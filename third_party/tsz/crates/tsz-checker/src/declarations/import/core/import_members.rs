@@ -130,7 +130,11 @@ impl<'a> CheckerState<'a> {
                     && !self.is_inside_function_body(idx)
                     && !self.is_inside_namespace_declaration(idx)
             });
-            if self
+            // The configured request was already admitted as External above.
+            // A specifier-only lookup can refuse mixed-kind outcomes and must
+            // not skip validation of this request's ambient member surface.
+            if self.ctx.project_module_resolution_outcomes.is_none()
+                && self
                 .resolve_effective_module_exports_from_file(
                     module_name,
                     Some(self.ctx.current_file_idx),

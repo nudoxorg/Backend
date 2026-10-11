@@ -1592,12 +1592,8 @@ pub(crate) struct ProducedSelectedNativeTypedPlaneHistoryV3 {
     input_claim: SemanticInputClaimV2,
     segment_admissions: Vec<DurableSemanticObjectAdmission>,
     jumbo_admissions: Vec<DurableSemanticObjectAdmission>,
-    segment_pins: Vec<DurableSemanticObjectPin>,
-    jumbo_pin: DurableSemanticObjectPin,
-    encoding_metrics: [CanonicalPlaneEncodingMetrics; TYPED_V2_FAMILY_COUNT],
-    segment_store_metrics: [SemanticProducerStoreMetrics; TYPED_V2_FAMILY_COUNT],
-    jumbo_store_metrics: SemanticProducerStoreMetrics,
-    verifier_io_metrics: SemanticProducerVerifierIoMetrics,
+    _segment_pins: Vec<DurableSemanticObjectPin>,
+    _jumbo_pin: DurableSemanticObjectPin,
 }
 
 impl ProducedSelectedNativeTypedPlaneHistoryV3 {
@@ -1620,19 +1616,10 @@ impl ProducedSelectedNativeTypedPlaneHistoryV3 {
     pub(crate) fn jumbo_admissions(&self) -> &[DurableSemanticObjectAdmission] {
         &self.jumbo_admissions
     }
-
-    pub(crate) fn segment_pins(&self) -> &[DurableSemanticObjectPin] {
-        &self.segment_pins
-    }
-
-    pub(crate) const fn jumbo_pin(&self) -> &DurableSemanticObjectPin {
-        &self.jumbo_pin
-    }
 }
 
 struct TypedV3ProducedArtifacts {
     image_facts: SemanticImageFacts,
-    input_witness: SemanticInputWitness,
     families: [SemanticTypedPlaneFamilyDescriptorV2; TYPED_V2_FAMILY_COUNT],
     segment_admissions: Vec<DurableSemanticObjectAdmission>,
     jumbo_admissions: Vec<DurableSemanticObjectAdmission>,
@@ -1653,6 +1640,7 @@ struct TypedV3ProducedArtifacts {
 /// This generic producer retains its existing complete-input gate and output
 /// type. It does not select a generation, and it has no changed-key frontier:
 /// the full reader is planned, sorted, encoded, and hashed on every run.
+#[cfg(test)]
 pub(crate) fn produce_semantic_typed_plane_v3<Reader: SemanticReader + ?Sized>(
     store: &FileStore,
     reader: &Reader,
@@ -1860,7 +1848,7 @@ pub(crate) fn produce_selected_native_typed_plane_history_v3<Reader: SemanticRea
             "typed V3 history producer emitted an unreferenced jumbo object".to_owned(),
         ));
     }
-    let verifier_io_metrics = source.io_metrics().checked_add(jumbo_source.io_metrics())?;
+    let _verifier_io_metrics = source.io_metrics().checked_add(jumbo_source.io_metrics())?;
     drop(source);
     drop(jumbo_source);
     let manifest = manifest_from_verified_content(
@@ -1883,12 +1871,8 @@ pub(crate) fn produce_selected_native_typed_plane_history_v3<Reader: SemanticRea
         input_claim,
         segment_admissions: artifacts.segment_admissions,
         jumbo_admissions: artifacts.jumbo_admissions,
-        segment_pins: artifacts.segment_pins,
-        jumbo_pin: artifacts.jumbo_pin,
-        encoding_metrics: artifacts.encoding_metrics,
-        segment_store_metrics: artifacts.segment_store_metrics,
-        jumbo_store_metrics: artifacts.jumbo_store_metrics,
-        verifier_io_metrics,
+        _segment_pins: artifacts.segment_pins,
+        _jumbo_pin: artifacts.jumbo_pin,
     })
 }
 
@@ -1997,7 +1981,6 @@ fn produce_typed_plane_v3_artifacts<Reader: SemanticReader + ?Sized>(
 
     Ok(TypedV3ProducedArtifacts {
         image_facts,
-        input_witness,
         families,
         segment_admissions: segment_admissions.into_admissions(),
         jumbo_admissions: jumbo_admissions.into_admissions(),

@@ -11,7 +11,7 @@
 use super::flight::{Marks, arrival, mark as flight_mark};
 use super::state::{Pick, Use};
 use super::text::{key, one, wrap, wrap_as};
-use crate::controls::button::{Handler, wire};
+use crate::controls::button::{ActivationAdmission, Handler, capture_activation_admission, wire};
 use crate::controls::state::{Touch, hover_zone, track};
 use crate::icons::{Kind, KindSize, kind_mark};
 use crate::marks::badges::{Badge as BadgeFacts, Glyph, Ink, Item, Lang as BadgeLang, Reading, badge, read};
@@ -23,7 +23,7 @@ use crate::theme::ActiveFacet;
 use crate::tokens::{TypeRole, ty};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce, SharedString, Styled, Window, div, px,
+    App, ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement, ParentElement, Pixels, RenderOnce, SharedString, StatefulInteractiveElement, Styled, Window, div, px,
 };
 use std::rc::Rc;
 
@@ -119,6 +119,17 @@ const DOC: TypeRole = TypeRole { size: 13.5, line: 18.5, ..ty::CAPTION };
 /// The chip that says yours.
 const YOURS: TypeRole = TypeRole { weight: 560.0, size: 11.0, line: 14.0, ..ty::SMALL };
 
+/// Native owner supplied by a host that registers the card in its target walk.
+#[derive(Clone)]
+pub struct NativeCardControl {
+    /// Identifier of the existing host target.
+    pub id: ElementId,
+    /// Continuously mounted native focus handle for that target.
+    pub focus: FocusHandle,
+    /// Current producer/visit admission checked before input and activation.
+    pub admit: ActivationAdmission,
+}
+
 /// One symbol card (see [`symbol_card`]).
 #[derive(IntoElement)]
 pub struct SymbolCard {
@@ -129,6 +140,7 @@ pub struct SymbolCard {
     width: Option<Pixels>,
     lit: Pick,
     on_open: Option<Handler>,
+    native_control: Option<NativeCardControl>,
     name_intent: Intent,
     mark: Option<(Marks, usize)>,
     carried: f32,
@@ -145,6 +157,7 @@ pub fn symbol_card(id: impl Into<ElementId>, facts: Rc<CardFacts>, measure: &Mea
         width: None,
         lit: Pick::Rest,
         on_open: None,
+        native_control: None,
         name_intent: Intent::Reading(ReadingRole::Heading),
         mark: None,
         carried: 1.0,
@@ -197,6 +210,13 @@ impl SymbolCard {
         self
     }
 
+    /// Gives the existing card activation its host's native target owner.
+    #[must_use]
+    pub fn native_control(mut self, control: NativeCardControl) -> Self {
+        self.native_control = Some(control);
+        self
+    }
+
     /// Called on click, Enter or Space.
     #[must_use]
     pub fn on_open(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
@@ -212,7 +232,8 @@ impl RenderOnce for SymbolCard {
         let measure = self.measure;
         let scale = measure.scale();
         let facts = self.facts;
-        let touch = Touch::read(&self.id, crate::controls::Look::LIVE, true, window, cx);
+        let touch = Touch::read_with_focus(&self.id, crate::controls::Look::LIVE, true,
+            self.native_control.as_ref().map(|control| control.focus.clone()), window, cx);
         let motion = touch.motion.clone();
         let hover = motion.animate(track(&self.id, "hover"), if touch.hovered || self.lit == Pick::Lit { 1.0 } else { 0.0 }, spec::LIFT, window, cx);
         let focus = motion.animate(track(&self.id, "focus"), if touch.focused { 1.0 } else { 0.0 }, spec::HOVER, window, cx);
@@ -305,8 +326,18 @@ impl RenderOnce for SymbolCard {
             .child(head)
             .child(doc)
             .child(badges)
-            .id(self.id.clone());
-        let body = wire(body, &touch, self.on_open);
+            .id(self.native_control.as_ref().map_or_else(|| self.id.clone(), |control| control.id.clone()));
+        let (body, activate) = if let Some(control) = self.native_control {
+            let admit = control.admit.clone();
+            let activate = self.on_open.map(|activate| Rc::new(move |window: &mut Window, cx: &mut App| {
+                if admit(cx) { activate(window, cx); }
+            }) as Handler);
+            let body = body.role(gpui::Role::Button).aria_label(facts.name.clone());
+            (capture_activation_admission(body, control.admit), activate)
+        } else {
+            (body, self.on_open)
+        };
+        let body = wire(body, &touch, activate);
         let shown = if facts.change == Some(Change::Absent) { 0.55 } else { 1.0 };
         hover_zone(body.opacity(shown * arrival(self.carried).max(0.0001)), &touch, 9.0 * scale, true)
     }

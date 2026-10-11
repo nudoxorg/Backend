@@ -29,8 +29,11 @@ mod persistent;
     reason = "zerocopy derives emit unsafe impls for plain-old-data wire types"
 )]
 pub mod schema;
+mod shared_coordinates;
 mod tree;
 mod workspace;
+
+pub use shared_coordinates::SharedCoordinates;
 
 pub use identity::{
     ArtifactHasher, ArtifactId, ArtifactIdDecodeError, CONTENT_PAYLOAD_BYTES, CapabilityDomain,

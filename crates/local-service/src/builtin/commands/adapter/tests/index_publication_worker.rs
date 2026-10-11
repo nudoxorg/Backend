@@ -10,7 +10,7 @@ use crate::builtin::commands::adapter::index_publication_worker::{
     Completion, Disposition, Event, Head, TestHook, TestStage,
 };
 use crate::builtin::commands::adapter::{
-    capture_recovery, commit_builtin_intent, prepare_builtin_intent_at_snapshot,
+    FinishAddError, capture_recovery, commit_builtin_intent, prepare_builtin_intent_at_snapshot,
     selected_semantic_removals,
 };
 use crate::builtin::{BuiltinModelError, BuiltinSemanticChange};
@@ -1710,7 +1710,20 @@ fn legacy_finish_add_removes_native_selection_after_staging_before_queue_compact
             None,
             Arc::new(AtomicBool::new(false)),
         )
-        .expect("actual legacy publication");
+        .unwrap_or_else(|error| match error {
+            FinishAddError::PublicationBusy => {
+                panic!("actual legacy publication refused: durable publication busy")
+            }
+            FinishAddError::Failed(cause) => {
+                // Keep the typed refusal and exact bounded cause identity;
+                // arbitrary model-error text can contain private source/URI data.
+                panic!(
+                    "actual legacy publication failed: BuiltinModelError (cause bytes={}, cause blake3={})",
+                    cause.0.len(),
+                    blake3::hash(cause.0.as_bytes()),
+                )
+            }
+        });
     assert_selection_removed(&mut fixture, &keys);
 }
 

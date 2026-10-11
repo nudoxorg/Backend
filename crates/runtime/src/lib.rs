@@ -38,12 +38,13 @@ pub mod server;
 mod bootstrap;
 mod recovery;
 mod startup;
-pub use recovery::{StartupFailure, StartupFailureCause, StartupRecovery};
 #[cfg(unix)]
 pub use bootstrap::{
-    LocaldStartup, SpawnedOwnerBootstrap, StartupPending, StartupPendingAction, StartupPendingCause,
-    StartupPhase, report_automatic_startup_failure, start_locald,
+    LocaldStartup, SpawnedOwnerBootstrap, StartupPending, StartupPendingAction,
+    StartupPendingCause, StartupPhase, report_automatic_startup_failure, start_locald,
+    start_locald_cancellable,
 };
+pub use recovery::{StartupFailure, StartupFailureCause, StartupRecovery};
 pub use startup::{STARTUP_DIAGNOSTIC_ENV, StartupDiagnostic, StartupFailureReporter};
 
 use std::ffi::OsString;
@@ -267,7 +268,8 @@ impl WorkspacePaths {
         if let Some(application_root) = self.private_application_root.as_ref() {
             initialize_default_state(application_root, &self.data).map_err(|source| {
                 RuntimeError::DefaultStateInitialization {
-                    path: application_root.path().join(APPLICATION_DIRECTORY), source,
+                    path: application_root.path().join(APPLICATION_DIRECTORY),
+                    source,
                 }
             })?;
         } else {
@@ -498,8 +500,33 @@ fn is_endpoint_file(metadata: &fs::Metadata) -> bool {
 /// bounded readiness wait fails.
 #[cfg(windows)]
 pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
-    if let Some(live) = try_attach(paths) {
-        return Ok(live.into_endpoint());
+    ensure_locald_cancellable(paths, None, || true)
+}
+
+/// Ensures endpoint readiness only while this caller remains interested.
+/// # Errors
+/// Returns cancellation as Interrupted, or the original startup failure.
+#[cfg(windows)]
+pub fn ensure_locald_cancellable(
+    paths: &WorkspacePaths,
+    remaining_read_budget: Option<Duration>,
+    mut keep_waiting: impl FnMut() -> bool,
+) -> Result<PathBuf, RuntimeError> {
+    let deadline = Instant::now()
+        + remaining_read_budget.map_or(LIVE_START_TIMEOUT, |budget| budget.min(LIVE_START_TIMEOUT));
+    if !keep_waiting() {
+        return Err(RuntimeError::Io(std::io::ErrorKind::Interrupted.into()));
+    }
+    if backend_platform::local::connect_timeout(
+        paths.endpoint(),
+        POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())),
+    )
+    .is_ok()
+    {
+        return Ok(paths.endpoint().to_path_buf());
+    }
+    if !keep_waiting() {
+        return Err(RuntimeError::Io(std::io::ErrorKind::Interrupted.into()));
     }
     paths.initialize()?;
     if let Some(parent) = paths.endpoint().parent() {
@@ -529,13 +556,24 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
         .stderr(Stdio::null());
     startup.configure(&mut command);
     detach(&mut command);
+    if Instant::now() >= deadline || !keep_waiting() {
+        return Err(RuntimeError::Io(std::io::ErrorKind::Interrupted.into()));
+    }
     let mut child = command
         .spawn()
         .map_err(|source| RuntimeError::Spawn { executable, source })?;
-    let mut deadline = Instant::now() + LIVE_START_TIMEOUT;
+    let mut deadline = deadline;
     let mut child_exit = None;
     loop {
-        if backend_platform::local::LocalStream::connect(paths.endpoint()).is_ok() {
+        if !keep_waiting() {
+            return Err(RuntimeError::Io(std::io::ErrorKind::Interrupted.into()));
+        }
+        if backend_platform::local::connect_timeout(
+            paths.endpoint(),
+            POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())),
+        )
+        .is_ok()
+        {
             return Ok(paths.endpoint().to_path_buf());
         }
         if child_exit.is_none()
@@ -558,7 +596,7 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
                 },
             );
         }
-        thread::sleep(POLL_INTERVAL);
+        thread::sleep(POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
     }
 }
 
@@ -571,6 +609,27 @@ pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
 #[cfg(unix)]
 pub fn ensure_locald(paths: &WorkspacePaths) -> Result<PathBuf, RuntimeError> {
     match start_locald(paths, LIVE_START_TIMEOUT, |_| {})? {
+        LocaldStartup::Ready(endpoint) => Ok(endpoint),
+        LocaldStartup::Pending(pending) => Err(RuntimeError::StartupPending(pending)),
+    }
+}
+
+/// Stops this caller's startup wait without cancelling the shared owner.
+/// # Errors
+/// Returns Interrupted for caller cancellation or the original startup failure.
+#[cfg(unix)]
+pub fn ensure_locald_cancellable(
+    paths: &WorkspacePaths,
+    remaining_read_budget: Option<Duration>,
+    mut keep_waiting: impl FnMut() -> bool,
+) -> Result<PathBuf, RuntimeError> {
+    let budget =
+        remaining_read_budget.map_or(LIVE_START_TIMEOUT, |budget| budget.min(LIVE_START_TIMEOUT));
+    let result = start_locald_cancellable(paths, budget, |_| {}, &mut keep_waiting);
+    if !keep_waiting() {
+        return Err(RuntimeError::Io(std::io::ErrorKind::Interrupted.into()));
+    }
+    match result? {
         LocaldStartup::Ready(endpoint) => Ok(endpoint),
         LocaldStartup::Pending(pending) => Err(RuntimeError::StartupPending(pending)),
     }
@@ -676,7 +735,10 @@ fn application_state_root() -> Result<ApplicationStateRoot, RuntimeError> {
                 "the user's home directory is unavailable",
             ))
         })?;
-        return Ok(ApplicationStateRoot::new(home, &["Library", "Application Support"]));
+        return Ok(ApplicationStateRoot::new(
+            home,
+            &["Library", "Application Support"],
+        ));
     }
 
     #[cfg(target_os = "windows")]
@@ -1226,7 +1288,9 @@ impl std::error::Error for RuntimeError {
             | Self::EndpointUnavailable { source, .. }
             | Self::Spawn { source, .. } => Some(source),
             #[cfg(unix)]
-            Self::StartupPending(_) | Self::StartupChannel(_) | Self::CompanionProtocolMismatch => None,
+            Self::StartupPending(_) | Self::StartupChannel(_) | Self::CompanionProtocolMismatch => {
+                None
+            }
             Self::InvalidPath(_)
             | Self::WorkspaceProjectMismatch { .. }
             | Self::InvalidCredential(_)
@@ -1707,8 +1771,11 @@ mod tests {
         fs::create_dir_all(&state).expect("create OS app-data parent");
         initialize_default_state(&ApplicationStateRoot::new(state.clone(), &[]), &first_state)
             .expect("initialize first project state");
-        initialize_default_state(&ApplicationStateRoot::new(state.clone(), &[]), &second_state)
-            .expect("initialize second project state");
+        initialize_default_state(
+            &ApplicationStateRoot::new(state.clone(), &[]),
+            &second_state,
+        )
+        .expect("initialize second project state");
         initialize_default_state(&ApplicationStateRoot::new(state.clone(), &[]), &first_state)
             .expect("cold reopen first project state");
         assert!(first_state.is_dir());

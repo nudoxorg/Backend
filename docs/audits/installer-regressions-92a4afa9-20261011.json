@@ -1,0 +1,337 @@
+{
+  "schema": "nudox.root-installer-regressions.v1",
+  "source": "92a4afa94bfdf435889678100b7037b1b3d2b98c",
+  "tree": "e803292879efae77a88e6e2dbf5a5c0f5fb13d46",
+  "python": "/Users/mileswirht/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+  "python_version": "Python 3.12.14",
+  "argv": [
+    "/Users/mileswirht/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
+    "-m",
+    "unittest",
+    "-v",
+    "test_compose_forgejo_checkpoint",
+    "test_install_diagnostic_launcher",
+    "test_install_forgejo_preview",
+    "test_release_contract"
+  ],
+  "cwd": "/private/tmp/nudox-root-profile-worker-integration-20261011/tools/package",
+  "exit": 0,
+  "actual_tests": {
+    "passed": 66,
+    "failed": 0
+  },
+  "test_body_seconds": 29.083,
+  "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stderr_sha256": "17f6752730630383938c1592c2c75b7a2bcb9b4c448962ec216e0e08aed5cdf3",
+  "tested_source_files": [
+    {
+      "path": "tools/package/compose_forgejo_checkpoint.py",
+      "bytes": 42692,
+      "sha256": "a31a8006e36706741a3bebeca36a288f070b1aeac0c9e954706c4f541f2832af"
+    },
+    {
+      "path": "tools/package/install_diagnostic_preview.sh",
+      "bytes": 5845,
+      "sha256": "d837c1fc8130285fe60d1dc44ef96f93fa2177f18bdb2c1db031eab7fc28a8ac"
+    },
+    {
+      "path": "tools/package/install_forgejo_preview.py",
+      "bytes": 16405,
+      "sha256": "b68aff74b65e3059e57684622feb08bb516a9f224200229f297f7dcd9043f910"
+    },
+    {
+      "path": "tools/package/release_contract.py",
+      "bytes": 47894,
+      "sha256": "511f3682f0931d08bf549e23c23ed4aa78efd31931cf34b6861a43f1c924cb18"
+    },
+    {
+      "path": "tools/package/test_compose_forgejo_checkpoint.py",
+      "bytes": 31251,
+      "sha256": "e023e614aa559e991073b758a7dcb5c77c6f5ec076543fd1ccca7f40245b8602"
+    },
+    {
+      "path": "tools/package/test_install_diagnostic_launcher.py",
+      "bytes": 12003,
+      "sha256": "e07407dac6487e329c2260e039979cb70da4bd96234f2b43d6632fe15f014e66"
+    },
+    {
+      "path": "tools/package/test_install_forgejo_preview.py",
+      "bytes": 38217,
+      "sha256": "40a4b7fb3f1bb765fffabd0b603cf3f1a36e0c18c779e15b9762c46e22ac4555"
+    },
+    {
+      "path": "tools/package/test_release_contract.py",
+      "bytes": 26110,
+      "sha256": "f86247b418ba09d2a7809fa84b4af389327123b110e3a1882bccf6be9f714df5"
+    }
+  ],
+  "verified_test_results": [
+    {
+      "name": "test_candidate_pins_and_channel_are_composed_from_typed_inputs (test_compose_forgejo_checkpoint.CandidateCompositionTests.test_candidate_pins_and_channel_are_composed_from_typed_inputs)",
+      "result": "ok"
+    },
+    {
+      "name": "test_changed_source_or_archive_does_not_carry_old_linux_failures (test_compose_forgejo_checkpoint.CandidateCompositionTests.test_changed_source_or_archive_does_not_carry_old_linux_failures)",
+      "result": "ok"
+    },
+    {
+      "name": "test_copy_failure_preserves_replacement_inode (test_compose_forgejo_checkpoint.CandidateCompositionTests.test_copy_failure_preserves_replacement_inode)",
+      "result": "ok"
+    },
+    {
+      "name": "test_copy_failure_retains_partial_asset_for_inspection (test_compose_forgejo_checkpoint.CandidateCompositionTests.test_copy_failure_retains_partial_asset_for_inspection)",
+      "result": "ok"
+    },
+    {
+      "name": "test_copy_refuses_preexisting_destination_without_removing_it (test_compose_forgejo_checkpoint.CandidateCompositionTests.test_copy_refuses_preexisting_destination_without_removing_it)",
+      "result": "ok"
+    },
+    {
+      "name": "test_failed_output_is_retained_for_inspection (test_compose_forgejo_checkpoint.CandidateCompositionTests.test_failed_output_is_retained_for_inspection)",
+      "result": "ok"
+    },
+    {
+      "name": "test_generated_launcher_executes_only_verified_saved_bootstrap_and_cleans_up (test_compose_forgejo_checkpoint.CandidateCompositionTests.test_generated_launcher_executes_only_verified_saved_bootstrap_and_cleans_up)",
+      "result": "ok"
+    },
+    {
+      "name": "test_generated_launcher_is_digest_and_size_pinned_to_new_bootstrap (test_compose_forgejo_checkpoint.CandidateCompositionTests.test_generated_launcher_is_digest_and_size_pinned_to_new_bootstrap)",
+      "result": "ok"
+    },
+    {
+      "name": "test_linux_package_root_symlink_is_refused_before_resolution (test_compose_forgejo_checkpoint.CandidateCompositionTests.test_linux_package_root_symlink_is_refused_before_resolution)",
+      "result": "ok"
+    },
+    {
+      "name": "test_mac_library_and_supported_platform_set_are_closed (test_compose_forgejo_checkpoint.CandidateCompositionTests.test_mac_library_and_supported_platform_set_are_closed)",
+      "result": "ok"
+    },
+    {
+      "name": "test_manifest_source_tag_and_linux_library_must_share_one_identity (test_compose_forgejo_checkpoint.CandidateCompositionTests.test_manifest_source_tag_and_linux_library_must_share_one_identity)",
+      "result": "ok"
+    },
+    {
+      "name": "test_output_directory_replacement_cannot_redirect_or_delete_candidate_assets (test_compose_forgejo_checkpoint.CandidateCompositionTests.test_output_directory_replacement_cannot_redirect_or_delete_candidate_assets)",
+      "result": "ok"
+    },
+    {
+      "name": "test_output_parent_must_be_controlled_or_sticky_protected (test_compose_forgejo_checkpoint.CandidateCompositionTests.test_output_parent_must_be_controlled_or_sticky_protected)",
+      "result": "ok"
+    },
+    {
+      "name": "test_output_symlink_is_refused_without_following_or_modifying_target (test_compose_forgejo_checkpoint.CandidateCompositionTests.test_output_symlink_is_refused_without_following_or_modifying_target)",
+      "result": "ok"
+    },
+    {
+      "name": "test_preexisting_output_directory_is_refused_without_touching_contents (test_compose_forgejo_checkpoint.CandidateCompositionTests.test_preexisting_output_directory_is_refused_without_touching_contents)",
+      "result": "ok"
+    },
+    {
+      "name": "test_private_output_contains_digest_launcher_alias_and_false_readiness (test_compose_forgejo_checkpoint.CandidateCompositionTests.test_private_output_contains_digest_launcher_alias_and_false_readiness)",
+      "result": "ok"
+    },
+    {
+      "name": "test_replacement_after_receipt_is_detected_before_success_return (test_compose_forgejo_checkpoint.CandidateCompositionTests.test_replacement_after_receipt_is_detected_before_success_return)",
+      "result": "ok"
+    },
+    {
+      "name": "test_same_linux_source_and_archive_preserve_detailed_base_failures (test_compose_forgejo_checkpoint.CandidateCompositionTests.test_same_linux_source_and_archive_preserve_detailed_base_failures)",
+      "result": "ok"
+    },
+    {
+      "name": "test_uncompleted_native_qa_note_is_candidate_scoped_and_explicit (test_compose_forgejo_checkpoint.CandidateCompositionTests.test_uncompleted_native_qa_note_is_candidate_scoped_and_explicit)",
+      "result": "ok"
+    },
+    {
+      "name": "test_auto_selection_prefers_host_cpython_over_broken_path_shim (test_install_diagnostic_launcher.LauncherTests.test_auto_selection_prefers_host_cpython_over_broken_path_shim)",
+      "result": "ok"
+    },
+    {
+      "name": "test_file_and_shell_stdin_fresh_install_reinstall_and_aliases_use_saved_python (test_install_diagnostic_launcher.LauncherTests.test_file_and_shell_stdin_fresh_install_reinstall_and_aliases_use_saved_python)",
+      "result": "ok"
+    },
+    {
+      "name": "test_http_and_partial_download_failure_preserve_status_and_never_execute (test_install_diagnostic_launcher.LauncherTests.test_http_and_partial_download_failure_preserve_status_and_never_execute)",
+      "result": "ok"
+    },
+    {
+      "name": "test_invalid_explicit_interpreter_does_not_silently_fallback (test_install_diagnostic_launcher.LauncherTests.test_invalid_explicit_interpreter_does_not_silently_fallback)",
+      "result": "ok"
+    },
+    {
+      "name": "test_launcher_literal_pin_is_exact_existing_published_r2_source (test_install_diagnostic_launcher.LauncherTests.test_launcher_literal_pin_is_exact_existing_published_r2_source)",
+      "result": "ok"
+    },
+    {
+      "name": "test_one_line_launcher_reaches_candidate_bootstrap_and_skips_repeat_archive (test_install_diagnostic_launcher.LauncherTests.test_one_line_launcher_reaches_candidate_bootstrap_and_skips_repeat_archive)",
+      "result": "ok"
+    },
+    {
+      "name": "test_optimized_python_cannot_bypass_implementation_version_or_api_probe (test_install_diagnostic_launcher.LauncherTests.test_optimized_python_cannot_bypass_implementation_version_or_api_probe)",
+      "result": "ok"
+    },
+    {
+      "name": "test_python_argument_failure_preserves_nonzero_status_and_cleanup (test_install_diagnostic_launcher.LauncherTests.test_python_argument_failure_preserves_nonzero_status_and_cleanup)",
+      "result": "ok"
+    },
+    {
+      "name": "test_successful_wrong_or_empty_response_is_never_executed (test_install_diagnostic_launcher.LauncherTests.test_successful_wrong_or_empty_response_is_never_executed)",
+      "result": "ok"
+    },
+    {
+      "name": "test_unsupported_host_and_missing_curl_fail_before_download (test_install_diagnostic_launcher.LauncherTests.test_unsupported_host_and_missing_curl_fail_before_download)",
+      "result": "ok"
+    },
+    {
+      "name": "test_update_refusal_preserves_pointer_and_explicit_flag_is_forwarded (test_install_diagnostic_launcher.LauncherTests.test_update_refusal_preserves_pointer_and_explicit_flag_is_forwarded)",
+      "result": "ok"
+    },
+    {
+      "name": "test_actual_old_bootstrap_updates_before_distinct_new_library_stdin_and_file (test_install_forgejo_preview.Tests.test_actual_old_bootstrap_updates_before_distinct_new_library_stdin_and_file)",
+      "result": "ok"
+    },
+    {
+      "name": "test_actual_stdin_file_dispatch_and_downgrade_flag_with_unchanged_library (test_install_forgejo_preview.Tests.test_actual_stdin_file_dispatch_and_downgrade_flag_with_unchanged_library)",
+      "result": "ok"
+    },
+    {
+      "name": "test_candidate_bootstrap_new_release_downloads_archive_and_corruption_fails_before_fetch (test_install_forgejo_preview.Tests.test_candidate_bootstrap_new_release_downloads_archive_and_corruption_fails_before_fetch)",
+      "result": "ok"
+    },
+    {
+      "name": "test_candidate_bootstrap_repeat_reuses_verified_mac_install_before_archive_fetch (test_install_forgejo_preview.Tests.test_candidate_bootstrap_repeat_reuses_verified_mac_install_before_archive_fetch)",
+      "result": "ok"
+    },
+    {
+      "name": "test_candidate_bootstrap_transport_reports_progress_with_bounded_timeout (test_install_forgejo_preview.Tests.test_candidate_bootstrap_transport_reports_progress_with_bounded_timeout)",
+      "result": "ok"
+    },
+    {
+      "name": "test_channel_refuses_role_pin_source_date_and_status_mismatches (test_install_forgejo_preview.Tests.test_channel_refuses_role_pin_source_date_and_status_mismatches)",
+      "result": "ok"
+    },
+    {
+      "name": "test_closed_initial_roles_reject_credentials_encoding_and_other_repositories (test_install_forgejo_preview.Tests.test_closed_initial_roles_reject_credentials_encoding_and_other_repositories)",
+      "result": "ok"
+    },
+    {
+      "name": "test_default_channel_and_unchanged_platform_library_pins (test_install_forgejo_preview.Tests.test_default_channel_and_unchanged_platform_library_pins)",
+      "result": "ok"
+    },
+    {
+      "name": "test_download_does_not_overwrite_existing_or_follow_symlink (test_install_forgejo_preview.Tests.test_download_does_not_overwrite_existing_or_follow_symlink)",
+      "result": "ok"
+    },
+    {
+      "name": "test_library_changed_after_download_is_refused_before_import (test_install_forgejo_preview.Tests.test_library_changed_after_download_is_refused_before_import)",
+      "result": "ok"
+    },
+    {
+      "name": "test_linux_original_pin_refuses_changed_mirror_manifest_before_install (test_install_forgejo_preview.Tests.test_linux_original_pin_refuses_changed_mirror_manifest_before_install)",
+      "result": "ok"
+    },
+    {
+      "name": "test_new_library_envelope_requires_new_bootstrap_before_library_admission (test_install_forgejo_preview.Tests.test_new_library_envelope_requires_new_bootstrap_before_library_admission)",
+      "result": "ok"
+    },
+    {
+      "name": "test_normal_mac_install_api_keeps_inventory_and_lease_guard (test_install_forgejo_preview.Tests.test_normal_mac_install_api_keeps_inventory_and_lease_guard)",
+      "result": "ok"
+    },
+    {
+      "name": "test_original_linux_manifest_parses_without_rewriting_provenance (test_install_forgejo_preview.Tests.test_original_linux_manifest_parses_without_rewriting_provenance)",
+      "result": "ok"
+    },
+    {
+      "name": "test_r2_bootstrap_updates_old_linux_pin_before_library_admission (test_install_forgejo_preview.Tests.test_r2_bootstrap_updates_old_linux_pin_before_library_admission)",
+      "result": "ok"
+    },
+    {
+      "name": "test_r2_pins_repaired_linux_library_without_changing_prior_release_assets (test_install_forgejo_preview.Tests.test_r2_pins_repaired_linux_library_without_changing_prior_release_assets)",
+      "result": "ok"
+    },
+    {
+      "name": "test_redirects_allow_only_same_origin_uuid_attachment_or_original_role (test_install_forgejo_preview.Tests.test_redirects_allow_only_same_origin_uuid_attachment_or_original_role)",
+      "result": "ok"
+    },
+    {
+      "name": "test_size_digest_overflow_and_final_route_fail_before_import (test_install_forgejo_preview.Tests.test_size_digest_overflow_and_final_route_fail_before_import)",
+      "result": "ok"
+    },
+    {
+      "name": "test_streamed_private_file_matches_digest_and_bounded_read (test_install_forgejo_preview.Tests.test_streamed_private_file_matches_digest_and_bounded_read)",
+      "result": "ok"
+    },
+    {
+      "name": "test_supported_and_refused_platforms (test_install_forgejo_preview.Tests.test_supported_and_refused_platforms)",
+      "result": "ok"
+    },
+    {
+      "name": "test_unreviewed_r2_linux_library_digest_is_rejected_by_compiled_pin (test_install_forgejo_preview.Tests.test_unreviewed_r2_linux_library_digest_is_rejected_by_compiled_pin)",
+      "result": "ok"
+    },
+    {
+      "name": "test_candidate_retry_finds_draft_by_listing_and_never_creates_duplicate (test_release_contract.CandidateTests.test_candidate_retry_finds_draft_by_listing_and_never_creates_duplicate)",
+      "result": "ok"
+    },
+    {
+      "name": "test_diagnostic_linux_validation_checks_package_without_claiming_native_qa (test_release_contract.CandidateTests.test_diagnostic_linux_validation_checks_package_without_claiming_native_qa)",
+      "result": "ok"
+    },
+    {
+      "name": "test_failed_public_download_rolls_back_with_compare_and_swap (test_release_contract.CandidateTests.test_failed_public_download_rolls_back_with_compare_and_swap)",
+      "result": "ok"
+    },
+    {
+      "name": "test_linux_archive_allows_exact_root_and_rejects_normalized_duplicates (test_release_contract.CandidateTests.test_linux_archive_allows_exact_root_and_rejects_normalized_duplicates)",
+      "result": "ok"
+    },
+    {
+      "name": "test_linux_archive_raw_names_match_installer_policy (test_release_contract.CandidateTests.test_linux_archive_raw_names_match_installer_policy)",
+      "result": "ok"
+    },
+    {
+      "name": "test_linux_archive_rejects_file_parent_collisions_and_unbounded_headers (test_release_contract.CandidateTests.test_linux_archive_rejects_file_parent_collisions_and_unbounded_headers)",
+      "result": "ok"
+    },
+    {
+      "name": "test_linux_build_and_packaging_identities_are_cross_bound (test_release_contract.CandidateTests.test_linux_build_and_packaging_identities_are_cross_bound)",
+      "result": "ok"
+    },
+    {
+      "name": "test_linux_manifest_digest_is_exact_on_disk_bytes (test_release_contract.CandidateTests.test_linux_manifest_digest_is_exact_on_disk_bytes)",
+      "result": "ok"
+    },
+    {
+      "name": "test_linux_member_stream_rejects_size_limits_before_reading_more_headers (test_release_contract.CandidateTests.test_linux_member_stream_rejects_size_limits_before_reading_more_headers)",
+      "result": "ok"
+    },
+    {
+      "name": "test_linux_source_lock_version_and_tree_match_the_selected_git_revision (test_release_contract.CandidateTests.test_linux_source_lock_version_and_tree_match_the_selected_git_revision)",
+      "result": "ok"
+    },
+    {
+      "name": "test_linux_validation_stops_reading_headers_at_the_member_cap (test_release_contract.CandidateTests.test_linux_validation_stops_reading_headers_at_the_member_cap)",
+      "result": "ok"
+    },
+    {
+      "name": "test_missing_qa_and_invalid_candidate_tag_never_publish (test_release_contract.CandidateTests.test_missing_qa_and_invalid_candidate_tag_never_publish)",
+      "result": "ok"
+    },
+    {
+      "name": "test_missing_release_lookup_closes_http_response (test_release_contract.CandidateTests.test_missing_release_lookup_closes_http_response)",
+      "result": "ok"
+    },
+    {
+      "name": "test_native_acceptance_and_archive_bytes_must_match (test_release_contract.CandidateTests.test_native_acceptance_and_archive_bytes_must_match)",
+      "result": "ok"
+    },
+    {
+      "name": "test_publication_is_read_back_verified_and_retry_does_not_replace_assets (test_release_contract.CandidateTests.test_publication_is_read_back_verified_and_retry_does_not_replace_assets)",
+      "result": "ok"
+    }
+  ],
+  "scope": "Root executed the focused suites and rehashed/count-checked raw results. Synthetic transport and directory-race controls; not current public release, native installation or application acceptance.",
+  "published": false,
+  "production_ready": false
+}

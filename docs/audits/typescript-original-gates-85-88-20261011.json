@@ -1,0 +1,341 @@
+{
+  "schema": "nudox.root-native-evidence.v1",
+  "gates": [
+    {
+      "gate": 85,
+      "source": {
+        "commit": "2578e58880ad53d8a6454f27a69e4c856a639bed",
+        "tree": "d5dd0a4d551910d313d1f7188398eb32944bf6e9",
+        "clean": true,
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350",
+        "clean_before": true,
+        "clean_after": true
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--manifest-path",
+        "third_party/tsz/Cargo.toml",
+        "--no-default-features",
+        "-j2",
+        "-p",
+        "tsz-core",
+        "--lib",
+        "parallel::core::project_checker_partitions_tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--nocapture",
+        "--test-threads=2"
+      ],
+      "receipt_sha256": "b1161f2438b820914d30e9e7c76d7ba40639f8755cbfd01bb71fd7d2417c40d4",
+      "frozen_manifest_sha256": "922f92124b48881e42fde746bda6e7c59acf77c102e6055d46e68f48553dc8d4",
+      "raw": {
+        "stdout": {
+          "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/native85/stdout.log",
+          "sha256": "e3eeaf8f8947e135f064ea8e9d0fac7ff9730247eed815b0c2eb83cc3f4f55f9"
+        },
+        "stderr": {
+          "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/native85/stderr.log",
+          "sha256": "aeee9333de665e55154f87656782e429e5a62e49c86d1f0dee0741f450f5c1e0"
+        }
+      },
+      "seconds": 19.39581132098101,
+      "actual_result": {
+        "passed": 25,
+        "failed": 8,
+        "ignored": 0,
+        "filtered": 3289
+      },
+      "tests": [
+        {
+          "name": "parallel::core::project_checker_partitions_tests::cancelled_and_expired_projects_return_typed_stops_without_results",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::captured_file_and_ambient_owner_key_collision_refuses_reexport_rows",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::cold_consumer_before_interface_owner_keeps_inherited_member_semantics",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::cold_barrel_consumer_preserves_number_and_string_discrimination",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::exhausted_library_materialization_rolls_back_completed_library_pushes",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::export_star_cannot_inspect_other_kind_export_equals_target",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::exact_external_aliases_keep_ambient_string_against_competing_file_number",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::external_export_equals_hydrates_only_the_exact_nested_import_type",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::external_wildcard_owner_cannot_lend_same_spelling_program_file_members",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::implicit_node_next_edge_cannot_borrow_explicit_sibling_mode",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::isolated_library_baseline_observes_budget_and_mid_library_stop_discards_output",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::library_name_index_stop_drops_partial_names_and_legacy_index_is_unchanged",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::malformed_named_edge_cannot_borrow_a_valid_same_specifier_sibling",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::merged_external_ambient_owners_keep_all_exact_wildcard_edges",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::merged_wildcard_rows_preserve_exact_lexical_edges_before_resolution",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::metered_path_validation_preserves_legacy_path_grammar",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::named_and_wildcard_edges_keep_disjoint_same_specifier_modes",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::nested_ambient_reexport_owner_cannot_borrow_foreign_owner_edge",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::nested_identifier_namespace_cannot_shift_ambient_wildcard_edge_mode",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::nested_statement_wildcards_cannot_retarget_following_sibling_request",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::nested_statement_wildcards_retain_actual_declaration_and_owner",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::node_next_foreign_plain_ts_request_requires_admitted_file_format",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::ordinary_import_none_mode_keeps_its_exact_file_and_members",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::outer_api_discards_completed_partition_results_when_another_partition_stops",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::import_type_and_typeof_member_chains_keep_exact_request_authority",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::partitions_keep_exact_unresolved_requests_and_typed_bad_targets",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::project_session_latches_one_shot_database_stop_and_discards_callback_output",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::selected_file_and_refused_request_dominate_shorthand_ambient_module",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::stop_after_completed_file_prevents_starting_later_partition_files",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::stopped_admission_precedes_invalid_resolution_and_resolution_bytes_are_metered",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::syntax_requests_cannot_borrow_other_kind_mode_or_ambient_success",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::partitions_preserve_cross_file_identity_options_libraries_and_diagnostics",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::two_worker_cold_consumer_finishes_before_interface_owner_starts",
+          "result": "FAILED"
+        }
+      ],
+      "artifacts_producer_observation": [
+        {
+          "path": "/root/.cache/nudox/cargo-1.97/build/slot-0/debug/deps/tsz_core-933d6e7f0121d97e",
+          "sha256": "22547034fafcafa9fab3977dd68b43ec09b3498d6332112a9cf348272478a7ff",
+          "bytes": 179868872,
+          "target": {
+            "kind": [
+              "rlib"
+            ],
+            "crate_types": [
+              "rlib"
+            ],
+            "name": "tsz_core",
+            "src_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/third_party/tsz/crates/tsz-core/src/lib.rs",
+            "edition": "2024",
+            "doc": true,
+            "doctest": true,
+            "test": true
+          },
+          "package_id": "path+file:///root/codex-worktrees/sol61-resident-fixture-20261011/third_party/tsz/crates/tsz-core#0.1.75",
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/third_party/tsz/crates/tsz-core/Cargo.toml"
+        }
+      ]
+    },
+    {
+      "gate": 88,
+      "source": {
+        "commit": "2578e58880ad53d8a6454f27a69e4c856a639bed",
+        "tree": "d5dd0a4d551910d313d1f7188398eb32944bf6e9",
+        "clean": true,
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350",
+        "clean_before": true,
+        "clean_after": true
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--manifest-path",
+        "third_party/tsz/Cargo.toml",
+        "--no-default-features",
+        "-j2",
+        "-p",
+        "tsz-core",
+        "--lib",
+        "parallel::core::project_module_resolution_tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--nocapture",
+        "--test-threads=2"
+      ],
+      "receipt_sha256": "9f41d65e5ab4f40a8e4df0db977588095e8abda6d16eada43e98611a556508c5",
+      "frozen_manifest_sha256": "15528c3f18827c1bbdaf61bfb99942bc99f9b1f6ac62487dd2246aa22cb9176a",
+      "raw": {
+        "stdout": {
+          "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/native88/stdout.log",
+          "sha256": "a0ba7ac2a7aa3bbe927b63628217420d6b66cb2d4ed6f2d52527fd9e1571e6f5"
+        },
+        "stderr": {
+          "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/native88/stderr.log",
+          "sha256": "4cf754acebb5948f4eef7ae906046dc2beb4a99bc72258e54a8d48d03819c527"
+        }
+      },
+      "seconds": 1.2500218930654228,
+      "actual_result": {
+        "passed": 4,
+        "failed": 1,
+        "ignored": 0,
+        "filtered": 3317
+      },
+      "tests": [
+        {
+          "name": "parallel::core::project_module_resolution_tests::explicit_project_resolution_preserves_outcomes_and_disables_filename_guessing",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_module_resolution_tests::explicit_project_resolution_rejects_unsupported_and_conflicting_requests",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_module_resolution_tests::project_checker_session_resolves_imported_members_in_full_program_context",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_module_resolution_tests::stopped_lazy_alias_walk_does_not_poison_a_fresh_project_session",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_module_resolution_tests::exact_project_requests_dominate_legacy_success_for_every_kind_mode_and_outcome",
+          "result": "ok"
+        }
+      ],
+      "artifacts_producer_observation": [
+        {
+          "path": "/root/.cache/nudox/cargo-1.97/build/slot-0/debug/deps/tsz_core-933d6e7f0121d97e",
+          "sha256": "22547034fafcafa9fab3977dd68b43ec09b3498d6332112a9cf348272478a7ff",
+          "bytes": 179868872,
+          "target": {
+            "kind": [
+              "rlib"
+            ],
+            "crate_types": [
+              "rlib"
+            ],
+            "name": "tsz_core",
+            "src_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/third_party/tsz/crates/tsz-core/src/lib.rs",
+            "edition": "2024",
+            "doc": true,
+            "doctest": true,
+            "test": true
+          },
+          "package_id": "path+file:///root/codex-worktrees/sol61-resident-fixture-20261011/third_party/tsz/crates/tsz-core#0.1.75",
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/third_party/tsz/crates/tsz-core/Cargo.toml"
+        }
+      ]
+    }
+  ],
+  "partition_comparison_to_81": {
+    "original_test_identities": 33,
+    "now_passing": [
+      "parallel::core::project_checker_partitions_tests::export_star_cannot_inspect_other_kind_export_equals_target"
+    ],
+    "new_whole_test_failures": []
+  },
+  "budget_comparison_to_78": {
+    "original_test_identities": 5,
+    "whole_test_statuses_unchanged": true,
+    "remaining_failure": "The armed stop now reaches its expected budget refusal; the fresh session fails at checking.rs:1883 with ERROR(1), expected STRING(10). Stack fallback and shared state are hypotheses, not proven causes."
+  },
+  "verification": "Root independently checked frozen manifests, receipts, raw outcomes, unchanged locks and tools, exact source identities, admission, empty process groups and unchanged cumulative accounting. Executable bytes remain producer observations.",
+  "limitations": [
+    "The 33-test subset is not the full tsz-core library.",
+    "Unchanged whole-test failures can move to different assertions; no claim that every negative or positive subcase is fixed.",
+    "Current source successors after 2578 have not run in these artifacts.",
+    "No current installed product or GUI proof."
+  ],
+  "production_ready": false
+}

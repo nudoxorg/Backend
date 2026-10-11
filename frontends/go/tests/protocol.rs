@@ -209,16 +209,12 @@ mod bounded_child {
 
     fn with_script(body: &str, oracle: GoOracle) -> Result<OracleError, String> {
         let (root, path) = script(body);
-        let _guard = super::ENVIRONMENT
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .map_err(|_| "lock")?;
-        // SAFETY: every test that mutates this process-global variable holds
-        // the same mutex, so no concurrent child observes a torn configuration.
-        unsafe { std::env::set_var("NUDOX_GO_ORACLE_BIN", &path) };
-        let result = oracle.run(&root).expect_err("script must fail");
-        // SAFETY: the mutex above remains held until this environment cleanup completes.
-        unsafe { std::env::remove_var("NUDOX_GO_ORACLE_BIN") };
+        let configuration = backend_frontend_go::legacy::GoOracleConfiguration::oracle_binary(path)
+            .map_err(|_| "explicit script configuration")?;
+        // This falsifier tests the bounded script child, not a preliminary
+        // real-Go environment probe through the compatibility override.
+        let result = oracle.with_configuration(configuration).run(&root)
+            .expect_err("script must fail");
         std::fs::remove_dir_all(root).map_err(|_| "cleanup")?;
         Ok(result)
     }
@@ -272,7 +268,7 @@ mod bounded_child {
         // SAFETY: the process-global test environment is serialized by the mutex.
         unsafe { std::env::set_var("NUDOX_GO_ORACLE_BIN", "/no/such/nudox-go-oracle") };
         let error = GoOracle::default()
-            .run(std::path::Path::new("missing"))
+            .run(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/module"))
             .expect_err("missing oracle must not fall back");
         // SAFETY: this test still exclusively holds the shared environment mutex.
         unsafe { std::env::remove_var("NUDOX_GO_ORACLE_BIN") };
@@ -378,11 +374,10 @@ fn end_to_end_fixture_preserves_package_and_tagged_declarations()
         demo.decls.iter().any(|decl| decl.name == "DarwinOnly"),
         active_darwin
     );
-    assert!(
-        demo.build_constraints
-            .iter()
-            .any(|constraint| constraint.file.ends_with("linux.go"))
-    );
+    // Build constraints describe excluded files; linux.go is active on
+    // Linux, while darwin.go is excluded there (and vice versa on macOS).
+    let excluded = if cfg!(target_os = "linux") { "darwin.go" } else { "linux.go" };
+    assert!(demo.build_constraints.iter().any(|constraint| constraint.file.ends_with(excluded)));
     Ok(())
 }
 
@@ -725,7 +720,7 @@ fn authority_image_round_trips_the_full_output() -> Result<(), Box<dyn std::erro
     let source = fixture.join("demo.go");
     // Both decodes come from the same oracle binary over the same module:
     // the JSON transcript is the fact source, the image its binary twin.
-    let output = adapter().run(&fixture)?;
+    let mut output = adapter().run(&fixture)?;
     let bytes = adapter().authority_image(&source, &fixture)?;
     let image = GoImage::open(&bytes).map_err(|cause| OracleError::Decode {
         message: cause.to_string(),
@@ -745,6 +740,14 @@ fn authority_image_round_trips_the_full_output() -> Result<(), Box<dyn std::erro
     assert_eq!(module.directory, json_module.dir.as_bytes());
     assert_eq!(module.go_version, json_module.go_version.as_bytes());
     assert_eq!(module.version, json_module.version.as_bytes());
+
+    // A source authority image contains only the selected package. The
+    // module transcript still proves both packages were actually loaded.
+    assert_eq!(output.packages.len(), 2);
+    let selected = image.package(0).map_err(image_fault)?.import_path;
+    output.packages = output.packages.into_vec().into_iter()
+        .filter(|package| package.import_path.as_bytes() == selected).collect();
+    assert_eq!(output.packages.len(), 1);
 
     // Package rows: identity and files. The image's declarations follow the
     // transcript's package order, so one shared cursor walks them.
@@ -1013,16 +1016,16 @@ func main() {
             .path,
         b"example.com/params".as_slice()
     );
-    // Two package rows in strict import-path order.
-    assert_eq!(image.package_count(), 2);
+    // The sibling remains compiler import context, not a second selected
+    // package serialized into this source-bound authority image.
+    assert_eq!(output.packages.len(), 2);
+    assert!(output.packages.iter().any(|package| package.import_path == "example.com/params/api"));
+    assert_eq!(image.package_count(), 1);
     assert_eq!(
         image.package(0).map_err(image_fault)?.import_path,
         b"example.com/params".as_slice()
     );
-    assert_eq!(
-        image.package(1).map_err(image_fault)?.import_path,
-        b"example.com/params/api".as_slice()
-    );
+
 
     // Greet's func row carries [name, greeting] then two unnamed results;
     // Sum's final variadic parameter is named vals; Unnamed's parameters
@@ -1099,8 +1102,8 @@ func main() {
 
     // Combo's method set is the complete post-embedding set: the inherited
     // foreign-package Log beside the locally declared Extra, in name order.
-    // api.Base's own row (one inherited Log of its own) precedes it, since
-    // the main package declares before the api package.
+    // Its foreign-package origin remains explicit even though api.Base's
+    // separate declaration is not serialized into the selected package.
     let combo_sets: Vec<NamePackage> = image
         .method_sets()
         .collect::<Result<Vec<_>, _>>()
@@ -1112,7 +1115,6 @@ func main() {
         combo_sets,
         [
             (b"Extra".to_vec(), b"example.com/params".to_vec()),
-            (b"Log".to_vec(), b"example.com/params/api".to_vec()),
             (b"Log".to_vec(), b"example.com/params/api".to_vec()),
         ]
     );

@@ -323,7 +323,23 @@ impl<'a> StatementCheckCallbacks for CheckerState<'a> {
                     && let Some(literal) = self.ctx.arena.get_literal(spec_node)
                 {
                     let module_name = literal.text.clone();
-                    if self.target_module_has_export_equals(&module_name) {
+                    let has_export_equals = if self.ctx.project_module_resolution_outcomes.is_some() {
+                        // This re-export can inspect only its own admitted target.
+                        // A same-spelling import may select a different export= module.
+                        self.ctx
+                            .bound_module_request_at(self.ctx.current_file_idx, export_idx)
+                            .and_then(|request| self.ctx.select_module_request(request))
+                            .is_some_and(|selected| {
+                                self.resolve_exports_for_selected_request(selected)
+                                    .is_some_and(|exports| exports.has("export="))
+                                    || selected
+                                        .file_target()
+                                        .is_some_and(|target| self.file_has_export_equals(target))
+                            })
+                    } else {
+                        self.target_module_has_export_equals(&module_name)
+                    };
+                    if has_export_equals {
                         // tsc uses the resolved module symbol name (without ./ prefix)
                         let display_name = module_name
                             .strip_prefix("./")

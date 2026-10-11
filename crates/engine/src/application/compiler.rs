@@ -720,6 +720,7 @@ fn stage_embedding_artifact(
     identity: EmbeddingExecutionIdentity,
     relative_path: &str,
     coordinates: &EmbeddingCoordinates,
+    memory: &backend_compile::EmbeddingMemoryBudget,
 ) -> Result<StagedEmbeddingArtifact, Box<str>> {
     if coordinates.purpose() != EmbeddingPurpose::Document
         || coordinates.recipe() != identity.recipe()
@@ -730,6 +731,12 @@ fn stage_embedding_artifact(
     {
         return Err("embedding response identity differs from its activated runtime".into());
     }
+    let memory_lease = memory
+        .reserve(
+            u64::try_from(coordinates.canonical_payload_len())
+                .map_err(|error| error.to_string().into_boxed_str())?,
+        )
+        .map_err(|error| error.to_string().into_boxed_str())?;
     let mut payload = Vec::new();
     payload
         .try_reserve_exact(coordinates.canonical_payload_len())
@@ -744,6 +751,7 @@ fn stage_embedding_artifact(
     Ok(StagedEmbeddingArtifact {
         key: *key.finalize().as_bytes(),
         payload: payload.into_boxed_slice(),
+        _memory_lease: memory_lease,
     })
 }
 
@@ -1979,6 +1987,7 @@ struct StagedEmbeddingOutput {
 struct StagedEmbeddingArtifact {
     key: [u8; 32],
     payload: Box<[u8]>,
+    _memory_lease: backend_compile::EmbeddingMemoryReservation,
 }
 
 impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
@@ -3188,7 +3197,12 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         for ((relative_path, _), coordinates) in
                             embedding_sources.iter().zip(&coordinates)
                         {
-                            match stage_embedding_artifact(identity, relative_path, coordinates) {
+                            match stage_embedding_artifact(
+                                identity,
+                                relative_path,
+                                coordinates,
+                                runtime.memory_budget(),
+                            ) {
                                 Ok(artifact) => embedding_artifacts.push(artifact),
                                 Err(cause)
                                     if embedding_requirement == EmbeddingRequirement::Required =>
@@ -4604,7 +4618,9 @@ fn package_authority_terminal(
     }
 }
 
-fn python_authority_failure_kind(error: &PythonCheckerError) -> PythonAuthorityFailureKind {
+pub(crate) fn python_authority_failure_kind(
+    error: &PythonCheckerError,
+) -> PythonAuthorityFailureKind {
     use PythonCheckerError as E;
     match error {
         E::ProjectPanic => PythonAuthorityFailureKind::ProjectPanic,

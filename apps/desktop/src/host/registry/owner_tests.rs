@@ -407,6 +407,7 @@ fn a_projects_packages_are_indexed_by_the_owner_and_their_pages_read_their_real_
         generation: crate::host::registry::CompositionGeneration::default(),
         refusals: None,
     };
+    let composition = cx.update(|cx| acquire::test_install_producer(composition, cx));
     let id = crate::core::LocalProjectId::from_path(&project).expect("project id");
     cx.update(|cx| {
         acquire::add_dependencies_with(

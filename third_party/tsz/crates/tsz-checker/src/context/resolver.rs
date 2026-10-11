@@ -204,7 +204,7 @@ impl<'a> CheckerContext<'a> {
         })
     }
 
-    fn bound_module_request_at(
+    pub(crate) fn bound_module_request_at(
         &self,
         importer: usize,
         declaration: NodeIndex,
@@ -398,6 +398,31 @@ impl<'a> CheckerContext<'a> {
             let request = request?;
             if alias.import_module() != Some(request.specifier) {
                 return None;
+            }
+            if self.project_module_resolution_outcomes.is_some()
+                && request.kind == ResolutionRequestKind::EsmReExport
+            {
+                // Direct export-table aliases can bypass the named re-export
+                // walker. Their lexical owner still must not borrow a row
+                // from a file/ambient-module string-key collision.
+                let mut owner_node = arena.parent_of(ancestor)?;
+                let mut owner = None;
+                for _ in 0..arena.len() {
+                    self.types.execution_checkpoint(1).ok()?;
+                    let node = arena.get(owner_node)?;
+                    if let Some(module) = arena.get_module(node) {
+                        owner = Some(arena.get_literal_text(module.name)?);
+                        break;
+                    }
+                    if node.kind == tsz_parser::parser::syntax_kind_ext::SOURCE_FILE {
+                        owner = Some(arena.source_files.first()?.file_name.as_str());
+                        break;
+                    }
+                    owner_node = arena.parent_of(owner_node)?;
+                }
+                if self.reexport_owner_is_ambiguous(importer, owner?)? {
+                    return None;
+                }
             }
             if selected.is_some_and(|previous| previous != request) {
                 return None;

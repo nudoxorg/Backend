@@ -44,7 +44,8 @@ mod project_native;
 mod project_configuration;
 pub use project_configuration::PythonProjectConfigurationFault;
 pub use project::{
-    DefinitionTarget, NativePythonProducerIdentity, NativePythonProjectAuthority,
+    DefinitionTarget, NativePythonProducerIdentity, NativePythonProducerImage,
+    NativePythonProjectAuthority,
     PythonCompiledImportUnavailable, PythonProjectBytesSource, PythonProjectControl,
     PythonProjectCoverageGap, PythonProjectCoverageGapKind, PythonProjectDiagnostic,
     PythonProjectFingerprint, PythonProjectReport, PythonProjectSource, PythonProjectSourceStatus,

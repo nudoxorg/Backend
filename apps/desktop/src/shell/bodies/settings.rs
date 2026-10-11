@@ -639,19 +639,19 @@ fn keys(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         leaves.push(value_row(key.says, caps, ty::MONO_ROW, palette.ink1, ctx));
     }
     // The sidebar's and the graph's own keys, while each has the keyboard.
-    let groups: [(&str, Vec<(&str, &str)>); 2] = [
+    let groups: [(&str, Vec<(String, &str)>); 2] = [
         (
             "In the sidebar",
             crate::shell::side::KEYS
                 .iter()
-                .map(|key| (key.cap, key.says))
+                .map(|key| (key.cap.to_owned(), key.says))
                 .collect(),
         ),
         (
             "In the graph",
             facet::graph::keys::KEYS
                 .iter()
-                .map(|key| (key.cap, key.says))
+                .map(|key| (key.cap(), key.says))
                 .collect(),
         ),
     ];

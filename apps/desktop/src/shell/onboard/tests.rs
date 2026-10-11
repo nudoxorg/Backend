@@ -94,6 +94,180 @@ fn type_in(rig: &mut Rig, text: &str) {
     rig.settle();
 }
 
+/// Hold the actual admission boundary's background answer while the mounted
+/// dialog continues to accept native input and overlay changes.
+fn held_admission(rig: &mut Rig, folder: &std::path::Path) -> async_channel::Sender<()> {
+    let release = unsettled_admission(rig, folder);
+    rig.settle();
+    release
+}
+
+fn unsettled_admission(rig: &mut Rig, folder: &std::path::Path) -> async_channel::Sender<()> {
+    let (release, wait) = async_channel::bounded(1);
+    let typed = folder.to_str().expect("path").to_owned();
+    rig.cx.update(|window, cx| {
+        let form = super::form(window, cx).expect("mounted Add form");
+        form.update(cx, |add, cx| {
+            let task = cx.background_executor().spawn(async move {
+                let _ = wait.recv().await;
+                super::path::admit(&typed, None, &[])
+            });
+            add.admit_submission(task, cx);
+        });
+    });
+    release
+}
+
+fn folder_work(rig: &mut Rig) -> (u64, bool, Option<String>) {
+    rig.cx.update(|window, cx| super::form(window, cx).expect("retained form").read(cx).work_state())
+}
+
+#[gpui::test]
+fn held_folder_work_coalesces_native_edits_into_one_latest_probe(cx: &mut TestAppContext) {
+    let (_, folder) = project("bounded-edits");
+    let mut rig = first_run(cx, 1440.0);
+    rig.keys("secondary-o");
+    type_in(&mut rig, folder.to_str().expect("path"));
+    let release = held_admission(&mut rig, &folder);
+    let (started, active, pending) = folder_work(&mut rig);
+    assert!(active);
+    assert!(pending.is_none());
+    for _ in 0..64 { type_in(&mut rig, "x"); }
+    let latest = rig.cx.update(|window, cx| super::field(window, cx).expect("field").read(cx).value().to_string());
+    assert_eq!(folder_work(&mut rig), (started, true, Some(latest)),
+        "logical retirement must retain physical occupancy and only the latest pending edit");
+    let _ = release.try_send(());
+    rig.settle();
+    assert_eq!(folder_work(&mut rig), (started + 1, false, None),
+        "only one latest filesystem probe starts after the old operation actually completes");
+    assert!(snapshot(&mut rig).workspace().projects.is_empty());
+    assert_eq!(overlay(&mut rig), Some(Overlay::AddProject));
+}
+
+#[gpui::test]
+fn queued_folder_submission_and_cover_do_not_release_held_physical_occupancy(cx: &mut TestAppContext) {
+    let (_, folder) = project("bounded-cover");
+    let mut rig = first_run(cx, 1440.0);
+    rig.keys("secondary-o");
+    type_in(&mut rig, folder.to_str().expect("path"));
+    let release = held_admission(&mut rig, &folder);
+    let started = folder_work(&mut rig).0;
+    type_in(&mut rig, "-changed");
+    rig.keys("enter enter enter");
+    assert_eq!(folder_work(&mut rig).0, started, "submitting behind a blocked call cannot start another worker");
+    rig.go(Intent::OpenSettings(crate::navigation::SettingsPage::Appearance));
+    rig.keys("escape");
+    assert_eq!(overlay(&mut rig), Some(Overlay::AddProject));
+    assert_eq!(folder_work(&mut rig), (started, true, None),
+        "cover and return retire queued submission, not the still-active physical call");
+    type_in(&mut rig, "-latest");
+    let latest = rig.cx.update(|window, cx| super::field(window, cx).expect("field").read(cx).value().to_string());
+    assert_eq!(folder_work(&mut rig), (started, true, Some(latest)));
+    let _ = release.try_send(());
+    rig.settle();
+    assert_eq!(folder_work(&mut rig), (started + 1, false, None));
+    assert!(snapshot(&mut rig).workspace().projects.is_empty(), "neither retired submission can land after return");
+}
+
+#[gpui::test]
+fn native_no_op_delete_does_not_cancel_admission_while_the_typing_probe_is_pending(cx: &mut TestAppContext) {
+    let (_, folder) = project("held-no-op-delete");
+    let mut rig = first_run(cx, 1440.0);
+    rig.keys("secondary-o");
+    let typed = folder.to_str().expect("path");
+    type_in(&mut rig, typed.strip_suffix('n').expect("fixture name ends in n"));
+    // Dispatch the final native key without the simulator's automatic
+    // run-until-parked, which would finish the fresh typing probe first.
+    rig.cx.cx.dispatch_keystroke(rig.cx.window, gpui::Keystroke::parse("n").expect("native key"));
+    let release = unsettled_admission(&mut rig, &folder);
+    assert!(rig.cx.update(|window, cx| super::form(window, cx).expect("form").read(cx).probe_pending()),
+        "native Delete must exercise a pending typing answer, not the already answered probe");
+    // At the end of the entered path, native Delete changes no bytes but the
+    // pinned InputState emits Change. This must leave the held Add alive.
+    rig.cx.simulate_keystrokes("delete");
+    release.try_send(()).expect("release unchanged admission");
+    rig.settle();
+    assert_eq!(overlay(&mut rig), None);
+    assert_eq!(snapshot(&mut rig).workspace().projects.len(), 1);
+}
+
+#[gpui::test]
+fn pending_folder_admission_keeps_native_editing_responsive_and_retires_on_edit(cx: &mut TestAppContext) {
+    let (_, folder) = project("held-edit");
+    let mut rig = first_run(cx, 1440.0);
+    rig.keys("secondary-o");
+    type_in(&mut rig, folder.to_str().expect("path"));
+    let release = held_admission(&mut rig, &folder);
+    assert_eq!(overlay(&mut rig), Some(Overlay::AddProject));
+    assert!(snapshot(&mut rig).workspace().projects.is_empty());
+    type_in(&mut rig, "-changed");
+    let _ = release.try_send(());
+    rig.settle();
+    assert_eq!(overlay(&mut rig), Some(Overlay::AddProject));
+    assert!(snapshot(&mut rig).workspace().projects.is_empty(), "an older edit cannot add a project");
+    let value = rig.cx.update(|window, cx| super::field(window, cx).expect("field").read(cx).value().to_string());
+    assert!(value.ends_with("-changed"), "native editing did not wait for admission");
+}
+
+#[gpui::test]
+fn covered_or_dismissed_folder_admission_cannot_land_after_return(cx: &mut TestAppContext) {
+    for covered in [true, false] {
+        let (_, folder) = project(if covered { "held-cover" } else { "held-dismiss" });
+        let mut rig = first_run(cx, 1440.0);
+        rig.keys("secondary-o");
+        type_in(&mut rig, folder.to_str().expect("path"));
+        let release = held_admission(&mut rig, &folder);
+        if covered { rig.go(Intent::OpenSettings(crate::navigation::SettingsPage::Appearance)); }
+        else { rig.keys("escape"); }
+        if covered { rig.keys("escape"); }
+        else { rig.keys("secondary-o"); }
+        assert_eq!(overlay(&mut rig), Some(Overlay::AddProject));
+        let _ = release.try_send(());
+        rig.settle();
+        assert!(snapshot(&mut rig).workspace().projects.is_empty(), "return cannot revive the retired admission");
+    }
+}
+
+#[gpui::test]
+fn coalesced_overlay_events_retire_a_folder_answer_even_when_the_final_overlay_is_add(cx: &mut TestAppContext) {
+    let (_, folder) = project("held-coalesced-cover");
+    let mut rig = first_run(cx, 1440.0);
+    rig.keys("secondary-o");
+    type_in(&mut rig, folder.to_str().expect("path"));
+    let release = held_admission(&mut rig, &folder);
+    let before = snapshot(&mut rig);
+    let mut session = before.session().clone();
+    session.open_overlay(Overlay::Settings(crate::navigation::SettingsPage::Appearance));
+    let covered = Arc::new(before.with_session(session));
+    // Actual store publications are emitted in one effect cycle, before the
+    // mounted form can redraw or observe a different final overlay snapshot.
+    rig.graph.store.update(rig.cx, |store, cx| {
+        store.admit_snapshot(covered, cx);
+        store.admit_snapshot(before, cx);
+    });
+    rig.settle();
+    assert_eq!(overlay(&mut rig), Some(Overlay::AddProject));
+    let _ = release.try_send(());
+    rig.settle();
+    assert!(snapshot(&mut rig).workspace().projects.is_empty(), "event continuity cannot be inferred from the final overlay");
+}
+
+#[gpui::test]
+fn completed_folder_admission_uses_current_shelf_membership(cx: &mut TestAppContext) {
+    let (_, folder) = project("held-current-shelf");
+    let mut rig = first_run(cx, 1440.0);
+    rig.keys("secondary-o");
+    type_in(&mut rig, folder.to_str().expect("path"));
+    let release = held_admission(&mut rig, &folder);
+    let id = crate::core::LocalProjectId::from_path(&folder).expect("identity");
+    rig.go(Intent::AddProject { project: id.clone() });
+    release.try_send(()).expect("release current admission");
+    rig.settle();
+    assert_eq!(overlay(&mut rig), None);
+    assert_eq!(snapshot(&mut rig).workspace().projects.len(), 1, "publication while pending does not duplicate a folder");
+    assert_eq!(snapshot(&mut rig).workspace().active.as_ref(), Some(&id));
+}
+
 #[gpui::test]
 fn the_first_screen_says_what_the_app_is_for_and_offers_the_way_in(cx: &mut TestAppContext) {
     let mut rig = first_run(cx, 1440.0);

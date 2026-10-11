@@ -1,0 +1,1017 @@
+{
+  "schema": "nudox.closed-runtime-tail-evidence.v1",
+  "recorded_utc": "2026-10-11T19:31:00Z",
+  "native": [
+    {
+      "source": {
+        "commit": "edd2c9735e79b8ffe7d0add3bb5960f526da2968",
+        "tree": "f03a2fef9e59e098d35fef69867bf6dd594b262b",
+        "clean": true,
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350",
+        "clean_before": true,
+        "clean_after": true
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "build",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-cli",
+        "-p",
+        "backend-mcp",
+        "-p",
+        "backend-locald",
+        "--bins",
+        "--message-format=json-render-diagnostics"
+      ],
+      "cwd": "/root/codex-worktrees/sol61-resident-fixture-20261011",
+      "started_utc": "2026-10-11T18:21:34.236792+00:00",
+      "finished_utc": "2026-10-11T18:27:18.071645+00:00",
+      "seconds": 343.16753135598265,
+      "exit": 0,
+      "name": "native59",
+      "receipt_sha256": "647243366e5a187cf88eece29463b6e500e5ea61685bc882a8f4fcf78b89edbd",
+      "logs": {
+        "stdout": {
+          "sha256": "81a0501b1029114cd875bbad43014462a99aad173c4960ca4458051180a8d485",
+          "bytes": 801377
+        },
+        "stderr": {
+          "sha256": "6f109446399208ef1053b6801d99f9fd28639be76c16782368de9513ee494f94",
+          "bytes": 253196
+        }
+      },
+      "errors": [],
+      "tests_executed": 0,
+      "optimized_release": false,
+      "manifest_sha256": "19a4781a508aff3b64426d821bbabafa2cd4e64c29b166fbcdc9deecf239aa91",
+      "artifacts": {
+        "backend-mcp": {
+          "path": "/root/codex-worktrees/sol61-resident-fixture-20261011/.local/target/debug/backend-mcp",
+          "sha256": "df3ea921ebe7c641f7dabd1d4f997a2b6bc3492cd1a29997d53dce659cace44d",
+          "bytes": 135937384,
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": false
+          },
+          "features": [
+            "default"
+          ],
+          "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/apps/mcp/Cargo.toml"
+        },
+        "backend-cli": {
+          "path": "/root/codex-worktrees/sol61-resident-fixture-20261011/.local/target/debug/backend-cli",
+          "sha256": "e28881a059f4eb72a06229478f32127aa2aaf3df54a1194e2c444123788d710c",
+          "bytes": 184536128,
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": false
+          },
+          "features": [],
+          "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/apps/cli/Cargo.toml"
+        },
+        "backend-locald": {
+          "path": "/root/codex-worktrees/sol61-resident-fixture-20261011/.local/target/debug/backend-locald",
+          "sha256": "9fad75fd240fe5f4e25f25a98dd2e93314f1146128d9bc6411af44737ec83444",
+          "bytes": 502670816,
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": false
+          },
+          "features": [],
+          "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/apps/locald/Cargo.toml"
+        }
+      }
+    },
+    {
+      "source": {
+        "commit": "6e9cc85defd48b6f7793d641630527670f773365",
+        "tree": "9516288f98af7e7aebd89d9e1bc7ccd5cc77d552",
+        "clean": true,
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350",
+        "clean_before": true,
+        "clean_after": true
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "build",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-cli",
+        "-p",
+        "backend-mcp",
+        "-p",
+        "backend-locald",
+        "--bins",
+        "--message-format=json-render-diagnostics"
+      ],
+      "cwd": "/root/codex-worktrees/sol61-resident-fixture-20261011",
+      "started_utc": "2026-10-11T18:48:06.483369+00:00",
+      "finished_utc": "2026-10-11T18:50:20.722448+00:00",
+      "seconds": 133.5911639139522,
+      "exit": 0,
+      "name": "native60",
+      "receipt_sha256": "fb4af3b3d47e622440b294069279052e1698b925c0defd217c6312dfb82141c3",
+      "logs": {
+        "stdout": {
+          "sha256": "b95d08c7e338af5c0904bd4c17992575c7d25c315690d8984bc3b4714628efec",
+          "bytes": 801362
+        },
+        "stderr": {
+          "sha256": "7fc43a44e45cfb21f76f3c9b295136f9d4462a94ab69d05588dcd3bb5378790b",
+          "bytes": 251930
+        }
+      },
+      "errors": [],
+      "tests_executed": 0,
+      "optimized_release": false,
+      "manifest_sha256": "236994d60fa160d4a373fc234bdd0de031257cb37e02eb879f843f323057b5a4",
+      "artifacts": {
+        "backend-mcp": {
+          "path": "/root/codex-worktrees/sol61-resident-fixture-20261011/.local/target/debug/backend-mcp",
+          "sha256": "f8b2320a1ef2f81c8b80b3cb0e583865e590e6390ff7a3ceb5d6455feadbbd43",
+          "bytes": 135988112,
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": false
+          },
+          "features": [
+            "default"
+          ],
+          "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/apps/mcp/Cargo.toml"
+        },
+        "backend-cli": {
+          "path": "/root/codex-worktrees/sol61-resident-fixture-20261011/.local/target/debug/backend-cli",
+          "sha256": "bb7c05843d685513a4e2075478de34d583a65f4b186bdaa9ddcff661e3c72253",
+          "bytes": 184572216,
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": false
+          },
+          "features": [],
+          "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/apps/cli/Cargo.toml"
+        },
+        "backend-locald": {
+          "path": "/root/codex-worktrees/sol61-resident-fixture-20261011/.local/target/debug/backend-locald",
+          "sha256": "aeb35a86d7ef327a141a3ccb53e1b4766ba55352507aba3f9a771b6d8e243f52",
+          "bytes": 502661856,
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": false
+          },
+          "features": [],
+          "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/apps/locald/Cargo.toml"
+        }
+      }
+    },
+    {
+      "source": {
+        "commit": "6e9cc85defd48b6f7793d641630527670f773365",
+        "tree": "9516288f98af7e7aebd89d9e1bc7ccd5cc77d552",
+        "clean": true,
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350",
+        "clean_before": true,
+        "clean_after": true
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-client",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--nocapture",
+        "--test-threads=2"
+      ],
+      "cwd": "/root/codex-worktrees/sol61-resident-fixture-20261011",
+      "started_utc": "2026-10-11T19:13:35.309651+00:00",
+      "finished_utc": "2026-10-11T19:16:51.080826+00:00",
+      "seconds": 195.14653379912488,
+      "exit": 101,
+      "name": "native63",
+      "receipt_sha256": "71c19ad4ee102e5fe117e4ca09a57971a6c519f3658e509b1a64f1a5803ce16d",
+      "logs": {
+        "stdout": {
+          "sha256": "f65df3eafb472736c50f9f1b3991800d3e1e7fa85f57bfc4b323f07998c44029",
+          "bytes": 785326
+        },
+        "stderr": {
+          "sha256": "2f6d319727cf170be58d3b86e8df3a334aeec86afdffea3ab374eb81d9f69e39",
+          "bytes": 171683
+        }
+      },
+      "errors": [
+        {
+          "code": {
+            "code": "E0283"
+          },
+          "message": "type annotations needed",
+          "stream": "stderr"
+        }
+      ],
+      "tests_executed": 0,
+      "optimized_release": false
+    },
+    {
+      "source": {
+        "commit": "e961d16bffdb6da208add0d28319de4d13e11480",
+        "tree": "156aa4d431d86ea1f94185539c4edf1caf34ee66",
+        "clean": true,
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350",
+        "clean_before": true,
+        "clean_after": true
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-client",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--nocapture",
+        "--test-threads=2"
+      ],
+      "cwd": "/root/codex-worktrees/sol61-resident-fixture-20261011",
+      "started_utc": "2026-10-11T19:23:28.555947+00:00",
+      "finished_utc": "2026-10-11T19:23:46.073621+00:00",
+      "seconds": 16.688673416152596,
+      "exit": 101,
+      "name": "native64",
+      "receipt_sha256": "74075cb7b9e1c55c342237a237fe17082119678c00ed9f5de60c3bc20d7cc867",
+      "logs": {
+        "stdout": {
+          "sha256": "3639ccd8b9bd0563abd6823b02106cdc2a5dff024ab9ce41175d881b4ec308b1",
+          "bytes": 800762
+        },
+        "stderr": {
+          "sha256": "1eb4b9e68c2c7a0313265410d5121d81c3d37aeac0c8f052c5b59ca032d86871",
+          "bytes": 170356
+        }
+      },
+      "errors": [],
+      "tests_executed": 136,
+      "optimized_release": false,
+      "actual_test_summaries": [
+        {
+          "status": "FAILED",
+          "passed": 132,
+          "failed": 4,
+          "ignored": 0
+        }
+      ],
+      "emitted_test_artifacts": [
+        {
+          "path": "/root/.cache/nudox/cargo-1.97/build/slot-0/debug/deps/backend_client-3ec908af95d6af71",
+          "sha256": "d2da4cf116e7020989e3ab72d07d9fbbf131d4a66cef4ae309707dc3ea755c69",
+          "bytes": 169475800,
+          "target": {
+            "kind": [
+              "lib"
+            ],
+            "crate_types": [
+              "lib"
+            ],
+            "name": "backend_client",
+            "src_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/crates/client/src/lib.rs",
+            "edition": "2024",
+            "doc": true,
+            "doctest": true,
+            "test": true
+          },
+          "package_id": "path+file:///root/codex-worktrees/sol61-resident-fixture-20261011/crates/client#backend-client@0.2.0",
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/crates/client/Cargo.toml"
+        }
+      ],
+      "image_hash_verification": "Recorded by producer; Root independently verified the raw artifact record and logs, not the executable bytes."
+    }
+  ],
+  "httpie_read06": {
+    "summary": {
+      "source": "71eef727245e2257ad9d0e919522cfe14621fa1f",
+      "tree": "5acad5cbe933cbb17a9ee64401ec3cd2250aeb91",
+      "app_pin": "5b604c37c6c67e18e7c3e9aee6c88a8c22b98345",
+      "home": "/home/sol61-cli-proof/current-b344-01",
+      "event_count": 60,
+      "bytes": 244050,
+      "actual_cl100k_tokens": 77132,
+      "max_bytes": 31809,
+      "max_tokens": 11126,
+      "all_response_budgets_pass": true,
+      "failed_valid_labels": [
+        "backend-search",
+        "mcp-search-page-0"
+      ],
+      "pass": false,
+      "first_try_search_pass": false,
+      "physical_source_checks": [
+        {
+          "label": "mcp-source exact physical source/extent",
+          "pass": true
+        },
+        {
+          "label": "cli-source exact physical source/extent",
+          "pass": true
+        }
+      ],
+      "protocol17_refusals": [
+        "backend.document",
+        "backend.graph",
+        "backend.index",
+        "backend.index_cancel",
+        "backend.index_progress",
+        "backend.index_search",
+        "backend.index_start",
+        "backend.outline",
+        "backend.package",
+        "backend.packages",
+        "backend.read",
+        "backend.references",
+        "backend.remove",
+        "backend.resolve",
+        "backend.search",
+        "backend.source",
+        "backend.status"
+      ],
+      "positive_index_remove_active_cancel_unrun": true,
+      "real_second_coordinate_batch_unproved": true,
+      "graph_class_rows": 1,
+      "graph_cursor_issued": false,
+      "cold_replay_unrun": true,
+      "prompts_unrun": true,
+      "wholewindow_seconds": 530.026258,
+      "native_call_seconds_exclude_admission": true,
+      "outer_exit": 1,
+      "permit_released": true,
+      "two_empty_scans": true
+    },
+    "summary_sha256": "5d796d287917abb41e923e5de7e715c1b6088eaee52e18fe72d096ac585e3d6c",
+    "events_sha256": "c398b6de2c5ae6d5c4ca231c6dba8c73b77514ef9929152626436308da22b3eb",
+    "responses": [
+      {
+        "kind": "mcp",
+        "label": "initialize",
+        "sequence": 1,
+        "sha256": "4ab776d9b646adaede687f19c266a7edd496186d70e9426d10a2c2cf78732de0",
+        "bytes": 2172,
+        "tokens": 488,
+        "seconds": 0.0058270590379834175,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "published-before",
+        "sequence": 2,
+        "sha256": "00473c07043ba5fa2e83cbe670503b691da32e29e3784d6bd98825f453628823",
+        "bytes": 3259,
+        "tokens": 1386,
+        "seconds": 3.2427389200311154,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "selected-mcp-document",
+        "sequence": 3,
+        "sha256": "3f531079e574033a8d128669d4236682b33d1e528dbbd1362bf9e215c9e41c4b",
+        "bytes": 12048,
+        "tokens": 3026,
+        "seconds": 0.22195143112912774,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "selected-mcp-source",
+        "sequence": 4,
+        "sha256": "591de73ea9391d6b4435f266043dbf2e9ebfe741999e37992fa712d2535b6d85",
+        "bytes": 11216,
+        "tokens": 2722,
+        "seconds": 0.011949433013796806,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "selected-mcp-references",
+        "sequence": 5,
+        "sha256": "198db4332d5fe4462a7f721c6c661bfcd8e6aa41334e22aa77041372849bdf70",
+        "bytes": 1406,
+        "tokens": 528,
+        "seconds": 0.11049161897972226,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "selected-mcp-graph-plain",
+        "sequence": 6,
+        "sha256": "5d4cd9b9e09ce859c821d9fe59af01f6d3b13656e12ca5338cfc7cba3076c0a2",
+        "bytes": 1891,
+        "tokens": 588,
+        "seconds": 0.04818671499378979,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "selected-mcp-graph-page-0",
+        "sequence": 7,
+        "sha256": "f9236e10d39203c4ddc6067db6d192e0c197da4804152cdecae3d85973d16286",
+        "bytes": 1891,
+        "tokens": 588,
+        "seconds": 0.05407612002454698,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "selected-mcp-read",
+        "sequence": 8,
+        "sha256": "8de43869be06876373f9ee26948e23fd83541a23b3b31b4e28d037abb1a3bb94",
+        "bytes": 9217,
+        "tokens": 2168,
+        "seconds": 0.00604637386277318,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "tools-list",
+        "sequence": 9,
+        "sha256": "eb14b66d3900620aaef22eb0166f2feb10859423ba5c6380eeb2ba73743179f6",
+        "bytes": 24216,
+        "tokens": 4996,
+        "seconds": 0.008144953055307269,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "resources-list",
+        "sequence": 10,
+        "sha256": "ed34bf7fc94df7ca194814e3cf624e30a2ef35a081733a3910946254a1fd61a4",
+        "bytes": 910,
+        "tokens": 208,
+        "seconds": 0.00036495295353233814,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "resources-templates-list",
+        "sequence": 11,
+        "sha256": "983df1e4a57d75778fdcdf9a52b48e3298ddb847185f50f50a581d1cbc253c12",
+        "bytes": 774,
+        "tokens": 168,
+        "seconds": 0.00024574599228799343,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "resource-workspace",
+        "sequence": 12,
+        "sha256": "280fd41d98f17c3e9aea002f2e21dc732565a620553c347153a8103fa5b8a300",
+        "bytes": 859,
+        "tokens": 235,
+        "seconds": 0.19547188095748425,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "resource-catalog",
+        "sequence": 13,
+        "sha256": "cf109d6c90a142edf3e428c8adae0aabf2b83ae5c5dc014796ef3d8d1194212d",
+        "bytes": 31809,
+        "tokens": 8199,
+        "seconds": 0.010403495980426669,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "resource-query-schema",
+        "sequence": 14,
+        "sha256": "a84a4937d9219482e3f71127028145c86308d90b7d953b7ed59ae0a4c95e54cf",
+        "bytes": 3925,
+        "tokens": 1011,
+        "seconds": 0.000981201184913516,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "resource-document",
+        "sequence": 15,
+        "sha256": "9cb16a24e1d7b2af6aa0b1bae8aad0221ba362551c68c4117fe6608ea2c72302",
+        "bytes": 6059,
+        "tokens": 1620,
+        "seconds": 0.1363575088325888,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "resource-outline",
+        "sequence": 16,
+        "sha256": "f9e58c64bb06966bea50e11adb11c88423910f741a6a4150d4aaa3f78b7e57e2",
+        "bytes": 6572,
+        "tokens": 2534,
+        "seconds": 0.043958333088085055,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "backend-packages",
+        "sequence": 17,
+        "sha256": "4d5362b746d89813b9595d75fd8899d10c8ae3b4c6ca0892185bc493d5bcdd70",
+        "bytes": 788,
+        "tokens": 218,
+        "seconds": 0.008105263113975525,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "backend-status",
+        "sequence": 18,
+        "sha256": "067fbe11cc668e48713825a8ef7d087511ebb5f4def10c16e94812b1a9104943",
+        "bytes": 1392,
+        "tokens": 411,
+        "seconds": 0.1871189489029348,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "backend-outline",
+        "sequence": 19,
+        "sha256": "cc60bacebd2506a266f3129e51caeb774568db29043941207e43f289b46a5b2c",
+        "bytes": 29848,
+        "tokens": 11126,
+        "seconds": 0.04966549202799797,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "backend-package",
+        "sequence": 20,
+        "sha256": "04c6fa39d2a38d989ec6cc82812b6d3f55d7ef6ea528c7201e919c80edd240e1",
+        "bytes": 1090,
+        "tokens": 297,
+        "seconds": 1.4798487308435142,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "backend-resolve",
+        "sequence": 21,
+        "sha256": "9608496c05e4916d6a9dbf6e3a3556a776efd0bdd77151f2be03fa037a0a9ebf",
+        "bytes": 5352,
+        "tokens": 1760,
+        "seconds": 0.013606059830635786,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "backend-search",
+        "sequence": 22,
+        "sha256": "62fa29400d5291681a681b379a0bcaaf192b68fffaba1c64670c831c47b4b86e",
+        "bytes": 1229,
+        "tokens": 337,
+        "seconds": 0.009674926986917853,
+        "outcome": "fail-valid-operation"
+      },
+      {
+        "kind": "mcp",
+        "label": "backend-index_search",
+        "sequence": 23,
+        "sha256": "27d1ac2853b783fb62471644a2663eea3072c4123c5562eba32da6027b65bdc9",
+        "bytes": 4577,
+        "tokens": 2122,
+        "seconds": 2.5884792478755116,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "mcp-search-page-0",
+        "sequence": 24,
+        "sha256": "474cd02890a74a26ed571c1640e83d3d9e4dede9f9ba12c41c32453c32d303cb",
+        "bytes": 1229,
+        "tokens": 337,
+        "seconds": 0.010572589002549648,
+        "outcome": "fail-valid-operation"
+      },
+      {
+        "kind": "mcp",
+        "label": "mcp-resolve-page-0",
+        "sequence": 25,
+        "sha256": "86b708bd3a588883efee34c5a2b9bfb3a095b631c014d433df617c28b79982fa",
+        "bytes": 7382,
+        "tokens": 3679,
+        "seconds": 0.01607605698518455,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "mcp-resolve-page-1",
+        "sequence": 26,
+        "sha256": "a426d2627833facc399597b86f27f31d698132fe0891fd382e65c2f7d882c8cc",
+        "bytes": 5604,
+        "tokens": 2859,
+        "seconds": 0.01374465599656105,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "mcp-resolve-page-2",
+        "sequence": 27,
+        "sha256": "e1fa38b6038b60f7c70293b843eb786579e4cbbc66032ca17cf489f6ac25831f",
+        "bytes": 2897,
+        "tokens": 975,
+        "seconds": 0.012184279039502144,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "protocol-negative-backend.document",
+        "sequence": 28,
+        "sha256": "0c73d9d4623e12ff7961f62da7c9db0b1ba445856d2f3ede79e3e383c826a6e6",
+        "bytes": 499,
+        "tokens": 124,
+        "seconds": 0.0003682519309222698,
+        "outcome": "pass-refusal"
+      },
+      {
+        "kind": "mcp",
+        "label": "protocol-negative-backend.graph",
+        "sequence": 29,
+        "sha256": "64941f6b0ca69208fc6f2b931e0b6dfce7448ba34b1efe7eee849537ec29d7a9",
+        "bytes": 441,
+        "tokens": 110,
+        "seconds": 0.00016284501180052757,
+        "outcome": "pass-refusal"
+      },
+      {
+        "kind": "mcp",
+        "label": "protocol-negative-backend.index",
+        "sequence": 30,
+        "sha256": "6f3fb54024b399fae711de2047693fa4ca7d04921004e6d9479fd56cdb06a5f9",
+        "bytes": 597,
+        "tokens": 142,
+        "seconds": 0.0011917420197278261,
+        "outcome": "pass-refusal"
+      },
+      {
+        "kind": "mcp",
+        "label": "protocol-negative-backend.index_cancel",
+        "sequence": 31,
+        "sha256": "fe2ce8f762a8c2cd51712fe00fa34031f4ab84c0ee19b6a381e07e2f8b005330",
+        "bytes": 441,
+        "tokens": 110,
+        "seconds": 0.000482392031699419,
+        "outcome": "pass-refusal"
+      },
+      {
+        "kind": "mcp",
+        "label": "protocol-negative-backend.index_progress",
+        "sequence": 32,
+        "sha256": "a792dc98fb06b1e4bd20e5594ab0386abc069b7bb2d583c107bb2e1b2c44c99d",
+        "bytes": 441,
+        "tokens": 110,
+        "seconds": 0.00034567900002002716,
+        "outcome": "pass-refusal"
+      },
+      {
+        "kind": "mcp",
+        "label": "protocol-negative-backend.index_search",
+        "sequence": 33,
+        "sha256": "aa4e2544bb79c4357429f8a001117e3f6547b4edea5ae3ce2a13df10c4d17ccb",
+        "bytes": 515,
+        "tokens": 126,
+        "seconds": 0.0003756678197532892,
+        "outcome": "pass-refusal"
+      },
+      {
+        "kind": "mcp",
+        "label": "protocol-negative-backend.index_start",
+        "sequence": 34,
+        "sha256": "a005bcb57d5cc794ad0b8b2f0bba60239ce033748499ac9720a88e26b69b60ae",
+        "bytes": 441,
+        "tokens": 110,
+        "seconds": 0.0002581269945949316,
+        "outcome": "pass-refusal"
+      },
+      {
+        "kind": "mcp",
+        "label": "protocol-negative-backend.outline",
+        "sequence": 35,
+        "sha256": "8b5222e5b0649f2b03c9ce261cc5195c77289f6c6b18355d9465681e274190a7",
+        "bytes": 505,
+        "tokens": 124,
+        "seconds": 0.0002681880723685026,
+        "outcome": "pass-refusal"
+      },
+      {
+        "kind": "mcp",
+        "label": "protocol-negative-backend.package",
+        "sequence": 36,
+        "sha256": "573f0b93cd2674244f367be2c517e900eb3afdef69cf417269ae2df56276ce44",
+        "bytes": 505,
+        "tokens": 124,
+        "seconds": 0.00016342499293386936,
+        "outcome": "pass-refusal"
+      },
+      {
+        "kind": "mcp",
+        "label": "protocol-negative-backend.packages",
+        "sequence": 37,
+        "sha256": "fb87a708b094e6398823682f07955d6e9fa2efcf61618fa6ced2b3f2800491bc",
+        "bytes": 507,
+        "tokens": 124,
+        "seconds": 0.000134339090436697,
+        "outcome": "pass-refusal"
+      },
+      {
+        "kind": "mcp",
+        "label": "protocol-negative-backend.read",
+        "sequence": 38,
+        "sha256": "cf2f784fdd5793ad4961193f6498d53c99b51b1f30b3f465916bb89702f709f8",
+        "bytes": 499,
+        "tokens": 124,
+        "seconds": 0.00013474910520017147,
+        "outcome": "pass-refusal"
+      },
+      {
+        "kind": "mcp",
+        "label": "protocol-negative-backend.references",
+        "sequence": 39,
+        "sha256": "ee36f844b4c003b147176af5775225b948b026b15836f8113a0a3ba9db2965a9",
+        "bytes": 511,
+        "tokens": 124,
+        "seconds": 0.00013102893717586994,
+        "outcome": "pass-refusal"
+      },
+      {
+        "kind": "mcp",
+        "label": "protocol-negative-backend.remove",
+        "sequence": 40,
+        "sha256": "1d59b8cc74da92f95f2909aa3fe7160c86f8e3bdadc366198540f11309c95f90",
+        "bytes": 503,
+        "tokens": 124,
+        "seconds": 0.00013878196477890015,
+        "outcome": "pass-refusal"
+      },
+      {
+        "kind": "mcp",
+        "label": "protocol-negative-backend.resolve",
+        "sequence": 41,
+        "sha256": "c827368e0c2ceddca363cff58bae09f468a14d8c2536403c984a45b19325e754",
+        "bytes": 505,
+        "tokens": 124,
+        "seconds": 0.0001316701527684927,
+        "outcome": "pass-refusal"
+      },
+      {
+        "kind": "mcp",
+        "label": "protocol-negative-backend.search",
+        "sequence": 42,
+        "sha256": "890f226f99dc0ecc1b9cdb1dabc09a7ff880f34fbd692f1679d931c96f56ee42",
+        "bytes": 503,
+        "tokens": 124,
+        "seconds": 0.00012826407328248024,
+        "outcome": "pass-refusal"
+      },
+      {
+        "kind": "mcp",
+        "label": "protocol-negative-backend.source",
+        "sequence": 43,
+        "sha256": "45be066b14e0ef5288da5e2076397565a7ddeef8bea7c66c7fa4298fff4708b4",
+        "bytes": 503,
+        "tokens": 124,
+        "seconds": 0.00012815394438803196,
+        "outcome": "pass-refusal"
+      },
+      {
+        "kind": "mcp",
+        "label": "protocol-negative-backend.status",
+        "sequence": 44,
+        "sha256": "ce9152a997799040334504497ce3aa8694ec2f83a054be87e4bf71fc71a53d9e",
+        "bytes": 503,
+        "tokens": 124,
+        "seconds": 0.00012932508252561092,
+        "outcome": "pass-refusal"
+      },
+      {
+        "kind": "mcp",
+        "label": "unknown-method",
+        "sequence": 45,
+        "sha256": "02b6c1672cf66cbae630cbbc6a60a4eb02115b234ba33721bfeb664125804099",
+        "bytes": 241,
+        "tokens": 70,
+        "seconds": 6.618513725697994e-05,
+        "outcome": "pass-refusal"
+      },
+      {
+        "kind": "mcp",
+        "label": "unknown-tool",
+        "sequence": 46,
+        "sha256": "ff5a803807027621d8568d901ef2241068cc085eccbe2e182a73b37fd7dc7d55",
+        "bytes": 237,
+        "tokens": 69,
+        "seconds": 6.914790719747543e-05,
+        "outcome": "pass-refusal"
+      },
+      {
+        "kind": "mcp",
+        "label": "unknown-resource",
+        "sequence": 47,
+        "sha256": "57e9477ac69f371d446a21d258facb8ab04b8ea2e69edaea05639b39ac75ed4d",
+        "bytes": 243,
+        "tokens": 70,
+        "seconds": 6.62039965391159e-05,
+        "outcome": "pass-refusal"
+      },
+      {
+        "kind": "mcp",
+        "label": "old-ticket-progress",
+        "sequence": 48,
+        "sha256": "021977a495388a89d09b85758b0b871c07acaff3433129de4a2da992d8dcfc9b",
+        "bytes": 1368,
+        "tokens": 443,
+        "seconds": 0.0129665641579777,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "old-ticket-cancel",
+        "sequence": 49,
+        "sha256": "5f7314ff990eb3286591557b868a90bc6abbe7b5a11cf5755d27035c2020f95b",
+        "bytes": 1190,
+        "tokens": 358,
+        "seconds": 0.004228078993037343,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "published-after-protocol",
+        "sequence": 50,
+        "sha256": "2670fe5a2679f91bfa1d49a37e660428480d27a52d00215b0f26188cd12e408b",
+        "bytes": 3260,
+        "tokens": 1386,
+        "seconds": 0.006432173075154424,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "mcp",
+        "label": "usable-after-negative",
+        "sequence": 51,
+        "sha256": "0a1cb63e60cd1affb00f5cc59f654d8a77f6c18cd7fc47a0f0a3ac56a811b8e0",
+        "bytes": 12049,
+        "tokens": 3026,
+        "seconds": 0.14262360986322165,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "cli",
+        "label": "selected-cli-document",
+        "sequence": 52,
+        "sha256": "3e47634120421bf2a4b968a25b4596781d82499d9b8deb2017780417e61a6c43",
+        "bytes": 6260,
+        "tokens": 1519,
+        "seconds": 0.2696884369943291,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "cli",
+        "label": "selected-cli-source",
+        "sequence": 53,
+        "sha256": "4f51e523995336d55ee7fca93e7ec06897dfc8da60b046f9cdcda559102880cd",
+        "bytes": 5650,
+        "tokens": 1302,
+        "seconds": 0.04066881304606795,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "cli",
+        "label": "selected-cli-references",
+        "sequence": 54,
+        "sha256": "dddf350765ae81bc69a6fb3fff44958efb34dfaa0a42d87e42f2190920947dd2",
+        "bytes": 646,
+        "tokens": 242,
+        "seconds": 0.14815089805051684,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "cli",
+        "label": "selected-cli-plain-graph",
+        "sequence": 55,
+        "sha256": "407f3503ce8edf4953f71f418bba9e448424c7e79322176bd27ecc0ba4ebd4a0",
+        "bytes": 1292,
+        "tokens": 398,
+        "seconds": 0.08257985091768205,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "cli",
+        "label": "selected-cli-read",
+        "sequence": 56,
+        "sha256": "c95903aac75eb376358b69b626b21fc99c16818afff9a7c9ba8279fece54bdb9",
+        "bytes": 4563,
+        "tokens": 1064,
+        "seconds": 0.019787053810432553,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "cli",
+        "label": "semantic-versions",
+        "sequence": 57,
+        "sha256": "9c3edf70cbd04e5b14ee287c58973e12fd7e164004680809dc40836a40f0468f",
+        "bytes": 2874,
+        "tokens": 1152,
+        "seconds": 0.034580869134515524,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "cli",
+        "label": "cli-search",
+        "sequence": 58,
+        "sha256": "355e33b51cb54412705cecb6e0d9b477f7cb5dafbc0edbc7fabd624a478d3937",
+        "bytes": 7235,
+        "tokens": 4097,
+        "seconds": 0.048815739806741476,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "cli",
+        "label": "cli-search-page-0",
+        "sequence": 59,
+        "sha256": "fa60fe282a673540d7c23331987843ea590ad9ae90639098d066db801a4af377",
+        "bytes": 5554,
+        "tokens": 3362,
+        "seconds": 0.05917287990450859,
+        "outcome": "pass-transport-and-protocol"
+      },
+      {
+        "kind": "cli",
+        "label": "cli-search-page-1",
+        "sequence": 60,
+        "sha256": "60f9d8295a6f5cdbec715a742633d9f932a4c18eaa2516164689b36d389d3ae5",
+        "bytes": 3357,
+        "tokens": 1916,
+        "seconds": 0.021271105855703354,
+        "outcome": "pass-transport-and-protocol"
+      }
+    ],
+    "verification": "Root independently rehashed all 60 raw responses and checked JSON ids, exact publication and recorded response budgets. Tokens were measured by the retained cl100k observer, not recomputed by Root.",
+    "plain_paged_graph_union_equivalence_proven": false,
+    "current60_acceptance_proven": false
+  },
+  "installer_regressions": {
+    "interpreter": "/usr/bin/python3",
+    "passed": 63,
+    "failed": 0,
+    "seconds": 25.204,
+    "stderr_sha256": "747d12c6e4eb7f7f813eaa4c0414efbf9917e952606c90ed1d07f34d920322d4",
+    "public_channel_promoted": false,
+    "real_current_mac_runtime_proven": false
+  },
+  "bootstrap_installer_regressions": {
+    "source": "6c6d609238",
+    "interpreter": "/usr/bin/python3",
+    "passed": 67,
+    "failed": 0,
+    "seconds": 39.654,
+    "stderr_sha256": "e77a1cfdd815d75257f03bef6ea55fbc0d7cd862379ce49d3de9377923b4a36c",
+    "transport": "Pinned R2 launcher and bootstrap handing off to synthetic candidate channel; not public candidate delivery.",
+    "public_channel_promoted": false
+  },
+  "production_ready": false
+}

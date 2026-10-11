@@ -1063,7 +1063,7 @@ impl Shelf {
             if spine_owns_input && item.does != Do::Nothing {
                 let guard = self.action_guard_for(Some(super::super::root::ShelfNativeSurface::Spine), cx);
                 let action = super::super::focus::TargetAction::new(guard.clone(),
-                    super::act(&cx.weak_entity(), item.does.clone(), self.reading_visit, guard))
+                    super::act(&cx.weak_entity(), item.does.clone(), self.reading_visit, guard.clone()))
                     .with_payload(item.does.clone());
                 self.targets.push(super::super::focus::Target {
                     id: spine_key.clone(), label: item.name.clone(), action: action.clone(),
@@ -1073,10 +1073,10 @@ impl Shelf {
                 if FocusRepresentative::for_leaf(self.targets.is_focused(&spine_key), &handle, window) == FocusRepresentative::Descendant {
                     cell = cell.aria_active_descendant();
                 }
-                cell = cell.track_focus(&handle);
                 let targets = self.targets.clone();
                 let id = spine_key.clone();
-                cell = cell.on_click(move |_: &ClickEvent, window, cx| {
+                cell = facet::controls::button::capture_activation_admission(cell, guard);
+                cell = facet::controls::button::native_button(cell, &handle, move |window, cx| {
                     if !action.admits(cx) { return; }
                     targets.focus(id.clone());
                     action.run(window, cx);

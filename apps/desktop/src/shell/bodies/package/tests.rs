@@ -119,6 +119,137 @@ fn readme_link_keyboard_back_restores_exact_row_and_unavailable_row_stays_action
     );
 }
 
+struct LongReadmeActions;
+impl crate::runtime::reads::PageReader for LongReadmeActions {
+    fn read(&mut self, request: &crate::runtime::reads::ReadRequest, context: &crate::runtime::reads::ReadContext<'_>)
+        -> Result<crate::model::pages::PageValue, crate::model::pages::ReadFailure> {
+        use crate::model::local_package::{ReadmeHeading, ReadmeLink};
+        use crate::model::pages::{Known, PageValue};
+        let value = ReadmeActions.read(request, context)?;
+        let PageValue::Package(mut about) = value else { return Ok(value); };
+        let mut source = String::new();
+        let mut headings = Vec::new();
+        let mut links = Vec::new();
+        for index in 0..33 {
+            let offset = source.len();
+            source.push_str(&format!("## Section {index}\n\n"));
+            headings.push(ReadmeHeading { slug: format!("section-{index}").into(),
+                element_id: format!("readme-heading-{offset}").into(), title: format!("Section {index}").into(), level: 2 });
+            links.push(ReadmeLink { label: format!("Section {index}").into(), destination: format!("#section-{index}").into(),
+                local_file: None, line: None });
+        }
+        about.readme_markdown = Known::Known(source.into());
+        about.readme_headings = Known::Known(headings.into());
+        about.readme_links = Known::Known(links.into());
+        Ok(PageValue::Package(about))
+    }
+}
+
+fn reach_readme_native(rig: &mut Rig, id: &str) {
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    for _ in 0..128 {
+        if rig.cx.update(|window, _| targets.native_focused(window).as_deref() == Some(id)) { return; }
+        rig.keys("tab");
+    }
+    panic!("real native Tab never reached {id}");
+}
+
+fn readme_native_node(rig: &mut Rig, role: &str, label: &str) -> gpui::accesskit::NodeId {
+    let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("mounted README tree");
+    let tree: serde_json::Value = serde_json::from_str(&json).expect("native README JSON");
+    let nodes = tree["nodes"].as_object().expect("native nodes");
+    let matching: Vec<_> = nodes.iter().filter(|(_, node)| node["aria"]["role"].as_str() == Some(role)
+        && node["aria"]["label"].as_str() == Some(label)).collect();
+    assert_eq!(matching.len(), 1, "one exact native {role} named {label}: {json}");
+    let (key, node) = matching[0];
+    assert_eq!(tree["accesskit_focus"].as_str(), Some(key.as_str()), "native and AccessKit focus must name the same README control");
+    assert!(node["aria"]["on_action"].as_array().is_some_and(|actions| actions.iter().any(|action| action.as_str() == Some("Click"))));
+    gpui::accesskit::NodeId(node["accesskit_id"].as_str().expect("native node id").parse().expect("native id"))
+}
+
+fn activate_readme_native(rig: &mut Rig, input: &str, role: &str, label: &str) {
+    let node = readme_native_node(rig, role, label);
+    match input {
+        "pointer" => {
+            let bounds = crate::shell::tests::native_bounds(rig, role, label, true).expect("native control bounds");
+            rig.cx.simulate_click(bounds.center(), Modifiers::none());
+        }
+        "accessibility" => { rig.cx.update(|window, cx| window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+            action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: node, data: None,
+        }, cx)); },
+        key => rig.native_press(key),
+    }
+    rig.settle();
+}
+
+#[gpui::test]
+fn readme_outline_and_more_rows_share_native_tab_pointer_keys_and_accessibility(cx: &mut TestAppContext) {
+    for input in ["pointer", "enter", "space", "accessibility"] {
+        let pool = crate::runtime::reads::ReadPool::start(1, |_| LongReadmeActions).expect("README pool");
+        let mut rig = crate::shell::tests::rig_with_reads(cx, Some(package_route()), 1440., 900., pool);
+        rig.cx.update(|window, cx| { window.set_a11y_forced(true); facet::probe::enable(cx); });
+        rig.repaint();
+        let count = |rig: &mut Rig, prefix: &str| painted(rig).targets.iter().filter(|target| target.key.starts_with(prefix)).count();
+        assert_eq!(count(&mut rig, "readme-heading-link-"), 32);
+        assert_eq!(count(&mut rig, "readme-link-"), 33, "32 rows plus the show-more target");
+        reach_readme_native(&mut rig, "readme-heading-more");
+        activate_readme_native(&mut rig, input, "Button", "Show more README headings (1 remaining)");
+        assert_eq!(count(&mut rig, "readme-heading-link-"), 33, "the actual native activation reveals the indexed final heading");
+        assert!(crate::shell::tests::native_bounds(&mut rig, "Button", "Show more README headings (1 remaining)", true).is_none());
+        reach_readme_native(&mut rig, "readme-link-more");
+        activate_readme_native(&mut rig, input, "Button", "Show more README links (1 remaining)");
+        assert_eq!(count(&mut rig, "readme-link-"), 33, "all 33 links replace the old show-more target");
+        assert!(painted(&mut rig).targets.iter().any(|target| target.key == "readme-link-32"), "native activation must reveal the actual last indexed link");
+        assert!(crate::shell::tests::native_bounds(&mut rig, "Button", "Show more README links (1 remaining)", true).is_none());
+        reach_readme_native(&mut rig, "readme-heading-link-0");
+        let scroll_y = |rig: &mut Rig| painted(rig).scrolls.iter().find(|sample| sample.key == "reader-scroll")
+            .and_then(|sample| sample.offset).expect("actual reader scroll displacement").y;
+        let before = scroll_y(&mut rig);
+        activate_readme_native(&mut rig, input, "Link", "Go to Section 0");
+        assert!(scroll_y(&mut rig) > before + 0.5, "{input} must move from the outline to the actual indexed Markdown heading");
+        assert_eq!(rig.route(), package_route(), "the indexed anchor is local to the same README");
+    }
+}
+
+#[gpui::test]
+fn an_old_readme_more_control_cannot_focus_or_expand_after_owner_replacement(cx: &mut TestAppContext) {
+    use crate::core::VersionedRoot;
+    use crate::runtime::owner::{OwnerGate, OwnerState};
+    let root = VersionedRoot::synthetic(backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
+    let gate = OwnerGate::ready(root, crate::model::ServiceMode::Attached);
+    let pool = crate::runtime::reads::ReadPool::start(1, |_| LongReadmeActions).expect("README pool");
+    let mut rig = crate::shell::tests::rig_with_engine_gate(cx, Some(package_route()), 1440., 900., pool,
+        crate::shell::tests::RootOnly, Some(gate.clone()));
+    rig.cx.update(|window, cx| { window.set_a11y_forced(true); facet::probe::enable(cx); });
+    rig.repaint();
+    reach_readme_native(&mut rig, "readme-heading-more");
+    let old = readme_native_node(&mut rig, "Button", "Show more README headings (1 remaining)");
+    let bounds = crate::shell::tests::native_bounds(&mut rig, "Button", "Show more README headings (1 remaining)", true).expect("native more bounds");
+    let retained_focus = rig.cx.update(|window, cx| window.focused(cx).expect("focused native More"));
+    gate.publish(OwnerState::Starting);
+    gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+    // Complete native keys, without watcher flush or a replacement frame.
+    for key in ["tab", "shift-tab", "enter", "space"] {
+        rig.native_press(key);
+        assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), Some(retained_focus.clone()),
+            "{key} must not give an old producer another native focus owner");
+    }
+    let shell = rig.shell.clone();
+    let saved_focus = rig.cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| shell.take_zone(crate::shell::focus::Zone::Reader, window, cx));
+        window.focused(cx).expect("current mounted Shell owner")
+    });
+    // No watcher flush, repaint, or new native node may hide this old callback.
+    rig.cx.simulate_click(bounds.center(), Modifiers::none());
+    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), Some(saved_focus));
+    rig.cx.update(|window, cx| window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+        action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: old, data: None,
+    }, cx));
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let list = targets.list_probe().upgrade().expect("retained mounted target list");
+    assert!(list.borrow().iter().all(|target| target.id.as_ref() != "readme-heading-link-32"), "the old producer cannot expand the retained README plan");
+}
+
 #[test]
 fn package_hero_stacks_when_text_scale_leaves_no_readable_side_column() {
     assert!(super::hero_stacks(px(320.0), 2.0));
@@ -454,7 +585,19 @@ fn a_card_is_a_door_to_its_exact_indexed_page(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn j_walks_the_modules_enter_opens_one_and_j_then_enter_opens_a_name(cx: &mut TestAppContext) {
-    let mut rig = rig(cx, Some(package_route()), 1440.0, 900.0);
+    use crate::core::VersionedRoot;
+    use crate::runtime::owner::OwnerGate;
+    use crate::runtime::reads::ReadPool;
+    use crate::shell::tests::{Fixture, RootOnly, rig_with_engine_gate};
+
+    let root = VersionedRoot::synthetic(
+        backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4,
+    );
+    let mut rig = rig_with_engine_gate(
+        cx, Some(package_route()), 1440., 900.,
+        ReadPool::start(2, |_| Fixture).expect("fixture pool"), RootOnly,
+        Some(OwnerGate::ready(root, crate::model::ServiceMode::Attached)),
+    );
     install(&mut rig);
     let _ = painted(&mut rig);
     rig.keys("j");
@@ -466,7 +609,8 @@ fn j_walks_the_modules_enter_opens_one_and_j_then_enter_opens_a_name(cx: &mut Te
         Some("pkg-module-glyph"),
         "j lands on the first module"
     );
-    rig.keys("enter");
+    rig.native_press("enter");
+    rig.settle();
     let ledger = painted(&mut rig);
     assert_eq!(
         rig.route(),
@@ -486,7 +630,12 @@ fn j_walks_the_modules_enter_opens_one_and_j_then_enter_opens_a_name(cx: &mut Te
         Some(true),
         "j now walks the cards: {focused:?}"
     );
-    rig.keys("enter");
+    let _ = painted(&mut rig);
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)), targets.focused(),
+        "the selected card's actual native handle owns Enter");
+    rig.native_press("enter");
+    rig.settle();
     assert!(
         matches!(rig.route(), crate::navigation::Route::Symbol(_)),
         "enter on a card opens its page: {:?}",
@@ -1245,25 +1394,16 @@ fn the_crest_and_releases_are_doors_and_enter_does_what_a_click_does(cx: &mut Te
         Some("pkg-module-glyph"),
         "the first door is the territory's"
     );
-    // Then the licence: Enter holds the stamp unfolded, Enter again lets it go.
+    // Native focus reveals the stamp; Enter closes and then reopens
+    // that same disclosure, rather than a second painted debug state.
     walk_to(&mut rig, "pkg-licence", 6);
-    rig.keys("enter");
-    assert!(
-        has(&painted(&mut rig), "licence-line")
-            || said(&painted(&mut rig), "licence")
-                .iter()
-                .any(|w| w.contains("keep the notice")),
-        "Enter unfolded the licence stamp"
-    );
-    rig.keys("enter");
+    assert!(native_licence_expanded(&mut rig), "focus reveals the actual licence stamp");
+    rig.native_press("enter");
     rig.settle();
-    rig.frame(400);
-    assert!(
-        !said(&painted(&mut rig), "licence")
-            .iter()
-            .any(|w| w.contains("keep the notice")),
-        "Enter again folded it"
-    );
+    assert!(!native_licence_expanded(&mut rig), "Enter folds the native stamp");
+    rig.native_press("enter");
+    rig.settle();
+    assert!(native_licence_expanded(&mut rig), "Enter unfolds the same native stamp");
     // The heads-up hand: Enter opens the sheet of evidence.
     walk_to(&mut rig, "pkg-heads", 3);
     rig.keys("enter");
@@ -1335,7 +1475,7 @@ fn package_card_reading_names_and_native_actions_follow_the_current_owner_attach
     let card_id = PageTarget::Card(symbol).id();
     let debug_id = format!("{:?}", gpui::ElementId::Name(card_id.clone()));
     let tree: serde_json::Value = serde_json::from_str(&rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("forced native tree")).expect("native JSON");
-    let (node_id, node) = tree["nodes"].as_object().expect("native nodes").iter().find(|(_, node)| {
+    let (_, node) = tree["nodes"].as_object().expect("native nodes").iter().find(|(_, node)| {
         node["element_id"].as_str() == Some(debug_id.as_str())
             && node["aria"]["role"].as_str() == Some("Button")
             && node["aria"]["label"].as_str() == Some("RelationLabel")
@@ -1349,7 +1489,7 @@ fn package_card_reading_names_and_native_actions_follow_the_current_owner_attach
         node.role() == gpui::Role::Label && node.label() == Some("enum")
             && !node.supports_action(gpui::AccessibleAction::SetValue)
     }))), "the actual card kind word is noneditable native reading");
-    let old = gpui::accesskit::NodeId(node_id.parse().expect("native node id"));
+    let old = gpui::accesskit::NodeId(node["accesskit_id"].as_str().expect("native AccessKit id").parse().expect("native node id"));
     // No UI watcher, repaint or new typed read may run between publication
     // of the new real attachment and delivery to the old mounted handler.
     gate.publish(OwnerState::Starting);
@@ -2150,7 +2290,9 @@ fn a_painted_dependency_back_return_refuses_later_focus_read_owner_or_visit(
                         .mount_claim("pkg-licence")
                         .expect("actual freshly painted alternate native control");
                     assert!(targets.admits_mount(&licence, window));
-                    assert!(targets.focus_native("pkg-licence", window, app));
+                    let handle = targets.native_handle(&"pkg-licence".into(), app);
+                    assert!(window.is_focus_handle_mounted(&handle));
+                    window.focus(&handle, app); // Actual later native input, not a deferred return.
                     assert_eq!(targets.native_focused(window).as_deref(), Some("pkg-licence"));
                 }
                 Interruption::ReadStamp => {
@@ -2330,7 +2472,7 @@ fn a_dependency_native_link_rejects_a_replaced_owner_before_any_repaint(cx: &mut
             .expect("real mounted dependency tree"),
     )
     .expect("native JSON");
-    let (node_id, node) = tree["nodes"]
+    let (_, node) = tree["nodes"]
         .as_object()
         .expect("native nodes")
         .iter()
@@ -2344,7 +2486,7 @@ fn a_dependency_native_link_rejects_a_replaced_owner_before_any_repaint(cx: &mut
             .iter()
             .any(|action| action.as_str() == Some("Click"))
     }));
-    let old = gpui::accesskit::NodeId(node_id.parse().expect("native dependency id"));
+    let old = gpui::accesskit::NodeId(node["accesskit_id"].as_str().expect("native AccessKit id").parse().expect("native dependency id"));
     // Deliver directly to the old mounted action, before any notification,
     // rebuilt link, or typed read can conceal the attachment replacement.
     gate.publish(OwnerState::Starting);

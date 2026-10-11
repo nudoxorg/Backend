@@ -1617,6 +1617,62 @@ mod tests {
     #[test]
     fn compiler_file_format_changes_recheck_with_shared_map_and_reuse_binds() {
         use tsz::checker::context::{ResolutionModeOverride, ResolutionRequestKind};
+        let syntax_target = |checker: &TszCheckerState<'_>,
+                             main: usize,
+                             expected_mode: ResolutionModeOverride| {
+            let arena = checker.ctx.arena;
+            let import = arena
+                .source_files
+                .first()
+                .unwrap()
+                .statements
+                .nodes
+                .iter()
+                .find_map(|&statement| {
+                    arena
+                        .get(statement)
+                        .and_then(|node| arena.get_import_decl(node))
+                })
+                .expect("actual import declaration");
+            let specifier = arena.get_literal_text(import.module_specifier).unwrap();
+            assert_eq!(specifier, "./value");
+            assert!(import.attributes.is_none());
+            let kind = ResolutionRequestKind::EsmImport;
+            let mode = checker
+                .ctx
+                .resolution_mode_for_project_request(specifier, kind, None);
+            assert_eq!(mode, Some(expected_mode));
+            // None is an exact unadmitted key, not an implicit-format selector.
+            assert_eq!(
+                checker
+                    .ctx
+                    .resolve_import_target_from_file_for_request(main, specifier, None, kind),
+                None
+            );
+            let target = checker
+                .ctx
+                .resolve_import_target_from_file_for_request(main, specifier, mode, kind)
+                .unwrap();
+            let opposite = match expected_mode {
+                ResolutionModeOverride::Import => ResolutionModeOverride::Require,
+                ResolutionModeOverride::Require => ResolutionModeOverride::Import,
+            };
+            let opposite_target = checker
+                .ctx
+                .resolve_import_target_from_file_for_request(
+                    main,
+                    specifier,
+                    Some(opposite),
+                    kind,
+                )
+                .unwrap();
+            assert_ne!(
+                opposite_target,
+                target,
+                "the other admitted mode cannot borrow this syntax target"
+            );
+            target
+        };
         let sources = vec![
             input(
                 "src/main.ts",
@@ -1645,6 +1701,11 @@ mod tests {
             (TszProjectFileFormat::EsModule, "src/es.ts", true),
             (TszProjectFileFormat::CommonJs, "src/cjs.ts", false),
         ] {
+            let expected_mode = if format == TszProjectFileFormat::EsModule {
+                ResolutionModeOverride::Import
+            } else {
+                ResolutionModeOverride::Require
+            };
             recipe.file_formats = vec![TszProjectFileFormatInput {
                 path: "src/main.ts".into(),
                 format,
@@ -1674,15 +1735,7 @@ mod tests {
                         checker.ctx.file_is_esm_map.as_ref().unwrap(),
                         &project.program().file_is_esm_map
                     ));
-                    let target = checker
-                        .ctx
-                        .resolve_import_target_from_file_for_request(
-                            main,
-                            "./value",
-                            None,
-                            ResolutionRequestKind::EsmImport,
-                        )
-                        .unwrap();
+                    let target = syntax_target(checker, main, expected_mode);
                     assert_eq!(project.program().files[target].file_name, expected);
                 })
                 .unwrap();
@@ -1699,15 +1752,7 @@ mod tests {
                         checker.ctx.file_is_esm_map.as_ref().unwrap(),
                         &project.program().file_is_esm_map
                     ));
-                    let target = checker
-                        .ctx
-                        .resolve_import_target_from_file_for_request(
-                            main,
-                            "./value",
-                            None,
-                            ResolutionRequestKind::EsmImport,
-                        )
-                        .unwrap();
+                    let target = syntax_target(checker, main, expected_mode);
                     assert_eq!(project.program().files[target].file_name, expected);
                 })
                 .unwrap();

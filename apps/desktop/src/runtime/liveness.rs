@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 pub(crate) fn transport_break(error: &ClientError) -> bool {
-    matches!(error, ClientError::Disconnected(_) | ClientError::Io(_) | ClientError::Transport(_) | ClientError::RemoteDeadlineExceeded)
+    matches!(error, ClientError::Disconnected(_) | ClientError::QueryPreparationDisconnected { .. } | ClientError::Io(_) | ClientError::Transport(_) | ClientError::RemoteDeadlineExceeded)
 }
 
 /// Worker-only probe after an attached owner's terminal transport error.
@@ -47,9 +47,16 @@ mod tests {
 
     #[test]
     fn a_query_fault_needs_an_independent_loss_before_failing_an_attachment() {
+        assert_attachment_needs_independent_loss(ClientError::Io("query failed".to_owned()));
+        assert_attachment_needs_independent_loss(ClientError::QueryPreparationDisconnected {
+            basis: backend_library::view_state_root(&[]).into(),
+            kind: std::io::ErrorKind::ConnectionReset,
+        });
+    }
+
+    fn assert_attachment_needs_independent_loss(query: ClientError) {
         let gate = OwnerGate::ready(VersionedRoot::unserved(), ServiceMode::Attached);
         let epoch = gate.attached_ready_epoch().expect("attached generation");
-        let query = ClientError::Io("query failed".to_owned());
         assert!(!confirm_attached_loss(&gate, epoch, &query, Ok(())));
         assert!(matches!(gate.state(), OwnerState::Ready { .. }), "a healthy independent probe keeps the owner ready");
 

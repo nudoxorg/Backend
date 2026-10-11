@@ -35,7 +35,8 @@ args=sys.argv[1:]
 pathlib.Path(os.environ['CURL_LOG']).write_text(json.dumps(args))
 body=pathlib.Path(os.environ['CURL_BODY']).read_bytes()
 if os.environ.get('CURL_PARTIAL'): body=body[:71]
-pathlib.Path(args[args.index('--output')+1]).write_bytes(body)
+sys.stdout.buffer.write(body)
+sys.stdout.buffer.flush()
 sys.exit(int(os.environ.get('CURL_STATUS','0')))
 ''')
 
@@ -102,7 +103,8 @@ urllib.request.build_opener=lambda *handlers: Opener()
                 self.environment["CURL_BODY"] = str(bad)
                 result = self.run_launcher("--prefix", str(self.root / "prefix"))
                 self.assertEqual(result.returncode, 1, result.stderr)
-                self.assertIn("size/SHA-256 mismatch", result.stderr)
+                expected_error = "exceeded its pinned byte count" if len(body) > len(BOOTSTRAP.read_bytes()) else "size/SHA-256 mismatch"
+                self.assertIn(expected_error, result.stderr)
                 self.assertNotIn("UNVERIFIED EXECUTION", result.stderr)
                 self.assertFalse((self.root / "prefix").exists())
 
@@ -121,11 +123,15 @@ urllib.request.build_opener=lambda *handlers: Opener()
                 self.assertTrue((prefix / "bin" / alias).resolve().is_file())
         args = json.loads((self.root / "curl.json").read_text())
         self.assertEqual(args[0], "-q")
-        for flag in ("--fail", "--proto", "--proto-redir", "--max-filesize"):
+        for flag in ("--fail", "--proto", "--proto-redir", "--tlsv1.2", "--max-filesize",
+                     "--connect-timeout", "--max-time"):
             self.assertIn(flag, args)
         self.assertEqual(args[args.index("--proto")+1], "=https")
         self.assertEqual(args[args.index("--proto-redir")+1], "=https")
         self.assertEqual(args[args.index("--max-filesize")+1], str(BOOTSTRAP.stat().st_size))
+        self.assertEqual(args[args.index("--output")+1], "-")
+        self.assertEqual(args[args.index("--connect-timeout")+1], "15")
+        self.assertEqual(args[args.index("--max-time")+1], "180")
 
     def test_one_line_launcher_reaches_candidate_bootstrap_and_skips_repeat_archive(self):
         entry, archive = mirror_tests.mac_fixture(self.root)

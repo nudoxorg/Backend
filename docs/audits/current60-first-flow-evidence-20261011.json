@@ -1,0 +1,127 @@
+{
+  "schema": "nudox.current60-first-flow-evidence.v1",
+  "packet_sha256": "fac704f8eda4445b3fd3fc0590cb3f29cb32926f4145314048d89270694e2c3b",
+  "source_commit": "6e9cc85defd48b6f7793d641630527670f773365",
+  "source_tree": "9516288f98af7e7aebd89d9e1bc7ccd5cc77d552",
+  "package_archive_sha256": "bf6a81478498b8e0b868734203eed9a180014e843d9438e6468ccdc72720da06",
+  "verification": "Root independently rehashed the packet, five raw responses and outer logs; checked actual JSON IDs, exact publication identity, source counts, default-path environment, owner and cleanup identities, and response budgets. Installed executable hashes are retained producer observations, not independently rehashed executable bytes. Token counts are from the retained cl100k observer and were not recomputed by Root.",
+  "fresh_installer": {
+    "argv": [
+      "/usr/bin/python3",
+      "/work/sol61-cli-proof/current60-01/package-6e9c60/install-linux-x64.py",
+      "--candidate-directory",
+      "/work/sol61-cli-proof/current60-01/package-6e9c60"
+    ],
+    "exit": 0,
+    "seconds": 5.435711351921782,
+    "finished_utc": "2026-10-11T19:42:24.859829+00:00"
+  },
+  "published": {
+    "operation_key": "31ffd7cafed7217fea1f594bcfa20b3c8aee9ed5560f2fd52de4c86debfec914",
+    "request_digest": "4348df513f135fe6d0f9a1efc0d2e7077ab76529571871dc18546fd62abcc738",
+    "view_root": "117319afae459c769c87418ce2c196948f6e6adf9b75a7947eb306d868590148",
+    "source_count": 133,
+    "coverage": "complete"
+  },
+  "responses": [
+    {
+      "kind": "cli",
+      "label": "first-observed-version",
+      "sha256": "965a77fc510a369f2e6fca796bcc1a436bd5ec2720a78c339811e5e1193ca712",
+      "bytes": 14,
+      "tokens": 8,
+      "seconds": 0.00532797584310174,
+      "started_utc": "2026-10-11T19:42:55.629324+00:00",
+      "finished_utc": "2026-10-11T19:42:55.643519+00:00"
+    },
+    {
+      "kind": "cli",
+      "label": "first-add",
+      "sha256": "8fb647f9c7521076434ccba9b1524a3f99c44c423c60edd54ccff458e66e2f35",
+      "bytes": 1135,
+      "tokens": 375,
+      "seconds": 1.0606541018933058,
+      "started_utc": "2026-10-11T19:43:26.410219+00:00",
+      "finished_utc": "2026-10-11T19:43:27.471317+00:00"
+    },
+    {
+      "kind": "mcp",
+      "label": "initialize",
+      "sha256": "371e14cad75a81aab11f67bd74b6dd2e869165323429c439f19ee974592f6e4d",
+      "bytes": 2166,
+      "tokens": 486,
+      "seconds": 0.0006632318254560232,
+      "started_utc": "2026-10-11T19:43:57.736379+00:00",
+      "finished_utc": "2026-10-11T19:43:57.737518+00:00"
+    },
+    {
+      "kind": "mcp",
+      "label": "persisted-operation-progress",
+      "sha256": "2ac37b2c1715cbc921dc631c3cd2e3f0179831457ad81721f639ce18b9421ce4",
+      "bytes": 3255,
+      "tokens": 1368,
+      "seconds": 0.04908614908345044,
+      "started_utc": "2026-10-11T19:44:09.258053+00:00",
+      "finished_utc": "2026-10-11T19:44:09.307984+00:00"
+    },
+    {
+      "kind": "cli",
+      "label": "first-packages",
+      "sha256": "fc0a93d780c259035df98ba78ce234a0fff64db86f162bc9ca5b81a78d62fa75",
+      "bytes": 394,
+      "tokens": 105,
+      "seconds": 0.019284222973510623,
+      "started_utc": "2026-10-11T19:44:29.041526+00:00",
+      "finished_utc": "2026-10-11T19:44:29.061011+00:00"
+    }
+  ],
+  "bytes": 6964,
+  "observer_measured_tokens": 2342,
+  "publication_observation": {
+    "add_started_utc": "2026-10-11T19:43:26.410219+00:00",
+    "add_finished_utc": "2026-10-11T19:43:27.471317+00:00",
+    "add_native_command_seconds": 1.0606541018933058,
+    "progress_started_utc": "2026-10-11T19:44:09.258053+00:00",
+    "progress_finished_utc": "2026-10-11T19:44:09.307984+00:00",
+    "progress_native_rpc_seconds": 0.04908614908345044,
+    "published_observed_seconds_from_add_started_including_admission_waits": 42.897765,
+    "publication_exact_timestamp_measured": false,
+    "publication_observation_bracket": "Actual add receipt was Active/scanning; later progress reported Published. Native indexing completion time is not isolated from guard/controller waiting."
+  },
+  "installed_identity_record_sha256": "2bf796f4521a7ad0170bd954fb0288a5e528e2b2620dc8c97b32046bd36d8c69",
+  "installed_elf_observations": {
+    "backend-cli": {
+      "sha256": "5de5d364ef9a3b571c177a8bd77e4a2162c195beadb963b00e6b614e9b512a82",
+      "bytes": 184585560,
+      "dev": 66309,
+      "ino": 9337867,
+      "uid": 1001,
+      "path": "/root/sol61-fresh-app-acceptance-20261011/ubuntu24/home/sol61-cli-proof/current60-01/.local/lib/nudox/versions/checkpoint-20261011-6e9cc85def-linux-x64/bin/backend-cli"
+    },
+    "backend-mcp": {
+      "sha256": "554fc3e82ec2a427ae3c878168dee33efd4b8335bda8057cdd3e36fd6e361bf4",
+      "bytes": 136002000,
+      "dev": 66309,
+      "ino": 9337883,
+      "uid": 1001,
+      "path": "/root/sol61-fresh-app-acceptance-20261011/ubuntu24/home/sol61-cli-proof/current60-01/.local/lib/nudox/versions/checkpoint-20261011-6e9cc85def-linux-x64/bin/backend-mcp"
+    },
+    "backend-locald": {
+      "sha256": "fe9cd4ca43e2b743d84774e1b58461db4fb617a2b71020ade0c3b3a8b8206ce1",
+      "bytes": 502678648,
+      "dev": 66309,
+      "ino": 9337868,
+      "uid": 1001,
+      "path": "/root/sol61-fresh-app-acceptance-20261011/ubuntu24/home/sol61-cli-proof/current60-01/.local/lib/nudox/versions/checkpoint-20261011-6e9cc85def-linux-x64/bin/backend-locald"
+    }
+  },
+  "outer_receipt_sha256": "cfff20476c9d0fa85d939d1fd3775de87e887c03c3e8875269e5264668dd0675",
+  "actual_outer_exit": 1,
+  "blocker": "Disk admission refused first-status before launch; this is not a product query failure.",
+  "two_complete_empty_scans": true,
+  "permit_released": true,
+  "current_cold_read_proven": false,
+  "current_graph_pagination_proven": false,
+  "genuine_semantic_inference_proven": false,
+  "production_ready": false
+}

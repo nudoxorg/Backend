@@ -404,10 +404,10 @@ mod portal_motion {
         #[test]
         fn portal_monitor_ignores_unrelated_settings() {
             assert_eq!(
-                portal_change("Settings.SettingChanged ('org.freedesktop.appearance', 'reduced-motion', <uint32 1>)"),
+                portal_change("org.freedesktop.portal.Settings.SettingChanged ('org.freedesktop.appearance', 'reduced-motion', <uint32 1>)"),
                 Some(SystemPreference::Known(true))
             );
-            assert_eq!(portal_change("Settings.SettingChanged ('org.gnome.desktop.interface', 'enable-animations', <uint32 1>)"), None);
+            assert_eq!(portal_change("org.freedesktop.portal.Settings.SettingChanged ('org.gnome.desktop.interface', 'enable-animations', <uint32 1>)"), None);
         }
     }
 }

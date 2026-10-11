@@ -118,13 +118,14 @@ pub(crate) struct GraphViewRequest {
 
 enum QueuedIntent {
     Plain(Intent),
+    Acquire { intent: Intent, composition: crate::host::registry::Composition, attachment: OwnerAttachment, owner: super::acquire::OwnerRequest },
     Index { intent: Intent, attachment: super::actor::IndexMutationLease },
     IndexStatus { intent: Intent, attachment: OwnerAttachment },
     Read { intent: Intent, lease: RouteReadLease, sequence: u64 },
 }
 
 impl QueuedIntent {
-    fn intent(&self) -> &Intent { match self { Self::Plain(intent) | Self::Index { intent, .. } | Self::IndexStatus { intent, .. } | Self::Read { intent, .. } => intent } }
+    fn intent(&self) -> &Intent { match self { Self::Plain(intent) | Self::Acquire { intent, .. } | Self::Index { intent, .. } | Self::IndexStatus { intent, .. } | Self::Read { intent, .. } => intent } }
 }
 
 enum IndexPreflightSave { Writing, Saved }
@@ -363,6 +364,14 @@ impl UiRootEntity {
         for queued in pending {
             match queued {
                 QueuedIntent::Plain(intent) => self.dispatch(intent, cx),
+                QueuedIntent::Acquire { intent: Intent::AddRelease(release), composition, attachment, owner }
+                    if super::acquire::current_composition(cx).is_some_and(|current| current.generation == composition.generation)
+                        && self.store.as_ref().is_some_and(|store| store.read(cx).admits_owner_attachment(&attachment)) =>
+                {
+                    self.reduced = self.reduced.saturating_add(1);
+                    super::acquire::add_owned(release, Some(composition), owner, cx.weak_entity(), cx);
+                }
+                QueuedIntent::Acquire { .. } => {}
                 QueuedIntent::Index { intent, attachment }
                     if matches!(&intent, Intent::IndexProject { project, operation, basis, .. }
                         if index_preflight_basis(&self.snapshot(), project, operation, *basis).is_ok()
@@ -733,7 +742,22 @@ impl UiRootEntity {
             self.queue_read(intent, dependency, cx);
             return;
         }
-        self.pending.push(QueuedIntent::Plain(intent));
+        if matches!(&intent, Intent::AddRelease(_)) {
+            // Capture before the end-effect handoff. A newly installed owner
+            // cannot inherit a click admitted by the previous composition.
+            let Some(composition) = super::acquire::current_composition(cx) else { return; };
+            let Some(store) = &self.store else { return; };
+            let store = store.read(cx);
+            let snapshot = self.snapshot();
+            if snapshot.route() != store.snapshot().route() || snapshot.overlay() != store.snapshot().overlay()
+                || !snapshot.key().same_authority(store.snapshot().key()) { return; }
+            let Some(attachment) = store.current_owner_attachment() else { return; };
+            let Some(lease) = store.current_index_owner() else { return; };
+            let owner = super::acquire::OwnerRequest::new(lease, snapshot.key());
+            self.pending.push(QueuedIntent::Acquire { intent, composition, attachment, owner });
+        } else {
+            self.pending.push(QueuedIntent::Plain(intent));
+        }
         self.schedule_flush(cx);
     }
 
@@ -749,6 +773,15 @@ impl UiRootEntity {
         let Some(lease) = RouteReadLease::capture(store, dependency) else { return; };
         self.pending.push(QueuedIntent::Read { intent, lease, sequence: self.graph_view_generation });
         self.schedule_flush(cx);
+    }
+
+    /// Capture from the window's actual index owner in both Embedded and
+    /// Attached modes. Registry configuration alone has no attached lifetime.
+    fn acquisition_owner(&self, cx: &App) -> Option<super::acquire::OwnerRequest> {
+        let snapshot = self.snapshot();
+        let store = self.store.as_ref()?.read(cx);
+        if !store.snapshot().key().same_authority(snapshot.key()) { return None; }
+        Some(super::acquire::OwnerRequest::new(store.current_index_owner()?, snapshot.key()))
     }
 
     fn cargo_resolution_dependency(&self, expected: &crate::navigation::CargoSourceRoute, context: &crate::navigation::CargoBrowseContext, cx: &App) -> Option<(crate::model::pages::PageKey, crate::model::pages::Stamp)> {
@@ -889,7 +922,11 @@ impl UiRootEntity {
                 self.schedule_pending_indexes(cx);
             }
             Intent::CheckIndexOutcome(project) => self.schedule_index_check(project, cx),
-            Intent::AddRelease(release) => super::acquire::add(release, cx.weak_entity(), cx),
+            Intent::AddRelease(release) => {
+                if let Some(owner) = self.acquisition_owner(cx) {
+                    super::acquire::add_owned(release, super::acquire::current_composition(cx), owner, cx.weak_entity(), cx);
+                }
+            },
             other => self.dispatch_runtime(other, cx),
         }
     }
@@ -923,7 +960,9 @@ impl UiRootEntity {
         }
         self.schedule_operation_observation(cx);
         // Packages an earlier launch was still adding are added now.
-        super::acquire::resume(&self.snapshot(), cx.weak_entity(), cx);
+        if let Some(owner) = self.acquisition_owner(cx) {
+            super::acquire::resume(&self.snapshot(), owner, cx.weak_entity(), cx);
+        }
         self.resume_indexes_after_owner(true, cx);
     }
 
@@ -1237,7 +1276,9 @@ impl UiRootEntity {
             self.queue(Intent::RefreshRoot { basis, request }, cx);
         }
         // A project the owner just indexed brings the packages it builds with.
-        super::acquire::follow_indexed_projects(before.as_deref(), &self.snapshot(), cx.weak_entity(), cx);
+        if let Some(owner) = self.acquisition_owner(cx) {
+            super::acquire::follow_indexed_projects(before.as_deref(), &self.snapshot(), owner, cx.weak_entity(), cx);
+        }
         // Cold restart restores durable Indexing rows without an ephemeral
         // request; reattach them once through the typed intent path.
         self.resume_saved_indexes(cx);
@@ -1456,6 +1497,72 @@ async fn await_final_save(saved: Option<WriteReceiver>, deadline: impl std::futu
         std::task::Poll::Pending
     }).await;
     if let Some(error) = result { eprintln!("backend-desktop: {}", error.message); }
+}
+
+#[cfg(test)]
+mod queued_acquisition_tests {
+    use super::*;
+    use crate::host::registry::{Availability, Composition, CompositionGeneration, CrateName, Published, RegistrySource, SourceError, SourceTree};
+    use crate::model::release::Release;
+    use super::super::actor::{EngineActor, EngineClient, EngineDto, EngineFault, EngineRequest};
+    use std::path::Path;
+
+    struct RefusingSource;
+    impl RegistrySource for RefusingSource {
+        fn releases(&self, _: &CrateName) -> Vec<Published> { vec![] }
+        fn offline(&self, _: &str, _: usize) -> Vec<Release> { vec![] }
+        fn availability(&self, _: &Release) -> Availability { Availability::Ambiguous { indexes: vec![PathBuf::from("queued-source")] } }
+        fn release_of(&self, _: &Path) -> Option<Release> { None }
+        fn resolve(&self, release: &Release) -> Result<SourceTree, SourceError> { Err(SourceError::NeedsDownload(release.clone())) }
+    }
+    struct RefusingEngine;
+    impl EngineClient for RefusingEngine {
+        fn execute(&mut self, _: &EngineRequest) -> Result<EngineDto, EngineFault> { Err(EngineFault::Cancelled) }
+    }
+    fn composition() -> Composition {
+        Composition { endpoint: PathBuf::from("/fixture/queued-owner"), source: Arc::new(RefusingSource),
+            authority: "queued-authority".into(), generation: CompositionGeneration::default(), refusals: None }
+    }
+
+    #[gpui::test]
+    fn deferred_add_keeps_its_original_producer_and_owner_attachment(cx: &mut gpui::TestAppContext) {
+        let basis = crate::core::VersionedRoot::synthetic(backend_library::view_state_root(&[("queued".into(), "owner".into())]), 1);
+        let gate = super::super::owner::OwnerGate::ready(basis, crate::model::ServiceMode::Attached);
+        let snapshot = AppSnapshot::empty(basis);
+        let store = cx.update(|cx| DataStore::install_with_owner(cx, Arc::new(snapshot.clone()), None, Some(gate.clone()), None));
+        let actor = EngineActor::start(RefusingEngine, 2).expect("actor");
+        let root = cx.update(|cx| cx.new(|_| {
+            let mut root = UiRootEntity::new(DesktopRuntime::new(snapshot, actor), None);
+            root.pending.clear();
+            root.store = Some(store.clone());
+            root
+        }));
+        let release = Release::new("queued", "0.1.0").expect("release");
+        root.update(cx, |root, cx| {
+            let old = super::super::acquire::test_install_producer(composition(), cx);
+            root.queue(Intent::AddRelease(release.clone()), cx);
+            assert!(matches!(root.pending.as_slice(), [QueuedIntent::Acquire { composition, .. }] if composition.generation == old.generation));
+            let current = super::super::acquire::test_install_producer(composition(), cx);
+            assert_ne!(old.generation, current.generation);
+            assert_eq!(old.endpoint, current.endpoint);
+            assert_eq!(old.authority, current.authority);
+            root.flush_pending(cx);
+            assert_eq!(super::super::acquire::stage(&release, super::super::offload::Asker::Everyone, cx), None,
+                "a queued click cannot acquire through the newly installed producer");
+
+            root.queue(Intent::AddRelease(release.clone()), cx);
+            assert!(matches!(root.pending.as_slice(), [QueuedIntent::Acquire { .. }]));
+            gate.publish(super::super::owner::OwnerState::Ready { key: basis, mode: crate::model::ServiceMode::Attached });
+            root.flush_pending(cx);
+            assert_eq!(super::super::acquire::stage(&release, super::super::offload::Asker::Everyone, cx), None,
+                "same-root owner renewal must retire the queued click before the watcher catches up");
+            store.update(cx, |store, cx| store.owner_ready(cx));
+            root.queue(Intent::AddRelease(release.clone()), cx);
+            root.flush_pending(cx);
+            assert_eq!(super::super::acquire::stage(&release, super::super::offload::Asker::Everyone, cx), Some(super::super::acquire::Stage::Queued),
+                "a current producer and current attachment must still dispatch normally");
+        });
+    }
 }
 
 #[cfg(test)]

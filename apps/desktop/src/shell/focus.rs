@@ -679,8 +679,31 @@ impl Targets {
         let Some((id, handle)) = next.and_then(|at| order.get(at)) else {
             return false;
         };
-        self.focus(id.clone());
-        handle.focus(window, cx);
+        // The guard can read/update the Reader or Shell that is currently
+        // routing Tab. Admit and focus after those entity borrows are returned,
+        // in this same effect cycle, not after a replacement draw.
+        self.request_native_focus(id, handle, window, cx);
+        true // A denied current control is not CE's generic region boundary.
+    }
+
+    fn request_native_focus(&self, id: &str, handle: &FocusHandle, window: &Window, cx: &mut App) -> bool {
+        let Some(claim) = self.mount_claim(id) else { return false; };
+        let Some(action) = self.list.with(|list| list.iter().find(|target| target.id == id)
+            .map(|target| target.action.clone())).flatten() else { return false; };
+        let targets = self.clone();
+        let handle = handle.clone();
+        let focus_epoch = window.focus_epoch();
+        let origin = window.focused(cx);
+        window.defer(cx, move |window, app| {
+            // An intervening pointer, modal, Tab or window activation owns the
+            // new focus. Retained target identity also rejects an intervening
+            // unmount or a different semantic action under the same row ID.
+            if !window.is_window_active() || window.focus_epoch() != focus_epoch
+                || window.focused(app) != origin || !targets.admits_mount(&claim, window)
+                || !action.admits(app) { return; }
+            targets.focus(claim.id.clone());
+            handle.focus(window, app);
+        });
         true
     }
 
@@ -688,8 +711,7 @@ impl Targets {
         let Some((_, handle)) = self.native_order().into_iter().find(|(key, _)| key == id) else {
             return false;
         };
-        handle.focus(window, cx);
-        true
+        self.request_native_focus(id, &handle, window, cx)
     }
 
     pub(crate) fn contains_native_handle(&self, handle: &FocusHandle) -> bool {

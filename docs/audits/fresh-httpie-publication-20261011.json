@@ -1,0 +1,654 @@
+{
+  "schema": "nudox.actual-fresh-httpie-publication.v1",
+  "scope": "Actual UID1001 Ubuntu24/glibc2.39 default-prefix current71 install and Published capture; not all-tool acceptance",
+  "source": {
+    "commit": "71eef727245e2257ad9d0e919522cfe14621fa1f",
+    "tree": "5acad5cbe933cbb17a9ee64401ec3cd2250aeb91",
+    "profile": "unoptimized diagnostic dev/debug0"
+  },
+  "bundle": {
+    "asset": "nudox-linux-x86_64-71eef72724.tar.gz",
+    "build_manifest_sha256": "d699f12d8292fcb25bf36f9b7aae1d8146f4d9abfce24b1b40f57512cbb21ecb",
+    "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+    "minimum_glibc": "2.39",
+    "packaging_manifest_sha256": "a15b12f950c7d555a4b83bdbe7f1627e68e0bc99eff2e3743f2a93aa6ad0270a",
+    "platform": "linux-x64",
+    "schema": 1,
+    "sha256": "5c2fa75958bba4d2a862c04f5979a2ea7f270acf7e608644df4cf4605a434e9a",
+    "size_bytes": 221733716,
+    "source_sha": "71eef727245e2257ad9d0e919522cfe14621fa1f",
+    "source_tree": "5acad5cbe933cbb17a9ee64401ec3cd2250aeb91",
+    "target": "x86_64-unknown-linux-gnu",
+    "version": "0.2.0"
+  },
+  "installed_identity": {
+    "finished_utc": "2026-10-11T17:44:08.516440+00:00",
+    "current_alias": "/root/sol61-fresh-app-acceptance-20261011/ubuntu24/home/sol61-cli-proof/current-b344-01/.local/lib/nudox/current",
+    "resolved_version_directory": "/root/sol61-fresh-app-acceptance-20261011/ubuntu24/home/sol61-cli-proof/current-b344-01/.local/lib/nudox/versions/checkpoint-20261011-71eef72724-linux-x64",
+    "executables": {
+      "backend-cli": {
+        "resolved_host_path": "/root/sol61-fresh-app-acceptance-20261011/ubuntu24/home/sol61-cli-proof/current-b344-01/.local/lib/nudox/versions/checkpoint-20261011-71eef72724-linux-x64/bin/backend-cli",
+        "sha256": "036155d54aa41cc53b93fa8f68617ebc8c6212f38ccf20f078f845c0ca0340ba",
+        "bytes": 184929624,
+        "dev": 66309,
+        "ino": 7112441,
+        "uid": 1001,
+        "mode": "0o755"
+      },
+      "backend-mcp": {
+        "resolved_host_path": "/root/sol61-fresh-app-acceptance-20261011/ubuntu24/home/sol61-cli-proof/current-b344-01/.local/lib/nudox/versions/checkpoint-20261011-71eef72724-linux-x64/bin/backend-mcp",
+        "sha256": "4d69d180773a162fd32a8790c9a9c2169bde4d134caa2a1467dbf48c59ab9397",
+        "bytes": 135932368,
+        "dev": 66309,
+        "ino": 7112443,
+        "uid": 1001,
+        "mode": "0o755"
+      },
+      "backend-locald": {
+        "resolved_host_path": "/root/sol61-fresh-app-acceptance-20261011/ubuntu24/home/sol61-cli-proof/current-b344-01/.local/lib/nudox/versions/checkpoint-20261011-71eef72724-linux-x64/bin/backend-locald",
+        "sha256": "b85ff5e1ef4c66ef22488c13bc87e8b107012fa677dfd623f1872f07db158079",
+        "bytes": 502682744,
+        "dev": 66309,
+        "ino": 7112442,
+        "uid": 1001,
+        "mode": "0o755"
+      }
+    },
+    "installed_manifests": [
+      "/root/sol61-fresh-app-acceptance-20261011/ubuntu24/home/sol61-cli-proof/current-b344-01/.local/lib/nudox/versions/checkpoint-20261011-71eef72724-linux-x64/build-manifest.json",
+      "/root/sol61-fresh-app-acceptance-20261011/ubuntu24/home/sol61-cli-proof/current-b344-01/.local/lib/nudox/versions/checkpoint-20261011-71eef72724-linux-x64/packaging-manifest.json"
+    ],
+    "source": "71eef727245e2257ad9d0e919522cfe14621fa1f",
+    "profile": "dev debug0 unoptimized",
+    "coverage": "closed install/version/add/initialize/Published progress/packages/status; live remainingflow unchanged"
+  },
+  "environment": {
+    "environment": {
+      "HOME": "/home/sol61-cli-proof/current-b344-01",
+      "PATH": "/home/sol61-cli-proof/current-b344-01/.local/bin:/usr/local/bin:/usr/bin:/bin",
+      "LANG": "C.UTF-8",
+      "NO_COLOR": "1",
+      "XDG_CONFIG_HOME": "/home/sol61-cli-proof/current-b344-01/.config",
+      "XDG_DATA_HOME": "/home/sol61-cli-proof/current-b344-01/.local/share",
+      "XDG_STATE_HOME": "/home/sol61-cli-proof/current-b344-01/.local/state",
+      "XDG_CACHE_HOME": "/home/sol61-cli-proof/current-b344-01/.cache",
+      "XDG_RUNTIME_DIR": "/home/sol61-cli-proof/current-b344-01/run"
+    },
+    "uid": 1001,
+    "gid": 1001,
+    "os_release": "PRETTY_NAME=\"Ubuntu 24.04.5 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"24.04\"\nVERSION=\"24.04.5 LTS (Noble Numbat)\"\nVERSION_CODENAME=noble\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=noble\nLOGO=ubuntu-logo\n",
+    "glibc": "glibc 2.39",
+    "kernel": "6.18.38",
+    "token_count_method": "cl100k_base"
+  },
+  "default_path_boundary": "Recorder explicitly sets XDG variables to platform-default locations; owner correctly launches direct, not xdg-home. Unset-XDG launch is separate.",
+  "installer": {
+    "argv": [
+      "/usr/bin/python3",
+      "/work/sol61-cli-proof/current-b344-01/package-71eef/install-linux-x64.py",
+      "--candidate-directory",
+      "/work/sol61-cli-proof/current-b344-01/package-71eef"
+    ],
+    "exit": 0,
+    "seconds": 5.641872618114576,
+    "finished_utc": "2026-10-11T17:40:42.678915+00:00"
+  },
+  "managed_stages": [
+    {
+      "name": "package71-current",
+      "receipt": {
+        "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/package71-current/receipt.json",
+        "bytes": 31291,
+        "sha256": "846cd6b1cbeaacaf1bd5f5ad9539e184dfdf60e7a564736b05f2cc22b251c98c"
+      },
+      "seconds": 96.4268103488721,
+      "argv": [
+        "/bin/sh",
+        "-c",
+        "/nix/store/jxyrvv4gbpnp3ap5iy7wxwl1sg4x2x88-python3-3.14.6/bin/python3 /root/sol61-ilo-real-cli-mcp-20261011/preserve_native58_originals.py && exec unshare --mount --fork /bin/sh /root/sol61-ilo-real-cli-mcp-20261011/package-in-ubuntu-current-slot0.sh /bin/sh /root/sol61-ilo-real-cli-mcp-20261011/package-current-71eef-01.sh"
+      ],
+      "exit": 0,
+      "permit_released": true,
+      "group_members_after": []
+    },
+    {
+      "name": "uid1001-setup02",
+      "receipt": {
+        "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/uid1001-setup02/receipt.json",
+        "bytes": 32065,
+        "sha256": "4f5e7cf2b794e9d24c150551fea6d48e03af3942bf1e863bc11363010d56a213"
+      },
+      "seconds": 25.389446024084464,
+      "argv": [
+        "/run/current-system/sw/bin/bash",
+        "/root/sol61-fresh-app-acceptance-20261011/current-b963-first-flow/httpie-copy-and-setup.sh"
+      ],
+      "exit": 0,
+      "permit_released": true,
+      "group_members_after": []
+    },
+    {
+      "name": "uid1001-copy01",
+      "receipt": {
+        "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/uid1001-copy01/receipt.json",
+        "bytes": 31666,
+        "sha256": "dc196a90f9d0081ce37e62b854f8d67f35b9d16b9f1dfb5e997891bc070373b8"
+      },
+      "seconds": 0.2303899610415101,
+      "argv": [
+        "/nix/store/jxyrvv4gbpnp3ap5iy7wxwl1sg4x2x88-python3-3.14.6/bin/python3",
+        "/root/sol61-fresh-app-acceptance-20261011/current-b963-first-flow/copy-current71-candidate.py"
+      ],
+      "exit": 0,
+      "permit_released": true,
+      "group_members_after": []
+    }
+  ],
+  "publication": {
+    "operation_key": "66ccbf0b2cca3f0650d8ad168fd9e80ff63642ae6556c757b7fa6bca02061b9a",
+    "request_digest": "a72db6e92bbbd85eed672a393705d1a7373eabc2057ce21378650af21a809f54",
+    "package": {
+      "kind": "local",
+      "value": "/work/sol61-cli-proof/current-b344-01/httpie"
+    },
+    "execution_intent": "interactive",
+    "state": {
+      "state": "published",
+      "detail": {
+        "request_identity": "217c203d94a229b344c480bf5a888782fa170d437c97bedf509f94292d7fbfba",
+        "commit_identity": "d2cd14efea7f91ccfb1d43f92c3e4fd3f899922119c1b6a50b4fb945590d8a93",
+        "workspace_root": "b918662a277fb3496f7d5b9c3fe4c357cfa9beb1d4e128036148566ff0efb8a7",
+        "workspace_sequence": 2,
+        "view_root": "2ad483e54a933e6687fa15ffb59401712ac183af9593e209b2d648e047685923",
+        "view_version": "f816d4bcfd13189f01cffa1ea08e25eb7006662b939754e809eb255554e9a428",
+        "view_recipe": "314b6ad5052f556e2c4688263eddbdaac44041f88b0f633e2edb1f17d6494422",
+        "revision_cursor": [
+          0,
+          3,
+          49,
+          75,
+          106,
+          213,
+          5,
+          47,
+          85,
+          110,
+          44,
+          70,
+          136,
+          38,
+          62,
+          221,
+          189,
+          170,
+          196,
+          64,
+          65,
+          248,
+          139,
+          15,
+          99,
+          62,
+          46,
+          219,
+          31,
+          23,
+          214,
+          73,
+          68,
+          34,
+          248,
+          22,
+          212,
+          188,
+          253,
+          19,
+          24,
+          159,
+          1,
+          207,
+          250,
+          30,
+          160,
+          142,
+          37,
+          235,
+          112,
+          6,
+          102,
+          43,
+          147,
+          151,
+          84,
+          232,
+          9,
+          235,
+          37,
+          85,
+          84,
+          233,
+          164,
+          40,
+          70,
+          80,
+          165,
+          210,
+          211,
+          140,
+          80,
+          124,
+          98,
+          27,
+          183,
+          173,
+          236,
+          150,
+          58,
+          250,
+          199,
+          189,
+          116,
+          11,
+          188,
+          133,
+          0,
+          123,
+          28,
+          214,
+          9,
+          166,
+          127,
+          178,
+          72,
+          47,
+          18,
+          164,
+          11,
+          26,
+          157,
+          139,
+          58,
+          240,
+          146,
+          235,
+          149,
+          116,
+          87,
+          89,
+          103,
+          193,
+          154,
+          93,
+          185,
+          202,
+          72,
+          237,
+          229,
+          66,
+          38,
+          226,
+          143,
+          41,
+          54,
+          30,
+          55,
+          96,
+          0,
+          3,
+          42,
+          212,
+          131,
+          229,
+          74,
+          147,
+          62,
+          102,
+          135,
+          250,
+          21,
+          255,
+          181,
+          148,
+          1,
+          113,
+          42,
+          193,
+          131,
+          175,
+          149,
+          147,
+          226,
+          9,
+          178,
+          214,
+          72,
+          224,
+          71,
+          104,
+          89,
+          35,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          2
+        ]
+      }
+    },
+    "source_capture": {
+      "operation_key": "66ccbf0b2cca3f0650d8ad168fd9e80ff63642ae6556c757b7fa6bca02061b9a",
+      "commit_identity": "f2560605d146b97d8e888e05e7497c130ccf0710c341dd7ce21608f66fd1de0f",
+      "workspace_root": "dd57812baa8cc5a68b660508b95298eed756c33dfccae4e5bec69a8baf8a1c4e",
+      "workspace_sequence": 1,
+      "profiles": [
+        {
+          "profile": [
+            2,
+            4
+          ],
+          "source_version": "ae7d519bddd4b97b6b381a72222e21f4fd0ba6a6220b2567bb962a6a86954e0f",
+          "input_digest": "66e2fb6af3946a8e4fdd08caca04420276df0395bbe844bb7cbcdd4e60b35973",
+          "observation_sequence": 1,
+          "source_count": 133,
+          "state": {
+            "state": "published",
+            "detail": {
+              "generation": "0612324a1f10257013b889dde263989a344a724d35e624ee3f6e22a9d9ca2d49",
+              "coverage": {
+                "coverage": "complete"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "closed_verified_commands": [
+    {
+      "event": {
+        "kind": "cli",
+        "argv": [
+          "/home/sol61-cli-proof/current-b344-01/.local/bin/nudox",
+          "--version"
+        ],
+        "cwd": "/work/sol61-cli-proof/current-b344-01/httpie",
+        "pid": 3028273,
+        "exit": 0,
+        "timeout": false,
+        "seconds": 0.01041112095117569,
+        "stderr_bytes": 0,
+        "started_utc": "2026-10-11T17:41:12.512957+00:00",
+        "json_requested": false,
+        "admission": {
+          "id": "152d2ba194854d4a8e0c2056c0c3231b",
+          "runtime_lease_id": "a85e65109d7141febbddf0251bf64137",
+          "guard_age_seconds": 11.899219,
+          "seconds": 19.142497869906947
+        },
+        "label": "first-observed-version",
+        "sequence": 1,
+        "wire_file": "/work/sol61-cli-proof/current-b344-01/httpie-current-first-flow-02/0001-first-observed-version.raw",
+        "sha256": "965a77fc510a369f2e6fca796bcc1a436bd5ec2720a78c339811e5e1193ca712",
+        "bytes": 14,
+        "tokens": 8,
+        "approx_tokens": null,
+        "expected": "success",
+        "finished_utc": "2026-10-11T17:41:12.532555+00:00",
+        "outcome": "pass-transport-and-protocol",
+        "byte_budget": 49152,
+        "token_budget": 12000,
+        "byte_budget_pass": true,
+        "token_budget_pass": true,
+        "reported_budgets": []
+      },
+      "raw": {
+        "path": "/private/tmp/nudox-sol61-fresh-app-acceptance-20261011/httpie-current71-early-closed-02/0001-first-observed-version.raw",
+        "bytes": 14,
+        "sha256": "965a77fc510a369f2e6fca796bcc1a436bd5ec2720a78c339811e5e1193ca712"
+      }
+    },
+    {
+      "event": {
+        "kind": "cli",
+        "argv": [
+          "/home/sol61-cli-proof/current-b344-01/.local/bin/nudox",
+          "--json",
+          "--detail",
+          "full",
+          "add",
+          "."
+        ],
+        "cwd": "/work/sol61-cli-proof/current-b344-01/httpie",
+        "pid": 3029115,
+        "exit": 0,
+        "timeout": false,
+        "seconds": 1.258097053039819,
+        "stderr_bytes": 155,
+        "started_utc": "2026-10-11T17:41:43.337698+00:00",
+        "json_requested": true,
+        "admission": {
+          "id": "7c25544a50254f7ea003152022e47ca2",
+          "runtime_lease_id": "a85e65109d7141febbddf0251bf64137",
+          "guard_age_seconds": 11.746284,
+          "seconds": 19.08178132888861
+        },
+        "label": "first-add",
+        "sequence": 2,
+        "wire_file": "/work/sol61-cli-proof/current-b344-01/httpie-current-first-flow-02/0002-first-add.raw",
+        "sha256": "0bfe81220fc6cd5f82a83d577e071449e61052b455723396136ae1d397035e6b",
+        "bytes": 1143,
+        "tokens": 381,
+        "approx_tokens": null,
+        "expected": "success",
+        "finished_utc": "2026-10-11T17:41:44.596151+00:00",
+        "outcome": "pass-transport-and-protocol",
+        "byte_budget": 49152,
+        "token_budget": 12000,
+        "byte_budget_pass": true,
+        "token_budget_pass": true,
+        "reported_budgets": [
+          {
+            "bytes": 1143,
+            "estimatedTokens": 286,
+            "bytesPerToken": 4
+          }
+        ]
+      },
+      "raw": {
+        "path": "/private/tmp/nudox-sol61-fresh-app-acceptance-20261011/httpie-current71-early-closed-02/0002-first-add.raw",
+        "bytes": 1143,
+        "sha256": "0bfe81220fc6cd5f82a83d577e071449e61052b455723396136ae1d397035e6b"
+      }
+    },
+    {
+      "event": {
+        "kind": "mcp",
+        "pid": 3030402,
+        "method": "initialize",
+        "expected_rpc_id": 1,
+        "seconds": 0.0024921309668570757,
+        "started_utc": "2026-10-11T17:42:13.351074+00:00",
+        "label": "initialize",
+        "sequence": 3,
+        "wire_file": "/work/sol61-cli-proof/current-b344-01/httpie-current-first-flow-02/0003-initialize.raw",
+        "sha256": "4ab776d9b646adaede687f19c266a7edd496186d70e9426d10a2c2cf78732de0",
+        "bytes": 2172,
+        "tokens": 488,
+        "approx_tokens": null,
+        "expected": "success",
+        "finished_utc": "2026-10-11T17:42:13.354079+00:00",
+        "outcome": "pass-transport-and-protocol",
+        "byte_budget": 49152,
+        "token_budget": 12000,
+        "byte_budget_pass": true,
+        "token_budget_pass": true,
+        "reported_budgets": []
+      },
+      "raw": {
+        "path": "/private/tmp/nudox-sol61-fresh-app-acceptance-20261011/httpie-current71-early-closed-02/0003-initialize.raw",
+        "bytes": 2172,
+        "sha256": "4ab776d9b646adaede687f19c266a7edd496186d70e9426d10a2c2cf78732de0"
+      }
+    },
+    {
+      "event": {
+        "kind": "mcp",
+        "pid": 3030402,
+        "method": "tools/call",
+        "expected_rpc_id": 3,
+        "seconds": 1.1737861309666187,
+        "started_utc": "2026-10-11T17:42:24.376495+00:00",
+        "label": "persisted-operation-progress",
+        "sequence": 4,
+        "wire_file": "/work/sol61-cli-proof/current-b344-01/httpie-current-first-flow-02/0004-persisted-operation-progress.raw",
+        "sha256": "00473c07043ba5fa2e83cbe670503b691da32e29e3784d6bd98825f453628823",
+        "bytes": 3259,
+        "tokens": 1386,
+        "approx_tokens": null,
+        "expected": "success",
+        "finished_utc": "2026-10-11T17:42:25.550808+00:00",
+        "outcome": "pass-transport-and-protocol",
+        "byte_budget": 49152,
+        "token_budget": 12000,
+        "byte_budget_pass": true,
+        "token_budget_pass": true,
+        "reported_budgets": [
+          {
+            "bytes": 2320,
+            "estimatedTokens": 580,
+            "bytesPerToken": 4
+          }
+        ]
+      },
+      "raw": {
+        "path": "/private/tmp/nudox-sol61-fresh-app-acceptance-20261011/httpie-current71-early-closed-02/0004-persisted-operation-progress.raw",
+        "bytes": 3259,
+        "sha256": "00473c07043ba5fa2e83cbe670503b691da32e29e3784d6bd98825f453628823"
+      }
+    },
+    {
+      "event": {
+        "kind": "cli",
+        "argv": [
+          "/home/sol61-cli-proof/current-b344-01/.local/bin/nudox",
+          "--json",
+          "--detail",
+          "full",
+          "packages"
+        ],
+        "cwd": "/work/sol61-cli-proof/current-b344-01/httpie",
+        "pid": 3031279,
+        "exit": 0,
+        "timeout": false,
+        "seconds": 0.03853863407857716,
+        "stderr_bytes": 0,
+        "started_utc": "2026-10-11T17:42:43.232836+00:00",
+        "json_requested": true,
+        "admission": {
+          "id": "ef82933d45b44917ad0bafc76fb77421",
+          "runtime_lease_id": "a85e65109d7141febbddf0251bf64137",
+          "guard_age_seconds": 11.603438,
+          "seconds": 17.68046239996329
+        },
+        "label": "first-packages",
+        "sequence": 5,
+        "wire_file": "/work/sol61-cli-proof/current-b344-01/httpie-current-first-flow-02/0005-first-packages.raw",
+        "sha256": "07e17a3bf07834bbed983f4a17991a83bcce7282f61e39ff5b59382532c6df65",
+        "bytes": 401,
+        "tokens": 107,
+        "approx_tokens": null,
+        "expected": "success",
+        "finished_utc": "2026-10-11T17:42:43.271858+00:00",
+        "outcome": "pass-transport-and-protocol",
+        "byte_budget": 49152,
+        "token_budget": 12000,
+        "byte_budget_pass": true,
+        "token_budget_pass": true,
+        "reported_budgets": [
+          {
+            "bytes": 401,
+            "estimatedTokens": 101,
+            "bytesPerToken": 4
+          }
+        ]
+      },
+      "raw": {
+        "path": "/private/tmp/nudox-sol61-fresh-app-acceptance-20261011/httpie-current71-early-closed-02/0005-first-packages.raw",
+        "bytes": 401,
+        "sha256": "07e17a3bf07834bbed983f4a17991a83bcce7282f61e39ff5b59382532c6df65"
+      }
+    },
+    {
+      "event": {
+        "kind": "cli",
+        "argv": [
+          "/home/sol61-cli-proof/current-b344-01/.local/bin/nudox",
+          "--json",
+          "--detail",
+          "full",
+          "status"
+        ],
+        "cwd": "/work/sol61-cli-proof/current-b344-01/httpie",
+        "pid": 3031413,
+        "exit": 0,
+        "timeout": false,
+        "seconds": 0.2047576189506799,
+        "stderr_bytes": 0,
+        "started_utc": "2026-10-11T17:43:13.332917+00:00",
+        "json_requested": true,
+        "admission": {
+          "id": "265762a424054f578215887f9054300d",
+          "runtime_lease_id": "a85e65109d7141febbddf0251bf64137",
+          "guard_age_seconds": 11.762108,
+          "seconds": 18.83554951287806
+        },
+        "label": "first-status",
+        "sequence": 6,
+        "wire_file": "/work/sol61-cli-proof/current-b344-01/httpie-current-first-flow-02/0006-first-status.raw",
+        "sha256": "40be24024c73895bbf89518516404c91a88b78f4708a6fa4e38135b1ef84700a",
+        "bytes": 858,
+        "tokens": 256,
+        "approx_tokens": null,
+        "expected": "success",
+        "finished_utc": "2026-10-11T17:43:13.537963+00:00",
+        "outcome": "pass-transport-and-protocol",
+        "byte_budget": 49152,
+        "token_budget": 12000,
+        "byte_budget_pass": true,
+        "token_budget_pass": true,
+        "reported_budgets": [
+          {
+            "bytes": 858,
+            "estimatedTokens": 215,
+            "bytesPerToken": 4
+          }
+        ]
+      },
+      "raw": {
+        "path": "/private/tmp/nudox-sol61-fresh-app-acceptance-20261011/httpie-current71-early-closed-02/0006-first-status.raw",
+        "bytes": 858,
+        "sha256": "40be24024c73895bbf89518516404c91a88b78f4708a6fa4e38135b1ef84700a"
+      }
+    }
+  ],
+  "raw_packet": {
+    "path": "/private/tmp/nudox-sol61-fresh-app-acceptance-20261011/httpie-current71-early-closed-02.tar.gz",
+    "bytes": 16871,
+    "sha256": "8a19cc77e775f774d5d3c737843f34e983d110fa86b7ecfae69c8ce94e026e5b"
+  },
+  "timing_boundary": "CLI add time is enqueue/response, not total compilation. Publication was observed by the later progress request; guard and observer gaps prevent treating that interval as a compiler benchmark.",
+  "known_product_failure": "First search after Published returned typed query-preparation Preparing, exit2. Exact same-index retry and structural eager-preparation/read-wait repair are separate work; this failure is not erased by Published.",
+  "unrun": [
+    "selected documents/source",
+    "plain/paged graphs",
+    "cold restart/offline/cancellation",
+    "all 17 MCP surfaces",
+    "large TypeScript application",
+    "genuine configured semantic inference",
+    "current production GUI"
+  ],
+  "public_channel_boundary": "Current71 candidate is not published to the public installer channel; historical Mac/Linux channel remains unchanged."
+}

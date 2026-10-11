@@ -344,15 +344,24 @@ impl<'a> CheckerState<'a> {
         if import_name == "*" {
             return None;
         }
-        let source_file_idx = self
-            .ctx
-            .resolve_symbol_file_index(export_sym_id)
-            .unwrap_or(self.ctx.current_file_idx);
-        let target_sym_id = self.resolve_cross_file_export_from_file(
-            &import_module,
-            &import_name,
-            Some(source_file_idx),
-        )?;
+        let target_sym_id = if self.ctx.project_module_resolution_outcomes.is_some() {
+            // Namespace property hydration must retain the alias declaration's
+            // own request kind and mode, including an admitted External owner.
+            let request = self.ctx.bound_module_request_for_alias(export_sym_id)?;
+            let selected = self.ctx.select_module_request(request)?;
+            self.resolve_exports_for_selected_request(selected)?
+                .get(&import_name)?
+        } else {
+            let source_file_idx = self
+                .ctx
+                .resolve_symbol_file_index(export_sym_id)
+                .unwrap_or(self.ctx.current_file_idx);
+            self.resolve_cross_file_export_from_file(
+                &import_module,
+                &import_name,
+                Some(source_file_idx),
+            )?
+        };
         self.get_validated_member_type(target_sym_id, &import_name)
     }
 
@@ -744,12 +753,21 @@ impl<'a> CheckerState<'a> {
         &mut self,
         module_name: &str,
         declaring_file_idx: Option<usize>,
+        selected_file_target: Option<usize>,
         props: &mut Vec<PropertyInfo>,
     ) {
-        let Some(js_surface) =
-            self.resolve_js_export_surface_for_module(module_name, declaring_file_idx)
-        else {
-            return;
+        let js_surface = if self.ctx.project_module_resolution_outcomes.is_some() {
+            let Some(target_idx) = selected_file_target else {
+                return;
+            };
+            self.resolve_js_export_surface(target_idx)
+        } else {
+            let Some(surface) =
+                self.resolve_js_export_surface_for_module(module_name, declaring_file_idx)
+            else {
+                return;
+            };
+            surface
         };
         for prop in js_surface.named_exports {
             let prop_name_atom = self.ctx.types.resolve_atom_ref(prop.name);

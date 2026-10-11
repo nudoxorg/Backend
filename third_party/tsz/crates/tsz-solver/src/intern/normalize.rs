@@ -14,9 +14,7 @@ use super::{
     UnionExecutionWork, expect_unmetered_union, flush_union_execution_work,
     tick_union_execution_work,
 };
-use crate::types::{
-    IntrinsicKind, LiteralValue, PropertyInfo, TemplateLiteralId, TypeData, TypeId, Visibility,
-};
+use crate::types::{IntrinsicKind, LiteralValue, PropertyInfo, TypeData, TypeId, Visibility};
 use crate::visitor::is_literal_type;
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
@@ -169,12 +167,6 @@ impl TypeInterner {
     /// mode exactly as in strict mode. `never` never counts as the non-nullish
     /// sibling that keeps a nullish member alive — it is the identity of union and
     /// is stripped anyway — so `null | never` reduces to `null`, not to `never`.
-    #[inline]
-    pub(crate) fn reduce_nonstrict_nullish_members(&self, flat: &mut TypeListBuffer) {
-        let mut work = None;
-        expect_unmetered_union(self.reduce_nonstrict_nullish_members_with_work(flat, &mut work))
-    }
-
     fn reduce_nonstrict_nullish_members_with_work(
         &self,
         flat: &mut TypeListBuffer,
@@ -221,27 +213,11 @@ impl TypeInterner {
         Ok(())
     }
 
-    /// Apply [`reduce_nonstrict_nullish_members`](Self::reduce_nonstrict_nullish_members)
-    /// then collapse the buffer to a terminal `TypeId` when it no longer needs a
-    /// `Union` node: `Some(never)`/`Some(only_member)` for the empty/singleton
-    /// cases, `None` when `>= 2` members remain and the caller should intern a
-    /// union. Shared by every buffer-level union constructor so the reduce-then-
-    /// collapse tail lives in one place. In strict mode the reduction is a no-op,
-    /// so this still folds an already-singleton buffer (e.g. after `never`
-    /// stripping) the same way.
-    #[inline]
-    pub(crate) fn reduce_and_collapse_nonstrict(
-        &self,
-        flat: &mut TypeListBuffer,
-    ) -> Option<TypeId> {
-        self.reduce_nonstrict_nullish_members(flat);
-        match flat.len() {
-            0 => Some(TypeId::NEVER),
-            1 => Some(flat[0]),
-            _ => None,
-        }
-    }
-
+    /// Reduces nullish members and collapses the buffer when it no longer needs
+    /// a `Union` node: `Some(never)`/`Some(only_member)` for the empty/singleton
+    /// cases, `None` when at least two members remain and the caller should intern
+    /// a union. In strict mode the reduction is a no-op, so this still folds an
+    /// already-singleton buffer (e.g. after `never` stripping) the same way.
     pub(crate) fn reduce_and_collapse_nonstrict_with_work(
         &self,
         flat: &mut TypeListBuffer,
@@ -1235,35 +1211,11 @@ impl TypeInterner {
 
     /// Classifies an enum's structural member type (the second field of
     /// `TypeData::Enum(DefId, member_type)`) as `String`/`Number` when every
-    /// member is drawn from that single primitive domain — the wrapped type
-    /// is either the primitive itself (`e.g. TypeId::NUMBER`, used for the
-    /// whole-enum reference), a single literal (a specific member), or a
-    /// union of literals (the whole enum's member set). A mixed or non-
-    /// literal member type returns `None` so absorption is skipped.
-    fn enum_underlying_primitive_class(&self, member_type: TypeId) -> Option<PrimitiveClass> {
-        if let Some(class) = self.primitive_class_for(member_type) {
-            return matches!(class, PrimitiveClass::String | PrimitiveClass::Number)
-                .then_some(class);
-        }
-        let TypeData::Union(list_id) = self.lookup(member_type)? else {
-            return None;
-        };
-        let members = self.type_list(list_id);
-        let mut result = None;
-        for &member in members.iter() {
-            let class = self.primitive_class_for(member)?;
-            if !matches!(class, PrimitiveClass::String | PrimitiveClass::Number) {
-                return None;
-            }
-            match result {
-                None => result = Some(class),
-                Some(existing) if existing == class => {}
-                Some(_) => return None,
-            }
-        }
-        result
-    }
-
+    /// member is drawn from that single primitive domain — the wrapped type is
+    /// either the primitive itself (`e.g. TypeId::NUMBER`, used for the
+    /// whole-enum reference), a single literal (a specific member), or a union
+    /// of literals (the whole enum's member set). A mixed or non-literal member
+    /// type returns `None` so absorption is skipped.
     fn enum_underlying_primitive_class_with_work(
         &self,
         member_type: TypeId,

@@ -1538,7 +1538,18 @@ impl<'a> CheckerState<'a> {
                 .or(target_idx);
             let mut props = Vec::new();
             for &(name, export_sym_id) in &ordered_exports {
-                if let Some(owner_file_idx) = exports_table_target {
+                let owner_file_idx = if configured {
+                    // An ambient export= surface can contain members hydrated
+                    // from a different exact file request. Keep each member's
+                    // owner instead of lending the first table entry's file.
+                    self.ctx
+                        .resolve_symbol_declaring_file_index(export_sym_id)
+                        .or_else(|| self.ctx.resolve_dynamic_symbol_file_index(export_sym_id))
+                        .or(target_idx)
+                } else {
+                    exports_table_target
+                };
+                if let Some(owner_file_idx) = owner_file_idx {
                     self.ctx
                         .register_symbol_file_target(export_sym_id, owner_file_idx);
                 }
@@ -1663,6 +1674,7 @@ impl<'a> CheckerState<'a> {
             self.merge_js_export_surface_into_typeof_import_namespace_props(
                 module_name,
                 exports_table_target.or(Some(self.ctx.current_file_idx)),
+                selected_target,
                 &mut props,
             );
             Self::normalize_namespace_export_declaration_order(&mut props);
@@ -1675,8 +1687,11 @@ impl<'a> CheckerState<'a> {
                 self.imported_namespace_display_module_name(display_module_name),
             );
             Some(namespace_type)
-        } else if let Some(surface) =
+        } else if let Some(surface) = if configured {
+            selected_target.map(|target_idx| self.resolve_js_export_surface(target_idx))
+        } else {
             self.resolve_js_export_surface_for_module(module_name, Some(self.ctx.current_file_idx))
+        }
         {
             let namespace_type = self.ctx.types.factory().object(surface.named_exports);
             self.ctx.namespace_module_names.insert(

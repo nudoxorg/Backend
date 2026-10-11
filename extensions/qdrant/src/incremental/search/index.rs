@@ -102,6 +102,7 @@ impl<S> VectorIndex<S> {
             || facts.model() != self.base.model()
             || facts.metric() != self.base.metric()
             || facts.dimensions() != self.base.dimensions()
+            || facts.admitted_recipe() != self.facts.admitted_recipe()
         {
             return Err(Error::StaleRoot);
         }
@@ -156,6 +157,7 @@ impl<S> VectorIndex<S> {
             || facts.model() != self.base.model()
             || facts.metric() != self.base.metric()
             || facts.dimensions() != self.base.dimensions()
+            || facts.admitted_recipe() != self.facts.admitted_recipe()
         {
             return Err(Error::StaleRoot);
         }
@@ -179,6 +181,107 @@ impl<S> VectorIndex<S> {
             facts: Arc::new(facts),
             source: self.source.clone(),
             overlay: None,
+        })
+    }
+}
+
+impl VectorIndex<crate::MemorySource> {
+    /// Scores the complete current local facts relation, without provider
+    /// candidate sampling. The selected binding must name this exact view,
+    /// authority, read manifest, frontier and embedding recipe.
+    ///
+    /// An advanced index retains complete target facts: replacements and
+    /// additions are already present and tombstoned rows are already absent.
+    /// Borrowing those facts avoids copying coordinates or reconstructing an
+    /// overlay union. Only the best `limit` scores are retained as scratch.
+    /// Facts must carry the full declared recipe admitted by
+    /// [`VectorFacts::from_recipe`]; legacy model/metric facts are insufficient.
+    ///
+    /// # Errors
+    /// Returns a binding, recipe, dimension, coverage or resource error before
+    /// scoring, or rejects a non-finite score. No corpus prefix is accepted as
+    /// an exact result when the complete relation exceeds the supplied bounds.
+    pub fn search_exact_embedding(
+        &self,
+        selected: Binding,
+        query: &QueryVector,
+        limit: usize,
+        limits: Limits,
+    ) -> Result<VectorSearchResult, Error> {
+        let limits = limits.validate()?;
+        if selected != self.binding()
+            || self.facts.binding() != selected
+            || query.recipe().version() != selected.recipe
+            || self.facts.admitted_recipe() != Some(query.recipe())
+        {
+            return Err(Error::StaleRoot);
+        }
+        let query = query.query();
+        if query.model() != self.facts.model()
+            || query.metric() != self.facts.metric()
+            || query.values().len() != self.facts.dimensions()
+        {
+            return Err(Error::DimensionMismatch);
+        }
+        if !matches!(self.facts.coverage(), CoverageWitness::Complete(_)) {
+            return Err(Error::IncompleteCoverage);
+        }
+        if limit == 0 || limit > limits.max_page {
+            return Err(Error::SizeLimit);
+        }
+        let payload_bytes = self
+            .facts
+            .dimensions()
+            .checked_mul(size_of::<f32>())
+            .and_then(|bytes| bytes.checked_add(size_of::<u32>()))
+            .ok_or(Error::SizeLimit)?;
+        let count = self
+            .facts
+            .ids()
+            .take(limits.max_candidates.saturating_add(1))
+            .count();
+        if count > limits.max_candidates
+            || payload_bytes > limits.max_payload_bytes
+            || count.checked_mul(payload_bytes).ok_or(Error::SizeLimit)?
+                > limits.max_total_payload_bytes
+            || self
+                .overlay
+                .as_deref()
+                .is_some_and(|overlay| overlay.tombstones().len() > limits.max_tombstones)
+        {
+            return Err(Error::SizeLimit);
+        }
+        let mut candidates = Vec::<ScoredCandidate>::new();
+        candidates
+            .try_reserve_exact(limit.min(count))
+            .map_err(|_| Error::SizeLimit)?;
+        for id in self.facts.ids() {
+            let point = self.facts.encoded_point(id).ok_or(Error::MalformedInput)?;
+            let score = score_admitted(self.facts.metric(), query.values(), &point);
+            if !score.is_finite() {
+                return Err(Error::MalformedInput);
+            }
+            let candidate = ScoredCandidate { id, score };
+            let position = candidates
+                .binary_search_by(|existing| {
+                    existing
+                        .score
+                        .total_cmp(&candidate.score)
+                        .then_with(|| existing.id.cmp(&candidate.id))
+                })
+                .unwrap_or_else(|position| position);
+            if position < limit {
+                if candidates.len() == limit {
+                    candidates.pop();
+                }
+                candidates.insert(position, candidate);
+            }
+        }
+        Ok(VectorSearchResult {
+            binding: selected,
+            coverage: self.facts.coverage(),
+            candidates,
+            quality: SearchQuality::Exact,
         })
     }
 }

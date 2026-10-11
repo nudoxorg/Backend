@@ -412,6 +412,18 @@ impl Session {
         limit: u16,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
+        self.resume_prepared_query_with_budget(family, text, limit, continuation, None)
+    }
+
+    pub(super) fn resume_prepared_query_with_budget(
+        &mut self,
+        family: &str,
+        text: &str,
+        limit: u16,
+        continuation: Option<PageContinuation>,
+        remaining: Option<Duration>,
+    ) -> Result<ReplyDto, ClientError> {
+        let started = std::time::Instant::now();
         let request = self
             .prepared_query
             .take()
@@ -435,7 +447,11 @@ impl Session {
             ));
         }
         let certificate = request.certificate().cloned();
-        self.send_success(request.command, certificate)
+        self.send_success_with_budget(
+            request.command,
+            certificate,
+            remaining.map(|budget| budget.saturating_sub(started.elapsed())),
+        )
     }
 }
 

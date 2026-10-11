@@ -13,6 +13,8 @@ use backend_version::{
 };
 use std::sync::Arc;
 
+mod exact_search;
+
 struct FixtureCoverageVerifier {
     producer: [u8; 32],
     scope: ScopeRoot,
@@ -1163,4 +1165,141 @@ fn provider_page_cannot_exceed_requested_bound() {
         adapter.search(SearchRequest::first(binding, 1)),
         Err(AdapterError::Extension(Error::SizeLimit))
     ));
+}
+
+#[test]
+fn consuming_candidate_state_keeps_payload_allocation_and_checks_the_same_contract() {
+    let entries = vec![(1, vec![1, 2]), (2, vec![3, 4])];
+    let (binding, coverage) = binding(&entries);
+    let pointer = entries[0].1.as_ptr();
+    let relation = RelationState::<CandidateRelation>::from_sorted_entries(entries, coverage)
+        .expect("relation");
+    let consumed = CandidateState::from_relation(binding, relation.clone(), Limits::default())
+        .expect("consumed");
+    assert_eq!(
+        consumed.payload(CandidateId(1)).expect("payload").as_ptr(),
+        pointer
+    );
+    let copied = CandidateState::new(
+        binding,
+        coverage,
+        vec![(CandidateId(1), vec![1, 2]), (CandidateId(2), vec![3, 4])],
+        Limits::default(),
+    )
+    .expect("logical state");
+    assert_eq!(consumed, copied);
+    let mut wrong = binding;
+    wrong.root = RelationState::<CandidateRelation>::empty(coverage).root();
+    assert_eq!(
+        CandidateState::from_relation(wrong, relation.clone(), Limits::default()),
+        Err(Error::StaleRoot)
+    );
+    assert_eq!(
+        CandidateState::from_relation(
+            binding,
+            relation.clone(),
+            Limits {
+                max_candidates: 1,
+                max_page: 1,
+                ..Limits::default()
+            }
+        ),
+        Err(Error::SizeLimit)
+    );
+    assert_eq!(
+        CandidateState::from_relation(
+            binding,
+            relation.clone(),
+            Limits {
+                max_payload_bytes: 1,
+                ..Limits::default()
+            }
+        ),
+        Err(Error::SizeLimit)
+    );
+    assert_eq!(
+        CandidateState::from_relation(
+            binding,
+            relation,
+            Limits {
+                max_total_payload_bytes: 3,
+                ..Limits::default()
+            }
+        ),
+        Err(Error::SizeLimit)
+    );
+}
+
+#[test]
+fn owned_document_values_retain_the_allocation_owner_without_coordinate_copy() {
+    #[derive(Debug)]
+    struct Storage {
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl Drop for Storage {
+        fn drop(&mut self) {
+            self.dropped
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+    }
+    let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let storage = Storage {
+        dropped: Arc::clone(&dropped),
+    };
+    let values = Arc::<[f32]>::from([0.6, 0.8]);
+    let pointer = values.as_ptr();
+    let storage = backend_version::SharedCoordinates::retain(values, storage);
+    let recipe = embedding_recipe();
+    let document =
+        DocumentVector::from_owned_values(recipe, CandidateId(1), storage).expect("document");
+    assert_eq!(document.point().values().as_ptr(), pointer);
+    let retained = document.clone();
+    drop(document);
+    assert!(!dropped.load(std::sync::atomic::Ordering::Acquire));
+    drop(retained);
+    assert!(dropped.load(std::sync::atomic::Ordering::Acquire));
+}
+
+#[test]
+fn retained_owner_mutation_cannot_change_admitted_coordinate_storage() {
+    #[derive(Debug)]
+    struct ChangingOwner(Arc<std::sync::atomic::AtomicBool>);
+    impl AsRef<[f32]> for ChangingOwner {
+        fn as_ref(&self) -> &[f32] {
+            if self.0.load(std::sync::atomic::Ordering::Acquire) {
+                &[f32::NAN, 0.0]
+            } else {
+                &[0.6, 0.8]
+            }
+        }
+    }
+    let changed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let values = backend_version::SharedCoordinates::retain(
+        Arc::<[f32]>::from([0.6, 0.8]),
+        ChangingOwner(changed.clone()),
+    );
+    let document = DocumentVector::from_owned_values(embedding_recipe(), CandidateId(1), values)
+        .expect("document");
+    changed.store(true, std::sync::atomic::Ordering::Release);
+    assert_eq!(document.point().values(), &[0.6, 0.8]);
+    assert_eq!(
+        document.clone().point().to_payload(),
+        document.point().to_payload()
+    );
+    assert!(
+        DocumentVector::from_owned_values(
+            embedding_recipe(),
+            CandidateId(2),
+            backend_version::SharedCoordinates::from(Arc::<[f32]>::from([f32::NAN, 0.0]))
+        )
+        .is_err()
+    );
+    assert!(
+        DocumentVector::from_owned_values(
+            embedding_recipe(),
+            CandidateId(2),
+            backend_version::SharedCoordinates::from(Arc::<[f32]>::from([2.0, 0.0]))
+        )
+        .is_err()
+    );
 }

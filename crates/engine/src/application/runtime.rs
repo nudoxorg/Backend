@@ -335,7 +335,7 @@ pub enum LocalCompilerCapabilityState {
     Probing,
     /// The selected executable failed bounded identity admission.
     ProbeFailed,
-    /// A selected Rust authority must be admitted by an actual package request.
+    /// Selected Rust or compiled native Python authority needs request-time admission.
     /// No reusable invocation manifest or recipe has been established yet.
     Deferred,
     /// Exact toolchain and package authority are ready.
@@ -401,6 +401,8 @@ pub enum LocalRuntimeGoAuthorityFailure {
 /// carries the adapter and bounded version proof together.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LocalRuntimePythonCheckerAdmission<Adapter> {
+    /// Native image authority is withheld until one Python request admits it.
+    DeferredNativePython,
     /// Actual compiled State producer; does not require an external executable.
     Native {
         /// Pinned source/manifest/policy and actual host producer bytes.
@@ -432,6 +434,7 @@ impl<Adapter> LocalRuntimePythonCheckerAdmission<Adapter> {
     /// Borrows the checker adapter while preserving the same single admission state.
     pub fn as_ref(&self) -> LocalRuntimePythonCheckerAdmission<&Adapter> {
         match self {
+            Self::DeferredNativePython => LocalRuntimePythonCheckerAdmission::DeferredNativePython,
             Self::Native { authority } => LocalRuntimePythonCheckerAdmission::Native {
                 authority: *authority,
             },
@@ -1159,6 +1162,18 @@ impl LocalCompilerCapabilities {
                         }
                     }
                 }
+                None if profile.language() == Language::Python
+                    && matches!(
+                        configuration.package_authority.admitted_python_checker(),
+                        LocalRuntimePythonCheckerAdmission::DeferredNativePython
+                    )
+                    && configuration
+                        .package_authority
+                        .deferred_native_python
+                        .is_some() =>
+                {
+                    LocalCompilerCapabilityState::Deferred
+                }
                 None if local_authority_fingerprint.is_none() => {
                     LocalCompilerCapabilityState::Unavailable
                 }
@@ -1314,7 +1329,7 @@ fn package_authority_fingerprint(
                 }
             }
         }
-        Language::Python => match &authority.python_checker {
+        Language::Python => match authority.admitted_python_checker() {
             LocalRuntimePythonCheckerAdmission::Native { authority } => {
                 identity.update(b"compiled-native-python-project\0");
                 identity.update(&authority.producer_identity().as_bytes());
@@ -1525,7 +1540,7 @@ fn capability_setup_issue(
         return None;
     }
     let checker = CompilerToolRequirement::PythonChecker;
-    match &authority.python_checker {
+    match authority.admitted_python_checker() {
         LocalRuntimePythonCheckerAdmission::Unconfigured => Some(CompilerToolIssue {
             requirement: checker,
             failure: CompilerToolFailure::Missing,
@@ -1534,7 +1549,8 @@ fn capability_setup_issue(
             requirement: checker,
             failure: CompilerToolFailure::ProbeFailed,
         }),
-        LocalRuntimePythonCheckerAdmission::Native { .. }
+        LocalRuntimePythonCheckerAdmission::DeferredNativePython
+        | LocalRuntimePythonCheckerAdmission::Native { .. }
         | LocalRuntimePythonCheckerAdmission::Ready { .. } => None,
     }
 }
@@ -1851,6 +1867,7 @@ pub struct LocalRuntimeToolchain {
 enum ToolchainProbeInvocation {
     #[default]
     Native,
+    DeferredNativePython,
     TypeScriptScript {
         node: Box<Path>,
         module_root: Box<Path>,
@@ -2001,6 +2018,12 @@ impl LocalRuntimeToolchain {
         }
     }
 
+    pub(crate) fn deferred_native_python(deferred: &DeferredNativePython) -> Self {
+        let mut row = Self::probing(NativeTool::Python, deferred.image.clone());
+        row.probe_invocation = ToolchainProbeInvocation::DeferredNativePython;
+        row
+    }
+
     pub(crate) fn probing(tool: NativeTool, executable: PathBuf) -> Self {
         debug_assert!(executable.is_absolute());
         Self {
@@ -2127,6 +2150,12 @@ impl LocalRuntimeToolchain {
     }
 
     fn probe_request(&self) -> Option<PendingToolchainProbe> {
+        if matches!(
+            self.probe_invocation,
+            ToolchainProbeInvocation::DeferredNativePython
+        ) {
+            return None; // Request admission is not an external executable --version probe.
+        }
         (self.facts.state == LocalRuntimeToolchainState::Probing).then(|| {
             let executable = self
                 .executable
@@ -2134,21 +2163,20 @@ impl LocalRuntimeToolchain {
                 .expect("probing toolchain retains its admitted executable")
                 .to_path_buf();
             match &self.probe_invocation {
+                ToolchainProbeInvocation::DeferredNativePython => {
+                    unreachable!("request-time admission")
+                }
                 ToolchainProbeInvocation::Native => PendingToolchainProbe::Native {
                     tool: self.facts.tool,
                     executable,
                 },
                 ToolchainProbeInvocation::TypeScriptScript {
-                    node,
-                    module_root,
-                    ..
-                } => {
-                    PendingToolchainProbe::TypeScriptScript {
-                        compiler: executable,
-                        node: node.clone(),
-                        module_root: module_root.clone(),
-                    }
-                }
+                    node, module_root, ..
+                } => PendingToolchainProbe::TypeScriptScript {
+                    compiler: executable,
+                    node: node.clone(),
+                    module_root: module_root.clone(),
+                },
             }
         })
     }
@@ -2161,6 +2189,9 @@ impl LocalRuntimeToolchain {
         ) {
             (LocalRuntimeToolchainState::Ready, Some(executable), Some(identity)) => {
                 let resolved = match &self.probe_invocation {
+                    ToolchainProbeInvocation::DeferredNativePython => {
+                        unreachable!("deferred row has no ready identity")
+                    }
                     ToolchainProbeInvocation::Native => {
                         ResolvedToolchain::from_identity(self.facts.tool, executable, identity)?
                     }
@@ -2686,6 +2717,8 @@ pub struct LocalRuntimePackageAuthority {
     pub typescript: Option<ExplicitTypeScriptChecker>,
     /// Compiled native State producer or explicitly selected external per-file checker.
     pub python_checker: LocalRuntimePythonCheckerAdmission<Pyrefly>,
+    /// One owner-shared request-time admission; lane workers never own independent caches.
+    pub deferred_native_python: Option<Arc<DeferredNativePython>>,
     /// Rust Analyzer/Cargo authority.
     pub rust: Option<LocalRuntimeRustAuthority>,
     /// Go package oracle authority.
@@ -2698,6 +2731,145 @@ pub struct LocalRuntimePackageAuthority {
     pub java: Option<LocalRuntimeJavaAuthority>,
     /// Exact maximum retained Go or Java authority image bytes.
     pub maximum_image_bytes: Option<NonZeroUsize>,
+}
+
+impl LocalRuntimePackageAuthority {
+    fn admitted_python_checker(&self) -> LocalRuntimePythonCheckerAdmission<&Pyrefly> {
+        match (&self.python_checker, self.deferred_native_python.as_ref()) {
+            (LocalRuntimePythonCheckerAdmission::DeferredNativePython, Some(deferred)) => {
+                deferred.ready.get().map_or(
+                    LocalRuntimePythonCheckerAdmission::DeferredNativePython,
+                    |authority| LocalRuntimePythonCheckerAdmission::Native {
+                        authority: *authority,
+                    },
+                )
+            }
+            _ => self.python_checker.as_ref(),
+        }
+    }
+}
+
+/// The selected executing image, admitted once by a Python requester, shared by the owner.
+/// Successful complete witnesses alone are cached. Cancellation/failure leaves admission retryable.
+#[derive(Debug)]
+pub struct DeferredNativePython {
+    image: PathBuf,
+    ready: OnceLock<NativePythonProjectAuthority>,
+    admission: Mutex<backend_frontend_python::legacy::checker::NativePythonProducerImage>,
+    observation_sent: AtomicBool,
+    #[cfg(test)]
+    admission_attempts: AtomicU64,
+}
+
+impl DeferredNativePython {
+    pub(crate) fn new() -> Result<Self, backend_frontend_python::legacy::checker::CheckerError> {
+        let image = std::env::current_exe().map_err(|source| {
+            backend_frontend_python::legacy::checker::CheckerError::Workspace { source }
+        })?;
+        Ok(Self {
+            image,
+            ready: OnceLock::new(),
+            admission: Mutex::new(
+                backend_frontend_python::legacy::checker::NativePythonProducerImage::open()?,
+            ),
+            observation_sent: AtomicBool::new(false),
+            #[cfg(test)]
+            admission_attempts: AtomicU64::new(0),
+        })
+    }
+
+    fn resolve(
+        &self,
+        control: CompileControl<'_>,
+    ) -> Result<NativePythonProjectAuthority, backend_frontend_python::legacy::checker::CheckerError>
+    {
+        use backend_frontend_python::legacy::checker::{CheckerError, PythonProjectControl};
+        let check = || {
+            if control.cancelled.load(Ordering::Acquire) {
+                return Err(CheckerError::Cancelled {
+                    phase: "producer-admission",
+                });
+            }
+            if Instant::now() >= control.deadline {
+                return Err(CheckerError::Deadline {
+                    phase: "producer-admission",
+                });
+            }
+            Ok(())
+        };
+        loop {
+            check()?;
+            if let Some(authority) = self.ready.get() {
+                return Ok(*authority);
+            }
+            // Only one requester streams the image. Peers retain independent cancellation/deadlines.
+            let mut image = match self.admission.try_lock() {
+                Ok(guard) => guard,
+                Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    thread::sleep(Duration::from_millis(2));
+                    continue;
+                }
+            };
+            check()?;
+            if let Some(authority) = self.ready.get() {
+                return Ok(*authority);
+            }
+            #[cfg(test)]
+            self.admission_attempts.fetch_add(1, Ordering::Relaxed);
+            let authority = NativePythonProjectAuthority::admit_from_image_controlled(
+                &mut image,
+                PythonProjectControl {
+                    cancelled: control.cancelled,
+                    deadline: control.deadline,
+                },
+            )?;
+            check()?;
+            let _ = self.ready.set(authority);
+            return Ok(authority);
+        }
+    }
+
+    fn publish_observation(
+        &self,
+        control: CompileControl<'_>,
+        sender: &Sender<ToolchainProbeObservation>,
+        row: impl FnOnce() -> Result<
+            LocalRuntimeToolchain,
+            backend_frontend_python::legacy::checker::CheckerError,
+        >,
+    ) -> Result<(), CompilerRuntimeCause> {
+        let _image = loop {
+            if control.cancelled.load(Ordering::Acquire) {
+                return Err(CompilerRuntimeCause::RequestCancelled);
+            }
+            if Instant::now() >= control.deadline {
+                return Err(CompilerRuntimeCause::ToolchainProbeTimeout);
+            }
+            match self.admission.try_lock() {
+                Ok(guard) => break guard,
+                Err(std::sync::TryLockError::Poisoned(error)) => break error.into_inner(),
+                Err(std::sync::TryLockError::WouldBlock) => thread::sleep(Duration::from_millis(2)),
+            }
+        };
+        if self.observation_sent.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let row = row().map_err(
+            |error| CompilerRuntimeCause::NativePythonProducerAdmission {
+                failure: super::compiler::python_authority_failure_kind(&error),
+            },
+        )?;
+        sender
+            .send(ToolchainProbeObservation {
+                tool: NativeTool::Python,
+                result: Ok(row),
+            })
+            .map_err(|_| CompilerRuntimeCause::RequestOwnerStopped)?;
+        // A peer cannot observe a claim until the fallible row and notification succeeded.
+        self.observation_sent.store(true, Ordering::Release);
+        Ok(())
+    }
 }
 
 /// Complete owned configuration moved into the compiler worker.
@@ -2733,6 +2905,20 @@ impl LocalCompilerRuntimeConfiguration {
     ) -> Result<Self, LocalCompilerRuntimeConfigurationError> {
         validate_toolchain_order(&toolchains)?;
         validate_package_root_order(&package_roots)?;
+        let deferred = matches!(
+            package_authority.python_checker,
+            LocalRuntimePythonCheckerAdmission::DeferredNativePython
+        );
+        if deferred != package_authority.deferred_native_python.is_some()
+            || toolchains.iter().any(|row| {
+                matches!(
+                    row.probe_invocation,
+                    ToolchainProbeInvocation::DeferredNativePython
+                )
+            }) != deferred
+        {
+            return Err(LocalCompilerRuntimeConfigurationError::NativePythonAdmissionPair);
+        }
         Ok(Self {
             paths,
             toolchains,
@@ -2813,6 +2999,9 @@ impl LocalCompilerRuntimeConfiguration {
 /// Rejection while validating owned bounded runtime tables.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum LocalCompilerRuntimeConfigurationError {
+    /// Deferred Python row, checker and owner image must be one consistent admission.
+    #[error("inconsistent deferred native Python admission")]
+    NativePythonAdmissionPair,
     /// The toolchain table violated its bounded canonical order.
     #[error(transparent)]
     Toolchains(#[from] LocalToolchainSetError),
@@ -2923,6 +3112,11 @@ impl LocalCompilerClient {
             &configuration,
         )));
         let go_authority = configuration.package_authority.go.clone();
+        let native_python = configuration
+            .package_authority
+            .deferred_native_python
+            .clone();
+        let native_python_timeout = configuration.timeout;
         let capability_signal = Arc::new(CapabilitySignal::new());
         let (command_tx, command_rx) = sync_channel(COMMAND_QUEUE_CAPACITY);
         let (probe_tx, probe_rx) = channel();
@@ -2950,7 +3144,7 @@ impl LocalCompilerClient {
             .map_err(LocalCompilerRuntimeOpenError::Spawn)?;
         match startup_rx.recv() {
             Ok(Ok(())) => {
-                start_toolchain_probes(pending_probes, probe_tx);
+                start_toolchain_probes(pending_probes, probe_tx.clone());
                 Ok(Self {
                     shared: Arc::new(RuntimeShared {
                         command: Some(command_tx),
@@ -2964,6 +3158,9 @@ impl LocalCompilerClient {
                         capability_signal,
                         input_witnesses,
                         go_authority,
+                        native_python,
+                        native_python_timeout,
+                        native_python_observations: probe_tx,
                     }),
                     client_id: 1,
                     last_image: Mutex::new(None),
@@ -3144,7 +3341,7 @@ impl LocalCompilerClient {
         result
     }
 
-    /// Waits for the selected profile's explicit toolchain probe to settle.
+    /// Waits for the selected probe or admits the compiled Python producer on first request.
     ///
     /// Host admission intentionally launches probes after the process owner
     /// becomes reachable, so an unrelated slow tool (for example a hanging Go
@@ -3159,9 +3356,46 @@ impl LocalCompilerClient {
     ) -> Result<(), CompilerTerminal> {
         const PROBE_WAIT: Duration = Duration::from_secs(6);
         const SIGNAL_WAIT: Duration = Duration::from_millis(25);
+        let native_python = (facts.language == Language::Python)
+            .then_some(self.shared.native_python.as_ref())
+            .flatten();
         let deadline = Instant::now()
-            .checked_add(PROBE_WAIT)
-            .expect("fixed probe wait fits the monotonic clock");
+            .checked_add(native_python.map_or(PROBE_WAIT, |_| *self.shared.native_python_timeout))
+            .expect("validated compiler admission wait fits the monotonic clock");
+        if let Some(deferred) = native_python {
+            if !self.shared.alive.load(Ordering::Acquire) {
+                return Err(facts.terminal(CompilerRuntimeCause::RequestOwnerStopped));
+            }
+            let authority = deferred
+                .resolve(CompileControl {
+                    cancelled,
+                    deadline,
+                })
+                .map_err(|error| {
+                    facts.terminal(
+                        if matches!(
+                            &error,
+                            backend_frontend_python::legacy::checker::CheckerError::Cancelled { .. }
+                        ) {
+                            CompilerRuntimeCause::RequestCancelled
+                        } else {
+                            CompilerRuntimeCause::NativePythonProducerAdmission {
+                                failure: super::compiler::python_authority_failure_kind(&error),
+                            }
+                        },
+                    )
+                })?;
+            deferred
+                .publish_observation(
+                    CompileControl {
+                        cancelled,
+                        deadline,
+                    },
+                    &self.shared.native_python_observations,
+                    || LocalRuntimeToolchain::compiled_native_python(authority),
+                )
+                .map_err(|cause| facts.terminal(cause))?;
+        }
         let mut signal = self
             .shared
             .capability_signal
@@ -3170,7 +3404,9 @@ impl LocalCompilerClient {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
             let state = self.capabilities().for_profile(facts.profile).state();
-            if !matches!(state, LocalCompilerCapabilityState::Probing) {
+            if !matches!(state, LocalCompilerCapabilityState::Probing)
+                && !(native_python.is_some() && state == LocalCompilerCapabilityState::Deferred)
+            {
                 return Ok(());
             }
             if !self.shared.alive.load(Ordering::Acquire) {
@@ -3511,6 +3747,9 @@ struct RuntimeShared {
     capability_signal: Arc<CapabilitySignal>,
     input_witnesses: Arc<CompilerInputWitnessStore>,
     go_authority: Option<ConfiguredGoOracle>,
+    native_python: Option<Arc<DeferredNativePython>>,
+    native_python_timeout: LocalCompilerTimeout,
+    native_python_observations: Sender<ToolchainProbeObservation>,
 }
 
 struct CapabilitySignal {
@@ -4020,7 +4259,7 @@ fn run_worker_generation(
         clang: configuration.package_authority.clang.as_ref(),
         typescript: configuration.package_authority.typescript.as_ref(),
         typescript_project_host: configuration.typescript_project_host.as_ref(),
-        python_checker: configuration.package_authority.python_checker.as_ref(),
+        python_checker: configuration.package_authority.admitted_python_checker(),
         rust,
         go: configuration.package_authority.go.as_ref(),
         go_unavailable: configuration.package_authority.go_unavailable,
@@ -5765,6 +6004,9 @@ mod request_lease_tests {
             capability_signal: Arc::new(CapabilitySignal::new()),
             input_witnesses: Arc::new(CompilerInputWitnessStore::new(root.join("witnesses"))),
             go_authority: None,
+            native_python: None,
+            native_python_timeout: configuration.timeout,
+            native_python_observations: channel().0,
         }
     }
 
@@ -6350,5 +6592,352 @@ mod python_raw_source_ownership_tests {
             OwnedPackageSource::from_bytes("../escaped.py", vec![255]),
             Err(PackageSourceSetError::InvalidPath)
         ));
+    }
+}
+
+#[cfg(test)]
+mod deferred_native_python_tests {
+    use super::*;
+    use backend_frontend_python::legacy::checker::CheckerError;
+    use backend_library::interface::{CorrelationId, GenerateTarget, PackageUrl};
+    use backend_semantic::vocabulary::PythonVersion;
+
+    fn control(cancelled: &AtomicBool) -> CompileControl<'_> {
+        CompileControl {
+            cancelled,
+            deadline: Instant::now() + Duration::from_secs(60),
+        }
+    }
+
+    fn configuration(
+        root: &Path,
+        deferred: Arc<DeferredNativePython>,
+    ) -> LocalCompilerRuntimeConfiguration {
+        LocalCompilerRuntimeConfiguration::new(
+            LocalCompilerRuntimePaths::new(
+                root.join("artifacts"),
+                root.join("journal"),
+                root.join("native"),
+            )
+            .unwrap(),
+            vec![LocalRuntimeToolchain::deferred_native_python(&deferred)].into_boxed_slice(),
+            Box::new([]),
+            LocalRuntimePackageAuthority {
+                python_checker: LocalRuntimePythonCheckerAdmission::DeferredNativePython,
+                deferred_native_python: Some(deferred),
+                ..Default::default()
+            },
+            LocalCompilerTimeout::new(Duration::from_secs(60)).unwrap(),
+            PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN).unwrap(),
+            LocalCompilerScratch::with_fragment_capacity(
+                NonZeroUsize::new(16 * 1024 * 1024).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn deferred_native_python_has_no_probe_digest_or_recipe_before_request() {
+        let deferred = Arc::new(DeferredNativePython::new().unwrap());
+        let root = std::env::temp_dir().join("nudox-native-python-inspection-only");
+        let config = configuration(&root, Arc::clone(&deferred));
+        let capability = config
+            .capabilities()
+            .for_profile(LanguageProfile::Python(PythonVersion::Python314));
+        assert_eq!(capability.state(), LocalCompilerCapabilityState::Deferred);
+        assert!(capability.toolchain_identity().is_none());
+        assert!(capability.local_authority_fingerprint().is_none());
+        assert!(capability.manifest().is_none());
+        assert!(capability.session_lineage().is_none());
+        assert!(deferred.ready.get().is_none());
+        assert_eq!(deferred.admission_attempts.load(Ordering::Relaxed), 0);
+        assert!(
+            config.toolchains[0].probe_request().is_none(),
+            "must not spawn executing host --version"
+        );
+    }
+
+    #[test]
+    fn deferred_native_python_cancel_deadline_and_waiters_leave_admission_retryable() {
+        let deferred = DeferredNativePython::new().unwrap();
+        let cancelled = AtomicBool::new(true);
+        assert!(matches!(
+            deferred.resolve(control(&cancelled)),
+            Err(CheckerError::Cancelled { .. })
+        ));
+        cancelled.store(false, Ordering::Release);
+        assert!(matches!(
+            deferred.resolve(CompileControl {
+                cancelled: &cancelled,
+                deadline: Instant::now()
+            }),
+            Err(CheckerError::Deadline { .. })
+        ));
+        let held = deferred.admission.lock().unwrap();
+        thread::scope(|scope| {
+            let (entered, waiting) = sync_channel(1);
+            let shared_deferred = &deferred;
+            let shared_cancelled = &cancelled;
+            let task = scope.spawn(move || {
+                entered.send(()).unwrap();
+                shared_deferred.resolve(control(shared_cancelled))
+            });
+            waiting.recv().unwrap();
+            cancelled.store(true, Ordering::Release);
+            assert!(matches!(
+                task.join().unwrap(),
+                Err(CheckerError::Cancelled { .. })
+            ));
+        });
+        drop(held);
+        assert!(deferred.ready.get().is_none());
+        assert_eq!(deferred.admission_attempts.load(Ordering::Relaxed), 0);
+        assert!(!deferred.observation_sent.load(Ordering::Acquire));
+        cancelled.store(false, Ordering::Release);
+        let admitted = deferred
+            .resolve(control(&cancelled))
+            .expect("actual image witness after retry");
+        assert_eq!(
+            admitted.producer_identity(),
+            NativePythonProjectAuthority::admit()
+                .unwrap()
+                .producer_identity(),
+            "controlled admission preserves eager full-image/receipt identity"
+        );
+        thread::scope(|scope| {
+            let tasks = (0..4)
+                .map(|_| scope.spawn(|| deferred.resolve(control(&cancelled)).unwrap()))
+                .collect::<Vec<_>>();
+            for task in tasks {
+                assert_eq!(task.join().unwrap(), admitted);
+            }
+        });
+        assert_eq!(
+            deferred.admission_attempts.load(Ordering::Relaxed),
+            1,
+            "peers share the one complete owner admission"
+        );
+        let cold = DeferredNativePython::new().unwrap();
+        assert!(
+            cold.ready.get().is_none(),
+            "new owner must perform fresh admission"
+        );
+        assert_eq!(cold.resolve(control(&cancelled)).unwrap(), admitted);
+        assert_eq!(cold.admission_attempts.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn deferred_native_python_inconsistent_public_pairs_are_rejected() {
+        for case in 0..3 {
+            let deferred = Arc::new(DeferredNativePython::new().unwrap());
+            let mut config = configuration(&std::env::temp_dir().join("native-pair"), deferred);
+            match case {
+                0 => config.package_authority.deferred_native_python = None,
+                1 => {
+                    config.package_authority.python_checker =
+                        LocalRuntimePythonCheckerAdmission::Unconfigured
+                }
+                _ => {
+                    config.package_authority.python_checker =
+                        LocalRuntimePythonCheckerAdmission::Ready {
+                            adapter: Pyrefly::from_executable(
+                                std::env::temp_dir().join("explicit-pyrefly"),
+                            )
+                            .unwrap(),
+                            proof: PyreflyToolchainIdentity::from_version_output(
+                                b"pyrefly 1.2.0-dev.1",
+                            ),
+                        };
+                }
+            }
+            let result = LocalCompilerRuntimeConfiguration::new(
+                config.paths,
+                config.toolchains,
+                config.package_roots,
+                config.package_authority,
+                config.timeout,
+                config.publication_limits,
+                config.scratch,
+            );
+            assert!(matches!(
+                result,
+                Err(LocalCompilerRuntimeConfigurationError::NativePythonAdmissionPair)
+            ));
+        }
+    }
+
+    #[test]
+    fn deferred_native_python_concurrent_observation_failure_remains_retryable() {
+        let deferred = DeferredNativePython::new().unwrap();
+        let cancelled = AtomicBool::new(false);
+        let authority = deferred.resolve(control(&cancelled)).unwrap();
+        let (observations, received) = channel();
+        thread::scope(|scope| {
+            let (entered, entry) = sync_channel(1);
+            let (release, released) = sync_channel(1);
+            let shared = &deferred;
+            let flag = &cancelled;
+            let sender = &observations;
+            let first = scope.spawn(move || {
+                shared.publish_observation(control(flag), sender, || {
+                    entered.send(()).unwrap();
+                    released.recv().unwrap();
+                    Err(CheckerError::Workspace {
+                        source: std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "selected image lookup failed",
+                        ),
+                    })
+                })
+            });
+            entry.recv().unwrap();
+            let peer = scope.spawn(|| {
+                deferred.publish_observation(control(&cancelled), &observations, || {
+                    LocalRuntimeToolchain::compiled_native_python(authority)
+                })
+            });
+            assert!(!deferred.observation_sent.load(Ordering::Acquire));
+            release.send(()).unwrap();
+            assert!(matches!(
+                first.join().unwrap(),
+                Err(CompilerRuntimeCause::NativePythonProducerAdmission { .. })
+            ));
+            peer.join().unwrap().unwrap();
+        });
+        assert!(deferred.observation_sent.load(Ordering::Acquire));
+        let observed = received.try_recv().unwrap();
+        assert_eq!(observed.tool, NativeTool::Python);
+        assert_eq!(
+            observed.result.unwrap().facts.identity.unwrap(),
+            ContentId::<ToolchainDomain>::from_digest(authority.producer_identity().as_bytes())
+        );
+        assert!(received.try_recv().is_err());
+        let (closed, receiver) = channel();
+        drop(receiver);
+        let fresh = DeferredNativePython::new().unwrap();
+        assert!(matches!(
+            fresh.publish_observation(control(&cancelled), &closed, || {
+                LocalRuntimeToolchain::compiled_native_python(authority)
+            }),
+            Err(CompilerRuntimeCause::RequestOwnerStopped)
+        ));
+        assert!(!fresh.observation_sent.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn deferred_native_python_first_package_reconfigures_exact_recipe_and_cold_repeat() {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "nudox-native-python-owner-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        std::fs::create_dir(&root).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let project = root.join("project");
+        std::fs::create_dir(&project).unwrap();
+        let source = "def actual_native(value: int) -> int:\n    return value + 1\n";
+        std::fs::write(project.join("source.py"), source).unwrap();
+        let profile = LanguageProfile::Python(PythonVersion::Python314);
+        let request = PackageCompileRequest::new(
+            GenerateTarget {
+                correlation: CorrelationId(0xf1),
+                profile,
+                stage: Stage::LowerIr,
+            },
+            PackageUrl::parse("pkg:pypi/deferred-native-owner@1.0.0".to_owned()).unwrap(),
+        )
+        .unwrap();
+        let package = || {
+            OwnedPackageSourceSet::new(
+                request.clone(),
+                project.clone(),
+                vec![OwnedPackageSource::new("source.py", source).unwrap()].into_boxed_slice(),
+            )
+            .unwrap()
+        };
+        let deferred = Arc::new(DeferredNativePython::new().unwrap());
+        let client =
+            LocalCompilerClient::start(configuration(&root, Arc::clone(&deferred))).unwrap();
+        assert_eq!(
+            client.capabilities().for_profile(profile).state(),
+            LocalCompilerCapabilityState::Deferred
+        );
+        assert!(
+            deferred.ready.get().is_none(),
+            "compiler owner setup must not hash native Python image"
+        );
+        let cancelled = Arc::new(AtomicBool::new(true));
+        let refused = client.compile_package_sources_staged_cancellable(package(), cancelled);
+        assert!(
+            matches!(
+                refused,
+                Err(PackageSemanticRuntimeError::Runtime(
+                    CompilerTerminal::Runtime {
+                        cause: CompilerRuntimeCause::RequestCancelled,
+                        ..
+                    }
+                ))
+            ),
+            "cancelled first request cannot publish native admission"
+        );
+        assert!(deferred.ready.get().is_none());
+        assert_eq!(deferred.admission_attempts.load(Ordering::Relaxed), 0);
+        let staged = client
+            .compile_package_sources_staged(package())
+            .expect("actual native Python State");
+        assert_eq!(staged.artifacts().len(), 1);
+        let capability = client.capabilities().for_profile(profile);
+        assert_eq!(capability.state(), LocalCompilerCapabilityState::Ready);
+        let authority = deferred.ready.get().expect("complete successful witness");
+        let expected_toolchain =
+            ContentId::<ToolchainDomain>::from_digest(authority.producer_identity().as_bytes());
+        assert_eq!(
+            capability.toolchain_identity().unwrap(),
+            *expected_toolchain.as_ref()
+        );
+        assert!(capability.manifest().is_some());
+        assert!(capability.local_authority_fingerprint().is_some());
+        for artifact in staged.artifacts() {
+            assert_eq!(
+                artifact.recipe().toolchain.as_ref(),
+                expected_toolchain.as_ref()
+            );
+        }
+        let repeat = client
+            .compile_package_sources_staged(package())
+            .expect("same owner second actual State");
+        assert_eq!(repeat.artifacts().len(), 1);
+        assert_eq!(deferred.admission_attempts.load(Ordering::Relaxed), 1);
+        drop(repeat);
+        drop(staged);
+        drop(client);
+        let cold = Arc::new(DeferredNativePython::new().unwrap());
+        let client = LocalCompilerClient::start(configuration(&root, Arc::clone(&cold))).unwrap();
+        assert_eq!(
+            client.capabilities().for_profile(profile).state(),
+            LocalCompilerCapabilityState::Deferred
+        );
+        assert!(cold.ready.get().is_none());
+        let repeated = client
+            .compile_package_sources_staged(package())
+            .expect("cold native authority + actual State");
+        assert_eq!(repeated.artifacts().len(), 1);
+        assert_eq!(cold.ready.get(), deferred.ready.get());
+        assert_eq!(cold.admission_attempts.load(Ordering::Relaxed), 1);
+        drop(repeated);
+        drop(client);
     }
 }

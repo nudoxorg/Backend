@@ -3,7 +3,10 @@ import copy
 import hashlib
 import json
 from dataclasses import replace
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -19,8 +22,9 @@ def synthetic_inputs():
     base = json.loads(base_raw)
     template = (ROOT / "install_forgejo_preview.py").read_bytes()
     mac_library = (ROOT / "install_macos_preview.py").read_bytes()
+    launcher_template = (ROOT / "install_diagnostic_preview.sh").read_bytes()
     source = compose.SourceSnapshot(ROOT, "f" * 40, "e" * 40, template, mac_library,
-                                    base, hashlib.sha256(base_raw).hexdigest())
+                                    launcher_template, base, hashlib.sha256(base_raw).hexdigest())
     manifest = {
         "schema": 1,
         "version": "0.2.0",
@@ -74,6 +78,12 @@ class CandidateCompositionTests(unittest.TestCase):
         self.assertEqual(result.channel["platforms"]["linux-x64"]["tag"], package.tag)
         self.assertEqual(result.channel["platforms"]["linux-x64"]["manifest"]["sha256"], package.manifest_sha256)
         self.assertEqual(result.channel["platforms"]["linux-x64"]["archive"]["sha256"], package.archive_sha256)
+        failures = result.channel["platforms"]["linux-x64"]["known_failures"]
+        self.assertEqual(failures, [package.native_qa_limitation])
+        self.assertNotIn("October 8", " ".join(failures))
+        for prior_failure in source.base_channel["platforms"]["linux-x64"]["known_failures"]:
+            self.assertNotIn(prior_failure, failures)
+        self.assertFalse(result.channel["production_ready"])
         mac = result.channel["platforms"]["macos-arm64"]
         for field in ("source", "tag", "archive", "known_failures"):
             self.assertEqual(mac[field], original_mac[field])
@@ -87,6 +97,215 @@ class CandidateCompositionTests(unittest.TestCase):
         with self.assertRaises(compose.bootstrap.InstallError):
             compose.bootstrap.validate_channel(wrong_library_location, bootstrap_tag=result.bootstrap_tag,
                                                 libraries=pins)
+
+    def test_same_linux_source_and_archive_preserve_detailed_base_failures(self):
+        source, package = synthetic_inputs()
+        base_row = source.base_channel["platforms"]["linux-x64"]
+        manifest = dict(
+            package.manifest,
+            source_sha=base_row["source"],
+            asset=Path(base_row["archive"]["url"]).name,
+            sha256=base_row["archive"]["sha256"],
+            size_bytes=base_row["archive"]["bytes"],
+        )
+        manifest_bytes = json.dumps(manifest, separators=(",", ":")).encode()
+        manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
+        tag = "checkpoint-20261011-" + manifest["source_sha"][:10] + "-linux-x64"
+        installer = compose.pin_linux_installer(package.installer_source_template, tag, manifest_sha)
+        same_artifact = replace(
+            package,
+            manifest=manifest,
+            manifest_bytes=manifest_bytes,
+            manifest_sha256=manifest_sha,
+            tag=tag,
+            archive_sha256=manifest["sha256"],
+            archive_bytes=manifest["size_bytes"],
+            installer=installer,
+        )
+
+        result = compose.compose_candidate(source, same_artifact)
+        failures = result.channel["platforms"]["linux-x64"]["known_failures"]
+        self.assertEqual(failures[:-1], base_row["known_failures"])
+        self.assertEqual(failures[-1], same_artifact.native_qa_limitation)
+        self.assertEqual(base_row["known_failures"], source.base_channel["platforms"]["linux-x64"]["known_failures"])
+
+    def test_changed_source_or_archive_does_not_carry_old_linux_failures(self):
+        source, package = synthetic_inputs()
+        base_row = source.base_channel["platforms"]["linux-x64"]
+        for changed in (
+            replace(package, manifest=dict(package.manifest, source_sha=base_row["source"]),
+                    archive_sha256=base_row["archive"]["sha256"]),
+            replace(package, archive_sha256=base_row["archive"]["sha256"]),
+            replace(package, archive_bytes=base_row["archive"]["bytes"]),
+            replace(package, manifest=dict(package.manifest, source_sha=base_row["source"]),
+                    archive_sha256=base_row["archive"]["sha256"],
+                    archive_bytes=base_row["archive"]["bytes"] + 1),
+        ):
+            with self.subTest(source=changed.manifest["source_sha"], sha=changed.archive_sha256,
+                              bytes=changed.archive_bytes):
+                self.assertEqual(compose.linux_failures_for_candidate(base_row, changed), [])
+
+    def test_uncompleted_native_qa_note_is_candidate_scoped_and_explicit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            qa = Path(directory) / compose.NATIVE_QA_NAME
+            qa.write_bytes((ROOT / "native-qa-linux-x64.example.json").read_bytes())
+            _, limitation = compose.uncompleted_linux_qa(Path(directory))
+        self.assertIn("No native Linux runtime acceptance is claimed for this release candidate", limitation)
+        self.assertIn("these cases uncompleted", limitation)
+        self.assertNotIn("October 8", limitation)
+
+    def test_generated_launcher_is_digest_and_size_pinned_to_new_bootstrap(self):
+        source, package = synthetic_inputs()
+        result = compose.compose_candidate(source, package)
+        body = result.launcher
+        bootstrap_sha = hashlib.sha256(result.bootstrap).hexdigest()
+        bootstrap_name = f"install-forgejo-bootstrap-{bootstrap_sha[:16]}.py"
+        bootstrap_url = compose.bootstrap.release_url(result.bootstrap_tag, bootstrap_name)
+        text = body.decode("utf-8")
+        self.assertTrue(text.startswith("#!/bin/sh\n"))
+        self.assertIn("installer_url='" + bootstrap_url + "'", text)
+        self.assertIn("installer_sha256='" + bootstrap_sha + "'", text)
+        self.assertIn("installer_bytes=" + str(len(result.bootstrap)) + "\n", text)
+        self.assertIn("'" + result.bootstrap_tag + "' >&2", text)
+        self.assertNotIn(compose.bootstrap.BOOTSTRAP_TAG, text)
+        self.assertNotIn("historical R2", text)
+        parsed = subprocess.run(["/bin/sh", "-n"], input=body, capture_output=True)
+        self.assertEqual(parsed.returncode, 0, parsed.stderr.decode("utf-8", "replace"))
+
+    def test_private_output_contains_digest_launcher_alias_and_false_readiness(self):
+        source, package = synthetic_inputs()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            archive = root / package.archive.name
+            archive_body = b"synthetic archive\n"
+            archive.write_bytes(archive_body)
+            archive_sha = hashlib.sha256(archive_body).hexdigest()
+            package = replace(package, directory=root, archive=archive,
+                              archive_sha256=archive_sha,
+                              archive_bytes=archive.stat().st_size,
+                              manifest=dict(package.manifest, sha256=archive_sha,
+                                            size_bytes=archive.stat().st_size))
+            # Keep all candidate identities internally consistent after the fixture size change.
+            manifest_bytes = json.dumps(package.manifest, separators=(",", ":")).encode()
+            manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
+            tag = "checkpoint-20261011-" + package.manifest["source_sha"][:10] + "-linux-x64"
+            installer = compose.pin_linux_installer(package.installer_source_template, tag, manifest_sha)
+            checksum = root / (archive.name + ".sha256")
+            checksum.write_text(f"{archive_sha}  {archive.name}\n")
+            package = replace(package, manifest_bytes=manifest_bytes, manifest_sha256=manifest_sha,
+                              tag=tag, installer=installer)
+            bundle = compose.compose_candidate(source, package)
+            output = root / "private-output"
+            receipt = compose.prepare_output(bundle, output)
+
+            launcher_sha = hashlib.sha256(bundle.launcher).hexdigest()
+            launcher_name = f"install-forgejo-launcher-{launcher_sha[:16]}.sh"
+            self.assertEqual((output / launcher_name).read_bytes(), bundle.launcher)
+            self.assertEqual((output / "install.sh").read_bytes(), bundle.launcher)
+            self.assertEqual(receipt["launcher"], {
+                "asset": launcher_name,
+                "sha256": launcher_sha,
+                "bytes": len(bundle.launcher),
+                "bootstrap_tag": bundle.bootstrap_tag,
+                "bootstrap_sha256": hashlib.sha256(bundle.bootstrap).hexdigest(),
+                "bootstrap_bytes": len(bundle.bootstrap),
+            })
+            for name in (launcher_name, "install.sh"):
+                self.assertEqual(receipt["assets"][name], {
+                    "sha256": launcher_sha, "bytes": len(bundle.launcher)})
+            self.assertFalse(receipt["production_ready"])
+            self.assertFalse(receipt["published"])
+            self.assertFalse(receipt["native_acceptance_claimed"])
+
+    def test_generated_launcher_executes_only_verified_saved_bootstrap_and_cleans_up(self):
+        payload = (
+            "import os,pathlib,sys\n"
+            "pathlib.Path(os.environ['BOOTSTRAP_MARKER']).write_text('ran:' + repr(sys.argv[1:]))\n"
+        ).encode()
+        tag = "nudox-diagnostic-installer-20261011-candidate"
+        launcher = compose.candidate_launcher(
+            (ROOT / "install_diagnostic_preview.sh").read_bytes(), tag, payload)
+        sha = hashlib.sha256(payload).hexdigest()
+        expected_url = compose.bootstrap.release_url(
+            tag, f"install-forgejo-bootstrap-{sha[:16]}.py")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bindir = root / "bin"
+            bindir.mkdir()
+            tmpdir = root / "private-tmp"
+            tmpdir.mkdir(mode=0o700)
+            payload_path = root / "payload.py"
+            payload_path.write_bytes(payload)
+            marker = root / "bootstrap-ran"
+            curl_log = root / "curl-args.json"
+            curl = bindir / "curl"
+            curl.write_text("#!" + sys.executable + "\n" + '''import json,os,pathlib,sys
+args=sys.argv[1:]
+pathlib.Path(os.environ['CURL_LOG']).write_text(json.dumps(args))
+body=pathlib.Path(os.environ['CURL_BODY']).read_bytes()
+if os.environ.get('CURL_PARTIAL'): body=body[:max(1,len(body)//2)]
+if os.environ.get('CURL_OVERSIZE'): body=body+bytes(1024*1024)
+sys.stdout.buffer.write(body)
+sys.stdout.buffer.flush()
+sys.exit(int(os.environ.get('CURL_STATUS','0')))
+''')
+            curl.chmod(0o755)
+            uname = bindir / "uname"
+            uname.write_text("#!/bin/sh\ncase \"$1\" in -s) echo Darwin;; -m) echo arm64;; esac\n")
+            uname.chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""),
+                "TMPDIR": str(tmpdir),
+                "NUDOX_INSTALL_PYTHON": sys.executable,
+                "CURL_BODY": str(payload_path),
+                "CURL_LOG": str(curl_log),
+                "BOOTSTRAP_MARKER": str(marker),
+            }
+            success = subprocess.run(
+                ["/bin/sh", "-s", "--", "argument with spaces"],
+                input=launcher, env=env, capture_output=True, timeout=15)
+            self.assertEqual(success.returncode, 0, success.stderr.decode("utf-8", "replace"))
+            self.assertEqual(marker.read_text(), "ran:['argument with spaces']")
+            args = json.loads(curl_log.read_text())
+            self.assertEqual(args[0], "-q")
+            self.assertEqual(args[args.index("--max-time") + 1], "180")
+            self.assertEqual(args[args.index("--connect-timeout") + 1], "15")
+            self.assertEqual(args[args.index("--max-filesize") + 1], str(len(payload)))
+            self.assertEqual(args[args.index("--output") + 1], "-")
+            for flag in ("--fail", "--proto", "--proto-redir", "--tlsv1.2"):
+                self.assertIn(flag, args)
+            self.assertEqual(args[args.index("--proto") + 1], "=https")
+            self.assertEqual(args[args.index("--proto-redir") + 1], "=https")
+            self.assertEqual(args[-1], expected_url)
+            self.assertEqual(list(tmpdir.iterdir()), [])
+
+            marker.unlink()
+            env["CURL_PARTIAL"] = "1"
+            truncated = subprocess.run(["/bin/sh", "-s"], input=launcher, env=env,
+                                       capture_output=True, timeout=15)
+            self.assertEqual(truncated.returncode, 1, truncated.stderr.decode("utf-8", "replace"))
+            self.assertIn(b"size/SHA-256 mismatch", truncated.stderr)
+            self.assertFalse(marker.exists())
+            self.assertEqual(list(tmpdir.iterdir()), [])
+
+            env.pop("CURL_PARTIAL")
+            env["CURL_OVERSIZE"] = "1"
+            oversized = subprocess.run(["/bin/sh", "-s"], input=launcher, env=env,
+                                       capture_output=True, timeout=15)
+            self.assertEqual(oversized.returncode, 1, oversized.stderr.decode("utf-8", "replace"))
+            self.assertIn(b"exceeded its pinned byte count", oversized.stderr)
+            self.assertFalse(marker.exists())
+            self.assertEqual(list(tmpdir.iterdir()), [])
+
+            env.pop("CURL_OVERSIZE")
+            env["CURL_STATUS"] = "28"
+            timed_out = subprocess.run(["/bin/sh", "-s"], input=launcher, env=env,
+                                       capture_output=True, timeout=15)
+            self.assertEqual(timed_out.returncode, 28, timed_out.stderr.decode("utf-8", "replace"))
+            self.assertIn(b"HTTPS download failed", timed_out.stderr)
+            self.assertFalse(marker.exists())
+            self.assertEqual(list(tmpdir.iterdir()), [])
 
     def test_manifest_source_tag_and_linux_library_must_share_one_identity(self):
         source, package = synthetic_inputs()
@@ -192,6 +411,163 @@ class CandidateCompositionTests(unittest.TestCase):
 
             self.assertTrue(output.is_dir())
             self.assertEqual(list(output.iterdir()), [])
+
+    def test_output_directory_replacement_cannot_redirect_or_delete_candidate_assets(self):
+        source, package = synthetic_inputs()
+        bundle = compose.compose_candidate(source, package)
+        real_write = compose.write_exclusive
+        for replace_parent in (False, True):
+            with self.subTest(replace_parent=replace_parent), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                parent = root / "assembly-parent"
+                parent.mkdir()
+                output = parent / "candidate"
+                moved_parent = root / "original-parent"
+                moved_output = root / "original-candidate"
+                replacement_marker = b"preserve this replacement directory"
+                switched = False
+                replacement_directory = None
+                sentinel = None
+
+                def replace_path_then_write(name, body, *, dir_fd=None):
+                    nonlocal switched, replacement_directory, sentinel
+                    if not switched:
+                        switched = True
+                        if replace_parent:
+                            parent.rename(moved_parent)
+                            parent.mkdir()
+                            output.mkdir(mode=0o700)
+                        else:
+                            output.rename(moved_output)
+                            output.mkdir(mode=0o700)
+                        (output / "sentinel").write_bytes(replacement_marker)
+                        replacement_directory = output.stat()
+                        sentinel = (output / "sentinel").stat()
+                    return real_write(name, body, dir_fd=dir_fd)
+
+                with mock.patch.object(compose, "write_exclusive", side_effect=replace_path_then_write):
+                    with self.assertRaisesRegex(
+                            compose.CandidateError,
+                            "private output was retained.*(?:directory identity changed|parent path changed)"):
+                        compose.prepare_output(bundle, output)
+
+                self.assertTrue(switched)
+                self.assertEqual((output / "sentinel").read_bytes(), replacement_marker)
+                after_directory = output.stat()
+                after_sentinel = (output / "sentinel").stat()
+                self.assertEqual((after_directory.st_dev, after_directory.st_ino),
+                                 (replacement_directory.st_dev, replacement_directory.st_ino))
+                self.assertEqual((after_sentinel.st_dev, after_sentinel.st_ino),
+                                 (sentinel.st_dev, sentinel.st_ino))
+                self.assertEqual({path.name for path in output.iterdir()}, {"sentinel"})
+                original_output = moved_parent / "candidate" if replace_parent else moved_output
+                self.assertTrue(original_output.is_dir())
+                self.assertEqual(len(list(original_output.iterdir())), 1)
+                self.assertTrue(next(original_output.iterdir()).name.startswith(
+                    "install-forgejo-bootstrap-"))
+
+    def test_preexisting_output_directory_is_refused_without_touching_contents(self):
+        source, package = synthetic_inputs()
+        bundle = compose.compose_candidate(source, package)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "candidate"
+            output.mkdir()
+            marker = output / "keep"
+            marker.write_bytes(b"existing candidate output")
+            output_before = output.stat()
+            marker_before = marker.stat()
+            with self.assertRaisesRegex(compose.CandidateError, "must be new"):
+                compose.prepare_output(bundle, output)
+            self.assertEqual(marker.read_bytes(), b"existing candidate output")
+            self.assertEqual((output.stat().st_dev, output.stat().st_ino),
+                             (output_before.st_dev, output_before.st_ino))
+            self.assertEqual((marker.stat().st_dev, marker.stat().st_ino),
+                             (marker_before.st_dev, marker_before.st_ino))
+
+    def test_output_symlink_is_refused_without_following_or_modifying_target(self):
+        source, package = synthetic_inputs()
+        bundle = compose.compose_candidate(source, package)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target"
+            target.mkdir()
+            marker = target / "keep"
+            marker.write_bytes(b"symlink target stays untouched")
+            target_before = target.stat()
+            marker_before = marker.stat()
+            output = root / "candidate"
+            output.symlink_to(target, target_is_directory=True)
+            with self.assertRaisesRegex(compose.CandidateError, "must be new"):
+                compose.prepare_output(bundle, output)
+            self.assertTrue(output.is_symlink())
+            self.assertEqual(marker.read_bytes(), b"symlink target stays untouched")
+            self.assertEqual((target.stat().st_dev, target.stat().st_ino),
+                             (target_before.st_dev, target_before.st_ino))
+            self.assertEqual((marker.stat().st_dev, marker.stat().st_ino),
+                             (marker_before.st_dev, marker_before.st_ino))
+
+    def test_output_parent_must_be_controlled_or_sticky_protected(self):
+        source, package = synthetic_inputs()
+        bundle = compose.compose_candidate(source, package)
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory) / "shared"
+            parent.mkdir()
+            parent.chmod(0o777)
+            output = parent / "candidate"
+            with self.assertRaisesRegex(compose.CandidateError, "writable by an untrusted user"):
+                compose.prepare_output(bundle, output)
+            self.assertFalse(output.exists())
+
+    def test_replacement_after_receipt_is_detected_before_success_return(self):
+        real_listdir = compose.os.listdir
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            package_dir = parent / "package"
+            package_dir.mkdir()
+            source, package = synthetic_inputs()
+            archive = package_dir / package.archive.name
+            archive_bytes = b"synthetic package archive\n"
+            archive.write_bytes(archive_bytes)
+            archive_sha = hashlib.sha256(archive_bytes).hexdigest()
+            manifest = dict(package.manifest, sha256=archive_sha, size_bytes=len(archive_bytes))
+            manifest_bytes = json.dumps(manifest, separators=(",", ":")).encode()
+            manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
+            tag = "checkpoint-20261011-" + manifest["source_sha"][:10] + "-linux-x64"
+            installer = compose.pin_linux_installer(package.installer_source_template, tag, manifest_sha)
+            checksum = package_dir / (archive.name + ".sha256")
+            checksum.write_text(f"{archive_sha}  {archive.name}\n")
+            package = replace(package, directory=package_dir, archive=archive,
+                              archive_sha256=archive_sha, archive_bytes=len(archive_bytes),
+                              manifest=manifest, manifest_bytes=manifest_bytes,
+                              manifest_sha256=manifest_sha, tag=tag, installer=installer)
+            bundle = compose.compose_candidate(source, package)
+            output_parent = parent / "assembly-parent"
+            output_parent.mkdir()
+            output = output_parent / "candidate"
+            moved_output = output_parent / "original-candidate"
+            marker_bytes = b"preserve late replacement"
+            calls = 0
+
+            def replace_on_final_listing(path):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    output.rename(moved_output)
+                    output.mkdir(mode=0o700)
+                    (output / "sentinel").write_bytes(marker_bytes)
+                return real_listdir(path)
+
+            with mock.patch.object(compose.os, "listdir", side_effect=replace_on_final_listing):
+                with self.assertRaisesRegex(
+                        compose.CandidateError,
+                        "private output was retained.*directory identity changed"):
+                    compose.prepare_output(bundle, output)
+
+            self.assertEqual(calls, 2)
+            self.assertEqual((output / "sentinel").read_bytes(), marker_bytes)
+            self.assertEqual({path.name for path in output.iterdir()}, {"sentinel"})
+            self.assertTrue((moved_output / "candidate-assembly.json").is_file())
+            self.assertGreater(len(list(moved_output.iterdir())), 1)
 
 
 if __name__ == "__main__":

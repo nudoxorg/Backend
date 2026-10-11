@@ -13,10 +13,10 @@ use super::{
     LocalAnswer, QueryCoordinator, QueryError, QueryResult, SemanticAcceleration, SemanticDocument,
 };
 use backend_compile::{
-    EmbeddingArtifact, EmbeddingBatchProtocol, EmbeddingExecutable, EmbeddingExecutableError,
-    EmbeddingInputIdentity, EmbeddingInvocation, EmbeddingNormalization, EmbeddingPurpose,
-    EmbeddingRuntimeSpecV1, MAX_EMBEDDING_BATCH_ITEMS, ProcessEnvironment, ProcessLimits,
-    ToolchainArtifact,
+    EmbeddingArtifact, EmbeddingBatchProtocol, EmbeddingCoordinateValues, EmbeddingExecutable,
+    EmbeddingExecutableError, EmbeddingInputIdentity, EmbeddingInvocation, EmbeddingNormalization,
+    EmbeddingPurpose, EmbeddingRuntimeSpecV1, MAX_EMBEDDING_BATCH_ITEMS, ProcessEnvironment,
+    ProcessLimits, ToolchainArtifact,
 };
 use backend_engine::RowId;
 use backend_extension_qdrant as qdrant;
@@ -402,7 +402,7 @@ pub struct ConfiguredQdrant {
     projection_scope: [u8; 32],
     producer: Option<EmbeddingProducer>,
     producer_health: ProducerHealth,
-    document_embeddings: BTreeMap<DocumentEmbeddingId, Arc<[f32]>>,
+    document_embeddings: BTreeMap<DocumentEmbeddingId, EmbeddingCoordinateValues>,
     embedding_cache: Option<EmbeddingCacheFile>,
     projection_state: Option<ProjectionState>,
     projection_uncertain: bool,
@@ -733,10 +733,30 @@ impl ConfiguredQdrant {
             .collect::<BTreeMap<_, _>>();
         if let Some(cache) = self.embedding_cache.as_mut() {
             for (_, identity) in &planned {
-                if !self.document_embeddings.contains_key(identity)
-                    && let Some(coordinates) = cache.load(identity.0)
-                {
-                    self.document_embeddings.insert(*identity, coordinates);
+                if !self.document_embeddings.contains_key(identity) {
+                    let memory = producer
+                        .batch_runtime
+                        .as_ref()
+                        .map(|runtime| {
+                            runtime
+                                .memory_budget()
+                                .reserve(u64::from(self.recipe.dimensions.get()) * 4 + 256)
+                                .map_err(|cause| {
+                                    RemoteConfigError::ProducerRuntime(
+                                        EmbeddingExecutableError::Memory(cause),
+                                    )
+                                })
+                        })
+                        .transpose()?;
+                    if let Some(coordinates) = cache.load(identity.0) {
+                        let values = match memory {
+                            Some(reservation) => {
+                                EmbeddingCoordinateValues::retain(coordinates, reservation)
+                            }
+                            None => coordinates.into(),
+                        };
+                        self.document_embeddings.insert(*identity, values);
+                    }
                 }
             }
         }
@@ -828,19 +848,16 @@ fn vector_facts(
     vectors: &[qdrant::DocumentVector],
     envelope: AdmittedProjectionEnvelope,
 ) -> Result<(qdrant::Binding, qdrant::VectorFacts), RemoteConfigError> {
-    let entries = vectors
+    let mut entries = vectors
         .iter()
         .map(|vector| (vector.point().id().0, vector.point().to_payload()))
         .collect::<Vec<_>>();
+    entries.sort_unstable_by_key(|(id, _)| *id);
     let relation =
-        RelationState::<qdrant::CandidateRelation>::from_entries(entries.clone(), coverage)
+        RelationState::<qdrant::CandidateRelation>::from_sorted_entries(entries, coverage)
             .map_err(|_| RemoteConfigError::InvalidRelation)?;
     let binding = coordinator.semantic_binding(relation.root(), recipe.version());
-    let candidates = entries
-        .into_iter()
-        .map(|(id, payload)| (qdrant::CandidateId(id), payload))
-        .collect();
-    let state = qdrant::CandidateState::new(binding, coverage, candidates, envelope.0)
+    let state = qdrant::CandidateState::from_relation(binding, relation, envelope.0)
         .map_err(RemoteConfigError::Extension)?;
     let facts =
         qdrant::VectorFacts::from_recipe(state, recipe).map_err(RemoteConfigError::Extension)?;
@@ -877,7 +894,7 @@ fn activate_projection(
             let id = coordinator
                 .semantic_candidate(document.row)
                 .ok_or(RemoteConfigError::StaleRow)?;
-            qdrant::DocumentVector::from_shared(recipe, id, document.coordinates)
+            qdrant::DocumentVector::from_owned_values(recipe, id, document.coordinates)
                 .map_err(RemoteConfigError::Extension)
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -1403,7 +1420,7 @@ impl EmbeddingProducer {
         &self,
         treatment: EmbeddingTreatment,
         texts: &[&str],
-    ) -> Result<Vec<Arc<[f32]>>, RemoteConfigError> {
+    ) -> Result<Vec<EmbeddingCoordinateValues>, RemoteConfigError> {
         if texts
             .iter()
             .any(|text| text.is_empty() || text.len() > MAX_EMBEDDING_TEXT_BYTES)
@@ -1428,7 +1445,10 @@ impl EmbeddingProducer {
         } else {
             texts
                 .iter()
-                .map(|text| self.embed_json(treatment, text).map(Arc::from))
+                .map(|text| {
+                    self.embed_json(treatment, text)
+                        .map(|values| EmbeddingCoordinateValues::from(Arc::<[f32]>::from(values)))
+                })
                 .collect::<Result<Vec<_>, _>>()?
         };
         self.verify_artifacts()?;
@@ -1669,7 +1689,7 @@ pub struct QdrantDocument {
     /// Row selected from the coordinator's exact view.
     pub row: RowId,
     /// Finite coordinates produced under the configured document treatment.
-    pub coordinates: Arc<[f32]>,
+    pub coordinates: EmbeddingCoordinateValues,
     /// Whether these coordinates may replace a vector already stored for the row.
     pub write: qdrant::CoordinateWrite,
 }
@@ -1940,10 +1960,10 @@ mod tests {
                 let candidate = coordinator
                     .semantic_candidate(document.row)
                     .expect("selected candidate");
-                qdrant::DocumentVector::from_shared(
+                qdrant::DocumentVector::from_owned_values(
                     recipe,
                     candidate,
-                    Arc::clone(&document.coordinates),
+                    document.coordinates.clone(),
                 )
                 .expect("document vector")
             })
@@ -2140,7 +2160,7 @@ printf '{{"abi":1,"dimensions":2,"values":[1.0,0.0]}}'
             fs::read_to_string(&calls).expect("calls").lines().count(),
             1
         );
-        assert!(Arc::ptr_eq(&cold[0].coordinates, &cold[1].coordinates));
+        assert!(cold[0].coordinates.shares_storage(&cold[1].coordinates));
         assert!(
             cold.iter()
                 .all(|document| document.write == qdrant::CoordinateWrite::Replace)
@@ -2153,7 +2173,7 @@ printf '{{"abi":1,"dimensions":2,"values":[1.0,0.0]}}'
             fs::read_to_string(&calls).expect("calls").lines().count(),
             1
         );
-        assert!(Arc::ptr_eq(&cold[0].coordinates, &warm[0].coordinates));
+        assert!(cold[0].coordinates.shares_storage(&warm[0].coordinates));
         assert!(
             warm.iter()
                 .all(|document| document.write == qdrant::CoordinateWrite::Replace)
@@ -2334,7 +2354,12 @@ for identity in items:
             fs::read_to_string(&calls).expect("calls").lines().count(),
             2
         );
-        assert!(Arc::ptr_eq(&cold[0].coordinates, &cold[1].coordinates));
+        assert!(cold[0].coordinates.shares_storage(&cold[1].coordinates));
+        assert_eq!(cold[0].coordinates.as_ref(), cold[2].coordinates.as_ref());
+        assert!(
+            !cold[0].coordinates.shares_storage(&cold[2].coordinates),
+            "equal producer values for different inputs are distinct allocations"
+        );
         assert!(
             cold.iter()
                 .all(|document| document.write == qdrant::CoordinateWrite::Replace)
@@ -2654,7 +2679,7 @@ for identity in items:
             .iter()
             .map(|document| QdrantDocument {
                 row: document.row,
-                coordinates: Arc::from([1.0, 0.0]),
+                coordinates: Arc::<[f32]>::from([1.0, 0.0]).into(),
                 write: qdrant::CoordinateWrite::Hold,
             })
             .collect::<Vec<_>>();
@@ -2989,7 +3014,7 @@ for identity in items:
         let mut next_documents = documents.clone();
         next_documents.push(QdrantDocument {
             row: extra_id,
-            coordinates: Arc::from([0.0, 1.0]),
+            coordinates: Arc::<[f32]>::from([0.0, 1.0]).into(),
             write: qdrant::CoordinateWrite::Hold,
         });
         let second = configured
@@ -3114,12 +3139,12 @@ for identity in items:
         let vectors = documents
             .iter()
             .map(|document| {
-                qdrant::DocumentVector::from_shared(
+                qdrant::DocumentVector::from_owned_values(
                     recipe,
                     coordinator
                         .semantic_candidate(document.row)
                         .expect("candidate"),
-                    Arc::clone(&document.coordinates),
+                    document.coordinates.clone(),
                 )
                 .expect("vector")
             })
@@ -3143,10 +3168,10 @@ for identity in items:
         )
         .expect("different nonzero candidate");
         assert_ne!(candidate, replacement_candidate);
-        let replacement = qdrant::DocumentVector::from_shared(
+        let replacement = qdrant::DocumentVector::from_owned_values(
             recipe,
             replacement_candidate,
-            Arc::clone(&documents[0].coordinates),
+            documents[0].coordinates.clone(),
         )
         .expect("same coordinates, distinct candidate");
         let (endpoint, server) = serve_resident(4);
@@ -3346,7 +3371,7 @@ for identity in items:
             .iter()
             .map(|document| QdrantDocument {
                 row: document.row,
-                coordinates: Arc::from([1.0, 0.0]),
+                coordinates: Arc::<[f32]>::from([1.0, 0.0]).into(),
                 write: qdrant::CoordinateWrite::Hold,
             })
             .collect::<Vec<_>>();

@@ -2131,7 +2131,7 @@ pub(crate) fn compose_owner(
             .map_err(|error| ProcessError::Profile(format!("open discovery owner: {error}")))?,
         )
     };
-    let commands = commands::CommandAdapter::new(
+    let mut commands = commands::CommandAdapter::new(
         sql_projection,
         registry,
         forge,
@@ -2149,6 +2149,7 @@ pub(crate) fn compose_owner(
         pending_stored_acks,
     )
     .map_err(|error| ProcessError::Profile(format!("start command read lane: {error}")))?;
+    commands.warm_queries(&daemon);
     let commands = Arc::new(Mutex::new(commands));
     let command_commands = Arc::clone(&commands);
     let command = move |daemon: &mut crate::Locald<

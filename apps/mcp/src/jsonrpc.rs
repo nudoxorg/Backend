@@ -19,7 +19,7 @@
 //!   rendered in the shared three-line grammar with its affordance as the exact
 //!   next tool call an agent can paste back.
 
-use backend_client::{ClientError, Session};
+use backend_client::{ClientError, RequestCancellationReason, RequestContext, Session};
 use backend_library::protocol::mcp::{MCP_PROTOCOL_VERSION, negotiate_version};
 use backend_library::{
     AdmittedGraphQueryInput, CompileExecutionIntent, GraphQueryPage, GraphQueryRow, GraphValue,
@@ -47,6 +47,7 @@ mod cursor_authority;
 pub(super) use codec::{ResponseTransport, encode_response, finalize_response};
 pub(super) use cursor_authority::CursorAuthority;
 mod reconnect;
+pub(crate) mod requests;
 mod resources;
 mod tools;
 use codec::{
@@ -69,6 +70,10 @@ const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// It is the shared driver's [`Engine`] plus the one capability that is not a
 /// registry row: the typed Trustfall lane behind `backend.query`.
 pub(super) trait Product: Engine {
+    fn set_request_context(&mut self, context: Option<RequestContext>) -> Result<(), ClientError> {
+        context.as_ref().map_or(Ok(()), RequestContext::check)
+    }
+
     /// Encodes an owner-issued continuation as a self-describing token.
     fn encode_continuation(
         &mut self,
@@ -178,6 +183,10 @@ impl Engine for SessionProduct {
 }
 
 impl Product for SessionProduct {
+    fn set_request_context(&mut self, context: Option<RequestContext>) -> Result<(), ClientError> {
+        self.0.set_request_context(context)
+    }
+
     fn encode_continuation(
         &mut self,
         continuation: PageContinuation,
@@ -226,31 +235,59 @@ pub(super) struct SessionEndpoint {
     /// Bounded continuation state retained if the daemon is still between
     /// leases and the replacement dial has not succeeded yet.
     pending_continuation_state: Option<backend_client::SessionContinuationState>,
+    request_context: Option<RequestContext>,
 }
 
 impl reconnect::Endpoint for SessionEndpoint {
     type Product = SessionProduct;
 
+    fn set_request_context(&mut self, context: Option<RequestContext>) {
+        self.request_context = context;
+    }
+
     fn connect(&mut self, previous: Option<Self::Product>) -> Result<Self::Product, ClientError> {
-        let state = previous
-            .map(SessionProduct::into_session)
-            .map(|mut session| session.take_continuation_state())
-            .or_else(|| self.pending_continuation_state.take());
-        let endpoint = match backend_runtime::ensure_locald(&self.paths) {
-            Ok(endpoint) => endpoint,
-            Err(error) => {
-                self.pending_continuation_state = state;
-                return Err(map_runtime_connect_error(error));
-            }
+        // Park the retired authority before any cancellation, deadline, or
+        // startup check can return. Only a fully admitted replacement takes it.
+        if let Some(previous) = previous {
+            self.retire(previous);
+        }
+        if let Some(context) = &self.request_context {
+            context.check()?;
+        }
+        let read_budget = self
+            .request_context
+            .as_ref()
+            .map(RequestContext::remaining_read_budget)
+            .transpose()?
+            .flatten();
+        let endpoint =
+            match backend_runtime::ensure_locald_cancellable(&self.paths, read_budget, || {
+                self.request_context
+                    .as_ref()
+                    .is_none_or(|context| context.check().is_ok())
+            }) {
+                Ok(endpoint) => endpoint,
+                Err(error) => {
+                    if let Some(context) = &self.request_context {
+                        context.check()?;
+                    }
+                    return Err(map_runtime_connect_error(error));
+                }
+            };
+        let connected = match &self.request_context {
+            Some(context) => Session::connect_with_context(endpoint, context.clone()),
+            None => Session::connect(endpoint),
         };
-        let mut session = match Session::connect(endpoint) {
+        let mut session = match connected {
             Ok(session) => session,
             Err(error) => {
-                self.pending_continuation_state = state;
+                if let Some(context) = &self.request_context {
+                    context.check()?;
+                }
                 return Err(error);
             }
         };
-        if let Some(state) = state {
+        if let Some(state) = self.pending_continuation_state.take() {
             session.restore_continuation_state(state);
         }
         Ok(SessionProduct::new(session, self.paths.clone()))
@@ -270,6 +307,7 @@ pub(super) fn disconnected_reconnecting_product(
     reconnect::Reconnecting::disconnected(SessionEndpoint {
         paths: paths.clone(),
         pending_continuation_state: None,
+        request_context: None,
     })
 }
 
@@ -290,7 +328,7 @@ pub(super) fn serve_stdio(
     paths: &backend_runtime::WorkspacePaths,
     project: String,
     cursor_secret: CursorAuthority,
-    reader: &mut impl BufRead,
+    reader: impl BufRead + Send + 'static,
     writer: &mut impl Write,
 ) -> io::Result<()> {
     let product = disconnected_reconnecting_product(paths);
@@ -298,15 +336,93 @@ pub(super) fn serve_stdio(
         .ok()
         .map(backend_runtime::normalize_surface_path)
         .map(|path| path.to_string_lossy().into_owned());
-    let mut server =
+    let server =
         Server::with_invocation_context(product, project, working_directory, cursor_secret);
-    loop {
-        let Some(line) = read_line(reader)? else {
-            return Ok(());
+    serve_stdio_server(server, reader, writer)
+}
+
+fn serve_stdio_server<P: Product>(
+    mut server: Server<P>,
+    mut reader: impl BufRead + Send + 'static,
+    writer: &mut impl Write,
+) -> io::Result<()> {
+    let registry = requests::RequestRegistry::default();
+    let _shutdown = StdioShutdown(registry.clone());
+    let intake_registry = registry.clone();
+    // Full intake terminates the session instead of blocking cancellation
+    // behind queued ordinary requests. There is one reader, never one task/line.
+    let (sender, receiver) = std::sync::mpsc::sync_channel(requests::MAX_PENDING_REQUESTS);
+    let reader_thread = std::thread::Builder::new()
+        .name("mcp-stdin".to_owned())
+        .spawn(move || {
+            loop {
+                let line = match read_line(&mut reader) {
+                    Ok(Some(line)) => line,
+                    // EOF is a read half-close: finite piped requests still
+                    // own their responses. Drain them before retiring the actor.
+                    Ok(None) => return Ok(()),
+                    Err(error) => {
+                        intake_registry.close(RequestCancellationReason::Shutdown);
+                        return Err(error);
+                    }
+                };
+                let item = match requests::decode(&line) {
+                    Ok(value) if intake_registry.cancel_notification(&value) => continue,
+                    Ok(value) => {
+                        let lease = match intake_registry.admit(&value) {
+                            Ok(lease) => lease,
+                            Err(reply) => {
+                                if sender.try_send(StdioInput::Reply(reply)).is_err() {
+                                    intake_registry.close(RequestCancellationReason::Shutdown);
+                                    return Err(io::Error::other("MCP intake capacity reached"));
+                                }
+                                continue;
+                            }
+                        };
+                        StdioInput::Request(value, lease)
+                    }
+                    Err(reply) => StdioInput::Reply(reply),
+                };
+                if sender.try_send(item).is_err() {
+                    intake_registry.close(RequestCancellationReason::Shutdown);
+                    return Err(io::Error::other("MCP intake capacity reached"));
+                }
+            }
+        })?;
+    for item in receiver {
+        let reply = match item {
+            StdioInput::Request(value, lease) => {
+                let context = lease.as_ref().map(|lease| lease.context.clone());
+                let reply = server.handle_value(value, context);
+                drop(lease);
+                reply
+            }
+            StdioInput::Reply(reply) => Some(reply),
         };
-        if let Some(reply) = server.handle(&line) {
-            write_message(writer, &reply)?;
+        if let Some(reply) = reply
+            && let Err(error) = write_message(writer, &reply)
+        {
+            registry.close(RequestCancellationReason::Shutdown);
+            // A reader blocked on a still-open stdin owns no borrowed data.
+            // Process exit closes it; do not block shutdown joining that read.
+            return Err(error);
         }
+    }
+    reader_thread
+        .join()
+        .map_err(|_| io::Error::other("MCP stdin reader failed"))?
+}
+
+enum StdioInput {
+    Request(Value, Option<requests::RequestLease>),
+    Reply(Value),
+}
+
+struct StdioShutdown(requests::RequestRegistry);
+
+impl Drop for StdioShutdown {
+    fn drop(&mut self) {
+        self.0.close(RequestCancellationReason::Shutdown);
     }
 }
 
@@ -361,17 +477,46 @@ impl<P: Product> Server<P> {
     /// Dispatches the semantic reply; the selected transport owns encoding
     /// and admission of the complete envelope immediately before emission.
     pub(super) fn handle(&mut self, input: &[u8]) -> Option<Value> {
-        let value: Value = match serde_json::from_slice(input) {
-            Ok(value) => value,
-            Err(error) => {
-                return Some(error_reply(
-                    Value::Null,
-                    -32700,
-                    "Parse error",
-                    Some(json!({ "detail": error.to_string() })),
-                ));
+        match requests::decode(input) {
+            Ok(value) => self.handle_value(value, None),
+            Err(reply) => Some(reply),
+        }
+    }
+
+    pub(super) fn handle_value(
+        &mut self,
+        value: Value,
+        context: Option<RequestContext>,
+    ) -> Option<Value> {
+        let id = value.get("id").cloned().unwrap_or(Value::Null);
+        if let Some(context) = &context
+            && let Some(reply) = requests::cancelled_reply(id.clone(), context)
+        {
+            return Some(reply);
+        }
+        if let Err(error) = self.product.set_request_context(context.clone()) {
+            let _ = self.product.set_request_context(None);
+            if let Some(context) = &context
+                && let Some(reply) = requests::cancelled_reply(id.clone(), context)
+            {
+                return Some(reply);
             }
-        };
+            return Some(error_reply(
+                id,
+                -32000,
+                "Request unavailable",
+                Some(json!({"detail": error.to_string()})),
+            ));
+        }
+        let reply = self.handle_inner(value);
+        let _ = self.product.set_request_context(None);
+        context
+            .as_ref()
+            .and_then(|context| requests::cancelled_reply(id, context))
+            .or(reply)
+    }
+
+    fn handle_inner(&mut self, value: Value) -> Option<Value> {
         if !json_depth_within(&value) {
             return Some(error_reply(
                 Value::Null,

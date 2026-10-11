@@ -71,7 +71,7 @@ fn json_rpc_main(paths: &backend_runtime::WorkspacePaths) -> ExitCode {
     let result = (|| {
         let stdin = io::stdin();
         let stdout = io::stdout();
-        serve_json_rpc_stdio(paths, &mut BufReader::new(stdin.lock()), &mut stdout.lock())
+        serve_json_rpc_stdio(paths, BufReader::new(stdin), &mut stdout.lock())
     })();
     #[cfg(not(any(unix, windows)))]
     let result: Result<(), String> =
@@ -88,7 +88,7 @@ fn json_rpc_main(paths: &backend_runtime::WorkspacePaths) -> ExitCode {
 #[cfg(any(unix, windows))]
 fn serve_json_rpc_stdio(
     paths: &backend_runtime::WorkspacePaths,
-    reader: &mut impl io::BufRead,
+    reader: impl io::BufRead + Send + 'static,
     writer: &mut impl Write,
 ) -> Result<(), String> {
     let project = backend_runtime::normalize_surface_path(paths.project())
@@ -364,9 +364,9 @@ mod tests {
                 )
             })
             .collect::<String>();
-        let mut input = io::Cursor::new(input.into_bytes());
+        let input = io::Cursor::new(input.into_bytes());
         let mut output = Vec::new();
-        serve_json_rpc_stdio(paths, &mut input, &mut output)
+        serve_json_rpc_stdio(paths, input, &mut output)
             .expect("stdio processes complete JSON-RPC requests");
         String::from_utf8(output)
             .expect("JSON-RPC output is UTF-8")
@@ -412,6 +412,10 @@ mod tests {
         }
         restrict_to_owner(&fixture.data);
         plant_authority_secret(&fixture.data);
+        let paths = fixture.paths();
+        let expected =
+            backend_platform::durable::validate_private_directory_candidate(&fixture.data)
+                .expect_err("existing explicit private parent is inadmissible");
 
         let [initialize, initialized] = handshake("outage-fixture");
         let status = json!({
@@ -420,12 +424,16 @@ mod tests {
             "method": "tools/call",
             "params": { "name": "backend.status", "arguments": {} }
         });
-        let replies = drive(&fixture.paths(), &[initialize, initialized, status]);
+        let replies = drive(&paths, &[initialize, initialized, status]);
 
         assert_eq!(replies.len(), 2, "notification has no JSON-RPC reply");
         assert_eq!(replies[0]["id"], 1);
         assert!(replies[0]["result"]["serverInfo"].is_object());
         assert_eq!(replies[1]["id"], 2);
+        assert!(
+            replies[1].get("error").is_none(),
+            "startup refusal is a typed tool result"
+        );
         assert_eq!(replies[1]["result"]["isError"], true);
         assert_eq!(replies[1]["result"]["structuredContent"]["answer"], "fault");
         // The two platforms name the same refusal in their own terms.
@@ -440,6 +448,40 @@ mod tests {
             replies[1]
         );
         let fault = &replies[1]["result"]["structuredContent"];
+        assert_eq!(fault["slug"], "endpoint");
+        assert_eq!(fault["cause"], "unreachable");
+        assert_eq!(
+            fault["detail"],
+            format!(
+                "the local daemon could not be started or reached: local runtime I/O failed: {expected}"
+            )
+        );
+        assert_eq!(
+            fs::read(fixture.data.join("authority.secret")).expect("unchanged planted authority"),
+            [0x41; 32]
+        );
+        assert!(
+            !paths.endpoint().exists(),
+            "private refusal must not start an owner"
+        );
+        assert_eq!(
+            fs::read_dir(&fixture.data)
+                .expect("no durable setup side effects")
+                .count(),
+            1
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                fs::metadata(&fixture.root)
+                    .expect("unrepaired explicit parent")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o755
+            );
+        }
         assert!(
             fault.get("shell").is_none(),
             "a setup refusal cannot be repaired by blind retry: {}",

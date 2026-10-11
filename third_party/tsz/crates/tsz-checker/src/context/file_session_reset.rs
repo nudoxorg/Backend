@@ -741,6 +741,38 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_import_policy_survives_delegation_and_file_switch() {
+        let parent_arena = NodeArena::default();
+        let child_arena = NodeArena::default();
+        let next_arena = NodeArena::default();
+        let parent_binder = BinderState::new();
+        let child_binder = BinderState::new();
+        let next_binder = BinderState::new();
+        let types = TypeInterner::new();
+        for policy in [false, true] {
+            let mut parent = fresh_ctx(&parent_arena, &parent_binder, &types);
+            assert!(
+                !parent.report_unresolved_imports,
+                "standalone default stays false"
+            );
+            parent.report_unresolved_imports = policy;
+
+            let mut child = fresh_ctx(&child_arena, &child_binder, &types);
+            child.report_unresolved_imports = !policy;
+            child.copy_cross_file_state_from(&parent);
+            assert_eq!(child.report_unresolved_imports, policy);
+
+            child.reset_for_next_file();
+            assert_eq!(child.report_unresolved_imports, policy);
+            child.switch_to_file(&next_arena, &next_binder, "next.ts".to_owned(), 1);
+            assert_eq!(child.file_name, "next.ts");
+            assert_eq!(child.current_file_idx, 1);
+            assert_eq!(child.report_unresolved_imports, policy);
+            assert_eq!(parent.report_unresolved_imports, policy);
+        }
+    }
+
+    #[test]
     fn reset_clears_file_local_lookup_caches_and_flags() {
         let arena = NodeArena::default();
         let binder = BinderState::new();

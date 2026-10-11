@@ -29,7 +29,11 @@ fn escape_from_settings_returns_to_the_exact_reader_target(cx: &mut TestAppConte
     assert_eq!(rig.route(), route);
     let (zone, after) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
     assert_eq!(zone, Zone::Reader);
-    assert_eq!(after, Some(before), "Escape restores the exact reader target");
+    assert_eq!(after, Some(before.clone()), "Escape restores the exact reader target");
+    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)
+        .filter(|handle| window.is_focus_handle_mounted(handle))
+        .and_then(|handle| targets.target_for_native_handle(&handle))), Some(before),
+        "Escape restores the exact currently mounted native receiver after its child paint");
 }
 
 #[gpui::test]

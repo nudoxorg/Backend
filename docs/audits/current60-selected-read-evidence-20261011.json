@@ -1,0 +1,419 @@
+{
+  "schema": "nudox.root-selected-read-evidence.v1",
+  "source_commit": "6e9cc85defd48b6f7793d641630527670f773365",
+  "packet_sha256": "4e616bd26f8582c0391dc0ae140951c9dec11f41e7a189b78064ae9a1cecbb1e",
+  "outer_receipt_sha256": "d6c7463be26395c814058459c923a8e3ddfd8c6857915eea937ce6fd0b13df35",
+  "verification": "Root independently rehashed all 47 raw replies and their complete packet, checked every response ID and byte/token ceiling, exact publication identity, five real caller graph pages against the full plain-row union, and search/resolve cursor chains. Measured token counts and source-byte classification are retained observer findings; Root has not independently re-tokenized or fetched the physical source in this audit.",
+  "cold_first_search_seconds": 4.713378214044496,
+  "cold_first_search_readiness": "ready",
+  "responses": [
+    {
+      "label": "initialize",
+      "sha256": "371e14cad75a81aab11f67bd74b6dd2e869165323429c439f19ee974592f6e4d",
+      "bytes": 2166,
+      "tokens": 486,
+      "seconds": 0.028427449986338615,
+      "expected": "success"
+    },
+    {
+      "label": "published-before",
+      "sha256": "2ac37b2c1715cbc921dc631c3cd2e3f0179831457ad81721f639ce18b9421ce4",
+      "bytes": 3255,
+      "tokens": 1368,
+      "seconds": 3.250716036884114,
+      "expected": "success"
+    },
+    {
+      "label": "first-current60-search",
+      "sha256": "2eb6239d9f854681c49edc2fc16d3ccf11c2b19d8ac260aab4500783c290b243",
+      "bytes": 8417,
+      "tokens": 4528,
+      "seconds": 4.713378214044496,
+      "expected": "success"
+    },
+    {
+      "label": "actual-current60-resolve",
+      "sha256": "88c2b9a0fbbb3587e0ae7ec3722419dc556d64390d6839555c7cde573f39e68c",
+      "bytes": 5305,
+      "tokens": 1746,
+      "seconds": 0.016479868907481432,
+      "expected": "success"
+    },
+    {
+      "label": "selected-mcp-document",
+      "sha256": "d3d05d6e8fad5f9c7f13fc8cd29855e40ff2c459804a32b2a2899b2f38f2de29",
+      "bytes": 12905,
+      "tokens": 3303,
+      "seconds": 0.18760491907596588,
+      "expected": "success"
+    },
+    {
+      "label": "selected-mcp-source",
+      "sha256": "c5c41985b16dfadbf4f37ccce3a8d03f4a41a589f2e50c6fbb45c2671c1f5abf",
+      "bytes": 11208,
+      "tokens": 2717,
+      "seconds": 0.013393950881436467,
+      "expected": "success"
+    },
+    {
+      "label": "selected-mcp-references",
+      "sha256": "a15e681b37179f2a225110b57efd916b79ca758e5ddd24fb6bdb0e2fb4c79ca4",
+      "bytes": 1388,
+      "tokens": 510,
+      "seconds": 0.11126862396486104,
+      "expected": "success"
+    },
+    {
+      "label": "selected-mcp-graph-plain",
+      "sha256": "4f8305df5fb177a2694ef003e44dcf5a238fc06e4cb331426a9028f0b9d016b6",
+      "bytes": 1880,
+      "tokens": 583,
+      "seconds": 0.05067207501269877,
+      "expected": "success"
+    },
+    {
+      "label": "selected-mcp-graph-page-0",
+      "sha256": "de73dc2716ef0f48d1d9fc46a51513b764de774d82e849e34878dc95a2c36cdb",
+      "bytes": 1881,
+      "tokens": 583,
+      "seconds": 0.0491731830406934,
+      "expected": "success"
+    },
+    {
+      "label": "actual-caller-document-0",
+      "sha256": "339c0409f83c5606047913d6bed4276cd0a4a4ed641fdcf466f6575731a17013",
+      "bytes": 4729,
+      "tokens": 1609,
+      "seconds": 0.13756620697677135,
+      "expected": "success"
+    },
+    {
+      "label": "actual-caller-source",
+      "sha256": "895cb564f76217018621b802d18ef17b583d5e7fc786c4485ee3a74b2552630e",
+      "bytes": 1920,
+      "tokens": 588,
+      "seconds": 0.009418379981070757,
+      "expected": "success"
+    },
+    {
+      "label": "selected-mcp-batch-read",
+      "sha256": "065b1b78ed6d1b7a9e3ca108f0713f11feeccd35e1952613a8e463be8d816071",
+      "bytes": 9803,
+      "tokens": 2369,
+      "seconds": 0.006413094000890851,
+      "expected": "success"
+    },
+    {
+      "label": "caller-graph-plain",
+      "sha256": "a811a44be4fedb7e7c21bee56dfd7ddf34d94dd0b81967e55a96da89ff08ea20",
+      "bytes": 4865,
+      "tokens": 1647,
+      "seconds": 0.051729199942201376,
+      "expected": "success"
+    },
+    {
+      "label": "caller-graph-page-0",
+      "sha256": "ee369f2702f21eb9b7b63c97a00aa1b759b9d804c5b2afa19ed8bc74cfcae789",
+      "bytes": 4345,
+      "tokens": 2347,
+      "seconds": 0.04861650778912008,
+      "expected": "success"
+    },
+    {
+      "label": "caller-graph-page-1",
+      "sha256": "ffe12510777d1342e680ae4684a661ae5c02a855a12d92d1f652ca77f7c261d9",
+      "bytes": 3965,
+      "tokens": 2162,
+      "seconds": 0.0502949480433017,
+      "expected": "success"
+    },
+    {
+      "label": "caller-graph-page-2",
+      "sha256": "2d3db3740c9839fa264945a33e1cf29910ed7c50b501804fcf437a5db6c7525c",
+      "bytes": 4007,
+      "tokens": 2212,
+      "seconds": 0.05020542489364743,
+      "expected": "success"
+    },
+    {
+      "label": "caller-graph-page-3",
+      "sha256": "e790500153937517c918dc8f1668985829000b7a99905db64433706052e61752",
+      "bytes": 3983,
+      "tokens": 2186,
+      "seconds": 0.05023506097495556,
+      "expected": "success"
+    },
+    {
+      "label": "caller-graph-page-4",
+      "sha256": "56c4b560f09c723a9f83948add48c9bdd142e39ce947a93b515413147b904729",
+      "bytes": 1873,
+      "tokens": 582,
+      "seconds": 0.05109751084819436,
+      "expected": "success"
+    },
+    {
+      "label": "tools-list",
+      "sha256": "d18f0114753eab102b01611d04e3e459a8da696487ebfe6cc0e31c26ee9c063a",
+      "bytes": 24216,
+      "tokens": 4996,
+      "seconds": 0.008438683114945889,
+      "expected": "success"
+    },
+    {
+      "label": "prompts-list",
+      "sha256": "5daebe2d1029070e92e242138218a9ca9385fe820257b0592306fb6341253c4b",
+      "bytes": 424,
+      "tokens": 100,
+      "seconds": 0.00021444400772452354,
+      "expected": "success"
+    },
+    {
+      "label": "prompt-default",
+      "sha256": "32878fcb16db4d4624fb1220df062d9bb5c4cfa559ad8ebbe7aceb981dc9ecad",
+      "bytes": 487,
+      "tokens": 112,
+      "seconds": 0.005472868913784623,
+      "expected": "success"
+    },
+    {
+      "label": "prompt-query",
+      "sha256": "93c5cf544d85979c5830a9543047ceb142585ec734becfdc83d557043c6a62f6",
+      "bytes": 480,
+      "tokens": 113,
+      "seconds": 0.004952833987772465,
+      "expected": "success"
+    },
+    {
+      "label": "unknown-prompt",
+      "sha256": "14805b547b3fbd4381ad6bc90cbfa396e7551f44f696405226c828965ce16fe6",
+      "bytes": 239,
+      "tokens": 69,
+      "seconds": 9.728898294270039e-05,
+      "expected": "refusal"
+    },
+    {
+      "label": "missing-prompt-name",
+      "sha256": "968f7de1c001bfbc0758fb0e55244d49bf92b19f5414e8d176c93f23bed66ddd",
+      "bytes": 288,
+      "tokens": 79,
+      "seconds": 7.510115392506123e-05,
+      "expected": "refusal"
+    },
+    {
+      "label": "resources-list",
+      "sha256": "8e697ba1ccb36fc7f2f2c04c3719578e869253e9b5ae23dec9305f853d5df101",
+      "bytes": 910,
+      "tokens": 208,
+      "seconds": 0.0002841642126441002,
+      "expected": "success"
+    },
+    {
+      "label": "resources-templates-list",
+      "sha256": "ab2e7160b761c5dbccdac92d64169a0a85b8fb3fc71666a3fc9591ce485dd4f3",
+      "bytes": 774,
+      "tokens": 168,
+      "seconds": 0.00022659706883132458,
+      "expected": "success"
+    },
+    {
+      "label": "resource-workspace",
+      "sha256": "43401d76cd7d8aeefe49aee1490d8c945d50bf7d33287af4c802c36a409eeac6",
+      "bytes": 853,
+      "tokens": 231,
+      "seconds": 0.18692762916907668,
+      "expected": "success"
+    },
+    {
+      "label": "resource-catalog",
+      "sha256": "b11e2483545b7ed8f0b451ff5ba9fb9c80fcbacd0c4b8e990d2a1a6c905e9558",
+      "bytes": 31809,
+      "tokens": 8199,
+      "seconds": 0.009146094089373946,
+      "expected": "success"
+    },
+    {
+      "label": "resource-query-schema",
+      "sha256": "e5d9c7b89bc49d38fdc8b1ae3b9372727fca0bf1a59be463f1827ba6d495f35a",
+      "bytes": 3925,
+      "tokens": 1011,
+      "seconds": 0.0009750179015100002,
+      "expected": "success"
+    },
+    {
+      "label": "resource-document",
+      "sha256": "5b6074e7d5006558f139f23c94f415af48e6a1bbe1c2af0b17f7f006ea8eb218",
+      "bytes": 6204,
+      "tokens": 1660,
+      "seconds": 0.14536270406097174,
+      "expected": "success"
+    },
+    {
+      "label": "resource-outline",
+      "sha256": "b4282d8ed720ca8c755ac4c2abc3beb6b07c6ec1b414feaa2cefc69ff77380ab",
+      "bytes": 5625,
+      "tokens": 2099,
+      "seconds": 0.05120258196257055,
+      "expected": "success"
+    },
+    {
+      "label": "backend-packages",
+      "sha256": "65caffb7999c49303c270eecddc092e7dad90bb7c82a51fbe95cfcd5bbc8e243",
+      "bytes": 778,
+      "tokens": 213,
+      "seconds": 0.008823881857097149,
+      "expected": "success"
+    },
+    {
+      "label": "backend-status",
+      "sha256": "416b079af10ecbe21e03b334c00ed5b854bdfac0410cecac372eb3d9a7bb11db",
+      "bytes": 1392,
+      "tokens": 408,
+      "seconds": 0.1861740960739553,
+      "expected": "success"
+    },
+    {
+      "label": "backend-outline",
+      "sha256": "0e9f8d22f573f86a72134fe430fe1663c74ddad4debf42ead71f0d663151eb9e",
+      "bytes": 28151,
+      "tokens": 10563,
+      "seconds": 0.049266200978308916,
+      "expected": "success"
+    },
+    {
+      "label": "backend-package",
+      "sha256": "41cade7f60576924f45b673126ac6d62bc449cdf3bfa3ec45ea0bfb4fb466bf4",
+      "bytes": 1090,
+      "tokens": 297,
+      "seconds": 1.218210421036929,
+      "expected": "capability"
+    },
+    {
+      "label": "backend-resolve",
+      "sha256": "4f37a3de7e9bd1c11d58ea4306d271327be50dc6b05893e4079707fb73fe2e2a",
+      "bytes": 5306,
+      "tokens": 1746,
+      "seconds": 0.012716911034658551,
+      "expected": "success"
+    },
+    {
+      "label": "backend-search",
+      "sha256": "03159399cd7a78c4b05446ad8a48dc42e4925af4bbf4177ec8d975d44518f992",
+      "bytes": 8418,
+      "tokens": 4529,
+      "seconds": 0.017607593908905983,
+      "expected": "success"
+    },
+    {
+      "label": "backend-index_search",
+      "sha256": "60981e8b59fd7bd7e77e549eea202e902c3121b3f70114265ffc86b56f53da7f",
+      "bytes": 4620,
+      "tokens": 2136,
+      "seconds": 2.4812270619440824,
+      "expected": "capability"
+    },
+    {
+      "label": "mcp-search-page-0",
+      "sha256": "41fc5f60d783bff9c1b802bad92c56ec8c3608969ab6f8e84e4416bbcf499875",
+      "bytes": 6347,
+      "tokens": 3654,
+      "seconds": 0.01570957386866212,
+      "expected": "success"
+    },
+    {
+      "label": "mcp-search-page-1",
+      "sha256": "b0a2ab7b150dd8714ac39597dc2935e89913c3f22bfd74d22353da94ca4084ba",
+      "bytes": 4077,
+      "tokens": 2120,
+      "seconds": 0.014993011020123959,
+      "expected": "success"
+    },
+    {
+      "label": "mcp-search-page-2",
+      "sha256": "ddeeca53707f7a3a45a1a595a67c8bdb86034239190223d93b794cf198e63e3b",
+      "bytes": 3932,
+      "tokens": 2063,
+      "seconds": 0.014809519983828068,
+      "expected": "success"
+    },
+    {
+      "label": "mcp-search-page-3",
+      "sha256": "023b59d8186307528e6ae8906b5a79614e5e85d76e3a5a944886c914c0c644cc",
+      "bytes": 1583,
+      "tokens": 491,
+      "seconds": 0.009597830008715391,
+      "expected": "success"
+    },
+    {
+      "label": "mcp-resolve-page-0",
+      "sha256": "1a60b932b542f1b0781783f73b019009dcf5c7a4828aa41002a760c09ef0fc9a",
+      "bytes": 7356,
+      "tokens": 3715,
+      "seconds": 0.01470468402840197,
+      "expected": "success"
+    },
+    {
+      "label": "mcp-resolve-page-1",
+      "sha256": "013ef50c1c1a130e70ce17638533f5daf5df0bc9694c405ed9f210c20322145e",
+      "bytes": 5570,
+      "tokens": 2802,
+      "seconds": 0.01474970206618309,
+      "expected": "success"
+    },
+    {
+      "label": "mcp-resolve-page-2",
+      "sha256": "83d036b87714d2d11ce35a097fe988bff1e108ad14f11cf7abb6e89667c29f1b",
+      "bytes": 2870,
+      "tokens": 968,
+      "seconds": 0.012655925005674362,
+      "expected": "success"
+    },
+    {
+      "label": "protocol-negative-backend.document",
+      "sha256": "05056013d4476c751f68dc7a11cf16622adbb8c6184b52779d0f6cae9bfa4b62",
+      "bytes": 499,
+      "tokens": 124,
+      "seconds": 0.00028943479992449284,
+      "expected": "refusal"
+    },
+    {
+      "label": "protocol-negative-backend.graph",
+      "sha256": "1f98665fcf25b6cfe8c5fd6c7538b7343e56ccea3382975a4c895c017e75f6a5",
+      "bytes": 441,
+      "tokens": 110,
+      "seconds": 0.00022221007384359837,
+      "expected": "refusal"
+    }
+  ],
+  "bytes": 246559,
+  "observer_measured_tokens": 86510,
+  "graph_pages": 5,
+  "plain_paged_graph_exact_union": true,
+  "original_failed_checks": [
+    "caller-source exact physical source/extent"
+  ],
+  "source_comparison_classification": {
+    "original_check_preserved_false": true,
+    "operand": "/work/sol61-cli-proof/current60-01/httpie::semantic::9c62582373bb8e008b4c4bf501a2f7ef506425ccf75a9e6f562a564d6865fcf0::setup_method",
+    "path": "tests/test_cli.py",
+    "line": 241,
+    "physical_file_sha256": "215e166399adf0429b7bc6731b429acbf7f217ecfdf91aed93233d9566052993",
+    "physical_first_line": "    def setup_method(self, method):",
+    "returned_first_line": "def setup_method(self, method):",
+    "omitted_prefix": "    ",
+    "remaining_line_exact": true,
+    "extent": "complete",
+    "exact_source_contract": "6e9 syntax.rs774 captures node_text(excerpt_node(definition.node), text); node_text1051 slices source.get(node.byte_range()). SourceExcerptExtent264 is declaration completeness, not whole physical-line completeness.",
+    "classification": "observer compared full physical first line against exact declaration-node slice; four indentation bytes are outside declaration node. Original packet remains red; independent exact declaration-slice validation passes. Public Source exposes line but no start column: user-visible source positioning limitation retained."
+  },
+  "semantic_inference": "unconfigured; genuine inference unproved",
+  "actual_outer_exit": 1,
+  "terminal_reason": "malformed backend.index request not sent after fresh v6 guard0 but overlayfleet17/16 admission refusal",
+  "unrun": [
+    "remaining15-tool malformed-input matrix",
+    "CLI selected reads/help/argument errors",
+    "cold issued-cursor replay",
+    "positive index/remove/active-cancel lifecycles"
+  ],
+  "all17_positive_lifecycle_pass": false,
+  "production_ready": false
+}

@@ -4,7 +4,7 @@ use crate::{
     Binding, CandidateId, CandidateState, Error, ModelVersion, Recipe, TokenizerVersion,
     TreatmentVersion,
 };
-use backend_version::CoverageWitness;
+use backend_version::{CoverageWitness, SharedCoordinates};
 use std::mem::size_of;
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -122,17 +122,18 @@ impl EmbeddingRecipe {
 #[derive(Clone, Debug)]
 pub struct VectorPoint {
     id: CandidateId,
-    values: Arc<[f32]>,
+    values: SharedCoordinates,
 }
 
 impl PartialEq for VectorPoint {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
-            && self.values.len() == other.values.len()
+            && self.values.as_ref().len() == other.values.as_ref().len()
             && self
                 .values
+                .as_ref()
                 .iter()
-                .zip(other.values.iter())
+                .zip(other.values.as_ref().iter())
                 .all(|(left, right)| left.to_bits() == right.to_bits())
     }
 }
@@ -157,7 +158,7 @@ impl VectorPoint {
         }
         Ok(Self {
             id,
-            values: Arc::from(values),
+            values: Arc::<[f32]>::from(values).into(),
         })
     }
 
@@ -179,7 +180,10 @@ impl VectorPoint {
         {
             return Err(Error::MalformedInput);
         }
-        Ok(Self { id, values })
+        Ok(Self {
+            id,
+            values: values.into(),
+        })
     }
 
     /// Returns the stable logical candidate identity.
@@ -191,13 +195,13 @@ impl VectorPoint {
     /// Returns immutable coordinates without another allocation.
     #[must_use]
     pub fn values(&self) -> &[f32] {
-        &self.values
+        self.values.as_ref()
     }
 
     /// Encodes coordinates into the canonical candidate payload grammar.
     #[must_use]
     pub fn to_payload(&self) -> Vec<u8> {
-        encode_values(&self.values)
+        encode_values(self.values.as_ref())
     }
 
     /// Decodes the canonical candidate payload grammar.
@@ -256,6 +260,38 @@ impl DocumentVector {
         })
     }
 
+    /// Admits shared coordinate storage while retaining its complete allocation owner.
+    /// Allocation owners carried by `values` survive every point/vector clone. Only the
+    /// concrete immutable storage is admitted; arbitrary accessors cannot change validated data.
+    ///
+    /// ```compile_fail
+    /// use backend_extension_qdrant::{CandidateId, DocumentVector, EmbeddingRecipe};
+    /// struct Unstable;
+    /// impl AsRef<[f32]> for Unstable {
+    ///     fn as_ref(&self) -> &[f32] { &[1.0, 0.0] }
+    /// }
+    /// fn admit(recipe: EmbeddingRecipe) {
+    ///     let _ = DocumentVector::from_owned_values(recipe, CandidateId(1), Unstable);
+    /// }
+    /// ```
+    ///
+    /// # Errors
+    /// Returns the same finite/dimension/normalization rejection as `from_shared`.
+    pub fn from_owned_values(
+        recipe: EmbeddingRecipe,
+        id: CandidateId,
+        values: SharedCoordinates,
+    ) -> Result<Self, Error> {
+        recipe.validate(values.as_ref())?;
+        if !id.is_valid() {
+            return Err(Error::MalformedInput);
+        }
+        Ok(Self {
+            recipe,
+            point: VectorPoint { id, values },
+        })
+    }
+
     /// Complete coordinate-production recipe.
     #[must_use]
     pub const fn recipe(&self) -> EmbeddingRecipe {
@@ -276,6 +312,7 @@ pub struct VectorFacts {
     model: ModelVersion,
     metric: Metric,
     dimensions: usize,
+    admitted_recipe: Option<EmbeddingRecipe>,
 }
 
 /// Borrowed coordinates whose canonical payload, dimension, and finite-value
@@ -349,7 +386,10 @@ impl<'a> AdmittedEncodedPoint<'a> {
 }
 
 impl VectorFacts {
-    /// Builds exact facts only when the durable relation is bound to this complete recipe.
+    /// Admits a full recipe and validates its stored float32 coordinates once.
+    ///
+    /// This establishes the declared recipe, payload shape and normalization;
+    /// it does not attest which inference process produced the coordinates.
     ///
     /// # Errors
     /// Returns a typed binding, coverage, coordinate, dimension, or size error.
@@ -357,12 +397,32 @@ impl VectorFacts {
         if state.binding().recipe != recipe.version() {
             return Err(Error::StaleRoot);
         }
+        if recipe.encoding != EmbeddingEncoding::Float32 {
+            return Err(Error::MalformedInput);
+        }
         let dimensions = usize::try_from(recipe.dimensions.get()).map_err(|_| Error::SizeLimit)?;
-        Self::new(state, recipe.model, recipe.metric, dimensions)
+        let mut facts = Self::new(state, recipe.model, recipe.metric, dimensions)?;
+        if recipe.normalization == EmbeddingNormalization::UnitL2 {
+            for id in facts.ids() {
+                let point = facts.encoded_point(id).ok_or(Error::MalformedInput)?;
+                let squared_norm = point
+                    .coordinates()
+                    .map(|value| f64::from(value).powi(2))
+                    .sum::<f64>();
+                if (squared_norm - 1.0).abs() > 1.0e-4 {
+                    return Err(Error::MalformedInput);
+                }
+            }
+        }
+        facts.admitted_recipe = Some(recipe);
+        Ok(facts)
     }
 
     /// Validates every relation payload once and binds the model/metric
     /// recipe to the exact relation root.
+    ///
+    /// This legacy constructor does not admit a full embedding recipe. Use
+    /// `from_recipe` for complete local semantic search.
     ///
     /// # Errors
     ///
@@ -391,7 +451,13 @@ impl VectorFacts {
             model,
             metric,
             dimensions,
+            admitted_recipe: None,
         })
+    }
+
+    /// Full declared recipe admitted by `from_recipe`, absent for legacy facts.
+    pub(super) const fn admitted_recipe(&self) -> Option<EmbeddingRecipe> {
+        self.admitted_recipe
     }
 
     /// Returns the exact relation binding.

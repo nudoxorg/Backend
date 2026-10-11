@@ -319,6 +319,7 @@ pub(in crate::builtin) struct CommandAdapter {
     compiler: LocalCompilerClient,
     search_snapshots: super::super::query::SearchSnapshotOwner,
     search_lane: SearchLane,
+    search_preparation_eager: bool,
     search_preparation_failure: Option<(
         backend_engine::WorkspaceRoot,
         backend_library::ViewStateRoot,
@@ -712,6 +713,7 @@ impl CommandAdapter {
             compiler,
             search_snapshots,
             search_lane: SearchLane::default(),
+            search_preparation_eager: false,
             search_preparation_failure: None,
             remote_semantic,
             pending_semantic_search: None,
@@ -2539,6 +2541,9 @@ impl CommandAdapter {
         }
         self.semantic_authority
             .install_image_loader(&mut self.generations);
+        if self.search_preparation_eager && matches!(completion.disposition, Disposition::Ready) {
+            self.warm_queries(daemon);
+        }
         Ok(retired)
     }
 
@@ -4652,7 +4657,61 @@ impl CommandAdapter {
             daemon,
             &outcome.deltas,
         )?;
-        self.semantic_authority.mark_projections_current()
+        self.semantic_authority.mark_projections_current()?;
+        if self.search_preparation_eager {
+            self.warm_queries(daemon);
+        }
+        Ok(())
+    }
+
+    /// Prepare the exact installed view off the control loop. Publication is
+    /// still an independent terminal; any preparation fault is retained for
+    /// the first read rather than turning a committed publication into failure.
+    pub(in crate::builtin) fn warm_queries(&mut self, daemon: &ProductDaemon) {
+        self.search_preparation_eager = true;
+        let _ = self.search_completions(daemon);
+    }
+
+    fn start_query_preparation(&mut self, daemon: &ProductDaemon) -> Result<(), BuiltinModelError> {
+        let capture = super::search_lane::Capture {
+            snapshot: daemon.engine().daemon().owner().snapshot(),
+            view: daemon.engine().daemon().library().view().clone(),
+            compiler: self.compiler.clone(),
+            generations: self.generations.for_preparation(),
+        };
+        let projection = self.search_snapshots.take_projection();
+        self.search_lane
+            .start(projection, capture)
+            .map_err(BuiltinModelError)
+    }
+
+    fn maintain_query_preparation(&mut self, daemon: &ProductDaemon) {
+        if !self.search_preparation_eager || self.search_lane.active() {
+            return;
+        }
+        let workspace = daemon.engine().daemon().owner().snapshot().root();
+        let view = daemon.engine().daemon().library().view();
+        if self
+            .search_snapshots
+            .selected_for(workspace, view)
+            .is_some()
+            || self.search_preparation_failure.as_ref().is_some_and(
+                |(failed_workspace, failed_view, _)| {
+                    *failed_workspace == workspace && *failed_view == view.root()
+                },
+            )
+        {
+            return;
+        }
+        if let Err(error) = self.start_query_preparation(daemon) {
+            self.search_preparation_failure = Some((
+                workspace,
+                view.root(),
+                backend_engine::CommandFailure::IncoherentView(format!(
+                    "search_preparation_start_refused: {error}"
+                )),
+            ));
+        }
     }
 
     /// Starts at most one corpus worker and returns current readiness, never
@@ -4690,16 +4749,7 @@ impl CommandAdapter {
                     return Ok(Some(failure));
                 }
             }
-            let capture = super::search_lane::Capture {
-                snapshot: daemon.engine().daemon().owner().snapshot(),
-                view: view.clone(),
-                compiler: self.compiler.clone(),
-                generations: self.generations.for_preparation(),
-            };
-            let projection = self.search_snapshots.take_projection();
-            self.search_lane
-                .start(projection, capture)
-                .map_err(BuiltinModelError)?;
+            self.start_query_preparation(daemon)?;
             backend_library::QueryPreparationState::Preparing
         };
         Ok(Some(backend_engine::CommandFailure::QueryPreparation {
@@ -4728,6 +4778,7 @@ impl CommandAdapter {
                     .restore_projection(projection, succeeded);
             }
         }
+        self.maintain_query_preparation(daemon);
         // All requests already received a typed readiness answer. Polling only
         // installs a completed immutable projection; it owes no delayed reply.
         Vec::new()
@@ -4755,6 +4806,18 @@ impl CommandAdapter {
         if let Some(failure) = self.prepare_query(daemon, query.basis())? {
             return Self::certify(daemon, &command, CommandReply::Failed(failure), certificate);
         }
+        let workspace = daemon.engine().daemon().owner().snapshot().root();
+        let view = daemon.engine().daemon().library().view().root();
+        let Some(_cancelled) = self.search_lane.selected_cancellation(workspace, view) else {
+            return Self::certify(
+                daemon,
+                &command,
+                CommandReply::Failed(backend_engine::CommandFailure::IncoherentView(
+                    "search preparation omitted its admitted selection lifetime".to_owned(),
+                )),
+                certificate,
+            );
+        };
         let (reply, status) = execute_search(
             daemon,
             &self.compiler,
@@ -9556,6 +9619,190 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(2));
         }
+    }
+
+    #[test]
+    fn preparation_installed_view_warms_before_first_read_and_keeps_one_worker() {
+        let mut fixture = AdapterFixture::new();
+        let (adapter, daemon) = fixture.parts();
+        let (entered, release) = adapter.search_lane.hold_next();
+        adapter.warm_queries(daemon);
+        entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("preparation starts without a search");
+        for id in 120..124 {
+            adapter.warm_queries(daemon);
+            assert_preparing(
+                &immediate_search(adapter, daemon, id, "project source"),
+                "preparing",
+                daemon,
+            );
+        }
+        assert_eq!(adapter.search_snapshots.projection_builds(), 0);
+        release.send(()).expect("release exact selection");
+        finish_search_lane(adapter, daemon);
+        assert_eq!(
+            immediate_search(adapter, daemon, 124, "project source")["reply"]["kind"],
+            "search"
+        );
+        assert_eq!(adapter.search_snapshots.projection_builds(), 1);
+        adapter.warm_queries(daemon);
+        assert!(
+            !adapter.search_lane.active(),
+            "warm immutable root does not rebuild"
+        );
+        let workspace = daemon.engine().daemon().owner().snapshot().root();
+        let view = daemon.engine().daemon().library().view().root();
+        let lifetime = adapter
+            .search_lane
+            .selected_cancellation(workspace, view)
+            .expect("actual successful worker lifetime");
+        assert!(!lifetime.load(Ordering::Acquire));
+        adapter.warm_queries(daemon);
+        assert!(Arc::ptr_eq(
+            &lifetime,
+            &adapter
+                .search_lane
+                .selected_cancellation(workspace, view)
+                .expect("same lifetime")
+        ));
+        adapter.close();
+        assert!(lifetime.load(Ordering::Acquire));
+        assert!(
+            adapter
+                .search_lane
+                .selected_cancellation(workspace, view)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn preparation_eager_publication_retires_old_view_and_prepares_current_without_a_read() {
+        let mut fixture = AdapterFixture::new();
+        let project = fixture.root.0.join("eager-project");
+        fs::create_dir_all(&project).expect("project");
+        let new_label = label(&project);
+        let (adapter, daemon) = fixture.parts();
+        let old_workspace = daemon.engine().daemon().owner().snapshot().root();
+        let old_view = daemon.engine().daemon().library().view().clone();
+        let (entered, release) = adapter.search_lane.hold_next();
+        adapter.warm_queries(daemon);
+        entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("held old view");
+        let intent = BuiltinIntent::add(backend_engine::package_key(&new_label), new_label)
+            .expect("new source");
+        super::commit_builtin_intent(daemon, 125, &intent).expect("commit new source");
+        adapter
+            .publish_view(daemon, Some(&intent))
+            .expect("admitted view publication");
+        assert_eq!(
+            adapter
+                .search_lane
+                .state_for(old_workspace, old_view.root()),
+            backend_library::QueryPreparationState::Retiring
+        );
+        release.send(()).expect("retire old selection");
+        finish_search_lane(adapter, daemon);
+        assert!(
+            adapter
+                .search_snapshots
+                .selected_for(old_workspace, &old_view)
+                .is_none()
+        );
+        let workspace = daemon.engine().daemon().owner().snapshot().root();
+        assert!(
+            adapter
+                .search_snapshots
+                .selected_for(workspace, daemon.engine().daemon().library().view())
+                .is_some(),
+            "polling prepares the published replacement without a query retry"
+        );
+        assert_eq!(
+            immediate_search(adapter, daemon, 126, "project source")["reply"]["kind"],
+            "search"
+        );
+    }
+
+    #[test]
+    fn preparation_selected_lifetime_is_invalidated_by_publication_and_never_lent_to_new_view() {
+        let mut fixture = AdapterFixture::new();
+        let project = fixture.root.0.join("lifetime-project");
+        fs::create_dir_all(&project).expect("project");
+        let new_label = label(&project);
+        let (adapter, daemon) = fixture.parts();
+        adapter.warm_queries(daemon);
+        finish_search_lane(adapter, daemon);
+        let old_workspace = daemon.engine().daemon().owner().snapshot().root();
+        let old_view = daemon.engine().daemon().library().view().root();
+        let original = adapter
+            .search_lane
+            .selected_cancellation(old_workspace, old_view)
+            .expect("successful selected lifetime");
+        let (entered, release) = adapter.search_lane.hold_next();
+        let intent = BuiltinIntent::add(backend_engine::package_key(&new_label), new_label)
+            .expect("new source");
+        super::commit_builtin_intent(daemon, 127, &intent).expect("commit");
+        adapter
+            .publish_view(daemon, Some(&intent))
+            .expect("publish exact replacement");
+        entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("new worker starts at publication");
+        let workspace = daemon.engine().daemon().owner().snapshot().root();
+        let view = daemon.engine().daemon().library().view().root();
+        assert!(original.load(Ordering::Acquire));
+        assert!(
+            adapter
+                .search_lane
+                .selected_cancellation(old_workspace, old_view)
+                .is_none()
+        );
+        assert!(
+            adapter
+                .search_lane
+                .selected_cancellation(workspace, view)
+                .is_none(),
+            "incomplete preparation exposes no selection lifetime"
+        );
+        release.send(()).expect("finish replacement");
+        finish_search_lane(adapter, daemon);
+        let current = adapter
+            .search_lane
+            .selected_cancellation(workspace, view)
+            .expect("new admitted lifetime");
+        assert!(!current.load(Ordering::Acquire));
+        assert!(!Arc::ptr_eq(&original, &current));
+    }
+
+    #[test]
+    fn preparation_eager_failure_is_retained_for_the_first_read() {
+        let mut fixture = AdapterFixture::new();
+        let (adapter, daemon) = fixture.parts();
+        adapter.search_preparation_eager = true;
+        let workspace = daemon.engine().daemon().owner().snapshot().root();
+        let view = daemon.engine().daemon().library().view().root();
+        let failure = backend_engine::CommandFailure::IncoherentView(
+            "actual retained preparation fault".to_owned(),
+        );
+        adapter.search_preparation_failure = Some((workspace, view, failure.clone()));
+        for _ in 0..3 {
+            adapter.warm_queries(daemon);
+        }
+        assert!(
+            !adapter.search_lane.active(),
+            "warming cannot hide a failed build by restarting it"
+        );
+        assert_eq!(
+            adapter
+                .prepare_query(daemon, view.into())
+                .expect("typed failure"),
+            Some(failure)
+        );
+        assert!(
+            adapter.search_preparation_failure.is_none(),
+            "only the actual read consumes the failure"
+        );
     }
 
     #[test]

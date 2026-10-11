@@ -15,7 +15,7 @@ use crate::model::pages::{
 };
 use crate::model::pages::package::PackageRecordEvidence;
 use crate::navigation::{CargoSourcePath, CargoSourceRoute, Intent, Overlay, Route};
-use crate::shell::focus::Target;
+use crate::shell::focus::{Target, TargetAction, native_control};
 use crate::shell::kit::{HoverIntent, package_route, quiet, text};
 use crate::shell::markdown::FollowMarkdownLink;
 use crate::shell::reader::Reader;
@@ -311,6 +311,16 @@ pub(super) fn body(
     });
     let package_key = PageKey::Package(dossier.package.clone());
     let package_stamp = ctx.links.store.read(cx).stamp(&package_key);
+    // Cards build their native leaves in Folio's RenderOnce, after Reader
+    // finishes its registry frame. Mark existing owners before that sweep so
+    // a parent repaint cannot replace the focused card's handle.
+    if ctx.active {
+        for module in &facts.modules {
+            for item in &module.items {
+                ctx.targets.reuse_native_handle(&PageTarget::Card(item.symbol.clone()).id());
+            }
+        }
+    }
     let folio = folio::Folio {
         id: id.into(),
         facts,
@@ -323,7 +333,7 @@ pub(super) fn body(
         active: ctx.active,
         licence_focus: ctx.native_handle(&PageTarget::Licence.id(), cx),
         admit_input: ctx.native_local_guard(cx),
-        admit_read: ctx.native_dependency_guard((package_key, package_stamp), cx),
+        admit_read: ctx.native_dependency_guard((package_key.clone(), package_stamp), cx),
         package: dossier.package.clone(),
     };
     // Centred on the reading column it overflows.
@@ -332,7 +342,8 @@ pub(super) fn body(
     if let Some(offer) = cargo_offer { leaves.push(offer); }
     // A registry release the owner has not indexed offers to be added (W-Acquire).
     if let Some(offer) =
-        crate::shell::acquire::page_offer(&dossier, ctx.links, cx.entity_id(), &ctx.measure, cx)
+        crate::shell::acquire::page_offer(&dossier, ctx.links, cx.entity_id(), &ctx.measure,
+            ctx.native_dependency_guard((package_key, package_stamp), cx), cx)
     {
         leaves.insert(0, Leaf::new(offer));
     }
@@ -1046,6 +1057,16 @@ fn open_dependency(
     }
 }
 
+/// Keep Reader walking, native focus, and AccessKit on the same admitted
+/// README target. Mouse capture rejects an old producer before GPUI focuses it.
+fn readme_native_control(
+    id: SharedString, label: SharedString, role: gpui::Role,
+    action: TargetAction, ctx: &Ctx<'_>, cx: &mut Context<Reader>,
+) -> gpui::Stateful<gpui::Div> {
+    let control = native_control(id.clone(), label, role, ctx.native_handle(&id, cx), action.callback());
+    facet::controls::button::capture_activation_admission(control, Rc::new(move |app| action.admits(app)))
+}
+
 fn readme(
     dossier: &PackageDossier,
     place: &Route,
@@ -1152,25 +1173,23 @@ fn readme(
                     );
                 });
                 let target_action = ctx.target_action(act, cx);
-                let act = target_action.callback();
+                let label: SharedString = format!("Go to {}", target.title).into();
                 ctx.targets.push(Target {
                     id: id.clone(),
-                    label: format!("Go to {}", target.title).into(),
-                    action: target_action,
+                    label: label.clone(),
+                    action: target_action.clone(),
                     peek: None,
                     source: None,
                 });
                 if restore_target.as_ref() == Some(&id) && plan.restore_focus_once(&id) {
                     ctx.targets.focus(id.clone());
                 }
-                let row = div()
-                    .id(id.clone())
+                let row = readme_native_control(id.clone(), label, gpui::Role::Link, target_action, ctx, cx)
                     .w_full()
                     .pl(px(f32::from(target.level.saturating_sub(1)) * 8.0))
                     .cursor_pointer()
                     .text_color(palette.ink2.hsla())
-                    .child(text(ty::PROSE, &measure, palette.ink2).child(target.title.to_string()))
-                    .on_click(move |_: &ClickEvent, window, app| act(window, app));
+                    .child(text(ty::PROSE, &measure, palette.ink2).child(target.title.to_string()));
                 column = column.child(ctx.targets.track(id, row));
             }
             if plan.total_headings() > plan.shown_headings() {
@@ -1182,24 +1201,22 @@ fn readme(
                     window.refresh();
                 });
                 let target_action = ctx.target_action(act, cx);
-                let act = target_action.callback();
+                let label: SharedString = format!("Show more README headings ({remaining} remaining)").into();
                 ctx.targets.push(Target {
                     id: id.clone(),
-                    label: format!("Show more README headings ({remaining} remaining)").into(),
-                    action: target_action,
+                    label: label.clone(),
+                    action: target_action.clone(),
                     peek: None,
                     source: None,
                 });
-                let row = div()
-                    .id(id.clone())
+                let row = readme_native_control(id.clone(), label, gpui::Role::Button, target_action, ctx, cx)
                     .w_full()
                     .cursor_pointer()
                     .text_color(palette.peri.base.hsla())
                     .child(
                         text(ty::PROSE, &measure, palette.peri.base)
                             .child(format!("Show more headings · {remaining} remaining")),
-                    )
-                    .on_click(move |_: &ClickEvent, window, app| act(window, app));
+                    );
                 column = column.child(ctx.targets.track(id, row));
             }
             if headings.len() > plan.total_headings() {
@@ -1293,24 +1310,22 @@ fn readme(
                     window.refresh();
                 });
                 let target_action = ctx.target_action(act, cx);
-                let act = target_action.callback();
+                let label: SharedString = format!("Show more README links ({remaining} remaining)").into();
                 ctx.targets.push(Target {
                     id: id.clone(),
-                    label: format!("Show more README links ({remaining} remaining)").into(),
-                    action: target_action,
+                    label: label.clone(),
+                    action: target_action.clone(),
                     peek: None,
                     source: None,
                 });
-                let row = div()
-                    .id(id.clone())
+                let row = readme_native_control(id.clone(), label, gpui::Role::Button, target_action, ctx, cx)
                     .w_full()
                     .cursor_pointer()
                     .text_color(palette.peri.base.hsla())
                     .child(
                         text(ty::PROSE, &measure, palette.peri.base)
                             .child(format!("Show more links · {remaining} remaining")),
-                    )
-                    .on_click(move |_: &ClickEvent, window, app| act(window, app));
+                    );
                 column = column.child(ctx.targets.track(id, row));
             }
             if readme_links.len() > plan.total_links() {

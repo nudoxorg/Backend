@@ -304,6 +304,7 @@ pub struct GraphView {
     hint_metrics: Rc<std::cell::Cell<hints::Metrics>>,
     chain_scroll: ScrollHandle,
     tour_scroll: ScrollHandle,
+    tour_focus: Vec<FocusHandle>,
     find_bounds: Option<Bounds<Pixels>>,
     discovery: Option<Rc<Discovery>>,
     search: Rc<Search>,
@@ -441,6 +442,7 @@ impl GraphView {
             hint_metrics: Rc::new(std::cell::Cell::new(hints::Metrics::default())),
             chain_scroll: ScrollHandle::new(),
             tour_scroll: ScrollHandle::new(),
+            tour_focus: (0..=tour::MAX_STOPS).map(|_| cx.focus_handle().tab_stop(true)).collect(),
             find_bounds: None,
             discovery: None,
             search,
@@ -519,6 +521,32 @@ impl GraphView {
         self.interaction_admission.as_ref().is_none_or(|admit| admit(InteractionPhase::LocalFocus, cx))
     }
 
+    /// A retained tour moves only through this immutable scene. Its native
+    /// controls cannot borrow declaration activation or a later reading visit.
+    fn local_tour_admission(&self, cx: &Context<Self>, current: impl Fn(&Self) -> bool + 'static) -> crate::controls::button::ActivationAdmission {
+        let owner = cx.entity().downgrade();
+        let producer = self.interaction_admission.clone();
+        let scene = self.scene.clone();
+        let generation = self.state.generation;
+        Rc::new(move |cx| {
+            if producer.as_ref().is_some_and(|admit| !admit(InteractionPhase::LocalFocus, cx)) { return false; }
+            owner.upgrade().is_some_and(|graph| {
+                let graph = graph.read(cx);
+                graph.admits_local_focus(cx) && graph.state.generation == generation
+                    && scene.as_ref().is_some_and(|scene| graph.scene.as_ref().is_some_and(|now| Arc::ptr_eq(scene, now)))
+                    && graph.paint_receipt().is_some_and(|scene| scene.was_painted())
+                    && current(graph)
+            })
+        })
+    }
+
+    fn local_tour_key(&self, event: &KeyDownEvent) -> bool {
+        let mods = event.keystroke.modifiers;
+        self.paint_receipt().is_some_and(|scene| scene.was_painted()) && !mods.platform && !mods.control && !mods.alt
+            && (event.keystroke.key == "t" || self.state.exploration.tour().is_some()
+                && matches!(event.keystroke.key.as_str(), "right" | "space" | "left" | "escape"))
+    }
+
     fn native_scope(&self) -> NativeControlScope {
         NativeControlScope { navigation: self.state.generation, declarations: self.declaration_epoch, coverage: self.status_epoch }
     }
@@ -537,6 +565,13 @@ impl GraphView {
         if painted.controls.resources_enabled && (!self.admits_native_interaction(cx)
             || painted.admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::Activate, cx))) { return Err(NativeFocusDenial::ResourceLease); }
         let mut handles = vec![self.find.read(cx).focus_handle(cx)];
+        if !self.state.find_open {
+            if let Some((tour, _)) = self.state.exploration.tour() {
+                handles.extend(self.tour_focus.iter().skip(1).take(tour.stops.len()).cloned());
+            } else {
+                handles.push(self.tour_focus[0].clone());
+            }
+        }
         if painted.controls.resources_enabled && !self.state.find_open {
             handles.push(self.declaration_focus[32].clone());
             if self.declarations_open {
@@ -589,12 +624,17 @@ impl GraphView {
     }
 
     fn admits_native_focus(&self, next: &FocusHandle, cx: &App) -> bool {
-        if *next == self.find.read(cx).focus_handle(cx) { return true; }
+        if *next == self.find.read(cx).focus_handle(cx) || self.tour_focus.contains(next) { return true; }
         self.admits_native_interaction(cx) && self.painted_labels.as_ref().is_some_and(|painted|
             painted.controls.resources_enabled && painted.admission.as_ref().is_none_or(|admit| admit(InteractionPhase::Activate, cx)))
     }
 
     fn native_entry<'a>(&self, order: &'a [FocusHandle]) -> Option<&'a FocusHandle> {
+        if let Some((_, at)) = self.state.exploration.tour()
+            && let Some(current) = self.tour_focus.get(at.saturating_add(1))
+            && let Some(stop) = order.iter().find(|handle| *handle == current) {
+            return Some(stop);
+        }
         // Find focus opens a different search surface. Enter the declaration
         // chooser first when mounted; Find keeps its real preceding Tab stop.
         order.iter().find(|handle| **handle == self.declaration_focus[32]).or_else(|| order.first())
@@ -1189,13 +1229,19 @@ impl GraphView {
     fn key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
         let mods = event.keystroke.modifiers;
-        if self.state.find_open || !self.focus_handle.is_focused(window) {
-            return;
-        }
-        if (key == "/" && !mods.platform && !mods.control && !mods.alt) || (key == "k" && mods.platform && !mods.alt) {
+        let tour_control = (self.local_tour_key(event) || super::keys::opens_find(&event.keystroke))
+            && self.native_focus_order(window, cx).is_ok_and(|order|
+            order.iter().any(|handle| self.tour_focus.contains(handle) && handle.is_focused(window)));
+        if self.state.find_open || (!self.focus_handle.is_focused(window) && !tour_control) { return; }
+        // The admitted native chip delegates its local navigation to the
+        // persistent receiver; Escape must not orphan the removed chip.
+        if tour_control { window.focus(&self.focus_handle, cx); }
+        if super::keys::opens_find(&event.keystroke) {
             self.open_find(window, cx); cx.stop_propagation(); return;
         }
-        if !self.admits_native_interaction(cx) || mods.platform || mods.control || mods.alt { return; }
+        // T and a retained tour's stop/escape keys navigate only this painted
+        // scene. Enter, reach and declaration selection still require Activate.
+        if (!self.local_tour_key(event) && !self.admits_native_interaction(cx)) || mods.platform || mods.control || mods.alt { return; }
         if key == "escape" { self.escape(window, cx); cx.stop_propagation(); return; }
         if key == "r" {
             if self.state.focus.is_none() {
@@ -2475,6 +2521,9 @@ impl Render for GraphView {
                 }
             }))
             .capture_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                // Find capture cannot borrow a tour button's local Enter. When
+                // Find is closed, that button owns its native release pipeline.
+                if !this.state.find_open { return; }
                 if find_admission.as_ref().is_none_or(|admit| admit(InteractionPhase::LocalFocus, cx)) && this.admits_local_focus(cx) {
                     if event.keystroke.key == "enter" && find_admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::Activate, cx)) {
                         cx.stop_propagation(); return;
@@ -2483,11 +2532,8 @@ impl Render for GraphView {
                 }
             }))
             .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
-                let key = event.keystroke.key.as_str();
-                let mods = event.keystroke.modifiers;
-                let local_find = (key == "/" && !mods.platform && !mods.control && !mods.alt)
-                    || (key == "k" && mods.platform && !mods.alt);
-                let phase = if local_find { InteractionPhase::LocalFocus } else { InteractionPhase::Activate };
+                let local = super::keys::opens_find(&event.keystroke) || this.local_tour_key(event);
+                let phase = if local { InteractionPhase::LocalFocus } else { InteractionPhase::Activate };
                 if key_admission.as_ref().is_none_or(|admit| admit(phase, cx)) && this.admits_local_focus(cx) { this.key(event, window, cx); }
             }))
             // Input's Tab uses the component Root action, while native
@@ -2587,9 +2633,22 @@ impl GraphView {
             line = line.child(div().ml(px(8.0)).child(graph_text("graph-where-level", altitude.word(), ty::STATUS, &measure, palette.ink2, crate::probe::TextOverflow::Clip)));
             if self.state.exploration.tour().is_none() {
                 if let Some(package) = self.tour_package().filter(|&package| self.discovery.as_ref().and_then(|discovery| discovery.package_tour(package)).is_some_and(Tour::shown)) {
-                    line = line.child(div().id("graph-start-here").cursor_pointer().ml(px(8.0)).flex().items_center().gap(px(5.0))
-                        .child(kbd("T", &measure)).child("start here")
-                        .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, window, cx| { window.focus(&this.focus_handle, cx); this.start_tour(package, 0, cx); })));
+                    let admission = self.local_tour_admission(cx, move |graph|
+                        !graph.state.find_open && graph.state.exploration.tour().is_none() && graph.tour_package() == Some(package));
+                    let start = div().id("graph-start-here").role(gpui::Role::Button)
+                        .aria_label(format!("Start a guided tour of {}", self.world.packages[package as usize].name))
+                        .cursor_pointer().ml(px(8.0)).flex().items_center().gap(px(5.0))
+                        .focus_visible(|style| style.bg(tone(palette.peri.base, 0.22)))
+                        .child(kbd("T", &measure)).child("start here");
+                    let start = crate::controls::button::capture_activation_admission(start, admission.clone());
+                    let owner = cx.entity().downgrade();
+                    line = line.child(crate::controls::button::native_button(start, &self.tour_focus[0], move |window, cx| {
+                        if !admission(cx) { return; }
+                        let _ = owner.update(cx, |graph, cx| {
+                            window.focus(&graph.focus_handle, cx);
+                            graph.start_tour(package, 0, cx);
+                        });
+                    }));
                 }
             }
             root = root.child(MeasuredChrome::new("graph-where-bounds", line, cx.entity()));
@@ -2777,11 +2836,25 @@ impl GraphView {
         let title = format!("{} in {count} stops · {} of {}", self.world.packages[tour.package as usize].name, at + 1, tour.stops.len());
         let mut strip = div().flex().flex_wrap().gap(px(8.0));
         for (n, stop) in tour.stops.iter().enumerate() {
-            strip = strip.child(div().id(("graph-tour-stop", n)).cursor_pointer().px(px(6.0)).py(px(6.0))
+            let data = tour.clone();
+            let admission = self.local_tour_admission(cx, move |graph|
+                graph.state.exploration.tour().is_some_and(|(now, now_at)| *now == data && now_at == at));
+            let chip = div().id(("graph-tour-stop", n)).role(gpui::Role::Button)
+                .aria_label(format!("Tour stop {}: {}", n + 1, self.world.name_of(stop.node)))
+                .cursor_pointer().px(px(6.0)).py(px(6.0))
                 .flex().items_center().gap(px(6.0)).when_selected(n == at, palette)
+                .focus_visible(|style| style.bg(tone(palette.peri.base, 0.22)))
                 .child(icons::kind_mark(crate::anatomy::icon_kind(self.world.node(stop.node).kind), KindSize::Sm, palette))
-                .child(div().set(ty::MONO_SMALL, measure).text_color(if n == at { palette.ink0 } else { palette.ink3 }.hsla()).child(self.world.name_of(stop.node)))
-                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, _, cx| this.go_stop(n, cx))));
+                .child(div().set(ty::MONO_SMALL, measure).text_color(if n == at { palette.ink0 } else { palette.ink3 }.hsla()).child(self.world.name_of(stop.node)));
+            let chip = crate::controls::button::capture_activation_admission(chip, admission.clone());
+            let owner = cx.entity().downgrade();
+            strip = strip.child(crate::controls::button::native_button(chip, &self.tour_focus[n + 1], move |window, cx| {
+                if !admission(cx) { return; }
+                let _ = owner.update(cx, |graph, cx| {
+                    window.focus(&graph.focus_handle, cx);
+                    graph.go_stop(n, cx);
+                });
+            }));
         }
         let mut body = div().flex().flex_col().gap(px(10.0))
             .child(graph_text("graph-tour-title", title, ty::TITLE, measure, palette.ink1, crate::probe::TextOverflow::Wrap))

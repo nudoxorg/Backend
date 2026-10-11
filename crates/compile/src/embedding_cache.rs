@@ -11,7 +11,10 @@
 //! cache actor takes a separate kernel lock on that exact directory and owns inventory, eviction,
 //! and atomic replacement. Cache reads and writes stay scoped to the borrowed actor session.
 
-use crate::{EmbeddingExecutionIdentity, EmbeddingInputIdentity, ProcessError};
+use crate::{
+    EmbeddingCoordinateValues, EmbeddingExecutionIdentity, EmbeddingInputIdentity,
+    EmbeddingMemoryBudget, EmbeddingMemoryError, EmbeddingMemoryReservation, ProcessError,
+};
 use backend_platform::{DirectoryCapability, EntryKind};
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -43,6 +46,52 @@ static ACTIVE_BROKERS: AtomicUsize = AtomicUsize::new(0);
 const CACHE_BROKER_LIMIT: usize = 16;
 const CACHE_BROKER_QUEUE: usize = 1;
 const CACHE_RPC_BATCH_ITEMS: usize = 256;
+// Finite envelope for bounded direct-child names (255 bytes on Unix / 255 UTF-16 units on
+// Windows), directory-entry capacity, inventory BTreeMap, eviction ordering and actor control.
+// Admission happens before inventory allocation and survives a blocked/detached actor.
+#[cfg(windows)]
+const CACHE_ACTOR_ENTRY_CREDITS: u64 = 2048; // UTF-8 enumeration and UTF-16 OsString conversion
+#[cfg(not(windows))]
+const CACHE_ACTOR_ENTRY_CREDITS: u64 = 1024;
+const CACHE_ACTOR_METADATA_CREDITS: u64 =
+    (MAX_CACHE_ENTRIES as u64 + 2) * CACHE_ACTOR_ENTRY_CREDITS + 64 * 1024;
+const CACHE_REQUEST_CONTROL_CREDITS: u64 = 64 * 1024;
+
+#[derive(Debug)]
+pub(crate) enum CacheLookupError {
+    Process(ProcessError),
+    Memory(EmbeddingMemoryError),
+}
+impl From<ProcessError> for CacheLookupError {
+    fn from(error: ProcessError) -> Self {
+        Self::Process(error)
+    }
+}
+
+/// Caller-owned aggregate result storage. Its bookkeeping credit is not attached to a hit.
+pub(crate) struct CachedLookupBatch {
+    pub(crate) values: Vec<Option<EmbeddingCoordinateValues>>,
+    pub(crate) _bookkeeping: EmbeddingMemoryReservation,
+}
+impl CachedLookupBatch {
+    fn new(items: usize, memory: &EmbeddingMemoryBudget) -> Result<Self, CacheLookupError> {
+        let bytes = items
+            .checked_mul(size_of::<Option<EmbeddingCoordinateValues>>())
+            .and_then(|bytes| bytes.checked_add(256))
+            .ok_or(ProcessError::OutputLimit)?;
+        let bookkeeping = memory
+            .reserve(u64::try_from(bytes).map_err(|_| ProcessError::OutputLimit)?)
+            .map_err(CacheLookupError::Memory)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(items)
+            .map_err(|_| ProcessError::OutputLimit)?;
+        Ok(Self {
+            values,
+            _bookkeeping: bookkeeping,
+        })
+    }
+}
 
 /// One held workspace-local directory of exact input-keyed vector entries.
 pub(crate) struct EmbeddingCacheFile {
@@ -70,6 +119,7 @@ struct CacheEntry {
 pub struct EmbeddingCacheSession {
     execution_identity: EmbeddingExecutionIdentity,
     sender: SyncSender<CacheBrokerMessage>,
+    memory: EmbeddingMemoryBudget,
     worker: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -86,10 +136,12 @@ enum CacheBrokerMessage {
         identities: Vec<EmbeddingInputIdentity>,
         cancelled: Arc<AtomicBool>,
         deadline: Instant,
-        reply: SyncSender<Vec<Option<Arc<[f32]>>>>,
+        reply: SyncSender<Result<Vec<Option<EmbeddingCoordinateValues>>, EmbeddingMemoryError>>,
+        scratch: EmbeddingMemoryReservation,
     },
     Store {
         values: Vec<crate::embedding::ValidatedProducerVector>,
+        scratch: EmbeddingMemoryReservation,
         cancelled: Arc<AtomicBool>,
         deadline: Instant,
     },
@@ -108,13 +160,16 @@ impl EmbeddingCacheSession {
     pub(crate) fn open(
         directory: DirectoryCapability,
         execution_identity: EmbeddingExecutionIdentity,
+        memory: EmbeddingMemoryBudget,
     ) -> Option<Self> {
+        let metadata = memory.reserve(CACHE_ACTOR_METADATA_CREDITS).ok()?;
         if !reserve_broker() {
             return None;
         }
         let (sender, receiver) = mpsc::sync_channel(CACHE_BROKER_QUEUE);
         let permit = CacheBrokerPermit;
         let broker_identity = execution_identity;
+        let broker_memory = memory.clone();
         let worker = thread::Builder::new()
             .name("embedding-cache-broker".into())
             .spawn(move || {
@@ -124,12 +179,15 @@ impl EmbeddingCacheSession {
                     directory,
                     broker_identity.recipe(),
                     broker_identity.dimension(),
+                    &broker_memory,
+                    metadata,
                 );
             })
             .ok()?;
         Some(Self {
             execution_identity,
             sender,
+            memory,
             worker: Mutex::new(Some(worker)),
         })
     }
@@ -143,14 +201,14 @@ impl EmbeddingCacheSession {
         identities: &[EmbeddingInputIdentity],
         cancelled: Option<&AtomicBool>,
         deadline: Instant,
-    ) -> Result<Option<Vec<Option<Arc<[f32]>>>>, ProcessError> {
+    ) -> Result<Option<CachedLookupBatch>, CacheLookupError> {
         check_request(cancelled, deadline)?;
-        let mut result = Vec::new();
-        result
-            .try_reserve_exact(identities.len())
-            .map_err(|_| ProcessError::OutputLimit)?;
+        let mut result = CachedLookupBatch::new(identities.len(), &self.memory)?;
         for batch in identities.chunks(CACHE_RPC_BATCH_ITEMS) {
             check_request(cancelled, deadline)?;
+            let scratch = self
+                .reserve_request(batch.len())
+                .map_err(CacheLookupError::Memory)?;
             let (reply, response) = mpsc::sync_channel(1);
             let request_cancelled = Arc::new(AtomicBool::new(false));
             let message = CacheBrokerMessage::Lookup {
@@ -158,6 +216,7 @@ impl EmbeddingCacheSession {
                 cancelled: Arc::clone(&request_cancelled),
                 deadline,
                 reply,
+                scratch,
             };
             match self.sender.try_send(message) {
                 Ok(()) => {}
@@ -166,28 +225,30 @@ impl EmbeddingCacheSession {
                     return Ok(None);
                 }
             }
-            let values = loop {
-                if let Err(error) = check_request(cancelled, deadline) {
-                    request_cancelled.store(true, Ordering::Release);
-                    return Err(error);
-                }
-                match response.try_recv() {
-                    Ok(values) => break values,
-                    Err(TryRecvError::Disconnected) => return Ok(None),
-                    Err(TryRecvError::Empty) => thread::sleep(
-                        deadline
-                            .saturating_duration_since(Instant::now())
-                            .min(Duration::from_millis(1)),
-                    ),
-                }
+            let Some(values) =
+                wait_lookup_response(response, cancelled, &request_cancelled, deadline)?
+            else {
+                return Ok(None);
             };
             if values.len() != batch.len() {
                 return Ok(None);
             }
-            result.extend(values);
+            result.values.extend(values);
         }
         check_request(cancelled, deadline)?;
         Ok(Some(result))
+    }
+
+    fn reserve_request(
+        &self,
+        items: usize,
+    ) -> Result<EmbeddingMemoryReservation, EmbeddingMemoryError> {
+        // One Vec-to-Arc coordinate conversion can overlap; retained hit payloads have their
+        // own leases. This scratch travels with the broker request, never with its waiter.
+        let bytes = CACHE_REQUEST_CONTROL_CREDITS
+            + u64::from(self.execution_identity.dimension()) * 4
+            + items as u64 * 512;
+        self.memory.reserve(bytes)
     }
 
     pub(crate) fn store_validated(
@@ -199,9 +260,13 @@ impl EmbeddingCacheSession {
         check_request(cancelled, deadline)?;
         for batch in values.chunks(CACHE_RPC_BATCH_ITEMS) {
             check_request(cancelled, deadline)?;
+            let Ok(scratch) = self.reserve_request(batch.len()) else {
+                break;
+            };
             let request_cancelled = Arc::new(AtomicBool::new(false));
             let message = CacheBrokerMessage::Store {
                 values: batch.to_vec(),
+                scratch,
                 cancelled: Arc::clone(&request_cancelled),
                 deadline,
             };
@@ -259,6 +324,8 @@ fn run_cache_broker(
     directory: DirectoryCapability,
     recipe: [u8; 32],
     dimensions: u32,
+    memory: &EmbeddingMemoryBudget,
+    _metadata: EmbeddingMemoryReservation,
 ) {
     let Some(mut cache) = EmbeddingCacheFile::open_directory(directory, recipe, dimensions) else {
         return;
@@ -270,27 +337,22 @@ fn run_cache_broker(
                 cancelled,
                 deadline,
                 reply,
+                scratch,
             } => {
-                let mut values = Vec::with_capacity(identities.len());
-                for identity in identities {
-                    if cache_checkpoint(&cancelled, deadline).is_err() {
-                        values.clear();
-                        break;
-                    }
-                    values.push(
-                        cache
-                            .load_until(identity, &cancelled, deadline)
-                            .ok()
-                            .flatten(),
-                    );
-                }
+                // The affine request scratch remains live even when the waiter cancels and
+                // disconnects while an uninterruptible filesystem call is still running.
+                let _scratch = scratch;
+                let values =
+                    load_charged_batch(&mut cache, identities, memory, &cancelled, deadline);
                 let _ = reply.try_send(values);
             }
             CacheBrokerMessage::Store {
                 values,
+                scratch,
                 cancelled,
                 deadline,
             } => {
+                let _scratch = scratch;
                 if cache_checkpoint(&cancelled, deadline).is_ok() {
                     let _ = cache.store_validated(&values, &cancelled, deadline);
                 }
@@ -298,6 +360,60 @@ fn run_cache_broker(
             CacheBrokerMessage::Shutdown => break,
         }
     }
+}
+
+fn wait_lookup_response(
+    response: Receiver<Result<Vec<Option<EmbeddingCoordinateValues>>, EmbeddingMemoryError>>,
+    cancelled: Option<&AtomicBool>,
+    request_cancelled: &AtomicBool,
+    deadline: Instant,
+) -> Result<Option<Vec<Option<EmbeddingCoordinateValues>>>, CacheLookupError> {
+    loop {
+        if let Err(error) = check_request(cancelled, deadline) {
+            request_cancelled.store(true, Ordering::Release);
+            return Err(error.into());
+        }
+        match response.try_recv() {
+            Ok(values) => return values.map(Some).map_err(CacheLookupError::Memory),
+            Err(TryRecvError::Disconnected) => return Ok(None),
+            Err(TryRecvError::Empty) => thread::sleep(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(1)),
+            ),
+        }
+    }
+}
+
+fn load_charged_batch(
+    cache: &mut EmbeddingCacheFile,
+    identities: Vec<EmbeddingInputIdentity>,
+    memory: &EmbeddingMemoryBudget,
+    cancelled: &AtomicBool,
+    deadline: Instant,
+) -> Result<Vec<Option<EmbeddingCoordinateValues>>, EmbeddingMemoryError> {
+    let mut values = Vec::with_capacity(identities.len());
+    for identity in identities {
+        if cache_checkpoint(cancelled, deadline).is_err() {
+            values.clear();
+            break;
+        }
+        // Unknown keys cannot contribute a durable hit. Missing/corrupt files release their
+        // attempt lease; every actual decoded hit retains only its own allocation charge.
+        if !cache.entries.contains_key(&identity.as_bytes()) {
+            values.push(None);
+            continue;
+        }
+        let reservation = memory.reserve(u64::from(cache.dimensions) * 4 + 256)?;
+        let loaded = cache
+            .load_until(identity, cancelled, deadline)
+            .ok()
+            .flatten();
+        values.push(
+            loaded.map(|coordinates| EmbeddingCoordinateValues::retain(coordinates, reservation)),
+        );
+    }
+    Ok(values)
 }
 
 fn check_request(cancelled: Option<&AtomicBool>, deadline: Instant) -> Result<(), ProcessError> {
@@ -924,6 +1040,166 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.directory);
         }
+    }
+
+    #[test]
+    fn all_miss_aggregate_bookkeeping_is_charged_independently_and_released() {
+        const ITEMS: usize = 65_536;
+        let bytes = (ITEMS * size_of::<Option<EmbeddingCoordinateValues>>() + 256) as u64;
+        let memory = EmbeddingMemoryBudget::new(bytes);
+        let mut batch =
+            CachedLookupBatch::new(ITEMS, &memory).unwrap_or_else(|_| panic!("bookkeeping"));
+        batch.values.resize_with(ITEMS, || None);
+        assert_eq!(memory.used(), bytes);
+        assert!(batch.values.iter().all(Option::is_none));
+        drop(batch);
+        assert_eq!(memory.used(), 0);
+        let refused = EmbeddingMemoryBudget::new(bytes - 1);
+        assert!(matches!(
+            CachedLookupBatch::new(ITEMS, &refused),
+            Err(CacheLookupError::Memory(_))
+        ));
+        assert_eq!(refused.used(), 0);
+    }
+
+    #[test]
+    fn mixed_hits_retain_only_actual_hit_owners_and_corruption_releases_attempts() {
+        let fixture = Fixture::new();
+        let mut cache = fixture.cache();
+        let (first, second, missing, corrupt) = (
+            input_identity(1),
+            input_identity(2),
+            input_identity(3),
+            input_identity(4),
+        );
+        cache
+            .store_batch(&[
+                (first, &[0.6, 0.8]),
+                (second, &[0.8, 0.6]),
+                (corrupt, &[0.6, 0.8]),
+            ])
+            .expect("store");
+        fs::write(
+            entry_path(&fixture.directory, &corrupt.as_bytes()),
+            b"invalid",
+        )
+        .expect("corrupt");
+        let budget = EmbeddingMemoryBudget::new(10_000);
+        let mut hits = load_charged_batch(
+            &mut cache,
+            vec![first, missing, second, corrupt],
+            &budget,
+            &AtomicBool::new(false),
+            Instant::now() + Duration::from_secs(2),
+        )
+        .expect("lookup");
+        assert!(hits[0].is_some());
+        assert!(hits[1].is_none());
+        assert!(hits[2].is_some());
+        assert!(hits[3].is_none());
+        assert_eq!(budget.used(), 2 * (8 + 256));
+        let first = hits[0].take().expect("hit");
+        let retained = first.clone();
+        drop(first);
+        assert_eq!(budget.used(), 2 * (8 + 256));
+        drop(hits);
+        assert_eq!(budget.used(), 8 + 256);
+        drop(retained);
+        assert_eq!(budget.used(), 0);
+
+        let exhausted = EmbeddingMemoryBudget::new(263);
+        assert!(
+            load_charged_batch(
+                &mut cache,
+                vec![second],
+                &exhausted,
+                &AtomicBool::new(false),
+                Instant::now() + Duration::from_secs(2)
+            )
+            .is_err()
+        );
+        assert_eq!(exhausted.used(), 0);
+    }
+
+    #[test]
+    fn cancelled_waiter_does_not_release_credit_owned_by_blocked_broker_request() {
+        let budget = EmbeddingMemoryBudget::new(1024);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let cancelled = AtomicBool::new(true);
+        let request_cancelled = Arc::new(AtomicBool::new(false));
+        let (reply, response) = mpsc::sync_channel(1);
+        let (sender, receiver) = mpsc::sync_channel(1);
+        sender
+            .send(CacheBrokerMessage::Lookup {
+                identities: vec![input_identity(1)],
+                cancelled: request_cancelled.clone(),
+                deadline,
+                reply,
+                scratch: budget.reserve(512).expect("scratch"),
+            })
+            .unwrap_or_else(|_| panic!("enqueue"));
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        thread::scope(|scope| {
+            let (entered_worker, release_worker) = (entered.clone(), release.clone());
+            let worker = scope.spawn(move || {
+                let message = receiver.recv().expect("request");
+                entered_worker.wait();
+                release_worker.wait(); // fixture for a filesystem call that has not returned
+                drop(message);
+            });
+            entered.wait();
+            let result =
+                wait_lookup_response(response, Some(&cancelled), &request_cancelled, deadline);
+            let held = budget.used();
+            let latched = request_cancelled.load(Ordering::Acquire);
+            release.wait();
+            worker.join().expect("broker");
+            assert!(matches!(
+                result,
+                Err(CacheLookupError::Process(ProcessError::Cancelled))
+            ));
+            assert!(latched);
+            assert_eq!(held, 512);
+        });
+        assert_eq!(budget.used(), 0);
+    }
+
+    #[test]
+    fn durable_actor_metadata_credit_survives_open_inventory_and_releases_on_exit() {
+        let fixture = Fixture::new();
+        let directory =
+            DirectoryCapability::open_or_create_private(&fixture.directory).expect("directory");
+        let budget = EmbeddingMemoryBudget::new(CACHE_ACTOR_METADATA_CREDITS);
+        let metadata = budget
+            .reserve(CACHE_ACTOR_METADATA_CREDITS)
+            .expect("metadata");
+        let (sender, receiver) = mpsc::sync_channel(1);
+        thread::scope(|scope| {
+            let worker_budget = budget.clone();
+            let worker = scope.spawn(move || {
+                run_cache_broker(receiver, directory, [7; 32], 2, &worker_budget, metadata)
+            });
+            // A lookup response proves actual inventory admission reached the message loop.
+            let (reply, response) = mpsc::sync_channel(1);
+            sender
+                .send(CacheBrokerMessage::Lookup {
+                    identities: Vec::new(),
+                    cancelled: Arc::new(AtomicBool::new(false)),
+                    deadline: Instant::now() + Duration::from_secs(2),
+                    reply,
+                    scratch: budget.reserve(0).expect("zero scratch"),
+                })
+                .unwrap_or_else(|_| panic!("lookup"));
+            let response = response.recv_timeout(Duration::from_secs(2));
+            let held = budget.used();
+            let _ = sender.send(CacheBrokerMessage::Shutdown);
+            drop(sender);
+            worker.join().expect("broker");
+            assert!(response.expect("response").expect("lookup").is_empty());
+            assert_eq!(held, CACHE_ACTOR_METADATA_CREDITS);
+        });
+        assert_eq!(budget.used(), 0);
     }
 
     #[test]

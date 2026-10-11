@@ -955,6 +955,12 @@ impl Fault {
                 format!("the local daemon could not be started or reached: {failure}"),
                 Affordance::startup(failure.recovery()),
             ),
+            ClientError::RequestCancelled(reason) => (
+                FaultSlug::Endpoint,
+                CauseSlug::Unreachable,
+                reason.to_string(),
+                Affordance::None,
+            ),
             ClientError::MutationOutcomeUnknown(kind) => (
                 FaultSlug::Endpoint,
                 CauseSlug::Unreachable,
@@ -975,6 +981,15 @@ impl Fault {
                 format!(
                     "the local endpoint closed this connection ({kind}); \
                      a fresh connection was opened, so retry the command"
+                ),
+                Affordance::Retry,
+            ),
+            ClientError::QueryPreparationDisconnected { basis, kind } => (
+                FaultSlug::Endpoint,
+                CauseSlug::Unreachable,
+                format!(
+                    "the connection closed while exchanging the pinned query at revision {} ({kind}); the read was not restarted against a different revision",
+                    backend_library::encode_id(basis.as_bytes()),
                 ),
                 Affordance::Retry,
             ),

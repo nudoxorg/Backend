@@ -399,6 +399,34 @@ fn find_package_action(
     })
 }
 
+fn find_acquire_actions(source: &FindActionSource, mut actions: facet::browse::acquire::AddActions) -> facet::browse::acquire::AddActions {
+    let add = Rc::clone(&actions.add);
+    let adding = source.clone();
+    actions.add = Rc::new(move |release, window, cx| {
+        match adding.current(cx, |find| find.prepared.candidates.iter()
+            .filter_map(|candidate| candidate.offer.as_ref())
+            .find(|offer| offer.release == release && offer.place.addable()).map(|_| ())) {
+            Ok(()) => add(release, window, cx),
+            Err(reason) => find_action_notice(reason, window, cx),
+        }
+    });
+    let open = Rc::clone(&actions.open);
+    let state = Rc::clone(&actions.state);
+    let opening = source.clone();
+    actions.open = Rc::new(move |package, window, cx| {
+        let offers = opening.current(cx, |find| Some(find.prepared.candidates.iter()
+            .filter_map(|candidate| candidate.offer.as_ref())
+            .map(|offer| (offer.release.clone(), offer.library.clone())).collect::<Vec<_>>()));
+        match offers {
+            Ok(offers) if offers.iter().any(|(release, library)| library.as_ref() == Some(&package)
+                || matches!(state(release, cx), facet::browse::acquire::Adding::Added { open } if open == package)) => open(package, window, cx),
+            Ok(_) => find_action_notice("That addition is no longer in the current Find reading.", window, cx),
+            Err(reason) => find_action_notice(reason, window, cx),
+        }
+    });
+    actions
+}
+
 fn tree_body(route: &BrowseRoute, ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Vec<Leaf> {
     let place = Route::Orbit(OrbitRoute::Browse(route.clone()));
     let plan = RouteDependencies::new(&place, None);
@@ -567,10 +595,7 @@ fn find_actions(
     let reader = cx.weak_entity();
     let held_visit = source.visit.clone();
     let refine_visit = source.visit.clone();
-    let acquire = Some(crate::shell::acquire::add_actions(
-        &ctx.links,
-        cx.entity_id(),
-    ));
+    let acquire = Some(find_acquire_actions(source, crate::shell::acquire::add_actions(&ctx.links, cx.entity_id())));
     facet::browse::find::Actions {
         acquire,
         retry: None,

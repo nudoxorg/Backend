@@ -18,6 +18,7 @@ use std::rc::Rc;
 /// The actions for the view `view`: it redraws as an addition moves.
 pub(crate) fn add_actions(links: &Links, view: EntityId) -> AddActions {
     let (adding, opening) = (links.clone(), links.clone());
+    let generation = crate::host::registry::composed().map(|composition| composition.generation);
     AddActions {
         state: Rc::new(move |release, cx| adding_state(release, Asker::View(view), cx)),
         add: Rc::new(move |release, _, cx| {
@@ -33,13 +34,18 @@ pub(crate) fn add_actions(links: &Links, view: EntityId) -> AddActions {
             }
         }),
         cancel: None,
-    }
+    }.admitted(Rc::new(move |_, _| generation.is_some()
+        && crate::host::registry::composed().map(|composition| composition.generation) == generation))
 }
 
 /// Where adding the release at `purl` stands, in facet's words.
 fn adding_state(purl: &SharedString, asker: Asker, cx: &mut App) -> Adding {
     let Some(release) = Release::from_purl(purl) else { return Adding::Idle };
-    match acquire::stage(&release, asker, cx) {
+    facet_stage(acquire::stage(&release, asker, cx))
+}
+
+pub(crate) fn facet_stage(stage: Option<Stage>) -> Adding {
+    match stage {
         None => Adding::Idle,
         Some(Stage::Queued) => Adding::Working(Step::Waiting),
         Some(Stage::Resolving) => Adding::Working(Step::Resolving),
@@ -74,7 +80,7 @@ pub(crate) fn facet_offer(offer: &Offer) -> facet::browse::acquire::Offer {
 /// library: a registry package reached through a dependency or from Find,
 /// whose own address the owner has not indexed. `None` for a local project,
 /// and for a page that already reads indexed names.
-pub(crate) fn page_offer(dossier: &crate::model::pages::PackageDossier, links: &Links, view: EntityId, measure: &Measure, cx: &mut App) -> Option<AnyElement> {
+pub(crate) fn page_offer(dossier: &crate::model::pages::PackageDossier, links: &Links, view: EntityId, measure: &Measure, admit: Rc<dyn Fn(&mut App) -> bool>, cx: &mut App) -> Option<AnyElement> {
     if dossier.outline.known().is_some_and(|outline| outline.count() > 0) {
         return None;
     }
@@ -85,7 +91,7 @@ pub(crate) fn page_offer(dossier: &crate::model::pages::PackageDossier, links: &
     let source = crate::host::registry::composed()?.source;
     let offer = Offer { availability: source.availability(&release), release, library: None };
     let palette = cx.palette();
-    let actions = add_actions(links, view);
+    let actions = add_actions(links, view).admitted(Rc::new(move |_, cx| admit(cx)));
     Some(
         div()
             .flex()

@@ -133,9 +133,14 @@ impl<'a> CheckerState<'a> {
                 if (flags & symbol_flags::VALUE != 0)
                     && !self.ctx.merged_value_types.contains_key(&sym_id)
                     && !self.merged_alias_value_decl_refs_type_alias(sym_id)
-                    && let Some(val_type) = self.compute_value_type_for_merged_alias(sym_id)
                 {
-                    self.ctx.merged_value_types.insert(sym_id, val_type);
+                    let value_type = self.compute_value_type_for_merged_alias(sym_id);
+                    if self.ctx.types.execution_checkpoint(0).is_err() {
+                        return (TypeId::UNKNOWN, Vec::new());
+                    }
+                    if let Some(val_type) = value_type {
+                        self.ctx.merged_value_types.insert(sym_id, val_type);
+                    }
                 }
 
                 let enclosing_tp_updates = if type_alias.type_parameters.is_none() {
@@ -145,12 +150,18 @@ impl<'a> CheckerState<'a> {
                 };
 
                 let generic_self_circular = self.detect_and_mark_generic_self_circular(sym_id);
+                if self.ctx.types.execution_checkpoint(0).is_err() {
+                    self.pop_type_parameters(enclosing_tp_updates);
+                    return (TypeId::UNKNOWN, Vec::new());
+                }
 
                 let (mut alias_type, params) = if has_cross_arena_metadata {
                     let mut result = self.lower_cross_arena_type_alias_declaration(
                         sym_id, decl_idx, decl_arena, type_alias,
                     );
-                    if (result.0 == TypeId::ANY
+                    if self.ctx.types.execution_checkpoint(0).is_err() {
+                        result.0 = TypeId::UNKNOWN;
+                    } else if (result.0 == TypeId::ANY
                         || result.0 == TypeId::UNKNOWN
                         || result.0 == TypeId::ERROR)
                         && let Some(resolved) = self
@@ -171,7 +182,9 @@ impl<'a> CheckerState<'a> {
                         let (mut at, params) = result;
                         let (_, tp_updates) =
                             self.push_type_parameters(&type_alias.type_parameters);
-                        at = self.resolve_type_queries_with_flow(at, type_alias.type_node);
+                        if self.ctx.types.execution_checkpoint(0).is_ok() {
+                            at = self.resolve_type_queries_with_flow(at, type_alias.type_node);
+                        }
                         self.pop_type_parameters(tp_updates);
                         (at, params)
                     } else {
@@ -183,16 +196,21 @@ impl<'a> CheckerState<'a> {
                         decl_arena,
                         type_alias.type_node,
                     );
-                    let mut alias_type = if self.alias_ast_is_deferred(sym_id)
+                    let mut alias_type = if self.ctx.types.execution_checkpoint(0).is_err() {
+                        TypeId::UNKNOWN
+                    } else if self.alias_ast_is_deferred(sym_id)
                         && self.alias_ast_refs_symbol_or_resolution_chain_alias(
                             type_alias.type_node,
                             sym_id,
-                        ) {
+                        )
+                    {
                         crate::TypeNodeChecker::new(&mut self.ctx).check(type_alias.type_node)
                     } else {
                         self.get_type_from_type_node(type_alias.type_node)
                     };
-                    if std::ptr::eq(decl_arena, self.ctx.arena) {
+                    if std::ptr::eq(decl_arena, self.ctx.arena)
+                        && self.ctx.types.execution_checkpoint(0).is_ok()
+                    {
                         alias_type =
                             self.resolve_type_queries_with_flow(alias_type, type_alias.type_node);
                     }
@@ -201,6 +219,12 @@ impl<'a> CheckerState<'a> {
                 };
 
                 self.pop_type_parameters(enclosing_tp_updates);
+                if self.ctx.types.execution_checkpoint(0).is_err() {
+                    // Type-node lowering can recurse through many source-level
+                    // aliases. Do not publish the UNKNOWN sentinel returned
+                    // after a project stop as a completed alias body.
+                    return (TypeId::UNKNOWN, params);
+                }
 
                 if params.is_empty() {
                     let db = self.ctx.types;
@@ -214,11 +238,17 @@ impl<'a> CheckerState<'a> {
                         )
                     {
                         let evaluated = self.evaluate_type_with_env(alias_type);
+                        if self.ctx.types.execution_checkpoint(0).is_err() {
+                            return (TypeId::UNKNOWN, params);
+                        }
                         if evaluated != alias_type {
                             let mark_computed = !self.type_node_contains_kind(
                                 type_alias.type_node,
                                 syntax_kind_ext::TYPE_QUERY,
                             );
+                            if self.ctx.types.execution_checkpoint(0).is_err() {
+                                return (TypeId::UNKNOWN, params);
+                            }
                             alias_type = evaluated;
                             if mark_computed {
                                 self.ctx.definition_store.mark_body_as_computed(alias_type);
@@ -252,11 +282,17 @@ impl<'a> CheckerState<'a> {
                     && !decl_has_parse_error;
                 let is_non_generic_mapped_cycle = params.is_empty()
                     && self.is_non_generic_mapped_type_circular(sym_id, type_alias.type_node);
+                if self.ctx.types.execution_checkpoint(0).is_err() {
+                    return (TypeId::UNKNOWN, params);
+                }
                 // A non-array tuple spread that re-enters the alias forces
                 // resolution and is circular (`type T = [number, ...T]`), unlike
                 // a plain element or an array spread (`...T[]`), which defer.
                 let is_tuple_self_spread_cycle = params.is_empty()
                     && self.tuple_alias_body_forces_resolution_chain(sym_id, type_alias.type_node);
+                if self.ctx.types.execution_checkpoint(0).is_err() {
+                    return (TypeId::UNKNOWN, params);
+                }
                 // `keyof` forces its operand's apparent type, so a self-reference
                 // reached through `keyof` re-enters the alias mid-resolution and is
                 // circular (`type A = keyof A`), unlike a deferred array element or
@@ -267,8 +303,14 @@ impl<'a> CheckerState<'a> {
                     && self
                         .keyof_operand_reaches_resolution_chain_alias(alias_type)
                         .is_some();
+                if self.ctx.types.execution_checkpoint(0).is_err() {
+                    return (TypeId::UNKNOWN, params);
+                }
                 let is_jsx_runtime_bridge_alias = self
                     .is_jsx_import_source_runtime_bridge_alias(decl_arena, type_alias.type_node);
+                if self.ctx.types.execution_checkpoint(0).is_err() {
+                    return (TypeId::UNKNOWN, params);
+                }
                 let is_circular = circularity_eligible
                     && !is_jsx_runtime_bridge_alias
                     && (generic_self_circular
@@ -285,6 +327,9 @@ impl<'a> CheckerState<'a> {
                         || is_non_generic_mapped_cycle
                         || is_tuple_self_spread_cycle
                         || is_keyof_eager_self_cycle);
+                if self.ctx.types.execution_checkpoint(0).is_err() {
+                    return (TypeId::UNKNOWN, params);
+                }
                 if is_circular && !self.has_parse_errors() {
                     use crate::diagnostics::{
                         diagnostic_codes, diagnostic_messages, format_message,
@@ -341,6 +386,9 @@ impl<'a> CheckerState<'a> {
                             sym_id,
                         );
                     }
+                    if self.ctx.types.execution_checkpoint(0).is_err() {
+                        return (TypeId::UNKNOWN, params);
+                    }
                     if generic_self_circular {
                         self.register_generic_circular_alias_error(sym_id);
                         return (TypeId::ERROR, Vec::new());
@@ -360,6 +408,10 @@ impl<'a> CheckerState<'a> {
                     // collapsing the branch to ERROR or hiding the original
                     // meta-type structure behind a self-lazy placeholder.
                     return (alias_type, params);
+                }
+
+                if self.ctx.types.execution_checkpoint(0).is_err() {
+                    return (TypeId::UNKNOWN, params);
                 }
 
                 // CRITICAL FIX: Always create DefId for type aliases, not just when they have type parameters
@@ -392,9 +444,14 @@ impl<'a> CheckerState<'a> {
                 // value side after the alias body is available.
                 if (flags & symbol_flags::VALUE != 0)
                     && !self.ctx.merged_value_types.contains_key(&sym_id)
-                    && let Some(val_type) = self.compute_value_type_for_merged_alias(sym_id)
                 {
-                    self.ctx.merged_value_types.insert(sym_id, val_type);
+                    let value_type = self.compute_value_type_for_merged_alias(sym_id);
+                    if self.ctx.types.execution_checkpoint(0).is_err() {
+                        return (TypeId::UNKNOWN, params);
+                    }
+                    if let Some(val_type) = value_type {
+                        self.ctx.merged_value_types.insert(sym_id, val_type);
+                    }
                 }
 
                 // Return the params that were used during lowering - this ensures
@@ -1210,14 +1267,22 @@ impl<'a> CheckerState<'a> {
                             let me_type = self.get_type_of_symbol(module_exports_sym);
                             export_equals_type = Some(self.widen_type_for_display(me_type));
                         }
-                        let surface = exports_table_target
-                            .map(|target_idx| self.resolve_js_export_surface(target_idx))
-                            .or_else(|| {
-                                self.resolve_js_export_surface_for_module(
-                                    module_name,
-                                    declaring_file_idx,
-                                )
-                            });
+                        let surface = if configured {
+                            // A JS surface belongs to the selected File request.
+                            // An External namespace cannot borrow a program file
+                            // admitted for a different kind or mode.
+                            configured_target
+                                .map(|target_idx| self.resolve_js_export_surface(target_idx))
+                        } else {
+                            exports_table_target
+                                .map(|target_idx| self.resolve_js_export_surface(target_idx))
+                                .or_else(|| {
+                                    self.resolve_js_export_surface_for_module(
+                                        module_name,
+                                        declaring_file_idx,
+                                    )
+                                })
+                        };
                         let mut props: Vec<PropertyInfo> = if surface
                             .as_ref()
                             .is_some_and(|s| s.has_commonjs_exports)

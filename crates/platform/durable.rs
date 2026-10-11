@@ -103,6 +103,21 @@ pub fn ensure_private_directory(path: &Path) -> io::Result<()> {
     ensure_private_directory_platform(path)
 }
 
+/// Checks existing private-directory admission without changing the filesystem.
+///
+/// An absent parent or final directory is left for the durable initializer.
+/// Existing objects must meet the same admission rules as
+/// [`ensure_private_directory`]. This snapshot does not replace the
+/// initializer's checks: a later owner must repeat admission before using it.
+/// No directory is created, repaired, or flushed by this check.
+///
+/// # Errors
+/// Returns an error for an existing unsafe parent or final directory, or an
+/// I/O failure other than an absent candidate.
+pub fn validate_private_directory_candidate(path: &Path) -> io::Result<()> {
+    validate_private_directory_candidate_platform(path)
+}
+
 /// Creates or verifies one owner-only application-state directory beneath an
 /// existing operating-system data directory.
 ///
@@ -334,17 +349,9 @@ fn remove_private_platform(_path: &Path) -> io::Result<()> {
 
 #[cfg(unix)]
 fn ensure_private_directory_platform(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as _};
+    use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 
-    let parent = parent(path);
-    validate_unix_parent(parent)?;
-    let parent_metadata = fs::symlink_metadata(parent)?;
-    if parent_metadata.mode() & 0o300 != 0o300 {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "private state directory parent is not writable and searchable by its owner",
-        ));
-    }
+    validate_unix_directory_parent(parent(path))?;
 
     match open_unix_private_directory(path) {
         Ok(directory) => flush_unix_private_directory(path, &directory),
@@ -366,6 +373,36 @@ fn ensure_private_directory_platform(path: &Path) -> io::Result<()> {
         }
         Err(error) => Err(error),
     }
+}
+
+#[cfg(unix)]
+fn validate_private_directory_candidate_platform(path: &Path) -> io::Result<()> {
+    match validate_unix_directory_parent(parent(path)) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    }
+    match open_unix_private_directory(path) {
+        Ok(directory) => validate_unix_private_directory(&directory),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(unix)]
+fn validate_unix_directory_parent(parent: &Path) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    validate_unix_parent(parent)?;
+    let parent_metadata = fs::symlink_metadata(parent)?;
+    if parent_metadata.mode() & 0o300 != 0o300 {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "private state directory parent is not writable and searchable by its owner",
+        ));
+    }
+
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -477,12 +514,7 @@ fn rustix_io(error: rustix::io::Errno) -> io::Error {
 fn ensure_private_directory_platform(path: &Path) -> io::Result<()> {
     use crate::win32::workspace_fs::WorkspaceRoot;
 
-    let name = path.file_name().and_then(OsStr::to_str).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "private Windows directory needs a Unicode final component",
-        )
-    })?;
+    let name = private_windows_directory_name(path)?;
     let parent = WorkspaceRoot::open(parent(path))?;
     match parent.open_dir_checked(&[name]) {
         Ok(directory) => {
@@ -507,8 +539,43 @@ fn ensure_private_directory_platform(path: &Path) -> io::Result<()> {
     }
 }
 
+#[cfg(windows)]
+fn validate_private_directory_candidate_platform(path: &Path) -> io::Result<()> {
+    use crate::win32::workspace_fs::WorkspaceRoot;
+
+    let name = private_windows_directory_name(path)?;
+    let parent = match WorkspaceRoot::open(parent(path)) {
+        Ok(parent) => parent,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    match parent.open_dir_checked(&[name]) {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(windows)]
+fn private_windows_directory_name(path: &Path) -> io::Result<&str> {
+    path.file_name().and_then(OsStr::to_str).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "private Windows directory needs a Unicode final component",
+        )
+    })
+}
+
 #[cfg(not(any(unix, windows)))]
 fn ensure_private_directory_platform(_path: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "private durable state directories are not supported on this platform",
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn validate_private_directory_candidate_platform(_path: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "private durable state directories are not supported on this platform",
@@ -880,6 +947,95 @@ mod tests {
         #[cfg(windows)]
         crate::win32::security::restrict_to_current_user(&root).expect("protect fixture directory");
         root
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn candidate_validation_creates_nothing_and_preserves_existing_private_state() {
+        let root = private_fixture("private-candidate");
+        let absent = root.join("absent-state");
+        validate_private_directory_candidate(&absent).expect("absent final directory is deferred");
+        assert!(!absent.exists());
+        let absent_parent = root.join("absent-parent");
+        validate_private_directory_candidate(&absent_parent.join("state"))
+            .expect("absent parent is deferred to the durable owner");
+        assert!(!absent_parent.exists());
+
+        let state = root.join("state");
+        ensure_private_directory(&state).expect("establish durable fixture state");
+        let secret = state.join("authority.secret");
+        write_private_atomic(&secret, &[0x41; 32]).expect("plant admitted authority");
+        for _ in 0..2 {
+            validate_private_directory_candidate(&state).expect("read-only existing admission");
+            assert_eq!(fs::read(&secret).expect("unchanged authority"), [0x41; 32]);
+            assert_eq!(
+                fs::read_dir(&state)
+                    .expect("unchanged state contents")
+                    .count(),
+                1
+            );
+        }
+        assert_eq!(
+            fs::read_dir(&root).expect("no created candidates").count(),
+            1
+        );
+        fs::remove_dir_all(root).expect("remove candidate fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn candidate_validation_preserves_private_refusals_without_permission_repair() {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+        let root = private_fixture("private-candidate-refusal");
+        let state = root.join("state");
+        ensure_private_directory(&state).expect("establish fixture state");
+        let secret = state.join("authority.secret");
+        write_private_atomic(&secret, &[0x41; 32]).expect("plant authority");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).expect("invalid parent");
+        let error = validate_private_directory_candidate(&state).expect_err("unsafe parent");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            error.to_string(),
+            "private state parent is not owned by this user with owner-only access"
+        );
+        assert_eq!(
+            fs::metadata(&root)
+                .expect("parent mode")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        assert_eq!(fs::read(&secret).expect("unchanged authority"), [0x41; 32]);
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).expect("restore parent");
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o755)).expect("invalid child");
+        let error = validate_private_directory_candidate(&state).expect_err("unsafe child");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            error.to_string(),
+            "private state directory is not owner-owned, owner-accessible, and owner-only"
+        );
+        assert_eq!(
+            fs::metadata(&state)
+                .expect("child mode")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).expect("restore child");
+        let link = root.join("linked-state");
+        symlink(&state, &link).expect("final-component symlink");
+        assert!(validate_private_directory_candidate(&link).is_err());
+        assert!(
+            fs::symlink_metadata(&link)
+                .expect("unchanged link")
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(fs::read(&secret).expect("retained authority"), [0x41; 32]);
+        fs::remove_dir_all(root).expect("remove candidate refusal fixture");
     }
 
     /// A reader that opens a private state file just before a replacing rename must read the

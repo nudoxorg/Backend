@@ -678,25 +678,28 @@ pub(crate) fn package_summary(
 }
 
 fn fault(error: ClientError) -> EngineFault {
-    EngineFault::Failed(crate::core::ErrorValue::new(
-        match error {
-            ClientError::Protocol(_) | ClientError::IncoherentView => FaultCode::Protocol,
-            ClientError::Startup(_) | ClientError::Disconnected(_) | ClientError::MutationOutcomeUnknown(_) | ClientError::Io(_) | ClientError::Transport(_) | ClientError::RemoteDeadlineExceeded => {
-                FaultCode::Transport
-            }
-            ClientError::CommandFailed(_) => FaultCode::Missing,
-            ClientError::BasisMismatch { .. }
-            | ClientError::FreshnessMismatch
-            | ClientError::RequestMismatch { .. }
-            | ClientError::CursorMismatch
-            | ClientError::StaleCursor
-            | ClientError::StaleSelection
-            | ClientError::StaleRemoteRoot { .. }
-            | ClientError::StaleRemoteCapability
-            | ClientError::RemoteCapabilityRevoked => FaultCode::Cancelled,
-        },
-        error.to_string(),
-    ))
+    let code = match error {
+        ClientError::RequestCancelled(_) => return EngineFault::Cancelled,
+        ClientError::Protocol(_) | ClientError::IncoherentView => FaultCode::Protocol,
+        ClientError::Startup(_)
+        | ClientError::Disconnected(_)
+        | ClientError::QueryPreparationDisconnected { .. }
+        | ClientError::MutationOutcomeUnknown(_)
+        | ClientError::Io(_)
+        | ClientError::Transport(_)
+        | ClientError::RemoteDeadlineExceeded => FaultCode::Transport,
+        ClientError::CommandFailed(_) => FaultCode::Missing,
+        ClientError::BasisMismatch { .. }
+        | ClientError::FreshnessMismatch
+        | ClientError::RequestMismatch { .. }
+        | ClientError::CursorMismatch
+        | ClientError::StaleCursor
+        | ClientError::StaleSelection
+        | ClientError::StaleRemoteRoot { .. }
+        | ClientError::StaleRemoteCapability
+        | ClientError::RemoteCapabilityRevoked => FaultCode::Cancelled,
+    };
+    EngineFault::Failed(crate::core::ErrorValue::new(code, error.to_string()))
 }
 
 fn owner_fault(fault: OwnerFault) -> EngineFault {

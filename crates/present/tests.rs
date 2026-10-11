@@ -1865,3 +1865,30 @@ fn corpus_preparation_fault_keeps_typed_readiness_and_exact_search_retry() {
         assert!(fault.cause().sentence().contains("retry this same query"));
     }
 }
+
+#[test]
+fn pinned_query_preparation_disconnect_remains_an_endpoint_fault_with_original_revision() {
+    let revision = basis().root;
+    let fault = Fault::from_client_error(
+        &backend_client::ClientError::QueryPreparationDisconnected {
+            basis: revision.into(),
+            kind: std::io::ErrorKind::ConnectionReset,
+        },
+        Operand::Text("Environment".to_owned()),
+    );
+    assert_eq!(fault.slug(), FaultSlug::Endpoint);
+    assert_eq!(fault.cause().slug(), CauseSlug::Unreachable);
+    assert!(
+        fault
+            .cause()
+            .sentence()
+            .contains(&backend_library::encode_id(revision.as_bytes()))
+    );
+    assert!(
+        fault
+            .cause()
+            .sentence()
+            .contains("not restarted against a different revision")
+    );
+    assert!(fault.render(None).contains("Environment"));
+}

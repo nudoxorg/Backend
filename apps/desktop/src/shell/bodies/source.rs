@@ -1671,9 +1671,13 @@ mod tests {
             .is_some_and(|words| words.contains("pub enum RelationLabel")),
             "the fresh native control copies the visible bounded source");
 
-        let other_owner = rig.cx.update(|window, cx| {
-            let targets = rig.shell.read(cx).reader_targets(cx);
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        rig.cx.update(|window, cx| {
             assert!(targets.focus_native("source-jump-go", window, cx), "the unrelated Go control owns native focus");
+        });
+        let other_owner = rig.cx.update(|window, cx| {
+            assert_eq!(targets.native_focused(window).as_deref(), Some("source-jump-go"),
+                "the admitted Go receiver owns focus after the deferred effect");
             window.focused(cx).expect("Go control focus")
         });
         rig.cx.write_to_clipboard(gpui::ClipboardItem::new_string("stale-copy-sentinel".into()));
@@ -2043,8 +2047,8 @@ mod tests {
         rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
         rig.settle();
         assert_eq!(rig.route(), before, "the pager stays on this Source route");
-        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).0), Zone::Shelf,
-            "pointer focus did not perform a Shell zone walk");
+        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).0), Zone::Reader,
+            "the mounted pager's native focus must select its Reader input zone");
         let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
         assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(),
             Some("source-page-top-next"), "the pointer focused the mounted pager button");
@@ -2082,10 +2086,18 @@ mod tests {
         let at = order.iter().position(|id| id == "source-page-top-next").expect("pager in Reader walk order");
         let next = order.get(at + 1).expect("Reader walk continues after pager").clone();
         rig.keys("j");
-        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)), (Zone::Reader, Some(next)));
+        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)), (Zone::Reader, Some(next.clone())));
+        // The next stop is a real text input: letters edit it rather than
+        // invoking the Shell's walk. Return to the pager before testing K.
+        assert_eq!(next.as_ref(), "source-jump-field");
         rig.keys("k");
-        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1.as_deref(), Some("source-page-top-next"));
+        assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(), Some("source-jump-field"));
+        rig.keys("shift-tab");
         assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(), Some("source-page-top-next"));
+        let previous = order.get(at - 1).expect("previous pager stop");
+        rig.keys("k");
+        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1.as_ref(), Some(previous));
+        assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_ref(), Some(previous));
     }
 
     #[gpui::test]

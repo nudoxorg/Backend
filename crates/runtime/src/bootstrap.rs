@@ -453,13 +453,26 @@ impl Channel {
 pub fn start_locald(
     paths: &WorkspacePaths,
     response_budget: Duration,
+    progress: impl FnMut(StartupPhase),
+) -> Result<LocaldStartup, RuntimeError> {
+    start_locald_cancellable(paths, response_budget, progress, || true)
+}
+
+/// Stops this launcher's readiness wait when its request is cancelled.
+/// The detached owner candidate retains its existing idle retirement policy.
+/// # Errors
+/// Returns the same startup admission failures as `start_locald`.
+pub fn start_locald_cancellable(
+    paths: &WorkspacePaths,
+    response_budget: Duration,
     mut progress: impl FnMut(StartupPhase),
+    mut keep_waiting: impl FnMut() -> bool,
 ) -> Result<LocaldStartup, RuntimeError> {
     let started = Instant::now();
     let deadline = started
         .checked_add(response_budget.min(LIVE_START_TIMEOUT))
         .unwrap_or(started);
-    if response_budget.is_zero() {
+    if response_budget.is_zero() || !keep_waiting() {
         return Ok(not_started());
     }
     if backend_platform::local::connect_timeout(
@@ -481,7 +494,7 @@ pub fn start_locald(
         authority_secret: super::lexically_absolute(paths.authority_secret()),
     };
     super::validate_endpoint_length(paths.endpoint())?;
-    let executable = locald_executable()?;
+    let executable = resolve_candidate_executable(&paths, locald_executable)?;
     let mut command = Command::new(&executable);
     SpawnedOwnerBootstrap::configure(&paths, &mut command)?;
     command
@@ -498,13 +511,27 @@ pub fn start_locald(
     // The pipe supersedes only this launcher's transient file receipt.
     command.env_remove(super::STARTUP_DIAGNOSTIC_ENV);
     detach(&mut command);
-    if Instant::now() >= deadline {
+    if Instant::now() >= deadline || !keep_waiting() {
         return Ok(not_started());
     }
     let child = command
         .spawn()
         .map_err(|source| RuntimeError::Spawn { executable, source })?;
-    observe_owned_candidate(&paths, child, deadline, &mut progress)
+    observe_owned_candidate_cancellable(&paths, child, deadline, &mut progress, &mut keep_waiting)
+}
+
+fn resolve_candidate_executable(
+    paths: &WorkspacePaths,
+    resolve: impl FnOnce() -> Result<PathBuf, RuntimeError>,
+) -> Result<PathBuf, RuntimeError> {
+    // A known invalid explicit state boundary is an operand refusal even if
+    // no companion is installed. This check is read-only; absent directories
+    // and default application-owned permission repair remain child-owned.
+    if paths.private_application_root.is_none() {
+        backend_platform::durable::validate_private_directory_candidate(paths.data())
+            .map_err(RuntimeError::Io)?;
+    }
+    resolve()
 }
 
 /// Only Ready/Pending relinquishes the exact child to the existing owner
@@ -525,11 +552,22 @@ impl Drop for StartupChild {
     }
 }
 
+#[cfg(test)]
 fn observe_owned_candidate(
     paths: &WorkspacePaths,
     child: Child,
     deadline: Instant,
     progress: &mut impl FnMut(StartupPhase),
+) -> Result<LocaldStartup, RuntimeError> {
+    observe_owned_candidate_cancellable(paths, child, deadline, progress, &mut || true)
+}
+
+fn observe_owned_candidate_cancellable(
+    paths: &WorkspacePaths,
+    child: Child,
+    deadline: Instant,
+    progress: &mut impl FnMut(StartupPhase),
+    keep_waiting: &mut impl FnMut() -> bool,
 ) -> Result<LocaldStartup, RuntimeError> {
     let mut candidate = StartupChild {
         child,
@@ -541,7 +579,14 @@ fn observe_owned_candidate(
         .take()
         .ok_or(RuntimeError::StartupChannel("startup pipe missing"))?;
     backend_platform::child_output::configure(&pipe).map_err(RuntimeError::Io)?;
-    let result = wait_for_owner(paths, &mut candidate.child, &mut pipe, deadline, progress)?;
+    let result = wait_for_owner_cancellable(
+        paths,
+        &mut candidate.child,
+        &mut pipe,
+        deadline,
+        progress,
+        keep_waiting,
+    )?;
     candidate.handed_off = true;
     Ok(result)
 }
@@ -554,16 +599,35 @@ fn not_started() -> LocaldStartup {
     })
 }
 
+#[cfg(test)]
 fn wait_for_owner(
+    paths: &WorkspacePaths,
+    child: &mut Child,
+    pipe: &mut ChildStdout,
+    deadline: Instant,
+    progress: &mut impl FnMut(StartupPhase),
+) -> Result<LocaldStartup, RuntimeError> {
+    wait_for_owner_cancellable(paths, child, pipe, deadline, progress, &mut || true)
+}
+
+fn wait_for_owner_cancellable(
     paths: &WorkspacePaths,
     child: &mut Child,
     pipe: &mut ChildStdout,
     mut deadline: Instant,
     progress: &mut impl FnMut(StartupPhase),
+    keep_waiting: &mut impl FnMut() -> bool,
 ) -> Result<LocaldStartup, RuntimeError> {
     let mut channel = Channel::new();
     let mut child_exit = None;
     loop {
+        if !keep_waiting() {
+            return Ok(LocaldStartup::Pending(StartupPending {
+                candidate_pid: Some(child.id()),
+                phase: channel.phase,
+                contender_exited: child_exit.is_some(),
+            }));
+        }
         channel.read(pipe, progress)?;
         let remaining = deadline.saturating_duration_since(Instant::now());
         if !remaining.is_zero()
@@ -906,6 +970,135 @@ mod tests {
     }
 
     #[test]
+    fn existing_explicit_state_refusal_precedes_missing_companion_without_writes() {
+        let root = super::super::tests::socket_test_directory("startup-invalid-existing-parent");
+        std::fs::create_dir_all(&root).expect("fixture root");
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755))
+            .expect("deliberately shared explicit parent");
+        let paths = paths(&root);
+        std::fs::create_dir(paths.data()).expect("existing state");
+        std::fs::set_permissions(paths.data(), std::fs::Permissions::from_mode(0o700))
+            .expect("private state child");
+        std::fs::write(paths.authority_secret(), [0x41; 32]).expect("planted authority");
+        std::fs::set_permissions(
+            paths.authority_secret(),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .expect("private authority");
+        let error = resolve_candidate_executable(&paths, || {
+            panic!("invalid explicit state must be refused before companion discovery")
+        })
+        .expect_err("private parent refusal");
+        let RuntimeError::Io(error) = error else {
+            panic!("exact filesystem cause retained")
+        };
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            error.to_string(),
+            "private state parent is not owned by this user with owner-only access"
+        );
+        assert_eq!(
+            std::fs::metadata(&root)
+                .expect("unchanged parent")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        assert_eq!(
+            std::fs::metadata(paths.data())
+                .expect("unchanged child")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::read(paths.authority_secret()).expect("unchanged authority"),
+            [0x41; 32]
+        );
+        assert!(!paths.endpoint().exists());
+        assert_eq!(
+            std::fs::read_dir(&root)
+                .expect("no startup side effects")
+                .count(),
+            1
+        );
+        std::fs::remove_dir_all(root).expect("remove startup refusal fixture");
+    }
+
+    #[test]
+    fn absent_explicit_state_and_default_permission_repair_preserve_missing_companion_cause() {
+        let root = super::super::tests::socket_test_directory("startup-deferred-state");
+        std::fs::create_dir_all(&root).expect("fixture root");
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+            .expect("private root");
+        let missing = root.join("missing-locald");
+        for paths in [paths(&root), paths(&root.join("absent-parent"))] {
+            let error = resolve_candidate_executable(&paths, || {
+                Err(RuntimeError::MissingExecutable(missing.clone()))
+            })
+            .expect_err("missing companion remains the first known refusal");
+            assert!(matches!(error, RuntimeError::MissingExecutable(path) if path == missing));
+            assert!(!paths.data().exists());
+            assert!(!paths.authority_secret().exists());
+        }
+        assert!(!root.join("absent-parent").exists());
+        assert_eq!(
+            std::fs::read_dir(&root)
+                .expect("no created candidates")
+                .count(),
+            0
+        );
+
+        // Default application-owned state can require permission repair. The
+        // client must defer that work and its admission to the owner child.
+        let mut paths = paths(&root);
+        let application_root = ApplicationStateRoot::new(root.clone(), &[]);
+        paths.data = default_workspace_path(&paths.project, &application_root.path());
+        paths.authority_secret = paths.data.join("authority.secret");
+        paths.private_application_root = Some(application_root);
+        std::fs::create_dir_all(paths.data()).expect("default child requiring repair");
+        let application = root.join(super::super::APPLICATION_DIRECTORY);
+        std::fs::set_permissions(&application, std::fs::Permissions::from_mode(0o755))
+            .expect("legacy application directory");
+        std::fs::set_permissions(paths.data(), std::fs::Permissions::from_mode(0o755))
+            .expect("public default child");
+        SpawnedOwnerBootstrap::configure(&paths, &mut Command::new(&missing))
+            .expect("genuine captured default layout");
+        let error = resolve_candidate_executable(&paths, || {
+            Err(RuntimeError::MissingExecutable(missing.clone()))
+        })
+        .expect_err("default repair remains child-owned");
+        assert!(matches!(error, RuntimeError::MissingExecutable(path) if path == missing));
+        assert_eq!(
+            std::fs::metadata(paths.data())
+                .expect("unrepaired default child")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        assert!(!paths.authority_secret().exists());
+        assert!(!paths.endpoint().exists());
+        assert_eq!(
+            std::fs::metadata(&application)
+                .expect("unrepaired application boundary")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        assert_eq!(
+            std::fs::read_dir(&root)
+                .expect("only deliberate default fixture")
+                .count(),
+            1
+        );
+        std::fs::remove_dir_all(root).expect("remove deferred startup fixture");
+    }
+
+    #[test]
     fn already_running_and_zero_budget_paths_create_no_state_or_candidate() {
         let root = super::super::tests::socket_test_directory("startup-live-or-zero");
         std::fs::create_dir_all(&root).expect("fixture root");
@@ -930,6 +1123,27 @@ mod tests {
         assert!(!paths.data().exists());
         assert!(!paths.authority_secret().exists());
         drop(listener);
+        std::fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn cancelled_before_startup_dispatch_creates_no_state_or_candidate() {
+        let root = super::super::tests::socket_test_directory("startup-cancel-before-dispatch");
+        std::fs::create_dir_all(&root).expect("fixture root");
+        let paths = paths(&root);
+        let result = start_locald_cancellable(
+            &paths,
+            Duration::from_secs(30),
+            |_| panic!("cancelled caller cannot dispatch startup"),
+            || false,
+        );
+        let LocaldStartup::Pending(pending) = result.expect("cancelled before startup") else {
+            panic!("no owner attached");
+        };
+        assert_eq!(pending.candidate_pid(), None);
+        assert!(!paths.data().exists());
+        assert!(!paths.authority_secret().exists());
+        assert!(!paths.endpoint().exists());
         std::fs::remove_dir_all(root).expect("remove fixture");
     }
 
@@ -1248,6 +1462,46 @@ mod tests {
         );
         assert_eq!(pending.phase(), StartupPhase::PrivateState);
         assert!(!pending.contender_exited());
+        assert!(!paths.data().exists());
+        std::fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn cancelled_readiness_wait_hands_off_shared_owner_without_killing_it() {
+        use rustix::process::{Pid, WaitOptions, waitpid};
+        let root = super::super::tests::socket_test_directory("startup-cancel-shared-owner");
+        std::fs::create_dir_all(&root).expect("fixture root");
+        let paths = paths(&root);
+        let child = Command::new("/bin/sh")
+            .args(["-c", "printf 'nudox.local-startup-pipe.v1\\nphase:admitted\\nphase:private-state\\n'; kill -STOP $$"])
+            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("owned valid peer");
+        let pid = Pid::from_raw(child.id().cast_signed()).expect("child PID");
+        let peer = UnreapedPeer(pid);
+        let active = std::cell::Cell::new(true);
+        let started = Instant::now();
+        let result = observe_owned_candidate_cancellable(
+            &paths,
+            child,
+            started + Duration::from_secs(30),
+            &mut |phase| {
+                if phase == StartupPhase::PrivateState {
+                    active.set(false);
+                }
+            },
+            &mut || active.get(),
+        );
+        let live = matches!(waitpid(Some(pid), WaitOptions::NOHANG), Ok(None));
+        drop(peer); // retire only this test's unreaped exact child before assertions
+        let LocaldStartup::Pending(pending) = result.expect("cancelled readiness handoff") else {
+            panic!("no endpoint");
+        };
+        assert!(live, "caller cancellation must not kill the shared owner");
+        assert_eq!(
+            pending.candidate_pid(),
+            Some(pid.as_raw_pid().cast_unsigned())
+        );
+        assert_eq!(pending.phase(), StartupPhase::PrivateState);
+        assert!(started.elapsed() < Duration::from_secs(3));
         assert!(!paths.data().exists());
         std::fs::remove_dir_all(root).expect("remove fixture");
     }

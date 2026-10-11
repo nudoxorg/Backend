@@ -8,10 +8,11 @@
 
 use super::compiler::{EmbeddingProvisioningFailure, EmbeddingRequirement};
 use backend_compile::{
-    EmbeddingArtifact, EmbeddingExecutable, EmbeddingNormalization, EmbeddingRuntimeSpecV1,
-    ExecutableIdentity, MAX_EMBEDDING_BATCH_COORDINATE_BYTES, MAX_EMBEDDING_BATCH_METADATA_BYTES,
-    MAX_EMBEDDING_CACHE_COORDINATE_BYTES, MAX_EMBEDDING_MODEL_BYTES, MAX_EMBEDDING_TOKENIZER_BYTES,
-    ProcessEnvironment, ProcessLimits, ToolchainArtifact,
+    EmbeddingArtifact, EmbeddingExecutable, EmbeddingMemoryAdmission, EmbeddingNormalization,
+    EmbeddingRuntimeSpecV1, ExecutableIdentity, MAX_EMBEDDING_BATCH_COORDINATE_BYTES,
+    MAX_EMBEDDING_BATCH_METADATA_BYTES, MAX_EMBEDDING_CACHE_COORDINATE_BYTES,
+    MAX_EMBEDDING_MODEL_BYTES, MAX_EMBEDDING_TOKENIZER_BYTES, ProcessEnvironment, ProcessLimits,
+    ToolchainArtifact,
 };
 use std::fs;
 use std::io::Read;
@@ -552,6 +553,33 @@ fn activate_config(
     config_path: &Path,
     config: &PersistedEmbeddingRuntimeConfig,
 ) -> Result<EmbeddingExecutable, EmbeddingUnavailableReason> {
+    let process_limits = config
+        .limits
+        .process_limits()
+        .map_err(|error| match error {
+            EmbeddingRuntimeError::Process(backend_compile::ProcessError::UnsupportedLimit(_)) => {
+                EmbeddingUnavailableReason::UnsupportedResourceLimit
+            }
+            _ => EmbeddingUnavailableReason::ActivationFailed,
+        })?;
+    if process_limits.unsupported_limit().is_some() {
+        return Err(EmbeddingUnavailableReason::UnsupportedResourceLimit);
+    }
+    let memory = EmbeddingMemoryAdmission::new(
+        config.limits.resident_credit_bytes,
+        usize::try_from(config.model_bytes)
+            .map_err(|_| EmbeddingUnavailableReason::ActivationFailed)?,
+        usize::try_from(config.tokenizer_bytes)
+            .map_err(|_| EmbeddingUnavailableReason::ActivationFailed)?,
+        process_limits,
+    )
+    .map_err(|_| EmbeddingUnavailableReason::ActivationFailed)?;
+    // Vec -> Arc materialization can temporarily own both buffers. Reserve that peak before reads.
+    let materialization_bytes = config.model_bytes.max(config.tokenizer_bytes);
+    let materialization = memory
+        .budget()
+        .reserve(materialization_bytes)
+        .map_err(|_| EmbeddingUnavailableReason::ActivationFailed)?;
     let model_path = artifact_path(config_path, config.spec.model(), "model");
     let tokenizer_path = artifact_path(config_path, config.spec.tokenizer(), "tokenizer");
     let model_bytes =
@@ -573,6 +601,7 @@ fn activate_config(
     })?;
     let model = EmbeddingArtifact::new(Arc::from(model_bytes));
     let tokenizer = EmbeddingArtifact::new(Arc::from(tokenizer_bytes));
+    drop(materialization);
     if model.identity().as_bytes() != config.spec.model()
         || tokenizer.identity().as_bytes() != config.spec.tokenizer()
     {
@@ -603,18 +632,6 @@ fn activate_config(
     if executable.identity().to_bytes() != config.spec.executable() {
         return Err(EmbeddingUnavailableReason::ArtifactIdentityMismatch);
     }
-    let process_limits = config
-        .limits
-        .process_limits()
-        .map_err(|error| match error {
-            EmbeddingRuntimeError::Process(backend_compile::ProcessError::UnsupportedLimit(_)) => {
-                EmbeddingUnavailableReason::UnsupportedResourceLimit
-            }
-            _ => EmbeddingUnavailableReason::ActivationFailed,
-        })?;
-    if process_limits.unsupported_limit().is_some() {
-        return Err(EmbeddingUnavailableReason::UnsupportedResourceLimit);
-    }
     let environment = ProcessEnvironment::new(config.environment.clone())
         .map_err(|_| EmbeddingUnavailableReason::ActivationFailed)?;
     let workspace = config_path
@@ -628,7 +645,7 @@ fn activate_config(
             EmbeddingUnavailableReason::ActivationFailed
         }
     })?;
-    let runtime = EmbeddingExecutable::activate_with_spec(
+    let runtime = EmbeddingExecutable::activate_with_spec_and_memory_admission(
         config.spec,
         config.program.clone(),
         config.arguments.clone(),
@@ -638,6 +655,7 @@ fn activate_config(
         executable,
         model,
         tokenizer,
+        memory,
     )
     .map_err(|_| EmbeddingUnavailableReason::ActivationFailed)?;
     config
@@ -1347,10 +1365,11 @@ sys.stdout.buffer.write(response)
             ],
         )?;
         assert_eq!(coordinates.len(), 3);
-        assert!(std::sync::Arc::ptr_eq(
-            &coordinates[0].shared_values(),
-            &coordinates[1].shared_values()
-        ));
+        assert!(
+            coordinates[0]
+                .shared_values()
+                .shares_storage(&coordinates[1].shared_values())
+        );
         fs::remove_dir_all(directory)?;
         Ok(())
     }

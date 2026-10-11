@@ -5,7 +5,7 @@ use std::{io::ErrorKind, path::Path};
 use crate::interface::{
     CompilerRuntimeCause, CompilerRuntimePanic, PackageCompilePhase, PackageDeclarationScopeCause,
     PackageEcosystem, PackagePathComponentError, PackageSourceCause, PackageSourceIoFact,
-    PackageSourceIoPhase, PackageTextRange,
+    PackageSourceIoPhase, PackageTextRange, PythonAuthorityFailureKind,
 };
 use backend_semantic::vocabulary::{NativeWorkerPanicClass, NativeWorkerPanicMessage};
 use serde::{Serialize, Serializer, ser::SerializeStruct};
@@ -209,6 +209,9 @@ pub(crate) enum CompilerRuntimeCauseWire {
     RequestOwnerStopped,
     ResponseOwnerStopped,
     ToolchainProbeTimeout,
+    NativePythonProducerAdmission {
+        failure: PythonAuthorityFailureKind,
+    },
     RequestCancelled,
     WorkerPanic(#[serde(with = "CompilerRuntimePanicWire")] CompilerRuntimePanic),
 }

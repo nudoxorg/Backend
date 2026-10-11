@@ -1230,6 +1230,21 @@ impl CheckerState<'_> {
     /// type T = string;         // get_type_of_symbol(T) → string
     /// ```
     pub fn get_type_of_symbol(&mut self, sym_id: SymbolId) -> TypeId {
+        // Source-level aliases are lowered eagerly through their referenced
+        // aliases, so they may never reach resolve_lazy_type's metered walk.
+        // Charge this alias-resolution boundary when a project meter is
+        // installed; a missing meter is a no-op and preserves legacy callers.
+        if self
+            .ctx
+            .binder
+            .get_symbol(sym_id)
+            .or_else(|| self.get_cross_file_symbol(sym_id))
+            .is_some_and(|symbol| symbol.has_any_flags(symbol_flags::TYPE_ALIAS))
+            && self.ctx.types.execution_checkpoint(1).is_err()
+        {
+            return TypeId::UNKNOWN;
+        }
+
         // Shared cross-context stack-overflow breaker: probe → trip → grow.
         // Symbol type resolution is a node in the heritage-merge recursion
         // cycle (`merge → get_type_of_symbol(base) → … → merge`), so it must
@@ -1521,6 +1536,19 @@ impl CheckerState<'_> {
         self.push_symbol_dependency(sym_id, true);
         let (result, type_params) = self.compute_type_of_symbol(sym_id);
         self.pop_symbol_dependency();
+        if self.ctx.types.execution_checkpoint(0).is_err() {
+            // A nested alias lookup may have latched the project stop and
+            // returned its UNKNOWN sentinel through this non-Result API.
+            // Unwind this symbol without caching or publishing that partial
+            // body into the shared DefinitionStore.
+            if use_local_symbol_state {
+                self.ctx.symbol_resolution_stack.pop();
+                self.ctx.symbol_resolution_set.remove(&sym_id);
+                self.ctx.symbol_types.remove(&sym_id);
+            }
+            self.ctx.symbol_resolution_depth.set(depth);
+            return TypeId::UNKNOWN;
+        }
         let result_is_bailout_artifact =
             Self::cross_arena_bailout_epoch() != bailout_epoch_before && result == TypeId::ANY;
 
@@ -1569,6 +1597,15 @@ impl CheckerState<'_> {
         } else {
             result
         };
+        if self.ctx.types.execution_checkpoint(0).is_err() {
+            if use_local_symbol_state {
+                self.ctx.symbol_resolution_stack.pop();
+                self.ctx.symbol_resolution_set.remove(&sym_id);
+                self.ctx.symbol_types.remove(&sym_id);
+            }
+            self.ctx.symbol_resolution_depth.set(depth);
+            return TypeId::UNKNOWN;
+        }
 
         // Fold cross-block / cross-file `declare global { interface X }`
         // declarations into a user-declared global interface's materialized body
@@ -1599,6 +1636,15 @@ impl CheckerState<'_> {
         } else {
             result
         };
+        if self.ctx.types.execution_checkpoint(0).is_err() {
+            if use_local_symbol_state {
+                self.ctx.symbol_resolution_stack.pop();
+                self.ctx.symbol_resolution_set.remove(&sym_id);
+                self.ctx.symbol_types.remove(&sym_id);
+            }
+            self.ctx.symbol_resolution_depth.set(depth);
+            return TypeId::UNKNOWN;
+        }
 
         // Pop from resolution stack
         if use_local_symbol_state {
@@ -1646,6 +1692,12 @@ impl CheckerState<'_> {
             .get_symbol(sym_id)
             .is_some_and(|s| s.has_any_flags(symbol_flags::CLASS))
             && self.ctor_result_embeds_inflight_instance(sym_id, result);
+        if self.ctx.types.execution_checkpoint(0).is_err() {
+            if use_local_symbol_state {
+                self.ctx.symbol_types.remove(&sym_id);
+            }
+            return TypeId::UNKNOWN;
+        }
         if result_is_bailout_artifact {
             // Registration-window artifact (a cross-arena delegation was refused
             // by the depth cap during this resolution): drop the placeholder so
@@ -1771,11 +1823,23 @@ impl CheckerState<'_> {
                 let alias_result_is_evaluable =
                     !generic_query::contains_free_type_parameters(self.ctx.types, result)
                         && self.can_register_evaluated_alias_form(def_id, result);
+                if self.ctx.types.execution_checkpoint(0).is_err() {
+                    if use_local_symbol_state {
+                        self.ctx.symbol_types.remove(&sym_id);
+                    }
+                    return TypeId::UNKNOWN;
+                }
                 let evaluated_alias_result = if alias_result_is_evaluable {
                     self.evaluate_type_with_env(result)
                 } else {
                     result
                 };
+                if self.ctx.types.execution_checkpoint(0).is_err() {
+                    if use_local_symbol_state {
+                        self.ctx.symbol_types.remove(&sym_id);
+                    }
+                    return TypeId::UNKNOWN;
+                }
                 let reducing_object_application = alias_is_non_generic
                     && diagnostic_query::application_base_has_conditional_alias_body(
                         self.ctx.types.as_type_database(),
@@ -1800,6 +1864,12 @@ impl CheckerState<'_> {
                                 )
                             })
                         }));
+                if self.ctx.types.execution_checkpoint(0).is_err() {
+                    if use_local_symbol_state {
+                        self.ctx.symbol_types.remove(&sym_id);
+                    }
+                    return TypeId::UNKNOWN;
+                }
                 self.record_alias_body_provenance(result, body_is_computed, alias_is_non_generic);
                 self.mark_tuple_spread_flattened_alias_def(
                     sym_id,
@@ -1807,6 +1877,12 @@ impl CheckerState<'_> {
                     result,
                     alias_is_non_generic,
                 );
+                if self.ctx.types.execution_checkpoint(0).is_err() {
+                    if use_local_symbol_state {
+                        self.ctx.symbol_types.remove(&sym_id);
+                    }
+                    return TypeId::UNKNOWN;
+                }
                 self.mark_bare_nominal_ref_alias_def(sym_id, def_id, result, alias_is_non_generic);
                 // Also register the evaluated form of the type.
                 // Type aliases with union/intersection bodies often contain Lazy

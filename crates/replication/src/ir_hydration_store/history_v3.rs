@@ -3,7 +3,9 @@
 //! cannot recreate read-closure authority.
 
 use super::{FileSemanticRangeStore, history_v2};
-use crate::ir_generation_store::{HistoryTypedV3RootClaim, TypedV3HistoryLocator};
+use crate::ir_generation_store::{
+    HistoryTypedV3RootClaim, TypedV3HistoryLocator, TypedV3HistoryPublicationSnapshot,
+};
 use crate::{
     DurableSemanticObjectAdmission, ProducedSemanticTypedPlaneContentV3,
     ProducedSemanticTypedPlaneV3, ir_producer_store::ProducedSelectedNativeTypedPlaneHistoryV3,
@@ -641,6 +643,7 @@ impl<'bytes> SelectedNativeHistoryImage<'bytes> {
 /// Exact physical-object and payload accounting for one local V3 admission.
 /// Reuse counts are local FileStore CAS hits; they do not measure transport
 /// skips or worker resend behavior.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct TypedV3HistoryAdmissionMetrics {
     pub(crate) closure_objects: u64,
@@ -740,7 +743,9 @@ pub(crate) struct TypedV3HistoryAdmission<'pin> {
     content: VerifiedTypedPlaneHistoryContentV3,
     closure: backend_store::ClosureId,
     locator: TypedV3HistoryLocator,
+    #[cfg(test)]
     root_claim: HistoryTypedV3RootClaim,
+    #[cfg(test)]
     metrics: TypedV3HistoryAdmissionMetrics,
 }
 
@@ -753,6 +758,7 @@ impl TypedV3HistoryAdmission<'_> {
         self.closure
     }
 
+    #[cfg(test)]
     pub(crate) const fn root_claim(&self) -> HistoryTypedV3RootClaim {
         self.root_claim
     }
@@ -761,6 +767,7 @@ impl TypedV3HistoryAdmission<'_> {
         &self.locator
     }
 
+    #[cfg(test)]
     pub(crate) const fn metrics(&self) -> TypedV3HistoryAdmissionMetrics {
         self.metrics
     }
@@ -805,6 +812,7 @@ impl FileSemanticRangeStore {
     /// producer receipt, reopens every member through the existing bounded
     /// history spool, then independently verifies the whole c007 manifest.
     /// No commit or ref is written, and the result cannot authorize selection.
+    #[cfg(test)]
     pub(crate) fn verify_produced_typed_v3<'pin>(
         &self,
         pin: &'pin TypedV3HistoryGcPin,
@@ -834,6 +842,7 @@ impl FileSemanticRangeStore {
     /// Independently reopens and verifies one claim-only c007 content closure.
     /// This path accepts a Partial or Unproven input claim but cannot create
     /// compiler-read completeness authority or authorize semantic reuse.
+    #[cfg(test)]
     pub(crate) fn verify_produced_typed_v3_content<'pin>(
         &self,
         pin: &'pin TypedV3HistoryGcPin,
@@ -903,7 +912,7 @@ impl FileSemanticRangeStore {
             ));
         }
 
-        let (inventory, metrics) = receipt_inventory(produced)?;
+        let (inventory, _metrics) = receipt_inventory(produced)?;
         let mut changes = Vec::new();
         changes
             .try_reserve_exact(inventory.len())
@@ -965,18 +974,21 @@ impl FileSemanticRangeStore {
                 "typed V3 cold closure proof differs from producer receipt",
             ));
         }
+        #[cfg(test)]
         let locator_id = locator.identity()?;
+        #[cfg(test)]
         let root_claim =
             HistoryTypedV3RootClaim::from_verified(&content, closure_claim, locator_id);
+        #[cfg(test)]
         let metrics = TypedV3HistoryAdmissionMetrics {
             closure_objects: u64::try_from(inventory.len())
                 .map_err(|error| format!("typed V3 closure object count: {error}"))?,
             closure_payload_bytes,
-            admitted_envelope_bytes: metrics.envelope_bytes,
-            newly_created_objects: metrics.created_objects,
-            newly_created_envelope_bytes: metrics.created_envelope_bytes,
-            reused_objects: metrics.reused_objects,
-            reused_envelope_bytes: metrics.reused_envelope_bytes,
+            admitted_envelope_bytes: _metrics.envelope_bytes,
+            newly_created_objects: _metrics.created_objects,
+            newly_created_envelope_bytes: _metrics.created_envelope_bytes,
+            reused_objects: _metrics.reused_objects,
+            reused_envelope_bytes: _metrics.reused_envelope_bytes,
             reopened_objects: u64::try_from(reopened_objects)
                 .map_err(|error| format!("typed V3 reopened object count: {error}"))?,
             reopened_payload_bytes,
@@ -988,7 +1000,9 @@ impl FileSemanticRangeStore {
             content,
             closure,
             locator,
+            #[cfg(test)]
             root_claim,
+            #[cfg(test)]
             metrics,
         })
     }
@@ -1015,7 +1029,7 @@ impl FileSemanticRangeStore {
         if commit.generation_root().typed_v3_claim().is_none() {
             return Ok(None);
         }
-        let snapshot = self
+        let snapshot: TypedV3HistoryPublicationSnapshot = self
             .generations
             .typed_v3_publication_snapshot(target, commit_id)?;
         let persisted_manifest = snapshot.locator().validate()?;
@@ -1435,7 +1449,7 @@ impl FileSemanticRangeStore {
         drop(produced);
         let guard = pin.into_guard();
         let receipt = receipt
-            .with_gc_pin(std::sync::Arc::new(guard))
+            .with_gc_pin(Arc::new(guard))
             .with_typed_v3_proof(
                 content,
                 selected_input_claim,
@@ -1649,7 +1663,7 @@ impl FileSemanticRangeStore {
             commit,
             manifest,
             content,
-            std::sync::Arc::new(pin.into_guard()),
+            Arc::new(pin.into_guard()),
         ))
     }
 }

@@ -66,6 +66,9 @@ fn settings_keys_list_the_graphs_own_keys(cx: &mut TestAppContext) {
     let _ = painted(&mut rig);
     let said = rig.said();
     let from = said.iter().position(|line| line == "In the graph").unwrap_or_else(|| panic!("no graph keys: {said:#?}"));
+    let find = said[from..].iter().position(|line| line == "find a symbol, a shape or a road").expect("Find's words");
+    let find_cap = if cfg!(target_os = "macos") { "/  ⌘K" } else { "/  Ctrl+K" };
+    assert_eq!(said[from + find - 1], find_cap, "the graph's Find cap matches its native secondary modifier");
     let tour = said[from..].iter().position(|line| line == "tour the package here; again to stop").expect("T's words");
     assert_eq!(said[from + tour - 1], "T", "its cap beside it: {:#?}", &said[from..]);
     assert!(said[from..].iter().any(|line| line == "the tour's next stop (← the one before)"), "{:#?}", &said[from..]);
