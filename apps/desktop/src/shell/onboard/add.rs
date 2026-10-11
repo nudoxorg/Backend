@@ -11,9 +11,10 @@
 
 use super::path::{self, Completion, Folder, Refusal};
 use crate::core::LocalProjectId;
-use crate::navigation::{Intent, OrbitRoute, Route};
+use crate::navigation::{Intent, OrbitRoute, Overlay, Route};
 use crate::shell::kit::text;
 use crate::shell::region::Links;
+use crate::runtime::store::Branch;
 use facet::controls::{KbdVoice, button, field, kbd};
 use facet::icons::{Icon, IconSize, ui};
 use facet::tokens::ty;
@@ -32,8 +33,6 @@ const RESERVED_ROWS: f32 = 1.0 + 4.0 + 1.0;
 /// What the disk said about the text last asked of it.
 #[derive(Clone, Debug, Default)]
 struct Probe {
-    /// The text this answers.
-    text: String,
     /// The folder it names, or why it names none.
     admitted: Option<Result<Folder, Refusal>>,
     /// The folders it could continue to.
@@ -49,6 +48,9 @@ pub(crate) struct Form {
     measure: Option<Measure>,
     /// What the disk said about the latest text (an older answer is dropped).
     probe: Probe,
+    /// Actual field text last observed, independently of the disk answer.
+    /// InputState can emit Change for a no-op Delete while a probe is pending.
+    observed_text: String,
     /// Bumps with each edit: an answer for an older edit is not applied.
     edit: u64,
     /// The suggestion ↑ ↓ are on; `None` until they walk.
@@ -56,6 +58,10 @@ pub(crate) struct Form {
     /// The refusal said under the field, once, until the next edit.
     said: Option<Refusal>,
     asking: Option<Task<()>>,
+    /// An admission belongs to one uninterrupted editing session. Covering
+    /// the form retires it even when the field is retained for a later return.
+    submission: u64,
+    submitted: Option<Task<()>>,
     /// ↵ put a folder on the shelf (or went to one already there): the
     /// dialog closes onto a Library that changed under it.
     landed: bool,
@@ -73,23 +79,35 @@ impl Form {
             InputEvent::PressEnter { .. } => add.submit(window, cx),
             InputEvent::Focus | InputEvent::Blur => {}
         });
+        let overlay = cx.subscribe(&links.store, |add: &mut Self, _, event, cx| {
+            if event.is_branch(Branch::Overlay) {
+                let pending = add.submitted.is_some();
+                add.retire_submission();
+                if pending { cx.notify(); }
+            }
+        });
         Self {
             links,
             input,
             measure: None,
             probe: Probe::default(),
+            observed_text: String::new(),
             edit: 0,
             walking: None,
             said: None,
             asking: None,
+            submission: 0,
+            submitted: None,
             landed: false,
-            _subscriptions: vec![events],
+            _subscriptions: vec![events, overlay],
         }
     }
 
     /// Opens fresh: an empty field, focused, nothing said.
     pub(crate) fn opened(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.retire_submission();
         self.probe = Probe::default();
+        self.observed_text.clear();
         self.walking = None;
         self.said = None;
         self.asking = None;
@@ -122,11 +140,18 @@ impl Form {
         self.input.read(cx).value().to_string()
     }
 
+    pub(crate) fn retire_submission(&mut self) {
+        self.submission = self.submission.wrapping_add(1);
+        self.submitted = None;
+    }
+
     /// The field's edit: ask the disk, off this thread, about the new text.
     fn edited(&mut self, typed: String, cx: &mut Context<Self>) {
-        if typed == self.probe.text && self.said.is_none() && self.asking.is_none() {
+        if typed == self.observed_text {
             return;
         }
+        self.observed_text.clone_from(&typed);
+        self.retire_submission();
         self.edit = self.edit.wrapping_add(1);
         self.walking = None;
         self.said = None;
@@ -139,7 +164,7 @@ impl Form {
                 .spawn(async move {
                     let home = path::home();
                     let admitted = (!asked.trim().is_empty()).then(|| path::admit(&asked, home.as_deref(), &shelf));
-                    Probe { completion: path::complete(&asked, home.as_deref()), admitted, text: asked }
+                    Probe { completion: path::complete(&asked, home.as_deref()), admitted }
                 })
                 .await;
             let _ = add.update(cx, |add, cx| {
@@ -152,6 +177,9 @@ impl Form {
         }));
         cx.notify();
     }
+
+    #[cfg(test)]
+    pub(super) fn probe_pending(&self) -> bool { self.asking.is_some() }
 
     fn shelf(&self, cx: &App) -> Vec<LocalProjectId> {
         self.links.snapshot(cx).workspace().projects.iter().map(|project| project.id.clone()).collect()
@@ -190,12 +218,43 @@ impl Form {
     /// ↵: takes the suggestion walked to; otherwise adds the folder the text
     /// names (or says why it names none).
     pub(crate) fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_submit(cx) { return; }
         if self.walking.is_some() && self.complete(window, cx) {
             return;
         }
         let typed = self.typed(cx);
-        match path::admit(&typed, path::home().as_deref(), &self.shelf(cx)) {
-            Ok(folder) if folder.on_shelf => {
+        let admission = cx.background_executor().spawn(async move {
+            // Admission is fresh, not the possibly older typing probe. Shelf
+            // membership is checked against the live shelf when it lands.
+            path::admit(&typed, path::home().as_deref(), &[])
+        });
+        self.admit_submission(admission, cx);
+    }
+
+    fn can_submit(&self, cx: &App) -> bool {
+        !self.landed && self.submitted.is_none() && self.links.snapshot(cx).overlay() == Some(Overlay::AddProject)
+    }
+
+    pub(super) fn admit_submission(&mut self, admission: Task<Result<Folder, Refusal>>, cx: &mut Context<Self>) {
+        if !self.can_submit(cx) { return; }
+        let typed = self.typed(cx);
+        let edit = self.edit;
+        let submission = self.submission;
+        self.submitted = Some(cx.spawn(async move |add, cx| {
+            let answer = admission.await;
+            let _ = add.update(cx, |add, cx| {
+                if add.submission != submission || add.edit != edit || add.typed(cx) != typed
+                    || add.landed || add.links.snapshot(cx).overlay() != Some(Overlay::AddProject) { return; }
+                add.submitted = None;
+                add.admitted(answer, cx);
+            });
+        }));
+        cx.notify();
+    }
+
+    fn admitted(&mut self, answer: Result<Folder, Refusal>, cx: &mut Context<Self>) {
+        match answer {
+            Ok(folder) if self.shelf(cx).contains(&folder.id) => {
                 self.landed = true;
                 self.links.dispatch(Intent::ActivateProject(folder.id), cx);
                 self.links.dispatch(Intent::Navigate(Route::Orbit(OrbitRoute::Home)), cx);
@@ -369,6 +428,7 @@ impl Render for Form {
                                 button("add-folder-add", "Add", &measure)
                                     .primary()
                                     .disabled(typed_nothing)
+                                    .busy(self.submitted.is_some())
                                     .on_click(move |window, cx| chosen.update(cx, |add, cx| add.submit(window, cx))),
                             ),
                     ),

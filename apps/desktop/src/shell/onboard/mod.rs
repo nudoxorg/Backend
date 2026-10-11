@@ -93,6 +93,7 @@ pub(crate) fn sync(links: &Links, before: TransientFocusReturn, window: &mut Win
             dialog::close(window, cx);
             let covered = links.snapshot(cx).session().overlay_is_covered(Overlay::AddProject);
             let content = cx.default_global::<PerWindow>().0.get(&id).map(|mounted| mounted.content.clone());
+            if let Some(content) = &content { content.update(cx, |add, _| add.retire_submission()); }
             let landed = content.as_ref().is_some_and(|content| content.read(cx).landed());
             let restore = cx.default_global::<PerWindow>().0.get_mut(&id).and_then(|mounted| {
                 mounted.ours = false;
@@ -140,6 +141,12 @@ pub(crate) fn field(window: &Window, cx: &mut App) -> Option<Entity<gpui_compone
     let id = window.window_handle().window_id();
     let content = cx.default_global::<PerWindow>().0.get(&id)?.content.clone();
     Some(content.read(cx).input().clone())
+}
+
+#[cfg(test)]
+fn form(window: &Window, cx: &mut App) -> Option<Entity<Form>> {
+    let id = window.window_handle().window_id();
+    Some(cx.default_global::<PerWindow>().0.get(&id)?.content.clone())
 }
 
 #[cfg(test)]
