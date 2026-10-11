@@ -122,7 +122,7 @@ pub enum NativeInvocationError {
         /// Which selected invocation file failed inspection.
         role: NativeInvocationFileRole,
         /// Exact absolute path selected at admission.
-        path: Box<std::path::Path>,
+        path: Box<Path>,
         /// Original filesystem cause.
         #[source]
         source: std::io::Error,
@@ -133,7 +133,7 @@ pub enum NativeInvocationError {
         /// Which selected invocation file changed.
         role: NativeInvocationFileRole,
         /// Exact absolute path selected at admission.
-        path: Box<std::path::Path>,
+        path: Box<Path>,
     },
 }
 

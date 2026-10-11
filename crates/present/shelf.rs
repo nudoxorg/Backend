@@ -115,7 +115,7 @@ pub struct ShelfEntry {
     identity: Identity,
     readiness: Readiness,
     languages: Box<[LanguageCount]>,
-    declarations: RowCount,
+    declarations: Option<RowCount>,
 }
 
 impl ShelfEntry {
@@ -126,7 +126,7 @@ impl ShelfEntry {
             identity,
             readiness,
             languages: Box::new([]),
-            declarations: RowCount::new(0),
+            declarations: None,
         }
     }
 
@@ -140,11 +140,11 @@ impl ShelfEntry {
                 .cmp(&left.declarations)
                 .then_with(|| left.language.cmp(&right.language))
         });
-        self.declarations = RowCount::new(
+        self.declarations = Some(RowCount::new(
             sorted
                 .iter()
                 .fold(0_u64, |total, row| total.saturating_add(row.declarations.get())),
-        );
+        ));
         self.languages = sorted.into_boxed_slice();
         self
     }
@@ -167,9 +167,9 @@ impl ShelfEntry {
         &self.languages
     }
 
-    /// Returns the total declaration count.
+    /// Returns the declaration count when the reply supplied count evidence.
     #[must_use]
-    pub const fn declarations(&self) -> RowCount {
+    pub const fn declarations(&self) -> Option<RowCount> {
         self.declarations
     }
 }

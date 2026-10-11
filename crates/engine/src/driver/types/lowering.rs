@@ -179,14 +179,43 @@ pub enum FactFault {
     TypeRowCapacity,
     /// The computed type-row lane is full.
     ComputedRowCapacity,
-    /// Native checker type projection crossed the configured recursion bound.
-    TypeProjectionDepthLimit { depth: u8, maximum: u8 },
-    /// A native interned type handle was revisited on the active descent path.
-    TypeProjectionCycle { type_id: u32 },
-    /// TSZ exposed a recursive back-reference that has no exact local-row encoding.
-    TypeProjectionRecursiveReference { distance: u32 },
-    /// A non-associative native type constructor exceeds the row's child bound.
-    TypeProjectionWidth { actual: usize, maximum: usize },
+    /// Native TSZ type projection exceeded its bounded recursive descent.
+    ///
+    /// The projected root starts at depth zero and each recursively projected
+    /// child increments it. The producer rejects the first depth greater than
+    /// its current maximum of 24; this bound limits descent, not total rows.
+    TypeProjectionDepthLimit {
+        /// First rejected descent depth (the root is depth zero).
+        depth: u8,
+        /// Largest accepted descent depth (currently 24).
+        maximum: u8,
+    },
+    /// Resolving a native checker type revisited a handle on the active path.
+    TypeProjectionCycle {
+        /// Raw TSZ type-handle payload passed on the revisiting edge, not a
+        /// semantic type-row ordinal.
+        type_id: u32,
+    },
+    /// TSZ exposed a recursive binder back-reference with no exact local-row encoding.
+    TypeProjectionRecursiveReference {
+        /// TSZ De Bruijn distance: zero refers to the current recursive type,
+        /// and each larger value refers one enclosing type level farther out.
+        distance: u32,
+    },
+    /// A projected semantic type row exceeded its direct-child capacity.
+    ///
+    /// This is a per-row bound (currently 255 child entries), not a bound on
+    /// total type size. Wide unions/intersections and checker-synthesized
+    /// anonymous-record member runs can be folded into multiple rows. Other
+    /// oversized shapes, including source type literals and tuple, application,
+    /// function, or template rows, are rejected when they exceed this bound.
+    TypeProjectionWidth {
+        /// Direct child entries requested for the rejected row, including any
+        /// synthetic base or result entry required by its constructor.
+        actual: usize,
+        /// Maximum direct child entries admitted in one row (currently 255).
+        maximum: usize,
+    },
     /// An occurrence names an owner outside the pushed prefix.
     OccurrenceOwner {
         /// Owner ordinal the occurrence named.

@@ -890,6 +890,16 @@ fn read(view: &ViewRoot, locators: &[ProductText]) -> Result<Box<[DeclarationRec
         .map(|locator| {
             let row = view.row_by_label(locator.as_str());
             Ok(DeclarationRecord {
+                extent: row
+                    .and_then(|value| value.excerpt.extent())
+                    .map(|extent| match extent {
+                        backend_library::SourceExcerptExtent::Complete => {
+                            backend_library::DeclarationReadExtent::Complete
+                        }
+                        backend_library::SourceExcerptExtent::Truncated => {
+                            backend_library::DeclarationReadExtent::Truncated
+                        }
+                    }),
                 label: locator.clone(),
                 stable_id: row.map(|value| match value.id {
                     RowId::Package(id) => id.to_bytes(),
@@ -3760,6 +3770,75 @@ mod tests {
             Vec::new(),
         )
         .expect("empty view")
+    }
+
+    #[test]
+    fn usability_batch_read_preserves_captured_extent_and_signature_fallback() {
+        let empty = view();
+        let basis = empty.basis();
+        let excerpt = backend_library::SourceExcerpt::capture_bounded(&format!(
+            "class WeightBurndownComponent {{ /* {} */ }}",
+            "λ".repeat(4096),
+        ));
+        let rows = vec![
+            Row::new(
+                RowId::Symbol(backend_engine::symbol_key("long")),
+                basis,
+                "long",
+            )
+            .with_signature("class WeightBurndownComponent")
+            .with_excerpt(excerpt.clone()),
+            Row::new(
+                RowId::Symbol(backend_engine::symbol_key("complete")),
+                basis,
+                "complete",
+            )
+            .with_excerpt(backend_library::SourceExcerpt::capture_bounded(
+                "class WeekService {}",
+            )),
+            Row::new(
+                RowId::Symbol(backend_engine::symbol_key("signature")),
+                basis,
+                "signature",
+            )
+            .with_signature("class AuthService")
+            .with_excerpt(backend_library::SourceExcerpt::Unconfigured),
+        ];
+        let view = ViewRoot::new_incomplete(
+            backend_engine::view_key(b"batch-read-extent-control"),
+            basis,
+            backend_engine::Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+            rows.clone(),
+            Vec::new(),
+        )
+        .expect("explicit incomplete fixture");
+        let locators = ["long", "complete", "signature", "missing"]
+            .map(|label| ProductText::new(label).expect("locator"));
+        let records = read(&view, &locators).expect("actual product batch read");
+        assert_eq!(
+            records[0].extent,
+            Some(backend_library::DeclarationReadExtent::Truncated)
+        );
+        assert_eq!(
+            records[0].signature.as_ref().map(ProductText::as_str),
+            excerpt.text()
+        );
+        assert_eq!(
+            records[0].stable_id,
+            Some(backend_engine::symbol_key("long").to_bytes())
+        );
+        assert_eq!(
+            records[1].extent,
+            Some(backend_library::DeclarationReadExtent::Complete)
+        );
+        assert_eq!(records[2].extent, None);
+        assert_eq!(
+            records[2].signature.as_ref().map(ProductText::as_str),
+            Some("class AuthService")
+        );
+        assert_eq!(records[3].stable_id, None);
+        assert_eq!(records[3].signature, None);
+        assert_eq!(records[3].extent, None);
     }
 
     fn indexed_graph(facts: Vec<PackageDependencySourceFacts>) -> IndexedCheckedPackageGraph {

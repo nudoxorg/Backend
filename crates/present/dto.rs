@@ -602,8 +602,8 @@ pub struct ShelfEntryDto {
     /// Rows published so far, when the project is still indexing.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rows: Option<u64>,
-    /// The total declaration count.
-    pub declarations: u64,
+    /// The declaration count, or null when this reply supplied no count evidence.
+    pub declarations: Option<u64>,
     /// Per-language declaration counts.
     pub languages: Vec<LanguageCountDto>,
     /// Why the project is not readable, when it failed.
@@ -631,7 +631,7 @@ impl ShelfEntryDto {
                 Readiness::Indexing { rows } => Some(rows.get()),
                 _ => None,
             },
-            declarations: entry.declarations().get(),
+            declarations: entry.declarations().map(crate::shelf::RowCount::get),
             languages: entry
                 .languages()
                 .iter()
@@ -888,6 +888,9 @@ pub struct ProductIndexSearchPageDto {
 /// One product record.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProductRecordDto {
+    /// Completeness of retained source text in a batch declaration read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extent: Option<backend_library::DeclarationReadExtent>,
     /// The readable title.
     pub title: String,
     /// The exact operand a caller passes back.
@@ -935,6 +938,7 @@ impl ProductDto {
                 .records()
                 .iter()
                 .map(|record| ProductRecordDto {
+                    extent: record.extent(),
                     title: record.title().to_owned(),
                     operand: record.operand().map(ToOwned::to_owned),
                     tags: record.tags().to_vec(),

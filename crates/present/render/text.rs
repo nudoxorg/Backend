@@ -428,8 +428,10 @@ fn push_shelf_entry(lines: &mut Lines, entry: &ShelfEntry, theme: Theme) {
     if let Readiness::Indexing { rows } = entry.readiness() {
         tags.push(format!("{} row(s)", rows.get()));
     }
-    if entry.declarations().get() > 0 {
-        tags.push(format!("{} declaration(s)", entry.declarations().get()));
+    match entry.declarations() {
+        Some(count) if count.get() > 0 => tags.push(format!("{} declaration(s)", count.get())),
+        Some(_) => {}
+        None => tags.push("declaration count unavailable".to_owned()),
     }
     for language in entry.languages() {
         tags.push(format!(

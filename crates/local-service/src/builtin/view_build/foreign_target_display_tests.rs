@@ -3,7 +3,9 @@
 #![allow(clippy::expect_used, clippy::too_many_lines)]
 
 use super::call_join::foreign_display_name;
-use super::identity::external_semantic_symbol;
+use super::identity::{
+    external_semantic_coordinate, external_semantic_symbol, push_declaration_identity,
+};
 use super::semantic::project_image_rows;
 use backend_engine::application::DocumentationSession;
 use backend_engine::{Row, RowId};
@@ -22,7 +24,7 @@ use backend_semantic::vocabulary::{
     CompileRecipeFact, LanguageProfile, NativeTool, PackageUrl, RustEdition, Stage,
 };
 use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 const HTTP_IMAGE: &[u8] = include_bytes!("fixtures/httpie-retained/context.nxfi");
@@ -45,6 +47,98 @@ fn assert_foreign_source_refusal(row: &Row) {
     assert_eq!(row.signature, None);
     assert_eq!(row.source, SourceAvailability::NotCaptured);
     assert_eq!(row.excerpt, SourceExcerpt::NotCaptured);
+    assert!(
+        row.document.is_empty(),
+        "an external spelling is not captured documentation"
+    );
+}
+
+fn projected_library(
+    base: &backend_engine::ViewRoot,
+    projected: &super::image_rows::ProjectedImage,
+) -> backend_library::Library {
+    let rows = projected
+        .rows
+        .iter()
+        .map(|projected| (projected.row.id, projected.row.clone()))
+        .collect::<BTreeMap<_, _>>()
+        .into_values()
+        .collect();
+    let view = backend_engine::ViewRoot::new_checked(
+        base.recipe(),
+        base.basis(),
+        base.frontier(),
+        rows,
+        base.coverage().to_vec(),
+        base.capability().expect("admitted producer scope"),
+    )
+    .expect("selected fixture projection");
+    let cursor = backend_engine::Cursor::for_view_root(&view);
+    backend_library::Library::from_view(view, cursor).expect("materialized arrangements")
+}
+
+fn assert_external_operand_roundtrip(library: &backend_library::Library, row: &Row) {
+    let selected = library
+        .view()
+        .unique_symbol_by_label(&row.label)
+        .expect("exact adapter lookup must be unambiguous");
+    assert_eq!(selected.id, row.id);
+    let RowId::Symbol(symbol) = selected.id else {
+        panic!("external symbol")
+    };
+    let query = backend_library::NameQuery::new(
+        &row.label,
+        library.revision_root(),
+        backend_library::QueryLimit::new(1).expect("one exact operand"),
+    );
+    let page = library.names(&query).expect("copied name operand");
+    assert_eq!(page.root.row_count(), 1);
+    assert_eq!(
+        page.root
+            .row_ref(row.id)
+            .expect("exact selected identity")
+            .label,
+        row.label
+    );
+    assert!(page.next.is_none());
+    let document = library
+        .document(backend_library::DocumentQuery::selected(
+            symbol,
+            library.revision_root(),
+        ))
+        .expect("same selected document/read operand");
+    assert_eq!(document.symbol, symbol);
+    assert_eq!(document.location, SourceAvailability::NotCaptured);
+    assert_eq!(document.excerpt, SourceExcerpt::NotCaptured);
+    assert!(document.signature.is_none());
+    assert!(document.fragments.is_empty());
+    let graph = library
+        .graph(backend_library::GraphNeighborhoodQuery::selected(
+            symbol,
+            library.revision_root(),
+        ))
+        .expect("same selected graph operand");
+    assert_eq!(graph.root.row_count(), 1);
+    assert_eq!(
+        graph.root.row_ref(row.id).expect("external centre").label,
+        row.label
+    );
+    assert!(graph.graph_relations.is_none());
+    // Case folding must never turn a changed exact external address into an
+    // ordinary name query, even for a relative project spelling.
+    let changed = row.label.replacen("::external::", "::EXTERNAL::", 1);
+    assert_eq!(
+        library
+            .names(&backend_library::NameQuery::new(
+                changed,
+                library.revision_root(),
+                backend_library::QueryLimit::default()
+            ))
+            .expect("changed address")
+            .root
+            .row_count(),
+        0
+    );
 }
 
 #[test]
@@ -71,7 +165,7 @@ fn retained_httpie_environment_ten_outgoing_foreign_names_keep_original_native_k
     );
     let identity = environment.entity.version.identity();
     let mut encoded_identity = String::new();
-    super::identity::push_declaration_identity(&mut encoded_identity, identity);
+    push_declaration_identity(&mut encoded_identity, identity);
     assert_eq!(
         encoded_identity,
         "ee415fc203e1cb2ba7464c299efee7d6accc6b5ccdcbcedc6a878b43c65cf29d"
@@ -94,6 +188,7 @@ fn retained_httpie_environment_ten_outgoing_foreign_names_keep_original_native_k
         &[],
     )
     .expect("actual image through current row projector");
+    let library = projected_library(&base, &projected);
     let expected = [
         ("initialise", LinkKind::Reads, 2124, 2134),
         ("error", LinkKind::Reads, 1979, 1984),
@@ -142,8 +237,12 @@ fn retained_httpie_environment_ten_outgoing_foreign_names_keep_original_native_k
             .find(|projected| projected.row.id == RowId::Symbol(symbol))
             .expect("foreign target row")
             .row;
-        assert_eq!(row.label, name);
+        assert_eq!(
+            row.label,
+            external_semantic_coordinate(HTTP_PROJECT, symbol, name)
+        );
         assert_foreign_source_refusal(row);
+        assert_external_operand_roundtrip(&library, row);
         // The previous generic display and the corrected spelling select
         // the same producer key; neither spelling is used as its preimage.
         let old_display = Row::new(row.id, row.basis, "external semantic target");
@@ -191,7 +290,12 @@ fn foreign_fixture() -> Vec<u8> {
     let ecosystem = builder.intern_atom(b"cargo").expect("ecosystem");
     let path = builder.intern_atom(b"foreign").expect("path");
     let mut links = Vec::new();
-    for (key, spelling) in [(1, &b"same"[..]), (2, &b"same"[..]), (3, &b""[..])] {
+    for (key, spelling) in [
+        (1, &b"same"[..]),
+        (2, &b"same"[..]),
+        (3, &b""[..]),
+        (4, &b""[..]),
+    ] {
         let display = builder.intern_atom(spelling).expect("display atom");
         let target = builder
             .intern_external(ExternalTarget::Foreign(ForeignExternalTarget {
@@ -272,18 +376,46 @@ fn duplicate_foreign_names_keep_distinct_native_ids_and_empty_name_stays_unknown
     let same = projected
         .rows
         .iter()
-        .filter(|row| row.row.label == "same")
+        .filter(|row| row.row.label.ends_with("::same"))
         .collect::<Vec<_>>();
     assert_eq!(same.len(), 2);
     assert_ne!(same[0].row.id, same[1].row.id);
     let unknown = projected
         .rows
         .iter()
-        .filter(|row| row.row.label == "external semantic target")
+        .filter(|row| row.row.label.ends_with("::external semantic target"))
         .collect::<Vec<_>>();
-    assert_eq!(unknown.len(), 1);
-    for row in same.into_iter().chain(unknown) {
+    assert_eq!(unknown.len(), 2);
+    assert_ne!(same[0].row.label, same[1].row.label);
+    assert_ne!(unknown[0].row.label, unknown[1].row.label);
+    let library = projected_library(&base, &projected);
+    let cold = backend_library::Library::from_view(library.view().clone(), library.cursor())
+        .expect("cold projection");
+    for row in same.iter().chain(unknown.iter()) {
         assert_foreign_source_refusal(&row.row);
+        assert_external_operand_roundtrip(&cold, &row.row);
+    }
+    for (text, targets) in [("same", same), ("external semantic target", unknown)] {
+        let query = backend_library::NameQuery::new(
+            text,
+            library.revision_root(),
+            backend_library::QueryLimit::new(1).expect("ambiguous page"),
+        );
+        let first = library.names(&query).expect("first ambiguity page");
+        let next = first.next.expect("both target identities remain queryable");
+        let second = cold
+            .names(&query.with_cursor(next))
+            .expect("cold successor");
+        assert_eq!(first.root.row_count(), 1);
+        assert_eq!(second.root.row_count(), 1);
+        assert!(second.next.is_none());
+        let seen = first
+            .root
+            .row_refs()
+            .chain(second.root.row_refs())
+            .map(|row| row.id)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(seen, targets.iter().map(|row| row.row.id).collect());
     }
 }
 
