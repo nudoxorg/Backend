@@ -4977,6 +4977,21 @@ impl CommandAdapter {
         request_id: u64,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let reply = match surface {
+            backend_engine::SurfaceCommand::Read { locators } => {
+                // Input has passed the same strict owner-aware command codec
+                // as every surface command. The selected view is the complete
+                // capability needed for this local declaration read.
+                super::super::product_state::read_from_selected_view(
+                    daemon.engine().daemon().library().view(),
+                    &locators,
+                )
+                .map_or_else(
+                    |error| {
+                        CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error))
+                    },
+                    CommandReply::Surface,
+                )
+            }
             backend_engine::SurfaceCommand::ForgeAdd { coordinate } => {
                 self.forge.acquire(coordinate.as_str()).map_or_else(
                     |error| {
@@ -6096,6 +6111,9 @@ mod tests {
 
     #[path = "public_coordinate_alias.rs"]
     mod public_coordinate_alias_tests;
+
+    #[path = "selected_read.rs"]
+    mod selected_read_tests;
 
     #[path = "index_profile_worker.rs"]
     mod index_profile_worker_tests;
