@@ -6,26 +6,26 @@
 use std::mem::size_of;
 
 use allocation_counter::{AllocationInfo, measure};
-use backend_semantic::vocabulary::{Language, LanguageProfile, RustEdition, Stage};
 use backend_library::interface::{
     ApplicationInput, ApplicationOutcome, ApplicationService, Capability, CompilerCapability,
     CompilerDiagnostic, CompilerRequest, CompilerTerminal, CorrelationId, DurableReceiptAuthority,
-    InputText, MAX_NATIVE_DIAGNOSTIC_BYTES, ReplyBody, UnavailableCompiler,
+    InputText, ReplyBody, UnavailableCompiler,
 };
+use backend_semantic::vocabulary::{Language, LanguageProfile, RustEdition, Stage};
 
-// The durable semantic result previously added one 32-byte image identity and
-// its exact extent to the compact-artifact reply layout (312 bytes). A later
-// revision added the durable publication receipt to `PublicationAuthority`:
-// `DurableReceiptAuthority` is 48 bytes (two u64 frame ends plus two 16-byte
-// checksums), which accounts for the entire growth to the intended 360-byte
-// LP64 reply. The const assertions below pin the exact width and prove the
-// delta is exactly that receipt so a future divergent change is caught.
-const EXPECTED_APPLICATION_REPLY_BYTES: usize = 360;
-const EXPECTED_APPLICATION_OUTCOME_BYTES: usize = 352;
+// Pin the complete LP64 envelopes independently from diagnostic text capacity.
+// The generated artifact occupies 352 bytes, including its 48-byte durable
+// receipt. ReplyBody reuses that payload's niche; ApplicationOutcome and the
+// correlation add eight bytes each. Failure terminals remain 344 bytes.
+const EXPECTED_GENERATED_ARTIFACT_BYTES: usize = 352;
+const EXPECTED_APPLICATION_REPLY_BYTES: usize = 368;
+const EXPECTED_APPLICATION_OUTCOME_BYTES: usize = 360;
+const EXPECTED_COMPILER_TERMINAL_BYTES: usize = 344;
 
+const _: () = assert!(size_of::<DurableReceiptAuthority>() == 48);
 const _: () = assert!(
-    EXPECTED_APPLICATION_REPLY_BYTES - size_of::<DurableReceiptAuthority>() == 312,
-    "reply grew by something other than the durable publication receipt"
+    EXPECTED_APPLICATION_OUTCOME_BYTES == EXPECTED_GENERATED_ARTIFACT_BYTES + 8,
+    "outcome must add only its outer tag to the generated payload"
 );
 const _: () = assert!(
     EXPECTED_APPLICATION_OUTCOME_BYTES
@@ -41,7 +41,7 @@ enum DiagnosticAllocationTestError {
     },
     TerminalLayout {
         actual: usize,
-        maximum: usize,
+        expected: usize,
     },
     ReplyLayout {
         actual: usize,
@@ -225,11 +225,18 @@ fn exact_layout() -> Result<(), DiagnosticAllocationTestError> {
         });
     }
     let terminal_bytes = size_of::<CompilerTerminal>();
-    if terminal_bytes >= MAX_NATIVE_DIAGNOSTIC_BYTES {
+    if size_of::<usize>() == 8 && terminal_bytes != EXPECTED_COMPILER_TERMINAL_BYTES {
         return Err(DiagnosticAllocationTestError::TerminalLayout {
             actual: terminal_bytes,
-            maximum: MAX_NATIVE_DIAGNOSTIC_BYTES - 1,
+            expected: EXPECTED_COMPILER_TERMINAL_BYTES,
         });
+    }
+    if size_of::<usize>() == 8 {
+        assert_eq!(
+            size_of::<backend_library::interface::GeneratedArtifact>(),
+            EXPECTED_GENERATED_ARTIFACT_BYTES
+        );
+        assert_eq!(size_of::<ReplyBody>(), EXPECTED_GENERATED_ARTIFACT_BYTES);
     }
     let reply_bytes = size_of::<backend_library::interface::ApplicationReply>();
     if size_of::<usize>() == 8 && reply_bytes != EXPECTED_APPLICATION_REPLY_BYTES {

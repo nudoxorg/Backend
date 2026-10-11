@@ -798,6 +798,56 @@ impl GoOracleCommand {
     fn command_mut(&mut self) -> &mut std::process::Command {
         &mut self.command
     }
+
+    // The compatibility API still selects its tool from the environment, but
+    // the package loader now requires an explicit workspace in every mode.
+    // Keep the helper's own vendored build outside the selected workspace.
+    fn select_workspace(&mut self, module: &Path, oracle: &GoOracle) -> Result<(), OracleError> {
+        let work = GoWorkWitness::capture(module)
+            .map_err(|error| OracleError::WorkspaceWitness(error.to_string()))?;
+        self.command
+            .env("NUDOX_GO_AUTHORITY_GOWORK", work.go_work_value())
+            // Match the native loader's admitted no-cgo policy explicitly.
+            .env("CGO_ENABLED", "0");
+        // The nested loader deliberately does not inherit HOME. Ask the
+        // selected Go compiler for its real roots rather than guessing OS
+        // cache locations or relying on defaults that disappear in the child.
+        let compiler = if self._source.is_some() {
+            self.command.get_program().to_owned()
+        } else {
+            std::env::var_os("COMPILER_GO_COMPILER").unwrap_or_else(|| "go".into())
+        };
+        let mut environment = std::process::Command::new(compiler);
+        environment
+            .args(["env", "-json", "GOROOT", "GOMODCACHE", "GOCACHE"])
+            .env("GOWORK", "off");
+        let bytes = oracle.execute(&mut environment)?;
+        let roots: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|error| OracleError::Decode {
+                message: error.to_string(),
+                transcript: transcript_prefix(&bytes),
+            })?;
+        for name in ["GOROOT", "GOMODCACHE", "GOCACHE"] {
+            let root = roots
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| Path::new(value).is_absolute())
+                .ok_or_else(|| OracleError::Decode {
+                    message: format!("Go environment omitted absolute {name}"),
+                    transcript: transcript_prefix(&bytes),
+                })?;
+            self.command.env(name, root);
+        }
+        self.command.env(
+            "GOWORK",
+            if self._source.is_some() {
+                "off".to_owned()
+            } else {
+                work.go_work_value()
+            },
+        );
+        Ok(())
+    }
 }
 
 /// Typed failures at the subprocess, private helper workspace, and protocol boundary.
@@ -1175,12 +1225,12 @@ impl GoOracleChildEnvironment {
             .env("CGO_ENABLED", "0");
         // `go run` builds the vendored helper outside the selected project
         // workspace. The helper receives a separate private value and applies
-        // it to `packages.Config.Env` after it starts. A prebuilt oracle can
-        // receive the selected GOWORK directly.
+        // it to `packages.Config.Env` after it starts. Both launch modes need
+        // this explicit loader value; a prebuilt oracle also receives the
+        // selected GOWORK directly.
+        command.env("NUDOX_GO_AUTHORITY_GOWORK", work.go_work_value());
         if toolchain_mode {
-            command
-                .env("GOWORK", "off")
-                .env("NUDOX_GO_AUTHORITY_GOWORK", work.go_work_value());
+            command.env("GOWORK", "off");
         } else {
             command.env("GOWORK", work.go_work_value());
         }
@@ -1300,6 +1350,7 @@ impl GoOracle {
                 ],
             )?
         };
+        command.select_workspace(module, self)?;
         let stdout = self.execute(command.command_mut())?;
         self.decode(&stdout)
     }
@@ -1355,6 +1406,7 @@ impl GoOracle {
                 ],
             )?
         };
+        command.select_workspace(module, self)?;
         self.execute(command.command_mut())
     }
 

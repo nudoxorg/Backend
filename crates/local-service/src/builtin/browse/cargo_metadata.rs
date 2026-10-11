@@ -108,21 +108,28 @@ fn coherent_metadata_with<R: Into<CargoMetadataRun>>(
     let required_manifests = discovery_document
         .inputs
         .required_manifests(&requested.manifest, &discovery_workspace);
+    let before = observe(&discovery_workspace, &discovery_paths)?;
+    // Cargo registry cache entries do not contain .cargo-checksum.json;
+    // directory sources (cargo vendor) do. Observe either bytes or absence,
+    // and retain every initially present checksum as required on the second
+    // pass. Cargo itself validates directory-source checksums while resolving.
+    // The observation digest still rejects absence/presence and byte changes.
     let required_registry_checksums = discovery_document
         .inputs
         .required_registry_checksums
-        .clone();
-    let before = observe(&discovery_workspace, &discovery_paths)?;
+        .iter()
+        .filter(|path| {
+            !before
+                .missing_path_keys
+                .contains(&observation_path_key(path))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
     observation_budget()?;
     require_required_paths_present(
         &before,
         &required_manifests,
         CargoMetadataInputKind::PackageManifest,
-    )?;
-    require_required_paths_present(
-        &before,
-        &required_registry_checksums,
-        CargoMetadataInputKind::RegistryChecksum,
     )?;
     require_lock_path_state(&before, &discovery)?;
 
@@ -217,6 +224,7 @@ struct CargoMetadataInputs {
     /// admission; absent inactive rows remain an observed absence, not a refusal.
     required_package_manifests: Vec<PathBuf>,
     registry_checksums: Vec<PathBuf>,
+    // Reachable candidates; only initially present files are required later.
     required_registry_checksums: Vec<PathBuf>,
     target_sources: Vec<PathBuf>,
     package_roots: Vec<PathBuf>,
@@ -3774,6 +3782,76 @@ mod tests {
             runs, 2,
             "no retry may turn this race into a success receipt"
         );
+    }
+
+    #[test]
+    fn registry_cache_checksum_absence_is_valid_but_checksum_changes_invalidate_metadata() {
+        let scratch = scratch("backend-cargo-optional-registry-checksum");
+        let workspace = scratch.0.join("workspace");
+        let dependency = scratch.0.join("registry/dep-1.0.0");
+        for path in [&workspace, &dependency] {
+            std::fs::create_dir_all(path).expect("fixture directory");
+            std::fs::write(
+                path.join("Cargo.toml"),
+                "[package]\nname=\"fixture\"\nversion=\"1.0.0\"\n",
+            )
+            .expect("fixture manifest");
+        }
+        let workspace = workspace.canonicalize().expect("canonical workspace");
+        let dependency = dependency.canonicalize().expect("canonical dependency");
+        let requested = requested_cargo_manifest(&workspace)
+            .expect("request read")
+            .expect("package request");
+        let metadata = serde_json::to_vec(&serde_json::json!({
+            "workspace_root": workspace,
+            "workspace_members": ["app"],
+            "packages": [
+                {"id": "app", "manifest_path": workspace.join("Cargo.toml"),
+                 "source": null, "dependencies": [], "targets": []},
+                {"id": "dep", "manifest_path": dependency.join("Cargo.toml"),
+                 "source": "registry+https://github.com/rust-lang/crates.io-index",
+                 "dependencies": [], "targets": []}
+            ],
+            "resolve": {"nodes": [
+                {"id": "app", "deps": [{"pkg": "dep"}]},
+                {"id": "dep", "deps": []}
+            ]}
+        }))
+        .expect("metadata fixture");
+        let checksum = dependency.join(".cargo-checksum.json");
+        for case in ["absent", "stable", "created", "removed", "changed"] {
+            let _ = std::fs::remove_file(&checksum);
+            if matches!(case, "stable" | "removed" | "changed") {
+                std::fs::write(&checksum, b"original checksum").expect("initial checksum");
+            }
+            let mut runs = 0;
+            let result = coherent_metadata_with(
+                &requested,
+                |_| {
+                    runs += 1;
+                    if runs == 2 {
+                        match case {
+                            "created" | "changed" => {
+                                std::fs::write(&checksum, b"new checksum")
+                                    .expect("checksum change");
+                            }
+                            "removed" => std::fs::remove_file(&checksum).expect("checksum removal"),
+                            _ => {}
+                        }
+                    }
+                    Ok((metadata.clone(), "host".to_owned(), [3; 32]))
+                },
+                |workspace, paths| {
+                    observation_witness_with_context(workspace, paths, [1; 32], [2; 32])
+                },
+            );
+            assert_eq!(
+                result.is_ok(),
+                matches!(case, "absent" | "stable"),
+                "{case}"
+            );
+            assert_eq!(runs, 2, "{case}: both observations must run");
+        }
     }
 
     #[test]

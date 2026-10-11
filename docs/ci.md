@@ -219,3 +219,12 @@ release packaging and cache finalization. The runtime worker had 913 GiB free
 and 58 GiB available memory during diagnosis; these observed failures do not
 justify blaming disk exhaustion. Warm runtime cache reuse and repeated release
 compilation still need separate measurement.
+
+The runtime PR recipe currently has no persistent Cargo build cache, while
+main uses `.backend-build-cache` and fast PR jobs use `.backend-fast-cache`.
+The `guiRuntime` root Nix check uses `buildRustPackage` to build release
+locald/CLI/MCP binaries before the native CLI builds debug test binaries. These are distinct build profiles, so Nix binary-cache hits do
+not establish Cargo test-cache reuse. A future runtime cache must be bounded
+and measured against Concourse's volume-copy cost; simply adding a very large
+task cache can increase queue time. Main's fast lane also retains the shared
+heavy-job lock, unlike the fast PR jobs, and can wait behind runtime work.

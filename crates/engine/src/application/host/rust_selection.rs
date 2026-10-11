@@ -178,10 +178,8 @@ mod tests {
         let cache = home.join(".cargo");
         assert!(!cache.exists(), "capture does not create the Cargo home");
         std::fs::create_dir(&cache).expect("simulate a preexisting Cargo home");
-        assert_eq!(
-            std::fs::metadata(&cache).unwrap().permissions().mode() & 0o777,
-            0o755
-        );
+        // CI may use a private umask. Set the preexisting user permissions
+        // explicitly; discovery must preserve them regardless of that umask.
         std::fs::write(cache.join("owned-marker"), "preserve").expect("user content");
         std::fs::set_permissions(&cache, std::fs::Permissions::from_mode(0o755))
             .expect("existing user permissions");

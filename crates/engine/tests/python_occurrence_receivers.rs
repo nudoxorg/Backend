@@ -135,7 +135,16 @@ fn python_receiver_occurrences_resolve_honestly() -> Result<(), TestError> {
                 source: SOURCE,
                 declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
                 toolchain: ToolchainSelection::ResolvedNative(toolchain.clone()),
-                authority: SemanticAuthorityInput::None,
+                // These laws pin syntax-tier receiver resolution, independently
+                // of whichever pyrefly executable the host provides. Native
+                // authority evidence is exercised by the authority suites.
+                authority: SemanticAuthorityInput::Python {
+                    report: &backend_frontend_python::legacy::CheckerReport {
+                        inferences: Box::from([]),
+                        imports: Box::from([]),
+                        symbols: Box::from([]),
+                    },
+                },
                 control: CompileControl {
                     deadline: Instant::now() + Duration::from_secs(30),
                     cancelled: &cancelled,
@@ -276,7 +285,16 @@ fn compile_python_fragment(
             source,
             declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(toolchain.clone()),
-            authority: SemanticAuthorityInput::None,
+            // These laws pin syntax-tier receiver resolution, independently
+            // of whichever pyrefly executable the host provides. Native
+            // authority evidence is exercised by the authority suites.
+            authority: SemanticAuthorityInput::Python {
+                report: &backend_frontend_python::legacy::CheckerReport {
+                    inferences: Box::from([]),
+                    imports: Box::from([]),
+                    symbols: Box::from([]),
+                },
+            },
             control: CompileControl {
                 deadline: Instant::now() + Duration::from_secs(30),
                 cancelled,

@@ -265,7 +265,16 @@ fn compile_fixture(
             source,
             declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
             toolchain: ToolchainSelection::ResolvedNative(toolchain),
-            authority: SemanticAuthorityInput::None,
+            // These laws pin syntax-tier receiver resolution, independently
+            // of whichever pyrefly executable the host provides. Native
+            // authority evidence is exercised by the authority suites.
+            authority: SemanticAuthorityInput::Python {
+                report: &backend_frontend_python::legacy::CheckerReport {
+                    inferences: Box::from([]),
+                    imports: Box::from([]),
+                    symbols: Box::from([]),
+                },
+            },
             control: CompileControl {
                 deadline: Instant::now() + Duration::from_secs(30),
                 cancelled: &cancelled,
@@ -1155,18 +1164,38 @@ fn python_super_child_field_does_not_hide_base_method() -> Result<(), TestError>
 }
 
 #[test]
-fn python_super_ambiguous_bases_stays_universe() -> Result<(), TestError> {
-    let source = b"class Left:\n    note: str\n\nclass Right:\n    note: str\n\nclass Child(Left, Right):\n    def read(self):\n        return super().note\n";
-    let (fragment, module) = compile_fixture(source)?;
-    let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
-    let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
-    let rows = occurrences(&decoded)?;
-    let left_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Left", b"note")?;
-    let right_note = field_ordinal_in_class(&decoded, &atoms, &module, b"Right", b"note")?;
-    if left_note == right_note {
-        return Err(TestError::Falsified("Left.note and Right.note are one field"));
+fn python_super_multiple_bases_uses_c3_order() -> Result<(), TestError> {
+    for (bases, first, decoy) in [
+        ("Left, Right", b"Left".as_slice(), b"Right".as_slice()),
+        ("Right, Left", b"Right".as_slice(), b"Left".as_slice()),
+    ] {
+        let source = format!(
+            "class Left:\n    note: str\n\nclass Right:\n    note: str\n\nclass Child({bases}):\n    def read(self):\n        return super().note\n"
+        );
+        let source = source.as_bytes();
+        let (fragment, module) = compile_fixture(source)?;
+        let decoded = FragmentView::validate(&fragment).map_err(|_| TestError::Validate)?;
+        let atoms: Vec<&[u8]> = decoded.atoms().map(|atom| atom.bytes).collect();
+        let rows = occurrences(&decoded)?;
+        let first_note = field_ordinal_in_class(&decoded, &atoms, &module, first, b"note")?;
+        let decoy_note = field_ordinal_in_class(&decoded, &atoms, &module, decoy, b"note")?;
+        if first_note == decoy_note {
+            return Err(TestError::Falsified(
+                "Left.note and Right.note are one field",
+            ));
+        }
+        pin_local_field_access(
+            source,
+            &module,
+            &decoded,
+            &atoms,
+            &rows,
+            b"read",
+            first_note,
+            Some(decoy_note),
+            b"note",
+        )?;
     }
-    pin_universe_field_access(source, &module, &decoded, &atoms, &rows, b"read", "note")?;
     Ok(())
 }
 

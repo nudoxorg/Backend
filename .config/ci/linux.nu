@@ -1,7 +1,7 @@
 # Linux CI lane runner, invoked as `nu .config/ci/linux.nu` inside the
 # `.#compiler` dev shell. The lane is the whole native x86_64/aarch64 Linux
 # gate: the root flake's structural checks, then `backend test pr` (every
-# workspace test except the deep-accuracy suites and the PR quarantine).
+# first-party workspace test except deep-accuracy suites and the PR quarantine).
 #
 # MachineConfigurations only schedules this file; what the lane runs lives
 # here so a Backend PR can change it.

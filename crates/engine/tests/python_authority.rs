@@ -15,12 +15,12 @@ use backend_engine::driver::{
     CompileControl, CompileFailure, CompileOutput, CompileRequest, CompileScratch, NativeTool,
     ResolvedToolchain, SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
+use backend_frontend_python::legacy::{
+    CheckerReport, Inference, InferenceSite, InferredType, Span, SymbolOutcome, SymbolResolution,
+};
 use backend_semantic::ir::{
     Confidence, DecodedOccurrence, EntityKind, FragmentView, LanguageExtensionWireFact,
     OccurrenceConfidence, OccurrenceTarget, PythonFacts,
-};
-use backend_frontend_python::legacy::{
-    CheckerReport, Inference, InferenceSite, InferredType, Span, SymbolOutcome, SymbolResolution,
 };
 use backend_semantic::vocabulary::{LanguageProfile, PythonVersion, Stage, TypeScriptSource};
 use thiserror::Error;
@@ -84,7 +84,9 @@ fn failure_label(failure: &CompileFailure<'_>) -> &'static str {
         CompileFailure::AuthorityInputRequired { .. } => "authority-input-required",
         CompileFailure::AuthorityInputProfileMismatch { .. } => "authority-profile-mismatch",
         CompileFailure::LoweringUnsupported { cause, .. } => match cause {
-            backend_semantic::vocabulary::LoweringUnsupported::FactRejected { .. } => "fact-rejected",
+            backend_semantic::vocabulary::LoweringUnsupported::FactRejected { .. } => {
+                "fact-rejected"
+            }
             backend_semantic::vocabulary::LoweringUnsupported::CSharpProjection { .. } => {
                 "csharp-projection"
             }
@@ -304,11 +306,10 @@ fn supplied_foreign_resolution_upgrades_the_call_to_import() -> Result<(), TestE
     })
 }
 
-/// Falsifier 3: `Unresolved` outcomes at the same exact spans upgrade
-/// nothing — every occurrence keeps its index tier and every proven syntax
-/// target keeps its shape.
+/// Falsifier 3: explicit native `Unresolved` outcomes retain index-tier
+/// written targets without inventing a same-spelled local declaration.
 #[test]
-fn unresolved_outcomes_keep_every_proven_syntax_tier() -> Result<(), TestError> {
+fn unresolved_project_authority_does_not_invent_a_local_target() -> Result<(), TestError> {
     with_deep_stack(|| {
         let report = report_with_symbols(Box::from([
             SymbolResolution {
@@ -323,8 +324,7 @@ fn unresolved_outcomes_keep_every_proven_syntax_tier() -> Result<(), TestError> 
             },
         ]));
         let bytes = compile_fragment(SOURCE, SemanticAuthorityInput::Python { report: &report })?;
-        let (fragment, occurrences) = decoded_occurrences(&bytes)?;
-        let target_row = entity_position(&fragment, b"target", EntityKind::Function)?;
+        let (_, occurrences) = decoded_occurrences(&bytes)?;
         if occurrences.is_empty() {
             return Err(TestError::Falsified("no occurrences decoded"));
         }
@@ -335,20 +335,25 @@ fn unresolved_outcomes_keep_every_proven_syntax_tier() -> Result<(), TestError> 
                 ));
             }
         }
-        let local_target_intact = occurrences.iter().any(|fact| {
-            matches!(fact.occurrence.target,
-                OccurrenceTarget::Local(local) if local.raw as usize == target_row)
-        });
-        let foreign_target_intact = occurrences
+        if occurrences
             .iter()
-            .any(|fact| matches!(fact.occurrence.target, OccurrenceTarget::Foreign(_)));
-        if local_target_intact && foreign_target_intact {
-            Ok(())
-        } else {
-            Err(TestError::Falsified(
-                "unresolved outcomes changed the resolved syntax targets",
-            ))
+            .any(|fact| matches!(fact.occurrence.target, OccurrenceTarget::Local(_)))
+        {
+            return Err(TestError::Falsified(
+                "unresolved authority invented a local target",
+            ));
         }
+        for written in ["target", "osp"] {
+            if !occurrences.iter().any(|fact| {
+                matches!(&fact.occurrence.target,
+                OccurrenceTarget::Foreign(key) if key.display == written)
+            }) {
+                return Err(TestError::Falsified(
+                    "unresolved project authority invented a resolved target",
+                ));
+            }
+        }
+        Ok(())
     })
 }
 

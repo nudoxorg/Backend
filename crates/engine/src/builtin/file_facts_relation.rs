@@ -1929,22 +1929,22 @@ mod tests {
     fn source_row(
         project: [u8; 32],
         path: &str,
+        language: SourceLanguage,
         content_version: [u8; 32],
         analysis_version: [u8; 32],
         source_identity: ContentId<SourceFactDomain>,
         declarations: Vec<SourceDeclaration>,
     ) -> ProductSourceRecord {
-        ProductSourceRecord::file_within_row_capacity(
+        ProductSourceRecord::identified_file_within_row_capacity(
             project,
             path,
-            SourceLanguage::Rust,
+            language,
             content_version,
             analysis_version,
             declarations,
+            source_identity,
         )
-        .expect("compact source row")
-        .with_source_identity(source_identity)
-        .expect("source identity")
+        .expect("compact identified source row")
     }
 
     #[test]
@@ -1969,6 +1969,7 @@ mod tests {
         let source = source_row(
             project,
             path,
+            SourceLanguage::Rust,
             [3; 32],
             [4; 32],
             identity,
@@ -1997,7 +1998,15 @@ mod tests {
             }
             ProductSourceFileFactsAdmission::PagedVerified(_) => panic!("small set is inline"),
         }
-        let wrong_file = source_row(project, path, [9; 32], [4; 32], identity, declarations);
+        let wrong_file = source_row(
+            project,
+            path,
+            SourceLanguage::Rust,
+            [9; 32],
+            [4; 32],
+            identity,
+            declarations,
+        );
         let error = match admit_product_source_file_facts(
             wrong_file.file_fields().expect("file fields"),
             update.manifest_key(),
@@ -2061,14 +2070,12 @@ mod tests {
             first.manifest().source_identity(),
             second.manifest().source_identity()
         );
-        let old_by_name = original
-            .iter()
-            .map(|declaration| (declaration.name(), declaration))
-            .collect::<BTreeMap<_, _>>();
-        for declaration in &changed {
-            let Some(old) = old_by_name.get(declaration.name()) else {
-                continue;
-            };
+        // Repeated parameter/member names belong to distinct declarations.
+        // A bare-name map collapsed them onto the final function's line.
+        assert_eq!(changed.len(), original.len());
+        for (old, declaration) in original.iter().zip(&changed) {
+            assert_eq!(declaration.name(), old.name());
+            assert_eq!(declaration.kind(), old.kind());
             if declaration.kind() == DeclarationKind::Module {
                 assert_eq!(
                     declaration.line(),
@@ -2086,7 +2093,23 @@ mod tests {
             assert_eq!(declaration.documentation(), old.documentation());
             assert_eq!(declaration.source_excerpt(), old.source_excerpt());
             assert_eq!(declaration.facts(), old.facts());
-            assert_eq!(declaration.container(), old.container());
+            match (old.container(), declaration.container()) {
+                (
+                    Container::Enclosing {
+                        name: old_name,
+                        line: old_line,
+                    },
+                    Container::Enclosing { name, line },
+                ) => {
+                    assert_eq!(name, old_name);
+                    assert_eq!(
+                        line.get(),
+                        old_line.get() + 2,
+                        "container anchor shifts with its declaration"
+                    );
+                }
+                (before, after) => assert_eq!(after, before),
+            }
         }
         let old_keys = first
             .pages()
@@ -2102,14 +2125,45 @@ mod tests {
                 matches!(record, ProductSourceFileFactsRecord::Page(_)).then_some(*key)
             })
             .collect::<std::collections::BTreeSet<_>>();
+        // The file-module anchor stays at line one while source declarations
+        // move. Its page changes relative offsets; every other page is reused.
+        let anchor_page = |update: &ProductSourceFileFactsUpdate| {
+            update
+                .pages()
+                .iter()
+                .find_map(|(key, record)| {
+                    let ProductSourceFileFactsRecord::Page(page) = record else {
+                        return None;
+                    };
+                    page.declarations
+                        .iter()
+                        .any(|declaration| declaration.kind() == DeclarationKind::Module)
+                        .then_some(*key)
+                })
+                .expect("file-module anchor page")
+        };
+        let old_anchor = anchor_page(&first);
+        let new_anchor = anchor_page(&second);
+        assert_ne!(old_anchor, new_anchor);
         assert_eq!(
-            old_keys, prefixed_keys,
-            "line-only prefix must preserve every page key"
+            old_keys
+                .difference(&prefixed_keys)
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from([old_anchor])
+        );
+        assert_eq!(
+            prefixed_keys
+                .difference(&old_keys)
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from([new_anchor])
         );
         assert_eq!(second.declaration_count(), original.len());
         let compact = source_row(
             project,
             "src/Panels.tsx",
+            SourceLanguage::TypeScript,
             [8; 32],
             [2; 32],
             ContentId::<SourceFactDomain>::from_canonical_bytes(prefixed_source.as_bytes()),
@@ -2145,11 +2199,21 @@ mod tests {
                         return Err("admitted TSX declaration order".to_owned());
                     }
                     last_line = line;
-                    if declaration.documentation().is_empty()
-                        || declaration.source_excerpt().text().is_none()
-                    {
-                        return Err("admitted TSX declaration lost captured facts".to_owned());
-                    }
+                    let expected = changed
+                        .get(visited)
+                        .ok_or_else(|| "admitted TSX page added a declaration".to_owned())?;
+                    assert_eq!(line, expected.line());
+                    assert_eq!(declaration.name(), expected.name());
+                    assert_eq!(declaration.kind(), expected.kind());
+                    assert_eq!(declaration.signature(), expected.signature());
+                    assert_eq!(declaration.documentation(), expected.documentation());
+                    assert_eq!(declaration.source_excerpt(), expected.source_excerpt());
+                    assert_eq!(declaration.facts(), expected.facts());
+                    let expected_container_line = match expected.container() {
+                        Container::Enclosing { line, .. } => Some(line.get()),
+                        _ => None,
+                    };
+                    assert_eq!(page.container_start_line(index), expected_container_line);
                     visited += 1;
                 }
                 Ok(())
@@ -2318,7 +2382,7 @@ mod tests {
         );
         assert!(rewritten_bytes > 0);
         eprintln!(
-            "TSX prefix edit: all {} pages / {prefix_page_bytes} bytes reused; one declaration insertion reused {reused_keys} pages / {reused_bytes} of {old_page_bytes} prior bytes and rewrote {rewritten_bytes} bytes",
+            "TSX prefix edit: all but the anchor of {} pages / {prefix_page_bytes} bytes reused; one declaration insertion reused {reused_keys} pages / {reused_bytes} of {old_page_bytes} prior bytes and rewrote {rewritten_bytes} bytes",
             old_keys.len()
         );
     }
@@ -2387,6 +2451,7 @@ mod tests {
         let compact = source_row(
             project,
             path,
+            SourceLanguage::TypeScript,
             [0x21; 32],
             [0x22; 32],
             identity,
@@ -2454,7 +2519,15 @@ mod tests {
         )
         .expect("paged facts");
         let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(b"source");
-        let source = source_row(project, path, [2; 32], [3; 32], identity, declarations);
+        let source = source_row(
+            project,
+            path,
+            SourceLanguage::Rust,
+            [2; 32],
+            [3; 32],
+            identity,
+            declarations,
+        );
         let mut rows = update.pages().iter().cloned().collect::<BTreeMap<_, _>>();
         let stale = source.file_fields().expect("file fields");
         let mut corrupt_key = None;

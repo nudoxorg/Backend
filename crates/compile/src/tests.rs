@@ -1413,8 +1413,10 @@ fn supervisor_enforces_workspace_growth() -> Result<(), Box<dyn Error>> {
 #[cfg(unix)]
 #[test]
 fn supervisor_enforces_unix_process_count_limit() -> Result<(), Box<dyn Error>> {
+    // A shell may diagnose a refused fork on stderr. Keep that bounded,
+    // but do not let the 64-byte transcript limit mask the process verdict.
     let process_limits =
-        limits(64, 64, Duration::from_secs(2), 128)?.with_process_count_limit(1)?;
+        limits(64, 4096, Duration::from_secs(2), 128)?.with_process_count_limit(1)?;
     let process = command("/bin/sh", &["-c", "sleep 1 & wait"], process_limits)?;
     let receipt = process.run()?;
     assert_eq!(receipt.terminal(), ProcessTerminal::Exit);
