@@ -1674,6 +1674,7 @@ impl<'a> CheckerState<'a> {
             self.merge_js_export_surface_into_typeof_import_namespace_props(
                 module_name,
                 exports_table_target.or(Some(self.ctx.current_file_idx)),
+                selected_target,
                 &mut props,
             );
             Self::normalize_namespace_export_declaration_order(&mut props);
@@ -1686,8 +1687,11 @@ impl<'a> CheckerState<'a> {
                 self.imported_namespace_display_module_name(display_module_name),
             );
             Some(namespace_type)
-        } else if let Some(surface) =
+        } else if let Some(surface) = if configured {
+            selected_target.map(|target_idx| self.resolve_js_export_surface(target_idx))
+        } else {
             self.resolve_js_export_surface_for_module(module_name, Some(self.ctx.current_file_idx))
+        }
         {
             let namespace_type = self.ctx.types.factory().object(surface.named_exports);
             self.ctx.namespace_module_names.insert(

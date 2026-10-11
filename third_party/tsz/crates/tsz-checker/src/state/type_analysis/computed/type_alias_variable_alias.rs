@@ -1267,14 +1267,22 @@ impl<'a> CheckerState<'a> {
                             let me_type = self.get_type_of_symbol(module_exports_sym);
                             export_equals_type = Some(self.widen_type_for_display(me_type));
                         }
-                        let surface = exports_table_target
-                            .map(|target_idx| self.resolve_js_export_surface(target_idx))
-                            .or_else(|| {
-                                self.resolve_js_export_surface_for_module(
-                                    module_name,
-                                    declaring_file_idx,
-                                )
-                            });
+                        let surface = if configured {
+                            // A JS surface belongs to the selected File request.
+                            // An External namespace cannot borrow a program file
+                            // admitted for a different kind or mode.
+                            configured_target
+                                .map(|target_idx| self.resolve_js_export_surface(target_idx))
+                        } else {
+                            exports_table_target
+                                .map(|target_idx| self.resolve_js_export_surface(target_idx))
+                                .or_else(|| {
+                                    self.resolve_js_export_surface_for_module(
+                                        module_name,
+                                        declaring_file_idx,
+                                    )
+                                })
+                        };
                         let mut props: Vec<PropertyInfo> = if surface
                             .as_ref()
                             .is_some_and(|s| s.has_commonjs_exports)

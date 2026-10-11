@@ -753,12 +753,21 @@ impl<'a> CheckerState<'a> {
         &mut self,
         module_name: &str,
         declaring_file_idx: Option<usize>,
+        selected_file_target: Option<usize>,
         props: &mut Vec<PropertyInfo>,
     ) {
-        let Some(js_surface) =
-            self.resolve_js_export_surface_for_module(module_name, declaring_file_idx)
-        else {
-            return;
+        let js_surface = if self.ctx.project_module_resolution_outcomes.is_some() {
+            let Some(target_idx) = selected_file_target else {
+                return;
+            };
+            self.resolve_js_export_surface(target_idx)
+        } else {
+            let Some(surface) =
+                self.resolve_js_export_surface_for_module(module_name, declaring_file_idx)
+            else {
+                return;
+            };
+            surface
         };
         for prop in js_surface.named_exports {
             let prop_name_atom = self.ctx.types.resolve_atom_ref(prop.name);
