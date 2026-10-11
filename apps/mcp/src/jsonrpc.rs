@@ -23,7 +23,7 @@ use backend_client::{ClientError, Session};
 use backend_library::protocol::mcp::{MCP_PROTOCOL_VERSION, negotiate_version};
 use backend_library::{
     AdmittedGraphQueryInput, CompileExecutionIntent, GraphQueryPage, GraphQueryRow, GraphValue,
-    HealthReport, IndexJobTicket, IndexSearchCursor, IndexSearchPage, PackageReference,
+    HealthReport, IndexJobTicket, IndexSearchCursor, PackageReference,
     PageContinuation, PageTerminal, ProductText, ReplyDto, SurfaceCommand, SurfaceReply,
     TreeOpener, ViewStateRoot, encode_id,
 };
@@ -1849,7 +1849,7 @@ impl RpcError {
         Err(self)
     }
     fn into_reply(self, id: Value) -> Value {
-        let mut data = serde_json::Map::new();
+        let mut data = Map::new();
         data.insert("kind".to_owned(), Value::String(self.kind.to_owned()));
         if let Some(detail) = self.detail {
             data.insert("detail".to_owned(), Value::String(bounded_text(&detail)));
