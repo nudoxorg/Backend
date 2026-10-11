@@ -7025,10 +7025,31 @@ mod tests {
     fn install_mixed_native_compiler(fixture: &mut AdapterFixture) {
         let compiler = backend_engine::application::LocalCompilerHost::new(
             MixedNativeEnvironment(fixture.root.0.join("compiler-native")),
-            backend_engine::application::LocalHostDiscovery::ExplicitOnly,
+            // ExplicitOnly deliberately permits TypeScript platform discovery;
+            // this control owns a closed host with an absent SDK on every host.
+            backend_engine::application::LocalHostDiscovery::ClosedSnapshot,
         )
         .open()
         .expect("compiled native Python producer and explicitly absent TypeScript SDK");
+        let capabilities = compiler.capabilities();
+        assert_eq!(
+            capabilities
+                .for_profile(backend_semantic::vocabulary::LanguageProfile::TypeScript(
+                    backend_semantic::vocabulary::TypeScriptSource::TypeScript,
+                ))
+                .state(),
+            backend_engine::application::LocalCompilerCapabilityState::Unavailable,
+            "closed fixture must retain an actual absent TypeScript SDK",
+        );
+        assert_eq!(
+            capabilities
+                .for_profile(backend_semantic::vocabulary::LanguageProfile::Python(
+                    backend_semantic::vocabulary::PythonVersion::Python314,
+                ))
+                .state(),
+            backend_engine::application::LocalCompilerCapabilityState::Ready,
+            "compiled native Python authority must be admitted by the actual owner",
+        );
         fixture.adapter.as_mut().expect("adapter").compiler = compiler;
     }
 
