@@ -454,7 +454,19 @@ fn a_card_is_a_door_to_its_exact_indexed_page(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn j_walks_the_modules_enter_opens_one_and_j_then_enter_opens_a_name(cx: &mut TestAppContext) {
-    let mut rig = rig(cx, Some(package_route()), 1440.0, 900.0);
+    use crate::core::VersionedRoot;
+    use crate::runtime::owner::OwnerGate;
+    use crate::runtime::reads::ReadPool;
+    use crate::shell::tests::{Fixture, RootOnly, rig_with_engine_gate};
+
+    let root = VersionedRoot::synthetic(
+        backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4,
+    );
+    let mut rig = rig_with_engine_gate(
+        cx, Some(package_route()), 1440., 900.,
+        ReadPool::start(2, |_| Fixture).expect("fixture pool"), RootOnly,
+        Some(OwnerGate::ready(root, crate::model::ServiceMode::Attached)),
+    );
     install(&mut rig);
     let _ = painted(&mut rig);
     rig.keys("j");
@@ -466,7 +478,8 @@ fn j_walks_the_modules_enter_opens_one_and_j_then_enter_opens_a_name(cx: &mut Te
         Some("pkg-module-glyph"),
         "j lands on the first module"
     );
-    rig.keys("enter");
+    rig.native_press("enter");
+    rig.settle();
     let ledger = painted(&mut rig);
     assert_eq!(
         rig.route(),
@@ -486,7 +499,12 @@ fn j_walks_the_modules_enter_opens_one_and_j_then_enter_opens_a_name(cx: &mut Te
         Some(true),
         "j now walks the cards: {focused:?}"
     );
-    rig.keys("enter");
+    let _ = painted(&mut rig);
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)), targets.focused(),
+        "the selected card's actual native handle owns Enter");
+    rig.native_press("enter");
+    rig.settle();
     assert!(
         matches!(rig.route(), crate::navigation::Route::Symbol(_)),
         "enter on a card opens its page: {:?}",
@@ -1245,25 +1263,16 @@ fn the_crest_and_releases_are_doors_and_enter_does_what_a_click_does(cx: &mut Te
         Some("pkg-module-glyph"),
         "the first door is the territory's"
     );
-    // Then the licence: Enter holds the stamp unfolded, Enter again lets it go.
+    // Native focus reveals the stamp; Enter closes and then reopens
+    // that same disclosure, rather than a second painted debug state.
     walk_to(&mut rig, "pkg-licence", 6);
-    rig.keys("enter");
-    assert!(
-        has(&painted(&mut rig), "licence-line")
-            || said(&painted(&mut rig), "licence")
-                .iter()
-                .any(|w| w.contains("keep the notice")),
-        "Enter unfolded the licence stamp"
-    );
-    rig.keys("enter");
+    assert!(native_licence_expanded(&mut rig), "focus reveals the actual licence stamp");
+    rig.native_press("enter");
     rig.settle();
-    rig.frame(400);
-    assert!(
-        !said(&painted(&mut rig), "licence")
-            .iter()
-            .any(|w| w.contains("keep the notice")),
-        "Enter again folded it"
-    );
+    assert!(!native_licence_expanded(&mut rig), "Enter folds the native stamp");
+    rig.native_press("enter");
+    rig.settle();
+    assert!(native_licence_expanded(&mut rig), "Enter unfolds the same native stamp");
     // The heads-up hand: Enter opens the sheet of evidence.
     walk_to(&mut rig, "pkg-heads", 3);
     rig.keys("enter");
@@ -1335,7 +1344,7 @@ fn package_card_reading_names_and_native_actions_follow_the_current_owner_attach
     let card_id = PageTarget::Card(symbol).id();
     let debug_id = format!("{:?}", gpui::ElementId::Name(card_id.clone()));
     let tree: serde_json::Value = serde_json::from_str(&rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("forced native tree")).expect("native JSON");
-    let (node_id, node) = tree["nodes"].as_object().expect("native nodes").iter().find(|(_, node)| {
+    let (_, node) = tree["nodes"].as_object().expect("native nodes").iter().find(|(_, node)| {
         node["element_id"].as_str() == Some(debug_id.as_str())
             && node["aria"]["role"].as_str() == Some("Button")
             && node["aria"]["label"].as_str() == Some("RelationLabel")
@@ -1349,7 +1358,7 @@ fn package_card_reading_names_and_native_actions_follow_the_current_owner_attach
         node.role() == gpui::Role::Label && node.label() == Some("enum")
             && !node.supports_action(gpui::AccessibleAction::SetValue)
     }))), "the actual card kind word is noneditable native reading");
-    let old = gpui::accesskit::NodeId(node_id.parse().expect("native node id"));
+    let old = gpui::accesskit::NodeId(node["accesskit_id"].as_str().expect("native AccessKit id").parse().expect("native node id"));
     // No UI watcher, repaint or new typed read may run between publication
     // of the new real attachment and delivery to the old mounted handler.
     gate.publish(OwnerState::Starting);
@@ -2330,7 +2339,7 @@ fn a_dependency_native_link_rejects_a_replaced_owner_before_any_repaint(cx: &mut
             .expect("real mounted dependency tree"),
     )
     .expect("native JSON");
-    let (node_id, node) = tree["nodes"]
+    let (_, node) = tree["nodes"]
         .as_object()
         .expect("native nodes")
         .iter()
@@ -2344,7 +2353,7 @@ fn a_dependency_native_link_rejects_a_replaced_owner_before_any_repaint(cx: &mut
             .iter()
             .any(|action| action.as_str() == Some("Click"))
     }));
-    let old = gpui::accesskit::NodeId(node_id.parse().expect("native dependency id"));
+    let old = gpui::accesskit::NodeId(node["accesskit_id"].as_str().expect("native AccessKit id").parse().expect("native dependency id"));
     // Deliver directly to the old mounted action, before any notification,
     // rebuilt link, or typed read can conceal the attachment replacement.
     gate.publish(OwnerState::Starting);

@@ -311,6 +311,16 @@ pub(super) fn body(
     });
     let package_key = PageKey::Package(dossier.package.clone());
     let package_stamp = ctx.links.store.read(cx).stamp(&package_key);
+    // Cards build their native leaves in Folio's RenderOnce, after Reader
+    // finishes its registry frame. Mark existing owners before that sweep so
+    // a parent repaint cannot replace the focused card's handle.
+    if ctx.active {
+        for module in &facts.modules {
+            for item in &module.items {
+                ctx.targets.reuse_native_handle(&PageTarget::Card(item.symbol.clone()).id());
+            }
+        }
+    }
     let folio = folio::Folio {
         id: id.into(),
         facts,

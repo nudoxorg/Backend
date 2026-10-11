@@ -1423,12 +1423,11 @@ impl Shell {
     }
 
     /// Tab: the next zone takes the keyboard.
-    fn graph_component_tab(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
-        // Graph has already walked its own mounted native region before
-        // propagating this component action. Its real edge belongs to the
-        // existing Shell zone walk, rather than CE's whole-window fallback.
-        if super::bodies::graph::is_graph(self.links.snapshot(cx).route())
-            && self.reader.read(cx).adopt_mounted_native_focus(window, cx).is_some()
+    fn reader_component_tab(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // A mounted Reader input can emit CE's component Tab actions too.
+        // Use the same native Reader/zone walk as plain controls; Graph's
+        // propagated region edge also arrives through this seam.
+        if self.reader.read(cx).adopt_mounted_native_focus(window, cx).is_some()
         {
             self.with_background_input(|shell| shell.cycle_zone(forward, window, cx));
         } else {
@@ -1958,6 +1957,15 @@ impl Shell {
             && matches!(scope, gpui::NativeActivationScope::Active { .. })
     }
 
+    /// The titlebar's Shelf toggle remains available to close its drawer.
+    /// The covered Reader still uses the stricter page admission above.
+    pub(crate) fn admits_shelf_toggle_scope(&self, scope: gpui::NativeActivationScope, cx: &App) -> bool {
+        self.local_native_input == scope
+            && matches!(scope, gpui::NativeActivationScope::Active { .. })
+            && self.background_input_allowed() && !self.ask_open
+            && !matches!(self.links.snapshot(cx).overlay(), Some(Overlay::CommandPalette | Overlay::AddProject))
+    }
+
     pub(crate) fn page_input_scope(&self, cx: &App) -> Option<PageInputScope> {
         if !self.page_input_allowed(cx) { return None; }
         self.native_input_scope(cx)
@@ -2355,7 +2363,19 @@ impl Shell {
         } else {
             // The page under a departing sheet is not yet available. Consume
             // its pointer hit without reviving any of Ask's old actions.
-            veil = veil.on_click(|_, _, cx| cx.stop_propagation());
+            // This occluding hitbox can prevent the root's hovered capture
+            // listener from seeing the pointer. Retire the interrupted Find
+            // return at the hitbox that actually owns the departing cover.
+            let interrupted = self.links.clone();
+            veil = veil
+                .capture_any_mouse_down(move |_, window, cx| {
+                    interrupted.shell(cx, |shell, cx| {
+                        shell.advance_transient_generation();
+                        shell.input_left_find_visit(cx);
+                        shell.focus.focus(window, cx);
+                    });
+                })
+                .on_click(|_, _, cx| cx.stop_propagation());
         }
         let plate = scene.geometry.map(|geometry| {
             let mut plate = div()
@@ -2698,8 +2718,8 @@ impl Render for Shell {
             .on_action(cx.listener(|shell, _: &keys::ToggleShelf, window, cx| shell.with_background_input(|shell| shell.toggle_shelf(window, cx))))
             .on_action(cx.listener(|shell, _: &keys::NextZone, window, cx| shell.with_background_input(|shell| shell.cycle_zone(true, window, cx))))
             .on_action(cx.listener(|shell, _: &keys::PrevZone, window, cx| shell.with_background_input(|shell| shell.cycle_zone(false, window, cx))))
-            .on_action(cx.listener(|shell, _: &gpui_component::Tab, window, cx| shell.graph_component_tab(true, window, cx)))
-            .on_action(cx.listener(|shell, _: &gpui_component::TabPrev, window, cx| shell.graph_component_tab(false, window, cx)))
+            .on_action(cx.listener(|shell, _: &gpui_component::Tab, window, cx| shell.reader_component_tab(true, window, cx)))
+            .on_action(cx.listener(|shell, _: &gpui_component::TabPrev, window, cx| shell.reader_component_tab(false, window, cx)))
             .on_action(cx.listener(|shell, _: &keys::AskNext, window, cx| shell.ask_tab(false, window, cx)))
             .on_action(cx.listener(|shell, _: &keys::AskPrev, window, cx| shell.ask_tab(true, window, cx)))
             .on_action(cx.listener(|shell, _: &keys::FolioNext, window, cx| shell.with_background_input(|shell| shell.folio_tab(false, window, cx))))
@@ -3342,13 +3362,23 @@ mod shelf_scene_admission_tests {
 
     #[gpui::test]
     fn titlebar_toggle_and_structural_changes_rehome_a_focused_shelf_row(cx: &mut gpui::TestAppContext) {
-        let mut rig = super::super::tests::rig(cx,
-            Some(super::super::tests::page_route("RelationLabel")), 1440.0, 900.0);
+        // The Types row belongs to the package inventory, not the symbol's
+        // contextual Shelf.
+        let route = Route::Package(crate::navigation::PackageRoute {
+            cargo: None, project: None, at: None,
+            package: crate::core::PackageId::new(super::super::tests::PACKAGE).expect("fixture package"),
+            lane: crate::navigation::PackageLane::Overview, selected: None,
+        });
+        let mut rig = super::super::tests::rig(cx, Some(route), 1440.0, 900.0);
+        rig.settle();
         let shell = rig.shell.clone();
         let focus_shelf = |rig: &mut super::super::tests::Rig| {
             rig.cx.update(|window, cx| shell.update(cx, |shell, cx| {
                 shell.take_zone(Zone::Shelf, window, cx);
-                shell.shelf.read(cx).targets.focus("shelf-kind-types");
+                let targets = shell.shelf.read(cx).targets.clone();
+                targets.focus("shelf-kind-types");
+                assert!(targets.focus_native("shelf-kind-types", window, cx),
+                    "the actual mounted Shelf row owns the keyboard");
                 shell.notify_zone(Zone::Shelf, cx);
             }));
             rig.repaint();
@@ -3375,7 +3405,7 @@ mod shelf_scene_admission_tests {
         rig.cx.simulate_resize(gpui::size(px(1440.0), px(900.0)));
         rig.settle();
         focus_shelf(&mut rig);
-        rig.keys("secondary-.");
+        rig.keys("secondary-shift-.");
         assert_eq!(shell.read_with(rig.cx, |shell, _| shell.zone), Zone::Reader,
             "zen removes the Shelf's row targets and their keyboard zone");
     }
@@ -3675,7 +3705,11 @@ mod responsive_shelf_scene_tests {
     use super::*;
 
     fn scope(rig: &mut super::super::tests::Rig, drawer: bool) -> ShelfInputScope {
-        rig.shell.read_with(rig.cx, |shell, cx| shell.shelf_input_scope(drawer, cx).expect("current native shelf scope"))
+        rig.shell.read_with(rig.cx, |shell, cx| shell.shelf_input_scope(drawer, cx).unwrap_or_else(|| {
+            panic!("current native shelf scope: requested_drawer={drawer} surface={:?} open={} departing={} overlay={:?}",
+                ShelfNativeSurface::of(shell.frame, shell.shelf_over_open), shell.shelf_over_open,
+                shell.drawer_departing, shell.links.snapshot(cx).overlay())
+        }))
     }
     fn admitted(rig: &mut super::super::tests::Rig, scope: &ShelfInputScope) -> bool {
         rig.shell.read_with(rig.cx, |shell, cx| shell.admits_shelf_input_scope(scope, cx))
@@ -3707,18 +3741,25 @@ mod responsive_shelf_scene_tests {
                 let renders = rig.shell.read_with(rig.cx, |shell, _| shell.renders);
                 // Actual action dispatch, not direct callbacks or seeded state;
                 // the two ownership transitions have no intervening draw.
+                let shell = rig.shell.clone();
                 rig.cx.update(|window, cx| {
+                    // FocusHandle dispatch is synchronous on the actual
+                    // rendered node; Window dispatch queues a deferred action.
+                    let focus = window.focused(cx).expect("held native tab owns focus");
                     if zen {
-                        window.dispatch_action(Box::new(keys::Zen), cx);
-                        window.dispatch_action(Box::new(keys::Zen), cx);
+                        focus.dispatch_action(&keys::Zen, window, cx);
+                        focus.dispatch_action(&keys::Zen, window, cx);
                     } else {
-                        window.dispatch_action(Box::new(keys::ToggleShelf), cx);
-                        window.dispatch_action(Box::new(keys::ToggleShelf), cx);
+                        focus.dispatch_action(&keys::ToggleShelf, window, cx);
+                        focus.dispatch_action(&keys::ToggleShelf, window, cx);
                     }
+                    // Measure the no-paint transaction before draining effects:
+                    // parking the test executor is allowed to draw a new frame.
+                    assert_eq!(shell.read(cx).renders, renders, "pair must exercise the no-paint boundary");
+                    assert!(!shell.read(cx).admits_shelf_input_scope(&old, cx),
+                        "unpainted ownership cycle retires the old receipt");
                 });
-                rig.cx.run_until_parked();
-                assert_eq!(rig.shell.read_with(rig.cx, |shell, _| shell.renders), renders, "pair must exercise the no-paint boundary");
-                assert!(!admitted(&mut rig, &old), "unpainted ownership cycle retires the old receipt");
+                assert!(!admitted(&mut rig, &old), "old receipt remains retired after effects drain");
                 rig.cx.simulate_mouse_up(rests.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
                 rig.settle();
                 assert!(selected_tab(&mut rig, "Used by"), "old held press cannot activate after an unpainted cycle");
@@ -4033,7 +4074,7 @@ mod responsive_shelf_scene_tests {
             let tree: serde_json::Value = serde_json::from_str(&query).expect("tree");
             let role = tree["nodes"].as_object().expect("nodes").values().find(|node| node["aria"]["label"] == "Find query")
                 .and_then(|node| node["aria"]["role"].as_str()).expect("mounted query role").to_owned();
-            let query = super::super::tests::native_bounds(&mut rig, &role, "Find query", true).expect("actual Find query");
+            let query = super::super::tests::native_bounds(&mut rig, &role, "Find query", false).expect("actual Find query");
             rig.cx.simulate_click(query.center(), gpui::Modifiers::none());
             rig.cx.simulate_input("local unsent draft");
             let focused = rig.cx.update(|window, cx| window.focused(cx));
