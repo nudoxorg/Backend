@@ -154,6 +154,17 @@ fn after_grant_state(
         .index_terminals
         .iter()
         .find(|terminal| &terminal.ticket == ticket);
+    let capabilities = adapter.compiler.capabilities();
+    let typescript = capabilities
+        .for_profile(backend_semantic::vocabulary::LanguageProfile::TypeScript(
+            backend_semantic::vocabulary::TypeScriptSource::TypeScript,
+        ))
+        .state();
+    let python = capabilities
+        .for_profile(backend_semantic::vocabulary::LanguageProfile::Python(
+            backend_semantic::vocabulary::PythonVersion::Python314,
+        ))
+        .state();
     let receipt = match adapter.index_operations.entry(operation) {
         Ok(Some(JournalEntry::Retained(entry))) => format!("Retained({entry:?})"),
         Ok(Some(JournalEntry::OutsideReceiptWindow { request_digest })) => {
@@ -164,7 +175,8 @@ fn after_grant_state(
     };
     format!(
         "expected_ticket={ticket:?}, operation={operation:?}, active={work:?}, terminal={terminal:?}, \
-             readonly_receipt={receipt:?}, actor_hook_pending={}, owner_root={:?}, owner_sequence={}",
+             readonly_receipt={receipt:?}, captured_typescript={typescript:?}, captured_python={python:?}, \
+             actor_hook_pending={}, owner_root={:?}, owner_sequence={}",
         adapter.publication_test_hook.is_some(),
         daemon.engine().daemon().owner().head().root(),
         daemon.engine().daemon().owner().head().sequence()
