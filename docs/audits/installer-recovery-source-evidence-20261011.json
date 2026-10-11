@@ -1,0 +1,127 @@
+{
+  "schema": "nudox.installer.recovery-source.v1",
+  "checked_at": "2026-10-11T05:14:25.479974+00:00",
+  "source_base": "24390d5666094dc807a7f10d12e62ee364de2ede",
+  "anonymous_public_asset_reads": [
+    {
+      "role": "r2",
+      "status_lines": [
+        "HTTP/2 200"
+      ],
+      "bytes": 13426,
+      "sha256": "36f0ea62e3b49cadebcef0f89e735639530c0ba1686e62d4dcbfea96294174f5",
+      "response_date": "Sun, 11 Oct 2026 05:09:04 GMT",
+      "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install.py"
+    },
+    {
+      "role": "hashed-bootstrap",
+      "status_lines": [
+        "HTTP/2 200"
+      ],
+      "bytes": 13426,
+      "sha256": "36f0ea62e3b49cadebcef0f89e735639530c0ba1686e62d4dcbfea96294174f5",
+      "response_date": "Sun, 11 Oct 2026 05:10:34 GMT",
+      "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install-forgejo-bootstrap-36f0ea62e3b49cad.py"
+    },
+    {
+      "role": "channel",
+      "status_lines": [
+        "HTTP/2 200"
+      ],
+      "bytes": 3222,
+      "sha256": "f7c24e4628ac88f6252063b1e54f9a96054993ea90964dcdc555809888cf4fef",
+      "response_date": "Sun, 11 Oct 2026 05:09:31 GMT",
+      "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/preview-channel.json"
+    },
+    {
+      "role": "linux-library",
+      "status_lines": [
+        "HTTP/2 200"
+      ],
+      "bytes": 49954,
+      "sha256": "e11fcc271fc3a8feb676b9f8c383bbf5bdc215578ffc399774819184908ed071",
+      "response_date": "Sun, 11 Oct 2026 05:09:52 GMT",
+      "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install-linux-x64-e11fcc271fc3a8fe.py"
+    },
+    {
+      "role": "mac-library",
+      "status_lines": [
+        "HTTP/2 200"
+      ],
+      "bytes": 22094,
+      "sha256": "82f71f98a05a2b13e05afd7185e35c5f8d252b9973ab4ce6d32ab22688794f25",
+      "response_date": "Sun, 11 Oct 2026 05:09:53 GMT",
+      "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/checkpoint-20261006-a659d5d181-macos-arm64/install-macos-arm64-82f71f98a05a2b13.py"
+    },
+    {
+      "role": "linux-manifest",
+      "status_lines": [
+        "HTTP/2 200"
+      ],
+      "bytes": 698,
+      "sha256": "384ab3802efd256752f39fd8e3d79ace7af9e3ccf72797c71577327cb2535b24",
+      "response_date": "Sun, 11 Oct 2026 05:09:55 GMT",
+      "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/checkpoint-20261008-c0016d4f4f-linux-x64/release-manifest-linux-x64.json"
+    }
+  ],
+  "all_small_assets_match_r2_and_platform_pins": true,
+  "archive_download_or_native_install_by_this_worker": false,
+  "public_shell_launcher_published": false,
+  "historical_binaries": {
+    "macos-arm64": "a659d5d1819078b3c0046937191a9b54a76b1dfb",
+    "linux-x64": "c0016d4f4fc9b0f0a452c7c9556954e2287948b3"
+  },
+  "current_native_application_acceptance": "UNRUN",
+  "stdin_failure": {
+    "interpreter": "/etc/profiles/per-user/mileswirht/bin/python3",
+    "implementation": "RustPython 0.5.0 / Python 3.14.0alpha",
+    "argv": [
+      "python3",
+      "-",
+      "--help"
+    ],
+    "input": "exact published R2 bootstrap bytes",
+    "exit": 101,
+    "observed": "Source parsed as REPL fragments, SyntaxError/IndentationError; Rust panic src/shell.rs:239 PermissionDenied. os.mkfifo is absent.",
+    "saved_file_help_exit": 0,
+    "subprocess_c_option_exit": 0
+  },
+  "host_interpreter": {
+    "path": "/usr/bin/python3",
+    "implementation": "CPython 3.9.6",
+    "old_installer_suite": "47 passed before edits"
+  },
+  "command_failure": {
+    "reproducer": "curl -fsS file:///missing-installer.py | /usr/bin/python3 -",
+    "curl_exit": 37,
+    "pipeline_exit_without_pipefail": 0,
+    "repair": "Download into a private file; require HTTP/TLS success and pinned bootstrap bytes before executing saved Python source."
+  },
+  "launcher_installer_regression": {
+    "command": "/usr/bin/python3 -m unittest discover -s tools/package -p 'test_install*.py'",
+    "tests": 56,
+    "result": "PASS",
+    "seconds": 35.847,
+    "old_tests_preserved": true,
+    "native_runtime_evidence": false
+  },
+  "shell_launcher_candidate": {
+    "bytes": 4318,
+    "sha256": "7e7bedf26d43119396fc62127464a2fa4af2affdad3238cbb5e8016402c46a44",
+    "bootstrap_hash_read_limit": 13427,
+    "source": "tools/package/install_diagnostic_preview.sh",
+    "public_asset": "UNPUBLISHED"
+  },
+  "broader_packaging_regression": {
+    "interpreter": "bundled CPython 3.12.14",
+    "tests": 201,
+    "failures": 4,
+    "errors": 52,
+    "result": "FAIL - fixture environment",
+    "observed_causes": [
+      "Temporary Git fixture commits inherited global GPG signing, whose certificate store cannot open.",
+      "Installer tests change the process umask to 077; later SDK fixtures expect exact 0644 files."
+    ],
+    "source_repairs_for_these_unrelated_fixtures": false
+  }
+}
