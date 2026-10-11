@@ -163,6 +163,17 @@ urllib.request.build_opener=lambda *handlers: Opener()
         self.assertIn("NUDOX_INSTALL_PYTHON", result.stderr)
         self.assertFalse((self.root / "curl.json").exists())
 
+    def test_optimized_python_cannot_bypass_implementation_version_or_api_probe(self):
+        for replacement in ('platform.python_implementation=lambda: "RustPython"',
+                            'sys.version_info=(3, 7)', 'del os.O_NOFOLLOW'):
+            with self.subTest(replacement=replacement):
+                (self.root / "sitecustomize.py").write_text('import os,platform,sys\n' + replacement + '\n')
+                self.environment.update(PYTHONPATH=str(self.root), PYTHONOPTIMIZE="1")
+                result = self.run_launcher()
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertIn("NUDOX_INSTALL_PYTHON", result.stderr)
+                self.assertFalse((self.root / "curl.json").exists())
+
     def test_python_argument_failure_preserves_nonzero_status_and_cleanup(self):
         result = self.run_launcher("--unknown-option")
         self.assertEqual(result.returncode, 2, result.stderr)
