@@ -76,11 +76,11 @@ fn accepted_pending_work_offers_an_exact_executable_poll_without_becoming_a_faul
         })
     );
     let shell = next.shell().expect("shell");
-    assert!(shell.contains("backend index_progress '"));
+    assert!(shell.starts_with("nudox index_progress '"));
     assert!(shell.ends_with("--after-sequence 19"));
     #[cfg(unix)]
     {
-        let script = format!(r#"backend() {{ printf '%s\000' "$@"; }}; {shell}"#);
+        let script = format!(r#"nudox() {{ printf '%s\000' "$@"; }}; {shell}"#);
         let parsed = std::process::Command::new("/bin/sh")
             .arg("-c")
             .arg(script)
@@ -104,6 +104,86 @@ fn accepted_pending_work_offers_an_exact_executable_poll_without_becoming_a_faul
     let markdown = markdown::product(&view);
     assert!(markdown.contains("Operation in flight"));
     assert!(markdown.contains("\"after_sequence\":19"));
+}
+
+#[test]
+fn durable_accepted_and_active_work_share_one_copyable_restart_safe_poll() {
+    use backend_library::{
+        CompileExecutionIntent, IndexOperationKey, IndexOperationObservation, IndexOperationState,
+        IndexOperationStatus,
+    };
+    let key = IndexOperationKey::from_bytes([0x5a; 32]).expect("durable key");
+    let package = PackageReference::parse("/workspace/project").expect("package");
+    let expected_call = serde_json::json!({
+        "name":"backend.index_progress",
+        "arguments":{"operation_key":"5a".repeat(32)}
+    });
+    let expected_shell = format!("nudox index_progress --operation-key {}", "5a".repeat(32));
+    for state in [
+        IndexOperationState::Accepted,
+        IndexOperationState::Active {
+            ticket: ticket(),
+            stage: IndexJobStage::Compiling,
+        },
+    ] {
+        let observation = IndexOperationObservation::Known(IndexOperationStatus::new(
+            key,
+            package.clone(),
+            CompileExecutionIntent::Interactive,
+            state,
+        ));
+        for reply in [
+            SurfaceReply::IndexOperationStarted(observation.clone()),
+            SurfaceReply::IndexOperationStatus(observation.clone()),
+        ] {
+            let view = product_view(&reply);
+            let answer = Answer::Product(Box::new(view.clone()));
+            assert!(
+                answer.fault().is_none(),
+                "accepted work is not an indexing failure"
+            );
+            let action = IndexPollDto::new(&view).expect("one exact observation");
+            assert_eq!(action.call, expected_call);
+            assert_eq!(action.shell, expected_shell);
+            let markdown = markdown::product(&view);
+            assert_eq!(markdown.matches("backend.index_progress").count(), 1);
+            assert!(markdown.contains(&expected_call.to_string()));
+            assert!(
+                !markdown.contains("owner_epoch"),
+                "durable guidance does not bind to an old owner"
+            );
+            let human = text::product(&view, Theme::plain());
+            assert_eq!(human.matches("nudox index_progress").count(), 1);
+            assert!(human.contains(&expected_shell));
+            assert!(!human.contains("backend index_progress"));
+
+            let mut copied = Invocation::new(grammar_for("index_progress").expect("poll grammar"));
+            copied.set("operation-key", "5a".repeat(32));
+            assert!(
+                matches!(lower(&copied, "/workspace/project").expect("copyable CLI action"),
+                Request::Surface(SurfaceCommand::IndexOperationStatus { operation_key }) if operation_key == key)
+            );
+            for detail in [Detail::Summary, Detail::Full] {
+                let payload = encode_answer(&answer, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES)
+                    .expect("complete typed action and observation fit together");
+                let body: serde_json::Value =
+                    serde_json::from_slice(&payload.bytes).expect("complete JSON");
+                assert_eq!(
+                    body["index_operation"],
+                    serde_json::to_value(&observation).expect("exact receipt")
+                );
+                assert_eq!(body["index_poll"]["call"], expected_call);
+                assert_eq!(body["index_poll"]["shell"], expected_shell);
+                assert!(payload.bytes.len() < 4096, "a poll hint must stay small");
+                let mut older = serde_json::to_value(ProductDto::new(&view)).expect("DTO");
+                older.as_object_mut().expect("object").remove("index_poll");
+                let old: ProductDto =
+                    serde_json::from_value(older).expect("prior DTO remains readable");
+                assert_eq!(old.index_poll, None);
+                assert_eq!(old.index_operation, Some(observation.clone()));
+            }
+        }
+    }
 }
 
 #[test]

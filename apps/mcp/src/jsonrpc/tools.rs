@@ -342,7 +342,7 @@ fn index_start_tool() -> Value {
     job_tool(
         INDEX_START_TOOL,
         "Start Indexing",
-        "Start indexing one local package or pinned package URL and return its owner-issued ticket. The operation continues after this call returns; poll backend.index_progress with the exact ticket. Tickets are scoped to one owner process and become unknown after an owner restart.",
+        "Start indexing one local package or pinned package URL. Accepted or active work includes index_poll with the exact next observation. With operation_key, poll the durable key across owner restarts; otherwise poll the exact owner-issued ticket, which becomes unknown after an owner restart. Terminal receipts do not require polling.",
         json!({
             "type": "object",
             "properties": {
@@ -451,6 +451,7 @@ fn index_job_output_schema() -> Value {
         "type": "object",
         "properties": {
             "fault": {"type": "object"},
+            "index_poll": index_poll_schema(),
             "surface": {
                 "type": "object",
                 "properties": {
@@ -478,6 +479,27 @@ fn index_job_output_schema() -> Value {
             }
         },
         "required": ["surface"],
+        "additionalProperties": false
+    })
+}
+
+fn index_poll_schema() -> Value {
+    json!({
+        "type": "object",
+        "description": "Exact next observation for accepted or active work; omitted for terminal, unknown, unresolved or expired operations.",
+        "properties": {
+            "shell": {"type": "string"},
+            "call": {
+                "type": "object",
+                "properties": {
+                    "name": {"const": "backend.index_progress"},
+                    "arguments": {"type": "object"}
+                },
+                "required": ["name", "arguments"],
+                "additionalProperties": false
+            }
+        },
+        "required": ["shell", "call"],
         "additionalProperties": false
     })
 }
@@ -575,6 +597,10 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
         .spec()
         .map_or_else(|| grammar.name(), |spec| spec.title);
     let write = grammar.is_write();
+    let mut output_schema = answer_schema();
+    if grammar.tool() == "backend.index" {
+        output_schema["properties"]["index_poll"] = index_poll_schema();
+    }
     json!({
         "name": grammar.tool(),
         "title": title,
@@ -585,7 +611,7 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
             "required": required,
             "additionalProperties": false
         },
-        "outputSchema": answer_schema(),
+        "outputSchema": output_schema,
         "annotations": {
             "title": title,
             "readOnlyHint": !write,

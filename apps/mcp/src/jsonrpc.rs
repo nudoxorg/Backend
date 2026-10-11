@@ -1043,6 +1043,7 @@ impl<P: Product> Server<P> {
             None,
             SurfaceBody {
                 fault: view.fault().map(backend_present::FaultDto::new),
+                index_poll: backend_present::IndexPollDto::new(&view),
                 surface: SurfaceProjection {
                     reply,
                     next_cursor,
@@ -2238,6 +2239,8 @@ pub(super) fn default_detail(tool: &str) -> Detail {
 struct SurfaceBody<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     fault: Option<backend_present::FaultDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    index_poll: Option<backend_present::IndexPollDto>,
     surface: SurfaceProjection<'a>,
 }
 

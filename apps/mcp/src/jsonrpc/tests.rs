@@ -576,6 +576,8 @@ struct Fake {
     continuation_error: Option<ClientError>,
     /// Optional product reply used by the high-fanout surface budget case.
     surface_reply: Option<SurfaceReply>,
+    /// Already-persisted durable identity used by the shared index-driver fixture.
+    durable_index_key: Option<backend_library::IndexOperationKey>,
     /// Typed client failure returned by the surface boundary.
     surface_error: Option<ClientError>,
     /// Typed failure at graph-page, prompt-revision, or continuation-encoding admission.
@@ -714,6 +716,25 @@ fn unreachable() -> ClientError {
 }
 
 impl Engine for Fake {
+    fn index(
+        &mut self,
+        package: PackageReference,
+        execution_intent: CompileExecutionIntent,
+    ) -> Result<SurfaceReply, ClientError> {
+        let command = self.durable_index_key.map_or_else(
+            || SurfaceCommand::IndexStart {
+                package: package.clone(),
+                execution_intent,
+            },
+            |operation_key| SurfaceCommand::IndexOperationStart {
+                operation_key,
+                package: package.clone(),
+                execution_intent,
+            },
+        );
+        self.surface(command)
+    }
+
     fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
         self.adapter_boundary = Some("revision");
         if let Some(error) = self.adapter_error.take() {
@@ -2027,6 +2048,34 @@ fn owner_index_job_tools_advertise_exact_tickets_and_immediate_progress() {
         0
     );
     assert_eq!(progress["annotations"]["readOnlyHint"], true);
+    let first_use = tool_named(tools, "backend.index");
+    for tool in [
+        first_use,
+        start,
+        progress,
+        tool_named(tools, INDEX_CANCEL_TOOL),
+    ] {
+        assert_eq!(
+            tool["outputSchema"]["properties"]["index_poll"]["required"],
+            json!(["shell", "call"])
+        );
+        assert_eq!(
+            tool["outputSchema"]["properties"]["index_poll"]["properties"]["call"]["properties"]["name"]
+                ["const"],
+            "backend.index_progress"
+        );
+        assert_eq!(
+            tool["outputSchema"]["properties"]["index_poll"],
+            first_use["outputSchema"]["properties"]["index_poll"]
+        );
+    }
+    assert_eq!(first_use["outputSchema"]["additionalProperties"], true);
+    assert_eq!(progress["outputSchema"]["additionalProperties"], false);
+    assert!(
+        tool_named(tools, "backend.search")["outputSchema"]["properties"]
+            .get("index_poll")
+            .is_none()
+    );
     assert_eq!(
         progress["outputSchema"]["properties"]["surface"]["required"],
         json!(["result", "data"])
@@ -2091,6 +2140,35 @@ fn keyed_index_progress_preserves_durable_owner_evidence_and_rejects_mixed_ident
     );
     assert!(text_of(&result).contains("accepted"));
     assert!(!text_of(&result).contains("index operation published"));
+    let next = result["structuredContent"]["index_poll"]["call"].clone();
+    assert_eq!(
+        next,
+        json!({"name":"backend.index_progress", "arguments":{"operation_key":"51".repeat(32)}})
+    );
+    assert_eq!(
+        result["structuredContent"]["index_poll"]["shell"],
+        format!("nudox index_progress --operation-key {}", "51".repeat(32))
+    );
+    assert!(text_of(&result).contains(&next.to_string()));
+    server.product.surface_reply = Some(SurfaceReply::IndexOperationStatus(observation.clone()));
+    let polled = call(
+        &mut server,
+        next["name"].as_str().expect("next tool"),
+        &next["arguments"],
+    );
+    assert_eq!(polled["isError"], false);
+    assert_eq!(
+        polled["structuredContent"]["surface"]["data"],
+        serde_json::to_value(&observation).expect("same exact operation")
+    );
+    assert_eq!(
+        server.product.surface_commands,
+        [
+            SurfaceCommand::IndexOperationStatus { operation_key: key },
+            SurfaceCommand::IndexOperationStatus { operation_key: key }
+        ]
+    );
+    assert_context_bounded(&polled);
     for input in [
         json!({"operation_key":key,"ticket":ticket_value(&index_job_ticket())}),
         json!({"operation_key":key,"after_sequence":0}),
@@ -2100,6 +2178,112 @@ fn keyed_index_progress_preserves_durable_owner_evidence_and_rejects_mixed_ident
         let result = call(&mut server, INDEX_PROGRESS_TOOL, &input);
         assert_eq!(result["isError"], true);
         assert!(server.product.surface_commands.is_empty());
+    }
+}
+
+#[test]
+fn index_first_use_returns_one_admitted_durable_poll_and_copying_it_only_observes() {
+    use backend_library::{
+        IndexOperationKey, IndexOperationObservation, IndexOperationState, IndexOperationStatus,
+    };
+    // A fixture for the presentation seam after the caller journal has chosen
+    // its key. Closed backend decoding/admission checks the key, package and
+    // intent first; this does not claim to exercise a compiler or disk journal.
+    let key = IndexOperationKey::from_bytes([0x52; 32]).expect("key");
+    let package = PackageReference::parse(PROJECT).expect("package");
+    let ticket = IndexJobTicket::new(std::num::NonZeroU64::MIN, [7; 16], package.clone());
+    for state in [
+        IndexOperationState::Accepted,
+        IndexOperationState::Active {
+            ticket,
+            stage: IndexJobStage::Compiling,
+        },
+    ] {
+        let operation = IndexOperationObservation::Known(IndexOperationStatus::new(
+            key,
+            package.clone(),
+            CompileExecutionIntent::Interactive,
+            state,
+        ));
+        let start = SurfaceCommand::IndexOperationStart {
+            operation_key: key,
+            package: package.clone(),
+            execution_intent: CompileExecutionIntent::Interactive,
+        };
+        let reply = SurfaceReply::IndexOperationStarted(operation.clone());
+        let bytes = serde_json::to_vec(&ReplyDto::new(703, CommandReply::Surface(reply.clone())))
+            .expect("closed reply");
+        let decoded = backend_library::decode_reply_body(&bytes).expect("closed backend wire");
+        backend_library::admit_reply(
+            &backend_library::CommandDto::new(
+                703,
+                backend_library::Command::Surface(start.clone()),
+            ),
+            &decoded,
+        )
+        .expect("exact start admission");
+        for detail in ["summary", "full"] {
+            let mut server = ready(Fake {
+                durable_index_key: Some(key),
+                surface_reply: Some(reply.clone()),
+                ..Fake::default()
+            });
+            let wire = request(
+                &mut server,
+                "tools/call",
+                &json!({
+                    "name":"backend.index", "arguments":{"path":PROJECT, "detail":detail}
+                }),
+            );
+            assert_eq!(wire["id"], 9);
+            assert!(wire.get("error").is_none(), "{wire}");
+            assert_eq!(wire["result"]["isError"], false);
+            let content = &wire["result"]["structuredContent"];
+            assert_eq!(content["answer"], "product");
+            assert_eq!(
+                content["index_operation"],
+                serde_json::to_value(&operation).expect("exact durable receipt")
+            );
+            let next = &content["index_poll"]["call"];
+            assert_eq!(
+                *next,
+                json!({"name":"backend.index_progress", "arguments":{"operation_key":"52".repeat(32)}})
+            );
+            assert!(text_of(&wire["result"]).contains(&next.to_string()));
+            assert_eq!(
+                text_of(&wire["result"])
+                    .matches("backend.index_progress")
+                    .count(),
+                1
+            );
+            assert_eq!(server.product.surface_commands, [start.clone()]);
+            let mut line = Vec::new();
+            write_message(&mut line, &wire).expect("whole production line");
+            assert_stdio_line_accounting(std::str::from_utf8(&line).expect("UTF-8"));
+
+            server.product.surface_reply =
+                Some(SurfaceReply::IndexOperationStatus(operation.clone()));
+            let observed = request(&mut server, "tools/call", next);
+            assert_eq!(observed["id"], 9);
+            assert!(observed.get("error").is_none(), "{observed}");
+            assert_eq!(observed["result"]["isError"], false);
+            assert_eq!(
+                observed["result"]["structuredContent"]["surface"]["data"],
+                serde_json::to_value(&operation).expect("same retained receipt")
+            );
+            assert_eq!(
+                server.product.surface_commands,
+                [
+                    start.clone(),
+                    SurfaceCommand::IndexOperationStatus { operation_key: key }
+                ]
+            );
+            assert_eq!(
+                server.product.probe_calls, 0,
+                "copying a poll adds no other owner work"
+            );
+            assert_context_bounded(&observed);
+        }
     }
 }
 
@@ -5826,6 +6010,20 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
                 assert_eq!(wire["id"], 9);
                 assert_eq!(wire["result"]["isError"], fault_slug.is_some(), "{wire}");
                 let content = &wire["result"]["structuredContent"];
+                if fault_slug.is_none() {
+                    assert_eq!(
+                        content["index_poll"]["call"],
+                        json!({
+                            "name":"backend.index_progress", "arguments":{"operation_key":key.to_hex()}
+                        })
+                    );
+                } else {
+                    assert!(
+                        content.get("index_poll").is_none(),
+                        "terminal receipts do not need another poll"
+                    );
+                    assert!(!text_of(&wire["result"]).contains("backend.index_progress"));
+                }
                 assert_eq!(
                     content["surface"]["data"],
                     serde_json::to_value(&operation).expect("complete exact operation")

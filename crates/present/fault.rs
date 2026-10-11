@@ -326,6 +326,11 @@ pub enum Affordance {
         /// Last observed event sequence.
         after_sequence: u64,
     },
+    /// Observe an admitted durable operation across owner restarts.
+    PollIndexOperation {
+        /// Exact operation identity returned by the owner.
+        operation_key: backend_library::IndexOperationKey,
+    },
     /// Nothing the reader can do changes the outcome.
     None,
 }
@@ -396,8 +401,11 @@ impl Affordance {
                 ticket,
                 after_sequence,
             } => Some(format!(
-                "backend index_progress {} --after-sequence {after_sequence}",
+                "nudox index_progress {} --after-sequence {after_sequence}",
                 crate::shell::quote_argument(&crate::product::index_ticket_json(ticket)),
+            )),
+            Self::PollIndexOperation { operation_key } => Some(format!(
+                "nudox index_progress --operation-key {operation_key}"
             )),
             Self::None => None,
         }
@@ -448,6 +456,10 @@ impl Affordance {
             } => Some(serde_json::json!({
                 "name": "backend.index_progress",
                 "arguments": { "ticket": ticket, "after_sequence": after_sequence }
+            })),
+            Self::PollIndexOperation { operation_key } => Some(serde_json::json!({
+                "name": "backend.index_progress",
+                "arguments": { "operation_key": operation_key }
             })),
         }
     }
