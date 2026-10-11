@@ -2920,7 +2920,10 @@ fn page_projection_mcp_summary_keeps_source_failure_and_source_tool_refusal() {
 #[test]
 fn page_projection_mcp_combined_summary_retains_real_faults_and_section_notes() {
     let native = symbol_key("selected-page-with-section-fault");
-    let identity = backend_present::Identity::parse_with_key(DECLARATION, native.into());
+    let identity = backend_present::Identity::parse_with_key(
+        DECLARATION,
+        backend_present::IdentityKey::Symbol(native),
+    );
     let source_fault = Fault::source(
         &SourceAvailability::Unconfigured,
         backend_present::Operand::Coordinate(identity.coordinate().clone()),

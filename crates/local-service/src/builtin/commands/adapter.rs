@@ -6,7 +6,7 @@ use super::super::{
     BuiltinIntent, BuiltinModel, BuiltinModelError, BuiltinSemanticChange, BuiltinSemanticRelation,
     Command, CommandReply, ForgeGateway, ProductDaemon, RegistryGateway, WireCertificate,
     WireClaim, WorkspaceModel, capture_basis_for_snapshot, ingest, projection,
-    publish_builtin_view,
+    publish_builtin_view, view_build,
 };
 use super::browse_lane::{BrowseLane, Terminal as BrowseTerminal};
 use super::diff::execute_semantic_diff;
@@ -6641,6 +6641,7 @@ mod tests {
                 .engine()
                 .daemon()
                 .library()
+                .view()
                 .row_ref(backend_engine::RowId::Package(package))
                 .is_some(),
             "the fixture includes an actual selected package row"

@@ -15,7 +15,10 @@ const NOTE: &str = "SECTION_FAULT_SENTINEL";
 
 fn page(source: Source) -> Page {
     Page::new(
-        Identity::parse_with_key(COORDINATE, symbol_key("selected-native-entry").into()),
+        Identity::parse_with_key(
+            COORDINATE,
+            IdentityKey::Symbol(symbol_key("selected-native-entry")),
+        ),
         Some(DeclarationKind::Function),
         source,
     )
