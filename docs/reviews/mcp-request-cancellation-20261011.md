@@ -1,10 +1,13 @@
 # MCP request cancellation: source freeze, 2026-10-11
 
-**Native status: UNRUN.** This slice has not been compiled, linked, or executed.
+**Native status at the original source freeze: UNRUN.** This slice had not been compiled, linked, or executed.
 The shared native broker has not admitted a fresh destination for this source.
 Rustfmt parsing/checking and `git diff --check` pass; those are source gates,
 not proof of Rust type checking or transport behavior. Root must complete the
 composed exhaustive `ClientError` matches before native admission.
+
+The status statements below describe that original freeze. The later native72
+MCP result and its source correction are recorded at the end of this document.
 
 ## Change and scope
 
@@ -23,7 +26,7 @@ authority. The first cancellation reason is preserved.
 
 Stdio has one independent owned reader/router thread, a 32-item bounded actor
 queue, and at most 32 registered request lifetimes. Valid cancellation
-notifications bypass the queue. Framing retains the existing 4 MiB request
+notifications bypass the queue. Framing retains the existing 64 KiB MCP request
 limit and JSON depth admission. Queue saturation is a terminal intake refusal:
 it closes the registry and interrupts pending requests, rather than blocking
 the router behind work or building an unbounded refusal queue. No per-line
@@ -146,3 +149,79 @@ same-owner legacy continuation admission after the refused replacement.
 No timing race or manufactured insertion into the private continuation map is
 used. Formatting and whitespace checks pass; EOF and cancellation controls
 are untouched.
+
+## Native72 full-suite failure diagnosis and source correction
+
+The broker ran the complete MCP library suite on
+`452645a8141faa80abc4d07c8db0302f727d438d` (tree
+`aa165ea2f984b163fc491f9ce59d454a507918cb`): **172 passed, 4 failed**, with
+176 selected and no ignored tests. The raw receipt remains in
+`/private/tmp/sol61-ilo-real-cli-mcp-20261011/native72`. Its stdout SHA-256 is
+`d80f3993ff60e3cb0f70efcc169387d84f30a93e176f598ce7ba26e67163a5e3`;
+stderr SHA-256 is
+`f63cdc76d6e7d993040d497436a663be694c5f00d8108330bd2debae2ed5abbc`.
+No failing receipt was replaced or hidden by a rerun.
+
+The correction separates product failures from fixture-contract mismatches:
+
+- The HTTP fixture expected capacity refusal during authentication Pending.
+  Production correctly reports the first admission boundary before taking an
+  ordinary slot. The revised real-wire law checks bounded, correlated Pending
+  with both occupied and free capacity, then authenticates and tests actual
+  Ready-session saturation and recovery. This exposed a product bug: ordinary
+  capacity refusal lost the admitted id. Refusals now retain numeric/string id
+  and session correlation through the whole-body budget encoder. Saturated
+  notifications return HTTP 503 without inventing a JSON-RPC response. Both
+  refused ids can subsequently be reused; metadata and empty ping semantics
+  are checked independently. A release guard prevents an assertion failure
+  from stranding the authentication initializer behind a disconnected barrier.
+- The durable cancelled index-operation fixture incorrectly expected
+  `isError:false`. The shared presentation contract already makes a failed
+  indexing goal a refusal. The correction preserves accepted, partial, and
+  cancelled cases on both started/status routes at summary/full detail. It
+  checks exact key and request digest, the retained terminal state, cancelled
+  `rejected/refused` cause, lack of a publication/source/compiler partition,
+  and the exact fresh-attempt call without a consumed operation key. Existing
+  partial receipt, source-digest partition, compiler remedy, and cause checks
+  remain intact. No production error flag was weakened.
+- The real stdio id-reuse fixture compared the ping result to `{}`, discarding
+  legitimate `_meta`. Its replacement checks id 7, no error, no semantic
+  payload, complete newline framing, the actual 171-byte line, and every
+  wire-budget field against independently counted bytes. Initialize and
+  explicit cancellation replies receive the same full-line accounting checks.
+- The startup fixture already expected a typed tool refusal. The actual
+  product failure was that missing companion discovery masked an existing
+  invalid explicit private parent on Unix. Startup now reuses the platform's
+  read-only private candidate admission before discovering a companion.
+  Existing unsafe parents/children are refused without creation, permission
+  repair, durability fences, or authority replacement. Absent parents/children
+  and default application-owned repair remain deferred to the owner. The
+  durable initializer repeats all admission checks; the snapshot conveys no
+  filesystem authority. Windows retains its existing startup initialization
+  order and uses the same read-only platform admission seam in the fixture.
+  The real stdio law keeps its original fixture and planted credential, and
+  now asserts the exact original cause, typed correlation, unchanged authority,
+  no endpoint, and no durable setup side effects.
+
+Additional source laws cover private-candidate absence, existing state,
+public parent/child refusal, unchanged modes and credential, symlink rejection,
+invalid explicit-parent priority over a forced missing companion, absent-state
+deferral, and a genuine captured default layout requiring permission repair.
+The resolver seam never executes a child and needs no global environment edit.
+Existing endpoint attachment, pre-dispatch cancellation, EOF half-close,
+request ownership, replay controls, and shared preparation workers are unchanged.
+
+**Correction native status: UNRUN.** The repair worktree ran no cargo build,
+native test, executable, or installed product command. Rustfmt parsing and
+whitespace checks are source gates only. Rustfmt check passes on all changed
+MCP/runtime files; comparison of platform formatter deltas proves that only
+the eight inherited formatting differences remain. Unrelated pre-existing
+platform formatting is preserved. The source review caught and corrected an
+initial assertion that omitted the existing RuntimeError display prefix and
+an initial default-state fixture outside its genuine captured layout. It also
+checked exact request-lease retirement before refused-id reuse, notification
+response suppression, first authentication admission, and repeated owner-side
+private-state validation. Root must review this atomic correction and ask the
+sole native broker to run the complete MCP suite plus the new platform/runtime
+laws in an admitted fresh destination. Windows compilation/execution and real
+installed preparing-owner receipts remain separate gates.

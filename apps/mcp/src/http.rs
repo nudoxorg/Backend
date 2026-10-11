@@ -242,6 +242,25 @@ impl AdmittedRequest {
         self.lease.as_ref().map(|lease| lease.context.clone())
     }
 
+    fn capacity_refusal(self) -> Response {
+        let response = match self.value.get("id") {
+            Some(id) => json_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": if matches!(id, Value::String(_) | Value::Number(_)) {
+                        id.clone()
+                    } else {
+                        Value::Null
+                    },
+                    "error": {"code": -32000, "message": "MCP request capacity reached"},
+                }),
+            ),
+            None => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        };
+        with_session_header(response, Some(&self.session_id))
+    }
+
     fn run(self) -> Response {
         let context = self.context();
         let Ok(mut server) = self.session.server.lock() else {
@@ -519,11 +538,7 @@ async fn accept(
         Err(response) => return response,
     };
     let Ok(permit) = state.request_capacity.clone().try_acquire_owned() else {
-        return rpc_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            -32000,
-            "MCP request capacity reached",
-        );
+        return request.capacity_refusal();
     };
     let mut disconnect = DisconnectGuard::new(request.context());
     let result = tokio::task::spawn_blocking(move || {
@@ -928,6 +943,15 @@ mod tests {
         authorization: Option<String>,
         body: String,
     ) -> String {
+        wire_session_request_body(address, authorization, None, body).await
+    }
+
+    async fn wire_session_request_body(
+        address: SocketAddr,
+        authorization: Option<String>,
+        session: Option<String>,
+        body: String,
+    ) -> String {
         tokio::task::spawn_blocking(move || {
             use std::io::Write as _;
             let mut connection = std::net::TcpStream::connect_timeout(
@@ -943,9 +967,10 @@ mod tests {
                 .expect("bounded request write");
             write!(
                 connection,
-                "POST /mcp HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{}\r\n{body}",
+                "POST /mcp HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{}{}\r\n{body}",
                 body.len(),
                 authorization.map_or_else(String::new, |token| format!("Authorization: Bearer {token}\r\n")),
+                session.map_or_else(String::new, |session| format!("Mcp-Session-Id: {session}\r\n")),
             )
             .expect("write initialize request");
             let mut response = String::new();
@@ -976,6 +1001,14 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn bound_http_answers_pending_before_blocked_durable_authentication_and_admits_afterward()
     {
+        struct AuthenticationRelease(Option<std::sync::mpsc::Sender<()>>);
+        impl Drop for AuthenticationRelease {
+            fn drop(&mut self) {
+                if let Some(release) = self.0.take() {
+                    let _ = release.send(());
+                }
+            }
+        }
         let fixture = PrivateTokenFixture::new();
         let paths = bootstrap_paths(&fixture);
         let state = Arc::new(HttpBootstrap::new(paths.clone()));
@@ -985,6 +1018,9 @@ mod tests {
         let address = listener.local_addr().expect("bound address");
         let (entered, admission_entered) = tokio::sync::oneshot::channel();
         let (release, admission_release) = std::sync::mpsc::channel();
+        // An assertion failure must release the real initializer, rather than
+        // replacing the first failure with an unrelated disconnected barrier.
+        let mut release = AuthenticationRelease(Some(release));
         let serving = tokio::spawn(serve_bound(listener, Arc::clone(&state), move |paths| {
             let _ = entered.send(());
             admission_release
@@ -1000,26 +1036,41 @@ mod tests {
             !paths.data().exists(),
             "metadata bootstrap must not create workspace state"
         );
-        let occupied = state
-            .request_capacity
-            .clone()
-            .acquire_many_owned(u32::try_from(MAX_IN_FLIGHT).expect("bounded capacity"))
-            .await
-            .expect("occupy request capacity");
-        let saturated = wire_request(address, None).await;
-        assert!(saturated.starts_with("HTTP/1.1 503"), "{saturated}");
-        assert!(saturated.contains("MCP request capacity reached"));
-        drop(occupied);
-        let pending = wire_request(address, None).await;
-        assert!(pending.starts_with("HTTP/1.1 503"), "{pending}");
-        assert!(pending.to_ascii_lowercase().contains("retry-after: 1\r\n"));
-        assert!(!pending.to_ascii_lowercase().contains("mcp-session-id:"));
-        let (_, body) = pending.split_once("\r\n\r\n").expect("HTTP body");
-        let pending = assert_http_body_accounting(body.as_bytes());
-        assert_eq!(pending["id"], 7);
-        assert_eq!(pending["error"]["data"]["kind"], "authentication_pending");
-        assert!(state.authentication.get().is_none());
+        let mut occupied = Some(
+            state
+                .request_capacity
+                .clone()
+                .acquire_many_owned(u32::try_from(MAX_IN_FLIGHT).expect("bounded capacity"))
+                .await
+                .expect("occupy request capacity"),
+        );
+        // Authentication is the first admission boundary even when every
+        // ordinary query slot is occupied. Both Pending replies are bounded
+        // actual HTTP responses; neither creates a session or private state.
+        for saturated in [true, false] {
+            if !saturated {
+                drop(occupied.take());
+            }
+            let pending = wire_request(address, None).await;
+            assert!(pending.starts_with("HTTP/1.1 503"), "{pending}");
+            assert!(pending.to_ascii_lowercase().contains("retry-after: 1\r\n"));
+            assert!(!pending.to_ascii_lowercase().contains("mcp-session-id:"));
+            let (_, body) = pending.split_once("\r\n\r\n").expect("HTTP body");
+            let pending = assert_http_body_accounting(body.as_bytes());
+            assert_eq!(pending["jsonrpc"], "2.0");
+            assert_eq!(pending["id"], 7);
+            assert!(pending.get("result").is_none());
+            assert_eq!(pending["error"]["code"], -32002);
+            assert_eq!(pending["error"]["data"]["kind"], "authentication_pending");
+            assert_eq!(pending["error"]["data"]["phase"], "durable-authentication");
+            assert!(state.authentication.get().is_none());
+            assert!(!paths.data().exists());
+        }
+        assert_eq!(state.request_capacity.available_permits(), MAX_IN_FLIGHT);
         release
+            .0
+            .take()
+            .expect("held authentication barrier")
             .send(())
             .expect("resume real durable token admission");
         wait_for_authentication(&state).await;
@@ -1029,7 +1080,94 @@ mod tests {
         assert!(unauthorized.starts_with("HTTP/1.1 401"), "{unauthorized}");
         let initialized = wire_request(address, Some(token.0.to_string())).await;
         assert!(initialized.starts_with("HTTP/1.1 200"), "{initialized}");
-        assert!(initialized.to_ascii_lowercase().contains("mcp-session-id:"));
+        let session = initialized
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("mcp-session-id")
+                    .then(|| value.trim().to_owned())
+            })
+            .expect("initialized HTTP session");
+        let (_, body) = initialized.split_once("\r\n\r\n").expect("initialize body");
+        let initialized = assert_http_body_accounting(body.as_bytes());
+        assert_eq!(initialized["id"], 7);
+        assert!(initialized["result"]["serverInfo"].is_object());
+        let acknowledged = wire_session_request_body(
+            address,
+            Some(token.0.to_string()),
+            Some(session.clone()),
+            json!({"jsonrpc":"2.0", "method":"notifications/initialized"}).to_string(),
+        )
+        .await;
+        assert!(acknowledged.starts_with("HTTP/1.1 202"), "{acknowledged}");
+        assert_eq!(acknowledged.split_once("\r\n\r\n").expect("ack body").1, "");
+        let occupied = state
+            .request_capacity
+            .clone()
+            .acquire_many_owned(u32::try_from(MAX_IN_FLIGHT).expect("bounded capacity"))
+            .await
+            .expect("occupy Ready request capacity");
+        for id in [json!(7), json!("7")] {
+            let saturated = wire_session_request_body(
+                address,
+                Some(token.0.to_string()),
+                Some(session.clone()),
+                json!({"jsonrpc":"2.0", "id":id, "method":"ping"}).to_string(),
+            )
+            .await;
+            assert!(saturated.starts_with("HTTP/1.1 503"), "{saturated}");
+            assert!(
+                saturated
+                    .to_ascii_lowercase()
+                    .contains(&format!("mcp-session-id: {session}\r\n"))
+            );
+            let (_, body) = saturated.split_once("\r\n\r\n").expect("capacity body");
+            let refused = assert_http_body_accounting(body.as_bytes());
+            assert_eq!(refused["jsonrpc"], "2.0");
+            assert_eq!(
+                refused["id"], id,
+                "capacity must preserve the typed request id"
+            );
+            assert!(refused.get("result").is_none());
+            assert_eq!(refused["error"]["code"], -32000);
+            assert_eq!(refused["error"]["message"], "MCP request capacity reached");
+            assert!(refused["error"]["data"]["kind"].is_null());
+        }
+        let notification = wire_session_request_body(
+            address,
+            Some(token.0.to_string()),
+            Some(session.clone()),
+            json!({"jsonrpc":"2.0", "method":"notifications/initialized"}).to_string(),
+        )
+        .await;
+        assert!(notification.starts_with("HTTP/1.1 503"), "{notification}");
+        assert_eq!(
+            notification
+                .split_once("\r\n\r\n")
+                .expect("notification body")
+                .1,
+            ""
+        );
+        drop(occupied);
+        // Refused admission retires its request lease; both exact ids can be
+        // reused successfully without owner startup once query capacity returns.
+        for id in [json!(7), json!("7")] {
+            let recovered = wire_session_request_body(
+                address,
+                Some(token.0.to_string()),
+                Some(session.clone()),
+                json!({"jsonrpc":"2.0", "id":id, "method":"ping"}).to_string(),
+            )
+            .await;
+            assert!(recovered.starts_with("HTTP/1.1 200"), "{recovered}");
+            let (_, body) = recovered.split_once("\r\n\r\n").expect("recovered body");
+            let recovered = assert_http_body_accounting(body.as_bytes());
+            assert_eq!(recovered["id"], id);
+            assert!(recovered.get("error").is_none());
+            let result = recovered["result"].as_object().expect("ping result");
+            assert_eq!(result.len(), 1);
+            assert!(result.contains_key("_meta"), "ping has no semantic payload");
+        }
         assert!(
             !paths.authority_secret().exists(),
             "initialize has no cursor"
@@ -1201,6 +1339,10 @@ mod tests {
         };
         assert_eq!(budget["bytes"], body.len());
         assert_eq!(budget["scope"], "complete_jsonrpc_body");
+        assert_eq!(
+            budget["bytesPerToken"],
+            backend_present::ESTIMATED_BYTES_PER_TOKEN
+        );
         assert_eq!(
             budget["limitBytes"],
             ResponseTransport::HttpBody.limit_bytes()

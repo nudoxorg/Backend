@@ -1385,6 +1385,31 @@ fn assert_context_bounded(response: &Value) {
     );
 }
 
+fn assert_stdio_line_accounting(line: &str) -> Value {
+    assert!(line.ends_with('\n'), "stdio owes a complete response line");
+    assert_eq!(
+        line.as_bytes()
+            .iter()
+            .filter(|byte| **byte == b'\n')
+            .count(),
+        1
+    );
+    assert!(line.len() <= DEFAULT_RESPONSE_BUDGET_BYTES);
+    let reply: Value = serde_json::from_str(line).expect("complete stdio JSON response");
+    assert_eq!(reply["jsonrpc"], "2.0");
+    let budget = if reply.get("result").is_some() {
+        &reply["result"]["_meta"]["backend/wireBudget"]
+    } else {
+        &reply["error"]["data"]["_meta"]["backend/wireBudget"]
+    };
+    assert_eq!(budget["bytes"], line.len());
+    assert_eq!(budget["estimatedTokens"], estimate_tokens(line.len()));
+    assert_eq!(budget["bytesPerToken"], ESTIMATED_BYTES_PER_TOKEN);
+    assert_eq!(budget["limitBytes"], DEFAULT_RESPONSE_BUDGET_BYTES);
+    assert_eq!(budget["scope"], "complete_jsonrpc_line");
+    reply
+}
+
 fn paging_catalog(count: usize) -> backend_library::Library {
     let mut rows = vec![package_row(), module_row()];
     rows.extend((0..count).map(|index| {
@@ -5731,8 +5756,8 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
         },
     )
     .with_source_capture(Some(capture));
-    for (status, is_error) in [
-        (partial_status.clone(), true),
+    for (status, fault_slug) in [
+        (partial_status.clone(), Some("partially-published")),
         (
             IndexOperationStatus::new(
                 key,
@@ -5740,7 +5765,7 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
                 CompileExecutionIntent::Interactive,
                 IndexOperationState::Accepted,
             ),
-            false,
+            None,
         ),
         (
             IndexOperationStatus::new(
@@ -5753,7 +5778,7 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
                     compiler_failure: None,
                 },
             ),
-            false,
+            Some("rejected"),
         ),
     ] {
         let operation = IndexOperationObservation::Known(status);
@@ -5798,13 +5823,22 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
                     &json!({"name":name, "arguments":arguments}),
                 );
                 assert!(wire.get("error").is_none(), "{wire}");
-                assert_eq!(wire["result"]["isError"], is_error, "{wire}");
+                assert_eq!(wire["id"], 9);
+                assert_eq!(wire["result"]["isError"], fault_slug.is_some(), "{wire}");
                 let content = &wire["result"]["structuredContent"];
                 assert_eq!(
                     content["surface"]["data"],
                     serde_json::to_value(&operation).expect("complete exact operation")
                 );
-                if is_error {
+                assert_eq!(
+                    content["surface"]["data"]["detail"]["operation_key"],
+                    key.to_hex()
+                );
+                assert_eq!(
+                    content["surface"]["data"]["detail"]["request_digest"],
+                    "bd8be50867ceba6df5959b6a6fdb3651b3f510574692c386858435e6e3c26897"
+                );
+                if fault_slug == Some("partially-published") {
                     let fault = backend_present::product_view(&reply);
                     assert_eq!(
                         fault
@@ -5831,8 +5865,47 @@ fn partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_s
                     assert!(text.contains("typescript: unavailable"));
                     assert!(text.contains("Set NUDOX_TSC"));
                     assert!(text.contains(&key.to_hex()));
+                } else if fault_slug == Some("rejected") {
+                    // A terminal cancellation failed the indexing goal. It
+                    // retains its exact operation, but claims no publication,
+                    // source partition, or compiler failure. Its retry starts
+                    // a fresh attempt rather than polling the consumed key.
+                    let fault = &content["fault"];
+                    assert_eq!(fault["slug"], "rejected");
+                    assert_eq!(fault["operand"], key.to_hex());
+                    assert_eq!(fault["cause"], "refused");
+                    assert_eq!(
+                        fault["detail"],
+                        "index operation was cancelled before publication: cancelled before commit"
+                    );
+                    assert!(fault["partial_publication"].is_null());
+                    assert!(fault["compiler_failure"].is_null());
+                    assert!(content["surface"]["data"]["detail"]["source_capture"].is_null());
+                    assert_eq!(
+                        content["surface"]["data"]["detail"]["state"],
+                        json!({"state":"failed", "detail":{"reason":"cancelled", "detail":"cancelled before commit"}})
+                    );
+                    assert_eq!(
+                        fault["call"],
+                        json!({"name":"backend.index", "arguments":{"path":"/abs/mixed-docs", "execution_intent":"interactive"}})
+                    );
+                    assert_eq!(
+                        fault["shell"],
+                        "nudox add /abs/mixed-docs --execution-intent interactive"
+                    );
+                    let text = text_of(&wire["result"]);
+                    assert!(text.contains("index operation cancelled: cancelled before commit"));
+                    assert!(text.contains(&key.to_hex()));
+                    assert!(!text.contains("Complete coverage"));
+                    assert!(!text.contains("typescript: unavailable"));
+                    assert!(!text.contains("NUDOX_TSC"));
                 } else {
                     assert!(content["fault"].is_null());
+                    assert_eq!(
+                        content["surface"]["data"]["detail"]["state"],
+                        json!({"state":"accepted"})
+                    );
+                    assert!(content["surface"]["data"]["detail"]["source_capture"].is_null());
                 }
                 assert_context_bounded(&wire);
             }
@@ -6188,7 +6261,10 @@ fn stdio_reader_cancels_an_active_call_then_allows_completed_id_reuse() {
     writeln!(input, "{}", json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"cancellation-law","version":"1"}}})).expect("initialize");
     let mut line = String::new();
     output.read_line(&mut line).expect("initialize reply");
-    assert!(serde_json::from_str::<Value>(&line).expect("initialize JSON")["result"].is_object());
+    let initialized = assert_stdio_line_accounting(&line);
+    assert_eq!(initialized["id"], 1);
+    assert!(initialized["result"]["serverInfo"].is_object());
+    assert!(initialized.get("error").is_none());
     writeln!(
         input,
         "{}",
@@ -6207,8 +6283,9 @@ fn stdio_reader_cancels_an_active_call_then_allows_completed_id_reuse() {
     .expect("cancel while actor is blocked");
     line.clear();
     output.read_line(&mut line).expect("cancelled response");
-    let reply = serde_json::from_str::<Value>(&line).expect("cancelled JSON");
+    let reply = assert_stdio_line_accounting(&line);
     assert_eq!(reply["id"], 7);
+    assert!(reply.get("result").is_none());
     assert_eq!(reply["error"]["code"], -32800);
     assert!(
         reply["error"]["data"]["reason"]
@@ -6220,10 +6297,17 @@ fn stdio_reader_cancels_an_active_call_then_allows_completed_id_reuse() {
         .expect("reuse completed id");
     line.clear();
     output.read_line(&mut line).expect("fresh reply");
+    let fresh = assert_stdio_line_accounting(&line);
     assert_eq!(
-        serde_json::from_str::<Value>(&line).expect("fresh JSON")["result"],
-        json!({})
+        line.len(),
+        171,
+        "complete correlated ping line, including newline and metadata"
     );
+    assert_eq!(fresh["id"], 7);
+    assert!(fresh.get("error").is_none());
+    let result = fresh["result"].as_object().expect("fresh ping result");
+    assert_eq!(result.len(), 1);
+    assert!(result.contains_key("_meta"), "ping has no semantic payload");
     input
         .shutdown(std::net::Shutdown::Write)
         .expect("client shutdown");

@@ -494,7 +494,7 @@ pub fn start_locald_cancellable(
         authority_secret: super::lexically_absolute(paths.authority_secret()),
     };
     super::validate_endpoint_length(paths.endpoint())?;
-    let executable = locald_executable()?;
+    let executable = resolve_candidate_executable(&paths, locald_executable)?;
     let mut command = Command::new(&executable);
     SpawnedOwnerBootstrap::configure(&paths, &mut command)?;
     command
@@ -518,6 +518,20 @@ pub fn start_locald_cancellable(
         .spawn()
         .map_err(|source| RuntimeError::Spawn { executable, source })?;
     observe_owned_candidate_cancellable(&paths, child, deadline, &mut progress, &mut keep_waiting)
+}
+
+fn resolve_candidate_executable(
+    paths: &WorkspacePaths,
+    resolve: impl FnOnce() -> Result<PathBuf, RuntimeError>,
+) -> Result<PathBuf, RuntimeError> {
+    // A known invalid explicit state boundary is an operand refusal even if
+    // no companion is installed. This check is read-only; absent directories
+    // and default application-owned permission repair remain child-owned.
+    if paths.private_application_root.is_none() {
+        backend_platform::durable::validate_private_directory_candidate(paths.data())
+            .map_err(RuntimeError::Io)?;
+    }
+    resolve()
 }
 
 /// Only Ready/Pending relinquishes the exact child to the existing owner
@@ -953,6 +967,135 @@ mod tests {
             .expect("reopen same admitted credential");
         assert_eq!(std::fs::read(&authority).expect("same credential"), before);
         std::fs::remove_dir_all(root).expect("remove owned fixture");
+    }
+
+    #[test]
+    fn existing_explicit_state_refusal_precedes_missing_companion_without_writes() {
+        let root = super::super::tests::socket_test_directory("startup-invalid-existing-parent");
+        std::fs::create_dir_all(&root).expect("fixture root");
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755))
+            .expect("deliberately shared explicit parent");
+        let paths = paths(&root);
+        std::fs::create_dir(paths.data()).expect("existing state");
+        std::fs::set_permissions(paths.data(), std::fs::Permissions::from_mode(0o700))
+            .expect("private state child");
+        std::fs::write(paths.authority_secret(), [0x41; 32]).expect("planted authority");
+        std::fs::set_permissions(
+            paths.authority_secret(),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .expect("private authority");
+        let error = resolve_candidate_executable(&paths, || {
+            panic!("invalid explicit state must be refused before companion discovery")
+        })
+        .expect_err("private parent refusal");
+        let RuntimeError::Io(error) = error else {
+            panic!("exact filesystem cause retained")
+        };
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            error.to_string(),
+            "private state parent is not owned by this user with owner-only access"
+        );
+        assert_eq!(
+            std::fs::metadata(&root)
+                .expect("unchanged parent")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        assert_eq!(
+            std::fs::metadata(paths.data())
+                .expect("unchanged child")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::read(paths.authority_secret()).expect("unchanged authority"),
+            [0x41; 32]
+        );
+        assert!(!paths.endpoint().exists());
+        assert_eq!(
+            std::fs::read_dir(&root)
+                .expect("no startup side effects")
+                .count(),
+            1
+        );
+        std::fs::remove_dir_all(root).expect("remove startup refusal fixture");
+    }
+
+    #[test]
+    fn absent_explicit_state_and_default_permission_repair_preserve_missing_companion_cause() {
+        let root = super::super::tests::socket_test_directory("startup-deferred-state");
+        std::fs::create_dir_all(&root).expect("fixture root");
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+            .expect("private root");
+        let missing = root.join("missing-locald");
+        for paths in [paths(&root), paths(&root.join("absent-parent"))] {
+            let error = resolve_candidate_executable(&paths, || {
+                Err(RuntimeError::MissingExecutable(missing.clone()))
+            })
+            .expect_err("missing companion remains the first known refusal");
+            assert!(matches!(error, RuntimeError::MissingExecutable(path) if path == missing));
+            assert!(!paths.data().exists());
+            assert!(!paths.authority_secret().exists());
+        }
+        assert!(!root.join("absent-parent").exists());
+        assert_eq!(
+            std::fs::read_dir(&root)
+                .expect("no created candidates")
+                .count(),
+            0
+        );
+
+        // Default application-owned state can require permission repair. The
+        // client must defer that work and its admission to the owner child.
+        let mut paths = paths(&root);
+        let application_root = ApplicationStateRoot::new(root.clone(), &[]);
+        paths.data = default_workspace_path(&paths.project, &application_root.path());
+        paths.authority_secret = paths.data.join("authority.secret");
+        paths.private_application_root = Some(application_root);
+        std::fs::create_dir_all(paths.data()).expect("default child requiring repair");
+        let application = root.join(super::super::APPLICATION_DIRECTORY);
+        std::fs::set_permissions(&application, std::fs::Permissions::from_mode(0o755))
+            .expect("legacy application directory");
+        std::fs::set_permissions(paths.data(), std::fs::Permissions::from_mode(0o755))
+            .expect("public default child");
+        SpawnedOwnerBootstrap::configure(&paths, &mut Command::new(&missing))
+            .expect("genuine captured default layout");
+        let error = resolve_candidate_executable(&paths, || {
+            Err(RuntimeError::MissingExecutable(missing.clone()))
+        })
+        .expect_err("default repair remains child-owned");
+        assert!(matches!(error, RuntimeError::MissingExecutable(path) if path == missing));
+        assert_eq!(
+            std::fs::metadata(paths.data())
+                .expect("unrepaired default child")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        assert!(!paths.authority_secret().exists());
+        assert!(!paths.endpoint().exists());
+        assert_eq!(
+            std::fs::metadata(&application)
+                .expect("unrepaired application boundary")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        assert_eq!(
+            std::fs::read_dir(&root)
+                .expect("only deliberate default fixture")
+                .count(),
+            1
+        );
+        std::fs::remove_dir_all(root).expect("remove deferred startup fixture");
     }
 
     #[test]
