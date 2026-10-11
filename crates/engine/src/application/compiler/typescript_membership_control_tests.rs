@@ -5,12 +5,13 @@ use crate::application::toolchain_probe::{
     ToolchainProbeStreamError,
 };
 use crate::application::{PackageAuthorityError, TypeScriptProjectHostError};
-use crate::driver::ToolchainSelection;
+use crate::driver::{ResolvedToolchain, ToolchainSelection};
+use crate::test_support::host_path;
 use backend_library::interface::{
     CompilerRequest, CompilerTerminal, PackageCompilePhase, TypeScriptAuthorityFailureKind,
 };
 use backend_semantic::vocabulary::{
-    LanguageProfile, NativeTool, NativeWorker, Stage, TypeScriptSource,
+    CompileRecipeFact, LanguageProfile, NativeTool, NativeWorker, Stage, TypeScriptSource,
 };
 use backend_version::{CompilationTargetDomain, ContentId};
 use std::{io, time::Duration};
@@ -52,10 +53,32 @@ fn host_program_control_preserves_exact_cancelled_and_deadline_package_terminals
     let source = request_source(request).unwrap();
     let target =
         ContentId::<CompilationTargetDomain>::from_canonical_bytes(b"host-program-control");
-    let toolchain = ToolchainSelection::ExplicitlyUnavailable {
-        tool: NativeTool::TypeScriptCompiler,
-    };
-    for cancelled in [true, false] {
+    // The terminal projector needs the selected project's binding to retain a
+    // deadline cause and recipe. This in-memory control never launches a tool.
+    let resolved = ResolvedToolchain::from_version(
+        NativeTool::TypeScriptCompiler,
+        host_path("/toolchain/bin/tsc"),
+        b"Version 5.9.3\n",
+    )
+    .expect("resolved control toolchain");
+    let toolchain = ToolchainSelection::ResolvedNative(resolved);
+    let recipe = CompileRecipeFact::derive(
+        request.profile,
+        request.stage,
+        resolved.tool,
+        source.identity,
+        resolved.invocation_identity(),
+    );
+    for (cancelled, toolchain) in [
+        (true, toolchain),
+        (
+            true,
+            ToolchainSelection::ExplicitlyUnavailable {
+                tool: NativeTool::TypeScriptCompiler,
+            },
+        ),
+        (false, toolchain),
+    ] {
         let direct = if cancelled {
             TypeScriptProjectHostError::CompilerProgramCancelled
         } else {
@@ -109,8 +132,12 @@ fn host_program_control_preserves_exact_cancelled_and_deadline_package_terminals
                 let failure = projected.expect("a deadline remains an exact typed refusal");
                 assert_eq!(
                     failure.kind_tag(),
-                    TypeScriptAuthorityFailureKind::HostProgramDeadline.kind_tag()
+                    TypeScriptAuthorityFailureKind::HostProgramDeadline.kind_tag(),
+                    "deadline must retain its admitted toolchain binding: {terminal:?}"
                 );
+                assert_eq!(failure.source_identity(), source.identity);
+                assert_eq!(failure.source_byte_len(), source.byte_len);
+                assert_eq!(failure.recipe_identity(), Some(recipe.identity));
                 assert!(
                     failure
                         .detail()
