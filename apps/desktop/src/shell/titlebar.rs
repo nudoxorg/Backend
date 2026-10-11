@@ -216,7 +216,10 @@ pub(crate) struct Titlebar {
 impl Titlebar {
     pub(crate) fn new(links: Links, store: &DataStore) -> Self {
         Self {
-            core: RegionCore::new(store, &[Branch::Route, Branch::Overlay, Branch::Settings, Branch::GraphFocus]),
+            // Every JumpVisit binds the producer authority as well as its
+            // route and selection. World has no chrome keys whose resource
+            // events could otherwise renew these cached native controls.
+            core: RegionCore::new(store, &[Branch::Root, Branch::Route, Branch::Overlay, Branch::Settings, Branch::GraphFocus]),
             links,
             targets: Targets::named("titlebar"),
             press: None,
