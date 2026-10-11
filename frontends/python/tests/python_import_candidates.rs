@@ -17,6 +17,87 @@ fn control(cancelled: &AtomicBool) -> PythonProjectControl<'_> {
 }
 
 #[test]
+fn unavailable_dependency_cycles_keep_other_owners_without_reflexive_causes() {
+    let root = std::env::temp_dir().join(format!("nudox-unavailable-cycle-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let left = "import opaque_left\nfrom right import right\n\ndef left():\n    return opaque_left.value, right\n";
+    let right = "import opaque_right\nfrom left import left\n\ndef right():\n    return opaque_right.value, left\n";
+    let consumer = "from left import left\n\ndef consume():\n    return left()\n";
+    let sources = [
+        PythonProjectSource {
+            relative_path: "left.py",
+            source: left,
+        },
+        PythonProjectSource {
+            relative_path: "right.py",
+            source: right,
+        },
+        PythonProjectSource {
+            relative_path: "consumer.py",
+            source: consumer,
+        },
+    ];
+    for source in &sources {
+        std::fs::write(root.join(source.relative_path), source.source).unwrap();
+    }
+    for module in ["opaque_left", "opaque_right"] {
+        std::fs::write(root.join(format!("{module}.pyx")), b"opaque compiled bytes").unwrap();
+    }
+    let cancelled = AtomicBool::new(false);
+    let report = NativePythonProjectAuthority::admit()
+        .unwrap()
+        .analyze_project(
+            &root,
+            "cycle",
+            &sources,
+            PythonVersion::Python314,
+            control(&cancelled),
+        )
+        .unwrap();
+    for (path, other, binding) in [
+        ("left.py", "right.py", "opaque_left"),
+        ("right.py", "left.py", "opaque_right"),
+    ] {
+        let Some(PythonProjectSourceStatus::UnavailableCompiledImport {
+            imports,
+            dependencies,
+        }) = report.source_status(path)
+        else {
+            panic!("direct compiled cause for {path}")
+        };
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].binding.as_ref(), binding);
+        assert_eq!(
+            dependencies
+                .iter()
+                .map(|path| path.as_ref())
+                .collect::<Vec<_>>(),
+            [other],
+            "the other genuine cycle owner survives; own root is not repeated"
+        );
+        assert!(report.module(path).unwrap().inferences.is_empty());
+        assert!(report.module(path).unwrap().symbols.is_empty());
+    }
+    let Some(PythonProjectSourceStatus::UnavailableDependency { dependencies }) =
+        report.source_status("consumer.py")
+    else {
+        panic!("consumer native reverse closure")
+    };
+    assert_eq!(
+        dependencies
+            .iter()
+            .map(|path| path.as_ref())
+            .collect::<Vec<_>>(),
+        ["left.py", "right.py"]
+    );
+    report
+        .witness()
+        .validate_current(control(&cancelled))
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn direct_compiled_import_preserves_other_unavailable_graph_causes() {
     let root = std::env::temp_dir().join(format!(
         "nudox-compiled-secondary-cause-{}",
@@ -525,6 +606,22 @@ fn local_compiled_stdlib_collision_never_claims_mirror_fallback_authority() {
                 .any(|import| import.module == "venv" && import.resolved),
             "a directory with a compiled suffix is not a compiled module"
         );
+        assert_eq!(
+            directory.source_status("core.py"),
+            Some(&PythonProjectSourceStatus::Analyzed)
+        );
+        assert!(!directory.module("core.py").unwrap().inferences.is_empty());
+        assert!(
+            !directory
+                .coverage_gaps()
+                .iter()
+                .any(|gap| gap.relative_path.as_ref() == "core.py"
+                    && gap.kind == PythonProjectCoverageGapKind::UnavailableCompiledImport)
+        );
+        directory
+            .witness()
+            .validate_current(control(&cancelled))
+            .unwrap();
         std::fs::remove_dir(&candidate).unwrap();
         #[cfg(unix)]
         {
