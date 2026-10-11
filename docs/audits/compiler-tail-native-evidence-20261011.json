@@ -1,0 +1,919 @@
+{
+  "schema": "nudox-root-compiler-tail-native-audit.v1",
+  "gates": [
+    {
+      "number": 26,
+      "local_directory": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/selected-pc4-mcp-packet-72-26",
+      "receipt_sha256": "39b8804f87eacbeec040bd98a248d58e0436792e586d2ac4a5a8c5ea9f254cfc",
+      "source": {
+        "commit": "72b8985fc983e23db78b8870413ad282b8982911",
+        "tree": "7fa443bd5ee4aa3866f49395951f18d4b4b3e02f",
+        "clean": true,
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd"
+      },
+      "source_after": {
+        "commit": "72b8985fc983e23db78b8870413ad282b8982911",
+        "status": "",
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "backend-mcp",
+        "--lib",
+        "actual_",
+        "-j2",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 101,
+      "wall_seconds": 246.16717855096795,
+      "source_unchanged": true,
+      "completed_group_empty": true,
+      "test_results": [],
+      "raw_sha256": {
+        "stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr": "af93418d5aceb0a6668af50af789598a33318c1ae03e4ef9ff33d2eb70f1f0ec"
+      },
+      "guard": {
+        "sha256": "5ee8bdc1838773e434f507a9b36dc49765ced970c171c9299db483799bed7228",
+        "sampled_at_utc": "2026-10-11T10:31:48.641408+00:00",
+        "requested_cargo_jobs": 2,
+        "destination_memory_bytes": 61458628608,
+        "destination_disk_bytes": 116133052416
+      }
+    },
+    {
+      "number": 27,
+      "local_directory": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/selected-pc4-mcp-packet-e604-27",
+      "receipt_sha256": "3e195e77febe3bf0388d8925a31a3d7bb84e9142f14561e0a709ae8345bec452",
+      "source": {
+        "commit": "e6042dca72f55177bdbdfb312cfb2a51595a12fa",
+        "tree": "7bdb405ef8063c8cf0d013654d3bc73930d6e815",
+        "clean": true,
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_after": {
+        "commit": "e6042dca72f55177bdbdfb312cfb2a51595a12fa",
+        "status": "",
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "backend-mcp",
+        "--lib",
+        "actual_",
+        "-j2",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "wall_seconds": 10.109597272938117,
+      "source_unchanged": true,
+      "completed_group_empty": true,
+      "test_results": [
+        {
+          "status": "ok",
+          "passed": 5,
+          "failed": 0,
+          "ignored": 0,
+          "seconds": 0.08
+        }
+      ],
+      "raw_sha256": {
+        "stdout": "e283dcefa2b533677e572d64e2a22fc911ee08632c8ed415128d8dafa5b26ca5",
+        "stderr": "b6270ef16e2a3f6c51935ea3bb264de9ae0fd25625b539402bad3601863d5fa4"
+      },
+      "guard": {
+        "sha256": "01ae8807db906f0da3cd324e9eaa643c1d2a860fe5f2873f8508bfcd9e3a3767",
+        "sampled_at_utc": "2026-10-11T10:49:25.324019+00:00",
+        "requested_cargo_jobs": 2,
+        "destination_memory_bytes": 61362688000,
+        "destination_disk_bytes": 98665668608
+      }
+    },
+    {
+      "number": 28,
+      "local_directory": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/selected-three-libraries-e604-28",
+      "receipt_sha256": "145f522e1efd9ecf663e4127d837acc1b5c649149914096b3fed8c259d1a8e0d",
+      "source": {
+        "commit": "e6042dca72f55177bdbdfb312cfb2a51595a12fa",
+        "tree": "7bdb405ef8063c8cf0d013654d3bc73930d6e815",
+        "clean": true,
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_after": {
+        "commit": "e6042dca72f55177bdbdfb312cfb2a51595a12fa",
+        "status": "",
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--no-fail-fast",
+        "-p",
+        "backend-client",
+        "-p",
+        "backend-library",
+        "-p",
+        "backend-present",
+        "--lib",
+        "-j2",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 101,
+      "wall_seconds": 378.2210735240951,
+      "source_unchanged": true,
+      "completed_group_empty": true,
+      "test_results": [
+        {
+          "status": "ok",
+          "passed": 123,
+          "failed": 0,
+          "ignored": 0,
+          "seconds": 5.15
+        },
+        {
+          "status": "FAILED",
+          "passed": 357,
+          "failed": 1,
+          "ignored": 2,
+          "seconds": 6.75
+        },
+        {
+          "status": "ok",
+          "passed": 137,
+          "failed": 0,
+          "ignored": 0,
+          "seconds": 1.41
+        }
+      ],
+      "raw_sha256": {
+        "stdout": "42e69fd43e3316855e2d26bc4720070dbe5a687f523e4c5e76c32211026a60b6",
+        "stderr": "0d6ac1cdd7c32be047519c435a159da9bf53b916431e2faaddc70f6aeb264001"
+      },
+      "guard": {
+        "sha256": "8022d419a6c6bac4cf9c5c55ed46341939d45ca3d46419e73324b017dd890176",
+        "sampled_at_utc": "2026-10-11T10:51:44.661375+00:00",
+        "requested_cargo_jobs": 2,
+        "destination_memory_bytes": 61277265920,
+        "destination_disk_bytes": 100197871616
+      }
+    },
+    {
+      "number": 29,
+      "local_directory": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/selected-pregrant-cancellation-e604-29",
+      "receipt_sha256": "61317ffa13bb7dab3b71f87ec4dfbfeefbfbb0db08e8bea1aa73a7f8ce426b9a",
+      "source": {
+        "commit": "e6042dca72f55177bdbdfb312cfb2a51595a12fa",
+        "tree": "7bdb405ef8063c8cf0d013654d3bc73930d6e815",
+        "clean": true,
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_after": {
+        "commit": "e6042dca72f55177bdbdfb312cfb2a51595a12fa",
+        "status": "",
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "backend-local-service",
+        "--lib",
+        "index_publication_worker_after_grant_wait_reports_original_pregrant_cancellation",
+        "-j2",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "wall_seconds": 438.5961126589682,
+      "source_unchanged": true,
+      "completed_group_empty": true,
+      "test_results": [
+        {
+          "status": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "seconds": 0.99
+        }
+      ],
+      "raw_sha256": {
+        "stdout": "8be119146ae419acf2661d30c17b0868fec809d486d284a64b74cd0d02420540",
+        "stderr": "330087ac789ba77cd49ce6f71ce949649c4c069dedfb5a2511acb54e21595b93"
+      },
+      "guard": {
+        "sha256": "352fbac9f27dc3306c0b4a00d400141baf9663fc1d1f5768b5c2b6d9a4893a15",
+        "sampled_at_utc": "2026-10-11T11:00:39.602578+00:00",
+        "requested_cargo_jobs": 2,
+        "destination_memory_bytes": 61486739456,
+        "destination_disk_bytes": 114925395968
+      }
+    },
+    {
+      "number": 30,
+      "local_directory": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/selected-grant-unwind-e604-30",
+      "receipt_sha256": "14b77d7e33a0d4aa3772641fe3515dd7e3c7b6bf540a1c74ecd5180d9a1dd383",
+      "source": {
+        "commit": "e6042dca72f55177bdbdfb312cfb2a51595a12fa",
+        "tree": "7bdb405ef8063c8cf0d013654d3bc73930d6e815",
+        "clean": true,
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_after": {
+        "commit": "e6042dca72f55177bdbdfb312cfb2a51595a12fa",
+        "status": "",
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "backend-local-service",
+        "--lib",
+        "index_publication_worker_native_grant_unwind_preserves_selector_for_next_publication",
+        "-j2",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "wall_seconds": 20.515184259042144,
+      "source_unchanged": true,
+      "completed_group_empty": true,
+      "test_results": [
+        {
+          "status": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "seconds": 18.6
+        }
+      ],
+      "raw_sha256": {
+        "stdout": "19bfab01ae6f550cac5aa464c6ff9bedc448af9c3b2223c67d64d6e5ad12fbbe",
+        "stderr": "018a4279454ab7e90bc9ffe3656371f6c2016006ac277d9708493529e88d20e9"
+      },
+      "guard": {
+        "sha256": "7ec4f4fdf9d2c1312190f95505bf39c6837e72e7564d0f11cba957a605918ca3",
+        "sampled_at_utc": "2026-10-11T11:09:45.077554+00:00",
+        "requested_cargo_jobs": 2,
+        "destination_memory_bytes": 61495353344,
+        "destination_disk_bytes": 114589065216
+      }
+    },
+    {
+      "number": 32,
+      "local_directory": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/selected-capture-cold-retry-e604-32",
+      "receipt_sha256": "8a939a5e868326489f13006ee794baeb9de99914f9d952859f1af1ada24ba529",
+      "source": {
+        "commit": "e6042dca72f55177bdbdfb312cfb2a51595a12fa",
+        "tree": "7bdb405ef8063c8cf0d013654d3bc73930d6e815",
+        "clean": true,
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_after": {
+        "commit": "e6042dca72f55177bdbdfb312cfb2a51595a12fa",
+        "status": "",
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "backend-local-service",
+        "--lib",
+        "index_publication_worker_failed_capture_cold_retry_preserves_original_terminal",
+        "-j2",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 101,
+      "wall_seconds": 106.73331389809027,
+      "source_unchanged": true,
+      "completed_group_empty": true,
+      "test_results": [
+        {
+          "status": "FAILED",
+          "passed": 0,
+          "failed": 1,
+          "ignored": 0,
+          "seconds": 102.17
+        }
+      ],
+      "raw_sha256": {
+        "stdout": "79341c7055e9c506c77d966bd95cb84c928fcce2087103b151aa56566a7608d9",
+        "stderr": "8d913b53ae222d8286fdb26674d10285875af7aaa1ee70164757bc46891a0666"
+      },
+      "guard": {
+        "sha256": "02b1aa382991c3f01f45898656b8f9e25a63d1b643ea66e898c6cd8b52d25088",
+        "sampled_at_utc": "2026-10-11T11:17:03.644243+00:00",
+        "requested_cargo_jobs": 2,
+        "destination_memory_bytes": 60066865152,
+        "destination_disk_bytes": 103670657024
+      }
+    },
+    {
+      "number": 33,
+      "local_directory": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/selected-library-4d86-33",
+      "receipt_sha256": "5373f88793066a2d7f9414ab355e03649281669f3cadda87222957052b5d7e1a",
+      "source": {
+        "commit": "4d86c0363b465e00f250f26ff61d0d5c41fd237d",
+        "tree": "1ff36d0209775fe6e6eaf4b629a7c6393546a494",
+        "clean": true,
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_after": {
+        "commit": "4d86c0363b465e00f250f26ff61d0d5c41fd237d",
+        "status": "",
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "backend-library",
+        "--lib",
+        "-j2",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "wall_seconds": 223.40338239702396,
+      "source_unchanged": true,
+      "completed_group_empty": true,
+      "test_results": [
+        {
+          "status": "ok",
+          "passed": 358,
+          "failed": 0,
+          "ignored": 2,
+          "seconds": 6.72
+        }
+      ],
+      "raw_sha256": {
+        "stdout": "935187a23f6dba9b04598c00afab580c40c5f1674b833bad72b73f1b6c8058e1",
+        "stderr": "1a5f31d5c83b01b3295b08464d13fb113e31d1eab0728ee1d65a39a1d52b25b7"
+      },
+      "guard": {
+        "sha256": "d5dfad9946a38cf0961da9accc9b88801812089d63b0d4d61a4eff83c1f07e5a",
+        "sampled_at_utc": "2026-10-11T11:23:37.876765+00:00",
+        "requested_cargo_jobs": 2,
+        "destination_memory_bytes": 61571166208,
+        "destination_disk_bytes": 100413816832
+      }
+    },
+    {
+      "number": 34,
+      "local_directory": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/tsz-common-latched-4d86-34",
+      "receipt_sha256": "41b8496be3221164c441783ccfd7c38c129a7f831e30a355052b5fe92f4866fb",
+      "source": {
+        "commit": "4d86c0363b465e00f250f26ff61d0d5c41fd237d",
+        "tree": "1ff36d0209775fe6e6eaf4b629a7c6393546a494",
+        "clean": true,
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_after": {
+        "commit": "4d86c0363b465e00f250f26ff61d0d5c41fd237d",
+        "status": "",
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--manifest-path",
+        "third_party/tsz/Cargo.toml",
+        "-p",
+        "tsz-common",
+        "--lib",
+        "-j2",
+        "execution_budget::tests::latched_checkpoint_preserves_one_shot_stop_for_outer_boundary",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "wall_seconds": 6.256293752929196,
+      "source_unchanged": true,
+      "completed_group_empty": true,
+      "test_results": [
+        {
+          "status": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "seconds": 0.0
+        }
+      ],
+      "raw_sha256": {
+        "stdout": "cd2c3caade1ee22423ebe07d4f16a772c51401f39661f8653c5bed6bd6cc171f",
+        "stderr": "ea675453f830ea1c67d1aa419c526cbd44e76089a1bce1e0ef1c71aac8d7c617"
+      },
+      "guard": {
+        "sha256": "858ea25f85339d1cf4dd5894f68a8900889cc0e829b7da460cd5e3265a7080e1",
+        "sampled_at_utc": "2026-10-11T11:29:45.038890+00:00",
+        "requested_cargo_jobs": 2,
+        "destination_memory_bytes": 61379502080,
+        "destination_disk_bytes": 112564834304
+      }
+    },
+    {
+      "number": 35,
+      "local_directory": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/tsz-solver-cache-reset-4d86-35",
+      "receipt_sha256": "e0eff7ce05e11f2c3f0884fd80b9c451b9befae8e28dd8fecc5a73a37dd94274",
+      "source": {
+        "commit": "4d86c0363b465e00f250f26ff61d0d5c41fd237d",
+        "tree": "1ff36d0209775fe6e6eaf4b629a7c6393546a494",
+        "clean": true,
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_after": {
+        "commit": "4d86c0363b465e00f250f26ff61d0d5c41fd237d",
+        "status": "",
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--manifest-path",
+        "third_party/tsz/Cargo.toml",
+        "-p",
+        "tsz-solver",
+        "--lib",
+        "-j2",
+        "next_file_reset_clears_local_memos_and_retains_shared_policy_and_stop",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "wall_seconds": 68.38076501199976,
+      "source_unchanged": true,
+      "completed_group_empty": true,
+      "test_results": [
+        {
+          "status": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "seconds": 0.0
+        }
+      ],
+      "raw_sha256": {
+        "stdout": "12fb815e02aef4d6605bf2fbf8483ffea681625d9b553ec4d2df4fc03ff3013e",
+        "stderr": "474afe40081d93338ff79479d5ec7aa0347a0b105758e32a90aa5b9382c955a6"
+      },
+      "guard": {
+        "sha256": "4664a9c1372bfb5538c618655cdb5d393221d2bc1d70fed3649698578a78ba29",
+        "sampled_at_utc": "2026-10-11T11:31:00.702750+00:00",
+        "requested_cargo_jobs": 2,
+        "destination_memory_bytes": 61364334592,
+        "destination_disk_bytes": 113250332672
+      }
+    },
+    {
+      "number": 36,
+      "local_directory": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/tsz-core-partitions-4d86-36",
+      "receipt_sha256": "1162ac9160ab94598e70fe04e9cd25a48aeb8bdb8d00484cb7cc75d423fe5b9f",
+      "source": {
+        "commit": "4d86c0363b465e00f250f26ff61d0d5c41fd237d",
+        "tree": "1ff36d0209775fe6e6eaf4b629a7c6393546a494",
+        "clean": true,
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_after": {
+        "commit": "4d86c0363b465e00f250f26ff61d0d5c41fd237d",
+        "status": "",
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--manifest-path",
+        "third_party/tsz/Cargo.toml",
+        "-p",
+        "tsz-core",
+        "--no-default-features",
+        "--lib",
+        "-j2",
+        "parallel::core::project_checker_partitions_tests",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 101,
+      "wall_seconds": 74.06453807000071,
+      "source_unchanged": true,
+      "completed_group_empty": true,
+      "test_results": [],
+      "raw_sha256": {
+        "stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr": "e39a9cb8f4830794479fb958dc4a5aff8886d2986a5eefa542a6166e63fc61a5"
+      },
+      "guard": {
+        "sha256": "8977d11724571f9128b35363b1a68834bef099fd9f3c7b28999486551e1109c4",
+        "sampled_at_utc": "2026-10-11T11:36:16.299810+00:00",
+        "requested_cargo_jobs": 2,
+        "destination_memory_bytes": 61347450880,
+        "destination_disk_bytes": 111953223680
+      }
+    },
+    {
+      "number": 37,
+      "local_directory": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/tsz-frontend-checker-4d86-37",
+      "receipt_sha256": "374e041990c8e8e515661e7382854216b45701ed28dfff1df0395dbe726a7ef7",
+      "source": {
+        "commit": "4d86c0363b465e00f250f26ff61d0d5c41fd237d",
+        "tree": "1ff36d0209775fe6e6eaf4b629a7c6393546a494",
+        "clean": true,
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_after": {
+        "commit": "4d86c0363b465e00f250f26ff61d0d5c41fd237d",
+        "status": "",
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "backend-frontend-typescript",
+        "--lib",
+        "-j2",
+        "checker_execution_",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "wall_seconds": 127.74348012008704,
+      "source_unchanged": true,
+      "completed_group_empty": true,
+      "test_results": [
+        {
+          "status": "ok",
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0,
+          "seconds": 0.05
+        }
+      ],
+      "raw_sha256": {
+        "stdout": "de6891c1adf7a21e98f89e663023d407400f43693501faeae5610a7d9375818a",
+        "stderr": "4a673fe7b666a48f788d80acb9aaaab738694ae12652bb988fdb49ef93cb28da"
+      },
+      "guard": {
+        "sha256": "c94e0da8d6612c8189af8f3dade2aa9e0cf846945d3840bb3c419653b43a92d6",
+        "sampled_at_utc": "2026-10-11T11:40:43.863017+00:00",
+        "requested_cargo_jobs": 2,
+        "destination_memory_bytes": 60882968576,
+        "destination_disk_bytes": 106991132672
+      }
+    },
+    {
+      "number": 38,
+      "local_directory": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/tsz-core-partitions-63bbc-38",
+      "receipt_sha256": "26aa7449ac8229b685961b48b07cdfa600e8c78721f6515d2d276dcd13bcc860",
+      "source": {
+        "commit": "63bbc385d9418fd536b5b100cb00a8edbb4a7677",
+        "tree": "127ba147e3b6cc69593faf54a843a6ca5061b9bc",
+        "clean": true,
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_after": {
+        "commit": "63bbc385d9418fd536b5b100cb00a8edbb4a7677",
+        "status": "",
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--manifest-path",
+        "third_party/tsz/Cargo.toml",
+        "-p",
+        "tsz-core",
+        "--no-default-features",
+        "--lib",
+        "-j2",
+        "parallel::core::project_checker_partitions_tests",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 101,
+      "wall_seconds": 23.881015128921717,
+      "source_unchanged": true,
+      "completed_group_empty": true,
+      "test_results": [
+        {
+          "status": "FAILED",
+          "passed": 10,
+          "failed": 3,
+          "ignored": 0,
+          "seconds": 0.12
+        }
+      ],
+      "raw_sha256": {
+        "stdout": "3db96fbdb7aa056d671835449dcc2e6bbf5c493b9d42e40d3d3fa25155491ce8",
+        "stderr": "08d101c774a4c32bff9a5fdca0a873d3fd8fa93c473a5cc338d4de3302b26f90"
+      },
+      "guard": {
+        "sha256": "c4ca74333f474c9813c9529d5ccb4fa221a2b03fc0a64a79bbdfdec960230141",
+        "sampled_at_utc": "2026-10-11T11:49:07.861064+00:00",
+        "requested_cargo_jobs": 2,
+        "destination_memory_bytes": 61235982336,
+        "destination_disk_bytes": 90256986112
+      }
+    },
+    {
+      "number": 39,
+      "local_directory": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/tsz-core-modules-63bbc-39",
+      "receipt_sha256": "f98d2ea3930974625b6c7ca1ec0da028215aa8d9ec5715e3303a46329e8b6e0e",
+      "source": {
+        "commit": "63bbc385d9418fd536b5b100cb00a8edbb4a7677",
+        "tree": "127ba147e3b6cc69593faf54a843a6ca5061b9bc",
+        "clean": true,
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_after": {
+        "commit": "63bbc385d9418fd536b5b100cb00a8edbb4a7677",
+        "status": "",
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--manifest-path",
+        "third_party/tsz/Cargo.toml",
+        "-p",
+        "tsz-core",
+        "--no-default-features",
+        "--lib",
+        "-j2",
+        "parallel::core::project_module_resolution_tests",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 101,
+      "wall_seconds": 0.8490275989752263,
+      "source_unchanged": true,
+      "completed_group_empty": true,
+      "test_results": [
+        {
+          "status": "FAILED",
+          "passed": 3,
+          "failed": 1,
+          "ignored": 0,
+          "seconds": 0.02
+        }
+      ],
+      "raw_sha256": {
+        "stdout": "f72a8038b344015f13f93e263d5b91b948f9d84a6833c120139f8fa451be10f1",
+        "stderr": "8186c3ffdaf596b90118719bb79458b2eaeb90955669071c3065d29991f061d6"
+      },
+      "guard": {
+        "sha256": "56fe2f2a11298cfbf9829732ccfe4627aa4bfd3b33d151486501f22d9731ac89",
+        "sampled_at_utc": "2026-10-11T11:54:11.237456+00:00",
+        "requested_cargo_jobs": 2,
+        "destination_memory_bytes": 61638508544,
+        "destination_disk_bytes": 110372237312
+      }
+    },
+    {
+      "number": 40,
+      "local_directory": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/tsz-core-cold-class-63bbc-40",
+      "receipt_sha256": "24a6ff5b0944fa497bb859156fe82b2c2c04cca245799fea24019fd4b0081175",
+      "source": {
+        "commit": "63bbc385d9418fd536b5b100cb00a8edbb4a7677",
+        "tree": "127ba147e3b6cc69593faf54a843a6ca5061b9bc",
+        "clean": true,
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_after": {
+        "commit": "63bbc385d9418fd536b5b100cb00a8edbb4a7677",
+        "status": "",
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--manifest-path",
+        "third_party/tsz/Cargo.toml",
+        "-p",
+        "tsz-core",
+        "--no-default-features",
+        "--lib",
+        "-j2",
+        "cross_file_class_decl_owner_driver_tests",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "wall_seconds": 0.7113187990617007,
+      "source_unchanged": true,
+      "completed_group_empty": true,
+      "test_results": [
+        {
+          "status": "ok",
+          "passed": 3,
+          "failed": 0,
+          "ignored": 0,
+          "seconds": 0.02
+        }
+      ],
+      "raw_sha256": {
+        "stdout": "fda2b9e62542a5a470e2823e909d26bae25db94d7295aa761d7add3fa32a8349",
+        "stderr": "79437ca4dd30512b45ff040ac2fd7717aa01df0f1fcd1c6687b4c7aa5c1f1536"
+      },
+      "guard": {
+        "sha256": "ce3b478f2576b5f087340cdf82066d121b6e5c0bc443657d22eac3a4be523836",
+        "sampled_at_utc": "2026-10-11T11:55:58.000455+00:00",
+        "requested_cargo_jobs": 2,
+        "destination_memory_bytes": 61580607488,
+        "destination_disk_bytes": 108030959616
+      }
+    },
+    {
+      "number": 41,
+      "local_directory": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/tsz-frontend-authority-63bbc-41",
+      "receipt_sha256": "42adff1b1af53408e2fa04a115557eb95384ca904c965f8486569d4848ee0072",
+      "source": {
+        "commit": "63bbc385d9418fd536b5b100cb00a8edbb4a7677",
+        "tree": "127ba147e3b6cc69593faf54a843a6ca5061b9bc",
+        "clean": true,
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_after": {
+        "commit": "63bbc385d9418fd536b5b100cb00a8edbb4a7677",
+        "status": "",
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "backend-frontend-typescript",
+        "--lib",
+        "-j2",
+        "tsz_authority::tests",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 101,
+      "wall_seconds": 1.0433347059879452,
+      "source_unchanged": true,
+      "completed_group_empty": true,
+      "test_results": [
+        {
+          "status": "FAILED",
+          "passed": 17,
+          "failed": 1,
+          "ignored": 0,
+          "seconds": 0.06
+        }
+      ],
+      "raw_sha256": {
+        "stdout": "3c33a740a0818268ec2ed5d335d2fa3a869b595cf20ba4cbfa2e24e3e745adea",
+        "stderr": "5505d758cccd015664b2db8134d27f4f9d3f1b54e1f45a3178f52c3d4d731b60"
+      },
+      "guard": {
+        "sha256": "1b7e47f7f4557018939a70f022028eecf1f6bdbe976525d95009daa29ced49fa",
+        "sampled_at_utc": "2026-10-11T11:58:14.717724+00:00",
+        "requested_cargo_jobs": 2,
+        "destination_memory_bytes": 58816831488,
+        "destination_disk_bytes": 107572981760
+      }
+    }
+  ],
+  "native32_distinct_replay": {
+    "receipt_sha256": "d7c1a1457bba066ae51f5c7ab429fa56989f4970639f641e4cb1f5f1f364c510",
+    "receipt": {
+      "source": {
+        "commit": "e6042dca72f55177bdbdfb312cfb2a51595a12fa",
+        "tree": "7bdb405ef8063c8cf0d013654d3bc73930d6e815",
+        "clean": true,
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "argv": [
+        "/root/sol61-ilo-real-cli-mcp-20261011/persistent-native29-e604-service-image-01/backend_local_service-bd5c324b3c32ebbb.replay",
+        "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_failed_capture_cold_retry_preserves_original_terminal",
+        "--exact",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "fixture_tree": "/root/codex-worktrees/sol61-native32-e604-runtime-fixture",
+      "compiled_manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011",
+      "compiled_manifest_path_now": "4d86 test-only Library fixture successor; this replay does not relabel the e604 image",
+      "image_sha256": "411d775747faa06a00b2914e47e238f4192debc9b65d6ddcf64ee22371d9904c",
+      "prior_receipt_sha256": "8a939a5e868326489f13006ee794baeb9de99914f9d952859f1af1ada24ba529",
+      "started_utc": "2026-10-11T11:39:04.755735+00:00",
+      "original_assertion_seconds": 30,
+      "image_process": {
+        "pid": 2430714,
+        "start_ticks": "106287036",
+        "pgid": 2430660,
+        "uids": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "root_dev": 66309,
+        "root_ino": 2,
+        "exe": "/root/sol61-ilo-real-cli-mcp-20261011/persistent-native29-e604-service-image-01/backend_local_service-bd5c324b3c32ebbb.replay"
+      },
+      "exit": 0,
+      "seconds": 30.081778834108263,
+      "sample_count": 15,
+      "stdout_sha256": "3e5586de97f0834ce2442760784414d5871265ea3b47afbe3c9734cfed1115a2",
+      "stderr_sha256": "5142e0544db0b075f02ccea18898df4baec54d5a7fab01304dca31dc2b6537d1",
+      "thread_samples_sha256": "e8e6e548e257abf6174f2a78c878f545e3067200542df60f6e4eadae6a0e99a3",
+      "finished_utc": "2026-10-11T11:39:36.676268+00:00",
+      "source_after": {
+        "commit": "e6042dca72f55177bdbdfb312cfb2a51595a12fa",
+        "status": ""
+      }
+    },
+    "limitation": "Distinct same-image retry; does not replace original native32 failure or prove its cause."
+  },
+  "earlier_independent_packet_audit": {
+    "path": "/private/tmp/nudox-root-native27-28-independent-audit-20261011.json",
+    "sha256": "1b1634f6152b98712103a477fe71cc1cb9b1c7fb41af179bdac7f576045f707f"
+  },
+  "owned_disk_retirement": {
+    "receipt_sha256": "b5eb64c24779d440fdb390c53895a8b68713bd0f373683be52ff56bf423ee752",
+    "inventory_sha256": "e4bd4371ecba248a64e7cd05dd6320644ca761607c391a6d4bb35ff2424aade4",
+    "final_images": 6,
+    "allocated_bytes_reclaimed": 4443594752,
+    "limitation": "Only six owned final ELF copies retired after exact lossless gzip custody and empty-holder checks; no rlib/rmeta or foreign files removed."
+  },
+  "not_proven": [
+    "current installed trio",
+    "real HTTPie publication",
+    "real Mealie publication",
+    "complete local-service suite",
+    "current native GUI user flows",
+    "configured semantic search",
+    "large Go application acceptance",
+    "full Clippy"
+  ]
+}

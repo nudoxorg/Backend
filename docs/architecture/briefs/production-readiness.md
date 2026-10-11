@@ -1,3 +1,33 @@
+## 2026-10-11, 12:10 UTC — Exact TypeScript resolution defect found by native execution
+
+The current source is not ready for a replacement public runtime. Genuine ILO execution exposed a production TypeScript resolution defect: project plan construction installs compiler-owned request outcomes and leaves the legacy specifier-only set empty, but static import checking consults that empty set before the exact file outcome. A valid imported interface therefore receives TS2792 before its target can be checked. The repair is in progress and must retain exact source, request kind and resolution mode, including authoritative unresolved outcomes. Seeding a permissive specifier set or guessing a target is not an acceptable repair.
+
+Root independently rehashed fifteen native receipt/log pairs and checked their literal result counts, clean source/lock identities and empty completed process groups. The results remain separate source epochs:
+
+| Actual native gate | Executed result | Boundary |
+| --- | --- | --- |
+| 26 | Compile error; zero tests executed. | Missing query constant import, repaired in successor source. |
+| 27, MCP selected packet | 5 passed, 0 failed. | Actual authenticated 25-row fixture: 22,624 bytes and 10,394 measured tokens. This is not a live application graph. |
+| 28, client/library/presenter | 123/0, 357/1, 137/0 passed/failed; library has 2 ignored. | Library failure expects old DTO27 while source uses DTO28. |
+| 29 and 30, cancellation | One pass each. | Pre-grant stop and genuine after-grant writer unwind; neither proves real application publication. |
+| 32, cold retry | 0 passed, 1 failed; test took 102.17 seconds. | Original failure remains retained. |
+| 33, complete library | 358 passed, 0 failed, 2 ignored. | Clean locked successor includes the DTO assertion repair. |
+| 34 and 35, TSZ stop/cache | One pass each. | One-shot stop latching and local-memo reset controls. |
+| 36, core partitions | Compile error; zero tests executed. | Unbudgeted test driver did not unwrap the newly fallible plan; successor repairs only that call site. |
+| 37, frontend execution | 3 passed, 0 failed. | Typed checker execution controls. |
+| 38, core partitions | 10 passed, 3 failed. | Two cold interface consumers fail with TS2792; another fixture expects TS2307 under default Classic configuration. |
+| 39, project modules | 3 passed, 1 failed. | Lazy-stop fixture arms its budget after an earlier type walk; corrected placement is pending execution. |
+| 40, historical cold classes | 3 passed, 0 failed. | Existing class ownership and constructor controls remain intact. |
+| 41, TSZ authority | 17 passed, 1 failed. | Fixture expects an interface property-name SymbolId which the binder does not create. A genuine bound class-member control and explicit unbound-interface control are pending. |
+
+A distinct replay of the original native32 executable passed in 29.85 test seconds under its unchanged 30-second assertion, with fifteen owned thread snapshots. The executable hash remains `411d775747faa06a00b2914e47e238f4192debc9b65d6ddcf64ee22371d9904c`. This narrowly demonstrates that the same image can complete; it does not erase the original failure, identify its cause or establish reliable latency. The replay uses an explicit source fixture tree because its original compilation workspace subsequently advanced.
+
+Reviewed source is split into nondraft [PR143](https://dev.nudox.org/git/Nudox/Backend/pulls/143), [PR145](https://dev.nudox.org/git/Nudox/Backend/pulls/145) for Python source-frontier correctness, [PR146](https://dev.nudox.org/git/Nudox/Backend/pulls/146) for immutable Nix Cargo launch witnesses, and [PR147](https://dev.nudox.org/git/Nudox/Backend/pulls/147) for actual worker/capability diagnostics and truthful package help. The latter three are stacked source checkpoints, with native gates still pending. Python's 24 active controls and separate exact HTTPie replay must run against the original installed project; a physical inventory of 133 sources does not itself prove the compiler's admitted membership.
+
+The six-filter native GUI build has actually started on ILO from frozen `3a5e6db24e1b1d68b376d5d3166a8e120a115d3f`; no GUI test pass or screenshot exists at this checkpoint. Its eventual native-window experiment uses a controlled owner and reduced motion, so it cannot substitute for live ingest or animation acceptance. Two earlier attempts refused before Cargo because their conservative disk floor was not met. Only six unused, owned final test ELF copies were subsequently retired after lossless compressed custody and empty-holder checks, recovering 4,443,594,752 allocated bytes. No intermediate libraries or foreign files were removed.
+
+Root's installed Mac HTTPie probes still exercise the historical October6 package, not these candidates. Ten read-only calls returned useful data, but several took roughly one to four seconds; package counts and declaration summaries have limitations. Real Mealie and HTTPie publication, a newly matched installed trio, full service and Clippy gates, large Go application acceptance, configured semantic search and current GUI user flows remain open. [The compiler-tail audit](../../audits/compiler-tail-native-evidence-20261011.json) retains exact commands, source and log identities and the independent packet/replay scope. Earlier failures below remain unchanged.
+
 ## 2026-10-11, 10:30 UTC — Current native failures and real application tails
 
 Readiness remains open. [PR143](https://dev.nudox.org/git/Nudox/Backend/pulls/143) composes the TypeScript worker pool, borrowed cancellation checkpoints, metered union normalization and strict selected-row proofs. Its first native MCP build failed before any tests on three Rust errors; the next source revision repairs them without claiming that the new controls have run. Root reviewed the production changes and independently checked the retained raw application responses.
