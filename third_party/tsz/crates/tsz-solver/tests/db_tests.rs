@@ -90,6 +90,7 @@ fn query_cache_caches_evaluate_and_subtype() {
 
 #[test]
 fn next_file_reset_clears_local_memos_and_retains_shared_policy_and_stop() {
+    use crate::caches::db::TypeCompilerOptions;
     use crate::construction::{SharedQueryCache, TypeExecutionCheckpoint};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};

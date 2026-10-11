@@ -47,6 +47,7 @@ use anyhow::{Context, Result, bail};
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::{
     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
+    ParallelSlice,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::Cow;
