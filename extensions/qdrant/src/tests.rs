@@ -13,6 +13,8 @@ use backend_version::{
 };
 use std::sync::Arc;
 
+mod exact_search;
+
 struct FixtureCoverageVerifier {
     producer: [u8; 32],
     scope: ScopeRoot,
