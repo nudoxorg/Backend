@@ -62,6 +62,9 @@ const MAX_CARGO_OBSERVATION_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 const MAX_CARGO_METADATA_PACKAGES: usize = 20_000;
 const MAX_CARGO_METADATA_TARGETS_PER_PACKAGE: usize = 65_536;
 const MAX_CARGO_TOOL_BINARY_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_NIX_GETCONF_PATH_BYTES: usize = 128 * 1024;
+const MAX_NIX_GETCONF_PATH_DIRECTORIES: usize = 128;
+const MAX_NIX_CONTROLLED_PATH_COMPONENTS: usize = 64;
 const MAX_CARGO_CONFIG_BYTES: usize = 1024 * 1024;
 const MAX_CARGO_CONFIG_INPUTS: usize = 256;
 const MAX_CARGO_CONFIG_DEPTH: usize = 16;
@@ -3503,10 +3506,19 @@ fn hash_unix_store_root_controls(
     path: &Path,
     metadata: &std::fs::Metadata,
 ) {
+    hash_unix_controlled_path_metadata(hasher, path, metadata);
+}
+
+#[cfg(unix)]
+fn hash_unix_controlled_path_metadata(
+    hasher: &mut blake3::Hasher,
+    path: &Path,
+    metadata: &std::fs::Metadata,
+) {
     use std::os::unix::fs::MetadataExt;
-    // The store root changes whenever any Nix object is installed. Bind only
-    // its identity and safety controls; hashing size/mtime would invalidate
-    // every tool token on unrelated store activity.
+    // Directory size, mtime, ctime, and link count change when unrelated
+    // entries are added. Bind identity and safety controls instead; exact
+    // executable and PATH-slot witnesses bind the entries that affect launch.
     hasher.update(path.as_os_str().as_encoded_bytes());
     for value in [
         metadata.dev(),
@@ -4086,6 +4098,7 @@ fn nix_store_directory_state(path: &Path) -> Result<[u8; 32], String> {
     use std::os::unix::fs::MetadataExt;
 
     let store = Path::new("/nix/store");
+    observation_budget()?;
     let canonical = path
         .canonicalize()
         .map_err(|_| "Nix Cargo runtime PATH directory cannot be resolved".to_owned())?;
@@ -4097,6 +4110,7 @@ fn nix_store_directory_state(path: &Path) -> Result<[u8; 32], String> {
     let object_name = nix_store_object_name(path)
         .ok_or_else(|| "Nix Cargo runtime PATH entry has no store object".to_owned())?;
     let object_root = store.join(object_name);
+    observation_budget()?;
     let store_metadata = std::fs::symlink_metadata(store)
         .map_err(|_| "Nix store root cannot be observed for Cargo runtime PATH".to_owned())?;
     let store_mode = store_metadata.mode();
@@ -4110,6 +4124,7 @@ fn nix_store_directory_state(path: &Path) -> Result<[u8; 32], String> {
     hasher.update(b"backend.nix-store-runtime-directory.v1\0");
     hash_unix_store_root_controls(&mut hasher, store, &store_metadata);
     for directory in [object_root.as_path(), path] {
+        observation_budget()?;
         let metadata = std::fs::symlink_metadata(directory)
             .map_err(|_| "Nix Cargo runtime PATH directory cannot be rechecked".to_owned())?;
         if !metadata.is_dir()
@@ -4126,18 +4141,31 @@ fn nix_store_directory_state(path: &Path) -> Result<[u8; 32], String> {
 
 #[cfg(unix)]
 fn nix_effective_path_directory_witness(path: &Path) -> Result<[u8; 32], String> {
-    if !path.is_absolute()
-        || path.components().any(|component| {
-            matches!(
-                component,
-                std::path::Component::CurDir | std::path::Component::ParentDir
-            )
-        })
-    {
+    if !path.is_absolute() {
         return Err(
             "Nix Cargo runtime PATH directory is not an absolute normalized path".to_owned(),
         );
     }
+    let mut component_count = 0;
+    for component in path
+        .components()
+        .take(MAX_NIX_CONTROLLED_PATH_COMPONENTS + 1)
+    {
+        observation_budget()?;
+        component_count += 1;
+        if matches!(
+            component,
+            std::path::Component::CurDir | std::path::Component::ParentDir
+        ) {
+            return Err(
+                "Nix Cargo runtime PATH directory is not an absolute normalized path".to_owned(),
+            );
+        }
+    }
+    if component_count > MAX_NIX_CONTROLLED_PATH_COMPONENTS {
+        return Err("Nix Cargo runtime PATH directory has too many components".to_owned());
+    }
+    observation_budget()?;
     let canonical = path
         .canonicalize()
         .map_err(|_| "Nix Cargo runtime PATH directory cannot be resolved".to_owned())?;
@@ -4147,7 +4175,7 @@ fn nix_effective_path_directory_witness(path: &Path) -> Result<[u8; 32], String>
         None
     };
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"backend.controlled-effective-path-directory.v1\0");
+    hasher.update(b"backend.controlled-effective-path-directory.v2\0");
     for value in [path, canonical.as_path()] {
         let value = value.as_os_str().as_encoded_bytes();
         hasher.update(&(value.len() as u64).to_le_bytes());
@@ -4175,8 +4203,19 @@ fn hash_root_controlled_path_components(
     use std::os::unix::fs::MetadataExt;
 
     let mut current = PathBuf::new();
-    let components = path.components().collect::<Vec<_>>();
+    let mut components = Vec::new();
+    for component in path
+        .components()
+        .take(MAX_NIX_CONTROLLED_PATH_COMPONENTS + 1)
+    {
+        observation_budget()?;
+        components.push(component);
+    }
+    if components.len() > MAX_NIX_CONTROLLED_PATH_COMPONENTS {
+        return Err("Nix Cargo runtime PATH directory has too many components".to_owned());
+    }
     for (index, component) in components.iter().enumerate() {
+        observation_budget()?;
         current.push(component.as_os_str());
         let metadata = std::fs::symlink_metadata(&current)
             .map_err(|_| "Nix Cargo runtime PATH component cannot be rechecked".to_owned())?;
@@ -4187,9 +4226,10 @@ fn hash_root_controlled_path_components(
             if !allow_symlinks || metadata.uid() != 0 {
                 return Err("Nix Cargo runtime PATH symlink is not root controlled".to_owned());
             }
+            observation_budget()?;
             let target = std::fs::read_link(&current)
                 .map_err(|_| "Nix Cargo runtime PATH symlink cannot be read".to_owned())?;
-            hash_unix_metadata(hasher, &current, &metadata);
+            hash_unix_controlled_path_metadata(hasher, &current, &metadata);
             let target = target.as_os_str().as_encoded_bytes();
             hasher.update(&(target.len() as u64).to_le_bytes());
             hasher.update(target);
@@ -4208,7 +4248,7 @@ fn hash_root_controlled_path_components(
                 "Nix Cargo runtime PATH component is writable and cannot be bound".to_owned(),
             );
         }
-        hash_unix_metadata(hasher, &current, &metadata);
+        hash_unix_controlled_path_metadata(hasher, &current, &metadata);
     }
     Ok(())
 }
@@ -4217,6 +4257,7 @@ fn hash_root_controlled_path_components(
 fn nix_getconf_candidate_state(
     candidate: &Path,
 ) -> Result<(bool, [u8; 32], Option<PathBuf>), String> {
+    observation_budget()?;
     let metadata = match std::fs::symlink_metadata(candidate) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -4235,6 +4276,7 @@ fn nix_getconf_candidate_state(
     hasher.update(&(candidate_bytes.len() as u64).to_le_bytes());
     hash_unix_metadata(&mut hasher, candidate, &metadata);
     let link_target = if metadata.file_type().is_symlink() {
+        observation_budget()?;
         let target = std::fs::read_link(candidate)
             .map_err(|_| "Nix Cargo launcher getconf symlink cannot be read".to_owned())?;
         let target_bytes = target.as_os_str().as_encoded_bytes();
@@ -4276,24 +4318,34 @@ fn nix_parallel_cargo_getconf_witness(
     }
     let inherited_path =
         inherited_path.ok_or_else(|| "Nix Cargo launcher PATH is unset".to_owned())?;
+    if inherited_path.as_encoded_bytes().len() > MAX_NIX_GETCONF_PATH_BYTES {
+        return Err("Nix Cargo launcher PATH exceeds its bounded size".to_owned());
+    }
+    if runtime_path.len() > MAX_NIX_GETCONF_PATH_DIRECTORIES {
+        return Err("Nix Cargo launcher PATH has too many directories".to_owned());
+    }
+    observation_budget()?;
     let working_directory = working_directory
         .canonicalize()
         .map_err(|_| "Nix Cargo launcher working directory cannot be resolved".to_owned())?;
-    let search = runtime_path
-        .iter()
-        .cloned()
-        .chain(std::env::split_paths(inherited_path).map(|directory| {
-            if directory.is_absolute() {
-                directory
-            } else if directory.as_os_str().is_empty() {
-                working_directory.clone()
-            } else {
-                working_directory.join(directory)
-            }
-        }));
+    let mut search_directories = runtime_path.to_vec();
+    for directory in std::env::split_paths(inherited_path) {
+        observation_budget()?;
+        if search_directories.len() == MAX_NIX_GETCONF_PATH_DIRECTORIES {
+            return Err("Nix Cargo launcher PATH has too many directories".to_owned());
+        }
+        search_directories.push(if directory.is_absolute() {
+            directory
+        } else if directory.as_os_str().is_empty() {
+            working_directory.clone()
+        } else {
+            working_directory.join(directory)
+        });
+    }
     let mut search_hasher = blake3::Hasher::new();
-    search_hasher.update(b"backend.nix-parallel-cargo-getconf-search.v1\0");
-    for directory in search {
+    search_hasher.update(b"backend.nix-parallel-cargo-getconf-search.v2\0");
+    for directory in search_directories {
+        observation_budget()?;
         let directory_digest = nix_effective_path_directory_witness(&directory)?;
         let path_bytes = directory.as_os_str().as_encoded_bytes();
         search_hasher.update(&(path_bytes.len() as u64).to_le_bytes());
@@ -4305,6 +4357,7 @@ fn nix_parallel_cargo_getconf_witness(
         if !exists {
             continue;
         }
+        observation_budget()?;
         let metadata = std::fs::metadata(&candidate)
             .map_err(|_| "Nix Cargo launcher getconf cannot be resolved".to_owned())?;
         if !metadata.is_file() || !is_executable_file(&metadata) {
@@ -4312,6 +4365,7 @@ fn nix_parallel_cargo_getconf_witness(
                 "Nix Cargo launcher PATH contains an unsupported getconf candidate".to_owned(),
             );
         }
+        observation_budget()?;
         let resolved = candidate
             .canonicalize()
             .map_err(|_| "Nix Cargo launcher getconf cannot be resolved".to_owned())?;
@@ -8885,6 +8939,176 @@ mod tests {
             "unrelated store entries must not invalidate immutable tool content reuse"
         );
         Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn controlled_path_component_identity_ignores_unrelated_entries()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(std::env::temp_dir().join(format!(
+            "backend-controlled-path-component-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        )));
+        std::fs::create_dir_all(&scratch.0)?;
+        let directory = scratch.0.join("component");
+        std::fs::create_dir(&directory)?;
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755))?;
+
+        let digest = |path: &Path| {
+            let metadata = std::fs::symlink_metadata(path).expect("component metadata");
+            let mut hasher = blake3::Hasher::new();
+            hash_unix_controlled_path_metadata(&mut hasher, path, &metadata);
+            *hasher.finalize().as_bytes()
+        };
+        let before = digest(&directory);
+        let before_metadata = std::fs::metadata(&directory)?;
+        std::fs::create_dir(directory.join("unrelated-directory"))?;
+        let after_metadata = std::fs::metadata(&directory)?;
+        assert!(
+            before_metadata.len() != after_metadata.len()
+                || before_metadata.modified()? != after_metadata.modified()?
+                || before_metadata.nlink() != after_metadata.nlink(),
+            "the fixture must change ordinary directory metadata"
+        );
+        assert_eq!(
+            before,
+            digest(&directory),
+            "unrelated directory entries must not invalidate a path-component receipt"
+        );
+
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
+        assert_ne!(
+            before,
+            digest(&directory),
+            "a component mode change must invalidate the receipt"
+        );
+
+        let replaced = scratch.0.join("previous-component");
+        std::fs::rename(&directory, &replaced)?;
+        std::fs::create_dir(&directory)?;
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755))?;
+        assert_ne!(
+            before,
+            digest(&directory),
+            "a component inode replacement must invalidate the receipt"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn getconf_candidate_receipt_binds_exact_symlink_target()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::symlink;
+
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(std::env::temp_dir().join(format!(
+            "backend-getconf-link-state-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        )));
+        std::fs::create_dir_all(&scratch.0)?;
+        let first_target = scratch.0.join("getconf-first");
+        let second_target = scratch.0.join("getconf-second");
+        let candidate = scratch.0.join("getconf");
+        std::fs::write(&first_target, b"first")?;
+        std::fs::write(&second_target, b"second")?;
+        symlink(&first_target, &candidate)?;
+
+        let before = nix_getconf_candidate_state(&candidate)?;
+        std::fs::write(scratch.0.join("unrelated-entry"), b"directory activity")?;
+        assert_eq!(
+            before,
+            nix_getconf_candidate_state(&candidate)?,
+            "unrelated parent-directory activity is not part of the candidate-slot receipt"
+        );
+        std::fs::remove_file(&candidate)?;
+        symlink(&second_target, &candidate)?;
+        let after = nix_getconf_candidate_state(&candidate)?;
+        assert!(before.0 && after.0);
+        assert_ne!(
+            before.1, after.1,
+            "retargeting the link must change its receipt"
+        );
+        assert_ne!(before.2, after.2, "the recorded target must change");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nix_getconf_search_bounds_path_entries_and_checks_observation_budget() {
+        let too_many_runtime_dirs = vec![PathBuf::from("/"); MAX_NIX_GETCONF_PATH_DIRECTORIES + 1];
+        let error = match nix_parallel_cargo_getconf_witness(
+            &too_many_runtime_dirs,
+            Path::new("/does/not/need/to/exist"),
+            None,
+            Some(std::ffi::OsStr::new("")),
+            None,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("runtime PATH must be bounded before touching directories"),
+        };
+        assert!(error.contains("too many directories"));
+
+        let inherited_many_dirs = std::iter::repeat("/")
+            .take(MAX_NIX_GETCONF_PATH_DIRECTORIES + 1)
+            .collect::<Vec<_>>()
+            .join(":");
+        let error = match nix_parallel_cargo_getconf_witness(
+            &[],
+            Path::new("/"),
+            None,
+            Some(std::ffi::OsStr::new(inherited_many_dirs.as_str())),
+            None,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("inherited PATH must have a bounded directory count"),
+        };
+        assert!(error.contains("too many directories"));
+
+        let long_path = "x".repeat(MAX_NIX_GETCONF_PATH_BYTES + 1);
+        let error = match nix_parallel_cargo_getconf_witness(
+            &[],
+            Path::new("/"),
+            None,
+            Some(std::ffi::OsStr::new(long_path.as_str())),
+            None,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("oversized PATH must be rejected before splitting or filesystem work"),
+        };
+        assert!(error.contains("exceeds its bounded size"));
+
+        let too_many_components = format!("/{}", "x/".repeat(MAX_NIX_CONTROLLED_PATH_COMPONENTS));
+        let error = nix_effective_path_directory_witness(Path::new(too_many_components.as_str()))
+            .expect_err("component traversal must be bounded before canonicalization");
+        assert!(error.contains("too many components"));
+
+        let control = Arc::new(ObservationControl::new());
+        control.expire_for_test();
+        let error = with_observation_control(control, || {
+            nix_effective_path_directory_witness(Path::new("/"))
+        })
+        .expect_err("component receipt must observe cancellation/deadline");
+        assert!(error.contains("deadline"));
     }
 
     #[test]
