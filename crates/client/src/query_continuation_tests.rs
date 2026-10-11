@@ -1621,7 +1621,7 @@ fn first_search_waits_for_exact_owner_preparation_and_reports_state_transitions(
     assert!(
         progress
             .iter()
-            .all(|p| p.basis == page.root.basis().root.into())
+            .all(|p| p.basis == backend_library::ViewRevision::from(page.root.basis().root))
     );
 }
 #[test]
