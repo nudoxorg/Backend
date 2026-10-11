@@ -159,10 +159,13 @@ fn durable_accepted_and_active_work_share_one_copyable_restart_safe_poll() {
 
             let mut copied = Invocation::new(grammar_for("index_progress").expect("poll grammar"));
             copied.set("operation-key", "5a".repeat(32));
-            assert!(
-                matches!(lower(&copied, "/workspace/project").expect("copyable CLI action"),
-                Request::Surface(SurfaceCommand::IndexOperationStatus { operation_key }) if operation_key == key)
-            );
+            let Request::Surface(command) =
+                lower(&copied, "/workspace/project").expect("copyable CLI action")
+            else {
+                panic!("a copied poll must lower to a surface command");
+            };
+            assert!(matches!(command.as_ref(),
+                SurfaceCommand::IndexOperationStatus { operation_key } if *operation_key == key));
             for detail in [Detail::Summary, Detail::Full] {
                 let payload = encode_answer(&answer, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES)
                     .expect("complete typed action and observation fit together");
