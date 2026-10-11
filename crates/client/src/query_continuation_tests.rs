@@ -768,7 +768,7 @@ fn portable_compact_proof_rejects_expansion_truncation_and_trailing_bytes() {
     let oversized = vec![b'x'; backend_library::MAX_COMMAND_BODY + 1];
     assert!(encode_compact_proof(&oversized).is_err());
     let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-    std::io::Write::write_all(&mut encoder, &oversized).expect("compressed adversary");
+    Write::write_all(&mut encoder, &oversized).expect("compressed adversary");
     let compressed = encoder.finish().expect("compressed adversary");
     let bomb = format!("pc3-{}", URL_SAFE_NO_PAD.encode(&compressed));
     assert!(bomb.len() < MAX_PORTABLE_QUERY_TOKEN_BYTES);
@@ -840,7 +840,7 @@ fn binary_portable_proof_bounds_canonical_encoding_and_format_are_closed_before_
     }
     let oversized = vec![0; backend_library::MAX_COMMAND_BODY + 1];
     let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
-    std::io::Write::write_all(&mut encoder, &oversized).expect("compressed adversary");
+    Write::write_all(&mut encoder, &oversized).expect("compressed adversary");
     let bomb = format!(
         "pc4-{}",
         URL_SAFE_NO_PAD.encode(encoder.finish().expect("finish"))
@@ -857,7 +857,7 @@ fn binary_portable_proof_bounds_canonical_encoding_and_format_are_closed_before_
 #[test]
 fn binary_and_legacy_query_proofs_reopen_exact_page_after_owner_and_session_restart() {
     for names in [false, true] {
-        let owner = Arc::new(Mutex::new(self::owner(1, 4, 7)));
+        let owner = Arc::new(Mutex::new(owner(1, 4, 7)));
         let requests = Arc::new(Mutex::new(vec![]));
         let mut issuing = session(&owner, &requests);
         let first = if names {
@@ -1102,7 +1102,7 @@ fn graph_fixture(selected_neighbors: bool, context: u8, sequence: u64) -> Librar
     let prototype = owner(context, 1, sequence);
     let view = prototype.view();
     let basis = view.basis();
-    let package = backend_library::package_key("graph");
+    let package = package_key("graph");
     let source = symbol_key("graph::source");
     let center = if selected_neighbors {
         Row::in_package(
@@ -1156,7 +1156,7 @@ fn graph_portable_fixture_owns_its_captured_alias_and_refuses_an_invented_locato
         .expect("native center");
     let package = library
         .view()
-        .row(RowId::Package(backend_library::package_key("graph")))
+        .row(RowId::Package(package_key("graph")))
         .expect("owned package");
     let proof = backend_library::CapturedSourceCoordinate::from_row_and_package(&center, &package)
         .expect("actual captured ownership");
@@ -1170,10 +1170,7 @@ fn graph_portable_fixture_owns_its_captured_alias_and_refuses_an_invented_locato
         .filter_map(|row| matches!(row.id, RowId::Symbol(_)).then_some(row.id))
         .collect::<Vec<_>>();
     ids.sort();
-    let page = backend_library::PageRequest::new(
-        library.revision_root(),
-        QueryLimit::new(2).expect("credit"),
-    );
+    let page = PageRequest::new(library.revision_root(), QueryLimit::new(2).expect("credit"));
     library
         .graph_page_from_ids(
             native,

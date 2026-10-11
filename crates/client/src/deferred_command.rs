@@ -184,13 +184,13 @@ mod tests {
                     builder.mode(0o700);
                     match builder.create(&path) {
                         Ok(()) => return Self(path),
-                        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
                         Err(error)
                             if matches!(
                                 error.kind(),
-                                std::io::ErrorKind::NotFound
-                                    | std::io::ErrorKind::PermissionDenied
-                                    | std::io::ErrorKind::ReadOnlyFilesystem
+                                io::ErrorKind::NotFound
+                                    | io::ErrorKind::PermissionDenied
+                                    | io::ErrorKind::ReadOnlyFilesystem
                             ) =>
                         {
                             unavailable = Some(error);
@@ -261,7 +261,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(ClientError::Disconnected(
-                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
             ))
         ));
         assert!(
@@ -454,7 +454,7 @@ mod tests {
 
     #[test]
     fn deferred_command_ack_unverified_stream_and_trickled_frame_cannot_renew() {
-        let (mut raw, mut peer) = backend_replication::LocalStream::pair().expect("pair");
+        let (raw, mut peer) = backend_replication::LocalStream::pair().expect("pair");
         let (release_peer, retain_peer) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             let original = read_body(&mut peer).expect("legacy raw request");
