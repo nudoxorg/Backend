@@ -937,3 +937,88 @@ reason = "Wine 11.0 drops SE_DACL_PROTECTED after successful SetSecurityInfo; th
 filter = "binary_id(backend-store::bounded_object_read) and test(=zero_byte_object_is_verified_and_copied_as_empty)"
 category = "wine-limit"
 reason = "Wine 11.0 drops SE_DACL_PROTECTED after successful SetSecurityInfo; this test fails while admitting private workspace storage"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=closure::tests::relation_node_cas_is_schema_parametric_and_reopens_children)"
+category = "wine-limit"
+reason = "Wine 11.0 drops SE_DACL_PROTECTED after successful SetSecurityInfo; this test fails while admitting private workspace storage"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=tests::authorityless_publish_cannot_bypass_held_owner_lease)"
+category = "wine-limit"
+reason = "Wine 11.0 drops SE_DACL_PROTECTED after successful SetSecurityInfo; this test fails while admitting private workspace storage"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=tests::complete_corrupt_recognized_head_temp_is_rejected_and_retained)"
+category = "wine-limit"
+reason = "Wine 11.0 drops SE_DACL_PROTECTED after successful SetSecurityInfo; this test fails while admitting private workspace storage"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=tests::complete_head_checkpoint_corruption_is_rejected)"
+category = "wine-limit"
+reason = "Wine 11.0 drops SE_DACL_PROTECTED after successful SetSecurityInfo; this test fails while admitting private workspace storage"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=tests::completed_journal_faults_report_typed_sync_statuses)"
+category = "wine-limit"
+reason = "Wine 11.0 drops SE_DACL_PROTECTED after successful SetSecurityInfo; this test fails while admitting private workspace storage"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=tests::every_interrupted_head_temp_prefix_is_scavenged_without_hiding_other_files)"
+category = "wine-limit"
+reason = "Wine 11.0 drops SE_DACL_PROTECTED after successful SetSecurityInfo; this test fails while admitting private workspace storage"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=tests::every_atomic_head_boundary_reopens_the_journal_selected_publication)"
+category = "wine-limit"
+reason = "Wine 11.0 drops SE_DACL_PROTECTED after successful SetSecurityInfo; this test fails while admitting private workspace storage"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=tests::filesystem_complete_journal_corruption_is_rejected)"
+category = "wine-limit"
+reason = "Wine 11.0 drops SE_DACL_PROTECTED after successful SetSecurityInfo; this test fails while admitting private workspace storage"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=tests::filesystem_publication_reopens_and_rejects_torn_or_corrupt_objects)"
+category = "wine-limit"
+reason = "Wine 11.0 drops SE_DACL_PROTECTED after successful SetSecurityInfo; this test fails while admitting private workspace storage"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=tests::filesystem_typestate_reopens_and_rejects_interleaved_stale_publish)"
+category = "wine-limit"
+reason = "Wine 11.0 drops SE_DACL_PROTECTED after successful SetSecurityInfo; this test fails while admitting private workspace storage"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=tests::lazy_bulk_frontier_publishes_every_branch_child)"
+category = "wine-limit"
+reason = "Wine 11.0 drops SE_DACL_PROTECTED after successful SetSecurityInfo; this test fails while admitting private workspace storage"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=tests::lazy_closure_open_lookup_and_pages_are_bounded)"
+category = "wine-limit"
+reason = "Wine 11.0 drops SE_DACL_PROTECTED after successful SetSecurityInfo; this test fails while admitting private workspace storage"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=tests::publication_authority_serializes_head_writes_and_reports_pre_head_abort)"
+category = "wine-limit"
+reason = "Wine 11.0 drops SE_DACL_PROTECTED after successful SetSecurityInfo; this test fails while admitting private workspace storage"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=tests::reopen_scavenges_only_store_owned_immutable_temps)"
+category = "wine-limit"
+reason = "Wine 11.0 drops SE_DACL_PROTECTED after successful SetSecurityInfo; this test fails while admitting private workspace storage"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=tests::staged_workspace_missing_page_cannot_publish_or_repair_head)"
+category = "wine-limit"
+reason = "Wine 11.0 drops SE_DACL_PROTECTED after successful SetSecurityInfo; this test fails while admitting private workspace storage"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=tests::tree_cas_reopens_transitively_and_writes_one_edit_boundary)"
+category = "wine-limit"
+reason = "Wine 11.0 drops SE_DACL_PROTECTED after successful SetSecurityInfo; this test fails while admitting private workspace storage"
+
+[[exclude]]
+filter = "binary_id(backend-store) and test(=tests::stored_extension_installs_auxiliary_children_before_membership_rebind)"
+category = "wine-limit"
+reason = "Wine 11.0 drops SE_DACL_PROTECTED after successful SetSecurityInfo; this test fails while admitting private workspace storage"

@@ -110,6 +110,10 @@ file ACLs to Unix mode bits and reconstructs a descriptor with `SE_DACL_PRESENT`
 it does not preserve protected DACL semantics. This is an emulation limitation,
 not a reason to weaken Backend's private-directory admission rules.
 
+A second run on head `aeef7ea2e` exposed the typed cause for the remaining
+17 failures: every one also reported a missing protected DACL. All 69 cases
+are individually classified on that evidence.
+
 The Windows emulation exclusion file lists each confirmed affected case
 individually. These tests remain enabled on native Windows and Linux where
 applicable. Other failures without captured causes still require diagnosis.
