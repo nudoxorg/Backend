@@ -1755,7 +1755,8 @@ fn owner_index_job_cli_ticket_and_progress_operands_are_validated() {
 
 #[test]
 fn corpus_preparation_fault_keeps_typed_readiness_and_exact_search_retry() {
-    let basis = backend_library::ViewRevision::from_bytes([41; 32]);
+    let root = view_state_root(&[]);
+    let basis = backend_library::ViewRevision::from(root);
     for state in [
         backend_library::QueryPreparationState::Preparing,
         backend_library::QueryPreparationState::Retiring,
@@ -1774,7 +1775,7 @@ fn corpus_preparation_fault_keeps_typed_readiness_and_exact_search_retry() {
         assert_eq!(fault.operand().render(), "find configuration handler");
         let dto = crate::dto::FaultDto::new(&fault);
         let readiness = dto.query_preparation.expect("exact typed readiness");
-        assert_eq!(readiness.basis, "29".repeat(32));
+        assert_eq!(readiness.basis, backend_library::encode_id(root.as_bytes()));
         assert_eq!(readiness.state, state);
         assert_eq!(
             dto.call,
