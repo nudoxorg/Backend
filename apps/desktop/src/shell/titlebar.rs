@@ -352,6 +352,7 @@ impl Render for Titlebar {
             )));
         }
 
+        self.targets.finish_native();
         let glow = self.targets.glow(&measure);
         div()
             .id("titlebar")
@@ -870,7 +871,7 @@ impl Titlebar {
             .into_any_element()
     }
 
-    fn view_switch(&mut self, active: View, measure: &Measure, palette: &Palette, keys: bool, cx: &App) -> AnyElement {
+    fn view_switch(&mut self, active: View, measure: &Measure, palette: &Palette, keys: bool, cx: &mut App) -> AnyElement {
         let mut row = div().flex().items_center().gap(measure.space(Space::Hair));
         let snapshot = self.links.snapshot(cx);
         let (visit, eligibility) = {
@@ -918,17 +919,16 @@ impl Titlebar {
             }
             let target_action = jump_target_action(JumpAction::View { visit: visit.clone(), view }, &self.links, &self.targets, cx);
             let act = target_action.callback();
-            let click_act = Rc::clone(&act);
-            let key_act = Rc::clone(&act);
             self.targets.push(Target { id: id.clone(), label: format!("Show {name} view").into(), action: target_action.clone(), peek: None, source: None });
-            face = face
-                .role(gpui::Role::Button)
-                .aria_label(format!("Show {name} view"))
-                .focusable().cursor_pointer()
-                .on_click(move |event: &ClickEvent, window, cx| {
-                    if !matches!(event, ClickEvent::Keyboard(_)) { click_act(window, cx); }
-                })
-                .on_key_down(move |event, window, cx| activate_key(event, &key_act, window, cx));
+            let focus = self.targets.native_handle(&id, cx);
+            let admission = target_action.clone();
+            face = facet::controls::button::capture_activation_admission(
+                facet::controls::button::native_button(
+                    face.role(gpui::Role::Button).aria_label(format!("Show {name} view")).cursor_pointer(),
+                    &focus, move |window, cx| act(window, cx),
+                ),
+                Rc::new(move |cx| admission.admits(cx)),
+            );
             if keys { face = face.children(keycap(true, cap, measure)); }
             row = row.child(self.targets.track(id, face));
         }

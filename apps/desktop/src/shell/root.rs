@@ -468,6 +468,11 @@ impl Shell {
     }
 
     #[cfg(test)]
+    pub(crate) fn titlebar_targets(&self, cx: &App) -> super::focus::Targets {
+        self.titlebar.read(cx).targets.clone()
+    }
+
+    #[cfg(test)]
     pub(crate) fn titlebar_target_action(&self, id: &str, cx: &App) -> Option<super::focus::Act> {
         self.titlebar.read(cx).targets.placed().into_iter().find(|(target, _)| target.id == id).map(|(target, _)| target.action.callback())
     }
@@ -1468,6 +1473,21 @@ impl Shell {
         }
         self.reader.update(cx, |reader, _| reader.cancel_native_return());
         self.adopt_reader_native_zone(window, cx);
+        // A pointer/AX client can focus a current view switch without changing
+        // the Shell's last zone. Its mounted native owner defines Tab origin.
+        if !self.ask_open && !self.shelf_over_open && self.background_input_allowed()
+            && self.links.snapshot(cx).overlay().is_none()
+            && !super::titlebar::menu_open(window, cx)
+            && let Some(id) = self.titlebar.read(cx).targets.native_focused(window) {
+            self.titlebar.read(cx).targets.focus(id);
+            self.set_zone(Zone::Titlebar, cx);
+        }
+        let titlebar_targets = self.titlebar.read(cx).targets.clone();
+        if self.zone == Zone::Titlebar
+            && titlebar_targets.native_step(forward, window, cx) {
+            self.notify_zone(Zone::Titlebar, cx);
+            return;
+        }
         if self.zone == Zone::Reader
             && self.reader.update(cx, |reader, cx| reader.step_native(forward, window, cx))
         {
