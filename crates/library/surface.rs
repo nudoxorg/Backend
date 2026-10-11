@@ -3475,7 +3475,9 @@ pub struct DeclarationRecord {
     /// Captured source text, or the canonical signature when source is unavailable.
     pub signature: Option<ProductText>,
     /// Completeness when `signature` contains captured source text.
-    /// Absent for a missing row, a signature fallback, or an older peer reply.
+    /// Absent for a missing row, a signature fallback, or a legacy record that
+    /// predates this optional field. Live peer replies still require the
+    /// current DTO version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extent: Option<DeclarationReadExtent>,
 }
