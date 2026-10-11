@@ -1960,10 +1960,10 @@ mod tests {
                 let candidate = coordinator
                     .semantic_candidate(document.row)
                     .expect("selected candidate");
-                qdrant::DocumentVector::from_shared(
+                qdrant::DocumentVector::from_owned_values(
                     recipe,
                     candidate,
-                    Arc::clone(&document.coordinates),
+                    document.coordinates.clone(),
                 )
                 .expect("document vector")
             })
@@ -2160,7 +2160,7 @@ printf '{{"abi":1,"dimensions":2,"values":[1.0,0.0]}}'
             fs::read_to_string(&calls).expect("calls").lines().count(),
             1
         );
-        assert!(Arc::ptr_eq(&cold[0].coordinates, &cold[1].coordinates));
+        assert!(cold[0].coordinates.shares_storage(&cold[1].coordinates));
         assert!(
             cold.iter()
                 .all(|document| document.write == qdrant::CoordinateWrite::Replace)
@@ -2173,7 +2173,7 @@ printf '{{"abi":1,"dimensions":2,"values":[1.0,0.0]}}'
             fs::read_to_string(&calls).expect("calls").lines().count(),
             1
         );
-        assert!(Arc::ptr_eq(&cold[0].coordinates, &warm[0].coordinates));
+        assert!(cold[0].coordinates.shares_storage(&warm[0].coordinates));
         assert!(
             warm.iter()
                 .all(|document| document.write == qdrant::CoordinateWrite::Replace)
@@ -2354,7 +2354,12 @@ for identity in items:
             fs::read_to_string(&calls).expect("calls").lines().count(),
             2
         );
-        assert!(Arc::ptr_eq(&cold[0].coordinates, &cold[1].coordinates));
+        assert!(cold[0].coordinates.shares_storage(&cold[1].coordinates));
+        assert_eq!(cold[0].coordinates.as_ref(), cold[2].coordinates.as_ref());
+        assert!(
+            !cold[0].coordinates.shares_storage(&cold[2].coordinates),
+            "equal producer values for different inputs are distinct allocations"
+        );
         assert!(
             cold.iter()
                 .all(|document| document.write == qdrant::CoordinateWrite::Replace)
@@ -3134,12 +3139,12 @@ for identity in items:
         let vectors = documents
             .iter()
             .map(|document| {
-                qdrant::DocumentVector::from_shared(
+                qdrant::DocumentVector::from_owned_values(
                     recipe,
                     coordinator
                         .semantic_candidate(document.row)
                         .expect("candidate"),
-                    Arc::clone(&document.coordinates),
+                    document.coordinates.clone(),
                 )
                 .expect("vector")
             })
@@ -3163,10 +3168,10 @@ for identity in items:
         )
         .expect("different nonzero candidate");
         assert_ne!(candidate, replacement_candidate);
-        let replacement = qdrant::DocumentVector::from_shared(
+        let replacement = qdrant::DocumentVector::from_owned_values(
             recipe,
             replacement_candidate,
-            Arc::clone(&documents[0].coordinates),
+            documents[0].coordinates.clone(),
         )
         .expect("same coordinates, distinct candidate");
         let (endpoint, server) = serve_resident(4);
