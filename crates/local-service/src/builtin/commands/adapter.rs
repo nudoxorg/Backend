@@ -9416,6 +9416,66 @@ mod tests {
         .expect("certified search DTO")
     }
 
+    // Use the same producer proof as a real revision reply, from this fixture's
+    // admitted root and cursor. Graph preparation also checks that exact cursor.
+    fn owner_query_body(daemon: &ProductDaemon, id: u64, command: Command) -> Vec<u8> {
+        let library = daemon.engine().daemon().library();
+        let certificate = crate::builtin::projection::certificate_for_snapshot_page(
+            library.view(),
+            library.cursor(),
+            None,
+            &[],
+            None,
+        )
+        .expect("owner revision certificate");
+        serde_json::to_vec(
+            &backend_engine::CommandDto::new(id, command).with_certificate(certificate),
+        )
+        .expect("owner-certified query DTO")
+    }
+
+    #[test]
+    fn preparation_query_requests_require_the_admitted_owner_proof() {
+        let mut fixture = AdapterFixture::new();
+        let (_, daemon) = fixture.parts();
+        let library = daemon.engine().daemon().library();
+        let basis = library.view().root();
+        let owner = library.cursor();
+        let graph = backend_engine::GraphQueryRequest::new(
+            "{ Package { coordinate @output } }",
+            BTreeMap::new(),
+            basis,
+            backend_engine::QueryLimit::default(),
+        )
+        .expect("bounded query");
+        for (id, command) in [
+            (
+                1,
+                Command::Name(backend_library::NameQuery::new(
+                    "project",
+                    basis,
+                    backend_engine::QueryLimit::default(),
+                )),
+            ),
+            (2, Command::GraphQuery(graph.clone())),
+            (3, Command::GraphQuery(graph.cancelled())),
+        ] {
+            let body = owner_query_body(daemon, id, command.clone());
+            let decoded = backend_engine::decode_command_dto_for_owner(&body, owner)
+                .expect("exact admitted owner proof");
+            assert_eq!(decoded.command, command);
+            assert_eq!(decoded.request_id, id);
+            let missing = serde_json::to_vec(&backend_engine::CommandDto::new(id, command))
+                .expect("uncertified request");
+            assert!(backend_engine::decode_command_dto_for_owner(&missing, owner).is_err());
+            if id != 1 {
+                let other_owner = backend_library::Cursor::new();
+                assert_ne!(owner, other_owner, "fixture has a seeded owner revision");
+                assert!(backend_engine::decode_command_dto_for_owner(&body, other_owner).is_err());
+            }
+        }
+    }
+
     fn immediate_search(
         adapter: &mut CommandAdapter,
         daemon: &mut ProductDaemon,
@@ -9769,8 +9829,7 @@ mod tests {
                 },
             ),
         ] {
-            let body = serde_json::to_vec(&backend_engine::CommandDto::new(id, command))
-                .expect("direct DTO");
+            let body = owner_query_body(daemon, id, command);
             let started = std::time::Instant::now();
             let Executed::Reply(bytes) = adapter
                 .execute_or_defer(daemon, &body, id + 1000)
@@ -9836,11 +9895,7 @@ mod tests {
         entered
             .recv_timeout(Duration::from_secs(2))
             .expect("held corpus");
-        let body = serde_json::to_vec(&backend_engine::CommandDto::new(
-            802,
-            Command::GraphQuery(query.clone()),
-        ))
-        .expect("structured DTO");
+        let body = owner_query_body(daemon, 802, Command::GraphQuery(query.clone()));
         let Executed::Reply(bytes) = adapter
             .execute_or_defer(daemon, &body, 1802)
             .expect("shared readiness")
@@ -9852,11 +9907,7 @@ mod tests {
             "preparing",
             daemon,
         );
-        let body = serde_json::to_vec(&backend_engine::CommandDto::new(
-            803,
-            Command::GraphQuery(query.cancelled()),
-        ))
-        .expect("cancel DTO");
+        let body = owner_query_body(daemon, 803, Command::GraphQuery(query.cancelled()));
         let Executed::Reply(bytes) = adapter
             .execute_or_defer(daemon, &body, 1803)
             .expect("immediate cancel")
