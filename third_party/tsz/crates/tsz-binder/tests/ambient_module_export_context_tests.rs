@@ -226,3 +226,45 @@ fn empty_ambient_surface_does_not_publish_an_augmentation_as_an_owner() {
     assert!(!binder.declared_modules.contains("pkg"));
     assert!(!binder.module_exports.contains_key("pkg"));
 }
+
+#[test]
+fn augmentation_reexports_preserve_the_literal_owner_without_declaring_an_ambient_module() {
+    for clause in ["export type { Shape }", "export type *"] {
+        let binder = bind_source(&format!(
+            "{clause} from 'dep'; declare module 'test.d.ts' {{ {clause} from 'other'; }}"
+        ));
+        assert!(binder.is_external_module);
+        assert!(
+            binder
+                .module_augmentations
+                .get("test.d.ts")
+                .is_some_and(Vec::is_empty),
+            "the augmentation body must retain its owner without inventing a named declaration"
+        );
+        assert!(!binder.declared_modules.contains("test.d.ts"));
+        assert!(!binder.shorthand_ambient_modules.contains("test.d.ts"));
+    }
+}
+
+#[test]
+fn augmentation_owner_entries_preserve_members_and_exclude_bodyless_and_identifier_declarations() {
+    let binder = bind_source(
+        "export {}; declare module './target' { interface Existing { value: number } } \
+         declare module './target' {} declare module './empty' {} \
+         declare module '*.json'; namespace Identifier {}",
+    );
+    let entries = binder.module_augmentations.get("./target").unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].name, "Existing");
+    assert!(
+        binder
+            .module_augmentations
+            .get("./empty")
+            .is_some_and(Vec::is_empty)
+    );
+    assert!(!binder.declared_modules.contains("./empty"));
+    assert!(!binder.module_exports.contains_key("./empty"));
+    assert!(binder.shorthand_ambient_modules.contains("*.json"));
+    assert!(!binder.module_augmentations.contains_key("*.json"));
+    assert!(!binder.module_augmentations.contains_key("Identifier"));
+}

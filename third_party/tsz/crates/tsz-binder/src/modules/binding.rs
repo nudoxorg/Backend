@@ -179,6 +179,12 @@ impl BinderState {
                             Arc::make_mut(&mut self.shorthand_ambient_modules)
                                 .insert(module_specifier);
                         } else {
+                            // A bound augmentation body owns this literal key
+                            // even when it contains only re-export edges and
+                            // contributes no named augmentation declaration.
+                            Arc::make_mut(&mut self.module_augmentations)
+                                .entry(module_specifier.clone())
+                                .or_default();
                             // The augmented body binds IN-PLACE at the current
                             // (boundary) scope rather than under a fresh child scope.
                             let boundary_scope_id = self.current_scope_id;

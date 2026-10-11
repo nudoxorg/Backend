@@ -706,6 +706,47 @@ fn build_module_augmentations_index_matches_legacy_topology() {
 }
 
 #[test]
+fn skeleton_reduction_preserves_an_empty_bound_augmentation_owner() {
+    let bound = crate::parallel::core::parse_and_bind_single(
+        "src/barrel.ts".to_string(),
+        "export type * from 'dep'; declare module 'src/barrel.ts' { export type * from 'other'; }"
+            .to_string(),
+    );
+    assert!(bound.parse_diagnostics.is_empty());
+    assert!(
+        bound
+            .module_augmentations
+            .get("src/barrel.ts")
+            .is_some_and(Vec::is_empty)
+    );
+    assert!(!bound.declared_modules.contains("src/barrel.ts"));
+    let skeleton = extract_skeleton(&bound);
+    let index = reduce_skeletons(&[skeleton]);
+    let entries = index.module_augmentations_for("src/barrel.ts");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].0, 0);
+    assert_eq!(entries[0].1.declaration_count, 0);
+    assert!(entries[0].1.declarations.is_empty());
+    let legacy = bound
+        .module_augmentations
+        .iter()
+        .map(|(specifier, declarations)| {
+            (
+                specifier.clone(),
+                declarations.iter().map(|entry| entry.name.clone()).collect(),
+            )
+        })
+        .collect();
+    index.validate_module_augmentations_against_legacy(&[legacy]);
+    assert!(
+        index
+            .build_module_augmentations_index(&[Arc::clone(&bound.arena)])
+            .get("src/barrel.ts")
+            .is_some_and(Vec::is_empty)
+    );
+}
+
+#[test]
 fn augmentation_targets_for_returns_per_file_entries() {
     let skel_a =
         skeleton_with_augmentation_targets("a.ts", vec![(7, "./shared".to_string(), 10, 20)]);
