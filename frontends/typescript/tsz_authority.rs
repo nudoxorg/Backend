@@ -1290,7 +1290,7 @@ fn module_resolution_digest(resolutions: &[TszProjectModuleResolution]) -> [u8; 
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
-    use tsz_core::parser::node::NodeAccess;
+    use tsz::parser::node::NodeAccess;
     use std::time::{Duration, Instant};
 
     fn options() -> TszProjectOptions {
