@@ -72,7 +72,7 @@ fn land(rig: &mut Rig, release: &Release, stage: Stage) {
         let additions = additions(cx);
         additions.root = Some(root);
         let producer = CompositionGeneration(17);
-        additions.mailbox.lock().expect("acquisition mailbox").push((producer, Landed::Stage(release.clone(), stage)));
+        additions.mailbox.lock().expect("acquisition mailbox").push((producer, super::OwnerRequest::fixture(), Landed::Stage(release.clone(), stage)));
         drain_in(Some(producer), cx);
     });
     rig.settle();
@@ -86,25 +86,69 @@ fn acquisition_receipts_retire_with_their_producer_before_stage_or_publication(c
     let current = CompositionGeneration(72);
     cx.update(|cx| {
         let ledger = additions(cx);
-        ledger.entries.insert(release.clone(), super::Entry { generation: Some(old), stage: Stage::Added(page.clone()), askers: vec![] });
+        ledger.entries.insert(release.clone(), super::Entry { owner: super::OwnerRequest::fixture(), generation: Some(old), stage: Stage::Added(page.clone()), askers: vec![] });
         assert_eq!(super::stage_in(&release, super::Asker::Everyone, Some(old), cx), Some(Stage::Added(page.clone())));
         assert_eq!(super::stage_in(&release, super::Asker::Everyone, Some(current), cx), None, "a new view cannot borrow the old owner's completed addition");
         let ledger = additions(cx);
-        ledger.entries.insert(release.clone(), super::Entry { generation: Some(current), stage: Stage::Queued, askers: vec![] });
+        ledger.entries.insert(release.clone(), super::Entry { owner: super::OwnerRequest::fixture(), generation: Some(current), stage: Stage::Queued, askers: vec![] });
         ledger.mailbox.lock().expect("mailbox").extend([
-            (old, Landed::Stage(release.clone(), Stage::Added(page.clone()))),
-            (old, Landed::Stage(release.clone(), Stage::Failed("old failure".into()))),
-            (current, Landed::Stage(release.clone(), Stage::Indexing)),
+            (old, super::OwnerRequest::fixture(), Landed::Stage(release.clone(), Stage::Added(page.clone()))),
+            (old, super::OwnerRequest::fixture(), Landed::Stage(release.clone(), Stage::Failed("old failure".into()))),
+            (current, super::OwnerRequest::fixture(), Landed::Stage(release.clone(), Stage::Indexing)),
         ]);
         drain_in(Some(current), cx);
         assert_eq!(super::stage_in(&release, super::Asker::Everyone, Some(current), cx), Some(Stage::Indexing), "old success/failure cannot overwrite the new request");
-        additions(cx).mailbox.lock().expect("mailbox").push((current, Landed::Stage(release.clone(), Stage::Partial { page: page.clone(), words: "one profile refused".into() })));
+        additions(cx).mailbox.lock().expect("mailbox").push((current, super::OwnerRequest::fixture(), Landed::Stage(release.clone(), Stage::Partial { page: page.clone(), words: "one profile refused".into() })));
         drain_in(Some(current), cx);
         assert!(matches!(super::stage_in(&release, super::Asker::Everyone, Some(current), cx), Some(Stage::Partial { page: admitted, .. }) if admitted == page));
-        additions(cx).mailbox.lock().expect("mailbox").push((current, Landed::Stage(release.clone(), Stage::Added(page.clone()))));
+        additions(cx).mailbox.lock().expect("mailbox").push((current, super::OwnerRequest::fixture(), Landed::Stage(release.clone(), Stage::Added(page.clone()))));
         drain_in(None, cx);
         assert_eq!(super::stage_in(&release, super::Asker::Everyone, None, cx), None, "withdrawal does not let a late completion become a current stage");
     });
+}
+
+#[gpui::test]
+fn same_composition_index_replacement_retires_stages_dependencies_and_late_receipts(cx: &mut TestAppContext) {
+    use crate::runtime::actor::IndexMutationLease;
+    use crate::runtime::owner::{OwnerGate, OwnerState};
+    let release = Release::new("present", "0.4.2").expect("release");
+    let page = PackageRef::parse(PACKAGE).expect("page");
+    let project = crate::core::LocalProjectId::new("/fixture/original-dependency-root").expect("project");
+    let generation = Some(CompositionGeneration(71));
+    for mode in [crate::model::ServiceMode::Embedded, crate::model::ServiceMode::Attached] {
+        let basis = crate::core::VersionedRoot::synthetic(backend_library::view_state_root(&[]), 4);
+        let gate = OwnerGate::ready(basis, mode);
+        let capture = || super::OwnerRequest::new(IndexMutationLease::capture(Some(&gate), gate.ready_epoch()).expect("captured index owner"), basis);
+        let old = capture();
+        cx.update(|cx| {
+            let ledger = additions(cx);
+            ledger.entries.insert(release.clone(), super::Entry { generation, owner: old.clone(), stage: Stage::Added(page.clone()), askers: vec![] });
+            ledger.projects.insert(project.clone(), super::Project { generation, owner: old.clone(), read: Ok(Some(Arc::from([]))), askers: vec![] });
+            assert_eq!(super::stage_in(&release, super::Asker::Everyone, generation, cx), Some(Stage::Added(page.clone())));
+        });
+        gate.publish(OwnerState::Starting);
+        gate.publish(OwnerState::Ready { key: basis, mode });
+        let current = capture();
+        assert!(!old.same_owner(&current), "same composition and root do not identify the replacement index lifetime");
+        cx.update(|cx| {
+            assert_eq!(super::stage_in(&release, super::Asker::Everyone, generation, cx), None);
+            let ledger = additions(cx);
+            ledger.entries.insert(release.clone(), super::Entry { generation, owner: current.clone(), stage: Stage::Queued, askers: vec![] });
+            ledger.projects.insert(project.clone(), super::Project { generation, owner: current.clone(), read: Ok(None), askers: vec![] });
+            ledger.mailbox.lock().expect("mailbox").extend([
+                (generation.expect("generation"), old.clone(), Landed::Stage(release.clone(), Stage::Added(page.clone()))),
+                (generation.expect("generation"), old.clone(), Landed::Dependencies(project.clone(), Ok(Arc::from([])))),
+                (generation.expect("generation"), current.clone(), Landed::Stage(release.clone(), Stage::Indexing)),
+            ]);
+            drain_in(generation, cx);
+            assert_eq!(super::stage_in(&release, super::Asker::Everyone, generation, cx), Some(Stage::Indexing));
+            assert!(matches!(additions(cx).projects.get(&project).expect("current project").read, Ok(None)),
+                "a late old dependency answer cannot settle the newly owned project");
+            additions(cx).mailbox.lock().expect("mailbox").push((generation.expect("generation"), current.clone(), Landed::Stage(release.clone(), Stage::Added(page.clone()))));
+            drain_in(generation, cx);
+            assert_eq!(super::stage_in(&release, super::Asker::Everyone, generation, cx), Some(Stage::Added(page.clone())));
+        });
+    }
 }
 
 #[gpui::test]
@@ -195,7 +239,7 @@ fn acquisition_publications_repair_the_mounted_dossier_at_the_same_authority(cx:
         assert_eq!(observed.roots.load(Ordering::Relaxed), root_reads);
     }
     rig.cx.update(|_, cx| {
-        additions(cx).mailbox.lock().expect("mailbox").push((CompositionGeneration(16), Landed::Stage(release.clone(), Stage::Added(source.clone()))));
+        additions(cx).mailbox.lock().expect("mailbox").push((CompositionGeneration(16), super::OwnerRequest::fixture(), Landed::Stage(release.clone(), Stage::Added(source.clone()))));
         drain_in(Some(CompositionGeneration(17)), cx);
     });
     rig.settle();

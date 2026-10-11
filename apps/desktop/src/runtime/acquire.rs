@@ -39,6 +39,37 @@ use std::sync::{Arc, Mutex, PoisonError};
 pub(crate) use work::{Job, Landed};
 use work::Queue;
 
+/// The exact mutation owner and root captured at acquisition ingress. A
+/// composition identifies the registry producer; this lease separately fences
+/// replacement of its serving index, including attached owners at one endpoint.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OwnerRequest {
+    lease: super::actor::IndexMutationLease,
+    basis: crate::core::VersionedRoot,
+}
+
+impl OwnerRequest {
+    pub(crate) fn new(lease: super::actor::IndexMutationLease, basis: crate::core::VersionedRoot) -> Self {
+        Self { lease, basis }
+    }
+
+    fn current(&self) -> bool {
+        match self.lease.admission(self.basis) {
+            super::owner::MutationAdmission::Ready(current) => super::actor::admits_mutation_root(self.basis, current),
+            super::owner::MutationAdmission::Observing => true,
+            super::owner::MutationAdmission::Replaced | super::owner::MutationAdmission::Unavailable(_) => false,
+        }
+    }
+
+    fn same_owner(&self, other: &Self) -> bool { self.lease == other.lease }
+
+    #[cfg(test)]
+    fn fixture() -> Self {
+        Self::new(super::actor::IndexMutationLease::capture(None, None).expect("explicit acquisition fixture"),
+            crate::core::VersionedRoot::synthetic(backend_library::view_state_root(&[]), 0))
+    }
+}
+
 /// Where adding one release stands.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Stage {
@@ -130,14 +161,16 @@ impl ProjectPackages {
 /// One addition and the views waiting on it.
 struct Entry {
     generation: Option<CompositionGeneration>,
+    owner: OwnerRequest,
     stage: Stage,
     askers: Vec<Asker>,
 }
 
 impl Entry {
-    fn renew(&mut self, generation: Option<CompositionGeneration>) {
-        if self.generation != generation {
+    fn renew(&mut self, generation: Option<CompositionGeneration>, owner: &OwnerRequest) {
+        if self.generation != generation || !self.owner.same_owner(owner) {
             self.generation = generation;
+            self.owner = owner.clone();
             self.stage = Stage::Queued;
         }
     }
@@ -146,6 +179,7 @@ impl Entry {
 /// One project whose packages are being added.
 struct Project {
     generation: Option<CompositionGeneration>,
+    owner: OwnerRequest,
     read: Result<Option<Arc<[Dependency]>>, Arc<str>>,
     askers: Vec<Asker>,
 }
@@ -155,7 +189,7 @@ struct Additions {
     entries: HashMap<Release, Entry>,
     projects: HashMap<LocalProjectId, Project>,
     queue: Arc<Queue>,
-    mailbox: Arc<Mutex<Vec<(CompositionGeneration, Landed)>>>,
+    mailbox: Arc<Mutex<Vec<(CompositionGeneration, OwnerRequest, Landed)>>>,
     wake: WakeSender,
     /// The one task that lands what the worker posts.
     _drain: Task<()>,
@@ -191,20 +225,21 @@ fn additions(cx: &mut App) -> &mut Additions {
 }
 
 /// Queues `job` on the window's worker.
-fn push(job: Job, composition: Composition, cx: &mut App) {
+fn push(job: Job, composition: Composition, owner: OwnerRequest, cx: &mut App) {
     let generation = composition.generation;
     let additions = additions(cx);
     let (mailbox, wake) = (Arc::clone(&additions.mailbox), additions.wake.clone());
+    let posted_owner = owner.clone();
     let post: Arc<dyn Fn(Landed) + Send + Sync> = Arc::new(move |landed| {
-        mailbox.lock().unwrap_or_else(PoisonError::into_inner).push((generation, landed));
+        mailbox.lock().unwrap_or_else(PoisonError::into_inner).push((generation, posted_owner.clone(), landed));
         wake.wake();
     });
     #[cfg(test)]
     if let Some(producer) = &additions.producer {
-        additions.queue.push_fixture(job, composition, post, Arc::clone(producer));
+        additions.queue.push_owned_fixture(job, composition, owner, post, Arc::clone(producer));
         return;
     }
-    additions.queue.push(job, composition, post);
+    additions.queue.push(job, composition, owner, post);
 }
 
 pub(crate) fn current_composition(_cx: &App) -> Option<Composition> {
@@ -234,7 +269,7 @@ pub(crate) fn stage(release: &Release, asker: Asker, cx: &mut App) -> Option<Sta
 fn stage_in(release: &Release, asker: Asker, generation: Option<CompositionGeneration>, cx: &mut App) -> Option<Stage> {
     cx.try_global::<Additions>()?;
     let entry = cx.global_mut::<Additions>().entries.get_mut(release)?;
-    if entry.generation != generation { return None; }
+    if entry.generation != generation || !entry.owner.current() { return None; }
     if !entry.askers.contains(&asker) {
         entry.askers.push(asker);
     }
@@ -248,7 +283,7 @@ pub(crate) fn test_stage_in(release: &Release, generation: Option<CompositionGen
 
 #[cfg(test)]
 pub(crate) fn test_land_stage(current: Option<CompositionGeneration>, producer: CompositionGeneration, release: Release, stage: Stage, cx: &mut App) {
-    additions(cx).mailbox.lock().expect("acquisition mailbox").push((producer, Landed::Stage(release, stage)));
+    additions(cx).mailbox.lock().expect("acquisition mailbox").push((producer, OwnerRequest::fixture(), Landed::Stage(release, stage)));
     drain_in(current, cx);
 }
 
@@ -256,35 +291,43 @@ pub(crate) fn test_land_stage(current: Option<CompositionGeneration>, producer: 
 /// again while it is under way, or once it is added, does nothing; asking
 /// again after it failed, or after the compiler could not finish it, tries
 /// again.
+#[cfg(test)]
 pub(crate) fn add(release: Release, root: WeakEntity<UiRootEntity>, cx: &mut App) {
-    add_with(release, crate::host::registry::composed(), root, cx);
+    add_with(release, current_composition(cx), root, cx);
 }
 
-/// [`add`] through `composition` (the process's, or a test's own).
+/// Explicit ownerless adapter for existing real-owner integration fixtures.
+/// Production ingress must call `add_owned` with its window's mutation lease.
+#[cfg(test)]
 pub(crate) fn add_with(release: Release, composition: Option<Composition>, root: WeakEntity<UiRootEntity>, cx: &mut App) {
+    add_owned(release, composition, OwnerRequest::fixture(), root, cx);
+}
+
+pub(crate) fn add_owned(release: Release, composition: Option<Composition>, owner: OwnerRequest, root: WeakEntity<UiRootEntity>, cx: &mut App) {
+    if !owner.current() { return; }
     let generation = composition.as_ref().map(|composition| composition.generation);
     let additions = additions(cx);
     additions.root = Some(root);
-    if additions.entries.get(&release).is_some_and(|entry| entry.generation == generation && !matches!(entry.stage, Stage::Failed(_) | Stage::Partial { .. })) {
+    if additions.entries.get(&release).is_some_and(|entry| entry.generation == generation && entry.owner.same_owner(&owner) && entry.owner.current() && !matches!(entry.stage, Stage::Failed(_) | Stage::Partial { .. })) {
         return;
     }
     let askers = additions.entries.remove(&release).map(|entry| entry.askers).unwrap_or_default();
     let Some(composition) = composition else {
-        additions.entries.insert(release, Entry { generation, stage: Stage::Failed(Arc::from("the index is not open yet")), askers });
+        additions.entries.insert(release, Entry { generation, owner: owner.clone(), stage: Stage::Failed(Arc::from("the index is not open yet")), askers });
         cx.refresh_windows();
         return;
     };
-    additions.entries.insert(release.clone(), Entry { generation, stage: Stage::Queued, askers });
-    push(Job::Release(release), composition, cx);
+    additions.entries.insert(release.clone(), Entry { generation, owner: owner.clone(), stage: Stage::Queued, askers });
+    push(Job::Release(release), composition, owner, cx);
     cx.refresh_windows();
 }
 
 /// Adds every registry package the projects the owner just answered for
 /// build with ([`just_indexed`]).
-pub(crate) fn follow_indexed_projects(before: Option<&AppSnapshot>, now: &AppSnapshot, root: WeakEntity<UiRootEntity>, cx: &mut App) {
+pub(crate) fn follow_indexed_projects(before: Option<&AppSnapshot>, now: &AppSnapshot, owner: OwnerRequest, root: WeakEntity<UiRootEntity>, cx: &mut App) {
     let Some(before) = before else { return };
     for project in just_indexed(before, now) {
-        add_dependencies_with(project, crate::host::registry::composed(), root.clone(), cx);
+        add_dependencies_owned(project, current_composition(cx), owner.clone(), root.clone(), cx);
     }
 }
 
@@ -309,7 +352,7 @@ pub(crate) fn just_indexed(before: &AppSnapshot, now: &AppSnapshot) -> Vec<Local
 /// being added resumes where it stopped. Packages the owner already lists are
 /// not compiled again (`work::Listed::Any`), so a relaunch costs one read of each
 /// project's packages and nothing more.
-pub(crate) fn resume(now: &AppSnapshot, root: WeakEntity<UiRootEntity>, cx: &mut App) {
+pub(crate) fn resume(now: &AppSnapshot, owner: OwnerRequest, root: WeakEntity<UiRootEntity>, cx: &mut App) {
     let generation = current_generation(cx);
     let answered = now
         .workspace()
@@ -319,9 +362,9 @@ pub(crate) fn resume(now: &AppSnapshot, root: WeakEntity<UiRootEntity>, cx: &mut
         .map(|row| row.id.clone())
         .collect::<Vec<_>>();
     for project in answered {
-        let asked = cx.try_global::<Additions>().is_some_and(|additions| additions.projects.get(&project).is_some_and(|project| project.generation == generation));
+        let asked = cx.try_global::<Additions>().is_some_and(|additions| additions.projects.get(&project).is_some_and(|project| project.generation == generation && project.owner.same_owner(&owner) && project.owner.current()));
         if !asked {
-            add_dependencies_with(project, crate::host::registry::composed(), root.clone(), cx);
+            add_dependencies_owned(project, current_composition(cx), owner.clone(), root.clone(), cx);
         }
     }
 }
@@ -336,17 +379,23 @@ pub(crate) fn working(cx: &App) -> bool {
 }
 
 /// Adds every registry package `project` builds with, through `composition`.
+#[cfg(test)]
 pub(crate) fn add_dependencies_with(project: LocalProjectId, composition: Option<Composition>, root: WeakEntity<UiRootEntity>, cx: &mut App) {
+    add_dependencies_owned(project, composition, OwnerRequest::fixture(), root, cx);
+}
+
+fn add_dependencies_owned(project: LocalProjectId, composition: Option<Composition>, owner: OwnerRequest, root: WeakEntity<UiRootEntity>, cx: &mut App) {
+    if !owner.current() { return; }
     let generation = composition.as_ref().map(|composition| composition.generation);
     let additions = additions(cx);
     additions.root = Some(root);
     let askers = additions.projects.remove(&project).map(|project| project.askers).unwrap_or_default();
     let Some(composition) = composition else {
-        additions.projects.insert(project, Project { generation, read: Err(Arc::from("the index is not open yet")), askers });
+        additions.projects.insert(project, Project { generation, owner: owner.clone(), read: Err(Arc::from("the index is not open yet")), askers });
         return;
     };
-    additions.projects.insert(project.clone(), Project { generation, read: Ok(None), askers });
-    push(Job::Dependencies(project), composition, cx);
+    additions.projects.insert(project.clone(), Project { generation, owner: owner.clone(), read: Ok(None), askers });
+    push(Job::Dependencies(project), composition, owner, cx);
 }
 
 /// What adding `project`'s packages has come to, if it was ever asked for;
@@ -356,16 +405,17 @@ pub(crate) fn project_packages(project: &LocalProjectId, asker: Asker, cx: &mut 
     cx.try_global::<Additions>()?;
     let additions = cx.global_mut::<Additions>();
     let entry = additions.projects.get_mut(project)?;
-    if entry.generation != generation { return None; }
+    if entry.generation != generation || !entry.owner.current() { return None; }
     if !entry.askers.contains(&asker) {
         entry.askers.push(asker);
     }
+    let owner = entry.owner.clone();
     Some(match &entry.read {
         Err(words) => ProjectPackages::Refused(Arc::clone(words)),
         Ok(None) => ProjectPackages::Reading,
         Ok(Some(found)) => {
             let found = Arc::clone(found);
-            ProjectPackages::Read(found.iter().map(|dependency| (dependency.clone(), additions.entries.get(&dependency.release).filter(|entry| entry.generation == generation).map(|entry| entry.stage.clone()))).collect())
+            ProjectPackages::Read(found.iter().map(|dependency| (dependency.clone(), additions.entries.get(&dependency.release).filter(|entry| entry.generation == generation && entry.owner.same_owner(&owner) && entry.owner.current()).map(|entry| entry.stage.clone()))).collect())
         }
     })
 }
@@ -416,12 +466,13 @@ fn drain_in(generation: Option<CompositionGeneration>, cx: &mut App) {
     };
     let mut published = BTreeSet::new();
     let additions = cx.global_mut::<Additions>();
-    for (producer, landed) in landed {
-        if Some(producer) != generation { continue; }
+    for (producer, owner, landed) in landed {
+        if !owner.current() || Some(producer) != generation { continue; }
         match landed {
             Landed::Stage(release, stage) => {
-                let entry = additions.entries.entry(release.clone()).or_insert_with(|| Entry { generation, stage: Stage::Queued, askers: Vec::new() });
-                entry.renew(generation);
+                let entry = additions.entries.entry(release.clone()).or_insert_with(|| Entry { generation, owner: owner.clone(), stage: Stage::Queued, askers: Vec::new() });
+                if !entry.owner.same_owner(&owner) { continue; }
+                entry.renew(generation, &owner);
                 if entry.stage != stage {
                     let page = match &stage {
                         Stage::Added(page) | Stage::Partial { page, .. } => Some(page),
@@ -439,21 +490,21 @@ fn drain_in(generation: Option<CompositionGeneration>, cx: &mut App) {
                 }
                 entry.stage = stage;
                 tell(&entry.askers);
-                for project in additions.projects.values().filter(|project| project.generation == generation) {
+                for project in additions.projects.values().filter(|project| project.generation == generation && project.owner.same_owner(&owner) && project.owner.current()) {
                     if project.read.as_ref().is_ok_and(|read| read.as_ref().is_some_and(|found| found.iter().any(|dependency| dependency.release == release))) {
                         tell(&project.askers);
                     }
                 }
             }
             Landed::Dependencies(project, read) => {
-                let entry = additions.projects.entry(project).or_insert_with(|| Project { generation, read: Ok(None), askers: Vec::new() });
-                if entry.generation != generation { continue; }
+                let entry = additions.projects.entry(project).or_insert_with(|| Project { generation, owner: owner.clone(), read: Ok(None), askers: Vec::new() });
+                if entry.generation != generation || !entry.owner.same_owner(&owner) { continue; }
                 entry.read = read.as_ref().map(|found| Some(Arc::clone(found))).map_err(Arc::clone);
                 tell(&entry.askers);
                 if let Ok(found) = &read {
                     for dependency in found.iter().filter(|dependency| matches!(dependency.origin, Origin::Registry(_))) {
-                        let entry = additions.entries.entry(dependency.release.clone()).or_insert_with(|| Entry { generation, stage: Stage::Queued, askers: Vec::new() });
-                        entry.renew(generation);
+                        let entry = additions.entries.entry(dependency.release.clone()).or_insert_with(|| Entry { generation, owner: owner.clone(), stage: Stage::Queued, askers: Vec::new() });
+                        entry.renew(generation, &owner);
                         if let Stage::Failed(_) = entry.stage {
                             entry.stage = Stage::Queued;
                         }
