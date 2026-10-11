@@ -70,6 +70,11 @@ fn host_failure(error: &TypeScriptProjectHostError) -> F {
         TypeScriptProjectHostError::ConfigMissing { .. } => F::HostConfigMissing,
         TypeScriptProjectHostError::CompilerProgramSourceMissing { .. } => F::HostCompilerApiBridge,
         TypeScriptProjectHostError::CompilerApiBridge { .. } => F::HostCompilerApiBridge,
+        TypeScriptProjectHostError::CompilerProgramCancelled => F::HostProgramCancelled,
+        TypeScriptProjectHostError::CompilerProgramDeadline => F::HostProgramDeadline,
+        TypeScriptProjectHostError::CompilerProgramProbe { source } => {
+            program_probe_failure(source)
+        }
         TypeScriptProjectHostError::CompilerIoClosureLimit { .. } => F::HostCompilerIoClosureLimit,
         TypeScriptProjectHostError::CompilerIoClosureMismatch { .. } => {
             F::HostCompilerIoClosureMismatch
@@ -106,6 +111,56 @@ fn host_failure(error: &TypeScriptProjectHostError) -> F {
         TypeScriptProjectHostError::InvalidCompilerVersion { .. } => F::HostInvalidCompilerVersion,
         TypeScriptProjectHostError::VersionMismatch { .. } => F::HostVersionMismatch,
         TypeScriptProjectHostError::CheckerConfiguration { .. } => F::HostCheckerConfiguration,
+    }
+}
+
+// Keep process control typed through cleanup and stream wrappers. The original
+// process/cleanup error remains retained in CompilerProgramProbe for local diagnostics.
+fn program_probe_failure(error: &super::toolchain_probe::ToolchainProbeError) -> F {
+    use super::toolchain_probe::{ToolchainProbeError as E, ToolchainProbePrimary as P};
+    match error {
+        E::Bounded {
+            primary: P::Cancelled,
+            ..
+        } => F::HostProgramCancelled,
+        E::Bounded {
+            primary: P::Deadline { .. },
+            ..
+        } => F::HostProgramDeadline,
+        E::Cleanup { preceding, .. }
+        | E::Stream {
+            preceding: Some(preceding),
+            ..
+        }
+        | E::Streams {
+            preceding: Some(preceding),
+            ..
+        } => program_probe_failure(preceding),
+        E::TypeScriptInterpreterUnavailable { .. }
+        | E::TypeScriptModuleRootUnavailable { .. }
+        | E::TypeScriptModuleEntryMismatch { .. }
+        | E::RelativeExecutable { .. }
+        | E::ExecutableWitness { .. }
+        | E::ExecutableChanged { .. }
+        | E::Spawn { .. }
+        | E::ProbeWorkerSpawn { .. }
+        | E::ReaderSpawn { .. }
+        | E::MissingStream { .. }
+        | E::Wait { .. }
+        | E::Stream {
+            preceding: None, ..
+        }
+        | E::Streams {
+            preceding: None, ..
+        }
+        | E::Bounded {
+            primary: P::OutputLimit { .. },
+            ..
+        }
+        | E::MissingStatus { .. }
+        | E::Exit { .. }
+        | E::Empty { .. }
+        | E::Resolution { .. } => F::HostCompilerApiBridge,
     }
 }
 

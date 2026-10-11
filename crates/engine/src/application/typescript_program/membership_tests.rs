@@ -360,26 +360,26 @@ fn excluded_sources_still_refuse_missing_changed_outside_and_cancelled_inputs() 
         .is_err(),
         "excluded source cannot disappear"
     );
-    assert!(
+    assert!(matches!(
         build_native_inputs(
             &inputs,
             &mut inputs.resolver(),
             &sources,
             Instant::now() + Duration::from_secs(90),
             &AtomicBool::new(true)
-        )
-        .is_err()
-    );
-    assert!(
+        ),
+        Err(super::TypeScriptProjectHostError::CompilerProgramCancelled)
+    ));
+    assert!(matches!(
         build_native_inputs(
             &inputs,
             &mut inputs.resolver(),
             &sources,
             Instant::now(),
             &AtomicBool::new(false)
-        )
-        .is_err()
-    );
+        ),
+        Err(super::TypeScriptProjectHostError::CompilerProgramDeadline)
+    ));
     // PackageSource rejects traversal; a symlink to a real source outside admission also refuses.
     assert!(PackageSource::new("../outside.ts", "export {};").is_err());
     let outside = fixture.root.with_extension("outside.ts");

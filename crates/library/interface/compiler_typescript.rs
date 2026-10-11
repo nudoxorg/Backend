@@ -85,6 +85,10 @@ pub enum TypeScriptAuthorityFailureKind {
     HostConfigMissing,
     /// TypeScript admitted compiler API rejected its program input.
     HostCompilerApiBridge,
+    /// TypeScript compiler program admission observed cooperative cancellation.
+    HostProgramCancelled,
+    /// TypeScript compiler program admission exceeded its admitted deadline.
+    HostProgramDeadline,
     /// TypeScript compiler I/O closure exceeded an admitted bound.
     HostCompilerIoClosureLimit,
     /// TypeScript compiler I/O closure did not match admitted directory state.
@@ -260,6 +264,8 @@ impl TypeScriptAuthorityFailureKind {
             Self::HostConfigInvalid => "typescript_host_config_invalid",
             Self::HostConfigMissing => "typescript_host_config_missing",
             Self::HostCompilerApiBridge => "typescript_host_compiler_api_bridge",
+            Self::HostProgramCancelled => "typescript_host_program_cancelled",
+            Self::HostProgramDeadline => "typescript_host_program_deadline",
             Self::HostCompilerIoClosureLimit => "typescript_host_compiler_io_closure_limit",
             Self::HostCompilerIoClosureMismatch => "typescript_host_compiler_io_closure_mismatch",
             Self::HostConfigCycle => "typescript_host_config_cycle",
@@ -451,6 +457,10 @@ impl TypeScriptAuthorityFailureKind {
             Self::HostCompilerApiBridge => {
                 "TypeScript admitted compiler API rejected its program input"
             }
+            Self::HostProgramCancelled => "TypeScript compiler program admission was cancelled",
+            Self::HostProgramDeadline => {
+                "TypeScript compiler program admission exceeded its admitted deadline"
+            }
             Self::HostCompilerIoClosureLimit => {
                 "TypeScript compiler I/O closure exceeded an admitted bound"
             }
@@ -625,7 +635,8 @@ impl TypeScriptAuthorityFailureKind {
     pub const fn is_cancelled(self) -> bool {
         matches!(
             self,
-            Self::NativeSessionCancelled
+            Self::HostProgramCancelled
+                | Self::NativeSessionCancelled
                 | Self::NativeProjectCheckCancelled
                 | Self::NativeUpdateCancelled
         )

@@ -4058,6 +4058,15 @@ pub enum TypeScriptProjectHostError {
         "admitted TypeScript package source {package_relative_path:?} was absent from the compiler program"
     )]
     CompilerProgramSourceMissing { package_relative_path: Box<str> },
+    #[error("TypeScript compiler program admission was cancelled")]
+    CompilerProgramCancelled,
+    #[error("TypeScript compiler program admission exceeded its admitted deadline")]
+    CompilerProgramDeadline,
+    #[error("TypeScript compiler API program process failed: {source}")]
+    CompilerProgramProbe {
+        #[source]
+        source: ToolchainProbeError,
+    },
     #[error("the admitted TypeScript compiler API rejected its program input: {message}")]
     CompilerApiBridge { message: Box<str> },
     #[error("TypeScript compiler I/O closure exceeded its {phase} budget: {detail}")]

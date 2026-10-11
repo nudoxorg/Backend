@@ -63,6 +63,15 @@ pub(crate) enum TypeScriptPackageSourceMembership {
     ExcludedFromConfiguredProgram,
 }
 
+impl TypeScriptPackageSourceMembership {
+    pub(crate) fn selected_program_path(&self) -> Option<&str> {
+        match self {
+            Self::Selected { program_path } => Some(program_path),
+            Self::ExcludedFromConfiguredProgram => None,
+        }
+    }
+}
+
 /// Owns both the admitted host reads and the exact Compiler API directory-query transcript.
 #[derive(Debug)]
 pub(crate) struct TypeScriptProgramClosureWitness {
@@ -1143,6 +1152,7 @@ pub(crate) fn build_native_inputs(
         module_resolutions: resolutions,
         environment,
     };
+    check_admission_control(deadline, cancelled)?;
     Ok(NativeTypeScriptInputs {
         sources,
         libraries,
@@ -1166,15 +1176,10 @@ fn check_admission_control(
     cancelled: &AtomicBool,
 ) -> Result<(), TypeScriptProjectHostError> {
     if cancelled.load(std::sync::atomic::Ordering::Acquire) {
-        return Err(bridge_error(
-            "TypeScript program source admission was cancelled",
-        ));
+        return Err(TypeScriptProjectHostError::CompilerProgramCancelled);
     }
     if Instant::now() >= deadline {
-        return Err(TypeScriptProjectHostError::CompilerIoClosureLimit {
-            phase: "TypeScript program source admission".into(),
-            detail: "deadline elapsed while admitting the exact source frontier".into(),
-        });
+        return Err(TypeScriptProjectHostError::CompilerProgramDeadline);
     }
     Ok(())
 }
@@ -1189,9 +1194,7 @@ fn run_program_bridge(
 ) -> Result<ProgramReport, TypeScriptProjectHostError> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
-        return Err(bridge_error(
-            "deadline elapsed before compiler API program construction",
-        ));
+        return Err(TypeScriptProjectHostError::CompilerProgramDeadline);
     }
     let limits = ToolchainProbeLimits::new(
         remaining,
@@ -1225,7 +1228,7 @@ fn run_program_bridge(
         limits,
         cancelled,
     )
-    .map_err(|error| bridge_error(&error.to_string()))?;
+    .map_err(|source| TypeScriptProjectHostError::CompilerProgramProbe { source })?;
     serde_json::from_slice(&output).map_err(|error| {
         bridge_error(&format!(
             "compiler API output was not bounded valid JSON: {error}"
@@ -2418,6 +2421,32 @@ outputs.linux_case_sensitive = caseSensitiveResult
   .map(item => path.isAbsolute(item) ? path.resolve(item) : path.resolve(caseRoot, item)).sort();
 process.stdout.write(JSON.stringify(outputs));
 "#;
+
+    #[test]
+    fn program_admission_controls_are_typed_before_any_compiler_launch() {
+        use super::TypeScriptProjectHostError;
+        use std::{
+            sync::atomic::AtomicBool,
+            time::{Duration, Instant},
+        };
+        let future = Instant::now() + Duration::from_secs(30);
+        assert!(matches!(
+            super::check_admission_control(future, &AtomicBool::new(true)),
+            Err(TypeScriptProjectHostError::CompilerProgramCancelled)
+        ));
+        assert!(matches!(
+            super::check_admission_control(Instant::now(), &AtomicBool::new(false)),
+            Err(TypeScriptProjectHostError::CompilerProgramDeadline)
+        ));
+        assert!(
+            matches!(
+                super::check_admission_control(Instant::now(), &AtomicBool::new(true)),
+                Err(TypeScriptProjectHostError::CompilerProgramCancelled)
+            ),
+            "cooperative cancellation retains precedence over elapsed time"
+        );
+        assert!(super::check_admission_control(future, &AtomicBool::new(false)).is_ok());
+    }
 
     #[test]
     fn compiler_api_library_filenames_map_to_tsconfig_library_names() {
