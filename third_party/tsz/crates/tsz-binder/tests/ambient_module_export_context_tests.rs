@@ -176,3 +176,53 @@ fn export_default_declaration_keeps_implicit_export_context() {
         "`g` stays implicitly exported, got {names:?}"
     );
 }
+
+#[test]
+fn empty_ambient_surface_retains_its_declared_wildcard_owner() {
+    let binder = bind_source(
+        r#"declare module "foreign" { export type * from "./wrong"; }
+           declare module "pkg" { export type * from "./right"; }"#,
+    );
+    for (owner, target) in [("foreign", "./wrong"), ("pkg", "./right")] {
+        assert!(binder.declared_modules.contains(owner));
+        let surface = binder.module_exports.get(owner).unwrap();
+        assert!(surface.is_empty(), "a wildcard edge is not a direct member");
+        let edges = binder.wildcard_reexports.get(owner).unwrap();
+        assert_eq!(edges.iter().count(), 1);
+        assert!(edges.iter().any(|(specifier, type_only)| {
+            specifier == target && *type_only
+        }));
+    }
+    assert!(!binder.module_exports.contains_key("src/pkg.ts"));
+}
+
+#[test]
+fn empty_ambient_body_after_a_public_declaration_preserves_merged_members() {
+    let binder = bind_source(
+        r#"declare module "pkg" { export const value: number; }
+           declare module "pkg" { export type * from "./right"; }"#,
+    );
+    let names = exported_names(&binder, "pkg");
+    assert_eq!(names, vec!["value"]);
+    assert!(binder.wildcard_reexports.get("pkg").is_some());
+}
+
+#[test]
+fn empty_ambient_surface_does_not_replace_bodyless_any_semantics() {
+    let binder = bind_source(r#"declare module "body" {} declare module "shorthand";"#);
+    assert!(binder.module_exports.get("body").unwrap().is_empty());
+    assert!(!binder.shorthand_ambient_modules.contains("body"));
+    assert!(binder.shorthand_ambient_modules.contains("shorthand"));
+    assert!(!binder.module_exports.contains_key("shorthand"));
+}
+
+#[test]
+fn empty_ambient_surface_does_not_publish_an_augmentation_as_an_owner() {
+    let binder = bind_source(
+        r#"import { value } from "./base";
+           declare module "pkg" {}"#,
+    );
+    assert!(binder.is_external_module);
+    assert!(!binder.declared_modules.contains("pkg"));
+    assert!(!binder.module_exports.contains_key("pkg"));
+}
