@@ -15,8 +15,9 @@ use std::{
 
 use backend_frontend_typescript::{
     TszCheckerOptions, TszEnvironmentFingerprint, TszFileInput, TszLibraryInput,
-    TszProjectModuleRequestKind, TszProjectModuleResolution, TszProjectModuleResolutionTarget,
-    TszProjectOptions, TszProjectSemanticOptions, checker_options_from_compiler_api_json,
+    TszProjectFileFormat, TszProjectFileFormatInput, TszProjectModuleRequestKind,
+    TszProjectModuleResolution, TszProjectModuleResolutionTarget, TszProjectOptions,
+    TszProjectSemanticOptions, checker_options_from_compiler_api_json,
 };
 use backend_version::{ContentId, SourceFactDomain};
 use serde::Deserialize;
@@ -145,6 +146,7 @@ struct ProgramFile {
     path: String,
     sha256: String,
     default_library: bool,
+    implied_node_format: TszProjectFileFormat,
 }
 
 #[derive(Debug, Deserialize)]
@@ -739,7 +741,11 @@ try {
     const sourceFiles = programFiles.map(file => ({
       path:path.resolve(file.fileName),
       sha256:digest(file.text),
-      default_library:program.isSourceFileDefaultLibrary(file)
+      default_library:program.isSourceFileDefaultLibrary(file),
+      implied_node_format:file.impliedNodeFormat === undefined ? 'unknown'
+        : file.impliedNodeFormat === ts.ModuleKind.CommonJS ? 'common_js'
+        : file.impliedNodeFormat === ts.ModuleKind.ESNext ? 'es_module'
+        : (() => { throw closureFault('mismatch', 'unsupported SourceFile.impliedNodeFormat'); })()
     }));
     const resolutions = [];
     const resolutionKeys = new Map();
@@ -757,9 +763,6 @@ try {
       const format = file.impliedNodeFormat;
       if (format === ts.ModuleKind.CommonJS) return 'require';
       if (format === ts.ModuleKind.ESNext) return 'import';
-      const mod = options.module === undefined ? undefined : ts.ModuleKind[options.module];
-      if (mod === 'CommonJS' || mod === 'Node16' && kind === 'CjsRequire') return 'require';
-      if (mod === 'NodeNext' || mod === 'ESNext' || mod === 'ES2022' || mod === 'ES2020' || mod === 'ES2015') return 'import';
       return null;
     };
     const addRequest = (file, literal, kind) => {
@@ -961,6 +964,7 @@ pub(crate) fn build_native_inputs(
     let mut libraries = Vec::new();
     let mut content_ids = BTreeMap::<String, ContentId<SourceFactDomain>>::new();
     let mut source_paths = BTreeSet::new();
+    let mut file_formats = Vec::new();
 
     let mut files = report.files.iter().collect::<Vec<_>>();
     files.sort_unstable_by(|left, right| left.path.cmp(&right.path));
@@ -998,6 +1002,12 @@ pub(crate) fn build_native_inputs(
         }
         virtual_by_canonical.insert(normalize_path(&admitted.path), virtual_path.clone());
         content_ids.insert(virtual_path.clone(), admitted.content_id);
+        if !is_library {
+            file_formats.push(TszProjectFileFormatInput {
+                path: virtual_path.clone(),
+                format: file.implied_node_format,
+            });
+        }
         if is_library {
             let input = TszLibraryInput::from_utf8(virtual_path, admitted.bytes.to_vec()).map_err(
                 |error| bridge_error(&format!("compiler library input was rejected: {error}")),
@@ -1143,6 +1153,7 @@ pub(crate) fn build_native_inputs(
         &compiler_api.content_id,
         &access_digest,
         &resolutions,
+        &file_formats,
         resolver_witness.digest(),
     )?;
     let work_units = calculate_work_units(inputs, &sources, &libraries, closure_work_units);
@@ -1150,6 +1161,7 @@ pub(crate) fn build_native_inputs(
         checker,
         semantic_options: TszProjectSemanticOptions::declaration_scoped(),
         module_resolutions: resolutions,
+        file_formats,
         environment,
     };
     check_admission_control(deadline, cancelled)?;
@@ -2002,10 +2014,11 @@ fn program_environment_fingerprint(
     compiler_api_content_id: &ContentId<SourceFactDomain>,
     compiler_access_digest: &[u8; 32],
     resolutions: &[TszProjectModuleResolution],
+    file_formats: &[TszProjectFileFormatInput],
     resolver_digest: &[u8; 32],
 ) -> Result<TszEnvironmentFingerprint, TypeScriptProjectHostError> {
     let mut digest = blake3::Hasher::new();
-    digest.update(b"compiler.typescript.tsz-program.v2\0");
+    digest.update(b"compiler.typescript.tsz-program.v3\0");
     digest.update(&inputs.fingerprint);
     digest.update(compiler_version.as_bytes());
     match config {
@@ -2036,6 +2049,17 @@ fn program_environment_fingerprint(
         let encoded = format!("{resolution:?}");
         digest.update(&(encoded.len() as u64).to_le_bytes());
         digest.update(encoded.as_bytes());
+    }
+    digest.update(b"compiler.source-file.implied-node-format.v1\0");
+    digest.update(&(file_formats.len() as u64).to_le_bytes());
+    for input in file_formats {
+        digest.update(&(input.path.len() as u64).to_le_bytes());
+        digest.update(input.path.as_bytes());
+        digest.update(&[match input.format {
+            TszProjectFileFormat::Unknown => 0,
+            TszProjectFileFormat::CommonJs => 1,
+            TszProjectFileFormat::EsModule => 2,
+        }]);
     }
     Ok(TszEnvironmentFingerprint::from_sha256(
         *digest.finalize().as_bytes(),

@@ -132,7 +132,7 @@ for(const f of p.getSourceFiles()) {
   }
   visit(f);
 }
-process.stdout.write(JSON.stringify({files:p.getSourceFiles().map(f=>f.fileName), calls, errors:ts.getPreEmitDiagnostics(p).filter(d=>d.category===ts.DiagnosticCategory.Error).map(d=>d.code)}));
+process.stdout.write(JSON.stringify({files:p.getSourceFiles().map(f=>f.fileName), formats:Object.fromEntries(p.getSourceFiles().map(f=>[f.fileName, f.impliedNodeFormat === undefined ? 'unknown' : f.impliedNodeFormat === ts.ModuleKind.CommonJS ? 'common_js' : f.impliedNodeFormat === ts.ModuleKind.ESNext ? 'es_module' : 'unsupported'])), calls, errors:ts.getPreEmitDiagnostics(p).filter(d=>d.category===ts.DiagnosticCategory.Error).map(d=>d.code)}));
 "#;
         let args = [
             OsString::from(self.root.join("node_modules/typescript/lib/typescript.js")),
@@ -672,4 +672,202 @@ fn configured_extends_inherits_membership_while_project_references_still_refuse(
         .is_err(),
         "membership exclusion does not admit project references as one TSZ program"
     );
+}
+
+#[test]
+#[ignore = "requires pinned TSZ_PROGRAM_TEST_NODE and TSZ_PROGRAM_TEST_TYPESCRIPT_API"]
+fn actual_compiler_node_formats_follow_package_type_with_identical_source_membership() {
+    use backend_frontend_typescript::{TszProjectFileFormat, TszProjectModuleRequestKind};
+    use std::collections::BTreeMap;
+    let fixture = Fixture::new();
+    let main = "import { value } from './dep.js';\nimport type { Token as I } from './dep.js' with { 'resolution-mode': 'import' };\nimport type { Token as R } from './dep.js' with { 'resolution-mode': 'require' };\nexport const result = value; export type Pair = [I, R];\n";
+    let dep = "export interface Token { value: number; } export const value = 42;\n";
+    let source_pairs = [
+        ("src/main.ts", main),
+        ("src/dep.ts", dep),
+        ("src/fixed.mts", "export const esm = 1;\n"),
+        ("src/fixed.cts", "export const cjs = 1;\n"),
+        ("eslint.config.ts", ESLINT),
+    ];
+    for (path, text) in source_pairs {
+        fs::write(fixture.root.join(path), text).unwrap();
+    }
+    let sources: Vec<_> = source_pairs
+        .into_iter()
+        .map(|(path, text)| PackageSource::new(path, text).unwrap())
+        .collect();
+    for module in ["Node16", "NodeNext"] {
+        fs::write(fixture.root.join("tsconfig.json"), serde_json::to_vec(&serde_json::json!({
+            "compilerOptions": {"strict": true, "target":"ES2022", "module": module, "moduleResolution": module},
+            "files": ["src/main.ts", "src/dep.ts", "src/fixed.mts", "src/fixed.cts"],
+        })).unwrap()).unwrap();
+        let mut prior = None;
+        for (package_type, format) in [
+            ("commonjs", TszProjectFileFormat::CommonJs),
+            ("module", TszProjectFileFormat::EsModule),
+        ] {
+            fs::write(
+                fixture.root.join("package.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "name":"program-membership", "version":"1.0.0", "type":package_type,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            let native = fixture.native(&sources);
+            let oracle = fixture.oracle();
+            assert_eq!(oracle["errors"], serde_json::json!([]));
+            let formats: BTreeMap<_, _> = native
+                .options
+                .file_formats
+                .iter()
+                .map(|input| (input.path.as_str(), input.format))
+                .collect();
+            assert_eq!(formats.len(), 4);
+            assert_eq!(formats["src/main.ts"], format);
+            assert_eq!(formats["src/dep.ts"], format);
+            assert_eq!(formats["src/fixed.mts"], TszProjectFileFormat::EsModule);
+            assert_eq!(formats["src/fixed.cts"], TszProjectFileFormat::CommonJs);
+            assert!(!formats.contains_key("eslint.config.ts"));
+            for input in &native.options.file_formats {
+                let expected = match input.format {
+                    TszProjectFileFormat::Unknown => "unknown",
+                    TszProjectFileFormat::CommonJs => "common_js",
+                    TszProjectFileFormat::EsModule => "es_module",
+                };
+                assert_eq!(
+                    oracle["formats"][fixture.root.join(&input.path).to_str().unwrap()],
+                    expected
+                );
+            }
+            let requests: Vec<_> = native
+                .options
+                .module_resolutions
+                .iter()
+                .filter(|request| {
+                    request.importer_path == "src/main.ts"
+                        && request.specifier == "./dep.js"
+                        && request.request_kind == TszProjectModuleRequestKind::EsmImport
+                })
+                .collect();
+            assert_eq!(
+                requests.len(),
+                2,
+                "implicit and explicit same-mode observations deduplicate only their exact tuple"
+            );
+            assert!(
+                requests
+                    .iter()
+                    .any(|request| format!("{:?}", request.resolution_mode) == "Some(Import)")
+            );
+            assert!(
+                requests
+                    .iter()
+                    .any(|request| format!("{:?}", request.resolution_mode) == "Some(Require)")
+            );
+            // Exercise the same admitted real API recipe through TSZ rather
+            // than treating the compiler report as the only positive control.
+            let mut authority = backend_frontend_typescript::TszProjectAuthority::new();
+            authority
+                .update(
+                    native.sources.clone(),
+                    native.options.clone(),
+                    &native.libraries,
+                )
+                .unwrap();
+            let project = authority.project().unwrap();
+            let main_index = project
+                .program()
+                .files
+                .iter()
+                .position(|file| file.file_name == "src/main.ts")
+                .unwrap();
+            project
+                .with_file_checker_and_types(main_index, |checker, _, _, _| {
+                    assert_eq!(
+                        checker.ctx.file_is_esm,
+                        Some(format == TszProjectFileFormat::EsModule)
+                    );
+                    assert!(std::sync::Arc::ptr_eq(
+                        checker.ctx.file_is_esm_map.as_ref().unwrap(),
+                        &project.program().file_is_esm_map
+                    ));
+                    let target = checker
+                        .ctx
+                        .resolve_import_target_from_file_with_mode(main_index, "./dep.js", None)
+                        .unwrap();
+                    assert_eq!(project.program().files[target].file_name, "src/dep.ts");
+                })
+                .unwrap();
+            let snapshots: Vec<_> = native
+                .sources
+                .iter()
+                .map(|source| (source.path.clone(), source.source.clone()))
+                .collect();
+            if let Some((prior_sources, prior_environment)) = prior {
+                assert_eq!(
+                    snapshots, prior_sources,
+                    "package format edit keeps exact source bytes and membership"
+                );
+                assert_ne!(
+                    native.options.environment, prior_environment,
+                    "format-only package change invalidates durable semantics"
+                );
+            }
+            prior = Some((snapshots, native.options.environment));
+        }
+    }
+    // A package manifest alone cannot fabricate format evidence outside the
+    // compiler's Node16/NodeNext format classification.
+    fs::write(fixture.root.join("tsconfig.json"), serde_json::to_vec(&serde_json::json!({
+        "compilerOptions": {"target":"ES2022", "module":"CommonJS", "moduleResolution":"Node10"},
+        "files":["src/main.ts", "src/dep.ts"],
+    })).unwrap()).unwrap();
+    let native = fixture.native(&sources);
+    let oracle = fixture.oracle();
+    let main = native
+        .options
+        .file_formats
+        .iter()
+        .find(|input| input.path == "src/main.ts")
+        .unwrap();
+    assert_eq!(main.format, TszProjectFileFormat::Unknown);
+    assert_eq!(
+        oracle["formats"][fixture.root.join("src/main.ts").to_str().unwrap()],
+        "unknown"
+    );
+}
+
+#[test]
+fn compiler_file_format_report_requires_closed_typed_evidence() {
+    use backend_frontend_typescript::TszProjectFileFormat;
+    let report = |format: serde_json::Value| {
+        serde_json::json!({
+            "path":"/project/src/main.ts", "sha256":"00", "default_library":false,
+            "implied_node_format": format,
+        })
+    };
+    for (value, expected) in [
+        ("unknown", TszProjectFileFormat::Unknown),
+        ("common_js", TszProjectFileFormat::CommonJs),
+        ("es_module", TszProjectFileFormat::EsModule),
+    ] {
+        let file: super::ProgramFile =
+            serde_json::from_value(report(serde_json::json!(value))).unwrap();
+        assert_eq!(file.implied_node_format, expected);
+    }
+    for unsupported in [
+        serde_json::json!(null),
+        serde_json::json!(1),
+        serde_json::json!("ES2015"),
+        serde_json::json!(true),
+    ] {
+        assert!(serde_json::from_value::<super::ProgramFile>(report(unsupported)).is_err());
+    }
+    let mut missing = report(serde_json::json!("unknown"));
+    missing
+        .as_object_mut()
+        .unwrap()
+        .remove("implied_node_format");
+    assert!(serde_json::from_value::<super::ProgramFile>(missing).is_err());
 }

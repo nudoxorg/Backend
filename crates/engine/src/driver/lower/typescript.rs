@@ -11288,6 +11288,7 @@ mod lane_tests {
             checker,
             semantic_options: TszProjectSemanticOptions::declaration_scoped(),
             module_resolutions: Vec::new(),
+            file_formats: Vec::new(),
             environment: TszEnvironmentFingerprint::from_sha256([0x5a; 32]),
         };
         let mut authority = TszProjectAuthority::new();
@@ -11344,6 +11345,7 @@ mod lane_tests {
             checker,
             semantic_options: TszProjectSemanticOptions::declaration_scoped(),
             module_resolutions: module_resolutions.to_vec(),
+            file_formats: Vec::new(),
             environment: TszEnvironmentFingerprint::from_sha256([0x71; 32]),
         };
         let mut authority = TszProjectAuthority::new();
@@ -11685,6 +11687,7 @@ mod lane_tests {
             checker,
             semantic_options: TszProjectSemanticOptions::declaration_scoped(),
             module_resolutions: Vec::new(),
+            file_formats: Vec::new(),
             environment: TszEnvironmentFingerprint::from_sha256([0x6b; 32]),
         };
         let mut authority = TszProjectAuthority::new();

@@ -53,6 +53,22 @@ use crate::parser::syntax_kind_ext;
 use crate::tsz_solver::TypeId;
 use tsz_common::ProjectSemanticOptions;
 
+/// Compiler-owned `SourceFile.impliedNodeFormat`. Unknown never supplies a mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectFileFormat {
+    Unknown,
+    CommonJs,
+    EsModule,
+}
+
+/// Format evidence for an exact member of the admitted compiler program.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ProjectFileFormatInput {
+    pub path: String,
+    pub format: ProjectFileFormat,
+}
+
 /// Syntactic form of a TypeScript module request supplied by an admitted
 /// compiler program.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -579,6 +595,8 @@ pub fn check_functions_parallel_with_project_semantic_options(
                 compiler_options, // default options for internal operations
                 std::sync::Arc::clone(&program.definition_store),
             );
+            checker.ctx.file_is_esm = program.file_is_esm_map.get(&checker.ctx.file_name).copied();
+            checker.ctx.file_is_esm_map = Some(Arc::clone(&program.file_is_esm_map));
             checker.ctx.set_all_arenas(Arc::clone(&all_arenas));
             checker.ctx.set_all_binders(Arc::clone(&all_binders));
             checker.ctx.set_current_file_idx(file_idx);
@@ -1218,6 +1236,12 @@ impl<'a> ParallelCheckPlan<'a> {
         checker
             .ctx
             .set_resolved_modules(Arc::clone(&self.resolved_modules));
+        checker.ctx.file_is_esm = self
+            .program
+            .file_is_esm_map
+            .get(&checker.ctx.file_name)
+            .copied();
+        checker.ctx.file_is_esm_map = Some(Arc::clone(&self.program.file_is_esm_map));
         if let Some(outcomes) = self.project_module_resolution_outcomes.as_ref() {
             checker
                 .ctx
@@ -1329,6 +1353,12 @@ impl<'a> ParallelCheckPlan<'a> {
         checker
             .ctx
             .set_resolved_modules(Arc::clone(&self.resolved_modules));
+        checker.ctx.file_is_esm = self
+            .program
+            .file_is_esm_map
+            .get(&checker.ctx.file_name)
+            .copied();
+        checker.ctx.file_is_esm_map = Some(Arc::clone(&self.program.file_is_esm_map));
         if let Some(outcomes) = self.project_module_resolution_outcomes.as_ref() {
             checker
                 .ctx
@@ -1394,6 +1424,12 @@ impl<'a> ParallelCheckPlan<'a> {
             lib_file.file_name.clone(),
             self.checker_options,
         );
+        checker.ctx.file_is_esm = self
+            .program
+            .file_is_esm_map
+            .get(&checker.ctx.file_name)
+            .copied();
+        checker.ctx.file_is_esm_map = Some(Arc::clone(&self.program.file_is_esm_map));
         let other_lib_contexts: Vec<LibContext> = self
             .lib_contexts
             .iter()

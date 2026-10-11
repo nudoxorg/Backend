@@ -31,6 +31,7 @@ pub use tsz::checker::state::CheckerState as TszCheckerState;
 pub use tsz::common::{ModuleKind as TszModuleKind, ScriptTarget as TszScriptTarget};
 pub use tsz::parallel::{
     ProjectCheckerExecution as TszProjectCheckerExecution,
+    ProjectFileFormat as TszProjectFileFormat, ProjectFileFormatInput as TszProjectFileFormatInput,
     ProjectModuleRequestKind as TszProjectModuleRequestKind,
     ProjectModuleResolution as TszProjectModuleResolution,
     ProjectModuleResolutionError as TszProjectModuleResolutionError,
@@ -250,6 +251,8 @@ pub struct TszProjectOptions {
     /// Empty is an explicit declaration that the admitted program has no
     /// requests; it does not enable filename-based fallback.
     pub module_resolutions: Vec<TszProjectModuleResolution>,
+    /// Actual Compiler API per-file format; missing entries remain unknown.
+    pub file_formats: Vec<TszProjectFileFormatInput>,
     /// Identity for all configuration and dependency inputs described above.
     pub environment: TszEnvironmentFingerprint,
 }
@@ -292,6 +295,7 @@ pub struct TszProject {
     checker_options_digest: [u8; 32],
     semantic_options_digest: [u8; 32],
     module_resolution_digest: [u8; 32],
+    file_format_digest: [u8; 32],
     library_digest: [u8; 32],
     bound_sources: BTreeMap<String, Arc<tsz::parallel::BindResult>>,
     lib_files: Vec<Arc<tsz::lib_loader::LibFile>>,
@@ -471,6 +475,11 @@ impl TszProjectAuthority {
             .project
             .as_ref()
             .is_some_and(|current| current.semantic_options_digest != semantic_digest);
+        let file_format_digest = file_format_digest(&options.file_formats);
+        let file_formats_changed = self
+            .project
+            .as_ref()
+            .is_some_and(|current| current.file_format_digest != file_format_digest);
         let module_resolution_digest = module_resolution_digest(&options.module_resolutions);
         let module_resolutions_changed = self
             .project
@@ -481,9 +490,9 @@ impl TszProjectAuthority {
             self.project = None;
             self.environment = Some(options.environment);
             self.libraries = Some(library_digest);
-        } else if semantic_options_changed || module_resolutions_changed {
-            // Semantic options and exact resolution outcomes affect merged
-            // identities/checking, but not parser/binder output. Reuse exact
+        } else if semantic_options_changed || module_resolutions_changed || file_formats_changed {
+            // Semantic options, exact resolution outcomes, and compiler file
+            // formats affect merged checking, but not parser/binder output. Reuse exact
             // source binds while rebuilding the merged/checker project.
             self.project = None;
         }
@@ -524,6 +533,7 @@ impl TszProjectAuthority {
                     && current.checker_options_digest == checker_digest
                     && current.semantic_options_digest == semantic_digest
                     && current.module_resolution_digest == module_resolution_digest
+                    && current.file_format_digest == file_format_digest
                     && current.library_digest == library_digest
             })
             && report.removed_sources == 0
@@ -600,6 +610,7 @@ impl TszProjectAuthority {
                 .checkpoint(0)
                 .map_err(TszAuthorityError::ExecutionStopped)?;
         }
+        program.set_project_file_formats(&options.file_formats)?;
         program.set_project_module_resolutions(&options.module_resolutions)?;
         let check = match execution {
             TszUpdateExecution::Partitions(execution) => {
@@ -655,6 +666,7 @@ impl TszProjectAuthority {
             checker_options_digest: checker_digest,
             semantic_options_digest: semantic_digest,
             module_resolution_digest,
+            file_format_digest,
             library_digest,
             lib_files: lib_files.to_vec(),
             options,
@@ -1258,6 +1270,13 @@ fn semantic_options_digest(options: TszProjectSemanticOptions) -> [u8; 32] {
     Sha256::digest(format!("{options:?}").as_bytes()).into()
 }
 
+fn file_format_digest(formats: &[TszProjectFileFormatInput]) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"compiler.typescript.tsz-file-formats.v1\0");
+    digest_part(&mut digest, format!("{formats:?}").as_bytes());
+    digest.finalize().into()
+}
+
 fn module_resolution_digest(resolutions: &[TszProjectModuleResolution]) -> [u8; 32] {
     // DTO Debug is a same-revision cache key only. The caller's durable
     // environment fingerprint remains responsible for resolved compiler
@@ -1281,6 +1300,7 @@ mod tests {
             checker,
             semantic_options: TszProjectSemanticOptions::structural(),
             module_resolutions: Vec::new(),
+            file_formats: Vec::new(),
             environment: TszEnvironmentFingerprint::from_sha256([0x5a; 32]),
         }
     }
@@ -1521,6 +1541,7 @@ mod tests {
                     checker: options().checker,
                     semantic_options: TszProjectSemanticOptions::declaration_scoped(),
                     module_resolutions: Vec::new(),
+                    file_formats: Vec::new(),
                     environment: TszEnvironmentFingerprint::from_sha256([0x5a; 32]),
                 },
                 &[],
@@ -1592,6 +1613,206 @@ mod tests {
                 TszProjectModuleResolutionError::TargetNotInProgram { .. }
             ))
         ));
+    }
+
+    #[test]
+    fn compiler_file_format_changes_recheck_with_shared_map_and_reuse_binds() {
+        use tsz::checker::context::{ResolutionModeOverride, ResolutionRequestKind};
+        let sources = vec![
+            input(
+                "src/main.ts",
+                "import { value } from './value'; export const result: number = value;",
+            ),
+            input("src/es.ts", "export const value = 'esm';"),
+            input("src/cjs.ts", "export const value = 42;"),
+        ];
+        let mut recipe = options();
+        recipe.checker.module = TszModuleKind::NodeNext;
+        recipe.module_resolutions = vec![
+            (ResolutionModeOverride::Import, "src/es.ts"),
+            (ResolutionModeOverride::Require, "src/cjs.ts"),
+        ]
+        .into_iter()
+        .map(|(mode, path)| TszProjectModuleResolution {
+            importer_path: "src/main.ts".into(),
+            specifier: "./value".into(),
+            request_kind: TszProjectModuleRequestKind::EsmImport,
+            resolution_mode: Some(mode),
+            target: TszProjectModuleResolutionTarget::File { path: path.into() },
+        })
+        .collect();
+        let mut authority = TszProjectAuthority::new();
+        for (format, expected, expected_error) in [
+            (TszProjectFileFormat::EsModule, "src/es.ts", true),
+            (TszProjectFileFormat::CommonJs, "src/cjs.ts", false),
+        ] {
+            recipe.file_formats = vec![TszProjectFileFormatInput {
+                path: "src/main.ts".into(),
+                format,
+            }];
+            let report = authority
+                .update(sources.clone(), recipe.clone(), &[])
+                .unwrap();
+            if format == TszProjectFileFormat::CommonJs {
+                assert_eq!(report.parsed_and_bound, 0);
+                assert_eq!(report.reused_binds, 3);
+                assert!(!report.reused_project_result);
+            }
+            let project = authority.project().unwrap();
+            let main = project
+                .program()
+                .files
+                .iter()
+                .position(|file| file.file_name == "src/main.ts")
+                .unwrap();
+            project
+                .with_file_checker_and_types(main, |checker, _, _, _| {
+                    assert_eq!(
+                        checker.ctx.file_is_esm,
+                        Some(format == TszProjectFileFormat::EsModule)
+                    );
+                    assert!(Arc::ptr_eq(
+                        checker.ctx.file_is_esm_map.as_ref().unwrap(),
+                        &project.program().file_is_esm_map
+                    ));
+                    let target = checker
+                        .ctx
+                        .resolve_import_target_from_file_for_request(
+                            main,
+                            "./value",
+                            None,
+                            ResolutionRequestKind::EsmImport,
+                        )
+                        .unwrap();
+                    assert_eq!(project.program().files[target].file_name, expected);
+                })
+                .unwrap();
+            let cancelled = AtomicBool::new(false);
+            let budget = execution_budget(&cancelled, 1_000_000);
+            let session = project.checked_query_session(&budget).unwrap();
+            session
+                .with_file_checker_and_types(main, |checker, _, _, _| {
+                    assert_eq!(
+                        checker.ctx.file_is_esm,
+                        Some(format == TszProjectFileFormat::EsModule)
+                    );
+                    assert!(Arc::ptr_eq(
+                        checker.ctx.file_is_esm_map.as_ref().unwrap(),
+                        &project.program().file_is_esm_map
+                    ));
+                    let target = checker
+                        .ctx
+                        .resolve_import_target_from_file_for_request(
+                            main,
+                            "./value",
+                            None,
+                            ResolutionRequestKind::EsmImport,
+                        )
+                        .unwrap();
+                    assert_eq!(project.program().files[target].file_name, expected);
+                })
+                .unwrap();
+            let actual_error = project
+                .check_result()
+                .file_results
+                .iter()
+                .filter(|file| file.file_name == "src/main.ts")
+                .flat_map(|file| &file.diagnostics)
+                .any(|diagnostic| diagnostic.code == 2322);
+            assert_eq!(actual_error, expected_error);
+        }
+        assert!(
+            authority
+                .update(sources.clone(), recipe.clone(), &[])
+                .unwrap()
+                .reused_project_result
+        );
+        recipe.file_formats[0].format = TszProjectFileFormat::Unknown;
+        let report = authority.update(sources, recipe, &[]).unwrap();
+        assert_eq!(report.reused_binds, 3);
+        assert!(!report.reused_project_result);
+        let project = authority.project().unwrap();
+        let main = project
+            .program()
+            .files
+            .iter()
+            .position(|file| file.file_name == "src/main.ts")
+            .unwrap();
+        project
+            .with_file_checker_and_types(main, |checker, _, _, _| {
+                assert_eq!(checker.ctx.file_is_esm, None);
+                assert!(checker.ctx.file_is_esm_map.as_ref().unwrap().is_empty());
+                assert_eq!(
+                    checker.ctx.resolve_import_target_from_file_for_request(
+                        main,
+                        "./value",
+                        None,
+                        ResolutionRequestKind::EsmImport
+                    ),
+                    None
+                );
+                assert!(
+                    checker
+                        .ctx
+                        .resolve_import_target_from_file_for_request(
+                            main,
+                            "./value",
+                            Some(ResolutionModeOverride::Import),
+                            ResolutionRequestKind::EsmImport
+                        )
+                        .is_some()
+                );
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn compiler_file_format_admission_rejects_wrong_duplicate_and_noncanonical_paths() {
+        let sources = vec![
+            input("src/main.ts", "export {};"),
+            input("other/main.ts", "export {};"),
+        ];
+        let mut authority = TszProjectAuthority::new();
+        let row = |path: &str| TszProjectFileFormatInput {
+            path: path.into(),
+            format: TszProjectFileFormat::Unknown,
+        };
+        for (formats, expected) in [
+            (
+                vec![row("src/../src/main.ts")],
+                TszProjectModuleResolutionError::InvalidVirtualPath {
+                    path: "src/../src/main.ts".into(),
+                },
+            ),
+            (
+                vec![row("main.ts")],
+                TszProjectModuleResolutionError::ImporterNotInProgram {
+                    path: "main.ts".into(),
+                },
+            ),
+            (
+                vec![row("src/main.ts"), row("src/main.ts")],
+                TszProjectModuleResolutionError::DuplicateProgramPath {
+                    path: "src/main.ts".into(),
+                },
+            ),
+        ] {
+            let mut recipe = options();
+            recipe.file_formats = formats;
+            match authority.update(sources.clone(), recipe, &[]) {
+                Err(TszAuthorityError::ModuleResolution(actual)) => assert_eq!(actual, expected),
+                other => panic!("expected exact format admission failure, got {other:?}"),
+            }
+        }
+        let mut recipe = options();
+        recipe.file_formats = vec![TszProjectFileFormatInput {
+            path: "other/main.ts".into(),
+            format: TszProjectFileFormat::EsModule,
+        }];
+        authority.update(sources, recipe, &[]).unwrap();
+        let map = &authority.project().unwrap().program().file_is_esm_map;
+        assert_eq!(map.get("other/main.ts"), Some(&true));
+        assert_eq!(map.get("src/main.ts"), None);
     }
 
     #[test]
@@ -2513,5 +2734,4 @@ mod tests {
         ));
         assert!(authority.project().is_none());
     }
-
 }

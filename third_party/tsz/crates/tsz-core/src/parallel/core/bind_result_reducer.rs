@@ -1680,6 +1680,7 @@ impl<'checkpoint> BindResultReducer<'checkpoint> {
             dep_graph: Some(dep_graph),
             pre_merge_bind_total_bytes: self.pre_merge_bind_total_bytes,
             project_module_resolution_outcomes: None,
+            file_is_esm_map: Arc::new(FxHashMap::default()),
         }
     }
 }
