@@ -83,6 +83,7 @@ use crate::application::executor::StagedOutputLease;
 use crate::application::package_authority::{
     enter_package_authority_with_go_authority_witness, enter_package_authority_with_rust_workspace,
 };
+use crate::application::typescript_program::TypeScriptPackageSourceMembership;
 use crate::application::{
     AdmittedRustRequestAuthority, LocalCompilerConfig, LocalCompilerControl,
     LocalCompilerExecutionIdentity, LocalCompilerOpenError, LocalCompilerPath,
@@ -1811,9 +1812,9 @@ pub enum PackageSemanticError {
 }
 
 /// The source of truth is the exact bound program, not the output artifact list.
-fn capture_native_program_sources(
+fn capture_native_program_sources<'paths>(
     project: &TszProject,
-    package_paths: &BTreeMap<Box<str>, Box<str>>,
+    package_paths: impl IntoIterator<Item = (&'paths str, &'paths str)>,
     toolchain: ContentId<backend_version::ToolchainDomain>,
     mut checkpoint: impl FnMut(u64) -> Result<(), PackageSemanticError>,
 ) -> Result<backend_semantic::ir::NativeProgramSourceManifest, PackageSemanticError> {
@@ -1832,7 +1833,7 @@ fn capture_native_program_sources(
     let mut mappings = BTreeMap::new();
     for (package, native) in package_paths {
         checkpoint(1)?;
-        if mappings.insert(native.as_ref(), package.as_ref()).is_some() {
+        if mappings.insert(native, package).is_some() {
             return Err(PackageSemanticError::NativeProgramSources(
                 NativeProgramSourceManifestError::Encoding,
             ));
@@ -2237,7 +2238,6 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         // merge, check, and every lazy per-file query.
         let mut tsz_authority = None;
         let mut tsz_budget = None;
-        let mut tsz_package_paths = std::collections::BTreeMap::<Box<str>, Box<str>>::new();
         let mut tsz_package_membership = BTreeMap::new();
         let mut typescript_closure_witness = None;
         let mut native_program_sources = None;
@@ -2299,14 +2299,6 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         terminal: Box::new(terminal),
                     }
                 })?;
-            for (package_path, membership) in &native.package_membership {
-                if let crate::application::typescript_program::TypeScriptPackageSourceMembership::Selected {
-                    program_path,
-                } = membership
-                {
-                    tsz_package_paths.insert(package_path.clone(), program_path.clone());
-                }
-            }
             tsz_package_membership = native.package_membership;
             tsz_budget = Some(budget);
             tsz_authority = Some(authority);
@@ -2334,7 +2326,13 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             };
             native_program_sources = Some(capture_native_program_sources(
                 project,
-                &tsz_package_paths,
+                tsz_package_membership
+                    .iter()
+                    .filter_map(|(package, membership)| {
+                        membership
+                            .selected_program_path()
+                            .map(|native| (package.as_ref(), native))
+                    }),
                 toolchain.identity,
                 |units| {
                     backend_frontend_typescript::TszExecutionCheckpoint::checkpoint(budget, units)
@@ -2920,7 +2918,6 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     })?;
             }
             if typescript_project.is_some() {
-                use crate::application::typescript_program::TypeScriptPackageSourceMembership;
                 let membership = tsz_package_membership.get(source.relative_path()).ok_or(
                     PackageSemanticError::Capacity {
                         lane: "TypeScript package source membership",
@@ -3028,11 +3025,12 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             };
             let authority =
                 if let (Some(project), Some(session)) = (tsz_project, tsz_session.as_ref()) {
-                    let source_path = tsz_package_paths.get(source.relative_path()).ok_or(
-                        PackageSemanticError::Capacity {
-                            lane: "TypeScript package source path mapping",
-                        },
-                    )?;
+                    let source_path = tsz_package_membership
+                        .get(source.relative_path())
+                        .and_then(TypeScriptPackageSourceMembership::selected_program_path)
+                        .ok_or(PackageSemanticError::Capacity {
+                            lane: "TypeScript selected package source path mapping",
+                        })?;
                     crate::driver::SemanticAuthorityInput::TypeScriptTsz {
                         project,
                         session,
@@ -5276,7 +5274,9 @@ mod tests {
         let mut polls = 0;
         let manifest = super::capture_native_program_sources(
             project,
-            &mappings,
+            mappings
+                .iter()
+                .map(|(package, native)| (package.as_ref(), native.as_ref())),
             ContentId::from_canonical_bytes(b"captured compiler"),
             |_| {
                 polls += 1;
@@ -5315,7 +5315,9 @@ mod tests {
         assert!(matches!(
             super::capture_native_program_sources(
                 project,
-                &wrong,
+                wrong
+                    .iter()
+                    .map(|(package, native)| (package.as_ref(), native.as_ref())),
                 ContentId::from_canonical_bytes(b"captured compiler"),
                 |_| Ok(())
             ),
@@ -5325,7 +5327,9 @@ mod tests {
             matches!(
                 super::capture_native_program_sources(
                     project,
-                    &mappings,
+                    mappings
+                        .iter()
+                        .map(|(package, native)| (package.as_ref(), native.as_ref())),
                     ContentId::from_canonical_bytes(b"captured compiler"),
                     |_| Err(PackageSemanticError::MissingPublication)
                 ),
@@ -6077,3 +6081,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "compiler/typescript_membership_control_tests.rs"]
+mod typescript_membership_control_tests;
