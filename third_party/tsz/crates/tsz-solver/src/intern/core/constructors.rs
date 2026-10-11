@@ -4,6 +4,7 @@
 //! interned types: literals, unions, intersections, objects, functions, etc.
 
 use super::interner::{PredicateCacheEntry, TypeInterner, TypeListBuffer, TypeShard};
+use crate::intern::{UnionExecutionWork, flush_union_execution_work, tick_union_execution_work};
 use crate::def::DefId;
 use crate::types::{
     CallableShape, ConditionalType, FunctionShape, FunctionShapeId, IntrinsicKind, LiteralValue,
@@ -16,8 +17,10 @@ use smallvec::SmallVec;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tsz_common::interner::Atom;
+use tsz_common::{ExecutionCheckpoint, ProjectExecutionStop};
 
 impl TypeInterner {
+
     // =========================================================================
     // Convenience methods for common type constructions
     // =========================================================================
@@ -1625,3 +1628,5 @@ impl Default for TypeInterner {
         Self::new()
     }
 }
+
+include!("constructors_execution.rs");

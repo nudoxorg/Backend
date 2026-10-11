@@ -9,6 +9,7 @@
 //! - Literal absorption into primitives
 
 use super::shallow_subtype::ShallowReduceKind;
+use super::{UnionExecutionWork, flush_union_execution_work, tick_union_execution_work};
 use super::{TypeInterner, TypeListBuffer};
 use crate::types::{
     IntrinsicKind, LiteralValue, PropertyInfo, TemplateLiteralId, TypeData, TypeId, Visibility,
@@ -17,6 +18,7 @@ use crate::visitor::is_literal_type;
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
 use tsz_common::interner::Atom;
+use tsz_common::ProjectExecutionStop;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PrimitiveClass {
@@ -204,6 +206,52 @@ impl TypeInterner {
         flat.push(survivor);
     }
 
+    fn reduce_nonstrict_nullish_members_with_work(
+        &self,
+        flat: &mut TypeListBuffer,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<(), ProjectExecutionStop> {
+        if self.strict_null_checks() {
+            return Ok(());
+        }
+        let mut has_null = false;
+        let mut has_undefined = false;
+        let mut has_non_nullish = false;
+        for &id in flat.iter() {
+            tick_union_execution_work(work, 1)?;
+            if id == TypeId::NULL {
+                has_null = true;
+            } else if id == TypeId::UNDEFINED {
+                has_undefined = true;
+            } else if id != TypeId::NEVER {
+                has_non_nullish = true;
+            }
+        }
+        if !has_null && !has_undefined {
+            return Ok(());
+        }
+        if has_non_nullish {
+            let mut write = 0;
+            for read in 0..flat.len() {
+                tick_union_execution_work(work, 1)?;
+                if !flat[read].is_nullish() {
+                    flat[write] = flat[read];
+                    write += 1;
+                }
+            }
+            flat.truncate(write);
+            return Ok(());
+        }
+        let survivor = if has_null {
+            TypeId::NULL
+        } else {
+            TypeId::UNDEFINED
+        };
+        flat.clear();
+        flat.push(survivor);
+        Ok(())
+    }
+
     /// Apply [`reduce_nonstrict_nullish_members`](Self::reduce_nonstrict_nullish_members)
     /// then collapse the buffer to a terminal `TypeId` when it no longer needs a
     /// `Union` node: `Some(never)`/`Some(only_member)` for the empty/singleton
@@ -223,6 +271,19 @@ impl TypeInterner {
             1 => Some(flat[0]),
             _ => None,
         }
+    }
+
+    pub(crate) fn reduce_and_collapse_nonstrict_with_work(
+        &self,
+        flat: &mut TypeListBuffer,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<Option<TypeId>, ProjectExecutionStop> {
+        self.reduce_nonstrict_nullish_members_with_work(flat, work)?;
+        Ok(match flat.len() {
+            0 => Some(TypeId::NEVER),
+            1 => Some(flat[0]),
+            _ => None,
+        })
     }
 
     pub(crate) fn intersection_has_disjoint_primitives(&self, members: &[TypeId]) -> bool {
@@ -1042,11 +1103,21 @@ impl TypeInterner {
     /// This preserves the nominal enum wrapper when control-flow analysis
     /// splits and rejoins enum member types (e.g., `E1.a | E1.b` → `E1`).
     pub(crate) fn merge_same_enum_parts(&self, flat: &mut TypeListBuffer) {
+        let mut work = None;
+        let _ = self.merge_same_enum_parts_with_work(flat, &mut work);
+    }
+
+    pub(crate) fn merge_same_enum_parts_with_work(
+        &self,
+        flat: &mut TypeListBuffer,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<(), ProjectExecutionStop> {
         if flat.len() < 2 {
-            return;
+            return Ok(());
         }
         let mut i = 0;
         while i < flat.len() {
+            tick_union_execution_work(work, 1)?;
             let Some(TypeData::Enum(def_a, _)) = self.lookup(flat[i]) else {
                 i += 1;
                 continue;
@@ -1054,6 +1125,7 @@ impl TypeInterner {
             // Collect consecutive enum members with the same DefId.
             let mut j = i + 1;
             while j < flat.len() {
+                tick_union_execution_work(work, 1)?;
                 if let Some(TypeData::Enum(def_b, _)) = self.lookup(flat[j])
                     && def_b == def_a
                 {
@@ -1064,19 +1136,21 @@ impl TypeInterner {
             }
             if j > i + 1 {
                 // Multiple same-def enum parts: merge their inners.
-                let inners: Vec<TypeId> = flat[i..j]
-                    .iter()
-                    .filter_map(|&id| match self.lookup(id) {
-                        Some(TypeData::Enum(_, inner)) => Some(inner),
-                        _ => None,
-                    })
-                    .collect();
-                let merged_inner = self.union_from_iter(inners);
+                let mut inners = Vec::with_capacity(j - i);
+                for &id in flat[i..j].iter() {
+                    tick_union_execution_work(work, 1)?;
+                    if let Some(TypeData::Enum(_, inner)) = self.lookup(id) {
+                        inners.push(inner);
+                    }
+                }
+                let merged_inner = self.union_from_iter_with_work(inners, work)?;
+                flush_union_execution_work(work)?;
                 flat[i] = self.intern(TypeData::Enum(def_a, merged_inner));
                 flat.drain(i + 1..j);
             }
             i += 1;
         }
+        Ok(())
     }
 
     /// Absorb literal types into their corresponding primitive types.
@@ -1086,6 +1160,15 @@ impl TypeInterner {
     ///
     /// This is called after deduplication and before creating the union.
     pub(crate) fn absorb_literals_into_primitives(&self, flat: &mut TypeListBuffer) {
+        let mut work = None;
+        let _ = self.absorb_literals_into_primitives_with_work(flat, &mut work);
+    }
+
+    pub(crate) fn absorb_literals_into_primitives_with_work(
+        &self,
+        flat: &mut TypeListBuffer,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<(), ProjectExecutionStop> {
         // Group types by primitive class
         let mut has_string = false;
         let mut has_number = false;
@@ -1097,6 +1180,7 @@ impl TypeInterner {
 
         // First pass: identify which primitive types are present
         for &type_id in flat.iter() {
+            tick_union_execution_work(work, 1)?;
             match type_id {
                 TypeId::STRING => has_string = true,
                 TypeId::NUMBER => has_number = true,
@@ -1125,22 +1209,31 @@ impl TypeInterner {
         if has_true && has_false && !has_boolean {
             has_boolean = true;
             // Replace `true` with `boolean`, remove `false`
-            for type_id in flat.iter_mut() {
-                if *type_id == TypeId::BOOLEAN_TRUE {
-                    *type_id = TypeId::BOOLEAN;
+            let mut write = 0;
+            for read in 0..flat.len() {
+                tick_union_execution_work(work, 1)?;
+                let mut type_id = flat[read];
+                if type_id == TypeId::BOOLEAN_TRUE {
+                    type_id = TypeId::BOOLEAN;
+                }
+                if type_id != TypeId::BOOLEAN_FALSE {
+                    flat[write] = type_id;
+                    write += 1;
                 }
             }
-            flat.retain(|type_id| *type_id != TypeId::BOOLEAN_FALSE);
+            flat.truncate(write);
         }
 
         // Second pass: remove literal types that have a corresponding primitive
-        flat.retain(|type_id| {
+        let mut write = 0;
+        for read in 0..flat.len() {
+            tick_union_execution_work(work, 1)?;
+            let type_id = flat[read];
             // Check for boolean literal intrinsics
-            if *type_id == TypeId::BOOLEAN_TRUE || *type_id == TypeId::BOOLEAN_FALSE {
-                return !has_boolean;
-            }
-
-            match self.lookup(*type_id) {
+            let keep = if type_id == TypeId::BOOLEAN_TRUE || type_id == TypeId::BOOLEAN_FALSE {
+                !has_boolean
+            } else {
+                match self.lookup(type_id) {
                 // Remove literal if the corresponding primitive is present
                 Some(TypeData::Literal(literal)) => match literal {
                     LiteralValue::String(_) => !has_string,
@@ -1157,7 +1250,7 @@ impl TypeInterner {
                 // mirror that absorption here based on the wrapped member
                 // type's primitive domain instead.
                 Some(TypeData::Enum(_, member_type)) => {
-                    match self.enum_underlying_primitive_class(member_type) {
+                    match self.enum_underlying_primitive_class_with_work(member_type, work)? {
                         Some(PrimitiveClass::String) => !has_string,
                         Some(PrimitiveClass::Number) => !has_number,
                         _ => true,
@@ -1165,8 +1258,15 @@ impl TypeInterner {
                 }
                 // Keep if it's not a literal or enum type
                 _ => true,
+                }
+            };
+            if keep {
+                flat[write] = type_id;
+                write += 1;
             }
-        });
+        }
+        flat.truncate(write);
+        Ok(())
     }
 
     /// Classifies an enum's structural member type (the second field of
@@ -1198,6 +1298,37 @@ impl TypeInterner {
             }
         }
         result
+    }
+
+    fn enum_underlying_primitive_class_with_work(
+        &self,
+        member_type: TypeId,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<Option<PrimitiveClass>, ProjectExecutionStop> {
+        tick_union_execution_work(work, 1)?;
+        if let Some(class) = self.primitive_class_for(member_type) {
+            return Ok(matches!(class, PrimitiveClass::String | PrimitiveClass::Number)
+                .then_some(class));
+        }
+        let Some(TypeData::Union(list_id)) = self.lookup(member_type) else {
+            return Ok(None);
+        };
+        let mut result = None;
+        for &member in self.type_list(list_id).iter() {
+            tick_union_execution_work(work, 1)?;
+            let Some(class) = self.primitive_class_for(member) else {
+                return Ok(None);
+            };
+            if !matches!(class, PrimitiveClass::String | PrimitiveClass::Number) {
+                return Ok(None);
+            }
+            match result {
+                None => result = Some(class),
+                Some(existing) if existing == class => {}
+                Some(_) => return Ok(None),
+            }
+        }
+        Ok(result)
     }
 
     /// TS2590 pairwise-iteration budget matching tsc `removeSubtypes`.
@@ -1830,3 +1961,5 @@ mod tests;
 
 #[cfg(test)]
 mod application_order_tests;
+
+include!("normalize_execution.rs");

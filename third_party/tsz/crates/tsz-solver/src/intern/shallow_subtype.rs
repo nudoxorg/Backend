@@ -11,6 +11,7 @@
 
 use super::normalize::{LiteralDomain, PrimitiveClass};
 use super::{TypeInterner, TypeListBuffer};
+use crate::intern::{UnionExecutionWork, tick_union_execution_work};
 use crate::types::{
     FunctionShapeId, IntrinsicKind, LiteralValue, ObjectShapeId, ParamInfo, TemplateLiteralId,
     TemplateSpan, TypeData, TypeId,
@@ -19,6 +20,7 @@ use rustc_hash::FxHashSet;
 use smallvec::SmallVec;
 use std::sync::Arc;
 use tsz_common::interner::Atom;
+use tsz_common::ProjectExecutionStop;
 
 impl TypeInterner {
     /// Shallow subtype check that avoids infinite recursion.
@@ -28,6 +30,141 @@ impl TypeInterner {
     #[inline]
     pub(super) fn is_subtype_shallow(&self, source: TypeId, target: TypeId) -> bool {
         self.is_subtype_shallow_depth(source, target, 3)
+    }
+
+    pub(super) fn is_subtype_shallow_with_work(
+        &self,
+        source: TypeId,
+        target: TypeId,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<bool, ProjectExecutionStop> {
+        self.is_subtype_shallow_depth_with_work(source, target, 3, work)
+    }
+
+    fn is_subtype_shallow_depth_with_work(
+        &self,
+        source: TypeId,
+        target: TypeId,
+        depth: u32,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<bool, ProjectExecutionStop> {
+        tick_union_execution_work(work, 1)?;
+        if source == target {
+            return Ok(true);
+        }
+        if depth == 0 {
+            return Ok(false);
+        }
+        if target.is_any_or_unknown() || source.is_never() {
+            return Ok(true);
+        }
+
+        let s_data = self.lookup(source);
+        let t_data = self.lookup(target);
+        if matches!(
+            (&s_data, &t_data),
+            (
+                Some(TypeData::TypeParameter(_)) | _,
+                Some(TypeData::TypeParameter(_))
+            ) | (Some(TypeData::Lazy(_)) | _, Some(TypeData::Lazy(_)))
+        ) {
+            return Ok(false);
+        }
+
+        if matches!(s_data, Some(TypeData::Literal(_))) {
+            if matches!(t_data, Some(TypeData::Literal(_))) {
+                return Ok(false);
+            }
+            if let (
+                Some(TypeData::Literal(LiteralValue::String(literal))),
+                Some(TypeData::TemplateLiteral(template_id)),
+            ) = (&s_data, &t_data)
+            {
+                return self.literal_string_matches_template_literal_with_work(
+                    *literal,
+                    *template_id,
+                    work,
+                );
+            }
+            if let Some(TypeData::Union(members)) = t_data {
+                for &member in self.type_list(members).iter() {
+                    if self.is_subtype_shallow_depth_with_work(source, member, depth, work)? {
+                        return Ok(true);
+                    }
+                }
+                return Ok(false);
+            }
+            if let Some(domain) = self.literal_domain_from_type(source)
+                && let Some(target_class) = self.primitive_class_for(target)
+                && self.literal_domain_matches_primitive(domain, target_class)
+            {
+                return Ok(true);
+            }
+        }
+
+        if let Some(TypeData::Enum(_, structural)) = s_data
+            && !matches!(t_data, Some(TypeData::Enum(..)))
+        {
+            return self.is_subtype_shallow_depth_with_work(structural, target, depth, work);
+        }
+
+        if self.is_builtin_type(source)
+            && let Some(TypeData::Union(members)) = t_data
+        {
+            for &member in self.type_list(members).iter() {
+                tick_union_execution_work(work, 1)?;
+                if member == source {
+                    return Ok(true);
+                }
+            }
+            return Ok(false);
+        }
+
+        if let Some(TypeData::Union(members)) = s_data {
+            let members = self.type_list(members);
+            if members.len() <= 8 {
+                for &member in members.iter() {
+                    if !self.is_subtype_shallow_depth_with_work(
+                        member,
+                        target,
+                        depth - 1,
+                        work,
+                    )? {
+                        return Ok(false);
+                    }
+                }
+                return Ok(true);
+            }
+            return Ok(false);
+        }
+
+        if let Some(TypeData::Union(members)) = t_data {
+            let members = self.type_list(members);
+            if members.len() <= 8 {
+                for &member in members.iter() {
+                    if self.is_subtype_shallow_depth_with_work(
+                        source,
+                        member,
+                        depth - 1,
+                        work,
+                    )? {
+                        return Ok(true);
+                    }
+                }
+            }
+            return Ok(false);
+        }
+
+        match (s_data, t_data) {
+            (
+                Some(TypeData::Object(s_id) | TypeData::ObjectWithIndex(s_id)),
+                Some(TypeData::Object(t_id) | TypeData::ObjectWithIndex(t_id)),
+            ) => self.is_object_shape_subtype_shallow_depth_with_work(s_id, t_id, 0, work),
+            (Some(TypeData::Function(s_id)), Some(TypeData::Function(t_id))) => {
+                self.is_function_subtype_shallow_with_work(s_id, t_id, depth, work)
+            }
+            _ => Ok(false),
+        }
     }
 
     /// Depth-limited shallow subtype check. Handles primitives, literals, objects,
@@ -183,6 +320,24 @@ impl TypeInterner {
         }
 
         self.match_template_literal_shallow(literal.as_str(), &spans, 0)
+    }
+
+    fn literal_string_matches_template_literal_with_work(
+        &self,
+        literal: Atom,
+        template_id: TemplateLiteralId,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<bool, ProjectExecutionStop> {
+        tick_union_execution_work(work, 1)?;
+        let literal = self.resolve_atom(literal);
+        if literal.len() > 128 {
+            return Ok(false);
+        }
+        let spans = self.template_list(template_id);
+        if spans.len() > 8 {
+            return Ok(false);
+        }
+        self.match_template_literal_shallow_with_work(literal.as_str(), &spans, 0, work)
     }
 
     fn match_template_literal_shallow(
@@ -350,6 +505,202 @@ impl TypeInterner {
         }
     }
 
+    pub(super) fn remove_string_literals_matched_by_templates_with_work(
+        &self,
+        flat: &mut TypeListBuffer,
+        string_literals: &[(usize, Atom)],
+        templates: &[TemplateLiteralId],
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<(), ProjectExecutionStop> {
+        type TemplateCandidate = (Option<Arc<str>>, Arc<[TemplateSpan]>);
+        let mut candidates: SmallVec<[TemplateCandidate; 8]> = SmallVec::new();
+        for &template_id in templates {
+            tick_union_execution_work(work, 1)?;
+            let spans = self.template_list(template_id);
+            if spans.len() > 8 {
+                continue;
+            }
+            let prefix = match spans.first() {
+                Some(TemplateSpan::Text(atom)) => Some(self.resolve_atom_ref(*atom)),
+                _ => None,
+            };
+            candidates.push((prefix, spans));
+        }
+        if candidates.is_empty() {
+            return Ok(());
+        }
+        let mut removed: FxHashSet<usize> = FxHashSet::default();
+        for &(index, atom) in string_literals {
+            tick_union_execution_work(work, 1)?;
+            let literal = self.resolve_atom_ref(atom);
+            if literal.len() > 128 {
+                continue;
+            }
+            for (prefix, spans) in &candidates {
+                tick_union_execution_work(work, 1)?;
+                if prefix
+                    .as_ref()
+                    .is_some_and(|prefix| !literal.starts_with(prefix.as_ref()))
+                {
+                    continue;
+                }
+                if self.match_template_literal_shallow_with_work(
+                    &literal,
+                    spans,
+                    0,
+                    work,
+                )? {
+                    removed.insert(index);
+                    break;
+                }
+            }
+        }
+        if !removed.is_empty() {
+            let mut write = 0;
+            for read in 0..flat.len() {
+                tick_union_execution_work(work, 1)?;
+                if !removed.contains(&read) {
+                    flat[write] = flat[read];
+                    write += 1;
+                }
+            }
+            flat.truncate(write);
+        }
+        Ok(())
+    }
+
+    fn match_template_literal_shallow_with_work(
+        &self,
+        remaining: &str,
+        spans: &[TemplateSpan],
+        span_idx: usize,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<bool, ProjectExecutionStop> {
+        tick_union_execution_work(work, 1)?;
+        let Some(span) = spans.get(span_idx) else {
+            return Ok(remaining.is_empty());
+        };
+        match span {
+            TemplateSpan::Text(text) => {
+                let text = self.resolve_atom(*text);
+                if let Some(remaining) = remaining.strip_prefix(text.as_str()) {
+                    self.match_template_literal_shallow_with_work(
+                        remaining,
+                        spans,
+                        span_idx + 1,
+                        work,
+                    )
+                } else {
+                    Ok(false)
+                }
+            }
+            TemplateSpan::Type(type_id) => self.match_template_type_span_shallow_with_work(
+                remaining,
+                spans,
+                span_idx,
+                *type_id,
+                work,
+            ),
+        }
+    }
+
+    fn match_template_type_span_shallow_with_work(
+        &self,
+        remaining: &str,
+        spans: &[TemplateSpan],
+        span_idx: usize,
+        type_id: TypeId,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<bool, ProjectExecutionStop> {
+        tick_union_execution_work(work, 1)?;
+        match self.lookup(type_id) {
+            Some(TypeData::Intrinsic(IntrinsicKind::Number)) => {
+                let num_len = crate::relations::subtype::rules::literals::find_number_length(remaining);
+                for len in (1..=num_len).rev() {
+                    tick_union_execution_work(work, 1)?;
+                    if crate::relations::subtype::rules::literals::is_valid_number(&remaining[..len])
+                        && self.match_template_literal_shallow_with_work(
+                            &remaining[len..],
+                            spans,
+                            span_idx + 1,
+                            work,
+                        )?
+                    {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            Some(TypeData::Intrinsic(IntrinsicKind::Bigint)) => {
+                let len = crate::relations::subtype::rules::literals::find_integer_length(remaining);
+                Ok(len > 0
+                    && self.match_template_literal_shallow_with_work(
+                        &remaining[len..],
+                        spans,
+                        span_idx + 1,
+                        work,
+                    )?)
+            }
+            Some(TypeData::Intrinsic(IntrinsicKind::Boolean)) => {
+                for prefix in ["true", "false"] {
+                    tick_union_execution_work(work, 1)?;
+                    if let Some(remaining) = remaining.strip_prefix(prefix)
+                        && self.match_template_literal_shallow_with_work(
+                            remaining,
+                            spans,
+                            span_idx + 1,
+                            work,
+                        )?
+                    {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            Some(TypeData::Literal(literal)) => {
+                let literal_text: std::borrow::Cow<'_, str> = match literal {
+                    LiteralValue::String(atom) | LiteralValue::BigInt(atom) => {
+                        self.resolve_atom(atom).into()
+                    }
+                    LiteralValue::Number(number) => crate::utils::js_number_to_string(number.0),
+                    LiteralValue::Boolean(value) => {
+                        if value { "true".into() } else { "false".into() }
+                    }
+                };
+                if let Some(remaining) = remaining.strip_prefix(literal_text.as_ref()) {
+                    self.match_template_literal_shallow_with_work(
+                        remaining,
+                        spans,
+                        span_idx + 1,
+                        work,
+                    )
+                } else {
+                    Ok(false)
+                }
+            }
+            Some(TypeData::Union(list_id)) => {
+                let members = self.type_list(list_id);
+                if members.len() > 8 {
+                    return Ok(false);
+                }
+                for &member in members.iter() {
+                    tick_union_execution_work(work, 1)?;
+                    if self.match_template_type_span_shallow_with_work(
+                        remaining,
+                        spans,
+                        span_idx,
+                        member,
+                        work,
+                    )? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            _ => Ok(false),
+        }
+    }
+
     /// Shallow object shape subtype check with depth-limited property comparison.
     ///
     /// At depth > 0, property types are compared using `is_subtype_shallow_depth`,
@@ -439,6 +790,65 @@ impl TypeInterner {
         has_any_overlap
     }
 
+    fn is_object_shape_subtype_shallow_depth_with_work(
+        &self,
+        s_id: ObjectShapeId,
+        t_id: ObjectShapeId,
+        depth: u32,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<bool, ProjectExecutionStop> {
+        tick_union_execution_work(work, 1)?;
+        if s_id == t_id {
+            return Ok(true);
+        }
+        let source = self.object_shape(s_id);
+        let target = self.object_shape(t_id);
+        if target.symbol.is_some() && source.symbol != target.symbol {
+            return Ok(false);
+        }
+        if target.string_index.is_some() || target.number_index.is_some() {
+            return Ok(false);
+        }
+
+        let mut source_index = 0;
+        let mut has_overlap = false;
+        for target_property in &target.properties {
+            tick_union_execution_work(work, 1)?;
+            while source_index < source.properties.len()
+                && source.properties[source_index].name < target_property.name
+            {
+                tick_union_execution_work(work, 1)?;
+                source_index += 1;
+            }
+
+            if source_index < source.properties.len()
+                && source.properties[source_index].name == target_property.name
+            {
+                let source_property = &source.properties[source_index];
+                has_overlap = true;
+                if source_property.type_id != target_property.type_id
+                    && !self.is_subtype_shallow_depth_with_work(
+                        source_property.type_id,
+                        target_property.type_id,
+                        depth,
+                        work,
+                    )?
+                {
+                    return Ok(false);
+                }
+                if (!target_property.optional && source_property.optional)
+                    || (!target_property.readonly && source_property.readonly)
+                {
+                    return Ok(false);
+                }
+                source_index += 1;
+            } else if !target_property.optional {
+                return Ok(false);
+            }
+        }
+        Ok(has_overlap)
+    }
+
     /// Shallow function subtype check for union reduction.
     ///
     /// Implements TypeScript's function subtyping rules:
@@ -514,6 +924,63 @@ impl TypeInterner {
         true
     }
 
+    fn is_function_subtype_shallow_with_work(
+        &self,
+        s_id: FunctionShapeId,
+        t_id: FunctionShapeId,
+        depth: u32,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<bool, ProjectExecutionStop> {
+        tick_union_execution_work(work, 1)?;
+        if s_id == t_id {
+            return Ok(true);
+        }
+        let source = self.function_shape(s_id);
+        let target = self.function_shape(t_id);
+        if !source.type_params.is_empty() || !target.type_params.is_empty() {
+            return Ok(false);
+        }
+        if source.this_type != target.this_type {
+            return Ok(false);
+        }
+        if source.return_type != target.return_type
+            && !self.is_subtype_shallow_depth_with_work(
+                source.return_type,
+                target.return_type,
+                depth,
+                work,
+            )?
+        {
+            return Ok(false);
+        }
+        let min_len = source.params.len().min(target.params.len());
+        for index in 0..min_len {
+            tick_union_execution_work(work, 1)?;
+            if !self.param_contravariant_shallow_with_work(
+                &target.params[index],
+                &source.params[index],
+                depth,
+                work,
+            )? {
+                return Ok(false);
+            }
+        }
+        if source.params.len() > target.params.len() {
+            return Ok(false);
+        }
+        if min_len > 0 {
+            let mut all_identical = true;
+            for index in 0..min_len {
+                tick_union_execution_work(work, 1)?;
+                all_identical &= source.params[index].type_id == target.params[index].type_id;
+            }
+            if all_identical {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// Check contravariant parameter compatibility for function subtyping.
     ///
     /// For `S <: T`, parameters are checked contravariantly: `T_param <: S_param`.
@@ -563,6 +1030,44 @@ impl TypeInterner {
         }
     }
 
+    fn param_contravariant_shallow_with_work(
+        &self,
+        target_param: &ParamInfo,
+        source_param: &ParamInfo,
+        depth: u32,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<bool, ProjectExecutionStop> {
+        tick_union_execution_work(work, 1)?;
+        let target_type = target_param.type_id;
+        let source_type = source_param.type_id;
+        if target_type == source_type {
+            if target_param.optional && !source_param.optional {
+                return self.type_contains_undefined_with_work(source_type, work);
+            }
+            return Ok(true);
+        }
+        match (target_param.optional, source_param.optional) {
+            (false, false) | (true, true) | (false, true) => {
+                let subtype = self.is_subtype_shallow_depth_with_work(
+                    target_type,
+                    source_type,
+                    depth,
+                    work,
+                )?;
+                Ok(subtype || (target_param.optional && source_type == TypeId::UNDEFINED))
+            }
+            (true, false) => {
+                Ok(self.type_contains_undefined_with_work(source_type, work)?
+                    && self.is_subtype_shallow_depth_with_work(
+                        target_type,
+                        source_type,
+                        depth,
+                        work,
+                    )?)
+            }
+        }
+    }
+
     /// Check if a type is a built-in primitive (string, number, boolean, etc.).
     /// These are safe to check against union targets without risk of cascading
     /// reductions that affect complex type inference.
@@ -596,6 +1101,29 @@ impl TypeInterner {
             return members.contains(&TypeId::UNDEFINED);
         }
         false
+    }
+
+    fn type_contains_undefined_with_work(
+        &self,
+        type_id: TypeId,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<bool, ProjectExecutionStop> {
+        tick_union_execution_work(work, 1)?;
+        if type_id == TypeId::UNDEFINED {
+            return Ok(true);
+        }
+        if type_id.is_intrinsic() {
+            return Ok(false);
+        }
+        if let Some(TypeData::Union(members)) = self.lookup(type_id) {
+            for &member in self.type_list(members).iter() {
+                tick_union_execution_work(work, 1)?;
+                if member == TypeId::UNDEFINED {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 
     /// Check if a literal domain matches a primitive class.

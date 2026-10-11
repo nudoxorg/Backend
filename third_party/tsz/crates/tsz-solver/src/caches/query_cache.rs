@@ -1136,27 +1136,67 @@ impl TypeDatabase for QueryCache<'_> {
     }
 
     fn union(&self, members: Vec<TypeId>) -> TypeId {
-        self.interner.union(members)
+        // TypeDatabase's constructor contract cannot carry a stop error. UNKNOWN
+        // is the local sentinel; ProjectCheckerSession checks this same latched
+        // checkpoint after its callback and returns the typed stop instead of
+        // publishing the callback's partial result.
+        match self.execution_checkpoint {
+            Some(checkpoint) => self
+                .interner
+                .union_with_execution_checkpoint(members, checkpoint)
+                .unwrap_or(TypeId::UNKNOWN),
+            None => self.interner.union(members),
+        }
     }
 
     fn union_from_slice(&self, members: &[TypeId]) -> TypeId {
-        self.interner.union_from_slice(members)
+        match self.execution_checkpoint {
+            Some(checkpoint) => self
+                .interner
+                .union_from_slice_with_execution_checkpoint(members, checkpoint)
+                .unwrap_or(TypeId::UNKNOWN),
+            None => self.interner.union_from_slice(members),
+        }
     }
 
     fn union_literal_reduce(&self, members: Vec<TypeId>) -> TypeId {
-        self.interner.union_literal_reduce(members)
+        match self.execution_checkpoint {
+            Some(checkpoint) => self
+                .interner
+                .union_literal_reduce_with_execution_checkpoint(members, checkpoint)
+                .unwrap_or(TypeId::UNKNOWN),
+            None => self.interner.union_literal_reduce(members),
+        }
     }
 
     fn union_from_sorted_vec(&self, flat: Vec<TypeId>) -> TypeId {
-        self.interner.union_from_sorted_vec(flat)
+        match self.execution_checkpoint {
+            Some(checkpoint) => self
+                .interner
+                .union_from_sorted_vec_with_execution_checkpoint(flat, checkpoint)
+                .unwrap_or(TypeId::UNKNOWN),
+            None => self.interner.union_from_sorted_vec(flat),
+        }
     }
 
     fn union2(&self, left: TypeId, right: TypeId) -> TypeId {
-        self.interner.union2(left, right)
+        match self.execution_checkpoint {
+            Some(checkpoint) => self
+                .interner
+                .union2_with_execution_checkpoint(left, right, checkpoint)
+                .unwrap_or(TypeId::UNKNOWN),
+            None => self.interner.union2(left, right),
+        }
     }
 
     fn union3(&self, first: TypeId, second: TypeId, third: TypeId) -> TypeId {
-        self.interner.union3(first, second, third)
+        match self.execution_checkpoint {
+            Some(checkpoint) => self
+                .interner
+                .union3_with_execution_checkpoint(first, second, third, checkpoint)
+                .unwrap_or(TypeId::UNKNOWN),
+            None => self.interner.union3(first, second, third),
+        }
     }
 
     fn intersection(&self, members: Vec<TypeId>) -> TypeId {

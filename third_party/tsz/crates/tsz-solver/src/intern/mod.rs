@@ -29,6 +29,7 @@ mod template_intersection;
 mod tuple_normalization;
 pub mod type_factory;
 mod union_mode;
+mod union_execution;
 
 // Re-export primary public type from core implementation
 pub use self::core::SharedDefVariance;
@@ -38,6 +39,9 @@ pub use self::core::clear_thread_local_cache;
 pub(crate) use self::core::{PredicateCacheKind, TEMPLATE_LITERAL_EXPANSION_LIMIT, TypeListBuffer};
 pub(crate) use self::tuple_normalization::tuple_normalized;
 pub(crate) use self::union_mode::union_literal_default_enabled;
+pub(crate) use self::union_execution::{
+    UnionExecutionWork, flush_union_execution_work, tick_union_execution_work,
+};
 // Used by intern_tests.rs (included via #[path] below).
 #[cfg(test)]
 pub(crate) use self::core::PROPERTY_MAP_THRESHOLD;
@@ -80,3 +84,7 @@ mod concurrent_tests;
 #[cfg(test)]
 #[path = "../../tests/intern_normalize_tests.rs"]
 mod intern_normalize_tests;
+
+#[cfg(test)]
+#[path = "union_execution_tests.rs"]
+mod union_execution_tests;
