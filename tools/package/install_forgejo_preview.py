@@ -147,16 +147,16 @@ def platform_key(system=None, machine=None):
     raise InstallError("diagnostic mirror supports macOS arm64 and Linux x64 only")
 
 
-def validate_channel(channel):
+def validate_channel(channel, *, bootstrap_tag=BOOTSTRAP_TAG, libraries=LIBRARIES):
     if (not isinstance(channel, dict) or set(channel) != {"schema", "production_ready", "bootstrap", "platforms"}
             or channel["schema"] != "nudox.diagnostic-forgejo-channel.v1" or channel["production_ready"] is not False):
         raise InstallError("explicit diagnostic mirror channel required")
     bootstrap = channel["bootstrap"]
     if not isinstance(bootstrap, dict) or not isinstance(bootstrap.get("sha256"), str):
         raise InstallError("invalid mirror bootstrap")
-    artifact(bootstrap, BOOTSTRAP_TAG, "install-forgejo-bootstrap-" + bootstrap["sha256"][:16] + ".py", MAX_SCRIPT)
+    artifact(bootstrap, bootstrap_tag, "install-forgejo-bootstrap-" + bootstrap["sha256"][:16] + ".py", MAX_SCRIPT)
     entries = channel["platforms"]
-    if not isinstance(entries, dict) or set(entries) != set(LIBRARIES):
+    if not isinstance(entries, dict) or set(entries) != set(libraries):
         raise InstallError("invalid mirror platforms")
     for key, entry in entries.items():
         fields = {"status", "source", "tag", "known_failures", "installer", "archive"}
@@ -178,11 +178,9 @@ def validate_channel(channel):
         installer = entry["installer"]
         if not isinstance(installer, dict) or not isinstance(installer.get("sha256"), str):
             raise InstallError("invalid mirror platform library")
-        library_name = LIBRARIES[key][2]
+        library_name = libraries[key][2]
         library_asset = library_name + "-" + installer["sha256"][:16] + ".py"
-        library_tag = tag
-        if key == "linux-x64" and installer.get("url") == release_url(BOOTSTRAP_TAG, library_asset):
-            library_tag = BOOTSTRAP_TAG
+        library_tag = bootstrap_tag if installer.get("url") == release_url(bootstrap_tag, library_asset) else tag
         artifact(installer, library_tag, library_asset, MAX_SCRIPT)
         archive_name = ("nudox-macos-arm64-" if key == "macos-arm64" else "nudox-linux-x86_64-") + source[:10] + ".tar.gz"
         artifact(entry["archive"], tag, archive_name, MAX_ARCHIVE)
@@ -191,10 +189,10 @@ def validate_channel(channel):
     return channel
 
 
-def admit_libraries(channel):
+def admit_libraries(channel, *, libraries=LIBRARIES):
     """Only the digest-matching bootstrap admits its compiled library pins."""
     for key, entry in channel["platforms"].items():
-        expected_sha, expected_size, _ = LIBRARIES[key]
+        expected_sha, expected_size, _ = libraries[key]
         if entry["installer"]["sha256"] != expected_sha or entry["installer"]["bytes"] != expected_size:
             raise InstallError("mirror platform library differs from the reviewed bytes")
 
