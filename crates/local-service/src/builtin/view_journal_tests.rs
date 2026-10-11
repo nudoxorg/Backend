@@ -240,6 +240,8 @@ fn workspace_head_change_starts_with_a_snapshot_before_any_view_event() {
 #[test]
 fn stale_selected_head_rebuild_keeps_only_the_lineage_checked_cursor_sequence() {
     let temp = tempfile::tempdir().expect("private owner workspace");
+    crate::test_support::make_private(temp.path())
+        .expect("make journal-owner fixture current-user private");
     let profile =
         super::super::profile_descriptor(super::super::BuiltinProfile::Product).expect("profile");
     let dispatcher = super::super::builtin_dispatcher(
@@ -1114,6 +1116,8 @@ fn capture_only_generation_rebind_cold_recovers_then_retains_compact_events() {
     use backend_engine::builtin::{ProductSemanticCaptureOutcome, ProductSemanticPublicationKey};
     use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, TypeScriptSource};
     let temp = tempfile::tempdir().expect("private owner workspace");
+    crate::test_support::make_private(temp.path())
+        .expect("make journal-owner fixture current-user private");
     let profile =
         super::super::profile_descriptor(super::super::BuiltinProfile::Product).expect("profile");
     let dispatcher = super::super::builtin_dispatcher(

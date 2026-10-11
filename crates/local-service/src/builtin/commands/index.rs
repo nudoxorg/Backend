@@ -4151,6 +4151,8 @@ mod admitted_capture_publication_tests {
     }
 
     fn open_daemon(path: &Path) -> crate::builtin::ProductDaemon {
+        crate::test_support::make_private(path)
+            .expect("make admitted-capture owner fixture current-user private");
         let profile = crate::builtin::profile_descriptor(crate::builtin::BuiltinProfile::Product)
             .expect("profile");
         let dispatcher = crate::builtin::builtin_dispatcher(
