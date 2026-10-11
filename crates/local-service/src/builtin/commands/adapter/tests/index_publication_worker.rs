@@ -9,7 +9,7 @@ use crate::builtin::commands::adapter::index_publication_worker::{
 };
 use crate::builtin::commands::adapter::{capture_recovery, commit_builtin_intent};
 use backend_library::CommandReply;
-use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::time::{Duration, Instant};
 
 struct Release(Option<SyncSender<()>>);
@@ -46,6 +46,124 @@ fn until(
             Instant::now() < deadline,
             "actual publication stage did not finish in30s"
         );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+// Observe the original actor/worker channels. Reading keyed status here would
+// admit an explicit retry and could hide the attempt that missed this barrier.
+fn after_grant_state(
+    fixture: &mut AdapterFixture,
+    operation: backend_library::IndexOperationKey,
+    ticket: &backend_library::IndexJobTicket,
+) -> String {
+    let (adapter, daemon) = fixture.parts();
+    let work = adapter.indexing.as_ref().map(|job| {
+        let phase = match &job.work {
+            IndexJobWork::Acquiring(_) => "Acquiring".to_owned(),
+            IndexJobWork::Scanning(_) => "Scanning".to_owned(),
+            IndexJobWork::Compiling { .. } => "Compiling".to_owned(),
+            IndexJobWork::Publishing { .. } => "Publishing".to_owned(),
+            IndexJobWork::PublicationWorker {
+                worker,
+                completion,
+                blocked,
+            } => {
+                let completed = completion.as_ref().map(|done| {
+                    let disposition = match &done.disposition {
+                        Disposition::Ready => "Ready".to_owned(),
+                        Disposition::Unselected(error) => format!("Unselected({error:?})"),
+                        Disposition::Pending(error) => format!("Pending({error:?})"),
+                    };
+                    let head = match &done.work.head {
+                        Head::Writer(_) => "Writer",
+                        Head::Pending(_) => "Pending",
+                        Head::Published(_) => "Published",
+                        Head::Moving => "Moving",
+                    };
+                    format!(
+                        "disposition={disposition}, head={head}, proof={}, outcome={:?}",
+                        done.work.proof.is_some(),
+                        done.work.outcome
+                    )
+                });
+                format!(
+                    "PublicationWorker(finished={:?}, blocked={}, completion={completed:?})",
+                    worker.as_ref().map(|worker| worker.is_finished()),
+                    blocked.is_some()
+                )
+            }
+            IndexJobWork::PublicationRetiring { worker, outcome } => {
+                format!(
+                    "PublicationRetiring(finished={}, outcome={outcome:?})",
+                    worker.is_finished()
+                )
+            }
+            IndexJobWork::Transition => "Transition".to_owned(),
+        };
+        format!(
+            "ticket={:?}, operation={:?}, progress={:?}/{}, cancelled={}, work={phase}",
+            job.owner_ticket,
+            job.operation_key,
+            job.progress_stage,
+            job.progress_sequence,
+            job.cancelled.load(Ordering::Acquire)
+        )
+    });
+    let terminal = adapter
+        .index_terminals
+        .iter()
+        .find(|terminal| &terminal.ticket == ticket);
+    let receipt = match adapter.index_operations.entry(operation) {
+        Ok(Some(JournalEntry::Retained(entry))) => format!("Retained({entry:?})"),
+        Ok(Some(JournalEntry::OutsideReceiptWindow { request_digest })) => {
+            format!("OutsideReceiptWindow(request_digest={request_digest:?})")
+        }
+        Ok(None) => "Missing".to_owned(),
+        Err(error) => format!("ReadRefused({error})"),
+    };
+    format!(
+        "expected_ticket={ticket:?}, operation={operation:?}, active={work:?}, terminal={terminal:?}, \
+             readonly_receipt={receipt:?}, actor_hook_pending={}, owner_root={:?}, owner_sequence={}",
+        adapter.publication_test_hook.is_some(),
+        daemon.engine().daemon().owner().head().root(),
+        daemon.engine().daemon().owner().head().sequence()
+    )
+}
+
+fn await_after_grant(
+    fixture: &mut AdapterFixture,
+    entered: &Receiver<()>,
+    operation: backend_library::IndexOperationKey,
+    ticket: &backend_library::IndexJobTicket,
+) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        tick(fixture);
+        let reason = match entered.try_recv() {
+            Ok(()) => return Ok(()),
+            Err(TryRecvError::Disconnected) => Some("stage channel disconnected"),
+            Err(TryRecvError::Empty) => {
+                let adapter = fixture.adapter.as_ref().expect("adapter");
+                if adapter
+                    .index_terminals
+                    .iter()
+                    .any(|terminal| &terminal.ticket == ticket)
+                {
+                    Some("original ticket became terminal before the stage")
+                } else if Instant::now() >= deadline {
+                    Some("original 30s stage deadline elapsed")
+                } else {
+                    None
+                }
+            }
+        };
+        if let Some(reason) = reason {
+            return Err(format!(
+                "AfterGrant was not observed: {reason}; {}",
+                after_grant_state(fixture, operation, ticket)
+            ));
+        }
         std::thread::sleep(Duration::from_millis(1));
     }
 }
@@ -199,6 +317,31 @@ fn published(fixture: &mut AdapterFixture, ticket: &backend_library::IndexJobTic
         ),
         "{terminal:?}"
     );
+}
+
+#[test]
+fn index_publication_worker_after_grant_wait_reports_original_pregrant_cancellation() {
+    let mut fixture = AdapterFixture::new();
+    let before = fixture.parts().1.engine().daemon().owner().head().root();
+    let (entered, _release) = block_at(&mut fixture, TestStage::AfterGrant);
+    let (_, ticket, operation, _) = start(&mut fixture, true, true);
+    let operation = operation.expect("original accepted operation");
+    let detail = await_after_grant(&mut fixture, &entered, operation, &ticket)
+        .expect_err("pre-grant cancellation cannot satisfy the grant barrier");
+    assert!(detail.contains("AfterGrant was not observed"), "{detail}");
+    assert!(
+        detail.contains("Cancelled"),
+        "original cancellation is diagnosed: {detail}"
+    );
+    let (adapter, daemon) = fixture.parts();
+    assert_eq!(daemon.engine().daemon().owner().head().root(), before);
+    assert!(matches!(
+        adapter.index_operations.entry(operation).expect("original read-only receipt"),
+        Some(JournalEntry::Retained(entry)) if matches!(entry.state,
+            StoredOperationState::Failed {
+                reason: backend_library::IndexOperationFailureReason::Cancelled, ..
+            })
+    ));
 }
 
 #[test]
@@ -961,7 +1104,8 @@ fn index_publication_worker_native_grant_unwind_preserves_selector_for_next_publ
         .expect("native prior selector");
     let (entered, mut release) = block_at(&mut fixture, TestStage::AfterGrant);
     let (package, label, operation, ticket) = native_dispatch(&mut fixture, false, 0xb4);
-    until(&mut fixture, |_, _| entered.try_recv().is_ok());
+    await_after_grant(&mut fixture, &entered, operation, &ticket)
+        .unwrap_or_else(|detail| panic!("{detail}"));
     {
         let (adapter, daemon) = fixture.parts();
         adapter
@@ -1080,8 +1224,9 @@ fn failed_capture_cold_retry_control(refuse_receipt_refresh: bool) {
     let (entered, mut release) = block_at(&mut fixture, TestStage::AfterGrant);
     // Actual Python selection and a genuine absent TypeScript SDK create two
     // Pending profiles before the selected candidate is granted.
-    let (_, label, operation, _) = native_dispatch(&mut fixture, true, 0xc1);
-    until(&mut fixture, |_, _| entered.try_recv().is_ok());
+    let (_, label, operation, ticket) = native_dispatch(&mut fixture, true, 0xc1);
+    await_after_grant(&mut fixture, &entered, operation, &ticket)
+        .unwrap_or_else(|detail| panic!("{detail}"));
     let (old_root, old_sequence) = {
         let (adapter, daemon) = fixture.parts();
         let head = daemon.engine().daemon().owner().head();
