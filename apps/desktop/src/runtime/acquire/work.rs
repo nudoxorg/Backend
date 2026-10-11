@@ -193,6 +193,57 @@ mod queue_tests {
         queue
     }
 
+    struct CountedRefusal { calls: Arc<std::sync::atomic::AtomicUsize> }
+    impl RegistrySource for CountedRefusal {
+        fn releases(&self, _: &CrateName) -> Vec<Published> { vec![] }
+        fn offline(&self, _: &str, _: usize) -> Vec<Release> { vec![] }
+        fn availability(&self, _: &Release) -> Availability {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Availability::Ambiguous { indexes: vec![PathBuf::from("counted-source")] }
+        }
+        fn release_of(&self, _: &Path) -> Option<Release> { None }
+        fn resolve(&self, release: &Release) -> Result<SourceTree, SourceError> { Err(SourceError::NeedsDownload(release.clone())) }
+    }
+
+    #[test]
+    fn the_real_drain_skips_replaced_and_withdrawn_jobs_without_source_io() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let queue = held_queue();
+        let producer = Arc::new(std::sync::RwLock::new(None));
+        let old_calls = Arc::new(AtomicUsize::new(0));
+        let current_calls = Arc::new(AtomicUsize::new(0));
+        let old_posts = Arc::new(Mutex::new(Vec::new()));
+        let current_posts = Arc::new(Mutex::new(Vec::new()));
+        let make = |calls| Composition { source: Arc::new(CountedRefusal { calls }), ..composition(0, "same-source") };
+        let old = crate::host::registry::test_install_registry(&producer, make(Arc::clone(&old_calls)));
+        let old_sink = Arc::clone(&old_posts);
+        assert!(queue.push_fixture(Job::Release(Release::new("old", "0.1.0").expect("release")), old,
+            Arc::new(move |stage| old_sink.lock().expect("old posts").push(stage)), Arc::clone(&producer)));
+        let current = crate::host::registry::test_install_registry(&producer, make(Arc::clone(&current_calls)));
+        let current_sink = Arc::clone(&current_posts);
+        assert!(queue.push_fixture(Job::Release(Release::new("current", "0.1.0").expect("release")), current,
+            Arc::new(move |stage| current_sink.lock().expect("current posts").push(stage)), Arc::clone(&producer)));
+        queue.drain();
+        assert_eq!(old_calls.load(Ordering::SeqCst), 0, "retired jobs must not resolve their source");
+        assert!(old_posts.lock().expect("old posts").is_empty(), "retired jobs must not publish");
+        assert_eq!(current_calls.load(Ordering::SeqCst), 1);
+        assert!(matches!(current_posts.lock().expect("current posts").last(), Some(Landed::Stage(_, Stage::Failed(_)))));
+        assert!(!queue.pending.lock().expect("queue").running);
+
+        let withdrawn_calls = Arc::new(AtomicUsize::new(0));
+        let withdrawn = crate::host::registry::test_install_registry(&producer, make(Arc::clone(&withdrawn_calls)));
+        queue.pending.lock().expect("queue").running = true;
+        let withdrawn_posts = Arc::new(Mutex::new(Vec::new()));
+        let withdrawn_sink = Arc::clone(&withdrawn_posts);
+        assert!(queue.push_fixture(Job::Release(Release::new("withdrawn", "0.1.0").expect("release")), withdrawn,
+            Arc::new(move |stage| withdrawn_sink.lock().expect("withdrawn posts").push(stage)), Arc::clone(&producer)));
+        *producer.write().expect("producer") = None;
+        queue.drain();
+        assert_eq!(withdrawn_calls.load(Ordering::SeqCst), 0);
+        assert!(withdrawn_posts.lock().expect("withdrawn posts").is_empty());
+        assert!(!queue.pending.lock().expect("queue").running);
+    }
+
     #[test]
     fn queued_jobs_keep_their_own_composition_and_progress_destination() {
         let queue = held_queue();

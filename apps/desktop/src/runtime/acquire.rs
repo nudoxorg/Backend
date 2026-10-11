@@ -207,12 +207,16 @@ fn push(job: Job, composition: Composition, cx: &mut App) {
     additions.queue.push(job, composition, post);
 }
 
-fn current_generation(_cx: &App) -> Option<CompositionGeneration> {
+pub(crate) fn current_composition(_cx: &App) -> Option<Composition> {
     #[cfg(test)]
     if let Some(producer) = _cx.try_global::<Additions>().and_then(|additions| additions.producer.as_ref()) {
-        return crate::host::registry::test_registry_in(producer).map(|composition| composition.generation);
+        return crate::host::registry::test_registry_in(producer);
     }
-    crate::host::registry::composed().map(|composition| composition.generation)
+    crate::host::registry::composed()
+}
+
+fn current_generation(cx: &App) -> Option<CompositionGeneration> {
+    current_composition(cx).map(|composition| composition.generation)
 }
 
 #[cfg(test)]
