@@ -5,8 +5,8 @@ use super::super::{
 };
 use super::call_join::foreign_display_name;
 use super::identity::{
-    declaration_family, declaration_kind, external_semantic_symbol, semantic_coordinate,
-    semantic_identity, semantic_symbol,
+    declaration_family, declaration_kind, external_semantic_coordinate, external_semantic_symbol,
+    semantic_coordinate, semantic_identity, semantic_symbol,
 };
 use super::image_rows::{Charge, DuplicatePolicy, ProjectedImage, ProjectedRow};
 use super::structural::{
@@ -1255,8 +1255,9 @@ pub(super) fn project_image_rows(
             // The captured spelling is presentation only. Keep the exact
             // scoped external identity and do not infer a local declaration,
             // source site, kind, or package membership from its name.
-            let label = foreign_display_name(image, target)?
+            let display = foreign_display_name(image, target)?
                 .unwrap_or_else(|| "external semantic target".to_owned());
+            let label = external_semantic_coordinate(&project.label, symbol, &display);
             let label_bytes = label.len();
             let preimage = backend_engine::encode_id(
                 identity
@@ -1265,6 +1266,7 @@ pub(super) fn project_image_rows(
             );
             projected.push(ProjectedRow {
                 row: Row::new(RowId::Symbol(symbol), basis, label)
+                    .with_document(Box::<[Fragment]>::default())
                     .try_with_identity_preimage(&preimage)
                     .map_err(|error| {
                         BuiltinModelError(format!("external row identity preimage: {error}"))

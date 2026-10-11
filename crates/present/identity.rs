@@ -8,7 +8,7 @@
 //! | module | `/abs/project::src/lib.rs` |
 //! | declaration | `/abs/project::src/lib.rs:2::ferris` |
 //! | semantic | `/abs/project::semantic::<64 hex>::ferris` |
-//! | external | `/abs/project::external::<id>` |
+//! | external | `/abs/project::external::symbol:<64 hex>::<display>` |
 //!
 //! [`Identity`] keeps the original spelling verbatim so [`Identity::coordinate`]
 //! round-trips to the exact bytes the engine accepts, and exposes the parsed
@@ -548,7 +548,7 @@ fn parse_tail(rest: &str) -> Identity {
             IdentityShape::External,
             None,
             None,
-            SymbolTrail::parse(tail),
+            SymbolTrail::parse(external_display_tail(tail)),
         ),
         (head, None) => (
             IdentityShape::Module,
@@ -575,6 +575,26 @@ fn parse_tail(rest: &str) -> Identity {
         trail,
         key: IdentityKey::Absent,
         manifest_name: None,
+    }
+}
+
+/// A producer's external operand carries a scoped key before its display.
+/// Hide only that closed identity segment; legacy named trails stay intact.
+fn external_display_tail(tail: &str) -> &str {
+    let Some((identity, display)) = tail.split_once(SEPARATOR) else {
+        return tail;
+    };
+    let Some(encoded) = identity.strip_prefix("symbol:") else {
+        return tail;
+    };
+    if encoded.len() == 64
+        && encoded
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        display
+    } else {
+        tail
     }
 }
 

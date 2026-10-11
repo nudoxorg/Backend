@@ -5,6 +5,7 @@
 //! complete answer from a lane that refused, a fault that names its operand.
 
 use super::*;
+mod external_identity_tests;
 use backend_library::{
     Coverage, DeclarationKind, Document, Fragment, GraphRelation, Lane, OutlineExtent, OutlineNode,
     Reason, RowId, SemanticLinkKind, SemanticSearchReason, SemanticSearchStatus,

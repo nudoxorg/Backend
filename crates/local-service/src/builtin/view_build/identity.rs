@@ -63,6 +63,19 @@ pub(crate) fn external_semantic_symbol(
     let scoped = target.in_scope(package.to_bytes(), image);
     backend_engine::symbol_key(&backend_engine::encode_id(scoped.as_bytes()))
 }
+
+/// A copied external operand retains its scoped producer key and captured
+/// display spelling. Equal or unavailable display names remain distinct.
+pub(crate) fn external_semantic_coordinate(
+    project: &str,
+    symbol: backend_engine::SymbolKey,
+    display: &str,
+) -> String {
+    format!(
+        "{project}::external::{}::{display}",
+        RowId::Symbol(symbol).stable_key()
+    )
+}
 pub(super) fn declaration_kind(kind: ItemKind) -> DeclarationKind {
     match kind {
         ItemKind::Function => DeclarationKind::Function,

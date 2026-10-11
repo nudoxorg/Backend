@@ -736,6 +736,29 @@ fn semantic_address(text: &str) -> bool {
         && identity.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+fn external_address(text: &str) -> bool {
+    // Display spelling never identifies a foreign endpoint. A copied operand
+    // contains its scoped producer key and must match the admitted row label.
+    let marker = b"::external::";
+    let Some(at) = text
+        .as_bytes()
+        .windows(marker.len())
+        .position(|cell| cell.eq_ignore_ascii_case(marker))
+    else {
+        return false;
+    };
+    let Some((identity, _)) = text[at + marker.len()..].split_once("::") else {
+        return false;
+    };
+    let Some((schema, encoded)) = identity.split_once(':') else {
+        return false;
+    };
+    at != 0
+        && schema.eq_ignore_ascii_case("symbol")
+        && encoded.len() == 64
+        && encoded.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 /// Name or exact declaration-address lookup pinned to a source root.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NameQuery {
@@ -779,6 +802,7 @@ impl NameQuery {
             && matches!(text.as_bytes().get(2), Some(b'/' | b'\\'));
         if source_syntax
             || semantic_address(text)
+            || external_address(text)
             || text.starts_with('/')
             || text.starts_with("pkg:")
             || windows_root
