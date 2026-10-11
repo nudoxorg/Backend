@@ -324,6 +324,22 @@ fn refused_project(root: &Path) -> PathBuf {
 
 #[test]
 fn a_refused_project_is_listed_in_the_same_boot_that_names_why() {
+    // CI supplies a real C# authority. Exercise the unavailable-authority
+    // boundary in a child with that capability absent, without changing the
+    // environment of other concurrently running tests.
+    if std::env::var_os("NUDOX_ROSLYN_HELPER").is_some() {
+        let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "host::embedded_owner_tests::a_refused_project_is_listed_in_the_same_boot_that_names_why",
+                "--nocapture",
+            ])
+            .env_remove("NUDOX_ROSLYN_HELPER")
+            .status()
+            .expect("isolated unavailable-authority test");
+        assert!(status.success(), "unavailable-authority child failed");
+        return;
+    }
     assert!(
         std::env::var_os("NUDOX_ROSLYN_HELPER").is_none(),
         "this test needs an owner with no C# authority: unset NUDOX_ROSLYN_HELPER"
