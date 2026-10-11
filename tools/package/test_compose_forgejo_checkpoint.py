@@ -244,7 +244,9 @@ args=sys.argv[1:]
 pathlib.Path(os.environ['CURL_LOG']).write_text(json.dumps(args))
 body=pathlib.Path(os.environ['CURL_BODY']).read_bytes()
 if os.environ.get('CURL_PARTIAL'): body=body[:max(1,len(body)//2)]
-pathlib.Path(args[args.index('--output')+1]).write_bytes(body)
+if os.environ.get('CURL_OVERSIZE'): body=body+bytes(1024*1024)
+sys.stdout.buffer.write(body)
+sys.stdout.buffer.flush()
 sys.exit(int(os.environ.get('CURL_STATUS','0')))
 ''')
             curl.chmod(0o755)
@@ -270,6 +272,7 @@ sys.exit(int(os.environ.get('CURL_STATUS','0')))
             self.assertEqual(args[args.index("--max-time") + 1], "180")
             self.assertEqual(args[args.index("--connect-timeout") + 1], "15")
             self.assertEqual(args[args.index("--max-filesize") + 1], str(len(payload)))
+            self.assertEqual(args[args.index("--output") + 1], "-")
             for flag in ("--fail", "--proto", "--proto-redir", "--tlsv1.2"):
                 self.assertIn(flag, args)
             self.assertEqual(args[args.index("--proto") + 1], "=https")
@@ -287,6 +290,15 @@ sys.exit(int(os.environ.get('CURL_STATUS','0')))
             self.assertEqual(list(tmpdir.iterdir()), [])
 
             env.pop("CURL_PARTIAL")
+            env["CURL_OVERSIZE"] = "1"
+            oversized = subprocess.run(["/bin/sh", "-s"], input=launcher, env=env,
+                                       capture_output=True, timeout=15)
+            self.assertEqual(oversized.returncode, 1, oversized.stderr.decode("utf-8", "replace"))
+            self.assertIn(b"exceeded its pinned byte count", oversized.stderr)
+            self.assertFalse(marker.exists())
+            self.assertEqual(list(tmpdir.iterdir()), [])
+
+            env.pop("CURL_OVERSIZE")
             env["CURL_STATUS"] = "28"
             timed_out = subprocess.run(["/bin/sh", "-s"], input=launcher, env=env,
                                        capture_output=True, timeout=15)

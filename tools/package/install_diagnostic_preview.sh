@@ -63,12 +63,57 @@ nudox_install_main() {
     trap 'exit 143' 15
     installer_path=$download_dir/install.py
     printf '%s\n' 'Downloading the pinned R2 diagnostic installer (historical October 6/8 binaries).' >&2
-    # -q is first: ignore user curl configuration. Fail before Python on every
-    # HTTP/transport error, including a partial response; both hops require TLS.
-    if curl -q --fail --silent --show-error --location \
-        --proto '=https' --proto-redir '=https' --tlsv1.2 \
-        --connect-timeout 15 --max-time 180 --max-filesize "$installer_bytes" \
-        --output "$installer_path" "$installer_url"; then
+    # The admitted CPython streams curl into an exclusive file and enforces the
+    # exact byte ceiling itself. Older curl versions do not apply --max-filesize
+    # to all in-progress/chunked transfers, so the curl option is only advisory.
+    bounded_download='
+import hashlib,os,subprocess,sys
+limit=int(sys.argv[4])
+try:
+ fd=os.open(sys.argv[2],os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW|os.O_CLOEXEC,0o600)
+except OSError as error:
+ print("nudox installer: cannot create private bootstrap file: "+str(error),file=sys.stderr)
+ sys.exit(1)
+command=["curl","-q","--fail","--silent","--show-error","--location","--proto","=https","--proto-redir","=https","--tlsv1.2","--connect-timeout","15","--max-time","180","--max-filesize",str(limit),"--output","-",sys.argv[1]]
+try:
+ process=subprocess.Popen(command,stdout=subprocess.PIPE)
+except OSError as error:
+ os.close(fd)
+ print("nudox installer: cannot start curl: "+str(error),file=sys.stderr)
+ sys.exit(127)
+digest=hashlib.sha256()
+total=0
+oversized=False
+try:
+ with os.fdopen(fd,"wb") as output:
+  while True:
+   chunk=process.stdout.read(min(65536,limit-total+1))
+   if not chunk: break
+   if len(chunk)>limit-total:
+    oversized=True
+    process.kill()
+    break
+   output.write(chunk)
+   digest.update(chunk)
+   total+=len(chunk)
+ process.stdout.close()
+ status=process.wait()
+except BaseException:
+ process.kill()
+ process.stdout.close()
+ process.wait()
+ raise
+if oversized:
+ print("nudox installer: downloaded bootstrap exceeded its pinned byte count; the installer was not executed.",file=sys.stderr)
+ sys.exit(1)
+if status:
+ sys.exit(status)
+if total!=limit or digest.hexdigest()!=sys.argv[3]:
+ print("nudox installer: downloaded bootstrap size/SHA-256 mismatch; the installer was not executed.",file=sys.stderr)
+ sys.exit(1)
+'
+    if "$install_python" -c "$bounded_download" \
+        "$installer_url" "$installer_path" "$installer_sha256" "$installer_bytes"; then
         :
     else
         status=$?
