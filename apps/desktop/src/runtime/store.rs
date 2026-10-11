@@ -478,13 +478,15 @@ impl DataStore {
         cx: &mut Context<Self>,
     ) {
         // The map publishes an empty focus when an overlay covers it. That
-        // publication must not erase the failed owner's current recovery
-        // notice, which belongs to the same route even while covered.
+        // publication must not erase the owner's current recovery notice
+        // while it fails or starts again. Retry remains visibly disabled until
+        // the current answer is admitted; the notice still belongs to this
+        // exact route and authority, even while covered.
         let owner_notice = self.notice.as_ref().filter(|current| {
             current.retry.is_some()
                 && current.visit == *self.snapshot.route()
                 && current.root.same_authority(self.snapshot.key())
-                && matches!(self.owner.phase(), OwnerPhase::Failed(_))
+                && matches!(self.owner.phase(), OwnerPhase::Failed(_) | OwnerPhase::Starting)
         }).cloned();
         let notice = owner_notice.or(notice);
         if self.graph_focus != focus || self.notice != notice {
@@ -1701,6 +1703,22 @@ mod tests {
         store.update(cx, |store, cx| store.owner_failed(&fault, cx));
         cx.run_until_parked();
         assert!(events.borrow().is_empty(), "same observed failure/capability stays silent");
+        // The map publishes empty focus while the same failed visit recovers.
+        // It cannot erase the notice backing the mounted, disabled Retry.
+        let retry = store.read_with(cx, |store, _| store.current_owner_retry()).expect("current Retry");
+        store.update(cx, |store, cx| {
+            assert!(store.retry_owner_at(&retry, PageKey::Orbit, cx));
+            store.owner_starting(cx);
+            store.admit_graph_focus(None, None, cx);
+            assert_eq!(store.notice().cloned(), notice, "Starting retains the exact recovery notice");
+            assert!(store.current_owner_retry().is_none(), "the consumed Retry is disabled");
+        });
+        gate.publish(OwnerState::Ready { key: root, mode: ServiceMode::Attached });
+        store.update(cx, |store, cx| {
+            store.owner_ready(cx);
+            store.admit_graph_focus(None, None, cx);
+            assert!(store.notice().is_none(), "an admitted answer releases recovery notice ownership");
+        });
     }
 
     fn rig(cx: &mut TestAppContext, workers: usize) -> Rig {
