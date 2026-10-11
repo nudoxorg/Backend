@@ -733,7 +733,8 @@ pub(super) fn finish_index_scan(
                 Some(key) => capture_intent.with_operation_key(key)?,
                 None => capture_intent,
             };
-            let capture_request = super::adapter::prepare_builtin_intent(daemon, &capture_intent)?;
+            let capture_request =
+                super::adapter::prepare_owned_builtin_intent(daemon, capture_intent)?;
             let capture_request_identity = capture_request.request_identity();
             let daemon_for_commit = &mut *daemon;
             semantic_authority.commit_product_selection_transaction(Vec::new(), move || {
@@ -743,10 +744,6 @@ pub(super) fn finish_index_scan(
                     capture_request,
                 )
             })?;
-            // Preparation owns its queue carrier and the commit has consumed
-            // it. Do not retain the original decoded after-images while source
-            // buffers and native compiler state are materialized.
-            drop(capture_intent);
             *committed_captures = captures.clone();
             if let (Some(operation_key), Some(index_operations)) =
                 (operation_key, index_operations.as_deref_mut())

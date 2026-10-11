@@ -5797,6 +5797,22 @@ pub(in crate::builtin) fn prepare_builtin_intent(
     prepare_builtin_intent_at(daemon, intent, None, Arc::new(AtomicBool::new(false)))
 }
 
+/// Transfers a caller-owned intent into preparation without retaining a second
+/// decoded frontier. Capture-basis admission, canonical identity, staged CAS
+/// membership, and selected-base fencing are shared with borrowed preparation.
+pub(in crate::builtin) fn prepare_owned_builtin_intent(
+    daemon: &ProductDaemon,
+    intent: BuiltinIntent,
+) -> Result<PreparedBuiltinIntent, BuiltinModelError> {
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    prepare_owned_builtin_intent_at_snapshot(
+        &snapshot,
+        intent,
+        None,
+        Arc::new(AtomicBool::new(false)),
+    )
+}
+
 fn prepare_builtin_intent_at(
     daemon: &ProductDaemon,
     intent: &BuiltinIntent,
@@ -5815,12 +5831,21 @@ fn prepare_builtin_intent_at_snapshot(
     source_root: Option<&Path>,
     cancellation: Arc<AtomicBool>,
 ) -> Result<PreparedBuiltinIntent, BuiltinModelError> {
+    prepare_owned_builtin_intent_at_snapshot(snapshot, intent.clone(), source_root, cancellation)
+}
+
+/// Consumes the private frontier; callers needing descriptors for later view
+/// projection continue to use the borrowed wrapper above.
+fn prepare_owned_builtin_intent_at_snapshot(
+    snapshot: &backend_engine::WorkspaceSnapshot,
+    intent: BuiltinIntent,
+    source_root: Option<&Path>,
+    cancellation: Arc<AtomicBool>,
+) -> Result<PreparedBuiltinIntent, BuiltinModelError> {
     let intent = if intent.has_capture_changes() && intent.capture_basis().is_none() {
-        intent
-            .clone()
-            .with_capture_basis(capture_basis_for_snapshot(snapshot)?)?
+        intent.with_capture_basis(capture_basis_for_snapshot(snapshot)?)?
     } else {
-        intent.clone()
+        intent
     };
     let request_identity = BuiltinModel.request_id(&intent);
     let intent =
@@ -6182,6 +6207,125 @@ mod tests {
     mod index_profile_worker_tests;
     #[path = "index_publication_worker.rs"]
     mod index_publication_worker_tests;
+
+    #[test]
+    fn owned_intent_preparation_moves_facts_and_preserves_bound_canonical_identity() {
+        use crate::builtin::{BuiltinCaptureChange, BuiltinSourceFactsChange, WorkspaceModel};
+        use backend_engine::builtin::{
+            ProductSemanticCaptureOutcome, ProductSemanticPublicationKey,
+            ProductSourceFileFactsRecord, SemanticSourceCapture,
+        };
+        use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, TypeScriptSource};
+
+        let root = TempTree::new();
+        let profile = profile_descriptor(BuiltinProfile::Product).expect("product profile");
+        let dispatcher =
+            builtin_dispatcher(Some(ECHO_AUTHORITY_SECRET), profile, 60_000).expect("dispatcher");
+        let registry = crate::builtin::product_relation_registry().expect("registry");
+        let daemon = crate::Locald::open_with_dispatcher_and_registry(
+            &root.0,
+            BuiltinModel,
+            genesis().expect("genesis"),
+            dispatcher,
+            backend_engine::DaemonConfig::default(),
+            registry,
+        )
+        .expect("fresh daemon");
+        let snapshot = daemon.engine().daemon().owner().snapshot();
+        assert!(snapshot.closure().stored_membership().is_none());
+        let label = "pkg:npm/owned-prepare@1.0.0";
+        let package = backend_engine::PackageKey::from_value(label);
+        let key = ProductSemanticPublicationKey::new(
+            backend_engine::PackageReference::parse(label.to_owned()).expect("package"),
+            PackageUrl::parse(label).expect("coordinate"),
+            LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+        )
+        .expect("selected key");
+        let basis = crate::builtin::capture_basis_for_snapshot(&snapshot).expect("capture basis");
+        for already_bound in [false, true] {
+            let (facts_key, facts) = backend_engine::build_product_source_file_facts(
+                package.to_bytes(),
+                "src/owned.ts",
+                backend_compile::SourceLanguage::TypeScript,
+                [2; 32],
+                [3; 32],
+                backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+                    b"source",
+                ),
+                &[],
+            )
+            .expect("facts")
+            .into_rows()
+            .next()
+            .expect("manifest");
+            let ProductSourceFileFactsRecord::Manifest(manifest) = &facts else {
+                panic!("manifest fixture");
+            };
+            let original_path = manifest.path().as_ptr();
+            let intent = crate::builtin::BuiltinIntent::index_with_capture(
+                package,
+                label,
+                Vec::new(),
+                Vec::new(),
+                vec![BuiltinCaptureChange {
+                    key: key.clone(),
+                    expected: None,
+                    capture: SemanticSourceCapture::new(None, [4; 32], [5; 32], 1, 1)
+                        .expect("capture"),
+                    outcome: ProductSemanticCaptureOutcome::Pending { prior: None },
+                    compiler_failure: None,
+                }],
+            )
+            .expect("capture intent")
+            .with_source_facts(vec![BuiltinSourceFactsChange {
+                key: facts_key,
+                expected: None,
+                after: Some(facts),
+            }])
+            .expect("complete facts");
+            let intent = if already_bound {
+                intent.with_capture_basis(basis).expect("existing basis")
+            } else {
+                intent
+            };
+            let expected = if already_bound {
+                intent.clone()
+            } else {
+                intent
+                    .clone()
+                    .with_capture_basis(basis)
+                    .expect("expected basis")
+            };
+            let borrowed =
+                super::prepare_builtin_intent(&daemon, &intent).expect("borrowed prepare");
+            let owned =
+                super::prepare_owned_builtin_intent(&daemon, intent).expect("owned prepare");
+            assert!(
+                owned.intent.staged().is_none(),
+                "exercise decoded inline ownership"
+            );
+            let Some(ProductSourceFileFactsRecord::Manifest(manifest)) =
+                owned.intent.source_facts_changes()[0].after.as_ref()
+            else {
+                panic!("retained manifest");
+            };
+            assert_eq!(
+                manifest.path().as_ptr(),
+                original_path,
+                "owned prepare must not clone facts"
+            );
+            assert_eq!(owned.intent.encode(), expected.encode());
+            assert_eq!(borrowed.intent.encode(), owned.intent.encode());
+            assert_eq!(owned.request_identity, BuiltinModel.request_id(&expected));
+            assert_eq!(borrowed.request_identity, owned.request_identity);
+            assert_eq!(owned.base_workspace_root, *snapshot.root().as_bytes());
+            assert_eq!(owned.base_workspace_sequence, snapshot.sequence());
+            assert_eq!(
+                owned.base_closure_id,
+                *snapshot.closure().binding().closure().as_bytes()
+            );
+        }
+    }
 
     struct TempTree(PathBuf);
 
