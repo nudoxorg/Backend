@@ -8,10 +8,9 @@ use super::{
 use crate::command::{AddressSelection, NameSelection};
 use crate::{PackageKey, Row, RowId, SymbolKey};
 use backend_flow::MaterializedIndex;
-use std::cmp::Ordering;
+use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 
-#[derive(Eq, PartialEq)]
 struct RankedRow {
     row: Row,
     normalized_label: String,
@@ -27,7 +26,6 @@ impl RankedRow {
     }
 }
 
-#[derive(Eq, PartialEq)]
 struct NameRanked {
     candidate: RankedRow,
     placement: (bool, bool, u8),
@@ -54,19 +52,27 @@ impl NameRanked {
             candidate: row,
         }
     }
+
+    fn ordering_key(&self) -> (Reverse<(bool, bool, u8)>, &str, RowId) {
+        (
+            Reverse(self.placement),
+            &self.candidate.normalized_label,
+            self.candidate.row.id,
+        )
+    }
 }
+
+impl PartialEq for NameRanked {
+    fn eq(&self, other: &Self) -> bool {
+        self.ordering_key() == other.ordering_key()
+    }
+}
+
+impl Eq for NameRanked {}
 
 impl Ord for NameRanked {
     fn cmp(&self, other: &Self) -> Ordering {
-        other
-            .placement
-            .cmp(&self.placement)
-            .then_with(|| {
-                self.candidate
-                    .normalized_label
-                    .cmp(&other.candidate.normalized_label)
-            })
-            .then_with(|| self.candidate.row.id.cmp(&other.candidate.row.id))
+        self.ordering_key().cmp(&other.ordering_key())
     }
 }
 
@@ -76,19 +82,29 @@ impl PartialOrd for NameRanked {
     }
 }
 
-#[derive(Eq, PartialEq)]
 struct SearchRanked(RankedRow);
+
+impl SearchRanked {
+    fn ordering_key(&self) -> (Reverse<u32>, &str, RowId) {
+        (
+            Reverse(self.0.row.score.unwrap_or_default()),
+            &self.0.normalized_label,
+            self.0.row.id,
+        )
+    }
+}
+
+impl PartialEq for SearchRanked {
+    fn eq(&self, other: &Self) -> bool {
+        self.ordering_key() == other.ordering_key()
+    }
+}
+
+impl Eq for SearchRanked {}
 
 impl Ord for SearchRanked {
     fn cmp(&self, other: &Self) -> Ordering {
-        other
-            .0
-            .row
-            .score
-            .unwrap_or_default()
-            .cmp(&self.0.row.score.unwrap_or_default())
-            .then_with(|| self.0.normalized_label.cmp(&other.0.normalized_label))
-            .then_with(|| self.0.row.id.cmp(&other.0.row.id))
+        self.ordering_key().cmp(&other.ordering_key())
     }
 }
 
@@ -113,7 +129,7 @@ fn retain_best_names(rows: impl Iterator<Item = NameRanked>, capacity: usize) ->
     retained.into_iter().collect()
 }
 
-fn retain_best_search(rows: impl Iterator<Item = RankedRow>, capacity: usize) -> Vec<RankedRow> {
+fn retain_best_search(rows: impl Iterator<Item = RankedRow>, capacity: usize) -> Vec<SearchRanked> {
     let mut retained = BinaryHeap::with_capacity(capacity.min(usize::from(crate::QueryLimit::MAX)));
     for row in rows {
         retained.push(SearchRanked(row));
@@ -121,23 +137,15 @@ fn retain_best_search(rows: impl Iterator<Item = RankedRow>, capacity: usize) ->
             retained.pop();
         }
     }
-    retained.into_iter().map(|row| row.0).collect()
+    retained.into_iter().collect()
 }
 
 fn sort_names(rows: &mut [NameRanked]) {
     rows.sort_unstable();
 }
 
-fn sort_search(rows: &mut [RankedRow]) {
-    rows.sort_unstable_by(|left, right| {
-        right
-            .row
-            .score
-            .unwrap_or_default()
-            .cmp(&left.row.score.unwrap_or_default())
-            .then_with(|| left.normalized_label.cmp(&right.normalized_label))
-            .then_with(|| left.row.id.cmp(&right.row.id))
-    });
+fn sort_search(rows: &mut [SearchRanked]) {
+    rows.sort_unstable();
 }
 
 impl ProjectionArrangement {
@@ -463,11 +471,99 @@ fn select_search_matches_page(
     sort_search(&mut rows);
     let mut ids = rows
         .into_iter()
-        .map(|row| row.row.id)
+        .map(|row| row.0.row.id)
         .skip(start)
         .take(limit.saturating_add(1))
         .collect::<Vec<_>>();
     let has_more = ids.len() > limit;
     ids.truncate(limit);
     ArrangementPage { ids, has_more }
+}
+
+#[cfg(test)]
+mod ordering_laws {
+    use super::*;
+    use crate::{
+        Basis, DeclarationKind, Fragment, SourceLocation, object_version, symbol_key,
+        view_state_root,
+    };
+
+    fn fixture(label: &str, kind: DeclarationKind, sourced: bool) -> Row {
+        let basis = Basis::new(view_state_root(&[]), object_version(b"rank-law-fixture"));
+        let row = Row::new(
+            RowId::Symbol(symbol_key("same admitted identity")),
+            basis,
+            label,
+        )
+        .with_kind(kind);
+        if sourced {
+            row.with_source(SourceLocation::new("first.py", 7).expect("fixture source"))
+        } else {
+            row
+        }
+    }
+
+    #[test]
+    fn name_equality_and_order_ignore_payload_and_scores_but_keep_placement_tiers() {
+        let original = fixture("scope::Environment", DeclarationKind::Class, true);
+        let mut changed = original
+            .clone()
+            .with_source(
+                SourceLocation::new("different.py", 90).expect("other captured fixture site"),
+            )
+            .with_signature("captured declaration signature")
+            .with_document(vec![Fragment::Text(
+                "different captured documentation".to_owned(),
+            )]);
+        changed.score = Some(987);
+        assert_ne!(original, changed);
+        let original = NameRanked::new(RankedRow::new(original), Some("environment"));
+        let changed = NameRanked::new(RankedRow::new(changed), Some("environment"));
+        assert!(original == changed);
+        assert_eq!(original.cmp(&changed), Ordering::Equal);
+
+        let tiers = [
+            fixture("z::Environment", DeclarationKind::Class, true),
+            fixture("c::Environment", DeclarationKind::Field, true),
+            fixture("b::Environment", DeclarationKind::Import, true),
+            fixture("a::Environment", DeclarationKind::Type, false),
+            fixture("a::MockEnvironment", DeclarationKind::Class, true),
+        ]
+        .into_iter()
+        .map(|row| NameRanked::new(RankedRow::new(row), Some("environment")))
+        .collect::<Vec<_>>();
+        for (at, left) in tiers.iter().enumerate() {
+            for (other_at, right) in tiers.iter().enumerate() {
+                assert_eq!(left == right, left.cmp(right) == Ordering::Equal);
+                assert_eq!(left.cmp(right), at.cmp(&other_at));
+            }
+        }
+    }
+
+    #[test]
+    fn search_equality_and_order_ignore_payload_but_observe_relevance_score() {
+        let original = fixture("scope::Environment", DeclarationKind::Class, false);
+        let changed = original
+            .clone()
+            .with_source(SourceLocation::new("different.py", 90).expect("captured fixture site"))
+            .with_signature("different signature")
+            .with_document(vec![Fragment::Text("different documentation".to_owned())]);
+        assert_ne!(original, changed);
+        let mut zero = changed.clone();
+        zero.score = Some(0);
+        let mut higher = changed.clone();
+        higher.score = Some(1);
+        let rows = [original, changed, zero, higher]
+            .into_iter()
+            .map(|row| SearchRanked(RankedRow::new(row)))
+            .collect::<Vec<_>>();
+        for left in &rows {
+            for right in &rows {
+                assert_eq!(left == right, left.cmp(right) == Ordering::Equal);
+            }
+        }
+        assert!(rows[0] == rows[1] && rows[1] == rows[2]);
+        assert_eq!(rows[3].cmp(&rows[0]), Ordering::Less);
+        assert!(rows[3] != rows[0]);
+    }
 }
