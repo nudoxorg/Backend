@@ -838,6 +838,73 @@ impl TszProject {
         None
     }
 
+    /// Borrows a property's raw identifier spelling from its exact TSZ owner.
+    ///
+    /// `PropertyInfo::parent_id` normally names the declaring class, rather than
+    /// the member symbol. Only direct parsed members of that bound class or
+    /// interface may supply spelling. A directly bound member declaration is
+    /// also accepted. Every declaration must retain aligned file-stable proof;
+    /// missing provenance, nested members and unrelated names are refused.
+    #[must_use]
+    pub fn property_name_source_from_owner(
+        &self,
+        symbol: TszSymbolId,
+        expected: &str,
+    ) -> Option<&str> {
+        if expected.is_empty() {
+            return None;
+        }
+        let owner = self.program.symbols.get(symbol)?;
+        if owner.declarations.len() != owner.stable_declarations.len() {
+            return None;
+        }
+        for (declaration, stable) in owner.declarations.iter().zip(&owner.stable_declarations) {
+            if stable.file_idx == u32::MAX || stable.pos >= stable.end {
+                continue;
+            }
+            let file = self
+                .program
+                .files
+                .get(usize::try_from(stable.file_idx).ok()?)?;
+            let arena = &file.arena;
+            if arena.pos_end_at(*declaration) != Some((stable.pos, stable.end))
+                || file.node_symbols.get(&declaration.0) != Some(&symbol)
+            {
+                continue;
+            }
+            let node = arena.get(*declaration)?;
+            let source = arena.get_source_file_at(file.source_file)?.text.as_ref();
+            let members = arena
+                .get_class(node)
+                .map(|class| &class.members)
+                .or_else(|| {
+                    arena
+                        .get_interface(node)
+                        .map(|interface| &interface.members)
+                });
+            if let Some(members) = members {
+                for &member in &members.nodes {
+                    if arena.get_extended(member).map(|node| node.parent) != Some(*declaration)
+                        || !arena.pos_end_at(member).is_some_and(|(start, end)| {
+                            stable.pos <= start && start < end && end <= stable.end
+                        })
+                    {
+                        continue;
+                    }
+                    if let Some(token) = exact_property_name_token(arena, source, member, expected)
+                    {
+                        return Some(token);
+                    }
+                }
+            } else if let Some(token) =
+                exact_property_name_token(arena, source, *declaration, expected)
+            {
+                return Some(token);
+            }
+        }
+        None
+    }
+
     /// Content identity for one exact retained project or library source.
     /// The stable path is included in the digest, so moving byte-identical
     /// content to another owner does not preserve a declaration identity.
@@ -1045,6 +1112,32 @@ fn library_digest(lib_files: &[Arc<tsz::lib_loader::LibFile>]) -> Result<[u8; 32
 fn digest_part(digest: &mut Sha256, part: &[u8]) {
     digest.update(u64::try_from(part.len()).unwrap_or(u64::MAX).to_be_bytes());
     digest.update(part);
+}
+
+fn exact_property_name_token<'a>(
+    arena: &tsz::parser::NodeArena,
+    source: &'a str,
+    member: TszNodeIndex,
+    expected: &str,
+) -> Option<&'a str> {
+    let node = arena.get(member)?;
+    let name = arena
+        .get_property_decl(node)
+        .map(|property| property.name)
+        .or_else(|| arena.get_signature(node).map(|signature| signature.name))
+        .or_else(|| arena.get_method_decl(node).map(|method| method.name))
+        .or_else(|| arena.get_accessor(node).map(|accessor| accessor.name))?;
+    if arena.get_extended(name)?.parent != member
+        || arena.get_identifier(arena.get(name)?)?.escaped_text != expected
+    {
+        return None;
+    }
+    let (lower, upper) = arena.pos_end_at(member)?;
+    let (start, end) = arena.pos_end_at(name)?;
+    if start < lower || end > upper || start >= end {
+        return None;
+    }
+    source.get(usize::try_from(start).ok()?..usize::try_from(end).ok()?)
 }
 
 fn symbol_name_in_arena<'a, 'symbols, I>(

@@ -10451,7 +10451,7 @@ fn intern_native_tsz_object<'source>(
         return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
     }
 
-    // Resolve every public named property through its TSZ declaration symbol
+    // Resolve every public named property through its exact TSZ declaring owner
     // when one exists. Anonymous structural members have no symbol in TSZ's
     // PropertyInfo, so those names require a parsed property-name node within
     // this exact owner declaration and source file. In either case the row
@@ -10465,7 +10465,7 @@ fn intern_native_tsz_object<'source>(
         let spelling = match property.parent_id {
             Some(symbol) => registry
                 .tsz_project
-                .and_then(|project| project.symbol_name_source(symbol, &name)),
+                .and_then(|project| project.property_name_source_from_owner(symbol, &name)),
             None => usize::try_from(owner).ok().and_then(|owner_index| {
                 let start = *registry.decl_starts.get(owner_index)?;
                 let end = *registry.decl_ends.get(owner_index)?;
