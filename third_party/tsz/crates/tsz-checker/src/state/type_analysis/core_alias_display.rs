@@ -32,6 +32,9 @@ impl CheckerState<'_> {
         // fixed tuple (`...[a, b]` or `...Inner` where `Inner` is a fixed tuple).
         // A rest array (`...number[]`) stays variadic and keeps its alias name.
         let evaluated = self.evaluate_type_with_env(result);
+        if self.ctx.types.execution_checkpoint(0).is_err() {
+            return;
+        }
         let is_non_variadic_tuple = crate::query_boundaries::common::tuple_elements(
             self.ctx.types.as_type_database(),
             evaluated,

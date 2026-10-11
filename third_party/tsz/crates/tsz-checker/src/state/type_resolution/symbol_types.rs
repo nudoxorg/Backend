@@ -75,13 +75,21 @@ impl<'a> CheckerState<'a> {
             && let Some(file_idx) = self.ctx.resolve_symbol_file_index(sym_id)
             && self.should_delegate_dynamic_type_alias_owner(sym_id, file_idx)
         {
-            if let Some((result, _)) = self.delegate_cross_arena_symbol_resolution(sym_id) {
+            let delegated = self.delegate_cross_arena_symbol_resolution(sym_id);
+            if self.ctx.types.execution_checkpoint(0).is_err() {
+                self.ctx.leave_recursion();
+                return TypeId::UNKNOWN;
+            }
+            if let Some((result, _)) = delegated {
                 self.ctx.leave_recursion();
                 return result;
             }
-            if let Some((result, _)) =
-                self.direct_source_file_type_alias_result(sym_id, Some(file_idx), true)
-            {
+            let direct = self.direct_source_file_type_alias_result(sym_id, Some(file_idx), true);
+            if self.ctx.types.execution_checkpoint(0).is_err() {
+                self.ctx.leave_recursion();
+                return TypeId::UNKNOWN;
+            }
+            if let Some((result, _)) = direct {
                 self.ctx.leave_recursion();
                 return result;
             }
@@ -372,9 +380,13 @@ impl<'a> CheckerState<'a> {
             if should_attempt_type_alias_resolution
                 && (has_type_alias_decl || (flags & symbol_flags::TYPE_ALIAS) != 0)
             {
-                if let Some(keyof_type) =
-                    self.keyof_array_to_enum_alias_type(sym_id, escaped_name, declarations)
-                {
+                let keyof_type =
+                    self.keyof_array_to_enum_alias_type(sym_id, escaped_name, declarations);
+                if self.ctx.types.execution_checkpoint(0).is_err() {
+                    self.ctx.leave_recursion();
+                    return TypeId::UNKNOWN;
+                }
+                if let Some(keyof_type) = keyof_type {
                     self.ctx
                         .register_resolved_type(sym_id, keyof_type, Vec::new());
                     self.ctx.leave_recursion();
@@ -429,6 +441,13 @@ impl<'a> CheckerState<'a> {
                     } else {
                         self.get_type_of_symbol(sym_id)
                     };
+                if self.ctx.types.execution_checkpoint(0).is_err() {
+                    // get_type_of_symbol communicates a latched project stop
+                    // through UNKNOWN; keep that sentinel out of the shared
+                    // alias DefinitionStore and both type environments.
+                    self.ctx.leave_recursion();
+                    return TypeId::UNKNOWN;
+                }
                 if (structural_type == TypeId::ANY
                     || structural_type == TypeId::UNKNOWN
                     || structural_type == TypeId::ERROR)
@@ -438,6 +457,10 @@ impl<'a> CheckerState<'a> {
                     && delegate_type != TypeId::ERROR
                 {
                     structural_type = delegate_type;
+                }
+                if self.ctx.types.execution_checkpoint(0).is_err() {
+                    self.ctx.leave_recursion();
+                    return TypeId::UNKNOWN;
                 }
                 let preserve_deferred_keyof =
                     crate::query_boundaries::state::checking::keyof_target(
@@ -459,6 +482,10 @@ impl<'a> CheckerState<'a> {
                         structural_type,
                     ) {
                     let evaluated = self.evaluate_type_with_env(structural_type);
+                    if self.ctx.types.execution_checkpoint(0).is_err() {
+                        self.ctx.leave_recursion();
+                        return TypeId::UNKNOWN;
+                    }
                     if matches!(evaluated, TypeId::ERROR | TypeId::UNKNOWN) {
                         structural_type
                     } else {
@@ -467,6 +494,10 @@ impl<'a> CheckerState<'a> {
                 } else {
                     structural_type
                 };
+                if self.ctx.types.execution_checkpoint(0).is_err() {
+                    self.ctx.leave_recursion();
+                    return TypeId::UNKNOWN;
+                }
                 // Register for alias-name formatting in diagnostics
                 self.ctx
                     .register_resolved_type(sym_id, structural_type, Vec::new());
