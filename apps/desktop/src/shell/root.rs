@@ -1418,6 +1418,27 @@ impl Shell {
         }
     }
 
+    /// Wait for the completed native frame before judging a Reader owner.
+    /// RenderOnce can mount a newly focused control after Shell.render, while
+    /// a removed Spine control can leave the window focused on a dead node.
+    fn rehome_orphaned_reader_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.zone != Zone::Reader { return; }
+        let Some(focus) = window.focused(cx) else { return; };
+        if focus == self.focus { return; }
+        let shell = cx.weak_entity();
+        window.defer(cx, move |window, app| {
+            if window.focused(app).as_ref() != Some(&focus)
+                || window.is_focus_handle_mounted(&focus) { return; }
+            let Some(shell) = shell.upgrade() else { return; };
+            shell.update(app, |shell, cx| {
+                if shell.zone == Zone::Reader && shell.page_input_allowed(cx)
+                    && !super::titlebar::menu_open(window, cx) {
+                    shell.focus.focus(window, cx);
+                }
+            });
+        });
+    }
+
     fn visible_zones(&self) -> Vec<Zone> {
         Zone::ALL.into_iter().filter(|zone| self.zone_available(*zone)).collect()
     }
@@ -2591,6 +2612,7 @@ impl Render for Shell {
             }
         }
         self.rehome_unavailable_zone(previous_surface != ShelfNativeSurface::of(self.frame, self.shelf_over_open), window, cx);
+        self.rehome_orphaned_reader_focus(window, cx);
 
         let ask_scene = self.ask_presentation.sample(
             self.ask_open,
@@ -3486,7 +3508,7 @@ mod shelf_scene_admission_tests {
         rig.settle();
         assert!(shell.read_with(rig.cx, |shell, _| shell.frame.is_some_and(|frame| frame.pins)));
         rig.cx.update(|window, cx| shell.update(cx, |shell, cx| shell.take_zone(Zone::Pins, window, cx)));
-        rig.keys("secondary-.");
+        rig.keys("secondary-shift-.");
         assert_eq!(shell.read_with(rig.cx, |shell, _| shell.zone), Zone::Reader,
             "zen cannot leave a hidden Pins zone active");
     }
@@ -3705,11 +3727,17 @@ mod responsive_shelf_scene_tests {
     use super::*;
 
     fn scope(rig: &mut super::super::tests::Rig, drawer: bool) -> ShelfInputScope {
-        rig.shell.read_with(rig.cx, |shell, cx| shell.shelf_input_scope(drawer, cx).unwrap_or_else(|| {
-            panic!("current native shelf scope: requested_drawer={drawer} surface={:?} open={} departing={} overlay={:?}",
-                ShelfNativeSurface::of(shell.frame, shell.shelf_over_open), shell.shelf_over_open,
-                shell.drawer_departing, shell.links.snapshot(cx).overlay())
-        }))
+        let shell = rig.shell.clone();
+        rig.cx.update(|window, cx| {
+            let shell = shell.read(cx);
+            shell.shelf_input_scope(drawer, cx).unwrap_or_else(|| {
+                let focus = window.focused(cx);
+                panic!("current native shelf scope: requested_drawer={drawer} surface={:?} open={} departing={} overlay={:?} zone={:?} focus={focus:?} mounted={}",
+                    ShelfNativeSurface::of(shell.frame, shell.shelf_over_open), shell.shelf_over_open,
+                    shell.drawer_departing, shell.links.snapshot(cx).overlay(), shell.zone,
+                    focus.as_ref().is_some_and(|focus| window.is_focus_handle_mounted(focus)))
+            })
+        })
     }
     fn admitted(rig: &mut super::super::tests::Rig, scope: &ShelfInputScope) -> bool {
         rig.shell.read_with(rig.cx, |shell, cx| shell.admits_shelf_input_scope(scope, cx))
