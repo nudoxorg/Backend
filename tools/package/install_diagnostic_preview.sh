@@ -31,7 +31,7 @@ nudox_install_main() {
 
     # Use a full CPython implementation. Some PATH shims treat "python3 -"
     # as a REPL and lack filesystem APIs; never pass downloaded source on stdin.
-    python_probe='import fcntl, hashlib, json, os, pathlib, platform, subprocess, sys, tarfile, urllib.request; assert platform.python_implementation() == "CPython" and sys.version_info >= (3, 8); assert all(hasattr(os, name) for name in ("O_NOFOLLOW", "O_NONBLOCK", "geteuid"))'
+    python_probe='import fcntl, hashlib, json, os, pathlib, platform, subprocess, sys, tarfile, urllib.request; sys.exit(0 if platform.python_implementation() == "CPython" and sys.version_info >= (3, 8) and all(hasattr(os, name) for name in ("O_NOFOLLOW", "O_NONBLOCK", "geteuid")) else 1)'
     install_python=''
     if [ -n "${NUDOX_INSTALL_PYTHON-}" ]; then
         if command -v "$NUDOX_INSTALL_PYTHON" >/dev/null 2>&1 && "$NUDOX_INSTALL_PYTHON" -c "$python_probe" >/dev/null 2>&1; then
