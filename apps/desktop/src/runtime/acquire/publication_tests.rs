@@ -152,6 +152,56 @@ fn same_composition_index_replacement_retires_stages_dependencies_and_late_recei
 }
 
 #[gpui::test]
+fn resumed_settled_stages_precede_dependencies_without_becoming_queued_for_the_new_owner(cx: &mut TestAppContext) {
+    use crate::runtime::actor::IndexMutationLease;
+    use crate::runtime::owner::{OwnerGate, OwnerState};
+    let release = Release::new("present", "0.4.2").expect("release");
+    let page = PackageRef::parse(PACKAGE).expect("source page");
+    let project = crate::core::LocalProjectId::new("/fixture/restored-dependency-root").expect("project");
+    for mode in [crate::model::ServiceMode::Embedded, crate::model::ServiceMode::Attached] {
+        for settled in [Stage::Added(page.clone()), Stage::Partial { page: page.clone(), words: "original compiler refusal".into() }] {
+            let basis = crate::core::VersionedRoot::synthetic(backend_library::view_state_root(&[]), 4);
+            let gate = OwnerGate::ready(basis, mode);
+            let capture = || super::OwnerRequest::new(IndexMutationLease::capture(Some(&gate), gate.ready_epoch()).expect("captured index owner"), basis);
+            let old = capture();
+            let generation = cx.update(|cx| super::test_install_producer(crate::host::registry::Composition {
+                endpoint: "/fixture/retained-owner.sock".into(),
+                source: Arc::new(crate::host::registry::CargoCache::at("/fixture/cargo".into(), "/fixture/unpacked".into())),
+                authority: "same-source".into(), generation: CompositionGeneration::default(), refusals: None,
+            }, cx).generation);
+            cx.update(|cx| {
+                let ledger = additions(cx);
+                ledger.entries.insert(release.clone(), super::Entry { generation: Some(generation), owner: old.clone(), stage: Stage::Added(page.clone()), askers: vec![] });
+                ledger.projects.insert(project.clone(), super::Project { generation: Some(generation), owner: old.clone(), read: Ok(None), askers: vec![] });
+            });
+            gate.publish(OwnerState::Starting);
+            gate.publish(OwnerState::Ready { key: basis, mode });
+            let current = capture();
+            cx.update(|cx| {
+                let dependency = super::Dependency { release: release.clone(), direct: true,
+                    origin: super::Origin::Registry(crate::host::registry::Availability::Unpacked(project.path())) };
+                // This is production run_in's exact order. Already-settled
+                // releases are deliberately never indexed or posted again.
+                additions(cx).mailbox.lock().expect("mailbox").extend([
+                    (generation, current.clone(), Landed::Stage(release.clone(), settled.clone())),
+                    (generation, current.clone(), Landed::Dependencies(project.clone(), Ok(Arc::from([dependency])))),
+                ]);
+                drain_in(Some(generation), cx);
+                assert_eq!(super::stage(&release, super::Asker::Everyone, cx), Some(settled.clone()));
+                let packages = super::project_packages(&project, super::Asker::Everyone, cx).expect("current resumed dependency list");
+                let super::ProjectPackages::Read(found) = &packages else { panic!("new owner must settle the actual dependency list") };
+                assert_eq!(found.len(), 1);
+                assert_eq!(found[0].1, Some(settled.clone()), "the preceding Added/Partial receipt must survive dependency admission");
+                let progress = packages.progress().expect("dependency progress");
+                assert!(progress.done);
+                assert_eq!(progress.landed, 1);
+                assert_eq!(progress.thin.len(), usize::from(matches!(settled, Stage::Partial { .. })));
+            });
+        }
+    }
+}
+
+#[gpui::test]
 fn acquisition_publications_repair_the_mounted_dossier_at_the_same_authority(cx: &mut TestAppContext) {
     let release = Release::new("present", "0.4.2").expect("release");
     let registry = PackageRef::parse(&release.purl()).expect("registry address");

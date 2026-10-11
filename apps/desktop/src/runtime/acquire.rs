@@ -471,7 +471,7 @@ fn drain_in(generation: Option<CompositionGeneration>, cx: &mut App) {
         match landed {
             Landed::Stage(release, stage) => {
                 let entry = additions.entries.entry(release.clone()).or_insert_with(|| Entry { generation, owner: owner.clone(), stage: Stage::Queued, askers: Vec::new() });
-                if !entry.owner.same_owner(&owner) { continue; }
+                if entry.generation == generation && !entry.owner.same_owner(&owner) && entry.owner.current() { continue; }
                 entry.renew(generation, &owner);
                 if entry.stage != stage {
                     let page = match &stage {
@@ -498,7 +498,9 @@ fn drain_in(generation: Option<CompositionGeneration>, cx: &mut App) {
             }
             Landed::Dependencies(project, read) => {
                 let entry = additions.projects.entry(project).or_insert_with(|| Project { generation, owner: owner.clone(), read: Ok(None), askers: Vec::new() });
-                if entry.generation != generation || !entry.owner.same_owner(&owner) { continue; }
+                if entry.generation == generation && !entry.owner.same_owner(&owner) && entry.owner.current() { continue; }
+                entry.generation = generation;
+                entry.owner = owner.clone();
                 entry.read = read.as_ref().map(|found| Some(Arc::clone(found))).map_err(Arc::clone);
                 tell(&entry.askers);
                 if let Ok(found) = &read {
