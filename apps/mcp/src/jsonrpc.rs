@@ -54,8 +54,8 @@ use codec::{
     read_line, string, success, valid_id, write_message,
 };
 use tools::{
-    INDEX_CANCEL_TOOL, INDEX_PROGRESS_TOOL, INDEX_START_TOOL, SURFACE_TOOL, ToolRoute, list_tools,
-    tool_route, validate_registry_arguments,
+    INDEX_CANCEL_TOOL, INDEX_PROGRESS_TOOL, INDEX_START_TOOL, QUERY_TOOL, SURFACE_TOOL, ToolRoute,
+    list_tools, tool_route, validate_registry_arguments,
 };
 
 #[cfg(feature = "token-budget")]
