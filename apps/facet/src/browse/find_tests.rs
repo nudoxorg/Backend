@@ -118,6 +118,71 @@ fn advance(cx: &mut VisualTestContext, millis: u64) {
     cx.run_until_parked();
 }
 
+struct MountedOfferInspector { state: Entity<State>, candidate: Candidate, actions: Actions }
+impl Render for MountedOfferInspector {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::probe::draw_started(cx);
+        let measure = Measure::new(px(480.0), &cx.facet());
+        div().w(px(480.0)).child(inspector(&"offered-find".into(), &self.candidate, None, &self.state, &self.actions, true, &measure, cx))
+    }
+}
+
+#[gpui::test]
+fn mounted_find_offer_add_retry_and_open_reject_the_latest_unread_input(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx);
+        crate::probe::enable(cx);
+    });
+    for (stage, target) in [
+        (Adding::Idle, "add"),
+        (Adding::Failed("fixture refusal".into()), "retry"),
+        (Adding::Added { open: "/cache/smallvec-1.16.2".into() }, "open"),
+        (Adding::Working(crate::browse::acquire::Step::Indexing), "cancel"),
+    ] {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let sink = Rc::clone(&calls);
+        let dispatch: Rc<dyn Fn(SharedString, &mut Window, &mut App)> = Rc::new(move |value, _, _| sink.borrow_mut().push(value));
+        let reads = Rc::new(RefCell::new(Vec::new()));
+        let opened = Rc::new(RefCell::new(Vec::new()));
+        let mut actions = actions(&reads, &opened);
+        actions.acquire = Some(AddActions {
+            state: Rc::new(move |_, _| stage.clone()), add: Rc::clone(&dispatch),
+            cancel: Some(Rc::clone(&dispatch)), open: dispatch,
+        });
+        let candidate = Candidate {
+            key: "pkg:cargo/smallvec@1.16.2".into(), name: "smallvec".into(), version: Some("1.16.2".into()),
+            indexed: false, summary: None, facts: vec![], answers: vec![],
+            offer: Some(Offer { release: "pkg:cargo/smallvec@1.16.2".into(), label: "smallvec 1.16.2".into(),
+                place: crate::browse::acquire::Place::Unpacked, library: None }),
+        };
+        let model = Arc::new(Model { query: "smallvec".into(), candidates: vec![candidate.clone()], loose: vec![],
+            coverage: vec![], more_answers: false, loading: false });
+        let (host, cx) = cx.add_window_view(|window, cx| {
+            let state = cx.new(|cx| {
+                let mut state = State::new(model.query.clone(), actions.clone(), window, cx);
+                state.accept(&model, &actions, window, cx);
+                state
+            });
+            MountedOfferInspector { state, candidate, actions }
+        });
+        draw(cx);
+        let ledger = cx.update(|_, cx| crate::probe::take(cx));
+        let target_id = child(&child(&"offered-find".into(), "acquire"), target).to_string();
+        let button = ledger.targets.iter().find(|node| node.key == target_id)
+            .unwrap_or_else(|| panic!("native {target} control missing: {:?}", ledger.targets));
+        let at = gpui::point(px(button.bounds.x + button.bounds.width / 2.0), px(button.bounds.y + button.bounds.height / 2.0));
+        cx.simulate_click(at, gpui::Modifiers::none());
+        assert_eq!(calls.borrow().len(), 1, "current {target} control must really dispatch before denial is tested");
+        let state = host.read_with(cx, |host, _| host.state.clone());
+        edit(&state, "another package", cx);
+        assert!(state.read_with(cx, |state, _| state.pending.is_some()), "edited native input is still awaiting its real debounce");
+        cx.simulate_click(at, gpui::Modifiers::none());
+        assert_eq!(calls.borrow().len(), 1, "painted {target} control must not act on the earlier reading after input changed");
+        assert!(reads.borrow().is_empty(), "denial precedes the next query publication");
+    }
+}
+
 #[gpui::test]
 fn latest_query_wins_clear_cancels_and_enter_never_opens_a_stale_answer(cx: &mut TestAppContext) {
     cx.update(gpui_component::init);

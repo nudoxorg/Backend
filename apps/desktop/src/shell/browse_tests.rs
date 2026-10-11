@@ -502,6 +502,86 @@ fn land_find(rig: &mut crate::shell::tests::Rig, route: &BrowseRoute, query: &st
     rig.graph.store.update(rig.cx, |store, cx| store.test_land_browse(BrowseKey::from(route), find_fixture(query, includes_answer), cx));
 }
 
+fn land_find_offer(rig: &mut crate::shell::tests::Rig, route: &BrowseRoute, release: &str, library: Option<&str>, addable: bool) {
+    let BrowseValue::Find(find) = find_fixture("smallvec", false) else { unreachable!() };
+    let mut find = (*find).clone();
+    let mut prepared = (*find.prepared).clone();
+    prepared.candidates.push(facet::browse::find::Candidate {
+        key: release.to_owned().into(), name: "smallvec".into(), version: Some("1.16.2".into()),
+        indexed: library.is_some(), summary: None, facts: vec![], answers: vec![],
+        offer: Some(facet::browse::acquire::Offer {
+            release: release.to_owned().into(), label: "smallvec 1.16.2".into(),
+            place: if addable { facet::browse::acquire::Place::Unpacked } else {
+                facet::browse::acquire::Place::Ambiguous { indexes: vec!["first".into(), "second".into()] }
+            }, library: library.map(|value| value.to_owned().into()),
+        }),
+    });
+    find.prepared = Arc::new(prepared);
+    rig.graph.store.update(rig.cx, |store, cx| store.test_land_browse(BrowseKey::from(route), BrowseValue::Find(Arc::new(find)), cx));
+}
+
+#[gpui::test]
+fn find_acquisition_rechecks_current_offer_visit_and_owner_before_dispatch(cx: &mut TestAppContext) {
+    use std::{cell::RefCell, rc::Rc};
+    let release = SharedString::from("pkg:cargo/smallvec@1.16.2");
+    let package = SharedString::from("/cache/smallvec-1.16.2");
+    let browse = BrowseRoute::Find(SearchQuery::new("smallvec", SearchQuery::DEFAULT_LIMIT).expect("query"));
+    let route = Route::Orbit(OrbitRoute::Browse(browse.clone()));
+    let mut rig = rig(cx, Some(route.clone()), 1200.0, 800.0);
+    let calls = Rc::new(RefCell::new(Vec::new()));
+    let raw = || {
+        let adding = Rc::clone(&calls);
+        let opening = Rc::clone(&calls);
+        facet::browse::acquire::AddActions {
+            state: Rc::new(|_, _| facet::browse::acquire::Adding::Idle), cancel: None,
+            add: Rc::new(move |value, _, _| adding.borrow_mut().push(("add", value))),
+            open: Rc::new(move |value, _, _| opening.borrow_mut().push(("open", value))),
+        }
+    };
+    land_find_offer(&mut rig, &browse, &release, Some(&package), true);
+    let actions = super::find_acquire_actions(&find_callback(&mut rig, &browse), raw());
+    rig.cx.update(|window, cx| (actions.add)("pkg:cargo/absent@1.0.0".into(), window, cx));
+    rig.cx.update(|window, cx| (actions.open)("/cache/absent-1.0.0".into(), window, cx));
+    assert!(calls.borrow().is_empty(), "a current page does not grant an unrepresented release or package");
+    let invoke = |rig: &mut crate::shell::tests::Rig| {
+        rig.cx.update(|window, cx| (actions.add)(release.clone(), window, cx));
+        rig.cx.update(|window, cx| (actions.open)(package.clone(), window, cx));
+    };
+    invoke(&mut rig);
+    assert_eq!(&*calls.borrow(), &[("add", release.clone()), ("open", package.clone())], "both exact current offers dispatch");
+    calls.borrow_mut().clear();
+
+    land_find_offer(&mut rig, &browse, "pkg:cargo/smallvec@1.16.1", None, true);
+    invoke(&mut rig);
+    assert!(calls.borrow().is_empty(), "removed release and package cannot dispatch");
+    land_find_offer(&mut rig, &browse, &release, None, false);
+    invoke(&mut rig);
+    assert!(calls.borrow().is_empty(), "an ambiguous source cannot add, and no library member can open");
+    land_find_offer(&mut rig, &browse, &release, Some(&package), true);
+    rig.go(crate::navigation::Intent::OpenSettings(SettingsPage::Appearance));
+    invoke(&mut rig);
+    assert!(calls.borrow().is_empty(), "covered offer cannot dispatch");
+    rig.go(crate::navigation::Intent::DismissOverlay);
+    rig.go(crate::navigation::Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
+    rig.settle();
+    rig.go(crate::navigation::Intent::Navigate(route.clone()));
+    rig.settle();
+    land_find_offer(&mut rig, &browse, &release, Some(&package), true);
+    invoke(&mut rig);
+    assert!(calls.borrow().is_empty(), "identical Find after return cannot revive the old offer");
+
+    let current = super::find_acquire_actions(&find_callback(&mut rig, &browse), raw());
+    rig.cx.update(|window, cx| (current.add)(release.clone(), window, cx));
+    assert_eq!(calls.borrow().len(), 1, "fresh returned offer dispatches");
+    calls.borrow_mut().clear();
+    rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
+    rig.graph.store.update(rig.cx, |store, cx| store.owner_ready(cx));
+    land_find_offer(&mut rig, &browse, &release, Some(&package), true);
+    rig.cx.update(|window, cx| (current.add)(release.clone(), window, cx));
+    rig.cx.update(|window, cx| (current.open)(package.clone(), window, cx));
+    assert!(calls.borrow().is_empty(), "same-root owner replacement retires both callbacks before repaint");
+}
+
 #[gpui::test]
 fn find_source_callback_opens_a_member_of_the_unchanged_live_reading(cx: &mut TestAppContext) {
     let query = SearchQuery::new("RelationLabel", SearchQuery::DEFAULT_LIMIT).expect("query");

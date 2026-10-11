@@ -333,7 +333,7 @@ pub(super) fn body(
         active: ctx.active,
         licence_focus: ctx.native_handle(&PageTarget::Licence.id(), cx),
         admit_input: ctx.native_local_guard(cx),
-        admit_read: ctx.native_dependency_guard((package_key, package_stamp), cx),
+        admit_read: ctx.native_dependency_guard((package_key.clone(), package_stamp), cx),
         package: dossier.package.clone(),
     };
     // Centred on the reading column it overflows.
@@ -342,7 +342,8 @@ pub(super) fn body(
     if let Some(offer) = cargo_offer { leaves.push(offer); }
     // A registry release the owner has not indexed offers to be added (W-Acquire).
     if let Some(offer) =
-        crate::shell::acquire::page_offer(&dossier, ctx.links, cx.entity_id(), &ctx.measure, cx)
+        crate::shell::acquire::page_offer(&dossier, ctx.links, cx.entity_id(), &ctx.measure,
+            ctx.native_dependency_guard((package_key, package_stamp), cx), cx)
     {
         leaves.insert(0, Leaf::new(offer));
     }

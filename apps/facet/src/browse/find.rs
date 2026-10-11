@@ -824,7 +824,9 @@ fn inspector(id: &ElementId, candidate: &Candidate, answer: Option<&Answer>, sta
     let offered = candidate.offer.as_ref().zip(actions.acquire.as_ref())
         .filter(|(offer, acquire)| offer.library.is_none() || (acquire.state)(&offer.release, cx) != Adding::Idle);
     if answer.is_none() && let Some((offer, acquire)) = offered {
-        return detail.child(add_control_enabled(child(id, "acquire"), offer, acquire, m, enabled, cx)).into_any_element();
+        let action_state = state.clone();
+        let acquire = acquire.clone().admitted(Rc::new(move |window, cx| result_action_ready(&action_state, window, cx)));
+        return detail.child(add_control_enabled(child(id, "acquire"), offer, &acquire, m, enabled, cx)).into_any_element();
     }
     if answer.is_none() && !candidate.key.is_empty() {
         let open = Rc::clone(&actions.open_package);

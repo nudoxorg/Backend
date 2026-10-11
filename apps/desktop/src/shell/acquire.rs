@@ -74,7 +74,7 @@ pub(crate) fn facet_offer(offer: &Offer) -> facet::browse::acquire::Offer {
 /// library: a registry package reached through a dependency or from Find,
 /// whose own address the owner has not indexed. `None` for a local project,
 /// and for a page that already reads indexed names.
-pub(crate) fn page_offer(dossier: &crate::model::pages::PackageDossier, links: &Links, view: EntityId, measure: &Measure, cx: &mut App) -> Option<AnyElement> {
+pub(crate) fn page_offer(dossier: &crate::model::pages::PackageDossier, links: &Links, view: EntityId, measure: &Measure, admit: Rc<dyn Fn(&mut App) -> bool>, cx: &mut App) -> Option<AnyElement> {
     if dossier.outline.known().is_some_and(|outline| outline.count() > 0) {
         return None;
     }
@@ -85,7 +85,7 @@ pub(crate) fn page_offer(dossier: &crate::model::pages::PackageDossier, links: &
     let source = crate::host::registry::composed()?.source;
     let offer = Offer { availability: source.availability(&release), release, library: None };
     let palette = cx.palette();
-    let actions = add_actions(links, view);
+    let actions = add_actions(links, view).admitted(Rc::new(move |_, cx| admit(cx)));
     Some(
         div()
             .flex()

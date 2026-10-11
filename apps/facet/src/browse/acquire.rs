@@ -135,6 +135,20 @@ pub struct AddActions {
     pub open: Rc<dyn Fn(SharedString, &mut Window, &mut App)>,
 }
 
+impl AddActions {
+    /// Recheck the caller's painted reading before any acquisition action.
+    /// State observation remains independent, so pending work can still paint.
+    pub fn admitted(self, admit: Rc<dyn Fn(&mut Window, &mut App) -> bool>) -> Self {
+        let guarded = |action: Rc<dyn Fn(SharedString, &mut Window, &mut App)>| {
+            let admit = Rc::clone(&admit);
+            Rc::new(move |value, window: &mut Window, cx: &mut App| {
+                if admit(window, cx) { action(value, window, cx); }
+            }) as Rc<dyn Fn(SharedString, &mut Window, &mut App)>
+        };
+        Self { state: self.state, add: guarded(self.add), cancel: self.cancel.map(&guarded), open: guarded(self.open) }
+    }
+}
+
 /// The seam's stages for `offer` at `step`: only the steps its source needs.
 #[must_use]
 pub fn seam_stages(place: &Place, step: Step) -> Vec<Stage> {
