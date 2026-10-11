@@ -1,4 +1,4 @@
-import importlib.util, io, json, hashlib, os, pathlib, tarfile, tempfile, unittest
+import contextlib, importlib.util, io, json, hashlib, os, pathlib, tarfile, tempfile, types, unittest
 from unittest.mock import patch
 ROOT=pathlib.Path(__file__).parent
 def load(name):
@@ -25,6 +25,24 @@ class Tests(unittest.TestCase):
     info=tarfile.TarInfo('nudox-macos-arm64/'+name); info.size=len(body); t.addfile(info,io.BytesIO(body))
    if extra: t.addfile(extra,io.BytesIO(b'x') if extra.isreg() else None)
   return archive
+ def mac_release(self,root,source='a'*40,date='20261009'):
+  root.mkdir(parents=True,exist_ok=True)
+  archive=self.archive(root,source=source)
+  tag='checkpoint-'+date+'-'+source[:10]+'-macos-arm64'
+  entry={'tag':tag,'version':'0.0.0','source_sha':source,'asset':'nudox-macos-arm64-'+source[:10]+'.tar.gz'}
+  manifest={'sha256':hashlib.sha256(archive.read_bytes()).hexdigest()}
+  args=['--archive-url','https://github.com/nudoxorg/Backend/releases/download/'+tag+'/'+entry['asset'],
+        '--archive-sha256',manifest['sha256'],'--archive-size',str(archive.stat().st_size),
+        '--source',source,'--tag',tag]
+  return entry,manifest,archive,args
+ @contextlib.contextmanager
+ def mac_host(self):
+  with patch.object(mac.sys,'platform','darwin'),patch.object(mac.os,'uname',return_value=types.SimpleNamespace(machine='arm64')):
+   yield
+ def install_fixture(self,prefix,entry,manifest,archive):
+  old_umask=os.umask(0o077)
+  try: mac.install(prefix,entry,manifest,archive)
+  finally: os.umask(old_umask)
  def test_traversal_and_links_and_duplicate_rejected(self):
   for name,kind in [('nudox-macos-arm64/../escape',tarfile.REGTYPE),('nudox-macos-arm64/link',tarfile.SYMTYPE),('nudox-macos-arm64/README.txt',tarfile.REGTYPE)]:
    with tempfile.TemporaryDirectory() as temp:
@@ -94,6 +112,95 @@ class Tests(unittest.TestCase):
    mac.install(prefix,*other,allow_downgrade=True); changed=current.resolve()
    self.assertNotEqual(changed,original); self.assertTrue(original.is_dir())
    mac.install(prefix,*other); self.assertEqual(current.resolve(),changed)
+ def test_main_reuses_verified_existing_release_before_archive_fetch(self):
+  with tempfile.TemporaryDirectory() as temp:
+   root=pathlib.Path(temp).resolve(); entry,manifest,archive,args=self.mac_release(root/'archive')
+   prefix=root/'prefix'; self.install_fixture(prefix,entry,manifest,archive)
+   current=prefix/'lib/nudox/current'; before=current.lstat(); target=current.resolve()
+   with self.mac_host(),patch.object(mac,'download_archive') as download,contextlib.redirect_stdout(io.StringIO()) as stdout,contextlib.redirect_stderr(io.StringIO()) as stderr:
+    self.assertEqual(mac.main(args+['--prefix',str(prefix)]),0)
+   download.assert_not_called()
+   self.assertIn('reused it without downloading the archive',stderr.getvalue())
+   self.assertIn(str(prefix),stdout.getvalue())
+   self.assertEqual(os.readlink(current),'versions/'+entry['tag'])
+   self.assertEqual((current.lstat().st_dev,current.lstat().st_ino),(before.st_dev,before.st_ino))
+   for alias,binary in mac.command_links(prefix/'lib/nudox').items():
+    self.assertEqual(os.readlink(prefix/'bin'/alias),binary)
+   self.assertEqual(current.resolve(),target)
+ def test_main_reuse_rejects_corrupt_file_manifest_and_package_symlink_before_fetch(self):
+  for corruption in ['binary','manifest','package-symlink']:
+   with self.subTest(corruption=corruption),tempfile.TemporaryDirectory() as temp:
+    root=pathlib.Path(temp).resolve(); entry,manifest,archive,args=self.mac_release(root/'archive')
+    prefix=root/'prefix'; self.install_fixture(prefix,entry,manifest,archive)
+    release=(prefix/'lib/nudox/current').resolve()
+    if corruption=='binary':
+     (release/'bin/backend-cli').write_bytes(b'changed after install')
+    elif corruption=='manifest':
+     (release/'manifest.json').write_text('{"schema":"tampered"}')
+    else:
+     binary=release/'bin/backend-mcp'; body=binary.read_bytes(); binary.unlink()
+     external=root/'external'; external.write_bytes(body); binary.symlink_to(external)
+    with self.mac_host(),patch.object(mac,'download_archive') as download:
+     with self.assertRaises(mac.InstallError): mac.main(args+['--prefix',str(prefix)])
+    download.assert_not_called()
+    self.assertEqual((prefix/'lib/nudox/current').resolve(),release)
+ def test_main_reuse_refuses_an_unowned_command_alias_before_fetch(self):
+  with tempfile.TemporaryDirectory() as temp:
+   root=pathlib.Path(temp).resolve(); entry,manifest,archive,args=self.mac_release(root/'archive')
+   prefix=root/'prefix'; self.install_fixture(prefix,entry,manifest,archive)
+   alias=prefix/'bin/nudox'; alias.unlink(); external=root/'user-command'; external.write_text('keep')
+   alias.symlink_to(external)
+   with self.mac_host(),patch.object(mac,'download_archive') as download:
+    with self.assertRaisesRegex(mac.InstallError,'outside the managed'): mac.main(args+['--prefix',str(prefix)])
+   download.assert_not_called()
+   self.assertEqual(alias.resolve(),external)
+ def test_main_downloads_new_release_but_rejects_downgrade_before_fetch(self):
+  with tempfile.TemporaryDirectory() as temp:
+   root=pathlib.Path(temp).resolve()
+   old,old_manifest,old_archive,_=self.mac_release(root/'old','a'*40,'20261009')
+   new,new_manifest,new_archive,new_args=self.mac_release(root/'new','b'*40,'20261010')
+   prefix=root/'prefix'; self.install_fixture(prefix,old,old_manifest,old_archive)
+   old_path=(prefix/'lib/nudox/versions'/old['tag'])
+   def deliver(url,digest,size,destination):
+    self.assertEqual((url,digest,size),(new_args[1],new_manifest['sha256'],new_archive.stat().st_size))
+    destination.write_bytes(new_archive.read_bytes())
+   with self.mac_host(),patch.object(mac,'download_archive',side_effect=deliver) as download,contextlib.redirect_stdout(io.StringIO()):
+    self.assertEqual(mac.main(new_args+['--prefix',str(prefix)]),0)
+   download.assert_called_once()
+   current=prefix/'lib/nudox/current'; new_path=current.resolve()
+   self.assertEqual(new_path.name,new['tag']); self.assertTrue(old_path.is_dir())
+   old_args=['--archive-url','https://github.com/nudoxorg/Backend/releases/download/'+old['tag']+'/'+old['asset'],
+             '--archive-sha256',old_manifest['sha256'],'--archive-size',str(old_archive.stat().st_size),
+             '--source',old['source_sha'],'--tag',old['tag'],'--prefix',str(prefix)]
+   with self.mac_host(),patch.object(mac,'download_archive') as download:
+    with self.assertRaisesRegex(mac.InstallError,'older'): mac.main(old_args)
+   download.assert_not_called(); self.assertEqual(current.resolve(),new_path)
+   with self.mac_host(),patch.object(mac,'download_archive') as download,contextlib.redirect_stdout(io.StringIO()):
+    self.assertEqual(mac.main(old_args+['--allow-downgrade']),0)
+   download.assert_not_called(); self.assertEqual(current.resolve(),old_path)
+ def test_network_failure_keeps_fresh_prefix_uncreated(self):
+  with tempfile.TemporaryDirectory() as temp:
+   root=pathlib.Path(temp).resolve(); entry,manifest,archive,args=self.mac_release(root/'archive')
+   prefix=root/'prefix'
+   with self.mac_host(),patch.object(mac,'download_archive',side_effect=mac.InstallError('simulated network failure')):
+    with self.assertRaisesRegex(mac.InstallError,'simulated network failure'): mac.main(args+['--prefix',str(prefix)])
+   self.assertFalse(prefix.exists())
+ def test_download_reports_bounded_byte_progress_for_real_archive_reads(self):
+  class Response(io.BytesIO):
+   def geturl(self): return 'https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261009-aaaaaaaaaa-macos-arm64/archive.tar.gz'
+  class Opener:
+   def __init__(self,body): self.response=Response(body); self.timeouts=[]
+   def open(self,request,timeout): self.timeouts.append(timeout); return self.response
+  with tempfile.TemporaryDirectory() as temp:
+   body=b'x'*(mac.DOWNLOAD_PROGRESS_BYTES+17); opener=Opener(body); destination=pathlib.Path(temp)/'archive.tar.gz'
+   with patch.object(mac,'HTTPS',opener),contextlib.redirect_stderr(io.StringIO()) as stderr:
+    mac.download_archive('https://github.com/nudoxorg/Backend/releases/download/checkpoint-20261009-aaaaaaaaaa-macos-arm64/archive.tar.gz',
+                         hashlib.sha256(body).hexdigest(),len(body),destination)
+   output=stderr.getvalue()
+   self.assertIn('0%',output); self.assertIn('8,388,608/',output); self.assertIn('100%',output)
+   self.assertIn('verifying the pinned SHA-256',output)
+   self.assertEqual(opener.timeouts,[mac.DOWNLOAD_TIMEOUT_SECONDS])
+   self.assertEqual(destination.read_bytes(),body)
 if __name__=='__main__': unittest.main()
 
 class PipeTests(unittest.TestCase):
