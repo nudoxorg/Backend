@@ -3,7 +3,7 @@
 //! in display type, its own words beneath, a line of what it holds, then the
 //! cards grouped by what they are (types, functions, traits, values).
 
-use super::cards::{CardFacts, symbol_card};
+use super::cards::{CardFacts, NativeCardControl, symbol_card};
 use super::flight::Marks;
 use super::state::{Extent, Pick};
 use super::text::{key, one, one_as, wrap, wrap_as};
@@ -41,6 +41,7 @@ pub struct ModuleView {
     lit: Option<usize>,
     measure: Measure,
     on_open: Option<Open>,
+    native_controls: Option<Rc<dyn Fn(usize) -> Option<NativeCardControl>>>,
     wrap: Option<Wrap>,
     card_name_intent: Intent,
     marks: Option<Marks>,
@@ -61,6 +62,7 @@ pub fn module(id: impl Into<ElementId>, package: impl Into<SharedString>, name: 
         lit: None,
         measure: *measure,
         on_open: None,
+        native_controls: None,
         wrap: None,
         card_name_intent: Intent::Reading(ReadingRole::Heading),
         marks: None,
@@ -69,6 +71,13 @@ pub fn module(id: impl Into<ElementId>, package: impl Into<SharedString>, name: 
 }
 
 impl ModuleView {
+    /// Supplies exact native target ownership for the cards' existing actions.
+    #[must_use]
+    pub fn native_controls(mut self, controls: impl Fn(usize) -> Option<NativeCardControl> + 'static) -> Self {
+        self.native_controls = Some(Rc::new(controls));
+        self
+    }
+
     /// Who names each card: its reading leaf or an existing host control.
     #[must_use]
     pub const fn card_name_intent(mut self, intent: Intent) -> Self {
@@ -159,6 +168,9 @@ impl RenderOnce for ModuleView {
         let card = |index: usize| {
             let facts = self.cards[index].clone();
             let mut card = symbol_card(key(&self.id, format!("card-{index}")), facts, &measure).name_intent(self.card_name_intent).width(width).at(self.at.clone()).lit(if self.lit == Some(index) { Pick::Lit } else { Pick::Rest }).carried(self.carried);
+            if let Some(control) = self.native_controls.as_ref().and_then(|controls| controls(index)) {
+                card = card.native_control(control);
+            }
             if let Some(marks) = &self.marks {
                 card = card.mark(marks, index);
             }

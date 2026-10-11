@@ -14,7 +14,7 @@ use crate::shell::region::Links;
 use facet::ActiveFacet as _;
 use facet::fluid::Modes;
 use facet::folio::berg::{BergFacts, berg as berg_view, weight};
-use facet::folio::cards::CardFacts;
+use facet::folio::cards::{CardFacts, NativeCardControl};
 use facet::folio::crest::{self, Advisories, DisclosureChoice, REST};
 use facet::folio::features::{FeatureFacts, feature_preview};
 use facet::folio::flight::{Marks, Stone, flight, progress};
@@ -1109,7 +1109,7 @@ impl RenderOnce for Folio {
                     });
                 self.with_doors(map, &nav, measured.layout())
             }
-            Some(open) => self.open_module(open, &nav_value, &nav, &measure, carried),
+            Some(open) => self.open_module(open, &nav_value, &nav, &measure, carried, cx),
         };
         // Esc folds the open module before the shell does anything of its own.
         if (open_at.is_some() || nav_value.pending.is_some()) && self.active {
@@ -1419,6 +1419,7 @@ impl Folio {
         nav: &Entity<Nav>,
         measure: &Measure,
         carried: f32,
+        cx: &mut App,
     ) -> AnyElement {
         let facts = &self.facts;
         let module = &facts.modules[open];
@@ -1491,6 +1492,7 @@ impl Folio {
         let name_words: Vec<SharedString> = module.items.iter().map(|i| i.name.clone()).collect();
         // The cards are doors, registered now (in walk order: before the
         // crest's cells, which the module view would otherwise follow).
+        let mut native_controls = Vec::new();
         if active {
             for (index, symbol) in symbols.iter().enumerate() {
                 let leave_id = PageTarget::Card(symbol.clone()).id();
@@ -1518,6 +1520,11 @@ impl Folio {
                         }
                     })
                 };
+                native_controls.push(NativeCardControl {
+                    id: ElementId::Name(leave_id.clone()),
+                    focus: targets.native_handle(&leave_id, cx),
+                    admit: Rc::clone(&self.admit_read),
+                });
                 targets.push(Target {
                     id: leave_id,
                     label: name_words.get(index).cloned().unwrap_or_default(),
@@ -1534,6 +1541,7 @@ impl Folio {
             cards,
             measure,
         )
+        .native_controls(move |index| native_controls.get(index).cloned())
         .doc(module.doc.clone())
         .card_name_intent(if active {
             facet::reading::Intent::NameOfExistingControl

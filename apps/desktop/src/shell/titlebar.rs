@@ -281,7 +281,12 @@ impl Render for Titlebar {
         let act: super::focus::Act = Rc::new(move |window, cx| {
             toggle_links.shell(cx, |shell, cx| shell.toggle_shelf(window, cx));
         });
-        let target_action = local_target_action(&self.links, act, cx);
+        let shell = self.links.shell.clone();
+        let scope = shell.upgrade().map(|shell| shell.read(cx).local_activation_scope());
+        let target_action = TargetAction::new(Rc::new(move |app| {
+            scope.is_some_and(|scope| shell.upgrade().is_some_and(|shell|
+                shell.read(app).admits_shelf_toggle_scope(scope, app)))
+        }), act);
         let act = target_action.callback();
         self.targets.push(Target { id: id.clone(), label: "Toggle the shelf".into(), action: target_action, peek: None, source: None });
         left = left.child(
