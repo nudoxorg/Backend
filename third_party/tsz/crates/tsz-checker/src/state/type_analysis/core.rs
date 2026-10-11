@@ -1234,16 +1234,23 @@ impl CheckerState<'_> {
         // aliases, so they may never reach resolve_lazy_type's metered walk.
         // Charge this alias-resolution boundary when a project meter is
         // installed; a missing meter is a no-op and preserves legacy callers.
-        if self
+        let is_type_alias = self
             .ctx
             .binder
             .get_symbol(sym_id)
             .or_else(|| self.get_cross_file_symbol(sym_id))
-            .is_some_and(|symbol| symbol.has_any_flags(symbol_flags::TYPE_ALIAS))
-            && self.ctx.types.execution_checkpoint(1).is_err()
-        {
+            .is_some_and(|symbol| symbol.has_any_flags(symbol_flags::TYPE_ALIAS));
+        if is_type_alias && self.ctx.types.execution_checkpoint(1).is_err() {
             return TypeId::UNKNOWN;
         }
+        let is_local_type_alias = self
+            .ctx
+            .binder
+            .get_symbol(sym_id)
+            .is_some_and(|symbol| symbol.has_any_flags(symbol_flags::TYPE_ALIAS));
+        let is_nested_same_file_type_alias = is_local_type_alias
+            && self.ctx.symbol_resolution_depth.get() > 0
+            && self.ctx.resolve_symbol_file_index(sym_id) == Some(self.ctx.current_file_idx);
 
         // Shared cross-context stack-overflow breaker: probe → trip → grow.
         // Symbol type resolution is a node in the heritage-merge recursion
@@ -1251,9 +1258,15 @@ impl CheckerState<'_> {
         // carry the same breaker as the merge entry points (#14111). `None`
         // signals a bail (already tripped, or this probe tripped it); cache
         // `ERROR` for the symbol on that path, matching the prior behaviour.
-        let type_id = if let Some(type_id) = crate::checkers_domain::with_stack_guard(None, || {
-            Some(self.get_type_of_symbol_inner(sym_id))
-        }) {
+        // A nested local alias walk grows before this guard so its periodic
+        // probe does not trip on the caller stack before stacker can grow it.
+        let resolve = || Some(self.get_type_of_symbol_inner(sym_id));
+        let guarded_type = if is_nested_same_file_type_alias {
+            crate::checkers_domain::with_same_file_alias_stack_guard(None, resolve)
+        } else {
+            crate::checkers_domain::with_stack_guard(None, resolve)
+        };
+        let type_id = if let Some(type_id) = guarded_type {
             type_id
         } else {
             self.ctx.symbol_types.insert(sym_id, TypeId::ERROR);

@@ -124,6 +124,22 @@ pub fn with_stack_guard<T>(on_exhausted: T, body: impl FnOnce() -> T) -> T {
     stacker::maybe_grow(STACK_RED_ZONE_BYTES, STACK_GROW_BYTES, body)
 }
 
+/// Grow before probing the shared breaker for a nested same-file alias walk.
+///
+/// The normal guard intentionally trips with 1 MiB of headroom to bound
+/// cross-context recursion. A bounded source alias chain can otherwise hit
+/// that probe on a smaller caller stack before its `maybe_grow` red zone is
+/// reached. Calling this only from the already-entered, same-file type-alias
+/// path gives the existing breaker at least 1 MiB of headroom, growing a 2 MiB
+/// segment when needed. The inner guard, recursion-depth caps, and execution
+/// checkpoints remain in force.
+#[inline]
+pub fn with_same_file_alias_stack_guard<T>(on_exhausted: T, body: impl FnOnce() -> T) -> T {
+    stacker::maybe_grow(STACK_BAILOUT_HEADROOM_BYTES, STACK_GROW_BYTES, || {
+        with_stack_guard(on_exhausted, body)
+    })
+}
+
 /// Trip the stack overflow breaker.  Called from guards in `dispatch.rs` and
 /// `state/type_analysis/core.rs` when `stacker::remaining_stack()` reports
 /// < 256 KB remaining.
