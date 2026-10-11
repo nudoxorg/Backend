@@ -640,13 +640,13 @@ impl Library {
             .ok_or(LibraryError::NotFound)?;
         self.work.record_seek();
         let root_id = RowId::Symbol(symbol);
-        let root = self.view.row(root_id).ok_or(LibraryError::NotFound)?;
+        let root = self.view.row_ref(root_id).ok_or(LibraryError::NotFound)?;
         let mut ids = Vec::with_capacity(1 + usize::from(QueryLimit::MAX));
         ids.push(root_id);
         if let Some(package) = root.package {
             if let Some(parent) = root.parent {
                 let parent_id = RowId::Symbol(parent);
-                if self.arrangement.document(parent) && self.view.row(parent_id).is_some() {
+                if self.arrangement.document(parent) && self.view.row_ref(parent_id).is_some() {
                     ids.push(parent_id);
                 }
             }
@@ -750,7 +750,9 @@ impl Library {
                     "semantic graph contains a duplicate typed relation".to_owned(),
                 ));
             }
-            if self.view.row(relation.from).is_none() || self.view.row(relation.to).is_none() {
+            if self.view.row_ref(relation.from).is_none()
+                || self.view.row_ref(relation.to).is_none()
+            {
                 return Err(LibraryError::InvalidQuery(
                     "semantic graph relation endpoint is absent from the selected view".to_owned(),
                 ));
@@ -938,7 +940,7 @@ impl Library {
         self.check_basis(page.basis())?;
         let root = self
             .view
-            .row(RowId::Symbol(symbol))
+            .row_ref(RowId::Symbol(symbol))
             .ok_or(LibraryError::NotFound)?;
         let mut recipe_bytes = b"graph-page".to_vec();
         recipe_bytes.extend_from_slice(&address.claimed_bytes());
@@ -946,10 +948,10 @@ impl Library {
         let limit = usize::from(page.limit().get());
         let cursor = page.continuation().map(crate::PageContinuation::cursor);
         let start = self.check_query_cursor(cursor, recipe, limit, |offset| {
-            self.graph_page_ids(&root, symbol, offset, limit)
+            self.graph_page_ids(root, symbol, offset, limit)
         })?;
         self.check_graph_address(symbol, address)?;
-        let result = self.graph_page_ids(&root, symbol, start, limit);
+        let result = self.graph_page_ids(root, symbol, start, limit);
         self.projection_page(&recipe_bytes, &result, start, limit)
     }
 
@@ -974,7 +976,7 @@ impl Library {
                 "graph page identities violate the selected neighborhood".to_owned(),
             ));
         }
-        if ids.iter().any(|id| self.view.row(*id).is_none()) {
+        if ids.iter().any(|id| self.view.row_ref(*id).is_none()) {
             return Err(LibraryError::NotFound);
         }
         let mut recipe_bytes = b"graph-page".to_vec();
@@ -1005,7 +1007,7 @@ impl Library {
         let mut prefix = vec![RowId::Symbol(symbol)];
         if let Some(parent) = root.parent {
             let id = RowId::Symbol(parent);
-            if self.view.row(id).is_some() {
+            if self.view.row_ref(id).is_some() {
                 prefix.push(id);
             }
         }
