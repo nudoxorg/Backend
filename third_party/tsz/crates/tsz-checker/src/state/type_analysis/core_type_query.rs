@@ -1538,7 +1538,18 @@ impl<'a> CheckerState<'a> {
                 .or(target_idx);
             let mut props = Vec::new();
             for &(name, export_sym_id) in &ordered_exports {
-                if let Some(owner_file_idx) = exports_table_target {
+                let owner_file_idx = if configured {
+                    // An ambient export= surface can contain members hydrated
+                    // from a different exact file request. Keep each member's
+                    // owner instead of lending the first table entry's file.
+                    self.ctx
+                        .resolve_symbol_declaring_file_index(export_sym_id)
+                        .or_else(|| self.ctx.resolve_dynamic_symbol_file_index(export_sym_id))
+                        .or(target_idx)
+                } else {
+                    exports_table_target
+                };
+                if let Some(owner_file_idx) = owner_file_idx {
                     self.ctx
                         .register_symbol_file_target(export_sym_id, owner_file_idx);
                 }
