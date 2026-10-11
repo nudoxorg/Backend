@@ -25,7 +25,7 @@ pub(in super::super) struct CapturedBaselines {
 }
 
 impl CapturedBaselines {
-    pub(in super::super) fn capture(
+    pub(super) fn capture(
         layout: &CapturedProjectLayout,
         original: &Path,
         configurations: &[PathBuf],

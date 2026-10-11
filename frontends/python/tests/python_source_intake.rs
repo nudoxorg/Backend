@@ -1,3 +1,8 @@
+//! Integration tests for native Python analysis of caller-provided source bytes.
+//!
+//! These cases check per-file syntax and encoding refusal, coverage-gap reporting,
+//! dependency failure propagation, and preservation of original UTF-8 byte spans.
+
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
