@@ -204,7 +204,7 @@ impl<'a> CheckerContext<'a> {
         })
     }
 
-    fn bound_module_request_at(
+    pub(crate) fn bound_module_request_at(
         &self,
         importer: usize,
         declaration: NodeIndex,
