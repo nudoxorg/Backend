@@ -72,28 +72,41 @@ impl TypeInterner {
         flat: Vec<TypeId>,
         work: &mut Option<&mut UnionExecutionWork<'_>>,
     ) -> Result<TypeId, ProjectExecutionStop> {
-        let mut reduced: TypeListBuffer = SmallVec::new();
-        for member in flat {
-            tick_union_execution_work(work, 1)?;
-            reduced.push(member);
+        if flat.is_empty() {
+            flush_union_execution_work(work)?;
+            return Ok(TypeId::NEVER);
         }
-        if !self.strict_null_checks() {
-            if let Some(collapsed) =
-                self.reduce_and_collapse_nonstrict_with_work(&mut reduced, work)?
-            {
-                flush_union_execution_work(work)?;
-                Ok(collapsed)
-            } else {
-                flush_union_execution_work(work)?;
-                let list_id = self.intern_type_list_from_slice(&reduced);
-                Ok(self.intern(TypeData::Union(list_id)))
+        if flat.len() == 1 {
+            if work.is_some() {
+                tick_union_execution_work(work, 1)?;
             }
-        } else if reduced.is_empty() {
             flush_union_execution_work(work)?;
-            Ok(TypeId::NEVER)
-        } else if reduced.len() == 1 {
+            return Ok(flat[0]);
+        }
+
+        if self.strict_null_checks() {
+            if work.is_some() {
+                for _ in &flat {
+                    tick_union_execution_work(work, 1)?;
+                }
+            }
             flush_union_execution_work(work)?;
-            Ok(reduced[0])
+            let list_id = self.intern_type_list(flat);
+            return Ok(self.intern(TypeData::Union(list_id)));
+        }
+
+        // Preserve the sorted Vec allocation for the strict fast path above. In
+        // non-strict mode, re-use its heap allocation when it fits SmallVec's
+        // spill representation, while still charging the consumed input.
+        if work.is_some() {
+            for _ in &flat {
+                tick_union_execution_work(work, 1)?;
+            }
+        }
+        let mut reduced = TypeListBuffer::from_vec(flat);
+        if let Some(collapsed) = self.reduce_and_collapse_nonstrict_with_work(&mut reduced, work)? {
+            flush_union_execution_work(work)?;
+            Ok(collapsed)
         } else {
             flush_union_execution_work(work)?;
             let list_id = self.intern_type_list_from_slice(&reduced);
@@ -689,39 +702,46 @@ mod sorted_vec_checkpoint_tests {
 
     #[test]
     fn sorted_vec_shared_path_preserves_strict_and_nonstrict_results() {
-        let strict = TypeInterner::new();
-        let sorted = vec![TypeId::NUMBER, TypeId::NULL];
-        let ordinary = strict.union_from_sorted_vec(sorted.clone());
-        assert!(matches!(strict.lookup(ordinary), Some(TypeData::Union(_))));
-        let checked = strict
-            .union_from_sorted_vec_with_execution_checkpoint(sorted, &ContinueCheckpoint)
-            .expect("continuing checkpoint preserves the ordinary result");
-        assert_eq!(checked, ordinary);
-        assert_eq!(
-            strict.union_from_sorted_vec(Vec::new()),
-            strict
-                .union_from_sorted_vec_with_execution_checkpoint(Vec::new(), &ContinueCheckpoint,)
-                .expect("empty sorted input completes"),
-        );
-        assert_eq!(
-            strict.union_from_sorted_vec(vec![TypeId::STRING]),
-            strict
-                .union_from_sorted_vec_with_execution_checkpoint(
-                    vec![TypeId::STRING],
-                    &ContinueCheckpoint,
-                )
-                .expect("singleton sorted input completes"),
-        );
+        for strict_null_checks in [true, false] {
+            let interner = TypeInterner::new();
+            interner.set_strict_null_checks(strict_null_checks);
 
-        let nonstrict = TypeInterner::new();
-        nonstrict.set_strict_null_checks(false);
-        let sorted = vec![TypeId::NUMBER, TypeId::NULL];
-        let ordinary = nonstrict.union_from_sorted_vec(sorted.clone());
-        assert_eq!(ordinary, TypeId::NUMBER);
-        let checked = nonstrict
-            .union_from_sorted_vec_with_execution_checkpoint(sorted, &ContinueCheckpoint)
-            .expect("continuing checkpoint preserves nonstrict absorption");
-        assert_eq!(checked, ordinary);
+            let sorted = vec![TypeId::NUMBER, TypeId::NULL];
+            let ordinary = interner.union_from_sorted_vec(sorted.clone());
+            if strict_null_checks {
+                assert!(matches!(
+                    interner.lookup(ordinary),
+                    Some(TypeData::Union(_))
+                ));
+            } else {
+                assert_eq!(ordinary, TypeId::NUMBER);
+            }
+            let checked = interner
+                .union_from_sorted_vec_with_execution_checkpoint(sorted, &ContinueCheckpoint)
+                .expect("continuing checkpoint preserves the ordinary result");
+            assert_eq!(checked, ordinary);
+
+            assert_eq!(
+                interner.union_from_sorted_vec(Vec::new()),
+                interner
+                    .union_from_sorted_vec_with_execution_checkpoint(
+                        Vec::new(),
+                        &ContinueCheckpoint,
+                    )
+                    .expect("empty sorted input completes"),
+            );
+            for singleton in [TypeId::NULL, TypeId::UNDEFINED, TypeId::STRING] {
+                let ordinary = interner.union_from_sorted_vec(vec![singleton]);
+                let checked = interner
+                    .union_from_sorted_vec_with_execution_checkpoint(
+                        vec![singleton],
+                        &ContinueCheckpoint,
+                    )
+                    .expect("singleton sorted input completes");
+                assert_eq!(ordinary, singleton);
+                assert_eq!(checked, ordinary);
+            }
+        }
     }
 
     #[test]
