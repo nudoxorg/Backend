@@ -83,12 +83,33 @@ struct Gate {
 #[derive(Default)]
 pub(super) struct SearchLane {
     active: Option<Active>,
+    selected: Option<(
+        WorkspaceRoot,
+        backend_library::ViewStateRoot,
+        Arc<AtomicBool>,
+    )>,
     closed: bool,
     #[cfg(test)]
     next_gate: Option<Gate>,
 }
 
 impl SearchLane {
+    /// Borrows the actual successful preparation lifetime. A caller's
+    /// disconnect cannot cancel this shared selected-owner lifetime.
+    pub(super) fn selected_cancellation(
+        &self,
+        workspace: WorkspaceRoot,
+        view: backend_library::ViewStateRoot,
+    ) -> Option<Arc<AtomicBool>> {
+        self.selected
+            .as_ref()
+            .and_then(|(selected_workspace, selected_view, cancelled)| {
+                (*selected_workspace == workspace
+                    && *selected_view == view
+                    && !cancelled.load(Ordering::Acquire))
+                .then(|| Arc::clone(cancelled))
+            })
+    }
     /// A request observes this one worker; it never waits on its completion.
     pub(super) fn state_for(
         &mut self,
@@ -207,6 +228,11 @@ impl SearchLane {
         workspace: WorkspaceRoot,
         view: backend_library::ViewStateRoot,
     ) {
+        if let Some((selected_workspace, selected_view, cancelled)) = &self.selected
+            && (*selected_workspace != workspace || *selected_view != view)
+        {
+            cancelled.store(true, Ordering::Release);
+        }
         if let Some(active) = self.active.as_ref() {
             if active.workspace != workspace || active.view != view {
                 active.cancelled.store(true, Ordering::Release);
@@ -236,6 +262,12 @@ impl SearchLane {
             Ok((projection, result)) => (Some(projection), result),
             Err(_) => (None, Err(Failure::Stopped)),
         };
+        if current && result.is_ok() {
+            if let Some((_, _, cancelled)) = &self.selected {
+                cancelled.store(true, Ordering::Release);
+            }
+            self.selected = Some((workspace, view, active.cancelled));
+        }
         Some(Completion {
             projection,
             result,
@@ -247,6 +279,9 @@ impl SearchLane {
     /// progress; the active control loop and cancellation never perform it.
     pub(super) fn close(&mut self) {
         self.closed = true;
+        if let Some((_, _, cancelled)) = self.selected.take() {
+            cancelled.store(true, Ordering::Release);
+        }
         if let Some(active) = self.active.take() {
             active.cancelled.store(true, Ordering::Release);
             drop(active.completed);
