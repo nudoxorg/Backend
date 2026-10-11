@@ -7,6 +7,7 @@
 
 mod embedding_cache;
 mod local;
+mod local_recipe;
 mod projection_state;
 mod remote;
 mod semantic;
@@ -15,6 +16,10 @@ pub use local::{
     CoverageBasis, Freshness, Lane, LaneReport, LeftOut, LexicalFailureCause, LexicalPhase,
     LocalAnswer, LocalQuery, QueryCoordinator, QueryError, QueryResult, RankedRow,
     SearchSnapshotOwner, SemanticDocument, SourceBasis,
+};
+pub use local_recipe::{
+    AdmittedLocalQueryRecipe, LocalEmbeddingTreatment, LocalQueryRecipeContract,
+    LocalQueryRecipeDescriptor, LocalQueryRecipeError,
 };
 pub use remote::{
     ActiveQdrant, ConfiguredQdrant, EMBEDDING_DEVICE_ENV, EMBEDDING_DIMENSIONS_ENV,
