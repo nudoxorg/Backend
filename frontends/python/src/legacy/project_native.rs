@@ -347,8 +347,14 @@ pub(super) fn analyze(
         let unavailable_path: Box<str> = (*path).into();
         // The committed Handle graph is the only authority for the reverse
         // dependency closure of unavailable syntax and compiled-shadow sources.
-        for dependent in read.get_transitive_rdeps(loaded) {
+        for dependent in read.get_transitive_rdeps(loaded.clone()) {
             checkpoint(control)?;
+            // Pyrefly includes the input Handle in this reflexive closure even
+            // without a dependency edge. The direct compiled cause is retained
+            // separately; only other selected owners are dependency causes.
+            if dependent == loaded {
+                continue;
+            }
             let Some(dependent_path) = selected_native_paths
                 .get(dependent.path().as_path())
                 .filter(|path| syntax.contains_key(**path))
