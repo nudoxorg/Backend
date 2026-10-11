@@ -179,7 +179,7 @@ impl<'a> CheckerState<'a> {
                     })
                 })
         {
-            let source_modules = source_modules.clone();
+            let source_modules = source_modules.shared();
 
             // When multiple wildcard sources provide the same name, prefer a VALUE
             // export over type-only paths, including pure TYPE declarations and
@@ -367,7 +367,7 @@ impl<'a> CheckerState<'a> {
                 })
             })
         {
-            let source_modules = source_modules.clone();
+            let source_modules = source_modules.shared();
             for edge in source_modules.edges() {
                 let (source_module, is_type_only) = &edge.target;
                 if *is_type_only {

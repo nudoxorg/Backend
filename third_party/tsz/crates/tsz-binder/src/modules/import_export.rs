@@ -351,8 +351,8 @@ impl BinderState {
     }
 
     // Bind-time parent work is performed once, using the same admitted budget.
-    // Preserve this base's owner-key semantics; namespace-owner policy belongs
-    // to the independently reviewed immediate correctness repair.
+    // The nearest module declaration chooses the key. An identifier namespace
+    // chooses the actual source root, never an enclosing literal module.
     fn retain_wildcard_declaration(
         &self,
         arena: &NodeArena,
@@ -366,6 +366,7 @@ impl BinderState {
             return Ok(None);
         };
         let mut ancestor = arena.parent_of(declaration);
+        let mut file_owner = false;
         for _ in 0..arena.len() {
             if let Some(checkpoint) = checkpoint {
                 checkpoint.checkpoint(1)?;
@@ -376,14 +377,20 @@ impl BinderState {
             let Some(node) = arena.get(index) else {
                 return Ok(None);
             };
-            let key = if let Some(module) = arena.get_module(node) {
-                Some(
-                    arena
-                        .get_literal_text(module.name)
-                        .unwrap_or(&self.debugger.current_file),
-                )
-            } else if node.kind == tsz_parser::parser::syntax_kind_ext::SOURCE_FILE {
-                Some(self.debugger.current_file.as_str())
+            let key = if let Some(source) = arena.get_source_file(node) {
+                Some(source.file_name.as_str())
+            } else if !file_owner {
+                if let Some(module) = arena.get_module(node) {
+                    match arena.get_literal_text(module.name) {
+                        Some(name) => Some(name),
+                        None => {
+                            file_owner = true;
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
             } else {
                 None
             };

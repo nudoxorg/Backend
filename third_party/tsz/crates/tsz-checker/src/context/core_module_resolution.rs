@@ -452,7 +452,7 @@ impl CheckerContext<'_> {
 
         // Wildcard re-exports: `export * from './other'`.
         if let Some(source_modules) = self.wildcard_reexports_for_file(target_binder, &file_name) {
-            let source_modules = source_modules.clone();
+            let source_modules = source_modules.shared();
             for edge in source_modules.edges() {
                 if let Some(source_idx) =
                     self.resolve_wildcard_reexport_target_from_file(target_idx, &file_name, edge)
@@ -530,7 +530,7 @@ impl CheckerContext<'_> {
 
         // Wildcard re-exports: `export * from './other'`.
         if let Some(source_modules) = self.wildcard_reexports_for_file(target_binder, &file_name) {
-            let source_modules = source_modules.clone();
+            let source_modules = source_modules.shared();
             for edge in source_modules.edges() {
                 if let Some(source_idx) =
                     self.resolve_wildcard_reexport_target_from_file(target_idx, &file_name, edge)

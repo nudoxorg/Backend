@@ -7,7 +7,7 @@
 //!
 //! # Format
 //!
-//! `[8-byte magic "TSZSNAP\x03"][bincode payload]`. Bumping the trailing
+//! `[8-byte magic "TSZSNAP\x0a"][bincode payload]`. Bumping the trailing
 //! byte invalidates older snapshots — necessary when the
 //! `BinderState`/`NodeArena` layout shifts in a way that breaks
 //! positional binary decoding.
@@ -57,7 +57,7 @@ use tsz_parser::parser::node::NodeArena;
 
 /// Magic header. Trailing byte is the format version. Bump on layout
 /// changes that break round-trip.
-const SNAPSHOT_MAGIC: &[u8; 8] = b"TSZSNAP\x09";
+const SNAPSHOT_MAGIC: &[u8; 8] = b"TSZSNAP\x0a";
 
 /// Environment variable that controls the lib snapshot cache.
 const ENV_VAR: &str = "TSZ_LIB_CACHE";
@@ -184,8 +184,14 @@ pub(super) fn try_load(file_name: &str, source_text: &str) -> Option<Arc<LibFile
         return None;
     }
     let dir = cache_dir()?;
+    try_load_in_dir(&dir, file_name, source_text)
+}
+
+// Same disk lookup and validation path, independent of process-wide cache
+// configuration. Tests can exercise cold misses without mutating global env.
+fn try_load_in_dir(dir: &Path, file_name: &str, source_text: &str) -> Option<Arc<LibFile>> {
     let hash = content_hash(file_name, source_text);
-    let path = snapshot_path(&dir, hash);
+    let path = snapshot_path(dir, hash);
     let bytes = fs::read(&path).ok()?;
     let snapshot = decode_snapshot(&bytes).ok()?;
     if snapshot.content_hash != hash || snapshot.file_name != file_name {
@@ -274,11 +280,20 @@ pub(super) fn try_store(file_name: &str, source_text: &str, lib: &Arc<LibFile>) 
         return Ok(());
     }
     let dir = cache_dir().ok_or_else(|| anyhow!("no cache directory available"))?;
-    fs::create_dir_all(&dir)
+    try_store_in_dir(&dir, file_name, source_text, lib)
+}
+
+fn try_store_in_dir(
+    dir: &Path,
+    file_name: &str,
+    source_text: &str,
+    lib: &Arc<LibFile>,
+) -> Result<()> {
+    fs::create_dir_all(dir)
         .with_context(|| format!("failed to create lib cache dir {}", dir.display()))?;
 
     let hash = content_hash(file_name, source_text);
-    let path = snapshot_path(&dir, hash);
+    let path = snapshot_path(dir, hash);
 
     let snapshot = LibSnapshot {
         file_name: file_name.to_string(),
@@ -482,6 +497,93 @@ mod tests {
         let mut wrong_hash = keys;
         wrong_hash[0].1 ^= 1;
         assert!(try_load_many(&wrong_hash).is_none());
+    }
+
+    #[test]
+    fn old_header_cold_misses_then_nonempty_retained_rows_rebind_and_reopen() {
+        let dir = tempfile::TempDir::new().expect("private cache directory");
+        let name = "retained-café.d.ts";
+        let source = "export type * from 'd\\u0065p' with { 'resolution-mode': 'import' }; declare module 'pkg' { namespace N { export type * from 'dep' with { 'resolution-mode': 'require' }; } export type * from 'dep' with { 'resolution-mode': 'import' }; }";
+        let hash = content_hash(name, source);
+        let path = snapshot_path(dir.path(), hash);
+        // A previous-format header must miss before reading any old positional
+        // payload. The sentinel deliberately cannot decode as the new layout.
+        let old = b"TSZSNAP\x09old positional binder payload";
+        fs::write(&path, old).expect("old disk entry");
+        assert_eq!(
+            decode_snapshot(old).err().unwrap().to_string(),
+            "snapshot magic mismatch"
+        );
+        assert_eq!(
+            decode_snapshot_set(old).err().unwrap().to_string(),
+            "snapshot magic mismatch"
+        );
+        assert!(try_load_in_dir(dir.path(), name, source).is_none());
+        let mut rebound = false;
+        let lib = try_load_in_dir(dir.path(), name, source).unwrap_or_else(|| {
+            rebound = true;
+            parse_and_bind(name, source)
+        });
+        assert!(rebound, "old cache cannot bypass binding");
+        assert_eq!(lib.binder.wildcard_reexports.get(name).unwrap().len(), 2);
+        assert_eq!(lib.binder.wildcard_reexports.get("pkg").unwrap().len(), 1);
+        try_store_in_dir(dir.path(), name, source, &lib).expect("new bincode disk store");
+        let original_file_rows = lib.binder.wildcard_reexports.get(name).unwrap().clone();
+        let original_ambient_rows = lib.binder.wildcard_reexports.get("pkg").unwrap().clone();
+        let root = lib.root_index;
+        drop(lib);
+        let bytes = fs::read(&path).expect("new disk bytes");
+        assert_eq!(&bytes[..8], b"TSZSNAP\x0a");
+        let cold = try_load_in_dir(dir.path(), name, source).expect("fresh bincode disk reopen");
+        assert_eq!(cold.root_index, root);
+        assert_eq!(
+            cold.binder.wildcard_reexports.get(name).unwrap(),
+            &original_file_rows
+        );
+        assert_eq!(
+            cold.binder.wildcard_reexports.get("pkg").unwrap(),
+            &original_ambient_rows
+        );
+        for owner in [name, "pkg"] {
+            for edge in cold.binder.wildcard_reexports.get(owner).unwrap().edges() {
+                let retained = edge
+                    .declaration
+                    .expect("nonempty source proof survived disk");
+                let node = cold.arena.get(retained.declaration).unwrap();
+                assert_eq!(
+                    (node.pos, node.end),
+                    (retained.location.pos, retained.location.end)
+                );
+                let export = cold.arena.get_export_decl(node).unwrap();
+                assert_eq!(export.is_type_only, edge.target.1);
+                assert_eq!(
+                    cold.arena.get_literal_text(export.module_specifier),
+                    Some(edge.target.0.as_str())
+                );
+                let owner_node = cold.arena.get(retained.owner).unwrap();
+                assert_eq!(
+                    (owner_node.pos, owner_node.end),
+                    (retained.owner_location.pos, retained.owner_location.end)
+                );
+                if owner == name {
+                    assert_eq!(retained.owner, root);
+                    assert_eq!(
+                        cold.arena.get_source_file(owner_node).unwrap().file_name,
+                        name
+                    );
+                } else {
+                    assert_eq!(
+                        cold.arena
+                            .get_literal_text(cold.arena.get_module(owner_node).unwrap().name),
+                        Some(owner)
+                    );
+                }
+                let raw = source.get(node.pos as usize..node.end as usize).unwrap();
+                assert!(raw.contains("resolution-mode"));
+            }
+        }
+        assert!(try_load_in_dir(dir.path(), "different.d.ts", source).is_none());
+        assert!(try_load_in_dir(dir.path(), name, "different source").is_none());
     }
 
     #[test]

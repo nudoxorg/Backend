@@ -1,6 +1,7 @@
 //! One canonical retained wildcard row: semantic target and exact lexical origin.
 //! The semantic iterator intentionally keeps standalone binder callers source-compatible.
 use crate::StableLocation;
+use std::sync::Arc;
 use tsz_parser::NodeIndex;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -28,7 +29,7 @@ pub struct RetainedWildcardReexport {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
-pub struct WildcardReexportRows(Vec<RetainedWildcardReexport>);
+pub struct WildcardReexportRows(Arc<Vec<RetainedWildcardReexport>>);
 
 pub type WildcardTargetIter<'a> = std::iter::Map<
     std::slice::Iter<'a, RetainedWildcardReexport>,
@@ -36,20 +37,29 @@ pub type WildcardTargetIter<'a> = std::iter::Map<
 >;
 
 impl WildcardReexportRows {
+    /// O(1) immutable row ownership for recursive checker calls. This copies no
+    /// target string or provenance row; mutation remains binder/reducer-owned.
+    pub fn shared(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
     pub fn iter(&self) -> WildcardTargetIter<'_> {
         self.0.iter().map(|row| &row.target)
     }
     pub fn to_vec(&self) -> Vec<(String, bool)> {
         self.iter().cloned().collect()
     }
-    pub fn capacity(&self) -> usize {
-        self.0.capacity()
+    /// Storage owned by the canonical Arc<Vec<_>>, excluding target strings.
+    pub fn allocation_size_bytes(&self) -> usize {
+        2 * std::mem::size_of::<usize>()
+            + std::mem::size_of::<Vec<RetainedWildcardReexport>>()
+            + self.0.capacity() * std::mem::size_of::<RetainedWildcardReexport>()
     }
     pub fn edges(&self) -> std::slice::Iter<'_, RetainedWildcardReexport> {
         self.0.iter()
     }
-    pub fn edges_mut(&mut self) -> std::slice::IterMut<'_, RetainedWildcardReexport> {
-        self.0.iter_mut()
+    #[cfg(test)]
+    fn edges_mut(&mut self) -> std::slice::IterMut<'_, RetainedWildcardReexport> {
+        Arc::make_mut(&mut self.0).iter_mut()
     }
     pub fn push(&mut self, target: (String, bool)) {
         self.push_retained(RetainedWildcardReexport {
@@ -58,7 +68,7 @@ impl WildcardReexportRows {
         });
     }
     pub fn push_retained(&mut self, row: RetainedWildcardReexport) {
-        self.0.push(row);
+        Arc::make_mut(&mut self.0).push(row);
     }
     pub fn len(&self) -> usize {
         self.0.len()
@@ -77,7 +87,8 @@ impl From<Vec<(String, bool)>> for WildcardReexportRows {
                     target,
                     declaration: None,
                 })
-                .collect(),
+                .collect::<Vec<_>>()
+                .into(),
         )
     }
 }
@@ -97,7 +108,9 @@ impl IntoIterator for WildcardReexportRows {
         fn(RetainedWildcardReexport) -> (String, bool),
     >;
     fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter().map(|row| row.target)
+        Arc::unwrap_or_clone(self.0)
+            .into_iter()
+            .map(|row| row.target)
     }
 }
 
@@ -122,6 +135,12 @@ mod tests {
             rows.iter().cloned().collect::<Vec<_>>(),
             vec![("dep".into(), true), ("dep".into(), false)]
         );
+        let shared = rows.shared();
+        assert!(Arc::ptr_eq(&rows.0, &shared.0));
+        assert!(std::ptr::eq(
+            rows.edges().next().unwrap(),
+            shared.edges().next().unwrap()
+        ));
         let edges = rows.edges().collect::<Vec<_>>();
         let first = edges[0].declaration.unwrap();
         let second = edges[1].declaration.unwrap();

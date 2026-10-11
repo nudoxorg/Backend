@@ -442,7 +442,7 @@ impl<'a> CheckerState<'a> {
                         .ctx
                         .wildcard_reexports_for_file(target_binder, file_name)
                     {
-                        let source_modules = source_modules.clone();
+                        let source_modules = source_modules.shared();
                         for (source_module, _is_type_only) in &source_modules {
                             if let Some(wc_target_idx) = self
                                 .ctx

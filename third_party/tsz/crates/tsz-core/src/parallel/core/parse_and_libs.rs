@@ -651,7 +651,7 @@ impl BindResult {
         for (k, v) in self.wildcard_reexports.iter() {
             tick!();
             size += k.capacity() + std::mem::size_of::<u64>();
-            size += v.capacity() * std::mem::size_of::<tsz_binder::RetainedWildcardReexport>();
+            size += v.allocation_size_bytes();
             for edge in v.edges() {
                 tick!();
                 size += edge.target.0.capacity();

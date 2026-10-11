@@ -2776,3 +2776,73 @@ mod retained_wildcard_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod retained_source_owner_tests {
+    use super::*;
+    use tsz_binder::BinderState;
+    use tsz_parser::parser::ParserState;
+    use tsz_solver::construction::{QueryCache, TypeInterner};
+
+    #[test]
+    fn source_root_and_identifier_namespace_keep_exact_file_owner() {
+        let name = "source.ts";
+        let text = "export type * from 'dep' with { 'resolution-mode': 'import' }; declare module 'pkg' { namespace Hidden { export type * from 'dep' with { 'resolution-mode': 'require' }; } export type * from 'dep' with { 'resolution-mode': 'import' }; }";
+        let mut parser = ParserState::new(name.into(), text.into());
+        let root = parser.parse_source_file();
+        assert!(parser.get_diagnostics().is_empty());
+        let arena = Arc::new(parser.into_arena());
+        let mut binder = BinderState::new();
+        binder.set_file_idx(0);
+        binder.bind_source_file(&arena, root);
+        let binder = Arc::new(binder);
+        let interner = TypeInterner::new();
+        let queries = QueryCache::new(&interner);
+        let mut ctx =
+            CheckerContext::new(&arena, &binder, &queries, name.into(), Default::default());
+        ctx.all_arenas = Some(Arc::new(vec![arena.clone()]));
+        ctx.all_binders = Some(Arc::new(vec![binder.clone()]));
+        let file_rows = binder.wildcard_reexports.get(name).unwrap();
+        assert_eq!(file_rows.len(), 2);
+        let mut modes = Vec::new();
+        for edge in file_rows.edges() {
+            let retained = edge.declaration.unwrap();
+            assert_eq!(retained.owner, root);
+            assert!(
+                arena
+                    .get_source_file(arena.get(retained.owner).unwrap())
+                    .is_some()
+            );
+            let request = ctx.bound_wildcard_reexport_request(0, name, edge).unwrap();
+            modes.push(request.mode);
+            assert_eq!(request.importer, 0);
+            assert!(ctx.bound_wildcard_reexport_request(1, name, edge).is_none());
+            assert!(
+                ctx.bound_wildcard_reexport_request(0, "other.ts", edge)
+                    .is_none()
+            );
+            assert!(
+                ctx.bound_wildcard_reexport_request(0, "pkg", edge)
+                    .is_none()
+            );
+        }
+        assert_eq!(
+            modes,
+            vec![
+                Some(ResolutionModeOverride::Import),
+                Some(ResolutionModeOverride::Require)
+            ]
+        );
+        let ambient = binder.wildcard_reexports.get("pkg").unwrap();
+        assert_eq!(ambient.len(), 1);
+        let edge = ambient.edges().next().unwrap();
+        assert_ne!(edge.declaration.unwrap().owner, root);
+        assert!(ctx.bound_wildcard_reexport_request(0, name, edge).is_none());
+        assert_eq!(
+            ctx.bound_wildcard_reexport_request(0, "pkg", edge)
+                .unwrap()
+                .mode,
+            Some(ResolutionModeOverride::Import)
+        );
+    }
+}
