@@ -394,6 +394,18 @@ let
               ps -p "$pid" -o command= | awk '{print $1}'
             fi
           }
+          process_running() {
+            kill -0 "$1" 2>/dev/null || return 1
+            # A worker's PID 1 may not reap orphaned locald children. A
+            # zombie has exited even though kill -0 still sees its PID.
+            if [ -r "/proc/$1/stat" ]; then
+              state=$(awk '{sub(/^.*\) /, ""); print $1}' "/proc/$1/stat")
+            else
+              state=$(ps -p "$1" -o stat= | awk '{print $1}')
+            fi
+            case "$state" in Z*|X*|x*) return 1 ;; esac
+            return 0
+          }
           acquire_lock() {
             lockdir="$pidfile.lock"
             if ! mkdir "$lockdir" 2>/dev/null; then
@@ -473,8 +485,8 @@ let
               validate_owner
               pid=$(owner_value pid)
               kill "$pid"
-              for attempt in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.05; done
-              if kill -0 "$pid" 2>/dev/null; then echo "backend-locald did not stop cleanly; retaining owner record" >&2; exit 75; fi
+              for attempt in $(seq 1 20); do process_running "$pid" || break; sleep 0.05; done
+              if process_running "$pid"; then echo "backend-locald did not stop cleanly; retaining owner record" >&2; exit 75; fi
               rm -f "$pidfile"
               rm -f "$ownerfile"
               ;;
