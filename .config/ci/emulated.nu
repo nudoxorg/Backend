@@ -186,6 +186,9 @@ def main [
         | save --append $config
     }
     let packages = platform-packages | each {|name| ["-p" $name] } | flatten
+    # CI's 62 GiB worker can compile more than the repository's conservative
+    # two-job developer default. Runtime concurrency remains separately bounded.
+    $env.CARGO_BUILD_JOBS = ($env.CARGO_BUILD_JOBS? | default "8")
     print $"== emulated: ($platform) \(($lane.target)\) on (platform-packages | length) crates =="
     let counts = (
         $lane.excluded
@@ -206,6 +209,8 @@ def main [
     | transpose name value
     | where {|row| $row.name =~ '^(CARGO_TARGET_DIR|CARGO_HOME|TMPDIR|WINEPREFIX|NEXTEST_|CARGO_TARGET_.*_RUNNER)' }
     | each {|row| print $"   env ($row.name)=($row.value)" }
+    print $"   compiling and listing tests with ($env.CARGO_BUILD_JOBS) Cargo jobs"
+    let listing_started = date now
     let listed = (
         try {
             do { ^cargo nextest list --locked --message-format oneline --config-file $config --profile emulated --target $lane.target ...$packages -E $filter }
@@ -214,6 +219,7 @@ def main [
             {exit_code: 1, stdout: "", stderr: $error.msg}
         }
     )
+    print $"CI-TIMING lane=($platform) step=compile-and-list seconds=(((date now) - $listing_started) / 1sec | math round) result=(if $listed.exit_code == 0 { 'PASS' } else { 'FAIL' })"
     let selection = validate-nextest-list $listed
     print $"   nextest list exit=($listed.exit_code), (($selection.tests | length)) selected tests"
     if $listed.exit_code != 0 {

@@ -79,6 +79,21 @@ to the exact head's final status. A commit's authored timestamp is not a push
 timestamp. Until that link is measured, do not advertise a push-to-green average
 or p99. Report full-runtime and fast-gate results separately.
 
+### Git source pins and emulated build capacity
+
+`ci-cargo-git-hashes` checks that every Git package in `Cargo.lock` has a
+SHA-256 source pin in `.config/nix/tools.nix`. The Linux packaging checks use
+that map to vendor the whole lockfile, even for a restricted package build.
+Adding a Git dependency requires a hash for each package supplied by that
+repository. Coverage is checked in the fast lane; Nix verifies fetched source
+contents against the pins during packaging.
+
+Emulated CI compilation defaults to eight Cargo jobs on the 62 GiB worker;
+an explicit `CARGO_BUILD_JOBS` overrides that CI setting. The repository's
+two-job developer default stays unchanged. QEMU runtime execution uses four
+test threads to avoid fsync and short-deadline contention. `compile-and-list`
+timing separates compilation from the subsequent runtime tests.
+
 ### Wine private-storage limitation
 
 Runtime build 2558 on PR131 ran 588 Windows cases: 519 passed and 69 failed.
