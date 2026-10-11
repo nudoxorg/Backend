@@ -118,3 +118,8 @@ finalization. Neither number includes time waiting for a worker. The first
 actual push took about 402 seconds from push completion to the fast verdict.
 A rerun requested through commit status is not a new push and cannot be used
 as a push-to-result sample.
+
+A verified-head heartbeat in the new pipeline finished in 36 seconds, with
+`verification_needed=false` and no cached Cargo task. A recorded old heartbeat
+that also skipped all heads took 289 seconds. Avoiding cache copies matters
+even when no Rust compilation would have happened.
