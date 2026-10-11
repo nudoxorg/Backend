@@ -102,7 +102,11 @@ and positive inference under QEMU. Explicit deadline tests retain their short
 budgets. The blocked-stdin test gives process creation a separate five-second
 lifetime while preserving its 100 ms write deadline and two-second completion
 assertion; previously a 100 ms process lifetime could expire during startup
-before the blocked write was tested. Production process limits are unchanged.
+before the blocked write was tested. The microbatch deadline fixture warms its
+persistent worker and then requires two three-second responses to share one
+five-second request budget. Each fits alone; both cannot. This retains the
+exact two-call, deadline-error, no-partial-cache and recovery assertions while
+leaving scheduling headroom. Production process limits are unchanged.
 
 ### Wine private-storage limitation
 

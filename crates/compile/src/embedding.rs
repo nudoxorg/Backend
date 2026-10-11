@@ -3052,7 +3052,7 @@ while True:
     if delay_mode == "slow":
         time.sleep(1)
     elif delay_mode == "multi-batch":
-        time.sleep(1.25)
+        time.sleep(3)
     fault = open(fault_file).read().strip() if fault_file and os.path.exists(fault_file) else ""
     if fault == "partial" and items:
         items = items[:-1]
@@ -3570,9 +3570,10 @@ while True:
             ),
             ("PATH".into(), "/usr/bin:/bin".into()),
         ])?;
-        // The two 1.25-second responses must share the original two-second
-        // request budget, independently of the positive-fixture default.
-        let limits = ProcessLimits::new(256, 64, Duration::from_secs(2), 256)?
+        // Each three-second response fits alone in the five-second request
+        // budget, but two cannot. Leave scheduling headroom under emulation
+        // without allowing a fresh deadline for the second microbatch.
+        let limits = ProcessLimits::new(256, 64, Duration::from_secs(5), 256)?
             .with_input_bytes_limit(2_048)?;
         let (root, _, runtime) = activate_fixture_with_limits(
             root,
@@ -3588,6 +3589,18 @@ while True:
             .collect::<Vec<_>>();
         assert!(owned_texts.iter().all(|text| text.len() == 128));
         let texts = owned_texts.iter().map(String::as_str).collect::<Vec<_>>();
+        // Start the persistent worker before measuring the two-batch request;
+        // process startup is covered by the dedicated supervisor tests.
+        runtime.infer(EmbeddingInvocation {
+            purpose: EmbeddingPurpose::Document,
+            text: "warm persistent worker",
+        })?;
+        runtime
+            .inference_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .coordinates
+            .clear();
         fs::write(&calls, "")?;
         fs::write(&delay, "multi-batch")?;
         let failed = runtime.infer_batch(EmbeddingPurpose::Document, &texts);
