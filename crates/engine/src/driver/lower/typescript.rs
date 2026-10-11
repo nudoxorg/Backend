@@ -12346,6 +12346,7 @@ describe('suite', () => {\n\
             checker: TszCheckerOptions::default(),
             semantic_options: TszProjectSemanticOptions::declaration_scoped(),
             module_resolutions: Vec::new(),
+            file_formats: Vec::new(),
             environment: TszEnvironmentFingerprint::from_sha256([0x79; 32]),
         };
         options.checker.no_lib = true;
