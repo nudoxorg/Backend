@@ -74,7 +74,7 @@ impl TszProject {
     /// # Errors
     /// Returns [`TszProjectQuerySessionError::MissingProjectModuleResolutions`]
     /// when the merged program has no explicit project-resolution witness.
-    #[cfg(feature = "tsz-semantic-session-test-support")]
+    #[cfg(any(test, feature = "tsz-semantic-session-test-support"))]
     pub fn checked_query_session_unmetered_for_test(
         &self,
     ) -> Result<TszProjectQuerySession<'_>, TszProjectQuerySessionError> {
@@ -82,17 +82,17 @@ impl TszProject {
     }
 }
 
-#[cfg(feature = "tsz-semantic-session-test-support")]
+#[cfg(any(test, feature = "tsz-semantic-session-test-support"))]
 struct UnmeteredTestCheckpoint;
 
-#[cfg(feature = "tsz-semantic-session-test-support")]
+#[cfg(any(test, feature = "tsz-semantic-session-test-support"))]
 impl ExecutionCheckpoint for UnmeteredTestCheckpoint {
     fn checkpoint(&self, _work_units: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
         Ok(())
     }
 }
 
-#[cfg(feature = "tsz-semantic-session-test-support")]
+#[cfg(any(test, feature = "tsz-semantic-session-test-support"))]
 static UNMETERED_TEST_CHECKPOINT: UnmeteredTestCheckpoint = UnmeteredTestCheckpoint;
 
 impl<'project> TszProjectQuerySession<'project> {

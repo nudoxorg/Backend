@@ -20,6 +20,7 @@ use std::sync::Arc;
 use crate::Utf8Span;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+#[cfg(any(test, feature = "tsz-semantic-session-test-support"))]
 use tsz::tsz_solver::construction::TypeDatabase;
 use tsz_common::ExecutionCheckpoint;
 
@@ -1064,6 +1065,7 @@ impl TszProject {
     ///
     /// # Errors
     /// Returns [`TszAuthorityError::MissingFile`] for an invalid merged index.
+    #[cfg(any(test, feature = "tsz-semantic-session-test-support"))]
     pub fn with_file_checker<Output>(
         &self,
         file_index: usize,
@@ -1078,6 +1080,10 @@ impl TszProject {
         })
     }
 
+    /// Unmetered regression helper using the exact shared project query context.
+    /// This helper is available only to unit tests or explicit semantic test support.
+    /// Production projection uses [`Self::checked_query_session`] and its shared budget.
+    ///
     /// Runs a typed checker query and exposes the same checker's native type
     /// database for direct structural IR mapping. All borrows remain scoped to
     /// this exact project/file transaction; no type handles escape the
@@ -1085,6 +1091,7 @@ impl TszProject {
     ///
     /// # Errors
     /// Returns [`TszAuthorityError::MissingFile`] for an invalid merged index.
+    #[cfg(any(test, feature = "tsz-semantic-session-test-support"))]
     pub fn with_file_checker_and_types<Output>(
         &self,
         file_index: usize,
@@ -1095,27 +1102,19 @@ impl TszProject {
             &dyn TypeDatabase,
         ) -> Output,
     ) -> Result<Output, TszAuthorityError> {
-        let file = self
-            .program
+        self.program
             .files
             .get(file_index)
             .ok_or(TszAuthorityError::MissingFile(file_index))?;
-        let binder = tsz::parallel::create_binder_from_bound_file(file, &self.program, file_index);
-        let query_cache =
-            tsz::tsz_solver::construction::QueryCache::new(&self.program.type_interner)
-                .with_definition_store(&self.program.definition_store)
-                .with_project_semantic_options(self.options.semantic_options);
-        let mut checker = TszCheckerState::new_with_shared_def_store(
-            &file.arena,
-            &binder,
-            &query_cache,
-            file.file_name.clone(),
-            self.options.checker.clone(),
-            Arc::clone(&self.program.definition_store),
-        );
-        checker.check_source_file(file.source_file);
-        let types = checker.ctx.types.as_type_database();
-        Ok(consume(&mut checker, &binder, file, types))
+        let session = self.checked_query_session_unmetered_for_test()?;
+        session
+            .with_file_checker_and_types(file_index, |checker, binder, file, types| {
+                // Preserve this legacy regression helper's eager file query semantics
+                // while borrowing the same exact context as bounded projection.
+                checker.check_source_file(file.source_file);
+                consume(checker, binder, file, types)
+            })
+            .map_err(TszAuthorityError::ProjectCheckerSession)
     }
 }
 
@@ -1764,6 +1763,48 @@ mod tests {
                 );
             })
             .unwrap();
+        assert!(
+            matches!(project.with_file_checker_and_types(usize::MAX, |_, _, _, _| ()), Err(TszAuthorityError::MissingFile(index)) if index == usize::MAX)
+        );
+        let cancelled = AtomicBool::new(false);
+        let budget = execution_budget(&cancelled, 1_000_000);
+        let session = project.checked_query_session(&budget).unwrap();
+        session
+            .with_file_checker_and_types(main, |checker, _, _, _| {
+                assert_eq!(checker.ctx.file_is_esm, None);
+                assert!(Arc::ptr_eq(
+                    checker.ctx.file_is_esm_map.as_ref().unwrap(),
+                    &project.program().file_is_esm_map
+                ));
+                assert_eq!(
+                    checker.ctx.resolve_import_target_from_file_for_request(
+                        main,
+                        "./value",
+                        None,
+                        ResolutionRequestKind::EsmImport
+                    ),
+                    None
+                );
+                assert!(
+                    checker
+                        .ctx
+                        .resolve_import_target_from_file_for_request(
+                            main,
+                            "./value",
+                            Some(ResolutionModeOverride::Import),
+                            ResolutionRequestKind::EsmImport
+                        )
+                        .is_some()
+                );
+            })
+            .unwrap();
+        assert!(matches!(
+            session.with_file_checker_and_types(usize::MAX, |_, _, _, _| ()),
+            Err(TszProjectQuerySessionError::FileIndexOutOfRange {
+                file_index: usize::MAX,
+                ..
+            })
+        ));
     }
 
     #[test]
