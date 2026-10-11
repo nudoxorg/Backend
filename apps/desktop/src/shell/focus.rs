@@ -679,15 +679,26 @@ impl Targets {
         let Some((id, handle)) = next.and_then(|at| order.get(at)) else {
             return false;
         };
+        // A mounted handle can outlive its producer until the next draw.
+        // Denial consumes Tab here; it is not a region boundary that permits
+        // CE's generic walker to focus the same stale native control.
+        if !self.admits_native_target(id, cx) { return true; }
         self.focus(id.clone());
         handle.focus(window, cx);
         true
+    }
+
+    fn admits_native_target(&self, id: &str, cx: &mut App) -> bool {
+        let action = self.list.with(|list| list.iter().find(|target| target.id == id)
+            .map(|target| target.action.clone())).flatten();
+        action.is_some_and(|action| action.admits(cx))
     }
 
     pub(crate) fn focus_native(&self, id: &str, window: &mut Window, cx: &mut App) -> bool {
         let Some((_, handle)) = self.native_order().into_iter().find(|(key, _)| key == id) else {
             return false;
         };
+        if !self.admits_native_target(id, cx) { return false; }
         handle.focus(window, cx);
         true
     }

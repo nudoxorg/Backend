@@ -225,13 +225,20 @@ fn an_old_readme_more_control_cannot_focus_or_expand_after_owner_replacement(cx:
     reach_readme_native(&mut rig, "readme-heading-more");
     let old = readme_native_node(&mut rig, "Button", "Show more README headings (1 remaining)");
     let bounds = crate::shell::tests::native_bounds(&mut rig, "Button", "Show more README headings (1 remaining)", true).expect("native more bounds");
+    let retained_focus = rig.cx.update(|window, cx| window.focused(cx).expect("focused native More"));
+    gate.publish(OwnerState::Starting);
+    gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
+    // Complete native keys, without watcher flush or a replacement frame.
+    for key in ["tab", "shift-tab", "enter", "space"] {
+        rig.native_press(key);
+        assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), Some(retained_focus.clone()),
+            "{key} must not give an old producer another native focus owner");
+    }
     let shell = rig.shell.clone();
     let saved_focus = rig.cx.update(|window, cx| {
         shell.update(cx, |shell, cx| shell.take_zone(crate::shell::focus::Zone::Reader, window, cx));
         window.focused(cx).expect("current mounted Shell owner")
     });
-    gate.publish(OwnerState::Starting);
-    gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
     // No watcher flush, repaint, or new native node may hide this old callback.
     rig.cx.simulate_click(bounds.center(), Modifiers::none());
     assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), Some(saved_focus));
