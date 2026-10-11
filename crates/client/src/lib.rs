@@ -2177,7 +2177,7 @@ fn map_peer_authentication_error(
 /// Every request re-arms this value, so a long mutation cannot make a later
 /// health or query call wait on the mutation lease. Direct remote-index setup,
 /// handshake, send, and response read share this same absolute deadline.
-pub(crate) const CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+pub const CLIENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Owner lease for durable writes that may synchronously compile or acquire a
