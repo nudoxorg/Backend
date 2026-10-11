@@ -286,6 +286,17 @@ impl Map {
                     // the newly admitted projection without route re-entry.
                     cx.notify();
                 }
+                if event.is_branch(Branch::Owner) {
+                    // A replacement can serve the same immutable root. Its
+                    // retired scene and native actions cannot borrow the new
+                    // attachment merely because their resource stamps match.
+                    if map.links.store.read(cx).current_owner_attachment().is_some() {
+                        map.reset_indexed_world(cx);
+                    }
+                    map.request_world(cx);
+                    map.publish_focus(cx);
+                    cx.notify();
+                }
                 if let StoreEvent::PackagesPublished(authority) = event
                     && map.world_key.as_ref().is_some_and(|key| key.at_authority(map.links.snapshot(cx).key()))
                     && *authority == map.links.snapshot(cx).key().authority()

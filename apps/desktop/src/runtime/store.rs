@@ -64,6 +64,9 @@ use std::sync::Arc;
 /// One snapshot branch, as named by a change event.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Branch {
+    /// Serving eligibility or the admitted owner attachment changed. This
+    /// can move at the same producer root without any page stamp movement.
+    Owner,
     /// The producer root advanced (page data from older roots is refreshed).
     Root,
     /// The content route changed.
@@ -1114,6 +1117,8 @@ impl DataStore {
     /// route shows, is fetched now, at that root.
     pub(crate) fn owner_ready(&mut self, cx: &mut Context<Self>) {
         let answer = self.owner.prepare_answer();
+        let changed = answer.attachment_changed || !self.owner.is_serving();
+        let retry_changed = self.owner.retry_publication_changed();
         if answer.attachment_changed {
             // The watcher may see only the new Ready. Completed bytes from
             // the previous same-root attachment still need a fresh read.
@@ -1123,6 +1128,9 @@ impl DataStore {
         keys.extend(self.focused.iter().cloned());
         for key in keys {
             self.ensure(key, cx);
+        }
+        if changed || retry_changed {
+            self.emit(StoreEvent::Snapshot(Branch::Owner), cx);
         }
     }
 
@@ -1135,6 +1143,7 @@ impl DataStore {
         // producer root. Quiet snapshot reads keep their last painted value.
         let repeated =
             matches!(self.owner.phase(), OwnerPhase::Failed(previous) if previous == fault);
+        let retry_changed = self.owner.retry_publication_changed();
         self.revoke_owner_reads_for_failure(repeated.then_some(fault), cx);
         let mut keys = self.owner.failed(fault.clone());
         keys.extend(self.focused.iter().cloned());
@@ -1171,6 +1180,9 @@ impl DataStore {
         // notice are identical; their stamps/events need not churn.
         if unchanged_notice {
             self.emit(StoreEvent::Snapshot(Branch::GraphFocus), cx);
+        }
+        if !repeated || retry_changed {
+            self.emit(StoreEvent::Snapshot(Branch::Owner), cx);
         }
     }
 
@@ -1226,8 +1238,10 @@ impl DataStore {
     /// The owner is starting (again): pages asked from now on are held.
     pub(crate) fn owner_starting(&mut self, cx: &mut Context<Self>) {
         let changed = self.owner.starting();
+        let retry_changed = self.owner.retry_publication_changed();
         self.revoke_owner_reads(cx);
-        if changed {
+        if changed || retry_changed {
+            self.emit(StoreEvent::Snapshot(Branch::Owner), cx);
             cx.notify();
         }
     }
@@ -1601,6 +1615,98 @@ mod tests {
             backend_library::view_state_root(&[("store".to_owned(), "tests".to_owned())]),
             5,
         )))
+    }
+
+    #[gpui::test]
+    fn owner_eligibility_wakes_cached_consumers_without_resource_or_root_movement(cx: &mut TestAppContext) {
+        use crate::model::ServiceMode;
+        use crate::runtime::owner::{OwnerGate, OwnerState};
+        let snapshot = snapshot();
+        let root = snapshot.key();
+        let gate = OwnerGate::ready(root, ServiceMode::Attached);
+        let owner = gate.clone();
+        let store = cx.update(|cx| cx.new(|_| {
+            let mut store = DataStore::new(snapshot, None);
+            store.owner = OwnerLink::behind(owner);
+            store
+        }));
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let sink = Rc::clone(&events);
+        let _subscription = cx.update(|cx| cx.subscribe(&store, move |_, event: &StoreEvent, _| {
+            sink.borrow_mut().push(event.clone());
+        }));
+        let former = store.read_with(cx, |store, _| store.current_owner_attachment()).expect("initial admitted attachment");
+        gate.publish(OwnerState::Starting);
+        store.update(cx, DataStore::owner_starting);
+        assert!(store.read_with(cx, |store, _| store.current_owner_attachment()).is_none());
+        gate.publish(OwnerState::Ready { key: root, mode: ServiceMode::Attached });
+        store.update(cx, DataStore::owner_ready);
+        store.read_with(cx, |store, _| {
+            assert_eq!(store.snapshot().key(), root);
+            assert!(store.current_owner_attachment().is_some());
+            assert!(!store.admits_owner_attachment(&former));
+            assert_eq!(store.stats.submitted, 0);
+        });
+        cx.run_until_parked();
+        assert_eq!(*events.borrow(), [StoreEvent::Snapshot(Branch::Owner), StoreEvent::Snapshot(Branch::Owner)]);
+        events.borrow_mut().clear();
+        store.update(cx, DataStore::owner_ready);
+        cx.run_until_parked();
+        assert!(events.borrow().is_empty(), "unchanged Ready is silent");
+        // The watcher may coalesce Starting away. Exact attachment movement
+        // still independently invalidates the old cached capability.
+        gate.publish(OwnerState::Starting);
+        gate.publish(OwnerState::Ready { key: root, mode: ServiceMode::Attached });
+        store.update(cx, DataStore::owner_ready);
+        cx.run_until_parked();
+        assert_eq!(*events.borrow(), [StoreEvent::Snapshot(Branch::Owner)]);
+    }
+
+    #[gpui::test]
+    fn empty_owner_failure_and_identical_retry_replacement_emit_the_owner_branch(cx: &mut TestAppContext) {
+        use crate::model::ServiceMode;
+        use crate::runtime::owner::{OwnerGate, OwnerState};
+        let snapshot = snapshot();
+        let root = snapshot.key();
+        let gate = OwnerGate::ready(root, ServiceMode::Attached);
+        let owner = gate.clone();
+        let store = cx.update(|cx| cx.new(|_| {
+            let mut store = DataStore::new(snapshot, None);
+            store.owner = OwnerLink::behind(owner);
+            store
+        }));
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let sink = Rc::clone(&events);
+        let _subscription = cx.update(|cx| cx.subscribe(&store, move |_, event: &StoreEvent, _| {
+            sink.borrow_mut().push(event.clone());
+        }));
+        let fault = OwnerFault::Lost("same owner failure".into());
+        gate.publish(OwnerState::Failed(fault.clone()));
+        store.update(cx, |store, cx| store.owner_failed(&fault, cx));
+        cx.run_until_parked();
+        assert!(events.borrow().iter().any(|event| event.is_branch(Branch::Owner)));
+        let (former, notice) = store.read_with(cx, |store, _| {
+            assert_eq!(store.snapshot().key(), root);
+            assert!(store.focused().is_empty());
+            assert_eq!(store.stats.submitted, 0);
+            (store.current_owner_retry().expect("first Retry capability"), store.notice().cloned())
+        });
+        events.borrow_mut().clear();
+        gate.publish(OwnerState::Failed(fault.clone()));
+        store.update(cx, |store, cx| store.owner_failed(&fault, cx));
+        cx.run_until_parked();
+        store.read_with(cx, |store, _| {
+            assert_eq!(store.notice().cloned(), notice, "identical display words need no new Notice");
+            assert_ne!(store.current_owner_retry(), Some(former));
+            assert_eq!(store.stats.submitted, 0);
+        });
+        assert_eq!(events.borrow().iter().filter(|event| event.is_branch(Branch::Owner)).count(), 1,
+            "exact Retry replacement independently wakes cached consumers");
+        assert!(!events.borrow().iter().any(|event| matches!(event, StoreEvent::Resource(_))));
+        events.borrow_mut().clear();
+        store.update(cx, |store, cx| store.owner_failed(&fault, cx));
+        cx.run_until_parked();
+        assert!(!events.borrow().iter().any(|event| event.is_branch(Branch::Owner)), "same observed failure/capability stays silent");
     }
 
     fn rig(cx: &mut TestAppContext, workers: usize) -> Rig {

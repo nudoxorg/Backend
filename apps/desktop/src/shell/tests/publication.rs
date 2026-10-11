@@ -131,6 +131,53 @@ fn companion_is_painted(rig: &mut Rig, words: &str) -> bool {
 }
 
 #[gpui::test]
+fn mounted_header_publication_renews_native_actions_at_the_same_authority(cx: &mut TestAppContext) {
+    let (mut rig, observed) = open(cx, go_route());
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+    let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let titlebar_renders = rig.counts().titlebar;
+    let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+    let key = PageKey::Symbol(SymbolRef::new(ERROR_TYPE).expect("the header's exact Go declaration"));
+    let reads = observed.count(&key);
+    observed.published.store(true, Ordering::Release);
+    rig.graph.store.update(rig.cx, |store, cx| {
+        store.packages_published(&BTreeSet::from([package()]), cx);
+    });
+    // Only drain ordinary effects while the actual fixture read worker lands.
+    // Explicit drawing/refreshing would conceal a missing cached-header wake.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        rig.cx.run_until_parked();
+        let current = rig.graph.store.read_with(rig.cx, |store, _| {
+            store.pool_activity().is_idle() && !store.observation_revoked(&key)
+        });
+        if current { break; }
+        assert!(std::time::Instant::now() < deadline, "publication must finish its controlled read");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(observed.count(&key), reads + 1, "one publication renews the header's declaration exactly once");
+    assert!(rig.counts().titlebar > titlebar_renders);
+    rig.graph.store.read_with(rig.cx, |store, _| {
+        assert!(before.key().same_authority(store.snapshot().key()));
+        assert_eq!(before.route(), store.snapshot().route());
+        assert_eq!(before.session().back, store.snapshot().session().back);
+    });
+    rig.cx.update(|window, _| {
+        assert!(window.a11y_frame_number() > frame);
+        let tree = window.a11y_tree().expect("publication's committed header tree");
+        assert!(tree.nodes.iter().any(|(_, node)| node.label() == Some("Show Code view")
+            && node.supports_action(gpui::AccessibleAction::Click)));
+    });
+    let bounds = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("view-code", cx))
+        .expect("publication's freshly mounted Code action");
+    rig.cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+    rig.settle();
+    assert!(matches!(rig.route(), Route::Symbol(route) if route.id.as_str() == ERROR_TYPE && route.view == View::Code),
+        "the renewed native control opens its exact declaration");
+}
+
+#[gpui::test]
 fn mounted_shelf_refreshes_its_unfocused_orbit_and_leaves_hidden_packages_lazy(cx: &mut TestAppContext) {
     let (mut rig, observed) = open(cx, package_route());
     let hidden = PackageRef::parse("pkg:cargo/hidden@1.0.0").expect("hidden release");
