@@ -499,6 +499,11 @@ pub enum CompilerRuntimeCause {
     ResponseOwnerStopped,
     /// The selected explicit toolchain probe did not settle within its bounded admission window.
     ToolchainProbeTimeout,
+    /// The executing native Python image failed request-time witness admission.
+    NativePythonProducerAdmission {
+        /// Closed native authority cause; no unbound recipe or partial authority is published.
+        failure: PythonAuthorityFailureKind,
+    },
     /// Cancellation won while the selected explicit toolchain was still being probed.
     RequestCancelled,
     /// The compiler owner panicked while executing this exact request.

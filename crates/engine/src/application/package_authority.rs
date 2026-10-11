@@ -396,7 +396,8 @@ fn require_python_checker(
     profile: LanguageProfile,
 ) -> Result<&Pyrefly, PackageAuthorityError> {
     match admission {
-        super::LocalRuntimePythonCheckerAdmission::Native { .. }
+        super::LocalRuntimePythonCheckerAdmission::DeferredNativePython
+        | super::LocalRuntimePythonCheckerAdmission::Native { .. }
         | super::LocalRuntimePythonCheckerAdmission::Unconfigured => {
             Err(PackageAuthorityError::RequiredTool {
                 profile,

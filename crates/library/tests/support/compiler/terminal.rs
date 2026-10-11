@@ -264,6 +264,9 @@ pub(crate) enum GoldenCompilerRuntimeCause {
     RequestOwnerStopped,
     ResponseOwnerStopped,
     ToolchainProbeTimeout,
+    NativePythonProducerAdmission {
+        failure: backend_library::interface::PythonAuthorityFailureKind,
+    },
     RequestCancelled,
     WorkerPanic {
         class: GoldenNativeWorkerPanicClass,
@@ -612,6 +615,9 @@ impl From<CompilerRuntimeCause> for GoldenCompilerRuntimeCause {
             CompilerRuntimeCause::RequestOwnerStopped => Self::RequestOwnerStopped,
             CompilerRuntimeCause::ResponseOwnerStopped => Self::ResponseOwnerStopped,
             CompilerRuntimeCause::ToolchainProbeTimeout => Self::ToolchainProbeTimeout,
+            CompilerRuntimeCause::NativePythonProducerAdmission { failure } => {
+                Self::NativePythonProducerAdmission { failure }
+            }
             CompilerRuntimeCause::RequestCancelled => Self::RequestCancelled,
             CompilerRuntimeCause::WorkerPanic(panic) => Self::WorkerPanic {
                 class: panic.class.into(),

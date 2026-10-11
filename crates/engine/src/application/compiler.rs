@@ -4604,7 +4604,9 @@ fn package_authority_terminal(
     }
 }
 
-fn python_authority_failure_kind(error: &PythonCheckerError) -> PythonAuthorityFailureKind {
+pub(crate) fn python_authority_failure_kind(
+    error: &PythonCheckerError,
+) -> PythonAuthorityFailureKind {
     use PythonCheckerError as E;
     match error {
         E::ProjectPanic => PythonAuthorityFailureKind::ProjectPanic,

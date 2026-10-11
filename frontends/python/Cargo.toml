@@ -10,6 +10,7 @@ workspace = true
 backend-compile = { path = "../../crates/compile" }
 backend-discovery = { path = "../../crates/discovery" }
 backend-semantic = { path = "../../crates/semantic" }
+backend-platform = { path = "../../crates/platform" }
 blake3.workspace = true
 ruff_python_ast = "=0.0.8"
 ruff_python_parser = "=0.0.8"
@@ -27,8 +28,6 @@ pyrefly_util = { git = "https://github.com/facebook/pyrefly", rev = "30b5ca5250d
 ruff_native_text_size = { package = "ruff_text_size", git = "https://github.com/astral-sh/ruff/", rev = "db5aa0a5f1b92cb91d910bf0866a967554dd94f5" }
 [target.'cfg(unix)'.dependencies]
 rustix = { version = "1.1.4", default-features = false, features = ["fs", "std"] }
-[target.'cfg(windows)'.dependencies]
-backend-platform = { path = "../../crates/platform" }
 [lib]
 path = "lib.rs"
 

@@ -815,6 +815,13 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                     crate::application::LocalRuntimeToolchain::compiled_native_python(*authority)?;
             }
         }
+        if let Some(deferred) = &package_authority.deferred_native_python
+            && let Some(row) = toolchains
+                .iter_mut()
+                .find(|row| row.tool == NativeTool::Python)
+        {
+            *row = crate::application::LocalRuntimeToolchain::deferred_native_python(deferred);
+        }
         let configuration = LocalCompilerRuntimeConfiguration::new(
             paths,
             toolchains,
@@ -1116,14 +1123,20 @@ mod tests {
 
         for capability in capabilities.as_slice() {
             if capability.profile().language() == backend_semantic::vocabulary::Language::Python {
-                // Python's producer is compiled into this host. Its admitted identity is
-                // available without an interpreter, cache, or runtime directory.
-                assert_eq!(capability.state(), crate::application::LocalCompilerCapabilityState::Ready);
-                assert!(capability.toolchain_identity().is_some());
-                assert!(capability.local_authority_fingerprint().is_some());
+                // Compiled Python is available for request-time admission; inspection
+                // must not stream the executing image or advertise an unbound recipe.
+                assert_eq!(
+                    capability.state(),
+                    crate::application::LocalCompilerCapabilityState::Deferred
+                );
+                assert!(capability.toolchain_identity().is_none());
+                assert!(capability.local_authority_fingerprint().is_none());
             } else {
-                assert_eq!(capability.state(), crate::application::LocalCompilerCapabilityState::Unavailable,
-                    "an unconfigured external authority cannot be advertised ready: {capability:?}");
+                assert_eq!(
+                    capability.state(),
+                    crate::application::LocalCompilerCapabilityState::Unavailable,
+                    "an unconfigured external authority cannot be advertised ready: {capability:?}"
+                );
             }
         }
         assert!(!data_root.exists());

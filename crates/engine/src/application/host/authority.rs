@@ -3,6 +3,7 @@
 use std::{
     path::{Path, PathBuf},
     str,
+    sync::Arc,
 };
 
 use arrayvec::ArrayVec;
@@ -12,7 +13,6 @@ use backend_frontend_go::legacy::oracle::{GoOracleChildEnvironment, GoOracleConf
 use backend_frontend_go::legacy::{GoOracle, GoOracleConfiguration};
 use backend_frontend_java::legacy::harness::JdkToolchain;
 use backend_frontend_python::legacy::Pyrefly;
-use backend_frontend_python::legacy::checker::NativePythonProjectAuthority;
 use backend_frontend_rust::legacy::{RustToolchain, SourceByteLimit};
 use backend_frontend_typescript::legacy::Checker as TypeScriptChecker;
 use backend_library::interface::PackageEcosystem;
@@ -165,10 +165,15 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                     },
                 }
             }
-            None => LocalRuntimePythonCheckerAdmission::Native {
-                authority: NativePythonProjectAuthority::admit()?,
-            },
+            None => LocalRuntimePythonCheckerAdmission::DeferredNativePython,
         };
+        let deferred_native_python = matches!(
+            python_checker,
+            LocalRuntimePythonCheckerAdmission::DeferredNativePython
+        )
+        .then(crate::application::runtime::DeferredNativePython::new)
+        .transpose()?
+        .map(Arc::new);
         let rust = match (
             executables.rustc.as_deref(),
             executables.cargo.as_deref(),
@@ -256,6 +261,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 clang,
                 typescript,
                 python_checker,
+                deferred_native_python,
                 rust,
                 go,
                 go_unavailable,

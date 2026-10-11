@@ -19,6 +19,11 @@ use crate::legacy::{DeclarationKind, Span, extract};
 
 const CONFIG_BYTES: u64 = 1024 * 1024;
 
+#[cfg(test)]
+thread_local! {
+    static WITNESS_READ_HOOK: std::cell::RefCell<Option<Box<dyn FnMut()>>> = const { std::cell::RefCell::new(None) };
+}
+
 #[path = "project_baseline.rs"]
 mod baseline;
 pub(super) use baseline::CapturedBaselines;
@@ -51,6 +56,94 @@ pub struct NativePythonProjectAuthority {
     timeout: std::time::Duration,
 }
 
+/// Held file object proven by the platform to be the loaded main executable.
+/// Opening this object does not read or hash the complete image.
+pub struct NativePythonProducerImage {
+    image: backend_platform::executable_identity::RunningExecutable,
+}
+
+impl std::fmt::Debug for NativePythonProducerImage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NativePythonProducerImage")
+            .finish_non_exhaustive()
+    }
+}
+
+#[inline(never)]
+fn native_python_main_image_anchor() {}
+
+impl NativePythonProducerImage {
+    /// Retains the actual executing object; replacement paths cannot supply producer bytes.
+    ///
+    /// # Errors
+    /// Refuses when the platform cannot prove the loaded main-image relationship.
+    pub fn open() -> Result<Self, CheckerError> {
+        Ok(Self {
+            image: backend_platform::executable_identity::open_running_executable(
+                native_python_main_image_anchor,
+            )
+            .map_err(workspace_error)?,
+        })
+    }
+
+    fn digest_controlled(
+        &mut self,
+        control: Option<PythonProjectControl<'_>>,
+    ) -> Result<(blake3::Hash, u64), CheckerError> {
+        self.image
+            .with_verified_read(|file| {
+                let mut capture = || -> Result<_, CheckerError> {
+                    let mut hasher = blake3::Hasher::new();
+                    let mut bytes = [0u8; 65536];
+                    let mut size = 0u64;
+                    loop {
+                        if let Some(control) = control {
+                            checkpoint(control)?;
+                        }
+                        let count =
+                            std::io::Read::read(file, &mut bytes).map_err(workspace_error)?;
+                        if count == 0 {
+                            break;
+                        }
+                        hasher.update(&bytes[..count]);
+                        #[cfg(test)]
+                        WITNESS_READ_HOOK.with(|slot| {
+                            if let Some(hook) = slot.borrow_mut().as_mut() {
+                                hook();
+                            }
+                        });
+                        size = size
+                            .checked_add(count as u64)
+                            .ok_or_else(|| project_error("", "witness extent overflow"))?;
+                    }
+                    if let Some(control) = control {
+                        checkpoint(control)?;
+                    }
+                    Ok((hasher.finalize(), size))
+                };
+                Ok(capture())
+            })
+            .map_err(workspace_error)?
+    }
+
+    fn validate_controlled(
+        &mut self,
+        control: Option<PythonProjectControl<'_>>,
+    ) -> Result<(), CheckerError> {
+        if let Some(control) = control {
+            checkpoint(control)?;
+        }
+        self.image
+            .with_verified_read(|_| Ok(()))
+            .map_err(workspace_error)?;
+        if let Some(control) = control {
+            checkpoint(control)?;
+        }
+        Ok(())
+    }
+}
+
 impl NativePythonProjectAuthority {
     /// Captures the actual executing native producer image and pinned solver receipts.
     ///
@@ -58,6 +151,31 @@ impl NativePythonProjectAuthority {
     /// Refuses unavailable producer bytes or a non-regular host executable.
     pub fn admit() -> Result<Self, CheckerError> {
         let (producer, _) = native_producer_capture()?;
+        Ok(Self {
+            producer,
+            timeout: super::DEFAULT_TIMEOUT,
+        })
+    }
+
+    /// Admits the executing image only for a bounded, cancellable Python request.
+    ///
+    /// # Errors
+    /// Preserves the same complete image and receipt witness as eager admission.
+    pub fn admit_controlled(control: PythonProjectControl<'_>) -> Result<Self, CheckerError> {
+        Self::admit_from_image_controlled(&mut NativePythonProducerImage::open()?, control)
+    }
+
+    /// Streams the held loaded-image object under the caller's admission bound.
+    ///
+    /// # Errors
+    /// Refuses changed objects, incomplete reads, cancellation and expired deadlines.
+    pub fn admit_from_image_controlled(
+        image: &mut NativePythonProducerImage,
+        control: PythonProjectControl<'_>,
+    ) -> Result<Self, CheckerError> {
+        let (digest, size) = image.digest_controlled(Some(control))?;
+        let producer = native_producer_identity(digest, size);
+        checkpoint(control)?;
         Ok(Self {
             producer,
             timeout: super::DEFAULT_TIMEOUT,
@@ -79,13 +197,23 @@ impl NativePythonProjectAuthority {
 }
 
 fn native_producer_capture() -> Result<(NativePythonProducerIdentity, FileWitness), CheckerError> {
-    let host = FileWitness::capture(std::env::current_exe().map_err(workspace_error)?)?;
-    let Some((digest, size)) = host.digest else {
-        return Err(project_error(
-            "",
-            "compiled native producer image is unavailable",
-        ));
+    native_producer_capture_controlled(None)
+}
+
+fn native_producer_capture_controlled(
+    control: Option<PythonProjectControl<'_>>,
+) -> Result<(NativePythonProducerIdentity, FileWitness), CheckerError> {
+    let mut image = NativePythonProducerImage::open()?;
+    let (digest, size) = image.digest_controlled(control)?;
+    let host = FileWitness {
+        path: std::env::current_exe().map_err(workspace_error)?,
+        digest: Some((digest, size)),
+        read: FileWitnessRead::RunningProducer(std::sync::Mutex::new(image)),
     };
+    Ok((native_producer_identity(digest, size), host))
+}
+
+fn native_producer_identity(digest: blake3::Hash, size: u64) -> NativePythonProducerIdentity {
     let mut identity = blake3::Hasher::new();
     identity.update(b"compiler.python.compiled-native-producer.v1\0");
     identity.update(super::PYTHON_NATIVE_PROJECT_SOURCE_REVISION.as_bytes());
@@ -104,11 +232,7 @@ fn native_producer_capture() -> Result<(NativePythonProducerIdentity, FileWitnes
     identity.update(b"root-isolated;named-single-package-import-root.v1;declared-captured-python-source-roots.v1;captured-diagnostic-baseline.v1;root-pinned-config-inputs.v1;fresh-state;per-file-raw-intake.v1;native-syntax-diagnostics;unavailable-exact-rdeps;classdef-declaration+constructor-callee;captured-candidates;depth64;work262144\0");
     identity.update(digest.as_bytes());
     identity.update(&size.to_be_bytes());
-    host.validate_current()?;
-    Ok((
-        NativePythonProducerIdentity(*identity.finalize().as_bytes()),
-        host,
-    ))
+    NativePythonProducerIdentity(*identity.finalize().as_bytes())
 }
 
 /// Exact borrowed source member of an admitted Python package frontier.
@@ -468,6 +592,7 @@ impl PythonProjectFingerprint {
 #[derive(Debug)]
 enum FileWitnessRead {
     Ordinary,
+    RunningProducer(std::sync::Mutex<NativePythonProducerImage>),
     CapturedInput { root: PathBuf },
 }
 
@@ -513,6 +638,12 @@ impl FileWitness {
                         break;
                     }
                     hasher.update(&bytes[..count]);
+                    #[cfg(test)]
+                    WITNESS_READ_HOOK.with(|slot| {
+                        if let Some(hook) = slot.borrow_mut().as_mut() {
+                            hook();
+                        }
+                    });
                     size = size
                         .checked_add(count as u64)
                         .ok_or_else(|| project_error("", "witness extent overflow"))?;
@@ -544,6 +675,12 @@ impl FileWitness {
         control: Option<PythonProjectControl<'_>>,
     ) -> Result<(), CheckerError> {
         let current = match &self.read {
+            FileWitnessRead::RunningProducer(image) => {
+                return image
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .validate_controlled(control);
+            }
             FileWitnessRead::Ordinary => {
                 Self::capture_controlled(self.path.clone(), control)?.digest
             }
@@ -992,7 +1129,7 @@ impl NativePythonProjectAuthority {
         let mut rejected = BTreeMap::new();
         let mut source_statuses = BTreeMap::new();
         let mut sources = Vec::new();
-        let (current_producer, host_witness) = native_producer_capture()?;
+        let (current_producer, host_witness) = native_producer_capture_controlled(Some(control))?;
         if current_producer != self.producer {
             return Err(CheckerError::NativeProducerIdentity {
                 expected: self.producer.as_bytes(),
@@ -1390,5 +1527,152 @@ mod capture_layout_tests {
                 workspace.join("imports").join(spelling)
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod native_producer_admission_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    #[cfg(unix)]
+    fn native_producer_same_path_atomic_replacement_cannot_admit_replacement_bytes() {
+        const CHILD: &str = "NUDOX_TEST_NATIVE_IMAGE_REPLACEMENT";
+        if let Some(root) = std::env::var_os(CHILD) {
+            let root = PathBuf::from(root);
+            let mut image = NativePythonProducerImage::open().unwrap();
+            std::fs::write(root.join("held"), b"held actual executing object").unwrap();
+            let until = Instant::now() + std::time::Duration::from_secs(60);
+            while !root.join("replaced").exists() {
+                assert!(
+                    Instant::now() < until,
+                    "parent did not replace the actual launch pathname"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let cancelled = AtomicBool::new(false);
+            let result = NativePythonProjectAuthority::admit_from_image_controlled(
+                &mut image,
+                PythonProjectControl {
+                    cancelled: &cancelled,
+                    deadline: Instant::now() + std::time::Duration::from_secs(60),
+                },
+            );
+            match result {
+                Ok(authority) => {
+                    let expected = std::fs::read(root.join("expected-running-producer")).unwrap();
+                    assert_eq!(
+                        authority.producer_identity().as_bytes().as_slice(),
+                        expected.as_slice(),
+                        "retained old image alone may supply producer bytes after pathname replacement"
+                    );
+                }
+                Err(CheckerError::Workspace { source })
+                    if source.kind() == std::io::ErrorKind::InvalidData
+                        && source.to_string()
+                            == "running executable changed during identity read" => {}
+                Err(error) => panic!(
+                    "uncancelled replacement control requires the old image or exact held-image stamp refusal: {error:?}"
+                ),
+            }
+            return;
+        }
+        let root = std::env::temp_dir().join(format!(
+            "native-image-replace-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let expected = NativePythonProjectAuthority::admit()
+            .unwrap()
+            .producer_identity()
+            .as_bytes();
+        std::fs::write(root.join("expected-running-producer"), expected).unwrap();
+        let executable = root.join("actual-native-child");
+        std::fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
+        let test = "legacy::checker::project::native_producer_admission_tests::native_producer_same_path_atomic_replacement_cannot_admit_replacement_bytes";
+        struct ChildGuard(std::process::Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut child = ChildGuard(
+            std::process::Command::new(&executable)
+                .args([test, "--exact", "--nocapture"])
+                .env(CHILD, &root)
+                .spawn()
+                .unwrap(),
+        );
+        let until = Instant::now() + std::time::Duration::from_secs(60);
+        while !root.join("held").exists() {
+            if child.0.try_wait().unwrap().is_some() || Instant::now() >= until {
+                let _ = child.0.kill();
+                let _ = child.0.wait();
+                panic!("copied actual native child did not retain its loaded executable");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let replacement = root.join("replacement");
+        std::fs::write(
+            &replacement,
+            b"different bytes at the identical launch pathname",
+        )
+        .unwrap();
+        std::fs::rename(&replacement, &executable).unwrap();
+        std::fs::write(root.join("replaced"), b"atomic rename complete").unwrap();
+        let until = Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            if let Some(status) = child.0.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            if Instant::now() >= until {
+                let _ = child.0.kill();
+                let _ = child.0.wait();
+                panic!("owned actual native child did not terminate after replacement");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn native_producer_controlled_capture_observes_cancellation_during_actual_image_read() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancelled);
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                WITNESS_READ_HOOK.with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        let _reset = Reset;
+        WITNESS_READ_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || flag.store(true, Ordering::Release)))
+        });
+        let result = NativePythonProjectAuthority::admit_controlled(PythonProjectControl {
+            cancelled: cancelled.as_ref(),
+            deadline: Instant::now() + std::time::Duration::from_secs(60),
+        });
+        assert!(
+            cancelled.load(Ordering::Acquire),
+            "actual executing image was read"
+        );
+        assert!(
+            matches!(result, Err(CheckerError::Cancelled { .. })),
+            "partial image cannot become admitted authority: {result:?}"
+        );
     }
 }
