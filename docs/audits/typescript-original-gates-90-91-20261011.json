@@ -1,0 +1,347 @@
+{
+  "schema": "nudox.root-native-evidence.v1",
+  "gates": [
+    {
+      "gate": 90,
+      "source": {
+        "commit": "85c9d5f431113de5f2b8634551f2e348becf6e3e",
+        "tree": "87cc8ecdf50486fe3ce443a2f22f3110ee7a8ab1",
+        "clean": true,
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350",
+        "clean_before": true,
+        "clean_after": true
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--manifest-path",
+        "third_party/tsz/Cargo.toml",
+        "--no-default-features",
+        "-j2",
+        "-p",
+        "tsz-core",
+        "--lib",
+        "parallel::core::project_checker_partitions_tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--nocapture",
+        "--test-threads=2"
+      ],
+      "receipt_sha256": "0fc63fcbd628ba56678c76304780d7489fa8eda260e9ea4c55b467fe852fbd4b",
+      "frozen_manifest_sha256": "9069b5f0d53c4cf0ed14aec2806c1469f88cb235544e475fa723f102f45c487d",
+      "raw": {
+        "receipt.json": {
+          "bytes": 52049,
+          "sha256": "0fc63fcbd628ba56678c76304780d7489fa8eda260e9ea4c55b467fe852fbd4b"
+        },
+        "stdout.log": {
+          "bytes": 121793,
+          "sha256": "e5a0cbb0611684207499e8d767b9c22dd9cae28f02e7c046eda91bca82617910"
+        },
+        "stderr.log": {
+          "bytes": 4821,
+          "sha256": "3882753cebaca4f7ad9b18cb47ba6810985d68917e09124b17178e1d3d5578fa"
+        }
+      },
+      "seconds": 88.10994417895563,
+      "actual_result": {
+        "passed": 25,
+        "failed": 8,
+        "ignored": 0
+      },
+      "comparison": {
+        "earlier_gate": 85,
+        "original_test_identities": 33,
+        "whole_test_outcomes_unchanged": true
+      },
+      "tests": [
+        {
+          "name": "parallel::core::project_checker_partitions_tests::cancelled_and_expired_projects_return_typed_stops_without_results",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::captured_file_and_ambient_owner_key_collision_refuses_reexport_rows",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::cold_consumer_before_interface_owner_keeps_inherited_member_semantics",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::cold_barrel_consumer_preserves_number_and_string_discrimination",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::exact_external_aliases_keep_ambient_string_against_competing_file_number",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::export_star_cannot_inspect_other_kind_export_equals_target",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::external_export_equals_hydrates_only_the_exact_nested_import_type",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::exhausted_library_materialization_rolls_back_completed_library_pushes",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::external_wildcard_owner_cannot_lend_same_spelling_program_file_members",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::implicit_node_next_edge_cannot_borrow_explicit_sibling_mode",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::isolated_library_baseline_observes_budget_and_mid_library_stop_discards_output",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::library_name_index_stop_drops_partial_names_and_legacy_index_is_unchanged",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::malformed_named_edge_cannot_borrow_a_valid_same_specifier_sibling",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::merged_external_ambient_owners_keep_all_exact_wildcard_edges",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::merged_wildcard_rows_preserve_exact_lexical_edges_before_resolution",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::metered_path_validation_preserves_legacy_path_grammar",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::named_and_wildcard_edges_keep_disjoint_same_specifier_modes",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::nested_ambient_reexport_owner_cannot_borrow_foreign_owner_edge",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::nested_identifier_namespace_cannot_shift_ambient_wildcard_edge_mode",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::nested_statement_wildcards_cannot_retarget_following_sibling_request",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::nested_statement_wildcards_retain_actual_declaration_and_owner",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::node_next_foreign_plain_ts_request_requires_admitted_file_format",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::import_type_and_typeof_member_chains_keep_exact_request_authority",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::ordinary_import_none_mode_keeps_its_exact_file_and_members",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::outer_api_discards_completed_partition_results_when_another_partition_stops",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::partitions_keep_exact_unresolved_requests_and_typed_bad_targets",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::project_session_latches_one_shot_database_stop_and_discards_callback_output",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::selected_file_and_refused_request_dominate_shorthand_ambient_module",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::stop_after_completed_file_prevents_starting_later_partition_files",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::stopped_admission_precedes_invalid_resolution_and_resolution_bytes_are_metered",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::syntax_requests_cannot_borrow_other_kind_mode_or_ambient_success",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::partitions_preserve_cross_file_identity_options_libraries_and_diagnostics",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::two_worker_cold_consumer_finishes_before_interface_owner_starts",
+          "result": "FAILED"
+        }
+      ],
+      "artifacts_producer_observation": [
+        {
+          "path": "/root/.cache/nudox/cargo-1.97/build/slot-0/debug/deps/tsz_core-933d6e7f0121d97e",
+          "sha256": "6ea0ef663baac8c5daaa4301131d3be453cf9792025537b130627105021c83c1",
+          "bytes": 179870472,
+          "target": {
+            "kind": [
+              "rlib"
+            ],
+            "crate_types": [
+              "rlib"
+            ],
+            "name": "tsz_core",
+            "src_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/third_party/tsz/crates/tsz-core/src/lib.rs",
+            "edition": "2024",
+            "doc": true,
+            "doctest": true,
+            "test": true
+          },
+          "package_id": "path+file:///root/codex-worktrees/sol61-resident-fixture-20261011/third_party/tsz/crates/tsz-core#0.1.75",
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/third_party/tsz/crates/tsz-core/Cargo.toml"
+        }
+      ]
+    },
+    {
+      "gate": 91,
+      "source": {
+        "commit": "85c9d5f431113de5f2b8634551f2e348becf6e3e",
+        "tree": "87cc8ecdf50486fe3ce443a2f22f3110ee7a8ab1",
+        "clean": true,
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350",
+        "clean_before": true,
+        "clean_after": true
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--manifest-path",
+        "third_party/tsz/Cargo.toml",
+        "--no-default-features",
+        "-j2",
+        "-p",
+        "tsz-core",
+        "--lib",
+        "parallel::core::project_module_resolution_tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--nocapture",
+        "--test-threads=2"
+      ],
+      "receipt_sha256": "284a714b8214d335d0b56e7fe37459ac776523b5e2e9aead7a8ef49f799ff3c5",
+      "frozen_manifest_sha256": "427c0a7ac5cf32550c4dbb9e1a80868d7a23be678eb4f84db6c06d12c466e5a8",
+      "raw": {
+        "receipt.json": {
+          "bytes": 56962,
+          "sha256": "284a714b8214d335d0b56e7fe37459ac776523b5e2e9aead7a8ef49f799ff3c5"
+        },
+        "stdout.log": {
+          "bytes": 117316,
+          "sha256": "c05a352f75ab25b8c3785e4dd75e08a9d26dc61f30cb24a66a97349151ecd863"
+        },
+        "stderr.log": {
+          "bytes": 1330,
+          "sha256": "298eb12b8298394847a59476c10105378bb78f4be9e411d550cabe06cd08eb1f"
+        }
+      },
+      "seconds": 1.248527588089928,
+      "actual_result": {
+        "passed": 4,
+        "failed": 1,
+        "ignored": 0
+      },
+      "comparison": {
+        "earlier_gate": 88,
+        "original_test_identities": 5,
+        "whole_test_outcomes_unchanged": true
+      },
+      "tests": [
+        {
+          "name": "parallel::core::project_module_resolution_tests::explicit_project_resolution_preserves_outcomes_and_disables_filename_guessing",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_module_resolution_tests::explicit_project_resolution_rejects_unsupported_and_conflicting_requests",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_module_resolution_tests::project_checker_session_resolves_imported_members_in_full_program_context",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_module_resolution_tests::stopped_lazy_alias_walk_does_not_poison_a_fresh_project_session",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_module_resolution_tests::exact_project_requests_dominate_legacy_success_for_every_kind_mode_and_outcome",
+          "result": "ok"
+        }
+      ],
+      "artifacts_producer_observation": [
+        {
+          "path": "/root/.cache/nudox/cargo-1.97/build/slot-0/debug/deps/tsz_core-933d6e7f0121d97e",
+          "sha256": "6ea0ef663baac8c5daaa4301131d3be453cf9792025537b130627105021c83c1",
+          "bytes": 179870472,
+          "target": {
+            "kind": [
+              "rlib"
+            ],
+            "crate_types": [
+              "rlib"
+            ],
+            "name": "tsz_core",
+            "src_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/third_party/tsz/crates/tsz-core/src/lib.rs",
+            "edition": "2024",
+            "doc": true,
+            "doctest": true,
+            "test": true
+          },
+          "package_id": "path+file:///root/codex-worktrees/sol61-resident-fixture-20261011/third_party/tsz/crates/tsz-core#0.1.75",
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/third_party/tsz/crates/tsz-core/Cargo.toml"
+        }
+      ]
+    }
+  ],
+  "production_ready": false,
+  "verification": "Root independently verified frozen receipts/manifests/raw outcomes, exact original filters and identities, unchanged locks/tools, fresh destination admission, terminal empty groups and retained cumulative accounting. Artifact bytes remain producer observations.",
+  "limitations": [
+    "These are original subsets, not the full tsz-core library.",
+    "The merged source retains the same eight partition and one fresh-session alias failures.",
+    "No resource stop occurred; namespace ownership and alias stack-fallback causes still require investigation.",
+    "Canonical merge f30 has this tree; the image was built at 85c9 and is not relabelled as a f30 build.",
+    "Later empty-ambient and consuming-facts changes have not run in these images.",
+    "No current installed product or native GUI proof."
+  ]
+}
