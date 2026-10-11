@@ -114,6 +114,41 @@ impl Fixture {
             .unwrap();
         native
     }
+    fn normalized_options(&self, sources: &[PackageSource<'_>]) -> serde_json::Value {
+        let admitted = self.host().admit(&self.root).unwrap().unwrap();
+        let inputs = admitted.inputs();
+        let report = super::run_program_bridge(
+            &inputs,
+            Some(&self.root.join("tsconfig.json")),
+            sources,
+            &self.root.join("node_modules/typescript/lib/typescript.js"),
+            Instant::now() + Duration::from_secs(90),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert!(
+            report.error.is_none(),
+            "compiler report failed: {:?}",
+            report.error
+        );
+        report.compiler_options["compilerOptions"].clone()
+    }
+    fn assert_normalized_options(&self, sources: &[PackageSource<'_>], oracle: &serde_json::Value) {
+        let normalized = self.normalized_options(sources);
+        for name in [
+            "target",
+            "module",
+            "moduleResolution",
+            "moduleDetection",
+            "esModuleInterop",
+            "allowSyntheticDefaultImports",
+        ] {
+            assert_eq!(
+                normalized[name], oracle["normalized"][name],
+                "selected SDK computed option {name}"
+            );
+        }
+    }
     /// This oracle constructs an ordinary TypeScript program without the production bridge.
     fn oracle(&self) -> serde_json::Value {
         let script = r#"
@@ -121,6 +156,14 @@ const ts = require(process.argv[1]);
 const config = ts.getParsedCommandLineOfConfigFile(process.argv[2], {}, {...ts.sys, onUnRecoverableConfigFileDiagnostic:d=>{throw Error(String(d.code))}});
 const p = ts.createProgram({rootNames:config.fileNames, options:config.options});
 const c = p.getTypeChecker();
+const ownedOptions = p.getCompilerOptions();
+const computed = name => ts.computedOptions[name].computeValue(ownedOptions);
+const normalized = {
+  target:ts.ScriptTarget[computed('target')], module:ts.ModuleKind[computed('module')],
+  moduleResolution:ts.ModuleResolutionKind[computed('moduleResolution')],
+  moduleDetection:ts.ModuleDetectionKind[computed('moduleDetection')],
+  esModuleInterop:computed('esModuleInterop'), allowSyntheticDefaultImports:computed('allowSyntheticDefaultImports')
+};
 const calls=[];
 const requests = new Map();
 const request = (f, literal, kind) => {
@@ -147,7 +190,7 @@ for(const f of p.getSourceFiles()) {
   }
   visit(f);
 }
-process.stdout.write(JSON.stringify({files:p.getSourceFiles().map(f=>f.fileName), requests:Array.from(requests.values()), formats:Object.fromEntries(p.getSourceFiles().map(f=>[f.fileName, f.impliedNodeFormat === undefined ? 'unknown' : f.impliedNodeFormat === ts.ModuleKind.CommonJS ? 'common_js' : f.impliedNodeFormat === ts.ModuleKind.ESNext ? 'es_module' : 'unsupported'])), calls, errors:ts.getPreEmitDiagnostics(p).filter(d=>d.category===ts.DiagnosticCategory.Error).map(d=>d.code)}));
+process.stdout.write(JSON.stringify({normalized, files:p.getSourceFiles().map(f=>f.fileName), requests:Array.from(requests.values()), formats:Object.fromEntries(p.getSourceFiles().map(f=>[f.fileName, f.impliedNodeFormat === undefined ? 'unknown' : f.impliedNodeFormat === ts.ModuleKind.CommonJS ? 'common_js' : f.impliedNodeFormat === ts.ModuleKind.ESNext ? 'es_module' : 'unsupported'])), calls, errors:ts.getPreEmitDiagnostics(p).filter(d=>d.category===ts.DiagnosticCategory.Error).map(d=>d.code)}));
 "#;
         let args = [
             OsString::from(self.root.join("node_modules/typescript/lib/typescript.js")),
@@ -695,7 +738,7 @@ fn actual_compiler_node_formats_follow_package_type_with_identical_source_member
     use backend_frontend_typescript::{TszProjectFileFormat, TszProjectModuleRequestKind};
     use std::collections::BTreeMap;
     let fixture = Fixture::new();
-    let main = "import { value } from './dep.js';\nimport type { Token as I } from './dep.js' with { 'resolution-mode': 'import' };\nimport type { Token as R } from './dep.js' with { 'resolution-mode': 'require' };\nexport const result = value; export type Pair = [I, R];\nexport { value as forwarded } from './dep.js';\nexport type InlineImport = import('./dep.js', { with: { 'resolution-mode': 'import' } }).Token;\nexport type InlineRequire = import('./dep.js', { with: { 'resolution-mode': 'require' } }).Token;\nimport legacy = require('./fixed.cjs'); export const legacyValue = legacy.cjs;\nexport const dynamic = import('./dep.js');\n";
+    let main = "import { value } from './dep.js';\nimport type { Token as I } from './dep.js' with { 'resolution-mode': 'import' };\nimport type { Token as R } from './dep.js' with { 'resolution-mode': 'require' };\nexport const result = value; export type Pair = [I, R];\nexport { value as forwarded } from './dep.js';\nexport type InlineImport = import('./dep.js', { with: { 'resolution-mode': 'import' } }).Token;\nexport type InlineRequire = import('./dep.js', { with: { 'resolution-mode': 'require' } }).Token;\nimport legacy = require('./fixed.cjs'); export const legacyValue = legacy.cjs;\nexport const dynamic = import('./dep.js');\ndeclare function require(name: string): { cjs: number }; export const rawRequire = require('./fixed.cjs');\n";
     let dep = "export interface Token { value: number; } export const value = 42;\n";
     let source_pairs = [
         ("src/main.ts", main),
@@ -742,6 +785,11 @@ fn actual_compiler_node_formats_follow_package_type_with_identical_source_member
                 .unwrap();
                 let native = fixture.native(&sources);
                 let oracle = fixture.oracle();
+                fixture.assert_normalized_options(&sources, &oracle);
+                assert_eq!(
+                    format!("{:?}", native.options.checker.module),
+                    oracle["normalized"]["module"].as_str().unwrap()
+                );
                 assert_eq!(oracle["errors"], serde_json::json!([]));
                 let formats: BTreeMap<_, _> = native
                     .options
@@ -941,4 +989,53 @@ fn compiler_file_format_report_requires_closed_typed_evidence() {
         .unwrap()
         .remove("implied_node_format");
     assert!(serde_json::from_value::<super::ProgramFile>(missing).is_err());
+}
+
+#[test]
+#[ignore = "requires pinned TSZ_PROGRAM_TEST_NODE and TSZ_PROGRAM_TEST_TYPESCRIPT_API"]
+fn actual_compiler_normalized_defaults_match_owned_sdk_computed_options() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.root.join("src/main.ts"),
+        "export const value = 42;\n",
+    )
+    .unwrap();
+    let sources = vec![PackageSource::new("src/main.ts", "export const value = 42;\n").unwrap()];
+    for options in [
+        serde_json::json!({}),
+        serde_json::json!({"target":"ES2022"}),
+        serde_json::json!({"module":"CommonJS"}),
+        serde_json::json!({"module":"ESNext"}),
+        serde_json::json!({"module":"Preserve", "moduleResolution":"Bundler"}),
+        serde_json::json!({"module":"ESNext", "moduleResolution":"Bundler"}),
+        serde_json::json!({"module":"Node16"}),
+        serde_json::json!({"module":"NodeNext"}),
+    ] {
+        fs::write(
+            fixture.root.join("tsconfig.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "compilerOptions":options, "files":["src/main.ts"],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let oracle = fixture.oracle();
+        assert_eq!(oracle["errors"], serde_json::json!([]));
+        fixture.assert_normalized_options(&sources, &oracle);
+        let native = fixture.native(&sources);
+        assert_eq!(
+            format!("{:?}", native.options.checker.module),
+            oracle["normalized"]["module"].as_str().unwrap()
+        );
+        assert_eq!(
+            native.options.checker.es_module_interop,
+            oracle["normalized"]["esModuleInterop"].as_bool().unwrap()
+        );
+        assert_eq!(
+            native.options.checker.allow_synthetic_default_imports,
+            oracle["normalized"]["allowSyntheticDefaultImports"]
+                .as_bool()
+                .unwrap()
+        );
+    }
 }

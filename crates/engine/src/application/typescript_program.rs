@@ -510,6 +510,9 @@ const result = value => { process.stdout.write(JSON.stringify(value)); };
 try {
   const ts = require(compilerApiPath);
   if (typeof ts.getModeForUsageLocation !== 'function') throw new Error('selected TypeScript runtime does not expose its exact getModeForUsageLocation implementation');
+  for (const name of ['getEmitScriptTarget', 'getEmitModuleKind', 'getEmitModuleResolutionKind', 'getEmitModuleDetectionKind', 'getESModuleInterop', 'getAllowSyntheticDefaultImports']) {
+    if (typeof ts[name] !== 'function') throw new Error('selected TypeScript runtime does not expose its exact ' + name + ' implementation');
+  }
   if (typeof ts.matchFiles !== 'function') throw closureFault('mismatch', 'selected TypeScript runtime does not expose its exact matchFiles implementation');
   const finishDirectoryQuery = (context, queryPath, value, kind, args, environment) => {
     for (const view of context.views.values()) {
@@ -790,20 +793,25 @@ try {
       if (typeof name !== 'string') throw new Error('compiler option enum has no canonical name');
       return name;
     };
-    const scriptTarget = options.target === undefined ? ts.ScriptTarget.ES5 : options.target;
-    const targetName = reverseName(ts.ScriptTarget, scriptTarget, 'ES5');
-    const resolutionValue = options.moduleResolution === undefined
-      ? ((options.module === ts.ModuleKind.Node16 || options.module === ts.ModuleKind.NodeNext) ? options.module : ts.ModuleResolutionKind.Node10)
-      : options.moduleResolution;
-    const moduleValue = options.module === undefined
-      ? (resolutionValue === ts.ModuleResolutionKind.Node16 ? ts.ModuleKind.Node16 : resolutionValue === ts.ModuleResolutionKind.NodeNext ? ts.ModuleKind.NodeNext : (scriptTarget >= ts.ScriptTarget.ES2015 ? ts.ModuleKind.ES2015 : ts.ModuleKind.CommonJS))
-      : options.module;
+    const computedEnumName = (table, value) => {
+      if (typeof value !== 'number' || typeof table[value] !== 'string') throw new Error('selected TypeScript computed option returned an unsupported enum value');
+      return table[value];
+    };
+    const computedFlag = name => {
+      const value = ts[name](options);
+      if (typeof value !== 'boolean') throw new Error('selected TypeScript computed option returned an unsupported boolean value');
+      return value;
+    };
+    const scriptTarget = ts.getEmitScriptTarget(options);
+    const targetName = computedEnumName(ts.ScriptTarget, scriptTarget);
+    const resolutionValue = ts.getEmitModuleResolutionKind(options);
+    const moduleValue = ts.getEmitModuleKind(options);
     const strictFlag = key => options[key] === undefined ? !!options.strict : !!options[key];
     const normalized = {
       target:targetName,
-      module:reverseName(ts.ModuleKind,moduleValue,'CommonJS'),
-      moduleResolution:reverseName(ts.ModuleResolutionKind,resolutionValue,'Node10'),
-      moduleDetection:reverseName(ts.ModuleDetectionKind,options.moduleDetection, 'Auto'),
+      module:computedEnumName(ts.ModuleKind,moduleValue),
+      moduleResolution:computedEnumName(ts.ModuleResolutionKind,resolutionValue),
+      moduleDetection:computedEnumName(ts.ModuleDetectionKind,ts.getEmitModuleDetectionKind(options)),
       strict:!!options.strict,
       noImplicitAny:strictFlag('noImplicitAny'), strictNullChecks:strictFlag('strictNullChecks'),
       strictFunctionTypes:strictFlag('strictFunctionTypes'), strictBindCallApply:strictFlag('strictBindCallApply'),
@@ -815,8 +823,8 @@ try {
       noImplicitOverride:!!options.noImplicitOverride, noUnusedLocals:!!options.noUnusedLocals,
       noUnusedParameters:!!options.noUnusedParameters, noFallthroughCasesInSwitch:!!options.noFallthroughCasesInSwitch,
       allowUnreachableCode:options.allowUnreachableCode, allowUnusedLabels:options.allowUnusedLabels,
-      experimentalDecorators:!!options.experimentalDecorators, esModuleInterop:!!options.esModuleInterop,
-      allowSyntheticDefaultImports:options.allowSyntheticDefaultImports === undefined ? !!options.esModuleInterop : !!options.allowSyntheticDefaultImports,
+      experimentalDecorators:!!options.experimentalDecorators, esModuleInterop:computedFlag('getESModuleInterop'),
+      allowSyntheticDefaultImports:computedFlag('getAllowSyntheticDefaultImports'),
       resolveJsonModule:!!options.resolveJsonModule, noResolve:!!options.noResolve, allowJs:!!options.allowJs,
       checkJs:!!options.checkJs, skipLibCheck:!!options.skipLibCheck,
       noUncheckedSideEffectImports:!!options.noUncheckedSideEffectImports,
