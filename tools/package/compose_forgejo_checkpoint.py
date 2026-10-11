@@ -47,6 +47,7 @@ class SourceSnapshot:
     tree: str
     bootstrap_template: bytes
     mac_library: bytes
+    launcher_template: bytes
     base_channel: dict
     base_channel_sha256: str
 
@@ -90,6 +91,7 @@ class LinuxPackage:
 class CandidateBundle:
     bootstrap_tag: str
     bootstrap: bytes
+    launcher: bytes
     channel: dict
     libraries: dict[str, PlatformLibrary]
     linux_package: LinuxPackage
@@ -214,6 +216,7 @@ def selected_source_snapshot(source_root: Path) -> SourceSnapshot:
 
     bootstrap_template = source_file(root, revision, "tools/package/install_forgejo_preview.py", MAX_SCRIPT)
     mac_library = source_file(root, revision, "tools/package/install_macos_preview.py", MAX_SCRIPT)
+    launcher_template = source_file(root, revision, "tools/package/install_diagnostic_preview.sh", MAX_SCRIPT)
     channel_bytes = source_file(root, revision, "tools/package/forgejo-preview-channel.json", MAX_JSON)
     channel = checked_json(channel_bytes, "base diagnostic channel")
     historical_path = root / "tools/package/fixtures/install-forgejo-bootstrap-r2-pinned.py"
@@ -228,7 +231,7 @@ def selected_source_snapshot(source_root: Path) -> SourceSnapshot:
     except (historical.InstallError, KeyError, TypeError, ValueError) as error:
         raise CandidateError(f"base channel is not the exact reviewed R2 channel: {error}") from error
     verify_library_contract(mac_library, "macos-arm64")
-    return SourceSnapshot(root, revision, tree, bootstrap_template, mac_library, channel,
+    return SourceSnapshot(root, revision, tree, bootstrap_template, mac_library, launcher_template, channel,
                           digest(channel_bytes))
 
 
@@ -257,7 +260,66 @@ def uncompleted_linux_qa(package_dir: Path) -> tuple[str, str]:
     if not isinstance(cases, dict) or set(cases) != release.LINUX_QA_CASES or any(value is not False for value in cases.values()):
         raise CandidateError("Linux native QA is not the exact all-uncompleted template")
     names = ", ".join(sorted(cases))
-    return digest(body), f"Linux runtime acceptance remains open; the package carries an uncompleted native QA template ({names})."
+    return digest(body), (
+        "No native Linux runtime acceptance is claimed for this release candidate; "
+        f"its native QA template marks these cases uncompleted: {names}."
+    )
+
+
+def candidate_launcher(template: bytes, bootstrap_tag: str, bootstrap_body: bytes) -> bytes:
+    """Pin the selected immutable bootstrap into the reviewed POSIX launcher source."""
+    if not re.fullmatch(r"[A-Za-z0-9.-]{1,100}", bootstrap_tag):
+        raise CandidateError("candidate bootstrap tag is invalid for the POSIX launcher")
+    try:
+        text = template.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise CandidateError("POSIX launcher source is not UTF-8") from error
+    bootstrap_sha256 = digest(bootstrap_body)
+    bootstrap_asset = f"install-forgejo-bootstrap-{bootstrap_sha256[:16]}.py"
+    bootstrap_url = bootstrap.release_url(bootstrap_tag, bootstrap_asset)
+    old_description = (
+        "# Download and execute the immutable R2 Python bootstrap as a saved file.\n"
+        "# This delivery repair still installs the October 6/8 diagnostic binaries."
+    )
+    replacements = {
+        old_description: "# Download and execute this immutable diagnostic bootstrap as a saved file.",
+        "'Supports macOS arm64 and Linux x86_64; installs the historical R2 diagnostic preview.'":
+            "'Supports macOS arm64 and Linux x86_64; installs this pinned diagnostic preview.'",
+        "installer_url='https://dev.nudox.org/git/philocalyst/Backend/releases/download/"
+        "nudox-diagnostic-installer-20261009-r2/install.py'": f"installer_url='{bootstrap_url}'",
+        "installer_sha256='36f0ea62e3b49cadebcef0f89e735639530c0ba1686e62d4dcbfea96294174f5'":
+            f"installer_sha256='{bootstrap_sha256}'",
+        "installer_bytes=13426": f"installer_bytes={len(bootstrap_body)}",
+        "printf '%s\\n' 'Downloading the pinned R2 diagnostic installer (historical October 6/8 binaries).' >&2":
+            f"printf 'Downloading pinned diagnostic bootstrap for %s.\\n' '{bootstrap_tag}' >&2",
+    }
+    for old, new in replacements.items():
+        if text.count(old) != 1:
+            raise CandidateError("POSIX launcher source has changed its reviewed pin anchors")
+        text = text.replace(old, new, 1)
+    body = text.encode("utf-8")
+    if (len(body) > MAX_SCRIPT or "historical October 6/8" in text
+            or "nudox-diagnostic-installer-20261009-r2" in text):
+        raise CandidateError("generated POSIX launcher is incomplete or exceeds its byte limit")
+    return body
+
+
+def linux_failures_for_candidate(base_row: dict, package: LinuxPackage) -> list[str]:
+    """Retain detailed failures only when the source and exact archive are unchanged."""
+    archive = base_row.get("archive") if isinstance(base_row, dict) else None
+    if not isinstance(archive, dict):
+        return []
+    same_artifact = (
+        base_row.get("source") == package.manifest.get("source_sha")
+        and archive.get("sha256") == package.archive_sha256
+        and archive.get("bytes") == package.archive_bytes
+    )
+    if not same_artifact:
+        return []
+    failures = base_row.get("known_failures")
+    if not isinstance(failures, list) or any(not isinstance(item, str) or not item.strip() for item in failures):
+        raise CandidateError("matching base Linux artifact has invalid detailed failure notes")
+    return list(failures)
 
 
 def pin_linux_installer(template: bytes, tag: str, manifest_sha256: str) -> bytes:
@@ -387,11 +449,15 @@ def compose_candidate(source: SourceSnapshot, package: LinuxPackage) -> Candidat
         "sha256": mac_installer.sha256,
         "bytes": mac_installer.byte_count,
     }
+    base_linux_row = source.base_channel["platforms"]["linux-x64"]
+    known_failures = linux_failures_for_candidate(base_linux_row, package)
+    if package.native_qa_limitation not in known_failures:
+        known_failures.append(package.native_qa_limitation)
     linux_row = {
         "status": "diagnostic-preview",
         "source": linux_manifest["source_sha"],
         "tag": linux_tag,
-        "known_failures": [package.native_qa_limitation],
+        "known_failures": known_failures,
         "installer": {
             "url": bootstrap.release_url(bootstrap_tag, f"{linux_installer.asset_stem}-{linux_installer.sha256[:16]}.py"),
             "sha256": linux_installer.sha256,
@@ -420,7 +486,8 @@ def compose_candidate(source: SourceSnapshot, package: LinuxPackage) -> Candidat
             or mac_row["source"] != original_mac_row["source"]
             or mac_row["archive"] != original_mac_row["archive"]):
         raise CandidateError("Mac release identity changed while composing the Linux candidate")
-    return CandidateBundle(bootstrap_tag, bootstrap_bytes, channel, libraries, package, source)
+    launcher = candidate_launcher(source.launcher_template, bootstrap_tag, bootstrap_bytes)
+    return CandidateBundle(bootstrap_tag, bootstrap_bytes, launcher, channel, libraries, package, source)
 
 
 def write_exclusive(path: Path, body: bytes) -> None:
@@ -518,8 +585,11 @@ def prepare_output(bundle: CandidateBundle, output_dir: Path) -> dict:
         linux_file = f"{bundle.libraries['linux-x64'].asset_stem}-{bundle.libraries['linux-x64'].sha256[:16]}.py"
         mac_file = f"{bundle.libraries['macos-arm64'].asset_stem}-{bundle.libraries['macos-arm64'].sha256[:16]}.py"
         bootstrap_file = f"install-forgejo-bootstrap-{digest(bundle.bootstrap)[:16]}.py"
+        launcher_file = f"install-forgejo-launcher-{digest(bundle.launcher)[:16]}.sh"
         channel_bytes = (json.dumps(bundle.channel, indent=2) + "\n").encode()
         write_exclusive(output / bootstrap_file, bundle.bootstrap)
+        write_exclusive(output / launcher_file, bundle.launcher)
+        write_exclusive(output / "install.sh", bundle.launcher)
         write_exclusive(output / linux_file, bundle.libraries["linux-x64"].body)
         write_exclusive(output / mac_file, bundle.libraries["macos-arm64"].body)
         write_exclusive(output / "preview-channel.json", channel_bytes)
@@ -547,6 +617,14 @@ def prepare_output(bundle: CandidateBundle, output_dir: Path) -> dict:
             "published": False,
             "native_acceptance_claimed": False,
             "bootstrap_tag": bundle.bootstrap_tag,
+            "launcher": {
+                "asset": launcher_file,
+                "sha256": digest(bundle.launcher),
+                "bytes": len(bundle.launcher),
+                "bootstrap_tag": bundle.bootstrap_tag,
+                "bootstrap_sha256": digest(bundle.bootstrap),
+                "bootstrap_bytes": len(bundle.bootstrap),
+            },
             "source_snapshot": {"revision": bundle.source.revision, "tree": bundle.source.tree},
             "base_channel_sha256": bundle.source.base_channel_sha256,
             "linux_release": {
