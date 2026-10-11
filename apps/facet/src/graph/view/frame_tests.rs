@@ -20,6 +20,50 @@ fn scene() -> Arc<Scene> {
     let world = Arc::new(world);
     Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))))
 }
+
+#[gpui::test]
+fn native_secondary_find_edits_locally_without_declaration_activation(cx: &mut TestAppContext) {
+    use super::InteractionPhase;
+    use std::rc::Rc;
+    cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
+    for local_allowed in [true, false] {
+        for chord in ["secondary-k", "/", "secondary-alt-k"] {
+            let (graph, cx) = cx.add_window_view(|window, cx| {
+                let mut graph = GraphView::with_scene(scene(), Start::World, window, cx);
+                graph.on_interaction_admission(Rc::new(move |phase, _| match phase {
+                    InteractionPhase::Render => true,
+                    InteractionPhase::LocalFocus => local_allowed,
+                    InteractionPhase::Activate => false,
+                }));
+                graph
+            });
+            draw(cx);
+            cx.update(|window, cx| window.focus(&graph.focus_handle(cx), cx));
+            cx.simulate_keystrokes(chord);
+            draw(cx);
+            let opens = local_allowed && chord != "secondary-alt-k";
+            cx.update(|window, cx| {
+                let graph = graph.read(cx);
+                assert_eq!(graph.find_open(), opens, "chord={chord}, local_allowed={local_allowed}");
+                assert_eq!(graph.find_focused(window, cx), opens,
+                    "the real query input, not a logical selection, owns local typing");
+            });
+            if opens {
+                cx.simulate_input("Page");
+                cx.simulate_keystrokes("enter");
+                draw(cx);
+                cx.update(|window, cx| {
+                    let graph = graph.read(cx);
+                    assert_eq!(graph.find.read(cx).value().as_ref(), "Page");
+                    assert!(graph.find_open() && graph.find_focused(window, cx));
+                    assert_eq!(graph.focused(), None,
+                        "local query editing cannot borrow declaration activation authority");
+                });
+            }
+        }
+    }
+}
+
 struct Region { graph: Entity<GraphView>, bounds: Bounds<Pixels> }
 impl Render for Region {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {

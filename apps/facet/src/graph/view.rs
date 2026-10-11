@@ -1192,7 +1192,7 @@ impl GraphView {
         if self.state.find_open || !self.focus_handle.is_focused(window) {
             return;
         }
-        if (key == "/" && !mods.platform && !mods.control && !mods.alt) || (key == "k" && mods.platform && !mods.alt) {
+        if super::keys::opens_find(&event.keystroke) {
             self.open_find(window, cx); cx.stop_propagation(); return;
         }
         if !self.admits_native_interaction(cx) || mods.platform || mods.control || mods.alt { return; }
@@ -2483,10 +2483,7 @@ impl Render for GraphView {
                 }
             }))
             .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
-                let key = event.keystroke.key.as_str();
-                let mods = event.keystroke.modifiers;
-                let local_find = (key == "/" && !mods.platform && !mods.control && !mods.alt)
-                    || (key == "k" && mods.platform && !mods.alt);
+                let local_find = super::keys::opens_find(&event.keystroke);
                 let phase = if local_find { InteractionPhase::LocalFocus } else { InteractionPhase::Activate };
                 if key_admission.as_ref().is_none_or(|admit| admit(phase, cx)) && this.admits_local_focus(cx) { this.key(event, window, cx); }
             }))
