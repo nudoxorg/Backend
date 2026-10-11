@@ -92,11 +92,14 @@ fn help_output(args: &[String]) -> Option<String> {
     // Global option values are paths or projection names, not help topics.
     // Reuse the normal option split before selecting the command, while help
     // still exits before workspace discovery or daemon startup.
-    let command = options::split(args).ok().and_then(|(_, words)| {
-        words
-            .into_iter()
-            .find(|word| !matches!(word.as_str(), "--help" | "-h"))
-    });
+    let arguments = args
+        .iter()
+        .filter(|word| !matches!(word.as_str(), "--help" | "-h"))
+        .cloned()
+        .collect::<Vec<_>>();
+    let command = options::split(&arguments)
+        .ok()
+        .and_then(|(_, words)| words.into_iter().next());
     Some(match command.as_deref() {
         Some("cluster") => crate::cluster::help_text().to_owned(),
         Some("semantic-hydrate") => crate::semantic_hydrate::help_text().to_owned(),
@@ -365,6 +368,8 @@ mod help_tests {
                 "resolve",
             ),
             (vec!["--help", "--project", "/repo", "add"], "add"),
+            (vec!["--help", "--passive", "health"], "health"),
+            (vec!["--help", "--limit", "3", "search"], "search"),
         ] {
             let arguments = arguments.into_iter().map(str::to_owned).collect::<Vec<_>>();
             let help = help_output(&arguments).expect("help requested");
