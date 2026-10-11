@@ -301,11 +301,18 @@ impl OwnerGate {
     }
 
     fn with(state: OwnerState) -> Self {
+        // A pre-ready gate already has an answer to publish to a newly
+        // mounted watcher. Zero remains the unpublished Starting state.
+        let epoch = if matches!(&state, OwnerState::Ready { .. }) {
+            Epoch::default().next()
+        } else {
+            Epoch::default()
+        };
         Self(Arc::new(Shared {
             inner: Mutex::new(Inner {
                 state,
-                epoch: Epoch::default(),
-                attachment: Epoch::default(),
+                epoch,
+                attachment: epoch,
                 mutation_generation: Some(MutationGeneration(0)),
                 mutation_cancel: super::actor::CancellationToken::new(),
                 publication: None,
@@ -1119,6 +1126,27 @@ mod tests {
         assert!(!thread.join().expect("the owner thread lets go"));
         assert!(gate.wait().is_err(), "nobody waits on an owner after quit");
         assert!(!gate.await_restart());
+    }
+
+    #[test]
+    fn a_pre_ready_gate_publishes_its_initial_answer_once() {
+        let key = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("owner".to_owned(), "initial-ready".to_owned())]), 1);
+        let gate = OwnerGate::ready(key, ServiceMode::Attached);
+        let mut task = std::task::Context::from_waker(Waker::noop());
+        let mut first = Box::pin(gate.next(Epoch::default()));
+        let Poll::Ready((epoch, state)) = first.as_mut().poll(&mut task) else {
+            panic!("a newly mounted watcher must observe the pre-ready answer");
+        };
+        assert_eq!(state, OwnerState::Ready { key, mode: ServiceMode::Attached });
+        let attachment = gate.ready_at(epoch, key).expect("current initial publication");
+        assert!(gate.serves_attachment(Some(attachment)));
+        let mut second = Box::pin(gate.next(epoch));
+        assert!(second.as_mut().poll(&mut task).is_pending(), "the initial answer is observed once");
+        gate.publish(OwnerState::Starting);
+        assert!(!gate.event_is_current(epoch), "a retired initial answer cannot admit a replacement");
+        assert!(gate.ready_at(epoch, key).is_none());
+        assert!(!gate.serves_attachment(Some(attachment)));
     }
 
     #[test]

@@ -116,6 +116,9 @@ fn world_header_renews_after_coalesced_same_root_owner_replacement(cx: &mut Test
     let former = rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_attachment())
         .expect("first serving attachment");
     let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    assert_eq!(before.settings().confirmed_service_mode, Some(ServiceMode::Attached),
+        "the documented pre-ready gate must have admitted its initial answer before this replacement");
+    assert_eq!(before.settings().connection, crate::model::ConnectionStatus::Connected);
     let before_focus = rig.graph.store.read_with(rig.cx, |store, _| store.graph_focus().cloned());
     let before_notice = rig.graph.store.read_with(rig.cx, |store, _| store.notice().cloned());
     let renders = rig.counts().titlebar;
