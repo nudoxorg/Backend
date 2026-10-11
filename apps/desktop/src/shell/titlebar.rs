@@ -460,8 +460,9 @@ impl Titlebar {
             let back_label = if back_to_graph { "Back to graph" } else { "Back" };
             let target_action = jump_target_action(JumpAction::Back { visit: visit.clone() }, &self.links, &self.targets, cx);
             let act = target_action.callback();
-            let key_act = Rc::clone(&act);
             let click_act = Rc::clone(&act);
+            let press_admission = target_action.clone();
+            let right_admission = target_action.clone();
             let menu_links = self.links.clone();
             let targets = self.targets.clone();
             let long = Rc::clone(&self.long);
@@ -472,12 +473,12 @@ impl Titlebar {
             self.targets.push(Target { id: "jump-back".into(), label: back_label.into(), action: target_action.clone(), peek: None, source: None });
             let right_links = menu_links.clone();
             let right_targets = targets.clone();
-            bar = bar.child(self.targets.track("jump-back",
-                div()
+            let focus = self.targets.native_handle(&"jump-back".into(), cx);
+            let admission = target_action.clone();
+            let face = div()
                     .id("jump-back")
                     .role(gpui::Role::Button)
                     .aria_label(back_label)
-                    .focusable()
                     .relative().flex().items_center().justify_center().h(hit_side(measure)).min_w(hit_side(measure))
                     .px(if back_to_graph { measure.space(Space::Snug) } else { px(0.0) })
                     .gap(measure.space(Space::Hair))
@@ -487,6 +488,7 @@ impl Titlebar {
                     .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                         let links = press_links.clone();
                         let targets = press_targets.clone();
+                        let admission = press_admission.clone();
                         let window_handle = window.window_handle();
                         let _ = weak.update(cx, |bar, cx| {
                             bar.long.set(false);
@@ -494,6 +496,7 @@ impl Titlebar {
                             bar.press = Some(cx.spawn(async move |_, cx| {
                                 cx.background_executor().timer(LONG_PRESS).await;
                                 let _ = window_handle.update(cx, |_, window, cx| {
+                                    if !admission.admits(cx) { return; }
                                     long.set(true);
                                     if let Some(anchor) = targets.bounds_of("jump-back") {
                                         back_menu(&links, anchor, window, cx);
@@ -508,19 +511,20 @@ impl Titlebar {
                         let _ = release.update(cx, |bar, _| bar.press = None);
                     })
                     .on_mouse_down(MouseButton::Right, move |_, window, cx| {
+                        if !right_admission.admits(cx) { return; }
                         if let Some(anchor) = right_targets.bounds_of("jump-back") {
                             back_menu(&right_links, anchor, window, cx);
                         }
                     })
-                    .on_click(move |event: &ClickEvent, window, cx| {
-                        if long.take() {
-                            return;
-                        }
-                        if !matches!(event, ClickEvent::Keyboard(_)) { click_act(window, cx); }
-                    })
-                    .on_key_down(move |event, window, cx| activate_key(event, &key_act, window, cx))
-                    .children(keycap(keys, super::keys::cap(super::keys::Command::Back), measure)),
-            ));
+                    .children(keycap(keys, super::keys::cap(super::keys::Command::Back), measure));
+            let face = facet::controls::button::capture_activation_admission(
+                facet::controls::button::native_button_with_event(face, &focus, move |event, window, cx| {
+                    if !matches!(event, ClickEvent::Keyboard(_)) && long.take() { return; }
+                    click_act(window, cx);
+                }),
+                Rc::new(move |cx| admission.admits(cx)),
+            );
+            bar = bar.child(self.targets.track("jump-back", face));
         } else {
             bar = bar.child(div()
                 .id("jump-back")
@@ -533,29 +537,18 @@ impl Titlebar {
         if snapshot.overlay().is_none() && !session.forward.is_empty() {
             let target_action = jump_target_action(JumpAction::Forward { visit: visit.clone() }, &self.links, &self.targets, cx);
             let act = target_action.callback();
-            let key_act = Rc::clone(&act);
-            let click_act = Rc::clone(&act);
             self.targets.push(Target { id: "jump-forward".into(), label: "Forward".into(), action: target_action.clone(), peek: None, source: None });
-            bar = bar.child(
-                self.targets.track(
-                    "jump-forward",
-                    div()
-                        .id("jump-forward")
-                        .role(gpui::Role::Button)
-                        .aria_label("Forward")
-                        .focusable()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .size(hit_side(measure))
-                        .cursor_pointer()
-                        .child(text(ty::ROW, measure, palette.ink2).child("›"))
-                        .on_click(move |event: &ClickEvent, window, cx| {
-                            if !matches!(event, ClickEvent::Keyboard(_)) { click_act(window, cx); }
-                        })
-                        .on_key_down(move |event, window, cx| activate_key(event, &key_act, window, cx)),
+            let focus = self.targets.native_handle(&"jump-forward".into(), cx);
+            let face = facet::controls::button::capture_activation_admission(
+                facet::controls::button::native_button(
+                    div().id("jump-forward").role(gpui::Role::Button).aria_label("Forward")
+                        .flex().items_center().justify_center().size(hit_side(measure)).cursor_pointer()
+                        .child(text(ty::ROW, measure, palette.ink2).child("›")),
+                    &focus, move |window, cx| act(window, cx),
                 ),
+                Rc::new(move |cx| target_action.admits(cx)),
             );
+            bar = bar.child(self.targets.track("jump-forward", face));
         }
 
         // The plate: where you are.

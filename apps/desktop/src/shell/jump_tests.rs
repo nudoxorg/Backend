@@ -303,6 +303,28 @@ fn back_steps_back_forward_appears_and_a_right_click_lists_the_last_places(cx: &
     assert_eq!(rig.route(), page_route("KindGlyph"), "listing is not stepping");
 }
 
+/// A held Back press is owned by the route/attachment which admitted it,
+/// including its delayed menu. Moving to another route does not reissue it.
+#[gpui::test]
+fn a_retired_held_back_press_cannot_open_the_next_routes_history(cx: &mut TestAppContext) {
+    use gpui::AppContext as _;
+    let mut rig = open(cx, "RelationLabel");
+    rig.go(Intent::Navigate(page_route("KindGlyph")));
+    let bounds = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("jump-back", cx))
+        .expect("painted Back control");
+    rig.cx.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
+    // Start the real pending timer without advancing its deadline.
+    rig.cx.run_until_parked();
+    rig.go(Intent::Navigate(page_route("RelationDirection")));
+    rig.cx.executor().advance_clock(std::time::Duration::from_millis(401));
+    rig.cx.run_until_parked();
+    assert!(!is_open(&mut rig, "jump-back-menu"), "retired held input cannot open or focus a new visit's menu");
+    assert_eq!(rig.route(), page_route("RelationDirection"));
+    rig.cx.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
+    rig.settle();
+    assert_eq!(rig.route(), page_route("RelationDirection"), "retired release cannot perform a new visit's Back");
+}
+
 #[gpui::test]
 fn a_module_segment_opens_its_siblings_from_the_outline(cx: &mut TestAppContext) {
     let mut rig = open(cx, "RelationLabel");

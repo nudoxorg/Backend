@@ -373,6 +373,16 @@ fn exercise(fixture: &OwnerFixture) {
 
 
 const VIEW_CHILD: &str = "NUDOX_TEST_PRODUCTION_HEADER_CHILD";
+/// History controls precede view controls when history exists. Walk the
+/// actual mounted order without assuming Back/Forward are absent.
+fn header_tab_to(rig: &mut Rig, targets: &crate::shell::focus::Targets, id: &str) {
+    for _ in 0..4 {
+        rig.keys("tab");
+        if rig.cx.update(|window, _| targets.native_focused(window)).as_deref() == Some(id) { return; }
+    }
+    panic!("native header Tab must reach {id} through at most two history controls");
+}
+
 const VIEW_NAME: &str = "shell::graph_tests::production::production_graph_header_native_controls_open_and_return_to_the_exact_selected_symbol";
 
 #[test]
@@ -434,9 +444,9 @@ fn exercise_header_controls(fixture: &OwnerFixture) {
         let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_targets(cx));
         rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx|
             shell.take_zone(super::super::focus::Zone::Titlebar, window, cx)));
-        rig.keys("tab");
+        header_tab_to(&mut rig, &targets, "view-page");
         assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(), Some("view-page"),
-            "Tab reaches the real Page receiver from the header dispatch owner");
+            "Tab reaches the real Page receiver through mounted history controls");
         if view == View::Code { rig.keys("tab"); }
         assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(), Some(id));
         let native = header_node(&mut rig, if view == View::Page { "Show Page view" } else { "Show Code view" });
@@ -453,10 +463,34 @@ fn exercise_header_controls(fixture: &OwnerFixture) {
         rig.settle();
         assert!(matches!(rig.route(), Route::Symbol(route) if route.package.as_str() == expected.0.as_str()
             && route.id.as_str() == expected.1.as_str() && route.view == view), "{input} opens the exact selected indexed symbol");
-        rig.keys("secondary-[");
+        let opened = rig.route();
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_targets(cx));
+        rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx|
+            shell.take_zone(super::super::focus::Zone::Titlebar, window, cx)));
+        header_tab_to(&mut rig, &targets, "jump-back");
+        let back = header_node(&mut rig, "Back to graph");
+        match input {
+            "pointer" => {
+                let bounds = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("jump-back", cx)).expect("native Back bounds");
+                rig.cx.simulate_click(bounds.center(), Modifiers::none());
+            }
+            "accessibility" => { rig.cx.update(|window, cx| window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+                action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: back, data: None,
+            }, cx)); }
+            key => rig.native_press(key),
+        }
+        rig.settle();
         assert_eq!(rig.route(), Route::World, "native Back returns to the actual graph visit");
         assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.graph_focus().and_then(|focus| focus.indexed.clone())), Some(expected),
             "Back preserves the selected semantic declaration instead of adopting a row number");
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_targets(cx));
+        rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx|
+            shell.take_zone(super::super::focus::Zone::Titlebar, window, cx)));
+        header_tab_to(&mut rig, &targets, "jump-forward");
+        rig.native_press("enter");
+        assert_eq!(rig.route(), opened, "native Forward restores the exact declaration/view visit");
+        rig.keys("secondary-[");
+        assert_eq!(rig.route(), Route::World, "the existing Back shortcut keeps the same history semantics");
     }
 
     // The original frame remains committed throughout this complete native
@@ -465,7 +499,7 @@ fn exercise_header_controls(fixture: &OwnerFixture) {
     let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_targets(cx));
     rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx|
         shell.take_zone(super::super::focus::Zone::Titlebar, window, cx)));
-    rig.keys("tab tab");
+    header_tab_to(&mut rig, &targets, "view-code");
     let bounds = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("view-page", cx)).expect("old painted Page");
     let native = header_node(&mut rig, "Show Page view");
     gate.publish(OwnerState::Starting);
