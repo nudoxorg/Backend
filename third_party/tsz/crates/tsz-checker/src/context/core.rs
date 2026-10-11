@@ -962,6 +962,10 @@ impl<'a> CheckerContext<'a> {
         outcomes: Arc<crate::context::ResolvedModuleRequestOutcomeMap>,
     ) {
         self.project_module_resolution_outcomes = Some(outcomes);
+        // Compiler-owned negatives are part of the configured program's
+        // diagnostics. The standalone checker's optional unresolved-import
+        // suppression must not erase an admitted Unresolved or absent request.
+        self.report_unresolved_imports = true;
     }
 
     /// Set resolved module specifiers (module names that exist in the project).
