@@ -135,8 +135,19 @@ impl Fixture {
     }
     fn assert_normalized_options(&self, sources: &[PackageSource<'_>], oracle: &serde_json::Value) {
         let normalized = self.normalized_options(sources);
+        let checker = backend_frontend_typescript::checker_options_from_compiler_api_json(
+            &serde_json::to_string(&serde_json::json!({"compilerOptions": normalized})).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            checker.target as u64,
+            oracle["target_value"].as_u64().unwrap(),
+            "selected SDK target semantic identity"
+        );
+        if oracle["target_is_esnext"].as_bool().unwrap() {
+            assert_eq!(normalized["target"], "ESNext");
+        }
         for name in [
-            "target",
             "module",
             "moduleResolution",
             "moduleDetection",
@@ -190,7 +201,7 @@ for(const f of p.getSourceFiles()) {
   }
   visit(f);
 }
-process.stdout.write(JSON.stringify({normalized, files:p.getSourceFiles().map(f=>f.fileName), requests:Array.from(requests.values()), formats:Object.fromEntries(p.getSourceFiles().map(f=>[f.fileName, f.impliedNodeFormat === undefined ? 'unknown' : f.impliedNodeFormat === ts.ModuleKind.CommonJS ? 'common_js' : f.impliedNodeFormat === ts.ModuleKind.ESNext ? 'es_module' : 'unsupported'])), calls, errors:ts.getPreEmitDiagnostics(p).filter(d=>d.category===ts.DiagnosticCategory.Error).map(d=>d.code)}));
+process.stdout.write(JSON.stringify({normalized, target_value:computed('target'), target_is_esnext:computed('target') === ts.ScriptTarget.ESNext, files:p.getSourceFiles().map(f=>f.fileName), requests:Array.from(requests.values()), formats:Object.fromEntries(p.getSourceFiles().map(f=>[f.fileName, f.impliedNodeFormat === undefined ? 'unknown' : f.impliedNodeFormat === ts.ModuleKind.CommonJS ? 'common_js' : f.impliedNodeFormat === ts.ModuleKind.ESNext ? 'es_module' : 'unsupported'])), calls, errors:ts.getPreEmitDiagnostics(p).filter(d=>d.category===ts.DiagnosticCategory.Error).map(d=>d.code)}));
 "#;
         let args = [
             OsString::from(self.root.join("node_modules/typescript/lib/typescript.js")),
@@ -1004,6 +1015,7 @@ fn actual_compiler_normalized_defaults_match_owned_sdk_computed_options() {
     for options in [
         serde_json::json!({}),
         serde_json::json!({"target":"ES2022"}),
+        serde_json::json!({"target":"ESNext"}),
         serde_json::json!({"module":"CommonJS"}),
         serde_json::json!({"module":"ESNext"}),
         serde_json::json!({"module":"Preserve", "moduleResolution":"Bundler"}),

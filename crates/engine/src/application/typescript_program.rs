@@ -803,7 +803,10 @@ try {
       return value;
     };
     const scriptTarget = ts.getEmitScriptTarget(options);
-    const targetName = computedEnumName(ts.ScriptTarget, scriptTarget);
+    let targetName = computedEnumName(ts.ScriptTarget, scriptTarget);
+    // Numeric reverse enums expose the SDK's compatibility alias `Latest`.
+    // Preserve the named ESNext semantic identity accepted by the native DTO.
+    if (scriptTarget === ts.ScriptTarget.ESNext) targetName = 'ESNext';
     const resolutionValue = ts.getEmitModuleResolutionKind(options);
     const moduleValue = ts.getEmitModuleKind(options);
     const strictFlag = key => options[key] === undefined ? !!options.strict : !!options[key];
