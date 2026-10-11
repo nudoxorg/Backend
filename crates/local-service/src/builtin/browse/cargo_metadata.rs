@@ -11,9 +11,9 @@ use super::{
     MAX_CARGO_OBSERVATION_PATHS, MAX_METADATA_BYTES, RequestedCargoManifest, basic_input_paths,
     cargo_config_paths, cargo_config_relative_path_base, cargo_environment_witness,
     cargo_tool_selection, metadata_tool_witness, observation_budget, observation_path_key,
-    read_observation_file, requested_cargo_manifest, run, run_with_default_rustc,
-    run_with_default_rustc_and_overrides, rustup_selection_paths, sccache_configuration_paths,
-    selected_cargo_program, strict_observation_witness,
+    preflight_selected_cargo_command, read_observation_file, requested_cargo_manifest, run,
+    run_with_default_rustc, run_with_default_rustc_and_overrides, rustup_selection_paths,
+    sccache_configuration_paths, selected_cargo_program, strict_observation_witness,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -1389,6 +1389,7 @@ impl CargoMetadataResolutionSession {
             .ok_or_else(|| "requested Cargo manifest has no parent directory".to_owned())?;
         let environment_before = cargo_environment_witness()?;
         let cargo = selected_cargo_program(request_context)?;
+        let cargo_preflight = preflight_selected_cargo_command(&cargo, request_context)?;
         let version = run(&cargo, request_context, &["-vV"], 64 * 1024)?;
         if cargo_environment_witness()? != environment_before {
             return Err(
@@ -1404,8 +1405,13 @@ impl CargoMetadataResolutionSession {
             })
             .ok_or_else(|| "cargo -vV named no host".to_owned())?;
         let selection_before = cargo_tool_selection(&cargo, request_context, &version)?;
-        let tool_before =
-            metadata_tool_witness(request_context, &version, &selection_before, cached)?;
+        let tool_before = metadata_tool_witness(
+            request_context,
+            &version,
+            &selection_before,
+            cached,
+            &cargo_preflight,
+        )?;
 
         let no_deps = run_cargo_metadata_query_with_limit(
             &cargo,
@@ -1757,8 +1763,13 @@ impl CargoMetadataResolutionSession {
             ),
         };
         let selection_after = cargo_tool_selection(&cargo, request_context, &version)?;
-        let tool_after =
-            metadata_tool_witness(request_context, &version, &selection_after, cached)?;
+        let tool_after = metadata_tool_witness(
+            request_context,
+            &version,
+            &selection_after,
+            cached,
+            &cargo_preflight,
+        )?;
         let environment_after = cargo_environment_witness()?;
         if tool_before.digest != tool_after.digest || environment_before != environment_after {
             return Err("Cargo tools or selection environment changed during metadata".to_owned());
