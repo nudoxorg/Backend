@@ -1651,43 +1651,327 @@ mod tests {
     }
 
     #[test]
+    fn property_owner_spelling_borrows_only_exact_direct_bound_members() {
+        let mut authority = TszProjectAuthority::new();
+        let mut project_options = options();
+        project_options
+            .module_resolutions
+            .push(TszProjectModuleResolution {
+                importer_path: "src/main.ts".to_owned(),
+                specifier: "../types".to_owned(),
+                request_kind: TszProjectModuleRequestKind::EsmImport,
+                resolution_mode: None,
+                target: TszProjectModuleResolutionTarget::File {
+                    path: "types.ts".to_owned(),
+                },
+            });
+        authority.update(vec![
+            input("types.ts", concat!(
+                "export class Owner { label!: string; café!: string; v\\u0061lue!: number; nested!: { nestedOnly: string }; method(): void { class Inner { nestedClassOnly!: string; } interface InnerFace { nestedInterfaceOnly: string } const localOnly = 0; } }\n",
+                "export interface Unbound { unbound: string; nested: { interfaceNested: string } }\n",
+                "export declare const nonMember: string;",
+            )),
+            input("foreign.d.ts", r"export declare class Owner { l\u0061bel: string; foreignOnly: string; }"),
+            input("src/main.ts", "import type { Owner } from '../types'; export declare const value: Owner;"),
+        ], project_options, &[]).expect("real cross-file owner project");
+        let (symbol, foreign_symbol, stable, declaration) = {
+            let project = authority.project().unwrap();
+            let owner_symbol =
+                |path: &str, expected: &str| {
+                    let file = project
+                        .program()
+                        .files
+                        .iter()
+                        .find(|file| file.file_name == path)
+                        .unwrap();
+                    file.arena
+                        .nodes
+                        .iter()
+                        .enumerate()
+                        .find_map(|(raw, node)| {
+                            let name = file.arena.get_class(node).map(|class| class.name).or_else(
+                                || {
+                                    file.arena
+                                        .get_interface(node)
+                                        .map(|interface| interface.name)
+                                },
+                            )?;
+                            let name = file.arena.get_identifier(file.arena.get(name)?)?;
+                            (name.escaped_text == expected)
+                                .then(|| file.node_symbols.get(&u32::try_from(raw).ok()?).copied())
+                                .flatten()
+                        })
+                        .expect("owner declaration itself has a real binder symbol")
+                };
+            let symbol = owner_symbol("types.ts", "Owner");
+            let foreign_symbol = owner_symbol("foreign.d.ts", "Owner");
+            let interface = owner_symbol("types.ts", "Unbound");
+            assert_ne!(symbol, foreign_symbol);
+            assert_eq!(
+                project.symbol_name_source(symbol, "label"),
+                None,
+                "the class symbol does not bind its property's identifier"
+            );
+            for (name, raw) in [
+                ("label", "label"),
+                ("café", "café"),
+                ("value", r"v\u0061lue"),
+            ] {
+                let token = project
+                    .property_name_source_from_owner(symbol, name)
+                    .expect("exact owner member");
+                assert_eq!(token, raw);
+                let source = project.source_text("types.ts").unwrap();
+                assert!(token.as_ptr() >= source.as_ptr());
+                assert!(
+                    token.as_bytes().as_ptr_range().end <= source.as_bytes().as_ptr_range().end,
+                    "spelling borrows the original retained UTF-8 bytes"
+                );
+            }
+            assert_eq!(
+                project.property_name_source_from_owner(interface, "unbound"),
+                Some("unbound"),
+                "an explicitly supplied bound interface owner may lend its direct member"
+            );
+            assert_eq!(
+                project.property_name_source_from_owner(foreign_symbol, "label"),
+                Some(r"l\u0061bel")
+            );
+            for name in [
+                "Owner",
+                "nonMember",
+                "nestedOnly",
+                "nestedClassOnly",
+                "nestedInterfaceOnly",
+                "localOnly",
+                "foreignOnly",
+                "missing",
+                "",
+            ] {
+                assert_eq!(
+                    project.property_name_source_from_owner(symbol, name),
+                    None,
+                    "wrong member {name}"
+                );
+            }
+            assert_eq!(
+                project.property_name_source_from_owner(interface, "interfaceNested"),
+                None
+            );
+            assert_eq!(
+                project.property_name_source_from_owner(foreign_symbol, "café"),
+                None
+            );
+            let file = project
+                .program()
+                .files
+                .iter()
+                .find(|file| file.file_name == "types.ts")
+                .unwrap();
+            let member_symbol = file
+                .node_symbols
+                .iter()
+                .find_map(|(&raw, &symbol)| {
+                    let node = file.arena.get(TszNodeIndex(raw))?;
+                    let identifier = file.arena.get_identifier(node)?;
+                    (identifier.escaped_text == "label").then_some(symbol)
+                })
+                .expect("class member has an actual bound name symbol");
+            assert_ne!(member_symbol, symbol);
+            assert_eq!(
+                project.property_name_source_from_owner(member_symbol, "label"),
+                Some("label")
+            );
+            assert_eq!(
+                project.property_name_source_from_owner(member_symbol, "café"),
+                None
+            );
+            assert!(
+                !file.node_symbols.keys().any(|&raw| file
+                    .arena
+                    .get(TszNodeIndex(raw))
+                    .and_then(|node| file.arena.get_identifier(node))
+                    .is_some_and(|name| name.escaped_text == "unbound")),
+                "interface member names have no member SymbolId to invent"
+            );
+            let data = project.program().symbols.get(symbol).unwrap();
+            assert_eq!(data.declarations.len(), 1);
+            assert_eq!(data.stable_declarations.len(), 1);
+            (
+                symbol,
+                foreign_symbol,
+                data.stable_declarations[0],
+                data.declarations[0],
+            )
+        };
+        // Corrupt only captured provenance for negative controls: no replacement
+        // symbol or positive authority is synthesized by the fixture.
+        let project = authority.project.as_mut().unwrap();
+        project
+            .program
+            .symbols
+            .get_mut(symbol)
+            .unwrap()
+            .stable_declarations
+            .clear();
+        assert_eq!(
+            project.property_name_source_from_owner(symbol, "label"),
+            None,
+            "a missing stable partner is refused before zipped lookup"
+        );
+        project
+            .program
+            .symbols
+            .get_mut(symbol)
+            .unwrap()
+            .stable_declarations
+            .push(stable);
+        project
+            .program
+            .symbols
+            .get_mut(symbol)
+            .unwrap()
+            .stable_declarations[0]
+            .file_idx = project
+            .program
+            .symbols
+            .get(foreign_symbol)
+            .unwrap()
+            .stable_declarations[0]
+            .file_idx;
+        assert_eq!(
+            project.property_name_source_from_owner(symbol, "label"),
+            None,
+            "same-spelled foreign source cannot replace this symbol's declaration"
+        );
+        project
+            .program
+            .symbols
+            .get_mut(symbol)
+            .unwrap()
+            .stable_declarations[0] = stable;
+        project
+            .program
+            .symbols
+            .get_mut(symbol)
+            .unwrap()
+            .stable_declarations[0]
+            .end -= 1;
+        assert_eq!(
+            project.property_name_source_from_owner(symbol, "label"),
+            None,
+            "a stale declaration span cannot lend spelling"
+        );
+        project
+            .program
+            .symbols
+            .get_mut(symbol)
+            .unwrap()
+            .stable_declarations[0] = stable;
+        let file = &mut project.program.files[stable.file_idx as usize];
+        Arc::make_mut(&mut file.node_symbols).insert(declaration.0, foreign_symbol);
+        assert_eq!(
+            project.property_name_source_from_owner(symbol, "label"),
+            None,
+            "even matching file/span needs the exact declaration-node symbol binding"
+        );
+    }
+
+    #[test]
     fn symbol_name_source_uses_the_exact_cross_file_declaration_binding() {
         let mut authority = TszProjectAuthority::new();
+        let mut project_options = options();
+        project_options
+            .module_resolutions
+            .push(TszProjectModuleResolution {
+                importer_path: "src/main.ts".to_owned(),
+                specifier: "../types".to_owned(),
+                request_kind: TszProjectModuleRequestKind::EsmImport,
+                resolution_mode: None,
+                target: TszProjectModuleResolutionTarget::File {
+                    path: "types.d.ts".to_owned(),
+                },
+            });
         authority
             .update(
                 vec![
                     input(
                         "types.d.ts",
-                        "export interface ExternalSettings { label: string }",
+                        "export declare class ExternalSettings { label: string }\nexport interface UnboundSettings { unbound: string }",
                     ),
+                    input("foreign.d.ts", r"export declare class ForeignSettings { l\u0061bel: string }"),
                     input(
                         "src/main.ts",
                         "import type { ExternalSettings } from '../types';\nexport const settings: ExternalSettings = { label: 'ready' };",
                     ),
                 ],
-                options(),
+                project_options,
                 &[],
             )
             .expect("TSZ should build the cross-file project");
         let project = authority.project().expect("project result exists");
+        let bound_property = |path: &str| {
+            let file = project
+                .program()
+                .files
+                .iter()
+                .find(|file| file.file_name == path)
+                .expect("declaration dependency is retained");
+            file.node_symbols
+                .iter()
+                .find_map(|(&raw, &symbol)| {
+                    let node = file.arena.get(TszNodeIndex(raw))?;
+                    let identifier = file.arena.get_identifier(node)?;
+                    (identifier.escaped_text == "label").then_some(symbol)
+                })
+                .expect("a class property-name node has an actual binder symbol")
+        };
+        let symbol = bound_property("types.d.ts");
+        let foreign_symbol = bound_property("foreign.d.ts");
+        assert_ne!(symbol, foreign_symbol);
+        assert_eq!(project.symbol_name_source(symbol, "label"), Some("label"));
+        assert_eq!(project.symbol_name_source(symbol, "ExternalSettings"), None);
+        assert_eq!(project.symbol_name_source(symbol, "unbound"), None);
+        assert_eq!(
+            project.symbol_name_source(foreign_symbol, "label"),
+            Some(r"l\u0061bel")
+        );
         let file = project
             .program()
             .files
             .iter()
             .find(|file| file.file_name == "types.d.ts")
-            .expect("declaration dependency is retained");
-        let symbol = file
-            .node_symbols
+            .unwrap();
+        let interface_range = file
+            .arena
+            .nodes
             .iter()
-            .find_map(|(&raw, &symbol)| {
-                let node = file.arena.get(TszNodeIndex(raw))?;
-                let identifier = file.arena.get_identifier(node)?;
-                (identifier.escaped_text == "label").then_some(symbol)
+            .find_map(|node| {
+                let interface = file.arena.get_interface(node)?;
+                let name = file
+                    .arena
+                    .get(interface.name)
+                    .and_then(|name| file.arena.get_identifier(name))?;
+                (name.escaped_text == "UnboundSettings").then_some((node.pos, node.end))
             })
-            .expect("the exact property-name node is bound to a symbol");
-
-        assert_eq!(project.symbol_name_source(symbol, "label"), Some("label"));
-        assert_eq!(project.symbol_name_source(symbol, "ExternalSettings"), None);
+            .expect("exact unbound interface declaration");
+        assert_eq!(
+            project.property_name_source_in_declaration("types.d.ts", interface_range, "unbound"),
+            Some("unbound")
+        );
+        assert_eq!(
+            project.property_name_source_in_declaration("foreign.d.ts", interface_range, "unbound"),
+            None
+        );
+        assert!(
+            !file.node_symbols.keys().any(|&raw| {
+                file.arena
+                    .get(TszNodeIndex(raw))
+                    .and_then(|node| file.arena.get_identifier(node))
+                    .is_some_and(|identifier| identifier.escaped_text == "unbound")
+            }),
+            "an interface property has no binder symbol and cannot lend one to the class property"
+        );
     }
 
     #[test]

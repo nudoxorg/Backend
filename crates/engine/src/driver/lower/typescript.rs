@@ -12178,6 +12178,76 @@ describe('suite', () => {\n\
     }
 
     #[test]
+    fn native_tsz_property_parent_is_the_exact_cross_file_class_owner() -> Result<(), LaneError> {
+        let authority = native_tsz_project_with_resolutions(
+            &[
+                (
+                    "types.d.ts",
+                    r"export declare class Owner { café: string; v\u0061lue: number; }",
+                ),
+                (
+                    "foreign.d.ts",
+                    r"export declare class Owner { c\u0061fé: string; foreignOnly: number; }",
+                ),
+                (
+                    "src/main.ts",
+                    "import type { Owner } from '../types'; export declare const settings: Owner;",
+                ),
+            ],
+            &[module_resolution(
+                "src/main.ts",
+                "../types",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "types.d.ts".to_owned(),
+                },
+            )],
+        )?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("owner project"))?;
+        let importer = project
+            .program()
+            .files
+            .iter()
+            .position(|file| file.file_name == "src/main.ts")
+            .ok_or(LaneError::Missing("exact importer"))?;
+        project.with_file_checker_and_types(importer, |checker, binder, _file, database| {
+            let symbol = binder.file_locals.get("settings").ok_or(LaneError::Missing("bound settings"))?;
+            let ty = checker.get_type_of_symbol(symbol);
+            let ty = checker.resolve_lazy_type(ty);
+            let shape_id = match database.lookup(ty) {
+                Some(super::TypeData::Object(shape)) | Some(super::TypeData::ObjectWithIndex(shape)) => shape,
+                _ => return Err(LaneError::Missing("actual checker class instance shape")),
+            };
+            let shape = database.object_shape(shape_id);
+            let owner = shape.symbol.ok_or(LaneError::Missing("preserved nominal class identity"))?;
+            let declaration_file = project.program().files.iter().find(|file| file.file_name == "types.d.ts")
+                .ok_or(LaneError::Missing("owner declaration file"))?;
+            let owner_data = project.program().symbols.get(owner).ok_or(LaneError::Missing("captured owner symbol"))?;
+            assert!(owner_data.declarations.iter().any(|node| declaration_file.node_symbols.get(&node.0) == Some(&owner)),
+                "the nominal owner is bound to its actual dependency declaration");
+            assert_eq!(shape.properties.len(), 2);
+            for property in &shape.properties {
+                assert_eq!(property.parent_id, Some(owner),
+                    "the checker gives this engine consumer the class owner, not a property symbol");
+                let name = database.resolve_atom_ref(property.name);
+                let expected = match name.as_ref() {
+                    "café" => "café",
+                    "value" => r"v\u0061lue",
+                    _ => return Err(LaneError::Missing("exact owner property names")),
+                };
+                assert_eq!(project.symbol_name_source(owner, &name), None,
+                    "a member-bound spelling lookup cannot interpret this actual owner identity");
+                assert_eq!(project.property_name_source_from_owner(owner, &name), Some(expected),
+                    "the engine's owner-spelling boundary borrows the exact retained dependency token");
+            }
+            assert_eq!(project.property_name_source_from_owner(owner, "foreignOnly"), None);
+            Ok(())
+        }).map_err(|_| LaneError::Missing("checked owner query"))?
+    }
+
+    #[test]
     fn native_tsz_preserves_a_source_owned_mapped_type_node() -> Result<(), LaneError> {
         let source = "export type Labels<T> = { [K in keyof T]: string };";
         let ir = owned_tsz_ir(source)?;
