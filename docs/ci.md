@@ -97,3 +97,24 @@ The Windows emulation exclusion file lists each confirmed affected case
 individually. These tests remain enabled on native Windows and Linux where
 applicable. Other failures without captured causes still require diagnosis.
 Wine coverage cannot certify the native Windows access-control boundary.
+
+### Controlled fast-check timing comparison
+
+On October 10, 2026 (EDT), PR131 head `2bad57dbe` was checked with the same
+24 GiB cache budget and four Cargo jobs per target, before and after the CI
+infrastructure change. This is one completed run per configuration, not an
+average or p99.
+
+| Phase | Two concurrent targets | Three concurrent targets |
+| --- | ---: | ---: |
+| Structural checks | 65 s | 55 s |
+| Three-target compilation | 160 s | 84 s |
+| Entire fast lane, including shell preparation | 299 s | 159 s |
+| Fresh Cargo artifacts | 85–87% | about 87% |
+
+For the second run, the required Forgejo verdict arrived 208 seconds after
+the queue worker started. The worker job finished later, after cleanup/cache
+finalization. Neither number includes time waiting for a worker. The first
+actual push took about 402 seconds from push completion to the fast verdict.
+A rerun requested through commit status is not a new push and cannot be used
+as a push-to-result sample.
