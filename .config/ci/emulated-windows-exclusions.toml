@@ -655,23 +655,23 @@ reason = "Wine does not keep a protected DACL (SE_DACL_PROTECTED), so the privat
 # directory creation path restricts its DACL and reads it back as protected.
 [[exclude]]
 filter = "binary_id(backend-platform) and test(=directory::windows_tests::created_handle_refuses_a_replacement_and_leaves_it_untouched)"
-category = "unclassified"
-reason = 'fails under Wine (create private test parent: WorkspaceCreateRollbackFailure { create: InvalidData "workspace object does not have a protected DACL" }); not yet confirmed as a Wine limit or a Windows bug'
+category = "wine-limit"
+reason = 'fails under Wine (create private test parent: WorkspaceCreateRollbackFailure { create: InvalidData "workspace object does not have a protected DACL" }); independently confirmed Wine 11.0 drops SE_DACL_PROTECTED after successful SetSecurityInfo'
 
 [[exclude]]
 filter = "binary_id(backend-platform) and test(=directory::windows_tests::postcreate_setup_failure_uses_the_held_created_handle_for_cleanup)"
-category = "unclassified"
-reason = 'fails under Wine (create private test parent: WorkspaceCreateRollbackFailure { create: InvalidData "workspace object does not have a protected DACL" }); not yet confirmed as a Wine limit or a Windows bug'
+category = "wine-limit"
+reason = 'fails under Wine (create private test parent: WorkspaceCreateRollbackFailure { create: InvalidData "workspace object does not have a protected DACL" }); independently confirmed Wine 11.0 drops SE_DACL_PROTECTED after successful SetSecurityInfo'
 
 [[exclude]]
 filter = "binary_id(backend-platform) and test(=directory::windows_tests::tracked_creation_refusal_preserves_existing_child_bytes)"
-category = "unclassified"
-reason = 'fails under Wine (create private test parent: WorkspaceCreateRollbackFailure { create: InvalidData "workspace object does not have a protected DACL" }); not yet confirmed as a Wine limit or a Windows bug'
+category = "wine-limit"
+reason = 'fails under Wine (create private test parent: WorkspaceCreateRollbackFailure { create: InvalidData "workspace object does not have a protected DACL" }); independently confirmed Wine 11.0 drops SE_DACL_PROTECTED after successful SetSecurityInfo'
 
 [[exclude]]
 filter = "binary_id(backend-platform) and test(=win32::workspace_fs::tests::postcreate_setup_refusal_rolls_back_the_held_object_not_its_replacement_name)"
-category = "unclassified"
-reason = 'fails under Wine (create private root: WorkspaceCreateRollbackFailure { create: InvalidData "workspace object does not have a protected DACL" }); not yet confirmed as a Wine limit or a Windows bug'
+category = "wine-limit"
+reason = 'fails under Wine (create private root: WorkspaceCreateRollbackFailure { create: InvalidData "workspace object does not have a protected DACL" }); independently confirmed Wine 11.0 drops SE_DACL_PROTECTED after successful SetSecurityInfo'
 
 # Confirmed on Wine 11.0 in runtime build 2558. An independent Win32 probe
 # reproduced SetSecurityInfo returning success while GetSecurityInfo reports
