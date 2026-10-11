@@ -154,3 +154,22 @@ A verified-head heartbeat in the new pipeline finished in 36 seconds, with
 `verification_needed=false` and no cached Cargo task. A recorded old heartbeat
 that also skipped all heads took 289 seconds. Avoiding cache copies matters
 even when no Rust compilation would have happened.
+
+### Observed push-to-fast-verdict samples
+
+Three subsequent pushes on October 10 (EDT) provide actual developer-latency
+observations, including queueing:
+
+| Head | Push to successful fast verdict | Queue context |
+| --- | ---: | --- |
+| `aeef7ea2e` | 230 s (3m50s) | Worker started about 10 s after push |
+| `65152f80f` | 219 s (3m39s) | Worker started about 16 s after push |
+| `116dee8c2` | 405 s (6m45s) | About 187 s waiting behind the previous cached task |
+
+The mean of these three observations is about 285 s (4m45s); this small,
+warm-cache sample is not a representative service-level average or p99.
+The third run makes the remaining queue cost visible: the preceding worker
+kept its serial slot for about 121 s after posting its fast verdict while
+finalizing the approximately 15 GiB Cargo cache. The cache is reused, but
+Concourse's cache-copy/finalization cost can delay a closely following push.
+These timings cover the required fast gate, not full runtime or release delivery.
