@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+if [ -n "${NUDOX_FLEET_CPYTHON:-}" ]; then
+    candidate=$NUDOX_FLEET_CPYTHON
+else
+    candidate=$(command -v python3 || true)
+fi
+if [ -z "$candidate" ] || [ ! -x "$candidate" ] || ! "$candidate" -c 'import sys; sys.exit(not (sys.implementation.name == "cpython" and sys.version_info.major == 3 and sys.version_info >= (3, 10)))' >/dev/null 2>&1; then
+    printf '%s\n' 'fleet census requires CPython >= 3.10; set NUDOX_FLEET_CPYTHON to a validated executable' >&2
+    exit 78
+fi
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
+exec "$candidate" -B "$script_dir/fleet-capacity-census.py" "$@"

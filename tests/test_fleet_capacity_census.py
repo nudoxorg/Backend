@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import datetime as dt
 import importlib.util
+import os
 import pathlib
+import subprocess
 import sys
 import unittest
 from collections import Counter
@@ -123,6 +125,28 @@ class FleetCapacityTests(unittest.TestCase):
             now=self.now,
         )
 
+    def evaluate_ilo_scope(
+        self,
+        *,
+        hosts: dict[str, dict[str, object]] | None = None,
+        samples: dict[str, dict[str, object]] | None = None,
+        excluded_hosts: object = None,
+    ) -> dict[str, object]:
+        active_hosts = hosts or {name: fleet.DEFAULT_HOSTS[name] for name in ("local", "ilo")}
+        active_samples = samples or {name: self.samples[name] for name in active_hosts}
+        if excluded_hosts is None:
+            excluded_hosts = {"h16001mac": "approved temporary offline exception"}
+        return fleet.evaluate_fleet(
+            active_samples,
+            destination="ilo",
+            requested_jobs=1,
+            hosts=active_hosts,
+            now=self.now,
+            allow_local_over_cap_for_remote=True,
+            destination_memory_only_for_remote=True,
+            excluded_hosts=excluded_hosts,
+        )
+
     def test_ilo_python_uses_the_durable_nix_gc_root(self) -> None:
         self.assertEqual(
             fleet.DEFAULT_HOSTS["ilo"]["python"],
@@ -141,6 +165,7 @@ class FleetCapacityTests(unittest.TestCase):
         result = self.evaluate()
         self.assertFalse(result["advisory_allowed"])
         self.assertTrue(any("ilo:unreachable" in reason for reason in result["reasons"]))
+        self.assertFalse(result["sample_scope"]["full_fleet_sampled"])
 
         self.samples = empty_samples(self.now)
         self.samples["h16001mac"]["census"]["compiler_groups_omitted_count"] = 1
@@ -401,6 +426,168 @@ class FleetCapacityTests(unittest.TestCase):
         self.samples["h16001mac"]["census"]["compiler_groups"] = []
         self.samples["ilo"]["transport_complete"] = False
         self.assertFalse(authorized()["advisory_allowed"])
+
+    def test_offline_mac_is_excluded_only_by_explicit_reported_ilo_scope(self) -> None:
+        result = self.evaluate_ilo_scope()
+        self.assertTrue(result["advisory_allowed"], result["reasons"])
+        self.assertEqual(result["sample_scope"]["requested_hosts"], ["local", "ilo"])
+        self.assertEqual(result["sample_scope"]["sampled_hosts"], ["local", "ilo"])
+        self.assertEqual(result["sample_scope"]["excluded_hosts"], [{
+            "host": "h16001mac", "reason": "approved temporary offline exception",
+        }])
+        self.assertFalse(result["sample_scope"]["full_fleet_sampled"])
+        self.assertTrue(result["sample_scope"]["fleet_limit_applies_across_sampled_hosts"])
+        self.assertNotIn("h16001mac", result["hosts"])
+
+        full = self.evaluate()
+        self.assertTrue(full["sample_scope"]["full_fleet_sampled"])
+        self.assertEqual(set(full["sample_scope"]["sampled_hosts"]), set(fleet.DEFAULT_HOSTS))
+
+    def test_exclusion_resolver_rejects_invalid_host_destination_and_reason(self) -> None:
+        invalid = (
+            ("local", ["h16001mac"], "offline"),
+            ("h16001mac", ["h16001mac"], "offline"),
+            ("ilo", ["ilo"], "offline"),
+            ("ilo", ["h16001mac", "h16001mac"], "offline"),
+            ("ilo", ["h16001mac"], None),
+            ("ilo", ["h16001mac"], ""),
+            ("ilo", ["h16001mac"], " \t"),
+            ("ilo", ["h16001mac"], "x" * 501),
+            ("ilo", ["h16001mac"], 9),
+            ("ilo", [], "reason without an exclusion"),
+        )
+        for destination, excluded, reason in invalid:
+            with self.subTest(destination=destination, excluded=excluded, reason=reason):
+                with self.assertRaises(ValueError):
+                    fleet._resolve_sample_scope(
+                        destination=destination,
+                        exclude_hosts=excluded,
+                        exclusion_reason=reason,
+                    )
+
+        active, omitted = fleet._resolve_sample_scope(
+            destination="ilo", exclude_hosts=["h16001mac"],
+            exclusion_reason="fresh offline evidence",
+        )
+        self.assertEqual(set(active), {"local", "ilo"})
+        self.assertEqual(omitted, {"h16001mac": "fresh offline evidence"})
+
+    def test_scope_requires_noncolliding_samples_for_every_included_host(self) -> None:
+        full_hosts = dict(fleet.DEFAULT_HOSTS)
+        collision = self.evaluate_ilo_scope(hosts=full_hosts)
+        self.assertFalse(collision["advisory_allowed"])
+        self.assertIn("fleet-sample-scope-invalid", collision["reasons"])
+
+        active_hosts = {name: fleet.DEFAULT_HOSTS[name] for name in ("local", "ilo")}
+        missing_sample = self.evaluate_ilo_scope(
+            hosts=active_hosts,
+            samples={"ilo": self.samples["ilo"]},
+        )
+        self.assertFalse(missing_sample["advisory_allowed"])
+        self.assertIn("fleet-host-set-incomplete-or-unexpected", missing_sample["reasons"])
+        self.assertNotIn("h16001mac", missing_sample["sample_scope"]["sampled_hosts"])
+
+        missing_exclusion = self.evaluate_ilo_scope(
+            hosts=active_hosts,
+            samples={name: self.samples[name] for name in active_hosts},
+            excluded_hosts={},
+        )
+        self.assertFalse(missing_exclusion["advisory_allowed"])
+        self.assertIn("fleet-sample-scope-invalid", missing_exclusion["reasons"])
+
+        unexpected_sample = fleet.evaluate_fleet(
+            {**self.samples, "unexpected": self.samples["local"]},
+            destination="ilo", requested_jobs=1, hosts=fleet.DEFAULT_HOSTS,
+            now=self.now,
+        )
+        self.assertFalse(unexpected_sample["advisory_allowed"])
+        self.assertFalse(unexpected_sample["sample_scope"]["full_fleet_sampled"])
+
+    def test_scope_refuses_stale_incomplete_and_nonnumeric_live_samples(self) -> None:
+        mutations = (
+            lambda sample: sample.update(transport_complete=False),
+            lambda sample: sample["census"].update(complete=False),
+            lambda sample: sample["census"].update(resource_snapshot_complete=False),
+            lambda sample: sample["census"].update(compiler_groups_omitted_count=1),
+            lambda sample: sample["census"].update(
+                sample_started_at_utc=(self.now - dt.timedelta(seconds=61)).isoformat()
+            ),
+        )
+        for host in ("local", "ilo"):
+            for index, mutate in enumerate(mutations):
+                with self.subTest(host=host, mutation=index):
+                    self.samples = empty_samples(self.now)
+                    mutate(self.samples[host])
+                    self.assertFalse(self.evaluate_ilo_scope()["advisory_allowed"])
+
+        for value in (None, -1, True, "8589934592"):
+            with self.subTest(memory=value):
+                self.samples = empty_samples(self.now)
+                self.samples["local"]["census"]["resource_snapshot"]["available_memory_bytes"] = value
+                report = self.evaluate_ilo_scope()
+                self.assertFalse(report["advisory_allowed"])
+                self.assertIn("local:available-memory-invalid-or-missing", report["reasons"])
+
+        for value in (None, -1, True, "17179869184", 16 * fleet.GIB - 1):
+            with self.subTest(destination_disk=value):
+                self.samples = empty_samples(self.now)
+                self.samples["ilo"]["census"]["resource_snapshot"]["root_disk_available_bytes"] = value
+                self.assertFalse(self.evaluate_ilo_scope()["advisory_allowed"])
+
+    def test_scoped_memory_disk_host_and_fleet_reservations_keep_exact_floors(self) -> None:
+        self.samples = empty_samples(self.now)
+        self.samples["ilo"]["census"]["resource_snapshot"]["available_memory_bytes"] = fleet.MIN_AVAILABLE_MEMORY - 1
+        below_memory = self.evaluate_ilo_scope()
+        self.assertFalse(below_memory["advisory_allowed"])
+        self.assertIn("ilo:available-memory-below-8-gib-or-missing", below_memory["reasons"])
+
+        self.samples = empty_samples(self.now)
+        self.samples["ilo"]["census"]["resource_snapshot"]["root_disk_available_bytes"] = fleet.MIN_DESTINATION_DISK - 1
+        below_disk = self.evaluate_ilo_scope()
+        self.assertFalse(below_disk["advisory_allowed"])
+        self.assertIn("destination-root-disk-below-16-gib-or-missing", below_disk["reasons"])
+
+        # Eight occupied ILO slots leave no room for the proposed ninth slot.
+        self.samples = empty_samples(self.now)
+        scoped = {name: self.samples[name] for name in ("local", "ilo")}
+        install_groups(scoped, "ilo", [compiler_group(6000 + i) for i in range(8)])
+        destination_full = self.evaluate_ilo_scope(samples=scoped)
+        self.assertFalse(destination_full["advisory_allowed"])
+        self.assertIn("ilo:host-compiler-admission-slot-limit-reached", destination_full["reasons"])
+
+        # Fifteen reachable current slots plus one proposed slot is exactly 16;
+        # ILO has seven current slots plus the proposed slot, exactly its cap.
+        self.samples = empty_samples(self.now)
+        scoped = {name: self.samples[name] for name in ("local", "ilo")}
+        install_groups(scoped, "local", [compiler_group(6100 + i) for i in range(8)])
+        install_groups(scoped, "ilo", [compiler_group(6200 + i) for i in range(7)])
+        exactly_full = self.evaluate_ilo_scope(samples=scoped)
+        self.assertEqual(exactly_full["current_fleet_compiler_admission_slot_count"], 15)
+        self.assertTrue(exactly_full["advisory_allowed"], exactly_full["reasons"])
+
+        install_groups(scoped, "ilo", [compiler_group(6300 + i) for i in range(8)])
+        over_fleet_and_destination = self.evaluate_ilo_scope(samples=scoped)
+        self.assertFalse(over_fleet_and_destination["advisory_allowed"])
+        self.assertIn("fleet-compiler-admission-slot-limit-reached", over_fleet_and_destination["reasons"])
+        self.assertIn("ilo:host-compiler-admission-slot-limit-reached", over_fleet_and_destination["reasons"])
+
+    def test_recovery_entry_accepts_only_a_validated_cpython(self) -> None:
+        launcher = SCRIPT.with_name("fleet-census-recovery")
+        good_env = {**os.environ, "NUDOX_FLEET_CPYTHON": sys.executable}
+        good = subprocess.run(
+            [str(launcher), "--help"], check=False, capture_output=True, text=True,
+            env=good_env, timeout=10,
+        )
+        self.assertEqual(good.returncode, 0, good.stderr)
+        self.assertIn("--exclude-host", good.stdout)
+
+        bad_env = {**os.environ, "NUDOX_FLEET_CPYTHON": "/bin/sh"}
+        bad = subprocess.run(
+            [str(launcher), "--help"], check=False, capture_output=True, text=True,
+            env=bad_env, timeout=10,
+        )
+        self.assertEqual(bad.returncode, 78)
+        self.assertIn("requires CPython >= 3.10", bad.stderr)
 
 
 if __name__ == "__main__":
