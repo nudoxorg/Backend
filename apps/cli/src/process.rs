@@ -483,6 +483,27 @@ mod startup_tests {
             assert_eq!(dto["operand"], "/socket");
             assert_eq!(dto["cause"], "unreachable");
             assert_eq!(dto["detail"], fault.cause().sentence());
+            for projection in [
+                backend_present::Detail::Summary,
+                backend_present::Detail::Standard,
+                backend_present::Detail::Full,
+            ] {
+                let payload = backend_present::encode_serializable(
+                    "fault",
+                    projection,
+                    None,
+                    backend_present::FaultDto::new(&fault),
+                    backend_present::DEFAULT_RESPONSE_BUDGET_BYTES,
+                )
+                .expect("bounded typed fault envelope");
+                let envelope: serde_json::Value =
+                    serde_json::from_slice(&payload.bytes).expect("encoded fault envelope");
+                assert_eq!(envelope["detail"], dto["detail"]);
+                assert_eq!(envelope["responseDetail"], projection.name());
+                for field in ["slug", "operand", "cause", "shell", "call"] {
+                    assert_eq!(envelope[field], dto[field]);
+                }
+            }
             assert!(dto.get("call").is_none());
             let text = render::fault(&fault, &Options::fallback());
             let markdown = render::fault(&fault, &Options::plain(options::Format::Markdown));

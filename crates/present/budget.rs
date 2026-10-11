@@ -346,7 +346,7 @@ fn encode_typed<'a, T: Serialize>(
     let mut envelope = BudgetEnvelope {
         body,
         answer,
-        detail: detail.name(),
+        projection: ProjectionDetail::new(answer, detail),
         next_cursor,
         budget: BudgetMetadata::default(),
     };
@@ -441,10 +441,39 @@ struct BudgetEnvelope<'a, T> {
     #[serde(flatten)]
     body: T,
     answer: &'static str,
-    detail: &'static str,
+    #[serde(flatten)]
+    projection: ProjectionDetail,
     #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
     next_cursor: Option<&'a str>,
     budget: BudgetMetadata,
+}
+
+// FaultDto owns `detail` as its original diagnostic. Projection metadata must
+// therefore use a separate key for fault envelopes, while answer envelopes
+// retain their established `detail` contract.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum ProjectionDetail {
+    Answer {
+        detail: &'static str,
+    },
+    Fault {
+        #[serde(rename = "responseDetail")]
+        response_detail: &'static str,
+    },
+}
+
+impl ProjectionDetail {
+    fn new(answer: &str, detail: Detail) -> Self {
+        match answer {
+            "fault" => Self::Fault {
+                response_detail: detail.name(),
+            },
+            _ => Self::Answer {
+                detail: detail.name(),
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
@@ -638,6 +667,157 @@ impl Write for CountingWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Deserialize directly from serialized bytes before Value can collapse
+    // duplicate object keys. This validator deliberately rejects the original
+    // envelope collision as well as accepting the repaired producer.
+    struct UniqueTopLevelKeys;
+
+    impl<'de> serde::Deserialize<'de> for UniqueTopLevelKeys {
+        fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            struct Keys;
+            impl<'de> serde::de::Visitor<'de> for Keys {
+                type Value = UniqueTopLevelKeys;
+
+                fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    formatter.write_str("a JSON object with unique top-level keys")
+                }
+
+                fn visit_map<A: serde::de::MapAccess<'de>>(
+                    self,
+                    mut map: A,
+                ) -> Result<Self::Value, A::Error> {
+                    let mut keys = std::collections::BTreeSet::new();
+                    while let Some(key) = map.next_key::<String>()? {
+                        if !keys.insert(key.clone()) {
+                            return Err(serde::de::Error::custom(format!("duplicate key: {key}")));
+                        }
+                        map.next_value::<serde::de::IgnoredAny>()?;
+                    }
+                    Ok(UniqueTopLevelKeys)
+                }
+            }
+            deserializer.deserialize_map(Keys)
+        }
+    }
+
+    fn diagnostic_fault() -> Fault {
+        Fault::new(
+            FaultSlug::Endpoint,
+            Operand::Path("/socket".to_owned()),
+            Cause::new(
+                CauseSlug::Unreachable,
+                "private state parent /state µ was refused; repair its permissions",
+            ),
+            Affordance::None,
+        )
+    }
+
+    #[test]
+    fn serialized_fault_envelopes_keep_unique_diagnostic_and_projection_keys() {
+        assert!(
+            serde_json::from_slice::<UniqueTopLevelKeys>(
+                br#"{"detail":"original refusal","detail":"full"}"#
+            )
+            .is_err(),
+            "the byte-level control must reject the original duplicate-key bug"
+        );
+        let fault = diagnostic_fault();
+        let direct = crate::fault_value(&fault);
+        let serialized_dto = serde_json::to_vec(&FaultDto::new(&fault)).expect("direct fault DTO");
+        serde_json::from_slice::<UniqueTopLevelKeys>(&serialized_dto)
+            .expect("unique direct DTO keys");
+        for (detail, expected_bytes) in [
+            (Detail::Summary, 245),
+            (Detail::Standard, 246),
+            (Detail::Full, 242),
+        ] {
+            let payload = encode_serializable(
+                "fault",
+                detail,
+                None,
+                FaultDto::new(&fault),
+                MAX_RESPONSE_BUDGET_BYTES,
+            )
+            .expect("complete fault envelope");
+            serde_json::from_slice::<UniqueTopLevelKeys>(&payload.bytes)
+                .expect("unique encoded envelope keys");
+            let value: Value = serde_json::from_slice(&payload.bytes).expect("fault JSON");
+            assert_eq!(value["detail"], fault.cause().sentence());
+            assert_eq!(value["detail"], direct["detail"]);
+            assert_eq!(value["responseDetail"], detail.name());
+            assert_eq!(value["answer"], "fault");
+            assert_eq!(value["slug"], direct["slug"]);
+            assert_eq!(value["operand"], direct["operand"]);
+            assert_eq!(value["cause"], direct["cause"]);
+            assert_eq!(payload.bytes.len(), expected_bytes);
+            assert_eq!(payload.budget.bytes, expected_bytes);
+            assert_eq!(
+                payload.budget.estimated_tokens,
+                estimate_tokens(expected_bytes)
+            );
+            assert_eq!(value["budget"]["bytes"], expected_bytes);
+            assert_eq!(
+                value["budget"]["estimatedTokens"],
+                estimate_tokens(expected_bytes)
+            );
+            assert_eq!(value["budget"]["bytesPerToken"], ESTIMATED_BYTES_PER_TOKEN);
+            let exact =
+                encode_serializable("fault", detail, None, FaultDto::new(&fault), expected_bytes)
+                    .expect("the exact complete fault budget is admitted");
+            assert_eq!(exact, payload);
+            let below = encode_serializable(
+                "fault",
+                detail,
+                None,
+                FaultDto::new(&fault),
+                expected_bytes - 1,
+            )
+            .expect_err("one byte below the complete fault is refused atomically");
+            assert_eq!(below.bytes, expected_bytes);
+            assert_eq!(below.budget, expected_bytes - 1);
+        }
+    }
+
+    #[test]
+    fn fault_metadata_uses_the_same_hard_ceiling_without_truncating_the_diagnostic() {
+        let fault = Fault::new(
+            FaultSlug::Endpoint,
+            Operand::Whole,
+            Cause::new(
+                CauseSlug::Unreachable,
+                "µ".repeat(MAX_RESPONSE_BUDGET_BYTES),
+            ),
+            Affordance::None,
+        );
+        for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+            let refused =
+                encode_serializable("fault", detail, None, FaultDto::new(&fault), usize::MAX)
+                    .expect_err("a complete oversized fault cannot bypass the protocol cap");
+            assert_eq!(refused.budget, MAX_RESPONSE_BUDGET_BYTES);
+            assert!(refused.bytes > MAX_RESPONSE_BUDGET_BYTES);
+        }
+    }
+
+    #[test]
+    fn ordinary_answer_envelopes_retain_the_existing_detail_contract() {
+        let list = crate::record::RecordList::new(
+            "unchanged projection metadata",
+            crate::coverage::CoverageLine::new(&[backend_library::Coverage::Complete], Some(0)),
+            Vec::<crate::record::Record>::new(),
+        );
+        let answer = Answer::Records(Box::new(list));
+        for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+            let payload = encode_answer(&answer, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES)
+                .expect("normal answer envelope");
+            serde_json::from_slice::<UniqueTopLevelKeys>(&payload.bytes)
+                .expect("unique answer keys");
+            let value: Value = serde_json::from_slice(&payload.bytes).expect("normal answer JSON");
+            assert_eq!(value["detail"], detail.name());
+            assert!(value.get("responseDetail").is_none());
+            assert_eq!(payload.budget.bytes, payload.bytes.len());
+        }
+    }
 
     #[test]
     fn usability_document_summary_retains_the_standard_signature() {

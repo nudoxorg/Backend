@@ -3206,6 +3206,23 @@ fn typed_startup_failures_preserve_recovery_and_original_diagnostic_in_mcp() {
         let result = &response["result"];
         assert_eq!(result["isError"], true);
         assert_eq!(result["structuredContent"], expected_dto);
+        for projection in [Detail::Summary, Detail::Standard, Detail::Full] {
+            let payload = encode_serializable(
+                "fault",
+                projection,
+                None,
+                backend_present::FaultDto::new(&fault),
+                DEFAULT_RESPONSE_BUDGET_BYTES,
+            )
+            .expect("bounded typed fault envelope");
+            let envelope: Value =
+                serde_json::from_slice(&payload.bytes).expect("encoded fault envelope");
+            assert_eq!(envelope["detail"], result["structuredContent"]["detail"]);
+            assert_eq!(envelope["responseDetail"], projection.name());
+            for field in ["slug", "operand", "cause", "shell", "call"] {
+                assert_eq!(envelope[field], result["structuredContent"][field]);
+            }
+        }
         assert_eq!(text_of(result), markdown);
         assert_context_bounded(&response);
         if retry {
