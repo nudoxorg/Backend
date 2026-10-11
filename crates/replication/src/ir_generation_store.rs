@@ -227,18 +227,6 @@ impl HistoricalSemanticPlaneBinding {
         self.kind
     }
 
-    /// Returns the canonical manifest root stored in the local record.
-    #[must_use]
-    pub(crate) const fn manifest_root(self) -> SemanticManifestRoot {
-        self.manifest_root
-    }
-
-    /// Returns the canonical plane root stored in the local record.
-    #[must_use]
-    pub(crate) const fn plane_root(self) -> SemanticPlaneRoot {
-        self.plane_root
-    }
-
     pub(crate) fn matches_manifest(
         self,
         manifest: &SemanticPlaneManifest,

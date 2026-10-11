@@ -676,14 +676,6 @@ pub(crate) fn append_history_index_entry(
     append_history_index_entry_with::<String>(index_path, identity, domain)
 }
 
-pub(crate) fn append_history_index_entry_typed(
-    index_path: &Path,
-    identity: HistoryCommitId,
-    domain: &[u8],
-) -> Result<(), HistoryMutationError> {
-    append_history_index_entry_with::<HistoryMutationError>(index_path, identity, domain)
-}
-
 fn append_history_index_entry_with<E: HistoryMutationFailure>(
     index_path: &Path,
     identity: HistoryCommitId,

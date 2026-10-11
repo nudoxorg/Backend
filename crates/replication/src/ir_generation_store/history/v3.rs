@@ -217,29 +217,6 @@ pub(crate) struct TypedV3HistoryLocator {
 }
 
 impl TypedV3HistoryLocator {
-    /// Derives the exact locator from all durable receipts emitted by the
-    /// complete typed V3 producer. Duplicate rope occurrences are reduced to
-    /// one semantic object mapping; conflicting aliases fail closed.
-    pub(crate) fn from_produced(
-        produced: &crate::ProducedSemanticTypedPlaneV3,
-    ) -> Result<Self, String> {
-        Self::from_receipts(
-            produced.manifest(),
-            produced.segment_admissions(),
-            produced.jumbo_admissions(),
-        )
-    }
-
-    pub(crate) fn from_selected_native_history(
-        produced: &crate::ir_producer_store::ProducedSelectedNativeTypedPlaneHistoryV3,
-    ) -> Result<Self, String> {
-        Self::from_receipts(
-            produced.manifest(),
-            produced.segment_admissions(),
-            produced.jumbo_admissions(),
-        )
-    }
-
     pub(crate) fn from_receipts(
         produced_manifest: &backend_semantic::ir::SemanticTypedPlaneManifestV2,
         segment_receipts: &[crate::DurableSemanticObjectAdmission],
@@ -498,14 +475,6 @@ fn ensure_typed_v3_locator_directories(target_root: &Path) -> Result<(), String>
     Ok(())
 }
 
-fn stage_typed_v3_locator_bytes(
-    target_root: &Path,
-    commit: HistoryCommitId,
-    bytes: &[u8],
-) -> Result<(), String> {
-    stage_typed_v3_locator_bytes_with::<String>(target_root, commit, bytes)
-}
-
 fn stage_typed_v3_locator_bytes_typed(
     target_root: &Path,
     commit: HistoryCommitId,
@@ -662,18 +631,6 @@ impl LocalSemanticGenerationFiles {
         locator.identity()
     }
 
-    pub(crate) fn stage_typed_v3_locator(
-        &self,
-        target: &SemanticTargetKey,
-        commit: HistoryCommitId,
-        locator: &TypedV3HistoryLocator,
-    ) -> Result<HistoryTypedV3LocatorId, String> {
-        let identity = locator.identity()?;
-        let bytes = locator.encode()?;
-        stage_typed_v3_locator_bytes(&self.target_root(target), commit, &bytes)?;
-        Ok(identity)
-    }
-
     pub(crate) fn stage_typed_v3_locator_typed(
         &self,
         target: &SemanticTargetKey,
@@ -684,14 +641,6 @@ impl LocalSemanticGenerationFiles {
         let bytes = locator.encode().map_err(HistoryMutationError::Refused)?;
         stage_typed_v3_locator_bytes_typed(&self.target_root(target), commit, &bytes)?;
         Ok(identity)
-    }
-
-    pub(crate) fn finish_typed_v3_locator_admission(
-        &self,
-        target: &SemanticTargetKey,
-        commit: HistoryCommitId,
-    ) -> Result<(), String> {
-        remove_file(&pending_locator_path(&self.target_root(target), commit))
     }
 
     pub(crate) fn finish_typed_v3_locator_admission_typed(
@@ -728,15 +677,6 @@ impl LocalSemanticGenerationFiles {
             target,
             &pending_locator_path(&target_root, commit),
         )
-    }
-
-    pub(crate) fn typed_v3_locator(
-        &self,
-        target: &SemanticTargetKey,
-        commit: HistoryCommitId,
-        identity: HistoryTypedV3LocatorId,
-    ) -> Result<TypedV3HistoryLocator, String> {
-        load_typed_v3_history_locator(&self.target_root(target), commit, identity)
     }
 
     pub(crate) fn typed_v3_publication_snapshot(

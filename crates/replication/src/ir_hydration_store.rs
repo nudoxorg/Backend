@@ -63,6 +63,7 @@ pub use history_v3::{
     SelectedNativeImageSource, SelectedNativeImageSourceFailure, SelectedTypedV3HistoryError,
     SelectedTypedV3HistoryOperation, SelectedTypedV3HistoryRefusal,
 };
+#[cfg(test)]
 pub(crate) use history_v3::{
     TypedV3HistoryAdmission, TypedV3HistoryAdmissionMetrics, TypedV3HistoryGcPin,
 };
