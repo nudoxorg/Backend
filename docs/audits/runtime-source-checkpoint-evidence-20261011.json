@@ -1,0 +1,334 @@
+{
+  "schema": "nudox.runtime-source-checkpoint-evidence.v1",
+  "checked_at": "2026-10-11T07:23:08.568368+00:00",
+  "canonical_merge": "7e0f481648d36f290cc99bdd855e5789d9730054",
+  "pr": 134,
+  "reviewed_source": {
+    "commit": "be7b91c0124d0eaf7301d0dd40384c2118cc55c7",
+    "tree": "3062e6784b23ae134683cd9e6cd4e2691fc2e839",
+    "clean": true,
+    "cargo_lock_sha256": "8201d7cdb691e3ac5094bd9aef516fb96dc6f98fe40abf8d84163c6f16e75719"
+  },
+  "gates": [
+    {
+      "name": "typescript-host-01",
+      "raw_packet": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/typescript-host-01",
+      "files": {
+        "receipt.json": {
+          "bytes": 43484,
+          "sha256": "34ab6d268cd9936b7a1c28346b134637eda7cabc955d51d837cedd38dc52b450"
+        },
+        "stdout.log": {
+          "bytes": 3929,
+          "sha256": "c60e089568f95263ed565536e2d4c4648021f61e07682a4622a9a860fcec5d52"
+        },
+        "stderr.log": {
+          "bytes": 271317,
+          "sha256": "a70b785b73ee0fc313341efe4cb8389a52fe4927c29366139667551b56156e5c"
+        }
+      },
+      "source": {
+        "commit": "f3a574e5622ec12c25c16de25518ad57f211f63b",
+        "tree": "36495010f5a71a3a214bc0cd74fb75585bd18b1e",
+        "clean": true,
+        "cargo_lock_sha256": "8201d7cdb691e3ac5094bd9aef516fb96dc6f98fe40abf8d84163c6f16e75719"
+      },
+      "source_after": {
+        "commit": "f3a574e5622ec12c25c16de25518ad57f211f63b",
+        "status": "",
+        "cargo_lock_sha256": "8201d7cdb691e3ac5094bd9aef516fb96dc6f98fe40abf8d84163c6f16e75719"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-engine",
+        "application::typescript_host::tests::",
+        "--lib"
+      ],
+      "exit": 0,
+      "seconds": 651.5842673939187,
+      "finished_utc": "2026-10-11T05:47:24.584213+00:00",
+      "result_lines": [
+        "test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 920 filtered out; finished in 0.03s"
+      ],
+      "ignored_lines": [
+        "test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 920 filtered out; finished in 0.03s"
+      ],
+      "group_members_after": null
+    },
+    {
+      "name": "five-libraries-token-budget-04",
+      "raw_packet": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/five-libraries-token-budget-04",
+      "files": {
+        "receipt.json": {
+          "bytes": 33502,
+          "sha256": "17262a735977d2eb0462e6a11abbb46f8019f1e44585442458001ad841ca9656"
+        },
+        "stdout.log": {
+          "bytes": 45775,
+          "sha256": "0800b267b431e7337015311e08f816b39c5f6d40659063e9297aae872ef0f22e"
+        },
+        "stderr.log": {
+          "bytes": 382255,
+          "sha256": "734f4544611a54c410293aadf20e45de8d753bad4ad7568f4b482f36d1d7ed50"
+        }
+      },
+      "source": {
+        "commit": "c4a847b278f79ee003b6c38578f3d890184a8051",
+        "tree": "44d400144a5519b801494a5a5b2471fa43447a60",
+        "clean": true,
+        "cargo_lock_sha256": "8201d7cdb691e3ac5094bd9aef516fb96dc6f98fe40abf8d84163c6f16e75719"
+      },
+      "source_after": {
+        "commit": "c4a847b278f79ee003b6c38578f3d890184a8051",
+        "status": "",
+        "cargo_lock_sha256": "8201d7cdb691e3ac5094bd9aef516fb96dc6f98fe40abf8d84163c6f16e75719"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-present",
+        "-p",
+        "backend-library",
+        "-p",
+        "backend-local-service",
+        "-p",
+        "backend-client",
+        "-p",
+        "backend-mcp",
+        "--features",
+        "backend-mcp/token-budget",
+        "--lib"
+      ],
+      "exit": 101,
+      "seconds": 714.6419576850021,
+      "finished_utc": "2026-10-11T06:40:51.495422+00:00",
+      "result_lines": [
+        "test result: ok. 119 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 25.07s",
+        "test result: FAILED. 344 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out; finished in 6.19s"
+      ],
+      "ignored_lines": [
+        "test result: ok. 119 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 25.07s",
+        "test tests::arrangement_owned_run::profile_admitted_projection_arrangement_allocations ... ignored, paired arrangement allocation experiment on frozen baseline and candidate",
+        "test wire::claim_index_tests::live_frame_admission_cost ... ignored, measurement over a local journal frame; set NUDOX_LIVE_VIEW_FRAME",
+        "test result: FAILED. 344 passed; 1 failed; 2 ignored; 0 measured; 0 filtered out; finished in 6.19s"
+      ],
+      "group_members_after": null
+    },
+    {
+      "name": "remaining-libraries-token-budget-05",
+      "raw_packet": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/remaining-libraries-token-budget-05",
+      "files": {
+        "receipt.json": {
+          "bytes": 27783,
+          "sha256": "ea8dccad6abd82d49c524e0785504b06fcabf5d6d14a446beffd3b92c17c83d2"
+        },
+        "stdout.log": {
+          "bytes": 139073,
+          "sha256": "53bd1c69fb1c65cface9f192192addfc93694a1622de9dbca665e04ce59da84a"
+        },
+        "stderr.log": {
+          "bytes": 373350,
+          "sha256": "ca1be31a144139850ae29601b948ab45a367890ee05ae1e51b1ed2f6612c4183"
+        }
+      },
+      "source": {
+        "commit": "c4a847b278f79ee003b6c38578f3d890184a8051",
+        "tree": "44d400144a5519b801494a5a5b2471fa43447a60",
+        "clean": true,
+        "cargo_lock_sha256": "8201d7cdb691e3ac5094bd9aef516fb96dc6f98fe40abf8d84163c6f16e75719"
+      },
+      "source_after": {
+        "commit": "c4a847b278f79ee003b6c38578f3d890184a8051",
+        "status": "",
+        "cargo_lock_sha256": "8201d7cdb691e3ac5094bd9aef516fb96dc6f98fe40abf8d84163c6f16e75719"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-present",
+        "-p",
+        "backend-local-service",
+        "-p",
+        "backend-mcp",
+        "--features",
+        "backend-mcp/token-budget",
+        "--lib"
+      ],
+      "exit": 101,
+      "seconds": 869.3111749680247,
+      "finished_utc": "2026-10-11T06:58:44.856709+00:00",
+      "result_lines": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1237 filtered out; finished in 0.01s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1238 filtered out; finished in 0.00s"
+      ],
+      "ignored_lines": [
+        "test builtin::browse::tests::blocked_cargo_capture_fixture ... ignored, native child fixture; invoked by the bounded capture test",
+        "test builtin::browse::tests::blocked_cargo_descendant_fixture ... ignored, native child fixture; invoked by the bounded capture test",
+        "test builtin::commands::adapter::tests::pinned_full_httpie_dependency_graph_keeps_package_and_search_surfaces_readable ... ignored, requires the full pinned HTTPie Git checkout via NUDOX_TEST_HTTP_GRAPH_PROJECT",
+        "test builtin::discovery_search::release_projection::tests::projection_scale_10k_releases_one_lineage ... ignored, manual 10k-release single-lineage rebuild and bounded top-k diagnostic",
+        "test builtin::discovery_search::release_projection::tests::projection_scale_320_releases_and_16k_aliases ... ignored, manual projection memory and 320-release/16k-alias latency diagnostic",
+        "test builtin::discovery_search::tests::direct_maven_discovery_index_benchmark_from_pinned_inputs ... ignored, manual production-index benchmark; requires pinned Maven journal and independent labels",
+        "test builtin::discovery_search::tests::exact_coordinate_lookup_covers_releases_beyond_lineage_field_bound ... ignored, manual 16k-release exact-coordinate coverage diagnostic",
+        "test builtin::discovery_search::tests::lineage_projection_scale_diagnostic ... ignored, manual 100k/1m package release scale and deep keyset diagnostic",
+        "test builtin::discovery_search::tests::manual_10k_discovery_search_benchmark_reports_rss_and_warm_vs_linear_p50_p95 ... ignored, manual diagnostic; run with --ignored --nocapture to measure the 10k search projection",
+        "test builtin::discovery_search::tests::manual_10k_local_index_reports_delta_mutation_and_cold_rebuild_cost ... ignored, manual diagnostic; run with --ignored --nocapture to measure incremental local-row mutation cost",
+        "test builtin::discovery_search::tests::manual_live_owner_group_search_reports_cold_open_and_warm_owner_p50_p95 ... ignored, manual live-owner latency diagnostic; set DISCOVERY_SEARCH_OWNER_JOURNAL to a cloned owner's registry-discovery/catalog.journal",
+        "test builtin::ingest::robustness_tests::gitignored_sources_are_excluded_while_negated_sources_are_admitted ... ok",
+        "test builtin::ingest::tests::benchmark_git_frontier_reads_large_fixture_once_then_reuses_all_rows ... ignored, manual large-fixture measurement; reports source bytes and wall time",
+        "test builtin::ingest::tests::git_frontier_warm_scan_reads_no_source_bytes_with_ignored_build_output ... ok",
+        "test builtin::product_state::tests::manual_catalog_search_measurement_10k_rows ... ignored, manual diagnostic; run with --ignored --nocapture to compare build, query, scan, and payload size",
+        "test builtin::profile::membership_tests::authentic_unicode_capture_snapshot_replays_twice_without_republishing ... ignored, requires the preserved authentic private cachetools Unicode failure snapshot",
+        "test builtin::profile::source_facts_tests::staged_official_archive_source_facts_use_real_queue_and_cold_replay ... ignored, requires an explicitly acquired official archive in NUDOX_STAGED_CORPUS_SOURCE",
+        "test builtin::query::remote::tests::configured_environment_builds_http_client_child ... ignored, executed in an isolated environment by its parent test",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1237 filtered out; finished in 0.01s",
+        "test builtin::registry::tests::archive_hard_generated_paths_are_ignored_before_accounting ... ok",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1238 filtered out; finished in 0.00s",
+        "test builtin::versioned_planes::tests::verified_segment_cache_hit_order_microbenchmark ... ignored, manual microbenchmark; compares cache hit-order cost"
+      ],
+      "group_members_after": null
+    },
+    {
+      "name": "independent-present-mcp-token-budget-06",
+      "raw_packet": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/independent-present-mcp-token-budget-06",
+      "files": {
+        "receipt.json": {
+          "bytes": 25171,
+          "sha256": "9b601ee97540bdae9e9a6812b606455b13d7b67f4ef871ec0977f6b2b12db57c"
+        },
+        "stdout.log": {
+          "bytes": 15163,
+          "sha256": "ee01de6f79355844aee6f0134eb2a7e76a2cdedfc24da915722e4c891652b2da"
+        },
+        "stderr.log": {
+          "bytes": 214143,
+          "sha256": "fdb02479787d91d4c75be7ffa279618cc994be0cff9df5827f52727eb06875c9"
+        }
+      },
+      "source": {
+        "commit": "c4a847b278f79ee003b6c38578f3d890184a8051",
+        "tree": "44d400144a5519b801494a5a5b2471fa43447a60",
+        "clean": true,
+        "cargo_lock_sha256": "8201d7cdb691e3ac5094bd9aef516fb96dc6f98fe40abf8d84163c6f16e75719"
+      },
+      "source_after": {
+        "commit": "c4a847b278f79ee003b6c38578f3d890184a8051",
+        "status": "",
+        "cargo_lock_sha256": "8201d7cdb691e3ac5094bd9aef516fb96dc6f98fe40abf8d84163c6f16e75719"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-present",
+        "-p",
+        "backend-mcp",
+        "--features",
+        "backend-mcp/token-budget",
+        "--lib"
+      ],
+      "exit": 101,
+      "seconds": 215.0532872780459,
+      "finished_utc": "2026-10-11T07:04:15.782769+00:00",
+      "result_lines": [
+        "test result: FAILED. 149 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.09s"
+      ],
+      "ignored_lines": [
+        "test result: FAILED. 149 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.09s"
+      ],
+      "group_members_after": []
+    },
+    {
+      "name": "whole-library-be7-07",
+      "raw_packet": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/whole-library-be7-07",
+      "files": {
+        "receipt.json": {
+          "bytes": 25181,
+          "sha256": "cff8357bd5cad13fe262ce515af6c0e53711b1a37c5f37c8f8974238e78a316e"
+        },
+        "stdout.log": {
+          "bytes": 32909,
+          "sha256": "5fd705a4fe3408a54e800d8aec6d0a2550c754dcb26785eeff4e3e84d8c00e58"
+        },
+        "stderr.log": {
+          "bytes": 139740,
+          "sha256": "ad04d4b1057d4ac01a7aba29991db8e695ef4a59bf7e2c3b932d4b0ceff322e3"
+        }
+      },
+      "source": {
+        "commit": "be7b91c0124d0eaf7301d0dd40384c2118cc55c7",
+        "tree": "3062e6784b23ae134683cd9e6cd4e2691fc2e839",
+        "clean": true,
+        "cargo_lock_sha256": "8201d7cdb691e3ac5094bd9aef516fb96dc6f98fe40abf8d84163c6f16e75719"
+      },
+      "source_after": {
+        "commit": "be7b91c0124d0eaf7301d0dd40384c2118cc55c7",
+        "status": "",
+        "cargo_lock_sha256": "8201d7cdb691e3ac5094bd9aef516fb96dc6f98fe40abf8d84163c6f16e75719"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-library",
+        "--lib"
+      ],
+      "exit": 0,
+      "seconds": 228.3610363989137,
+      "finished_utc": "2026-10-11T07:10:40.745716+00:00",
+      "result_lines": [
+        "test result: ok. 345 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 6.55s"
+      ],
+      "ignored_lines": [
+        "test tests::arrangement_owned_run::profile_admitted_projection_arrangement_allocations ... ignored, paired arrangement allocation experiment on frozen baseline and candidate",
+        "test wire::claim_index_tests::live_frame_admission_cost ... ignored, measurement over a local journal frame; set NUDOX_LIVE_VIEW_FRAME",
+        "test result: ok. 345 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 6.55s"
+      ],
+      "group_members_after": []
+    }
+  ],
+  "runtime_guard_control": {
+    "raw_receipt": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/runtime-bridge-smoke-03/receipt.json",
+    "receipt_sha256": "efbcdecacd620b852e4538027ed7fe3169a6fa1f8f14f956d4a634f12fc273b8",
+    "exit": 0,
+    "permit_released": true,
+    "two_consecutive_complete_empty_scans": true,
+    "product_runtime_proof": false
+  },
+  "retained_failures": {
+    "library_c4": "Historical snapshot fixture failed strict recipe certificate admission; be7 repairs and passes the entire library suite.",
+    "local_service_c4": "Observed listener accept hang; owned test was stopped. No complete local-service suite result.",
+    "mcp_c4": "149 passed / 1 failed: missing locald companion prevented exercising the private-parent owner-startup refusal."
+  },
+  "unproven": [
+    "Current installed CLI/MCP/daemon large-application acceptance",
+    "Current presenter and full local-service suites",
+    "Current-source GUI and screenshots",
+    "Full Clippy",
+    "Windows, Intel Mac, Linux arm64 and generic NixOS package compatibility"
+  ],
+  "binary_channel": {
+    "macos_source": "a659d5d1819078b3c0046937191a9b54a76b1dfb",
+    "linux_source": "c0016d4f4fc9b0f0a452c7c9556954e2287948b3",
+    "current_replacement_published": false
+  },
+  "user_nix_edit_sha256": "7d3d5ffa38bfcbacb7fa8c490ca78ed9803a2a17a2bfedef942e2c0032fe3cab"
+}
