@@ -6,6 +6,7 @@
 //! A transition is prepared against one exact root and consumes that
 //! preparation before a [`CommittedViewDelta`] can be observed.
 
+mod coordinate;
 mod descriptor;
 mod model;
 mod page;
@@ -13,6 +14,10 @@ mod proof;
 mod root;
 mod transition;
 
+pub use coordinate::{
+    AddressMatchKind, CapturedSourceCoordinate, PackageQualifiedDeclaration, SelectedViewAddress,
+    resolve_selected_view_address,
+};
 pub(crate) use descriptor::DescriptorParts;
 pub use descriptor::{ViewRootDescriptor, ViewRootDescriptorClaim};
 pub use model::{

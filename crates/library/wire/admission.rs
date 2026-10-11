@@ -751,18 +751,63 @@ fn admit_reply_shape(command: &Command, reply: &CommandReply) -> Result<(), Repl
                     "graph reply source revision does not match the request".to_owned(),
                 ));
             }
-            // A declaration is present when its row carries the requested
-            // key, or, for a compiler-backed row whose key is its compiler
-            // identity, when the row's certified coordinate is the address
-            // the caller requested (`symbol_key(coordinate)`).
-            if !snapshot.root.rows().iter().any(|row| {
-                matches!(row.id, crate::RowId::Symbol(symbol)
-                    if query.symbol().matches(symbol)
-                        || query.symbol().matches(crate::symbol_key(&row.label)))
-            }) {
-                return Err(ReplyAdmissionError::Protocol(
+            // Match the execution owner's order: native ID, qualified exact
+            // label, then captured source alias. Selected addresses use only
+            // native membership. A neighboring label cannot shadow that ID.
+            let absent = || {
+                ReplyAdmissionError::Protocol(
                     "graph reply omitted the selected source declaration".to_owned(),
-                ));
+                )
+            };
+            let ambiguous = || {
+                ReplyAdmissionError::Protocol(
+                    "graph reply source declaration is ambiguous or differs from its center"
+                        .to_owned(),
+                )
+            };
+            let native = snapshot.root.row_refs().find(|row| {
+                matches!(row.id, crate::RowId::Symbol(symbol)
+                    if query.symbol().matches(symbol))
+            });
+            let center = if let Some(center) = native {
+                center
+            } else {
+                if query.symbol().is_selected() {
+                    return Err(absent());
+                }
+                let mut exact = snapshot.root.row_refs().filter(|row| {
+                    matches!(row.id, crate::RowId::Symbol(_))
+                        && row.label.len() <= crate::MAX_ROW_IDENTITY_PREIMAGE_BYTES
+                        && query.symbol().matches(crate::symbol_key(&row.label))
+                });
+                if let Some(center) = exact.next() {
+                    if exact.next().is_some() {
+                        return Err(ambiguous());
+                    }
+                    if crate::PackageQualifiedDeclaration::from_row(center).is_none() {
+                        return Err(absent());
+                    }
+                    center
+                } else {
+                    let mut aliases = snapshot.root.row_refs().filter(|row| {
+                        crate::CapturedSourceCoordinate::from_row(row)
+                            .is_some_and(|proof| proof.matches_address(query.symbol()))
+                    });
+                    let Some(center) = aliases.next() else {
+                        return Err(absent());
+                    };
+                    if aliases.next().is_some() {
+                        return Err(ambiguous());
+                    }
+                    center
+                }
+            };
+            if snapshot
+                .rich_graph
+                .as_ref()
+                .is_some_and(|rich| rich.center != crate::GraphNodeId::for_row(center.id))
+            {
+                return Err(ambiguous());
             }
             true
         }

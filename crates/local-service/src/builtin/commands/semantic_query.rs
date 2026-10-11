@@ -1,3 +1,4 @@
+use super::super::read_package_sources;
 use super::super::view_build;
 use super::super::view_build::{
     ProjectCallableIndex, foreign_namespace_call_retarget, foreign_package_call_retarget,
@@ -7,7 +8,6 @@ use super::super::{
     BuiltinAuthorityVerifier, BuiltinModel, BuiltinModelError, BuiltinSemanticRelation,
     BuiltinValidator, activate_semantic_publication,
 };
-use super::super::{empty_indexed_sources, read_package_sources};
 use super::snapshot::{
     semantic_confidence, semantic_declaration_identity, semantic_link_evidence, semantic_link_kind,
 };
@@ -944,10 +944,15 @@ pub(super) fn execute_references(
 ) -> Result<backend_engine::SurfaceReply, BuiltinModelError> {
     let library = daemon.engine().daemon().library();
     let view = library.view();
-    let (target_symbol, package) = {
-        let target_row = view
-            .row_refs()
-            .find(|row| row.label == target.as_str())
+    let (target_symbol, package, target_label) = {
+        let target_row = view_build::resolve_selected_view_address(view, target.as_str())
+            .declaration()
+            .map_err(|failure| {
+                BuiltinModelError(match failure {
+                    backend_library::CommandFailure::InvalidQuery(message) => message,
+                    other => other.to_string(),
+                })
+            })?
             .ok_or_else(|| {
                 BuiltinModelError("references target is absent from the selected view".to_owned())
             })?;
@@ -964,7 +969,7 @@ pub(super) fn execute_references(
                 "references target is not attributed to a package".to_owned(),
             ));
         };
-        (target_symbol, package)
+        (target_symbol, package, target_row.label.as_str())
     };
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let sources = read_package_sources(&snapshot, package)?;
@@ -989,7 +994,14 @@ pub(super) fn execute_references(
         Ok(())
     })?;
     if !publication_found {
-        return execute_structural_references(structural_calls, daemon, target);
+        return execute_structural_references(
+            structural_calls,
+            daemon,
+            target,
+            target_symbol,
+            package,
+            target_label,
+        );
     }
     let project_paths = project_paths_for_package(&sources, package);
     let mut opened = Vec::new();
@@ -1026,9 +1038,11 @@ pub(super) fn execute_references(
             .iter()
             .any(|activation| activation.has_program_manifest()),
     )?;
-    let references = library.references(target, &facts).map_err(|error| {
-        BuiltinModelError(format!("project references through the catalog: {error}"))
-    })?;
+    let references = library
+        .references_for_symbol(target_symbol, &facts)
+        .map_err(|error| {
+            BuiltinModelError(format!("project references through the catalog: {error}"))
+        })?;
     Ok(backend_engine::SurfaceReply::References {
         target: target.clone(),
         references,
@@ -1039,24 +1053,19 @@ fn execute_structural_references(
     structural_calls: &mut view_build::StructuralCallResidence,
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     target: &backend_engine::ProductText,
+    target_symbol: backend_engine::SymbolKey,
+    package: backend_engine::PackageKey,
+    target_label: &str,
 ) -> Result<backend_engine::SurfaceReply, BuiltinModelError> {
     let library = daemon.engine().daemon().library();
     let view = library.view();
     let snapshot = daemon.engine().daemon().owner().snapshot();
-    let package = view
-        .rows()
-        .iter()
-        .find(|row| row.label == target.as_str())
-        .and_then(|row| row.package);
-    let sources = match package {
-        Some(package) => read_package_sources(&snapshot, package)?,
-        None => empty_indexed_sources(),
-    };
+    let sources = read_package_sources(&snapshot, package)?;
     let mut facts = view_build::structural_reference_facts_resident(
         structural_calls,
         view,
         &sources,
-        target.as_str(),
+        target_label,
     )?;
     facts.sort_by(|left, right| {
         left.evidence
@@ -1072,9 +1081,11 @@ fn execute_structural_references(
             )
             .then_with(|| left.site.to_bytes().cmp(&right.site.to_bytes()))
     });
-    let references = library.references(target, &facts).map_err(|error| {
-        BuiltinModelError(format!("project references through the catalog: {error}"))
-    })?;
+    let references = library
+        .references_for_symbol(target_symbol, &facts)
+        .map_err(|error| {
+            BuiltinModelError(format!("project references through the catalog: {error}"))
+        })?;
     Ok(backend_engine::SurfaceReply::References {
         target: target.clone(),
         references,

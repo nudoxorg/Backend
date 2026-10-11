@@ -4,6 +4,7 @@ use super::*;
 
 mod arrangement_owned_run;
 mod name_ranking;
+mod public_coordinates;
 
 fn source() -> (ViewStateRoot, SemanticObject) {
     (view_state_root(&[]), object_version(b"source"))
@@ -639,10 +640,10 @@ fn graph_page_recovered_coordinate_preserves_claimed_cursor_and_rejects_foreign_
     let package = package_key("semantic-page");
     let actual = symbol_key("compiler-owned-root");
     let child = symbol_key("compiler-owned-child");
-    let address = SymbolAddress::canonical(symbol_key("pkg::semantic::digest::Root"));
+    let address = SymbolAddress::canonical(symbol_key("semantic-page::semantic::digest::Root"));
     let library = projection(vec![
         Row::new(RowId::Package(package), basis, "semantic-page"),
-        Row::in_package(RowId::Symbol(actual), basis, package, "Root"),
+        Row::in_package(RowId::Symbol(actual), basis, package, "semantic-page::semantic::digest::Root"),
         Row::in_package(RowId::Symbol(child), basis, package, "Child").with_parent(actual),
     ]);
     let request = PageRequest::new(library.revision_root(), QueryLimit::new(1).expect("limit"));
@@ -693,9 +694,9 @@ fn graph_page_selected_neighbors_refuses_duplicates_reordering_and_foreign_curso
     let (root, object) = source();let basis = Basis::new(root, object);
     let package = package_key("semantic-neighbors");
     let symbol = symbol_key("semantic-origin");let neighbor = symbol_key("nonparent-neighbor");
-    let address = SymbolAddress::canonical(symbol_key("public::semantic::origin"));
+    let address = SymbolAddress::canonical(symbol_key("semantic-neighbors::semantic::origin"));
     let library = projection(vec![Row::new(RowId::Package(package), basis, "semantic-neighbors"),
-        Row::in_package(RowId::Symbol(symbol), basis, package, "Origin"),
+        Row::in_package(RowId::Symbol(symbol), basis, package, "semantic-neighbors::semantic::origin"),
         Row::in_package(RowId::Symbol(neighbor), basis, package, "Nonparent")]);
     let mut ids = vec![RowId::Symbol(symbol), RowId::Symbol(neighbor)];ids.sort();
     let request = PageRequest::new(library.revision_root(), QueryLimit::new(1).expect("limit"));

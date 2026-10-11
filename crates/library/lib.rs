@@ -290,13 +290,15 @@ pub use surface::{
     index_operation_request_digest,
 };
 pub use view::{
-    Basis, CommittedViewDelta, CompleteViewProjection, Coverage, CoverageCapability, Document,
-    DocumentSelection, Fragment, Freshness, GraphRelation, Lane, MAX_COVERAGE_EVIDENCE,
-    MAX_ROW_IDENTITY_PREIMAGE_BYTES, MAX_SNAPSHOT_PAGE_ROWS, MAX_VIEW_PATCH_ROWS, NameRecord,
-    Outline, OutlineExtent, OutlineNode, PreparedViewDelta, Reason, Row, RowChange, RowId,
-    RowIdentityPreimage, RowIdentityPreimageError, RowState, SourceAvailability, ViewDelta,
-    ViewError, ViewPageCursor, ViewPageError, ViewProjection, ViewProjectionError, ViewRoot,
-    ViewRootDescriptor, ViewRootDescriptorClaim, ViewSnapshot, ViewSnapshotPage,
+    AddressMatchKind, Basis, CapturedSourceCoordinate, CommittedViewDelta, CompleteViewProjection,
+    Coverage, CoverageCapability, Document, DocumentSelection, Fragment, Freshness, GraphRelation,
+    Lane, MAX_COVERAGE_EVIDENCE, MAX_ROW_IDENTITY_PREIMAGE_BYTES, MAX_SNAPSHOT_PAGE_ROWS,
+    MAX_VIEW_PATCH_ROWS, NameRecord, Outline, OutlineExtent, OutlineNode,
+    PackageQualifiedDeclaration, PreparedViewDelta, Reason, Row, RowChange, RowId,
+    RowIdentityPreimage, RowIdentityPreimageError, RowState, SelectedViewAddress,
+    SourceAvailability, ViewDelta, ViewError, ViewPageCursor, ViewPageError, ViewProjection,
+    ViewProjectionError, ViewRoot, ViewRootDescriptor, ViewRootDescriptorClaim, ViewSnapshot,
+    ViewSnapshotPage, resolve_selected_view_address,
 };
 pub use wire::SemanticShapeExport;
 pub use wire::{

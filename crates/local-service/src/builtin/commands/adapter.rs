@@ -4452,7 +4452,7 @@ impl CommandAdapter {
         query: &backend_library::DocumentQuery,
         certificate: Option<&WireCertificate>,
         recover_excerpt: bool,
-    ) -> Option<backend_library::Document> {
+    ) -> Result<Option<backend_library::Document>, backend_library::CommandFailure> {
         let library = daemon.engine().daemon().library();
         let root = library.revision_root();
         let source_basis = backend_library::Basis {
@@ -4464,7 +4464,7 @@ impl CommandAdapter {
                 .source_basis()
                 .is_some_and(|source| source != source_basis)
         {
-            return None;
+            return Ok(None);
         }
         let label = certificate.and_then(|certificate| {
             certificate.claims.iter().find_map(|claim| match claim {
@@ -4482,16 +4482,33 @@ impl CommandAdapter {
             })
         });
         let row = if query.symbol().is_selected() {
-            let symbol = query.resolve_symbol(library.view())?;
-            library
+            let Some(symbol) = query.resolve_symbol(library.view()) else {
+                return Ok(None);
+            };
+            let Some(row) = library
                 .view()
-                .row_ref(backend_engine::RowId::Symbol(symbol))?
+                .row_ref(backend_engine::RowId::Symbol(symbol))
+            else {
+                return Ok(None);
+            };
+            row
         } else {
-            symbol_row_by_label(library.view(), label?)?
+            let Some(label) = label else {
+                return Ok(None);
+            };
+            let Some(row) =
+                view_build::resolve_selected_view_address(library.view(), label).declaration()?
+            else {
+                return Ok(None);
+            };
+            row
         };
+        let requested_coordinate = label;
         let label = row.label.as_str();
         let backend_engine::RowId::Symbol(symbol) = row.id else {
-            return None;
+            return Err(backend_library::CommandFailure::InvalidQuery(
+                "coordinate does not name a declaration".to_owned(),
+            ));
         };
         let excerpt =
             if recover_excerpt && row.excerpt == backend_library::SourceExcerpt::NotHydrated {
@@ -4506,15 +4523,20 @@ impl CommandAdapter {
             .with_excerpt(excerpt)
             .with_facts(row.facts.clone());
         if !query.symbol().is_selected() {
-            document = document
-                .with_selection(backend_library::DocumentSelection::from_row(
-                    row,
-                    source_basis,
-                )?)
-                .ok()?;
+            let Some(selection) = backend_library::DocumentSelection::from_selected_view(
+                library.view(),
+                source_basis,
+                requested_coordinate.unwrap_or(label),
+            ) else {
+                return Ok(None);
+            };
+            let selected = document
+                .with_selection(selection)
+                .map_err(|error| backend_library::CommandFailure::InvalidQuery(error.to_owned()))?;
+            document = selected;
         }
         document.signature.clone_from(&row.signature);
-        Some(document)
+        Ok(Some(document))
     }
 
     /// Rehydrates a shed declaration excerpt from the exact package source
@@ -4762,7 +4784,12 @@ impl CommandAdapter {
         } else {
             Command::Graph(query)
         };
-        let query = Self::claimed_graph_source(daemon, query, certificate.as_ref());
+        let query = match Self::claimed_graph_source(daemon, query, certificate.as_ref()) {
+            Ok(query) => query,
+            Err(failure) => {
+                return Self::certify(daemon, &command, CommandReply::Failed(failure), certificate);
+            }
+        };
         let reply = self
             .graph_snapshot(daemon, query, include_incoming)?
             .map_or_else(
@@ -4771,7 +4798,8 @@ impl CommandAdapter {
                         .engine()
                         .daemon()
                         .library()
-                        .execute(command.clone())
+                        .graph(query)
+                        .map(CommandReply::Graph)
                         .unwrap_or_else(|error| CommandReply::Failed(error.into()))
                 },
                 CommandReply::Graph,
@@ -4828,7 +4856,17 @@ impl CommandAdapter {
         let command = Command::GraphPage { symbol, page };
         let library = daemon.engine().daemon().library();
         let selected =
-            Self::claimed_graph_symbol(daemon, symbol, page.basis(), certificate.as_ref());
+            match Self::claimed_graph_symbol(daemon, symbol, page.basis(), certificate.as_ref()) {
+                Ok(selected) => selected,
+                Err(failure) => {
+                    return Self::certify(
+                        daemon,
+                        &command,
+                        CommandReply::Failed(failure),
+                        certificate,
+                    );
+                }
+            };
         // A canonical address resolves to its key even when no selected row
         // exists. Check membership before opening semantic graph residence so
         // an absent source keeps the library's typed read refusal.
@@ -4880,11 +4918,12 @@ impl CommandAdapter {
         daemon: &ProductDaemon,
         query: backend_engine::GraphNeighborhoodQuery,
         certificate: Option<&WireCertificate>,
-    ) -> backend_engine::GraphNeighborhoodQuery {
-        let symbol = Self::claimed_graph_symbol(daemon, query.symbol(), query.basis(), certificate);
-        symbol
+    ) -> Result<backend_engine::GraphNeighborhoodQuery, backend_library::CommandFailure> {
+        let symbol =
+            Self::claimed_graph_symbol(daemon, query.symbol(), query.basis(), certificate)?;
+        Ok(symbol
             .resolve(daemon.engine().daemon().library().view())
-            .map_or(query, |symbol| query.with_resolved_symbol(symbol))
+            .map_or(query, |symbol| query.with_resolved_symbol(symbol)))
     }
 
     /// Shares the exact admitted coordinate lookup between complete and paged graphs.
@@ -4893,14 +4932,14 @@ impl CommandAdapter {
         address: backend_engine::SymbolAddress,
         basis: backend_library::ViewRevision,
         certificate: Option<&WireCertificate>,
-    ) -> backend_engine::SymbolAddress {
+    ) -> Result<backend_engine::SymbolAddress, backend_library::CommandFailure> {
         let library = daemon.engine().daemon().library();
         let view = library.view();
         let requested = address.resolve(view);
         if requested.is_some_and(|symbol| view.row(backend_engine::RowId::Symbol(symbol)).is_some())
             || !basis.matches(library.revision_root())
         {
-            return address;
+            return Ok(address);
         }
         let Some(label) = certificate.and_then(|certificate| {
             certificate.claims.iter().find_map(|claim| match claim {
@@ -4917,14 +4956,18 @@ impl CommandAdapter {
                 _ => None,
             })
         }) else {
-            return address;
+            return Ok(address);
         };
-        symbol_row_by_label(view, label)
-            .and_then(|row| match row.id {
-                backend_engine::RowId::Symbol(symbol) => Some(symbol),
-                _ => None,
-            })
-            .map_or(address, backend_engine::SymbolAddress::selected)
+        let Some(row) = view_build::resolve_selected_view_address(view, label).declaration()?
+        else {
+            return Ok(address);
+        };
+        let backend_engine::RowId::Symbol(symbol) = row.id else {
+            return Err(backend_library::CommandFailure::InvalidQuery(
+                "coordinate does not name a declaration".to_owned(),
+            ));
+        };
+        Ok(backend_engine::SymbolAddress::selected(symbol))
     }
 
     fn surface(
@@ -5389,18 +5432,22 @@ impl CommandAdapter {
         certificate: Option<WireCertificate>,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let reply = match command {
-            Command::Document(query) | Command::Source(query) => self
+            Command::Document(query) | Command::Source(query) => match self
                 .canonical_claim_document(
                     daemon,
                     query,
                     certificate.as_ref(),
                     matches!(command, Command::Source(_)),
-                )
-                .map_or_else(
-                    || daemon.engine().daemon().library().execute(command.clone()),
-                    |document| Ok(CommandReply::Document(document)),
-                )
-                .unwrap_or_else(|error| CommandReply::Failed(error.into())),
+                ) {
+                Ok(Some(document)) => CommandReply::Document(document),
+                Ok(None) => daemon
+                    .engine()
+                    .daemon()
+                    .library()
+                    .execute(command.clone())
+                    .unwrap_or_else(|error| CommandReply::Failed(error.into())),
+                Err(failure) => CommandReply::Failed(failure),
+            },
             _ => daemon
                 .engine()
                 .daemon()
@@ -5709,13 +5756,6 @@ fn prepare_builtin_intent_at_snapshot(
     })
 }
 
-fn symbol_row_by_label<'a>(
-    view: &'a backend_engine::ViewRoot,
-    label: &str,
-) -> Option<&'a backend_engine::Row> {
-    view.unique_symbol_by_label(label)
-}
-
 /// Resolves the source root named by the package's admitted project record.
 /// Local projects are stored under their canonical directory label; staged
 /// packages retain their canonical pinned package URL.
@@ -5928,6 +5968,15 @@ mod tests {
 
     use super::{Command, WireCertificate, WireClaim};
 
+    fn symbol_coordinate_certificate(coordinate: &str) -> WireCertificate {
+        let symbol = backend_engine::symbol_key(coordinate);
+        WireCertificate::new().with_claim(WireClaim::Key {
+            schema: backend_engine::WireSchema::Symbol,
+            id: backend_engine::encode_id(symbol.as_bytes()),
+            value: coordinate.to_owned(),
+        })
+    }
+
     fn checked_resident_graph(reason: &'static str) -> backend_library::IndexedCheckedPackageGraph {
         backend_library::IndexedCheckedPackageGraph::new(
             vec![(
@@ -6044,6 +6093,9 @@ mod tests {
         };
         assert!(Arc::ptr_eq(catalog_after_failure, &catalog_before_failure));
     }
+
+    #[path = "public_coordinate_alias.rs"]
+    mod public_coordinate_alias_tests;
 
     #[path = "index_profile_worker.rs"]
     mod index_profile_worker_tests;
@@ -6311,6 +6363,34 @@ mod tests {
             let label = path.to_str().expect("UTF-8 fixture path").to_owned();
             (backend_engine::package_key(&label), label)
         }
+
+        fn publish_rows(&mut self, additional: Vec<backend_library::Row>) {
+            let (_, daemon) = self.parts();
+            let snapshot = daemon.engine().daemon().owner().snapshot();
+            let current = daemon.engine().daemon().library().view().clone();
+            let mut rows = current.row_refs().cloned().collect::<Vec<_>>();
+            rows.extend(additional);
+            let capability = current.capability().expect("selected view capability");
+            let view = backend_library::ViewRoot::new_checked(
+                current.recipe(),
+                current.basis(),
+                current.frontier(),
+                rows,
+                current.coverage().to_vec(),
+                capability,
+            )
+            .expect("checked test declarations");
+            let cursor = backend_library::Cursor::for_view_root(&view);
+            let admission = crate::builtin::BuiltinViewAdmission {
+                workspace_root: snapshot.root(),
+                source_root: view.basis().root,
+            };
+            daemon
+                .engine_mut()
+                .daemon_mut()
+                .publish_view(view, cursor, &admission, None)
+                .expect("publish checked test declarations");
+        }
     }
 
     impl Drop for AdapterFixture {
@@ -6378,7 +6458,10 @@ mod tests {
                 CommandReply::Failed(backend_library::CommandFailure::NotFound)
             );
         }
-        let stale = backend_library::view_state_root(&[("fixture".to_owned(), "foreign-outline-view".to_owned())]);
+        let stale = backend_library::view_state_root(&[(
+            "fixture".to_owned(),
+            "foreign-outline-view".to_owned(),
+        )]);
         let command = Command::Outline(backend_library::OutlineQuery::new(package, stale));
         assert!(matches!(
             adapter
@@ -6457,6 +6540,192 @@ mod tests {
             owner_cursor(daemon),
             before,
             "reads never admit project work"
+        );
+    }
+
+    #[test]
+    fn public_address_commands_reject_package_coordinates_at_the_adapter() {
+        use backend_library::{CommandReply, SurfaceCommand};
+
+        let mut fixture = AdapterFixture::new();
+        let label = fixture.label.clone();
+        let package = fixture.package;
+        let (adapter, daemon) = fixture.parts();
+        let root = daemon.engine().daemon().library().revision_root();
+        let symbol = backend_library::symbol_key(&label);
+        let expected = CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+            "coordinate names a package, not a declaration".to_owned(),
+        ));
+
+        for source in [false, true] {
+            let query = backend_library::DocumentQuery::new(symbol, root);
+            let command = if source {
+                Command::Source(query)
+            } else {
+                Command::Document(query)
+            };
+            assert_eq!(
+                adapter
+                    .standard(
+                        daemon,
+                        &command,
+                        Some(symbol_coordinate_certificate(&label)),
+                    )
+                    .expect("package document refusal")
+                    .0,
+                expected
+            );
+        }
+        for incoming in [false, true] {
+            let query = backend_library::GraphNeighborhoodQuery::new(symbol, root);
+            assert_eq!(
+                adapter
+                    .graph(
+                        daemon,
+                        query,
+                        Some(symbol_coordinate_certificate(&label)),
+                        incoming,
+                    )
+                    .expect("package graph refusal")
+                    .0,
+                expected
+            );
+        }
+        let page = backend_library::PageRequest::new(root, backend_library::QueryLimit::default());
+        assert_eq!(
+            adapter
+                .graph_page(
+                    daemon,
+                    backend_library::SymbolAddress::canonical(symbol),
+                    page,
+                    Some(symbol_coordinate_certificate(&label)),
+                )
+                .expect("package graph page refusal")
+                .0,
+            expected
+        );
+        assert_eq!(
+            adapter
+                .surface(
+                    daemon,
+                    SurfaceCommand::References {
+                        target: backend_library::ProductText::new(label)
+                            .expect("package coordinate text"),
+                    },
+                    980,
+                )
+                .expect("package references refusal")
+                .0,
+            expected
+        );
+        assert!(
+            daemon
+                .engine()
+                .daemon()
+                .library()
+                .row_ref(backend_engine::RowId::Package(package))
+                .is_some(),
+            "the fixture includes an actual selected package row"
+        );
+    }
+
+    #[test]
+    fn public_address_commands_reject_ambiguous_sites_at_the_adapter() {
+        use backend_library::{CommandReply, SurfaceCommand};
+
+        let mut fixture = AdapterFixture::new();
+        let label = fixture.label.clone();
+        let package = fixture.package;
+        let basis = {
+            let (_, daemon) = fixture.parts();
+            daemon.engine().daemon().library().view().basis()
+        };
+        let location = backend_compile::SourceLocation::new("src/lib.rs", 9)
+            .expect("one-based captured source site");
+        let first = backend_library::Row::in_package(
+            backend_library::RowId::Symbol(backend_library::symbol_key("first-draw-identity")),
+            basis,
+            package,
+            format!("{label}::semantic::first-draw::draw"),
+        )
+        .with_source(location.clone());
+        let second = backend_library::Row::in_package(
+            backend_library::RowId::Symbol(backend_library::symbol_key("second-draw-identity")),
+            basis,
+            package,
+            format!("{label}::semantic::second-draw::draw"),
+        )
+        .with_source(location);
+        fixture.publish_rows(vec![first, second]);
+
+        let coordinate = format!("{label}::src/lib.rs:9::draw");
+        let (adapter, daemon) = fixture.parts();
+        let root = daemon.engine().daemon().library().revision_root();
+        let symbol = backend_library::symbol_key(&coordinate);
+        let expected = CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+            "coordinate is ambiguous in the selected view".to_owned(),
+        ));
+
+        for source in [false, true] {
+            let query = backend_library::DocumentQuery::new(symbol, root);
+            let command = if source {
+                Command::Source(query)
+            } else {
+                Command::Document(query)
+            };
+            assert_eq!(
+                adapter
+                    .standard(
+                        daemon,
+                        &command,
+                        Some(symbol_coordinate_certificate(&coordinate)),
+                    )
+                    .expect("ambiguous document refusal")
+                    .0,
+                expected
+            );
+        }
+        for incoming in [false, true] {
+            let query = backend_library::GraphNeighborhoodQuery::new(symbol, root);
+            assert_eq!(
+                adapter
+                    .graph(
+                        daemon,
+                        query,
+                        Some(symbol_coordinate_certificate(&coordinate)),
+                        incoming,
+                    )
+                    .expect("ambiguous graph refusal")
+                    .0,
+                expected
+            );
+        }
+        let page = backend_library::PageRequest::new(root, backend_library::QueryLimit::default());
+        assert_eq!(
+            adapter
+                .graph_page(
+                    daemon,
+                    backend_library::SymbolAddress::canonical(symbol),
+                    page,
+                    Some(symbol_coordinate_certificate(&coordinate)),
+                )
+                .expect("ambiguous graph page refusal")
+                .0,
+            expected
+        );
+        assert_eq!(
+            adapter
+                .surface(
+                    daemon,
+                    SurfaceCommand::References {
+                        target: backend_library::ProductText::new(coordinate)
+                            .expect("ambiguous coordinate text"),
+                    },
+                    981,
+                )
+                .expect("ambiguous references refusal")
+                .0,
+            expected
         );
     }
 
