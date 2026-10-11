@@ -49,7 +49,7 @@ def main [
         # reading it afterwards reported every clean target as failed.
         let status = (try {
             with-env {CARGO_TARGET_DIR: $target_dir} {
-                run-external "cargo" "check" "--locked" "--workspace" "--all-targets" "--target" $triple "--jobs" ($jobs | into string)
+                run-external "python3" ($env.FILE_PWD | path join "cargo-check.py") $triple ($jobs | into string)
             }
             0
         } catch {

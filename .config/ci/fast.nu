@@ -19,6 +19,7 @@ def fast-flake-checks []: nothing -> list<string> {
         "agent-skills"
         "tooling-contracts"
         "telemetry-config"
+        "ci-compile-telemetry"
     ]
 }
 

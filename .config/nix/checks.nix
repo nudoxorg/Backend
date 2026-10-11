@@ -55,6 +55,17 @@ in
   agent-skills = commands.agentSkills;
   formatting = formatting.check;
 
+  ci-compile-telemetry = helpers.nuCheck {
+    inherit pkgs;
+    name = "backend-ci-compile-telemetry";
+    packages = [ pkgs.python3 ];
+    build = ''
+      python3 -m unittest discover -s ${../ci} -p 'test_*.py' -v
+      mkdir $env.out
+      "validated" | save ($env.out | path join "ci-compile-telemetry")
+    '';
+  };
+
   # Exercises the Cargo lease protocol with fake Cargo/git/sccache processes;
   # it is deliberately independent from the workspace build graph.
   cargo-cache-protocol =
