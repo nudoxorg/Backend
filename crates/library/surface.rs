@@ -2,7 +2,7 @@
 
 use crate::interface::{
     CompilerAttempt, CompilerFragmentFailure, CompilerFragmentFaultFacts,
-    CompilerFragmentFaultKind, CompilerToolFailure, CompilerToolIssue, CompilerToolRequirement,
+    CompilerFragmentFaultKind, CompilerToolFailure, CompilerToolRequirement,
     MAX_COMPILER_FRAGMENT_DETAIL_BYTES,
 };
 use crate::{
@@ -24,8 +24,7 @@ use std::{fmt, str::FromStr};
 mod package_compiler_failure;
 pub use package_compiler_failure::{
     AuthorityClassFact, AuthorityPhaseFact, CompilerAuthorityDiagnosticFacts, CompilerLanguageFact,
-    CompilerNativeToolFact, CompilerStageFact, PackageAnonymousCallableAnchorFaultFacts,
-    PackageAnonymousCallableAnchorPoolFact, PackageCompilerFailureCause,
+    CompilerNativeToolFact, CompilerStageFact, PackageCompilerFailureCause,
     PackageCompilerFailurePhase, PackageCompilerFragmentFaultFacts, PackageForeignKeyFaultFacts,
     PackageLanguageProjectionFault, PackageLineageFaultFacts, PackageLoweringFaultFacts,
     PackageParentageFact, PackageProjectionAdmissionFaultFacts,
