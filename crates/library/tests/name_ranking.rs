@@ -20,7 +20,7 @@ fn exact_names_precede_partial_names_through_bounded_pages_and_cold_reopen() {
     // and there are enough partials to exercise heap eviction at small limits.
     for index in 0..18 {
         let id = RowId::Symbol(symbol_key(&format!("partial-{index}")));
-        let coordinate = format!("/fixture::semantic::{index:0128x}::MockEnvironment");
+        let coordinate = format!("/fixture::semantic::{index:064x}::MockEnvironment");
         rows.push(Row::in_package(id, basis, package, coordinate));
         partial_ids.push(id);
     }
@@ -33,7 +33,7 @@ fn exact_names_precede_partial_names_through_bounded_pages_and_cold_reopen() {
             id,
             basis,
             package,
-            format!("/fixture::semantic::{:0128x}::Environment", index + 100),
+            format!("/fixture::semantic::{:064x}::Environment", index + 100),
         ));
     }
     let original = projection(rows);
