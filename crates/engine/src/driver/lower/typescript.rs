@@ -12356,15 +12356,28 @@ describe('suite', () => {\n\
             .map_err(|error| {
                 LaneError::ConfiguredProject(format!("resolver witness: {error:?}"))
             })?;
-        let route_path = native
-            .package_paths
+        let package_membership = &native.package_membership;
+        assert_eq!(package_membership.len(), source_paths.len());
+        for path in source_paths {
+            package_membership
+                .get(path)
+                .ok_or(LaneError::Missing(
+                    "captured configured corpus source membership",
+                ))?
+                .selected_program_path()
+                .ok_or(LaneError::Missing(
+                    "configured corpus source excluded from selected program",
+                ))?;
+        }
+        let route_path = package_membership
             .get("src/app/api/route.ts")
-            .cloned()
+            .ok_or(LaneError::Missing("captured alias importer membership"))?
+            .selected_program_path()
             .ok_or(LaneError::Missing("exact alias importer TSZ path"))?;
-        let scheduler_path = native
-            .package_paths
+        let scheduler_path = package_membership
             .get("src/lib/scheduler.ts")
-            .cloned()
+            .ok_or(LaneError::Missing("captured aliased target membership"))?
+            .selected_program_path()
             .ok_or(LaneError::Missing("exact aliased target TSZ path"))?;
         assert!(
             !native.options.checker.no_lib,
@@ -12377,19 +12390,18 @@ describe('suite', () => {\n\
         );
         assert!(
             native.options.module_resolutions.iter().any(|resolution| {
-                resolution.importer_path == route_path.as_ref()
+                resolution.importer_path.as_str() == route_path
                     && resolution.specifier == "@/lib/scheduler"
                     && matches!(
                         &resolution.target,
                         TszProjectModuleResolutionTarget::File { path }
-                            if path == scheduler_path.as_ref()
+                            if path.as_str() == scheduler_path
                     )
             }),
             "the compiler's paths alias resolves to its exact source file"
         );
 
         let work_units = native.work_units;
-        let package_path_map = native.package_paths;
         let budget = TszProjectExecutionBudget::new(deadline, &cancelled, work_units);
         let mut authority = TszProjectAuthority::new();
         authority
@@ -12410,8 +12422,10 @@ describe('suite', () => {\n\
             .iter()
             .position(|path| *path == "src/app/api/route.ts")
             .ok_or(LaneError::Missing("alias importer source"))?;
-        let route_path = package_path_map
+        let route_path = package_membership
             .get(source_paths[route_index])
+            .ok_or(LaneError::Missing("captured alias importer membership"))?
+            .selected_program_path()
             .ok_or(LaneError::Missing("exact alias importer TSZ path"))?;
         let mut route_facts = FactSet::new();
         collect_with_tsz(
@@ -12428,7 +12442,7 @@ describe('suite', () => {\n\
             .ok_or(LaneError::Missing("aliased source declaration name"))?;
         assert!(
             targets.iter().any(|(_, path, _, _, name_start, _)| {
-                path == scheduler_path.as_ref() && *name_start == scheduler_name as u32
+                path.as_str() == scheduler_path && *name_start == scheduler_name as u32
             }),
             "aliased use must point to the exact dependency declaration: {targets:?}"
         );
