@@ -5,6 +5,10 @@
 //! limits. A runtime becomes active only after the executable answers a real self-test request.
 
 use crate::embedding_cache::EmbeddingCacheSession;
+use crate::embedding_memory::{
+    EmbeddingCoordinateValues, EmbeddingMemoryBudget, EmbeddingMemoryError,
+    EmbeddingMemoryReservation,
+};
 use crate::supervisor::RunningByteSession;
 use crate::{
     ProcessEnvironment, ProcessError, ProcessLimits, ProcessStdin, ProcessSupervisor,
@@ -587,20 +591,20 @@ pub struct EmbeddingCoordinates {
     tokenizer: EmbeddingArtifactId,
     purpose: EmbeddingPurpose,
     normalization: EmbeddingNormalization,
-    values: Arc<[f32]>,
+    values: EmbeddingCoordinateValues,
 }
 
 #[derive(Clone)]
 pub(crate) struct ValidatedProducerVector {
     identity: EmbeddingInputIdentity,
-    values: Arc<[f32]>,
+    values: EmbeddingCoordinateValues,
 }
 
 impl ValidatedProducerVector {
     fn from_decoded(identity: EmbeddingInputIdentity, coordinates: &EmbeddingCoordinates) -> Self {
         Self {
             identity,
-            values: Arc::clone(&coordinates.values),
+            values: coordinates.values.clone(),
         }
     }
 
@@ -1105,8 +1109,8 @@ impl EmbeddingCoordinates {
 
     /// Clones the shared immutable coordinate storage without copying its values.
     #[must_use]
-    pub fn shared_values(&self) -> Arc<[f32]> {
-        Arc::clone(&self.values)
+    pub fn shared_values(&self) -> EmbeddingCoordinateValues {
+        self.values.clone()
     }
 
     /// Returns the exact length of the canonical versioned vector payload.
@@ -1134,6 +1138,47 @@ impl EmbeddingCoordinates {
     }
 }
 
+/// Owner admission reserved before materializing persisted model/tokenizer buffers.
+/// The affine resident lease moves into the activated runtime; no second account is created.
+#[derive(Debug)]
+pub struct EmbeddingMemoryAdmission {
+    budget: EmbeddingMemoryBudget,
+    resident: EmbeddingMemoryReservation,
+    model_bytes: usize,
+    tokenizer_bytes: usize,
+    process_limits: ProcessLimits,
+}
+
+impl EmbeddingMemoryAdmission {
+    /// Admits fixed artifact, child and cache-metadata residency against one owner envelope.
+    ///
+    /// # Errors
+    /// Returns numeric memory/extent refusal before any artifact bytes are allocated.
+    pub fn new(
+        capacity: u64,
+        model_bytes: usize,
+        tokenizer_bytes: usize,
+        limits: ProcessLimits,
+    ) -> Result<Self, EmbeddingExecutableError> {
+        let budget = EmbeddingMemoryBudget::new(capacity);
+        let resident = budget
+            .reserve(resident_memory_bytes(model_bytes, tokenizer_bytes, limits)?)
+            .map_err(EmbeddingExecutableError::Memory)?;
+        Ok(Self {
+            budget,
+            resident,
+            model_bytes,
+            tokenizer_bytes,
+            process_limits: limits,
+        })
+    }
+    /// Shared account for temporary provisioning buffers before activation consumes admission.
+    #[must_use]
+    pub const fn budget(&self) -> &EmbeddingMemoryBudget {
+        &self.budget
+    }
+}
+
 /// Bounded external embedding executable and its resident artifact closure.
 pub struct EmbeddingExecutable {
     program: PathBuf,
@@ -1152,6 +1197,8 @@ pub struct EmbeddingExecutable {
     tokenizer: EmbeddingArtifact,
     artifact_workspace: EmbeddingArtifactWorkspace,
     launch_configuration: [u8; 32],
+    memory_budget: EmbeddingMemoryBudget,
+    _resident_memory: EmbeddingMemoryReservation,
     inference_gate: InferenceAdmissionGate,
     inference_cache: Mutex<EmbeddingInferenceCache>,
     persistent_session: Mutex<Option<RunningByteSession>>,
@@ -1249,7 +1296,7 @@ impl EmbeddingExecutable {
             return None;
         }
         let identity = self.execution_identity();
-        EmbeddingCacheSession::open(directory, identity)
+        EmbeddingCacheSession::open(directory, identity, self.memory_budget.clone())
     }
 
     /// Upper bound for one vector's canonical output bytes.
@@ -1265,9 +1312,9 @@ impl EmbeddingExecutable {
     }
 
     /// Per-call upper bound for cache storage, batch request/output scratch, decoded coordinates,
-    /// and per-input batch metadata. Returned vectors retained by callers and concurrent calls
-    /// can aggregate beyond this per-call budget. Compiler staging reserves encoded BVE1 payloads
-    /// separately.
+    /// and per-input batch metadata. All actual retained coordinate and staging allocations
+    /// additionally hold leases from the shared owner account. This bound remains the compiler
+    /// scheduler estimate; it does not create another embedding credit controller.
     #[must_use]
     pub const fn maximum_inference_scratch_bytes(&self) -> usize {
         self.process_limits
@@ -1276,6 +1323,67 @@ impl EmbeddingExecutable {
             .saturating_add(MAX_EMBEDDING_BATCH_COORDINATE_BYTES)
             .saturating_add(MAX_EMBEDDING_BATCH_METADATA_BYTES)
             .saturating_add(MAX_EMBEDDING_CACHE_COORDINATE_BYTES)
+    }
+
+    /// The one memory-credit controller shared by compiler and local query consumers.
+    #[must_use]
+    pub const fn memory_budget(&self) -> &EmbeddingMemoryBudget {
+        &self.memory_budget
+    }
+
+    fn reserve_inference_scratch(
+        &self,
+        inputs: usize,
+    ) -> Result<EmbeddingMemoryReservation, EmbeddingExecutableError> {
+        let bytes = self
+            .process_limits
+            .input_bytes()
+            .checked_add(self.process_limits.output_bytes())
+            .and_then(|bytes| bytes.checked_add(inputs.checked_mul(512)?))
+            .and_then(|bytes| bytes.checked_add(64 * 1024))
+            .ok_or(EmbeddingExecutableError::BatchRequestExtent)?;
+        self.memory_budget
+            .reserve(
+                u64::try_from(bytes).map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?,
+            )
+            .map_err(EmbeddingExecutableError::Memory)
+    }
+
+    fn reserve_coordinates(
+        &self,
+        count: usize,
+        allocations: usize,
+    ) -> Result<EmbeddingMemoryReservation, EmbeddingExecutableError> {
+        let bytes = count
+            .checked_mul(size_of::<f32>())
+            .and_then(|bytes| bytes.checked_add(allocations.checked_mul(256)?))
+            .ok_or(EmbeddingExecutableError::BatchRequestExtent)?;
+        self.memory_budget
+            .reserve(
+                u64::try_from(bytes).map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?,
+            )
+            .map_err(EmbeddingExecutableError::Memory)
+    }
+
+    fn retain_decoded_values(
+        &self,
+        values: Vec<f32>,
+        reservation: EmbeddingMemoryReservation,
+    ) -> Result<EmbeddingCoordinateValues, EmbeddingExecutableError> {
+        let bytes = values
+            .len()
+            .checked_mul(size_of::<f32>())
+            .ok_or(EmbeddingExecutableError::BatchRequestExtent)?;
+        let _conversion = self
+            .memory_budget
+            .reserve(
+                u64::try_from(bytes).map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?,
+            )
+            .map_err(EmbeddingExecutableError::Memory)?;
+        Ok(EmbeddingCoordinateValues::retain(
+            Arc::from(values.into_boxed_slice()),
+            reservation,
+        ))
     }
 
     /// Maximum simultaneous child processes admitted through this activated model runtime.
@@ -1332,6 +1440,7 @@ impl EmbeddingExecutable {
             executable,
             model,
             tokenizer,
+            None,
         )
     }
 
@@ -1360,6 +1469,83 @@ impl EmbeddingExecutable {
         executable: ToolchainArtifact,
         model: EmbeddingArtifact,
         tokenizer: EmbeddingArtifact,
+    ) -> Result<Self, EmbeddingExecutableError> {
+        let capacity =
+            default_memory_credits(model.bytes().len(), tokenizer.bytes().len(), process_limits)?;
+        Self::activate_with_spec_and_memory_credits(
+            spec,
+            program,
+            arguments,
+            workspace,
+            environment,
+            process_limits,
+            executable,
+            model,
+            tokenizer,
+            capacity,
+        )
+    }
+
+    /// Activates with one explicit owner credit envelope for compiler and query consumers.
+    /// Retained coordinate and encoded-output allocations must retain leases from this account.
+    ///
+    /// # Errors
+    /// Returns the same activation errors, or a shared memory-credit refusal.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "activation binds complete runtime authority and one memory envelope"
+    )]
+    pub fn activate_with_spec_and_memory_credits(
+        spec: EmbeddingRuntimeSpecV1,
+        program: PathBuf,
+        arguments: Vec<String>,
+        workspace: PathBuf,
+        environment: ProcessEnvironment,
+        process_limits: ProcessLimits,
+        executable: ToolchainArtifact,
+        model: EmbeddingArtifact,
+        tokenizer: EmbeddingArtifact,
+        resident_credit_bytes: u64,
+    ) -> Result<Self, EmbeddingExecutableError> {
+        let memory = EmbeddingMemoryAdmission::new(
+            resident_credit_bytes,
+            model.bytes().len(),
+            tokenizer.bytes().len(),
+            process_limits,
+        )?;
+        Self::activate_with_spec_and_memory_admission(
+            spec,
+            program,
+            arguments,
+            workspace,
+            environment,
+            process_limits,
+            executable,
+            model,
+            tokenizer,
+            memory,
+        )
+    }
+
+    /// Consumes owner admission reserved before loading persisted artifacts.
+    ///
+    /// # Errors
+    /// Returns extent/identity mismatch or the same bounded activation failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "activation consumes complete authority and its affine owner admission"
+    )]
+    pub fn activate_with_spec_and_memory_admission(
+        spec: EmbeddingRuntimeSpecV1,
+        program: PathBuf,
+        arguments: Vec<String>,
+        workspace: PathBuf,
+        environment: ProcessEnvironment,
+        process_limits: ProcessLimits,
+        executable: ToolchainArtifact,
+        model: EmbeddingArtifact,
+        tokenizer: EmbeddingArtifact,
+        memory: EmbeddingMemoryAdmission,
     ) -> Result<Self, EmbeddingExecutableError> {
         let observed_static = [
             ("model", spec.model == model.identity.as_bytes()),
@@ -1393,6 +1579,7 @@ impl EmbeddingExecutable {
             executable,
             model,
             tokenizer,
+            Some(memory),
         )?;
         spec.validate_execution_identity(runtime.execution_identity())
             .map_err(EmbeddingExecutableError::Spec)?;
@@ -1418,6 +1605,7 @@ impl EmbeddingExecutable {
         executable: ToolchainArtifact,
         model: EmbeddingArtifact,
         tokenizer: EmbeddingArtifact,
+        memory: Option<EmbeddingMemoryAdmission>,
     ) -> Result<Self, EmbeddingExecutableError> {
         // Activation construction, artifact verification, and the initial readiness self-test
         // share one explicit budget. This is separate from later inference-call deadlines.
@@ -1455,6 +1643,27 @@ impl EmbeddingExecutable {
         {
             return Err(EmbeddingExecutableError::ResponseBound);
         }
+        let memory = match memory {
+            Some(memory) => memory,
+            None => EmbeddingMemoryAdmission::new(
+                default_memory_credits(
+                    model.bytes().len(),
+                    tokenizer.bytes().len(),
+                    process_limits,
+                )?,
+                model.bytes().len(),
+                tokenizer.bytes().len(),
+                process_limits,
+            )?,
+        };
+        if memory.model_bytes != model.bytes().len()
+            || memory.tokenizer_bytes != tokenizer.bytes().len()
+            || memory.process_limits != process_limits
+        {
+            return Err(EmbeddingExecutableError::BatchRequestExtent);
+        }
+        let memory_budget = memory.budget;
+        let resident_memory = memory.resident;
         let launch_configuration = embedding_launch_configuration(
             &program,
             &workspace,
@@ -1487,6 +1696,8 @@ impl EmbeddingExecutable {
             tokenizer,
             artifact_workspace,
             launch_configuration,
+            memory_budget,
+            _resident_memory: resident_memory,
             inference_gate: InferenceAdmissionGate::new(),
             inference_cache: Mutex::new(EmbeddingInferenceCache::default()),
             persistent_session: Mutex::new(None),
@@ -1512,6 +1723,7 @@ impl EmbeddingExecutable {
     }
 
     fn probe_ready_until(&mut self, deadline: Instant) -> Result<(), EmbeddingExecutableError> {
+        let _scratch = self.reserve_inference_scratch(2)?;
         check_request_deadline(None, deadline)?;
         if !self.active {
             return Err(EmbeddingExecutableError::Revoked);
@@ -1655,6 +1867,35 @@ impl EmbeddingExecutable {
         self.infer_batch_inner(purpose, texts, Some(cancelled), deadline, None)
     }
 
+    /// Cancellation-aware inference bounded by both the runtime and caller's absolute deadline.
+    /// This prevents paged projection work from renewing the operation budget per page.
+    ///
+    /// # Errors
+    /// Returns the same whole-batch failure contract as the cancellation-aware form.
+    pub fn infer_batch_with_cancellation_until(
+        &self,
+        purpose: EmbeddingPurpose,
+        texts: &[&str],
+        cancelled: &AtomicBool,
+        deadline: Instant,
+    ) -> Result<Vec<EmbeddingCoordinates>, EmbeddingExecutableError> {
+        self.infer_batch_inner(
+            purpose,
+            texts,
+            Some(cancelled),
+            deadline.min(self.request_deadline()?),
+            None,
+        )
+    }
+
+    /// One absolute operation deadline from the configured runtime policy.
+    ///
+    /// # Errors
+    /// Returns a typed deadline refusal on clock extent overflow.
+    pub fn inference_deadline(&self) -> Result<Instant, EmbeddingExecutableError> {
+        self.request_deadline()
+    }
+
     /// Embeds a batch using the workspace cache session borrowed for this owner operation.
     ///
     /// The session belongs to the caller's workspace compiler, not this shareable runtime. A
@@ -1718,6 +1959,7 @@ impl EmbeddingExecutable {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
+        let _scratch = self.reserve_inference_scratch(texts.len())?;
         validate_batch_input_bytes(
             texts,
             self.maximum_text_bytes,
@@ -1966,18 +2208,41 @@ impl EmbeddingExecutable {
             return Ok(());
         }
         check_request_deadline(cancelled, deadline)?;
+        // These caller-owned Vecs include misses and never become a retained hit's charge.
+        let bookkeeping_bytes = misses
+            .len()
+            .checked_mul(size_of::<EmbeddingInputIdentity>() + size_of::<usize>())
+            .and_then(|bytes| bytes.checked_add(512))
+            .ok_or(EmbeddingExecutableError::BatchRequestExtent)?;
+        let _bookkeeping = self
+            .memory_budget
+            .reserve(
+                u64::try_from(bookkeeping_bytes)
+                    .map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?,
+            )
+            .map_err(EmbeddingExecutableError::Memory)?;
         let mut identities = Vec::new();
         if identities.try_reserve_exact(misses.len()).is_err() {
             return Ok(());
         }
         identities.extend(misses.iter().map(|index| unique_inputs[*index].0));
         let cached = match cache_session.lookup_batch(&identities, cancelled, deadline) {
-            Ok(Some(cached)) if cached.len() == misses.len() => cached,
-            Ok(_) | Err(ProcessError::OutputLimit | ProcessError::UnsupportedLimit(_)) => {
-                return Ok(());
+            Ok(Some(cached)) if cached.values.len() == misses.len() => cached,
+            Ok(_)
+            | Err(crate::embedding_cache::CacheLookupError::Process(
+                ProcessError::OutputLimit | ProcessError::UnsupportedLimit(_),
+            )) => return Ok(()),
+            Err(crate::embedding_cache::CacheLookupError::Process(error)) => {
+                return Err(EmbeddingExecutableError::Process(error));
             }
-            Err(error) => return Err(EmbeddingExecutableError::Process(error)),
+            Err(crate::embedding_cache::CacheLookupError::Memory(error)) => {
+                return Err(EmbeddingExecutableError::Memory(error));
+            }
         };
+        let crate::embedding_cache::CachedLookupBatch {
+            values: cached,
+            _bookkeeping: _result_bookkeeping,
+        } = cached;
         let mut still_missing = Vec::new();
         if still_missing.try_reserve_exact(misses.len()).is_err() {
             return Ok(());
@@ -2011,6 +2276,7 @@ impl EmbeddingExecutable {
         if !self.active {
             return Err(EmbeddingExecutableError::Revoked);
         }
+        let _scratch = self.reserve_inference_scratch(1)?;
         check_request_deadline(cancelled, deadline)?;
         let _permit = self.inference_gate.acquire(cancelled, deadline)?;
         self.infer_inner_admitted(invocation, use_cache, cancelled, deadline)
@@ -2499,6 +2765,7 @@ impl EmbeddingExecutable {
             let values_end = offset
                 .checked_add(usize::from(dimensions) * size_of::<f32>())
                 .ok_or(EmbeddingExecutableError::Protocol)?;
+            let reservation = self.reserve_coordinates(usize::from(dimensions), 1)?;
             let mut values = Vec::new();
             values
                 .try_reserve_exact(usize::from(dimensions))
@@ -2528,7 +2795,7 @@ impl EmbeddingExecutable {
                 tokenizer: self.tokenizer.identity,
                 purpose,
                 normalization: self.normalization,
-                values: Arc::from(values.into_boxed_slice()),
+                values: self.retain_decoded_values(values, reservation)?,
             });
             offset = values_end;
         }
@@ -2564,6 +2831,7 @@ impl EmbeddingExecutable {
         if bytes.len() != coordinate_bytes {
             return Err(EmbeddingExecutableError::Protocol);
         }
+        let reservation = self.reserve_coordinates(usize::from(dimensions), 1)?;
         let mut values = Vec::with_capacity(usize::from(dimensions));
         for (index, encoded) in bytes[RESPONSE_HEADER_BYTES..]
             .chunks_exact(size_of::<f32>())
@@ -2591,7 +2859,7 @@ impl EmbeddingExecutable {
             tokenizer: self.tokenizer.identity,
             purpose,
             normalization: self.normalization,
-            values: Arc::from(values.into_boxed_slice()),
+            values: self.retain_decoded_values(values, reservation)?,
         })
     }
 }
@@ -2599,6 +2867,8 @@ impl EmbeddingExecutable {
 /// Exact external embedding failure.
 #[derive(Debug)]
 pub enum EmbeddingExecutableError {
+    /// Shared owner credits could not admit this allocation.
+    Memory(EmbeddingMemoryError),
     /// Zero input-text bound is not meaningful.
     ZeroTextLimit,
     /// Model or tokenizer bytes were empty.
@@ -2703,7 +2973,54 @@ impl fmt::Display for EmbeddingExecutableError {
     }
 }
 
-impl std::error::Error for EmbeddingExecutableError {}
+impl std::error::Error for EmbeddingExecutableError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Memory(error) => Some(error),
+            Self::Spec(error) => Some(error),
+            Self::ArtifactWorkspace(error) => Some(error),
+            Self::Process(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+// Persistent owner metadata is bounded independently of coordinate payloads. The cache has
+// at most 256 keys and one deque; this allowance covers its table/control storage.
+const EMBEDDING_CACHE_METADATA_CREDITS: usize = 1024 * 1024;
+
+fn resident_memory_bytes(
+    model: usize,
+    tokenizer: usize,
+    limits: ProcessLimits,
+) -> Result<u64, EmbeddingExecutableError> {
+    let bytes = model
+        .checked_add(tokenizer)
+        .and_then(|bytes| bytes.checked_add(limits.memory_bytes_limit().unwrap_or(0)))
+        .and_then(|bytes| bytes.checked_add(EMBEDDING_CACHE_METADATA_CREDITS))
+        .ok_or(EmbeddingExecutableError::BatchRequestExtent)?;
+    u64::try_from(bytes).map_err(|_| EmbeddingExecutableError::BatchRequestExtent)
+}
+
+fn default_memory_credits(
+    model: usize,
+    tokenizer: usize,
+    limits: ProcessLimits,
+) -> Result<u64, EmbeddingExecutableError> {
+    let retained = MAX_EMBEDDING_BATCH_COORDINATE_BYTES
+        .checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(MAX_EMBEDDING_BATCH_INPUTS * 256))
+        .and_then(|bytes| bytes.checked_add(MAX_EMBEDDING_CACHE_COORDINATE_BYTES))
+        .and_then(|bytes| bytes.checked_add(MAX_EMBEDDING_BATCH_METADATA_BYTES))
+        .and_then(|bytes| bytes.checked_add(limits.input_bytes()))
+        .and_then(|bytes| bytes.checked_add(limits.output_bytes()))
+        .ok_or(EmbeddingExecutableError::BatchRequestExtent)?;
+    resident_memory_bytes(model, tokenizer, limits)?
+        .checked_add(
+            u64::try_from(retained).map_err(|_| EmbeddingExecutableError::BatchRequestExtent)?,
+        )
+        .ok_or(EmbeddingExecutableError::BatchRequestExtent)
+}
 
 fn check_cancelled(cancelled: Option<&AtomicBool>) -> Result<(), EmbeddingExecutableError> {
     if cancelled.is_some_and(|flag| flag.load(Ordering::Acquire)) {
@@ -4330,7 +4647,7 @@ while True:
         let warm = runtime.infer(document)?;
         let warm_elapsed = warm_started.elapsed();
         assert_eq!(fs::read_to_string(&counter)?.lines().count(), 2);
-        assert!(Arc::ptr_eq(&cold.values, &warm.values));
+        assert!(cold.values.shares_storage(&warm.values));
         assert_eq!(cold.values(), warm.values());
 
         runtime.infer(query)?;
@@ -4520,6 +4837,7 @@ while True:
             let foreign_session = EmbeddingCacheSession::open(
                 backend_platform::DirectoryCapability::open(&cache_root)?,
                 foreign_identity,
+                runtime.memory_budget().clone(),
             )
             .ok_or("foreign cache actor admission failed")?;
 
@@ -4790,13 +5108,13 @@ while True:
         let cold = runtime.infer_batch(EmbeddingPurpose::Document, &["alpha", "alpha", "beta"])?;
         let cold_elapsed = cold_started.elapsed();
         assert_eq!(cold.len(), 3);
-        assert!(Arc::ptr_eq(&cold[0].values, &cold[1].values));
+        assert!(cold[0].values.shares_storage(&cold[1].values));
         assert_eq!(fs::read_to_string(&counter)?.lines().count(), 2);
 
         let warm_started = Instant::now();
         let warm = runtime.infer_batch(EmbeddingPurpose::Document, &["alpha", "alpha", "beta"])?;
         let warm_elapsed = warm_started.elapsed();
-        assert!(Arc::ptr_eq(&cold[0].values, &warm[0].values));
+        assert!(cold[0].values.shares_storage(&warm[0].values));
         assert_eq!(fs::read_to_string(&counter)?.lines().count(), 2);
         eprintln!(
             "embedding batch fixture: 3 inputs / 2 unique -> 1 supervised call; cold={}us, exact cache hit={}us; avoids 2 single-item calls",
@@ -4807,6 +5125,41 @@ while True:
         drop(runtime);
         fs::remove_dir_all(root)?;
         fs::remove_dir_all(counter_root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn charged_coordinate_storage_survives_cache_eviction_and_cancellation_releases_scratch()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (root, _, runtime) = runtime_with_counters(None, None)?;
+        let baseline = runtime.memory_budget().used();
+        let coordinates =
+            runtime.infer_batch(EmbeddingPurpose::Document, &["charge law", "charge law"])?;
+        let values = coordinates[0].shared_values();
+        assert!(values.shares_storage(&coordinates[1].shared_values()));
+        let charged = runtime.memory_budget().used();
+        assert!(charged > baseline);
+        runtime.clear_inference_cache_for_test();
+        drop(coordinates);
+        assert_eq!(
+            runtime.memory_budget().used(),
+            charged,
+            "external shared values retain the charge after cache eviction"
+        );
+        let cancelled = AtomicBool::new(true);
+        assert!(matches!(
+            runtime.infer_batch_with_cancellation_flag(
+                EmbeddingPurpose::Query,
+                &["cancelled"],
+                &cancelled
+            ),
+            Err(EmbeddingExecutableError::Process(ProcessError::Cancelled))
+        ));
+        assert_eq!(runtime.memory_budget().used(), charged);
+        drop(values);
+        assert_eq!(runtime.memory_budget().used(), baseline);
+        drop(runtime);
+        fs::remove_dir_all(root)?;
         Ok(())
     }
 
@@ -4837,20 +5190,17 @@ while True:
             }));
         }
         start.wait();
-        let mut shared: Option<[Arc<[f32]>; 2]> = None;
+        let mut shared: Option<[EmbeddingCoordinateValues; 2]> = None;
         for caller in callers {
             let coordinates = caller
                 .join()
                 .map_err(|_| io::Error::other("concurrent embedding caller panicked"))??;
             assert_eq!(coordinates.len(), 2);
             if let Some(expected) = shared.as_ref() {
-                assert!(Arc::ptr_eq(&expected[0], &coordinates[0].values));
-                assert!(Arc::ptr_eq(&expected[1], &coordinates[1].values));
+                assert!(expected[0].shares_storage(&coordinates[0].values));
+                assert!(expected[1].shares_storage(&coordinates[1].values));
             } else {
-                shared = Some([
-                    Arc::clone(&coordinates[0].values),
-                    Arc::clone(&coordinates[1].values),
-                ]);
+                shared = Some([coordinates[0].values.clone(), coordinates[1].values.clone()]);
             }
         }
         assert_eq!(fs::read_to_string(&calls)?.lines().count(), 2); // one cold batch

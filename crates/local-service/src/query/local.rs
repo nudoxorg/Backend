@@ -407,6 +407,72 @@ impl Iterator for SemanticDocumentPages<'_> {
 
 impl ExactSizeIterator for SemanticDocumentPages<'_> {}
 
+/// Local document pages reject the exact text extent before allocating a String.
+/// The caller reserves page storage from the shared embedding owner first.
+pub(crate) struct BoundedSemanticDocumentPages<'a> {
+    corpus: &'a Corpus,
+    offset: usize,
+    page_rows: NonZeroUsize,
+    maximum_text_bytes: usize,
+}
+
+impl BoundedSemanticDocumentPages<'_> {
+    /// Computes the next page's exact UTF-8 extent without forming owned text.
+    pub(crate) fn next_page_extent(&self) -> Result<Option<(usize, usize)>, QueryError> {
+        let order = &self.corpus.selected.document_order;
+        if self.offset >= order.len() {
+            return Ok(None);
+        }
+        let end = self
+            .offset
+            .saturating_add(self.page_rows.get())
+            .min(order.len());
+        let mut bytes = 0usize;
+        for index in &order[self.offset..end] {
+            let selected = self.corpus.selected.entities[*index];
+            let row = self.corpus.semantic_evidence.facts()[selected.fact_index].presentation();
+            bytes = bytes
+                .checked_add(semantic_text_extent(
+                    row,
+                    selected.row,
+                    self.maximum_text_bytes,
+                )?)
+                .ok_or(QueryError::CorpusLimit)?;
+        }
+        Ok(Some((end - self.offset, bytes)))
+    }
+}
+
+impl Iterator for BoundedSemanticDocumentPages<'_> {
+    type Item = Result<Vec<SemanticDocument>, QueryError>;
+    fn next(&mut self) -> Option<Self::Item> {
+        let order = &self.corpus.selected.document_order;
+        if self.offset >= order.len() {
+            return None;
+        }
+        let end = self
+            .offset
+            .saturating_add(self.page_rows.get())
+            .min(order.len());
+        let result = (|| {
+            let mut page = Vec::new();
+            page.try_reserve_exact(end - self.offset)
+                .map_err(|_| QueryError::CorpusLimit)?;
+            for index in &order[self.offset..end] {
+                let selected = self.corpus.selected.entities[*index];
+                let row = self.corpus.semantic_evidence.facts()[selected.fact_index].presentation();
+                page.push(SemanticDocument {
+                    row: selected.row,
+                    text: bounded_semantic_text(row, selected.row, self.maximum_text_bytes)?,
+                });
+            }
+            Ok(page)
+        })();
+        self.offset = end;
+        Some(result)
+    }
+}
+
 pub(crate) struct Corpus {
     pub(crate) workspace: WorkspaceRoot,
     pub(crate) view: ViewRoot,
@@ -1458,6 +1524,34 @@ impl QueryCoordinator {
         })
     }
 
+    /// Checks every exact document extent without text allocation before local inference.
+    pub(crate) fn admit_semantic_text_bounds(&self, maximum: usize) -> Result<usize, QueryError> {
+        let mut maximum_observed = 0usize;
+        for index in &self.corpus.selected.document_order {
+            let selected = self.corpus.selected.entities[*index];
+            let row = self.corpus.semantic_evidence.facts()[selected.fact_index].presentation();
+            maximum_observed =
+                maximum_observed.max(semantic_text_extent(row, selected.row, maximum)?);
+        }
+        Ok(maximum_observed)
+    }
+
+    pub(crate) fn bounded_semantic_document_pages(
+        &self,
+        page_rows: NonZeroUsize,
+        maximum_text_bytes: usize,
+    ) -> Result<BoundedSemanticDocumentPages<'_>, QueryError> {
+        if page_rows.get() > MAX_SEMANTIC_DOCUMENT_PAGE_ROWS || maximum_text_bytes == 0 {
+            return Err(QueryError::InvalidLimit);
+        }
+        Ok(BoundedSemanticDocumentPages {
+            corpus: &self.corpus,
+            offset: 0,
+            page_rows,
+            maximum_text_bytes,
+        })
+    }
+
     /// Returns the exact number of rows requiring document embeddings for
     /// this immutable selection.
     #[must_use]
@@ -1909,6 +2003,65 @@ fn fields_for_fact(fact: &SemanticQueryFact) -> Vec<(String, String)> {
     fields
 }
 
+fn semantic_text_fields(row: &SemanticQueryPresentation) -> [(&str, Option<&str>); 5] {
+    // Exactly the existing sorted field grammar, without cloning the source strings.
+    [
+        ("coordinate", Some(row.coordinate.as_str())),
+        (
+            "documentation",
+            (!row.documentation.is_empty()).then_some(row.documentation.as_str()),
+        ),
+        ("kind", Some(row.kind.as_str())),
+        ("name", Some(row.name.as_str())),
+        ("signature", row.signature.as_deref()),
+    ]
+}
+
+fn semantic_text_extent(
+    row: &SemanticQueryPresentation,
+    id: RowId,
+    maximum: usize,
+) -> Result<usize, QueryError> {
+    let bytes = semantic_text_fields(row)
+        .into_iter()
+        .try_fold(0usize, |bytes, (name, value)| match value {
+            Some(value) => bytes
+                .checked_add(name.len())?
+                .checked_add(2)?
+                .checked_add(value.len()),
+            None => Some(bytes),
+        })
+        .ok_or(QueryError::CorpusLimit)?;
+    if bytes > maximum {
+        return Err(QueryError::SemanticDocumentTooLarge {
+            row: id,
+            observed: bytes,
+            maximum,
+        });
+    }
+    Ok(bytes)
+}
+
+fn bounded_semantic_text(
+    row: &SemanticQueryPresentation,
+    id: RowId,
+    maximum: usize,
+) -> Result<String, QueryError> {
+    let bytes = semantic_text_extent(row, id, maximum)?;
+    let mut text = String::new();
+    text.try_reserve_exact(bytes)
+        .map_err(|_| QueryError::CorpusLimit)?;
+    for (name, value) in semantic_text_fields(row) {
+        if let Some(value) = value {
+            text.push_str(name);
+            text.push('\n');
+            text.push_str(value);
+            text.push('\n');
+        }
+    }
+    Ok(text)
+}
+
 fn semantic_text(row: &SemanticQueryPresentation) -> String {
     let fields = fields(row);
     let mut text = String::new();
@@ -1968,6 +2121,15 @@ pub enum QueryError {
     InvalidSemanticEvidence,
     /// One document exceeds the lexical field or text budget.
     CorpusLimit,
+    /// Exact selected text exceeded the activated local runtime before allocation.
+    SemanticDocumentTooLarge {
+        /// Exact canonical row refused; no prefix is embedded.
+        row: RowId,
+        /// Exact document UTF-8 extent.
+        observed: usize,
+        /// Activated runtime text bound.
+        maximum: usize,
+    },
     /// Typed lexical admission failed.
     Lexical(lexical::Error),
     /// The concrete Tantivy projection or provider boundary failed.
@@ -2128,6 +2290,14 @@ impl fmt::Display for QueryError {
             Self::CorpusLimit => {
                 formatter.write_str("selected view exceeds the query corpus bound")
             }
+            Self::SemanticDocumentTooLarge {
+                row,
+                observed,
+                maximum,
+            } => write!(
+                formatter,
+                "semantic document {row:?} requires {observed} bytes; runtime admits {maximum}; complete corpus refused"
+            ),
             Self::Lexical(error) => write!(formatter, "lexical query failed: {error}"),
             Self::LexicalProvider { phase, cause } => write!(
                 formatter,
@@ -2544,5 +2714,36 @@ mod source_origin_tests {
         ] {
             assert_eq!(SearchOrigin::from_source(&source), SearchOrigin::Unsourced);
         }
+    }
+}
+
+#[cfg(test)]
+mod bounded_semantic_text_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_text_preserves_exact_canonical_grammar_and_rejects_utf8_extent()
+    -> Result<(), QueryError> {
+        let fact = package_query_fact(0);
+        let mut row = fact.presentation().clone();
+        row.documentation = "café\ncontext".to_owned();
+        row.signature = Some("fn sample()".to_owned());
+        let id = RowId::Package(backend_engine::package_key("pkg-0"));
+        let expected = "coordinate\npkg-0\ndocumentation\ncafé\ncontext\nkind\nproject\nname\npkg-0\nsignature\nfn sample()\n";
+        assert_eq!(semantic_text(&row), expected);
+        assert_eq!(
+            semantic_text_extent(&row, id, expected.len())?,
+            expected.len()
+        );
+        assert_eq!(bounded_semantic_text(&row, id, expected.len())?, expected);
+        assert!(matches!(
+            bounded_semantic_text(&row, id, expected.len() - 1),
+            Err(QueryError::SemanticDocumentTooLarge { row, observed, maximum })
+                if row == id && observed == expected.len() && maximum == expected.len() - 1
+        ));
+        row.signature = None;
+        row.documentation.clear();
+        assert_eq!(bounded_semantic_text(&row, id, 1024)?, semantic_text(&row));
+        Ok(())
     }
 }

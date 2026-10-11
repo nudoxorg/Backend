@@ -4,7 +4,7 @@ use crate::{
     Binding, CandidateId, CandidateState, Error, ModelVersion, Recipe, TokenizerVersion,
     TreatmentVersion,
 };
-use backend_version::CoverageWitness;
+use backend_version::{CoverageWitness, SharedCoordinates};
 use std::mem::size_of;
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -122,17 +122,18 @@ impl EmbeddingRecipe {
 #[derive(Clone, Debug)]
 pub struct VectorPoint {
     id: CandidateId,
-    values: Arc<[f32]>,
+    values: SharedCoordinates,
 }
 
 impl PartialEq for VectorPoint {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
-            && self.values.len() == other.values.len()
+            && self.values.as_ref().len() == other.values.as_ref().len()
             && self
                 .values
+                .as_ref()
                 .iter()
-                .zip(other.values.iter())
+                .zip(other.values.as_ref().iter())
                 .all(|(left, right)| left.to_bits() == right.to_bits())
     }
 }
@@ -157,7 +158,7 @@ impl VectorPoint {
         }
         Ok(Self {
             id,
-            values: Arc::from(values),
+            values: Arc::<[f32]>::from(values).into(),
         })
     }
 
@@ -179,7 +180,10 @@ impl VectorPoint {
         {
             return Err(Error::MalformedInput);
         }
-        Ok(Self { id, values })
+        Ok(Self {
+            id,
+            values: values.into(),
+        })
     }
 
     /// Returns the stable logical candidate identity.
@@ -191,13 +195,13 @@ impl VectorPoint {
     /// Returns immutable coordinates without another allocation.
     #[must_use]
     pub fn values(&self) -> &[f32] {
-        &self.values
+        self.values.as_ref()
     }
 
     /// Encodes coordinates into the canonical candidate payload grammar.
     #[must_use]
     pub fn to_payload(&self) -> Vec<u8> {
-        encode_values(&self.values)
+        encode_values(self.values.as_ref())
     }
 
     /// Decodes the canonical candidate payload grammar.
@@ -253,6 +257,38 @@ impl DocumentVector {
         Ok(Self {
             recipe,
             point: VectorPoint::from_shared(id, values)?,
+        })
+    }
+
+    /// Admits shared coordinate storage while retaining its complete allocation owner.
+    /// Allocation owners carried by `values` survive every point/vector clone. Only the
+    /// concrete immutable storage is admitted; arbitrary accessors cannot change validated data.
+    ///
+    /// ```compile_fail
+    /// use backend_extension_qdrant::{CandidateId, DocumentVector, EmbeddingRecipe};
+    /// struct Unstable;
+    /// impl AsRef<[f32]> for Unstable {
+    ///     fn as_ref(&self) -> &[f32] { &[1.0, 0.0] }
+    /// }
+    /// fn admit(recipe: EmbeddingRecipe) {
+    ///     let _ = DocumentVector::from_owned_values(recipe, CandidateId(1), Unstable);
+    /// }
+    /// ```
+    ///
+    /// # Errors
+    /// Returns the same finite/dimension/normalization rejection as `from_shared`.
+    pub fn from_owned_values(
+        recipe: EmbeddingRecipe,
+        id: CandidateId,
+        values: SharedCoordinates,
+    ) -> Result<Self, Error> {
+        recipe.validate(values.as_ref())?;
+        if !id.is_valid() {
+            return Err(Error::MalformedInput);
+        }
+        Ok(Self {
+            recipe,
+            point: VectorPoint { id, values },
         })
     }
 

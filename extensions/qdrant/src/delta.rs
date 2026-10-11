@@ -66,6 +66,29 @@ impl CandidateState {
         }
         entries.sort_by_key(|(id, _)| *id);
         let state = RelationState::from_entries(entries, coverage).map_err(Error::State)?;
+        Self::from_relation(binding, state, limits)
+    }
+
+    /// Consumes a version-kernel-admitted relation without copying its payloads.
+    ///
+    /// Coverage, all candidate/payload bounds, and the claimed binding root are
+    /// checked exactly as for `new`; an admitted relation is not a vector recipe proof.
+    ///
+    /// # Errors
+    /// Returns a typed incomplete-coverage, size, identity or root refusal.
+    pub fn from_relation(
+        binding: Binding,
+        state: RelationState<CandidateRelation>,
+        limits: Limits,
+    ) -> Result<Self, Error> {
+        let limits = limits.validate()?;
+        let coverage = state.coverage();
+        if !matches!(
+            coverage,
+            CoverageWitness::Complete(_) | CoverageWitness::Closed(_)
+        ) {
+            return Err(Error::IncompleteCoverage);
+        }
         validate_candidate_state(&state, limits)?;
         if state.root() != binding.root {
             return Err(Error::StaleRoot);

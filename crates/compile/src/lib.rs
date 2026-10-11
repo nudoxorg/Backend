@@ -14,6 +14,7 @@ mod containment;
 mod contract;
 mod embedding;
 mod embedding_cache;
+mod embedding_memory;
 mod errors;
 mod facts;
 mod frame;
@@ -63,13 +64,17 @@ pub use contract::{
 pub use embedding::{
     EmbeddingArtifact, EmbeddingArtifactId, EmbeddingBatchProtocol, EmbeddingCoordinates,
     EmbeddingExecutable, EmbeddingExecutableError, EmbeddingExecutionIdentity,
-    EmbeddingInputIdentity, EmbeddingInvocation, EmbeddingNormalization, EmbeddingPayloadError,
-    EmbeddingPurpose, EmbeddingRuntimeSpecError, EmbeddingRuntimeSpecV1,
+    EmbeddingInputIdentity, EmbeddingInvocation, EmbeddingMemoryAdmission, EmbeddingNormalization,
+    EmbeddingPayloadError, EmbeddingPurpose, EmbeddingRuntimeSpecError, EmbeddingRuntimeSpecV1,
     MAX_EMBEDDING_BATCH_COORDINATE_BYTES, MAX_EMBEDDING_BATCH_INPUT_BYTES,
     MAX_EMBEDDING_BATCH_INPUTS, MAX_EMBEDDING_BATCH_ITEMS, MAX_EMBEDDING_BATCH_METADATA_BYTES,
     MAX_EMBEDDING_CACHE_COORDINATE_BYTES, MAX_EMBEDDING_MODEL_BYTES, MAX_EMBEDDING_TOKENIZER_BYTES,
 };
 pub use embedding_cache::EmbeddingCacheSession;
+pub use embedding_memory::{
+    EmbeddingCoordinateValues, EmbeddingMemoryBudget, EmbeddingMemoryError,
+    EmbeddingMemoryReservation,
+};
 pub use errors::{FrameError, PoolError, ProcessError, UnsupportedLimit};
 pub use facts::{
     DeclarationFacts, Deprecation, Fact, FactError, MAX_FACT_TEXT_BYTES, Obligation,
