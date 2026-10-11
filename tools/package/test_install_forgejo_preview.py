@@ -15,6 +15,7 @@ from unittest.mock import patch
 import urllib.request
 
 ROOT = Path(__file__).parent
+PUBLISHED_MAC_LIBRARY_FIXTURE = ROOT / "fixtures/install-macos-arm64-r2-pinned.py"
 spec = importlib.util.spec_from_file_location("mirror", ROOT / "install_forgejo_preview.py")
 boot = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(boot)
@@ -22,6 +23,22 @@ spec.loader.exec_module(boot)
 
 def channel():
     return json.loads((ROOT / "forgejo-preview-channel.json").read_bytes())
+
+
+def published_mac_library_bytes():
+    """Return the exact R2 library bytes pinned by the unchanged channel."""
+    body = PUBLISHED_MAC_LIBRARY_FIXTURE.read_bytes()
+    expected = boot.LIBRARIES["macos-arm64"][:2]
+    if (hashlib.sha256(body).hexdigest(), len(body)) != expected:
+        raise AssertionError("historical Mac source does not match the immutable R2 pin")
+    return body
+
+
+def published_mac_library(root):
+    """Materialize the exact R2 library bytes pinned by the unchanged channel."""
+    path = Path(root) / "published-r2-install-macos-preview.py"
+    path.write_bytes(published_mac_library_bytes())
+    return path
 
 
 class Response(io.BytesIO):
@@ -72,11 +89,14 @@ class Tests(unittest.TestCase):
     def test_default_channel_and_unchanged_platform_library_pins(self):
         boot.validate_channel(channel())
         boot.admit_libraries(channel())
-        mac = (ROOT / "install_macos_preview.py").read_bytes()
+        mac = published_mac_library_bytes()
+        candidate_mac = (ROOT / "install_macos_preview.py").read_bytes()
         linux = (ROOT / "install_linux.py").read_text().replace('PINNED_RELEASE_TAG = ""',
                 'PINNED_RELEASE_TAG = "checkpoint-20261008-c0016d4f4f-linux-x64"').replace('PINNED_MANIFEST_SHA256 = ""',
                 'PINNED_MANIFEST_SHA256 = "384ab3802efd256752f39fd8e3d79ace7af9e3ccf72797c71577327cb2535b24"').encode()
         self.assertEqual((hashlib.sha256(mac).hexdigest(), len(mac)), boot.LIBRARIES["macos-arm64"][:2])
+        self.assertNotEqual((hashlib.sha256(candidate_mac).hexdigest(), len(candidate_mac)),
+                            boot.LIBRARIES["macos-arm64"][:2])
         self.assertEqual((hashlib.sha256(linux).hexdigest(), len(linux)), boot.LIBRARIES["linux-x64"][:2])
         script = (ROOT / "install_forgejo_preview.py").read_bytes()
         self.assertEqual(channel()["bootstrap"]["sha256"], hashlib.sha256(script).hexdigest())
@@ -207,16 +227,17 @@ class Tests(unittest.TestCase):
     def test_normal_mac_install_api_keeps_inventory_and_lease_guard(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); entry, archive = mac_fixture(root); prefix = root / "prefix"
-            boot.install_verified(entry, "macos-arm64", ROOT / "install_macos_preview.py", archive, None, prefix, False)
+            library = published_mac_library(root)
+            boot.install_verified(entry, "macos-arm64", library, archive, None, prefix, False)
             current = prefix / "lib/nudox/current"; active = current.resolve()
             marker = json.loads((active / ".installed-release.json").read_bytes())
             self.assertEqual(marker["sha256"], entry["archive"]["sha256"])
             self.assertEqual(marker["asset"], Path(entry["archive"]["url"]).name)
-            boot.install_verified(entry, "macos-arm64", ROOT / "install_macos_preview.py", archive, None, prefix, False)
+            boot.install_verified(entry, "macos-arm64", library, archive, None, prefix, False)
             self.assertEqual(current.resolve(), active)
             (active / "bin/backend-cli").write_bytes(b"tampered")
             with self.assertRaises(boot.InstallError):
-                boot.install_verified(entry, "macos-arm64", ROOT / "install_macos_preview.py", archive, None, prefix, False)
+                boot.install_verified(entry, "macos-arm64", library, archive, None, prefix, False)
             self.assertEqual(current.resolve(), active)
 
     def test_linux_original_pin_refuses_changed_mirror_manifest_before_install(self):
@@ -265,7 +286,7 @@ class Tests(unittest.TestCase):
             value = channel(); value["platforms"]["macos-arm64"] = entry
             metadata = root / "channel.json"; metadata.write_text(json.dumps(value))
             mapping = {boot.CHANNEL: str(metadata), value["bootstrap"]["url"]: str(ROOT / "install_forgejo_preview.py"),
-                       entry["installer"]["url"]: str(ROOT / "install_macos_preview.py"), entry["archive"]["url"]: str(archive)}
+                       entry["installer"]["url"]: str(published_mac_library(root)), entry["archive"]["url"]: str(archive)}
             (root / "mapping.json").write_text(json.dumps(mapping))
             (root / "sitecustomize.py").write_text('''import io,json,os,pathlib,platform,urllib.request
 platform.system=lambda: 'Darwin'
@@ -288,7 +309,7 @@ urllib.request.build_opener=lambda *handlers: Opener()
             prefix = root / "prefix"
             newer = copy.deepcopy(entry)
             newer["tag"] = newer["tag"].replace("20261006", "20261010")
-            boot.install_verified(newer, "macos-arm64", ROOT / "install_macos_preview.py", archive, None, prefix, False)
+            boot.install_verified(newer, "macos-arm64", published_mac_library(root), archive, None, prefix, False)
             original = (prefix / "lib/nudox/current").resolve()
             refusal = subprocess.run([sys.executable, str(ROOT / "install_forgejo_preview.py"), "--prefix", str(prefix)],
                                      text=True, capture_output=True, env=environment, timeout=20)
@@ -386,7 +407,7 @@ urllib.request.build_opener=lambda *handlers: Opener()
                                 (value["platforms"]["linux-x64"]["installer"]["sha256"], value["platforms"]["linux-x64"]["installer"]["bytes"]))
             metadata = root / "channel.json"; metadata.write_text(json.dumps(value))
             mapping = {boot.CHANNEL: str(metadata), value["bootstrap"]["url"]: str(new_bootstrap),
-                       entry["installer"]["url"]: str(ROOT / "install_macos_preview.py"),
+                       entry["installer"]["url"]: str(published_mac_library(root)),
                        entry["archive"]["url"]: str(archive)}
             (root / "mapping.json").write_text(json.dumps(mapping))
             (root / "sitecustomize.py").write_text('''import io,json,os,pathlib,platform,urllib.request

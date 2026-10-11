@@ -60,7 +60,7 @@ sys.exit(int(os.environ.get('CURL_STATUS','0')))
         metadata = self.root / "channel.json"
         metadata.write_text(json.dumps(value))
         mapping = {mirror_tests.boot.CHANNEL: str(metadata), value["bootstrap"]["url"]: str(BOOTSTRAP),
-                   entry["installer"]["url"]: str(ROOT / "install_macos_preview.py"),
+                   entry["installer"]["url"]: str(mirror_tests.published_mac_library(self.root)),
                    entry["archive"]["url"]: str(archive)}
         (self.root / "mapping.json").write_text(json.dumps(mapping))
         (self.root / "sitecustomize.py").write_text('''import io,json,os,pathlib,platform,urllib.request
@@ -131,7 +131,7 @@ urllib.request.build_opener=lambda *handlers: Opener()
         entry, archive = self.fixture_transport()
         prefix = self.root / "existing"
         newer = {**entry, "tag": entry["tag"].replace("20261006", "20261010")}
-        mirror_tests.boot.install_verified(newer, "macos-arm64", ROOT / "install_macos_preview.py", archive, None, prefix, False)
+        mirror_tests.boot.install_verified(newer, "macos-arm64", mirror_tests.published_mac_library(self.root), archive, None, prefix, False)
         current = prefix / "lib/nudox/current"
         prior = current.resolve()
         refused = self.run_launcher("--prefix", str(prefix))

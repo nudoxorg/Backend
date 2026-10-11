@@ -10,6 +10,10 @@ PLATFORM="macos-arm64"
 import urllib.request, urllib.parse, urllib.error
 MAX_ARCHIVE_BYTES=2*1024**3
 MAX_MEMBER_BYTES=1024**3
+MAX_PACKAGE_METADATA_BYTES=16*1024**2
+DOWNLOAD_TIMEOUT_SECONDS=20
+DOWNLOAD_PROGRESS_INTERVAL_SECONDS=5
+DOWNLOAD_PROGRESS_BYTES=8*1024**2
 REQUIRED_BINARIES=('backend-cli','backend-mcp','backend-locald')
 class InstallError(Exception): pass
 class HTTPSOnlyRedirect(urllib.request.HTTPRedirectHandler):
@@ -39,8 +43,11 @@ def download_archive(url: str, expected_sha256: str, expected_size: int, destina
     request = urllib.request.Request(url, headers={"User-Agent": "nudox-installer/1", "Accept": "application/octet-stream"})
     digest = hashlib.sha256()
     count = 0
+    last_progress_at = time.monotonic()
+    last_progress_count = 0
+    print(f"Downloading pinned macOS arm64 release archive: 0/{expected_size:,} bytes (0%).", file=sys.stderr, flush=True)
     try:
-        with HTTPS.open(request, timeout=120) as response, destination.open("xb") as output:
+        with HTTPS.open(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response, destination.open("xb") as output:
             final_host = urllib.parse.urlsplit(response.geturl()).hostname or ""
             if final_host != "github.com" and not final_host.endswith(".githubusercontent.com"):
                 raise InstallError("GitHub release download redirected to an unexpected host")
@@ -53,10 +60,19 @@ def download_archive(url: str, expected_sha256: str, expected_size: int, destina
                     raise InstallError("release archive exceeds the 2 GiB safety limit")
                 output.write(chunk)
                 digest.update(chunk)
+                now = time.monotonic()
+                if (count == expected_size
+                        or count - last_progress_count >= DOWNLOAD_PROGRESS_BYTES
+                        or now - last_progress_at >= DOWNLOAD_PROGRESS_INTERVAL_SECONDS):
+                    percent = min(100, count * 100 // max(expected_size, 1))
+                    print(f"Downloading pinned macOS arm64 release archive: {count:,}/{expected_size:,} bytes ({percent}%).", file=sys.stderr, flush=True)
+                    last_progress_at = now
+                    last_progress_count = count
     except urllib.error.HTTPError as error:
         raise InstallError(f"release archive request failed with HTTP {error.code}") from error
     except (urllib.error.URLError, TimeoutError, OSError) as error:
         raise InstallError(f"could not download the release archive: {error}") from error
+    print(f"Downloaded {count:,} bytes; verifying the pinned SHA-256.", file=sys.stderr, flush=True)
     if count != expected_size:
         raise InstallError(f"release archive size mismatch (expected {expected_size}, received {count})")
     if digest.hexdigest() != expected_sha256:
@@ -91,6 +107,66 @@ def _file_sha256(path: Path) -> str:
             digest.update(chunk)
     return digest.hexdigest()
 
+def _verified_package_file(root: Path, relative: str, *, read_bytes: bool = False, max_bytes: int | None = None):
+    """Hash one installed package file without following links or accepting shared files."""
+    if (not isinstance(relative, str) or not relative or relative.startswith("/")
+            or "\\" in relative or any(part in {"", ".", ".."} for part in relative.split("/"))):
+        raise InstallError("invalid package file path")
+    root = Path(root)
+    try:
+        root_stat = root.lstat()
+    except OSError as error:
+        raise InstallError("package root is unavailable") from error
+    if (not stat.S_ISDIR(root_stat.st_mode) or root_stat.st_uid != os.geteuid()
+            or stat.S_IMODE(root_stat.st_mode) & 0o022):
+        raise InstallError("package root is not a private owned directory")
+    current = root
+    parts = relative.split("/")
+    try:
+        for part in parts[:-1]:
+            current = current / part
+            metadata = current.lstat()
+            if (not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid()
+                    or stat.S_IMODE(metadata.st_mode) & 0o022):
+                raise InstallError("package path contains an unsafe directory")
+        target = current / parts[-1]
+        descriptor = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except InstallError:
+        raise
+    except OSError as error:
+        raise InstallError("package file is missing or linked") from error
+    try:
+        before = os.fstat(descriptor)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.geteuid()
+                or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) & 0o022):
+            raise InstallError("package file is not a private owned single-link regular file")
+        if max_bytes is not None and before.st_size > max_bytes:
+            raise InstallError("package metadata exceeds its size limit")
+        digest = hashlib.sha256()
+        contents = bytearray() if read_bytes else None
+        count = 0
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            count += len(chunk)
+            if max_bytes is not None and count > max_bytes:
+                raise InstallError("package metadata exceeds its size limit")
+            digest.update(chunk)
+            if contents is not None:
+                contents.extend(chunk)
+        after = os.fstat(descriptor)
+        try:
+            path_after = target.lstat()
+        except OSError as error:
+            raise InstallError("package file changed while verifying") from error
+        if (count != before.st_size or _file_identity(before) != _file_identity(after)
+                or _file_identity(after) != _file_identity(path_after)):
+            raise InstallError("package file changed while verifying")
+        return (bytes(contents) if contents is not None else None), digest.hexdigest()
+    finally:
+        os.close(descriptor)
+
 def _version_root(prefix: Path) -> Path:
     return prefix / "lib" / "nudox" / "versions"
 
@@ -117,10 +193,10 @@ def _replace_symlink(link: Path, target: str) -> None:
 
 def verify_existing_install(final: Path, expected_marker: dict, entry: dict, manifest: dict) -> None:
     """Reuse a prior release only after rechecking the files on disk."""
-    installed_marker = final / ".installed-release.json"
     try:
-        existing_marker = json.loads(installed_marker.read_text())
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        marker_bytes, _ = _verified_package_file(final, ".installed-release.json", read_bytes=True, max_bytes=16 * 1024)
+        existing_marker = json.loads(marker_bytes)
+    except (InstallError, OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise InstallError(f"refusing to reuse existing unverified install at {final}") from error
     if existing_marker != expected_marker:
         raise InstallError(f"release {entry['tag']} is already installed with different bytes")
@@ -184,19 +260,9 @@ def _validate_marker(marker):
 
 
 def _read_active_marker(current):
-    marker = current.resolve(strict=True) / ".installed-release.json"
     try:
-        descriptor = os.open(marker, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(descriptor, "rb") as stream:
-            before = os.fstat(stream.fileno())
-            if (not stat.S_ISREG(before.st_mode) or before.st_size > 16 * 1024
-                    or before.st_uid != os.geteuid() or before.st_nlink != 1
-                    or stat.S_IMODE(before.st_mode) & 0o022):
-                raise InstallError("active release marker is not a bounded private owned regular file")
-            raw = stream.read(16 * 1024 + 1)
-            after = os.fstat(stream.fileno())
-            if len(raw) != before.st_size or _file_identity(before) != _file_identity(after) or _file_identity(after) != _file_identity(marker.lstat()):
-                raise InstallError("active release marker changed during admission")
+        release_root = current.resolve(strict=True)
+        raw, _ = _verified_package_file(release_root, ".installed-release.json", read_bytes=True, max_bytes=16 * 1024)
         return json.loads(raw)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise InstallError("cannot verify active checkpoint before update") from error
@@ -227,11 +293,14 @@ def check_checkpoint_update(current, incoming, allow_downgrade=False):
 
 
 @contextmanager
-def _install_lease(managed_root):
+def _install_lease(managed_root, *, create=True):
     """Hold one owned inode from checkpoint admission through publication."""
     _validate_install_directory(managed_root)
     path = managed_root / ".install.lock"
-    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+    if create:
+        flags |= os.O_CREAT
+    descriptor = os.open(path, flags, 0o600)
     try:
         before = os.fstat(descriptor)
         if (not stat.S_ISREG(before.st_mode) or before.st_size != 0
@@ -245,6 +314,109 @@ def _install_lease(managed_root):
     finally:
         fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
+
+
+def _lstat_or_none(path):
+    try:
+        return path.lstat()
+    except FileNotFoundError:
+        return None
+
+
+def _check_command_aliases(prefix, managed_root, *, create_bin):
+    bin_dir = prefix / "bin"
+    if bin_dir.is_symlink():
+        raise InstallError(f"command install directory must not be a symlink: {bin_dir}")
+    if _lstat_or_none(bin_dir) is None:
+        if not create_bin:
+            return None
+        bin_dir.mkdir(mode=0o700, exist_ok=True)
+    _validate_install_directory(bin_dir)
+    links = command_links(managed_root)
+    for name, target in links.items():
+        link = bin_dir / name
+        if link.exists() and not link.is_symlink():
+            raise InstallError(f"refusing to replace existing non-symlink command: {link}")
+        if link.is_symlink() and os.readlink(link) != target and not _managed_link(link, managed_root):
+            raise InstallError(f"refusing to replace command symlink outside the managed NuDox install: {link}")
+    current = managed_root / "current"
+    if current.exists() and not current.is_symlink():
+        raise InstallError(f"refusing to replace non-symlink active install pointer: {current}")
+    if current.is_symlink() and not _managed_link(current, managed_root):
+        raise InstallError(f"refusing to replace active install pointer outside the managed NuDox install: {current}")
+    return bin_dir, links, current
+
+
+def _publish_command_aliases(bin_dir, links, current, managed_root, final):
+    for name, target in links.items():
+        link = bin_dir / name
+        if not link.is_symlink() or os.readlink(link) != target:
+            _replace_symlink(link, target)
+    current_target = os.path.relpath(final, managed_root)
+    if not current.is_symlink() or os.readlink(current) != current_target:
+        _replace_symlink(current, current_target)
+
+
+def reuse_existing_install(prefix: Path, entry: dict, manifest: dict, *, allow_downgrade: bool = False) -> bool:
+    """Reuse a fully verified selected version before fetching its archive again."""
+    prefix = Path(prefix)
+    prefix_stat = _lstat_or_none(prefix)
+    if prefix_stat is None:
+        return False
+    if stat.S_ISLNK(prefix_stat.st_mode):
+        raise InstallError(f"managed install prefix must not be a symlink: {prefix}")
+    _validate_install_directory(prefix)
+    lib_dir = prefix / "lib"
+    lib_stat = _lstat_or_none(lib_dir)
+    if lib_stat is None:
+        return False
+    if stat.S_ISLNK(lib_stat.st_mode):
+        raise InstallError(f"managed install parent must not be a symlink: {lib_dir}")
+    _validate_install_directory(lib_dir)
+    managed_root = lib_dir / "nudox"
+    root_stat = _lstat_or_none(managed_root)
+    if root_stat is None:
+        return False
+    if stat.S_ISLNK(root_stat.st_mode):
+        raise InstallError(f"managed install root must not be a symlink: {managed_root}")
+    _validate_install_directory(managed_root)
+    try:
+        with _install_lease(managed_root, create=False):
+            return _reuse_existing_install_locked(prefix, entry, manifest, allow_downgrade)
+    except FileNotFoundError:
+        return False
+
+
+def _reuse_existing_install_locked(prefix, entry, manifest, allow_downgrade):
+    managed_root = prefix / "lib" / "nudox"
+    version_root = _version_root(prefix)
+    version_stat = _lstat_or_none(version_root)
+    if version_stat is None:
+        return False
+    if stat.S_ISLNK(version_stat.st_mode) or not stat.S_ISDIR(version_stat.st_mode):
+        raise InstallError("managed install versions path must be a real directory")
+    _validate_install_directory(version_root)
+    install_id = entry.get("tag")
+    if not isinstance(install_id, str) or not re.fullmatch(r"[A-Za-z0-9.-]{1,100}", install_id):
+        raise InstallError("release has an unsafe install identity")
+    final = version_root / install_id
+    marker = {"version": entry["version"], "tag": entry["tag"], "source_sha": entry["source_sha"], "asset": entry["asset"], "sha256": manifest["sha256"]}
+    current = managed_root / "current"
+    if current.exists() and not current.is_symlink():
+        raise InstallError(f"refusing to replace non-symlink active install pointer: {current}")
+    if current.is_symlink() and not _managed_link(current, managed_root):
+        raise InstallError(f"refusing to replace active install pointer outside the managed NuDox install: {current}")
+    check_checkpoint_update(current, marker, allow_downgrade)
+    final_stat = _lstat_or_none(final)
+    if final_stat is None:
+        return False
+    if stat.S_ISLNK(final_stat.st_mode) or not stat.S_ISDIR(final_stat.st_mode):
+        raise InstallError(f"version path exists and is not an install directory: {final}")
+    verify_existing_install(final, marker, entry, manifest)
+    aliases = _check_command_aliases(prefix, managed_root, create_bin=True)
+    bin_dir, links, current = aliases
+    _publish_command_aliases(bin_dir, links, current, managed_root, final)
+    return True
 
 
 def install(prefix: Path, entry: dict, manifest: dict, archive: Path, *, allow_downgrade: bool = False) -> None:
@@ -279,24 +451,8 @@ def _install_locked(prefix, entry, manifest, archive, *, allow_downgrade=False):
     if not isinstance(install_id, str) or not re.fullmatch(r"[A-Za-z0-9.-]{1,100}", install_id):
         raise InstallError("release has an unsafe install identity")
     final = version_root / install_id
-    bin_dir = prefix / "bin"
-    if bin_dir.is_symlink():
-        raise InstallError(f"command install directory must not be a symlink: {bin_dir}")
-    bin_dir.mkdir(mode=0o700, exist_ok=True)
-    if not bin_dir.is_dir():
-        raise InstallError(f"command install path is not a directory: {bin_dir}")
-    links = command_links(managed_root)
-    for name, target in links.items():
-        link = bin_dir / name
-        if link.exists() and not link.is_symlink():
-            raise InstallError(f"refusing to replace existing non-symlink command: {link}")
-        if link.is_symlink() and os.readlink(link) != target and not _managed_link(link, managed_root):
-            raise InstallError(f"refusing to replace command symlink outside the managed NuDox install: {link}")
+    bin_dir, links, current = _check_command_aliases(prefix, managed_root, create_bin=True)
     current = managed_root / "current"
-    if current.exists() and not current.is_symlink():
-        raise InstallError(f"refusing to replace non-symlink active install pointer: {current}")
-    if current.is_symlink() and not _managed_link(current, managed_root):
-        raise InstallError(f"refusing to replace active install pointer outside the managed NuDox install: {current}")
     marker = {"version": entry["version"], "tag": entry["tag"], "source_sha": entry["source_sha"], "asset": entry["asset"], "sha256": manifest["sha256"]}
     check_checkpoint_update(current, marker, allow_downgrade)
     stage = Path(tempfile.mkdtemp(prefix=".staging-", dir=version_root))
@@ -316,12 +472,7 @@ def _install_locked(prefix, entry, manifest, archive, *, allow_downgrade=False):
         shutil.rmtree(stage, ignore_errors=True)
         raise
 
-    for name, target in links.items():
-        link = bin_dir / name
-        if not link.is_symlink() or os.readlink(link) != target:
-            _replace_symlink(link, target)
-
-    _replace_symlink(current, os.path.relpath(final, managed_root))
+    _publish_command_aliases(bin_dir, links, current, managed_root, final)
 
 def shlex_quote(value: str) -> str:
     import shlex
@@ -349,15 +500,26 @@ def safe_extract(archive,destination):
             with bundle.extractfile(member) as source,target.open('xb') as output: shutil.copyfileobj(source,output,1024*1024)
             os.chmod(target,0o755 if relative.startswith('bin/') else 0o644)
 def verify_package(root,entry,manifest):
-    package=json.loads((root/'manifest.json').read_bytes())
-    if package.get('schema')!='nudox.mac-cli-diagnostic-preview.v1' or package.get('source')!=entry['source_sha'] or package.get('production_ready') is not False: raise InstallError('exact diagnostic source identity required')
-    if _file_sha256(root/'native-build-manifest.json')!=package['runtime_manifest_sha256']: raise InstallError('native build receipt hash mismatch')
+    package_bytes,_=_verified_package_file(root,'manifest.json',read_bytes=True,max_bytes=MAX_PACKAGE_METADATA_BYTES)
+    try: package=json.loads(package_bytes)
+    except (UnicodeDecodeError,json.JSONDecodeError) as error: raise InstallError('package manifest is not valid JSON') from error
+    if not isinstance(package,dict) or package.get('schema')!='nudox.mac-cli-diagnostic-preview.v1' or package.get('source')!=entry['source_sha'] or package.get('production_ready') is not False: raise InstallError('exact diagnostic source identity required')
+    runtime_digest=package.get('runtime_manifest_sha256')
+    if not isinstance(runtime_digest,str) or not re.fullmatch(r'[a-f0-9]{64}',runtime_digest): raise InstallError('invalid native build receipt digest')
+    if _verified_package_file(root,'native-build-manifest.json')[1]!=runtime_digest: raise InstallError('native build receipt hash mismatch')
+    records=package.get('files')
+    if not isinstance(records,list): raise InstallError('invalid packaged inventory')
     paths=set()
-    for record in package.get('files',[]):
-        path=record['packaged']
-        if not isinstance(path,str) or path in paths or path.startswith('/') or any(p in {'','..','.'} for p in path.split('/')) or '\\' in path: raise InstallError('invalid packaged inventory')
+    for record in records:
+        if not isinstance(record,dict): raise InstallError('invalid packaged file record')
+        path=record.get('packaged')
+        expected_digest=record.get('packaged_sha256')
+        if (not isinstance(path,str) or path in paths or path.startswith('/')
+                or any(p in {'','..','.'} for p in path.split('/')) or '\\' in path
+                or not isinstance(expected_digest,str) or not re.fullmatch(r'[a-f0-9]{64}',expected_digest)):
+            raise InstallError('invalid packaged inventory')
         paths.add(path)
-        if _file_sha256(root/path)!=record['packaged_sha256']: raise InstallError('packaged file hash mismatch')
+        if _verified_package_file(root,path)[1]!=expected_digest: raise InstallError('packaged file hash mismatch')
     if not {'bin/'+n for n in REQUIRED_BINARIES}<=paths: raise InstallError('incomplete executable inventory')
     clean={k:v for k,v in os.environ.items() if not k.startswith(('NUDOX_','DYLD_'))}
     for name in REQUIRED_BINARIES:
@@ -375,11 +537,17 @@ def main(argv=None):
     parsed=urllib.parse.urlsplit(args.archive_url)
     if parsed.scheme!='https' or parsed.hostname!='github.com' or not parsed.path.startswith('/nudoxorg/Backend/releases/download/'+args.tag+'/') or parsed.username or parsed.password: raise InstallError('invalid immutable archive URL')
     prefix=(args.prefix or Path.home()/'.local').expanduser().resolve()
+    entry={'version':'0.0.0','tag':args.tag,'source_sha':args.source,'asset':Path(parsed.path).name}
+    manifest={'sha256':args.archive_sha256}
+    if reuse_existing_install(prefix,entry,manifest,allow_downgrade=args.allow_downgrade):
+        print('Verified existing release '+args.tag+'; reused it without downloading the archive.',file=sys.stderr)
+        print('Installed diagnostic Mac CLI preview in '+str(prefix)+'; add '+str(prefix/'bin')+' to PATH.')
+        print('Known publication failures remain; ad-hoc signed, not notarized. Commands: nudox, nudox-mcp, nudox-locald.')
+        return 0
     with tempfile.TemporaryDirectory(prefix='nudox-mac-preview-') as temporary:
         archive=Path(temporary)/'archive.tar.gz'
         download_archive(args.archive_url,args.archive_sha256,size,archive)
-        entry={'version':'0.0.0','tag':args.tag,'source_sha':args.source,'asset':Path(parsed.path).name}
-        install(prefix,entry,{'sha256':args.archive_sha256},archive,allow_downgrade=args.allow_downgrade)
+        install(prefix,entry,manifest,archive,allow_downgrade=args.allow_downgrade)
     print('Installed diagnostic Mac CLI preview in '+str(prefix)+'; add '+str(prefix/'bin')+' to PATH.')
     print('Known publication failures remain; ad-hoc signed, not notarized. Commands: nudox, nudox-mcp, nudox-locald.')
     return 0
