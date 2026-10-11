@@ -635,12 +635,8 @@ fn typed_find_for_ask_return(rig: &mut Rig, shelf_origin: bool) -> gpui::FocusHa
         .read_with(rig.cx, |shell, cx| shell.focus_state(cx).0);
     assert_eq!(
         zone,
-        if shelf_origin {
-            Zone::Shelf
-        } else {
-            Zone::Reader
-        },
-        "the fixture preserves the actual departure zone"
+        Zone::Reader,
+        "the mounted Find query owns Reader input even when reached from the Shelf"
     );
     let handle = rig
         .cx
@@ -704,7 +700,7 @@ fn ask_tab_to_real_result(rig: &mut Rig) {
 
 /// The old native baseline sent the next character to Library after this
 /// exact no-click sequence. Cover both an ordinary Reader origin and a
-/// Shelf-origin Find whose actual input focus differs from the Shell zone.
+/// Find reached from the Shelf and adopted by its mounted native input.
 #[gpui::test]
 fn find_query_receives_character_after_ask_result_tab_escape_without_click(
     cx: &mut TestAppContext,

@@ -377,6 +377,10 @@ mod tests {
         ));
         crate::host::private_dir(&directory).expect("fixture");
         let file = SnapshotFile::in_data(&directory);
+        // Normal launch prepares the executable identity even when no saved
+        // snapshot exists. Match that boot before writing packets whose roots
+        // this test later compares against the running build.
+        assert!(file.read(&[PageKey::Orbit]).is_none());
         let mut keeper = SnapshotKeeper::default();
         keeper.file = Some(file.clone());
         let view = backend_library::view_state_root(&[("fence".into(), "close".into())]);
@@ -410,11 +414,15 @@ mod tests {
             std::fs::read(file.path()).expect("still final"),
             final_bytes
         );
-        assert!(
-            file.read(&[PageKey::Orbit])
-                .expect("read final snapshot")
-                .root
-                .serves(last)
+        let saved = file.read(&[PageKey::Orbit]).expect("read final snapshot");
+        // A large debug test image can exceed the bounded executable probe.
+        // Historical producer identity must still be exact; an unknown build
+        // fingerprint must never be promoted to present read authority.
+        let root = serde_json::to_value(&saved.root).expect("saved root metadata");
+        assert_eq!(root["epoch"], serde_json::json!(last.producer_epoch()));
+        assert_eq!(
+            root["cursor"],
+            serde_json::json!(last.revision().encode_control().into_vec())
         );
         std::fs::remove_dir_all(directory).expect("fixture removed");
     }
