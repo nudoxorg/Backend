@@ -17,6 +17,8 @@ use crate::runtime::reads::ReadPool;
 use crate::runtime::{DesktopRuntime, EngineActor, UiEntityGraph};
 use gpui::{AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
 use std::cell::RefCell;
+use std::io::Read as _;
+use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -48,15 +50,26 @@ struct Command {
     command: String,
 }
 
-fn read_command(path: &Path) -> Result<Option<Command>, String> {
-    match std::fs::read(path) {
-        Ok(bytes) if bytes.len() <= 4096 => serde_json::from_slice(&bytes)
-            .map(Some)
-            .map_err(|error| error.to_string()),
-        Ok(_) => Err("native fixture command exceeds 4096 bytes".into()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error.to_string()),
+fn read_command(path: &Path, owner: u32) -> Result<Option<Command>, String> {
+    let before = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    if !before.is_file() || before.uid() != owner || before.mode() & 0o022 != 0 {
+        return Err("native fixture command must be a trusted owner file".into());
     }
+    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let opened = file.metadata().map_err(|error| error.to_string())?;
+    if (before.dev(), before.ino()) != (opened.dev(), opened.ino()) {
+        return Err("native fixture command changed during open".into());
+    }
+    let mut bytes = Vec::new();
+    file.take(4097).read_to_end(&mut bytes).map_err(|error| error.to_string())?;
+    if bytes.len() > 4096 {
+        return Err("native fixture command exceeds 4096 bytes".into());
+    }
+    serde_json::from_slice(&bytes).map(Some).map_err(|error| error.to_string())
 }
 
 #[test]
@@ -66,9 +79,14 @@ fn owner_publications_mount_a_native_linux_window() {
         std::env::var_os("NUDOX_OWNER_WINDOW_DIRECTORY")
             .expect("owned native-window evidence directory"),
     );
-    assert!(directory.is_absolute() && directory.is_dir());
+    assert!(directory.is_absolute());
+    let directory_metadata = std::fs::symlink_metadata(&directory).expect("private evidence directory metadata");
+    let owner = std::fs::metadata("/proc/self").expect("Linux process owner").uid();
+    assert!(directory_metadata.is_dir() && directory_metadata.uid() == owner
+        && directory_metadata.mode() & 0o077 == 0, "evidence directory must be private and owned by this process");
     let source = std::env::var("NUDOX_OWNER_WINDOW_SOURCE").expect("launcher exact-source receipt");
-    assert_eq!(source.len(), 40, "source must be the full candidate commit");
+    assert!(source.len() == 40 && source.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "source must be the full lowercase hexadecimal candidate commit");
     facet::fonts::verify().expect("bundled font identities");
     let failed = Rc::new(RefCell::new(None));
     let failure = Rc::clone(&failed);
@@ -132,7 +150,7 @@ fn owner_publications_mount_a_native_linux_window() {
                 timer.timer(Duration::from_millis(50)).await;
                 let result = cx.update(|cx| -> Result<bool, String> {
                     if Instant::now() > deadline { return Err("native fixture exceeded its five-minute lifetime".into()); }
-                    if let Some(command) = read_command(&directory.join("command.json"))? {
+                    if let Some(command) = read_command(&directory.join("command.json"), owner)? {
                         if command.seq > seq {
                             if command.seq != seq + 1 { return Err("native fixture command sequence is not contiguous".into()); }
                             match command.command.as_str() {
