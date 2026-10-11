@@ -196,6 +196,10 @@ pub enum ClientError {
     /// This is separate from [`ClientError::Io`] because the request itself
     /// may be valid and the client can recover by opening a new connection.
     Disconnected(std::io::ErrorKind),
+    /// A non-repeatable command was in flight when its connection closed, so
+    /// the owner may or may not have admitted it. A replacement connection
+    /// does not resolve that ambiguity.
+    MutationOutcomeUnknown(std::io::ErrorKind),
     /// A remote-index connect or read-only request exceeded its bounded client lease.
     RemoteDeadlineExceeded,
     /// A frame, DTO, or identity proof failed admission.
@@ -252,6 +256,12 @@ impl fmt::Display for ClientError {
             Self::Startup(failure) => write!(formatter, "local startup: {failure}"),
             Self::Disconnected(kind) => {
                 write!(formatter, "endpoint disconnected: {kind}")
+            }
+            Self::MutationOutcomeUnknown(kind) => {
+                write!(
+                    formatter,
+                    "mutation outcome is unknown after endpoint disconnect: {kind}"
+                )
             }
             Self::RemoteDeadlineExceeded => {
                 formatter.write_str("remote index exceeded the bounded client request deadline")

@@ -563,7 +563,7 @@ impl<P: Product> Server<P> {
             return Err(RpcError::invalid("arguments must be an object"));
         }
         self.call_routed_tool(params, name, route)
-            .or_else(RpcError::into_tool_result)
+            .or_else(|error| error.into_tool_result_for_call(name, params.get("arguments")))
     }
     /// A recognized route owns input/domain refusals. Envelope and retained
     /// proof failures remain JSON-RPC errors; no display string classifies one.
@@ -1741,6 +1741,58 @@ struct RpcError {
 }
 
 impl RpcError {
+    /// Only a typed startup refusal proves that the original command was not
+    /// submitted. Attach the caller's exact call as advice, never execute it.
+    fn into_tool_result_for_call(
+        self,
+        name: &str,
+        arguments: Option<&Value>,
+    ) -> Result<Value, Self> {
+        if let Some(fault) = &self.fault
+            && fault.startup_recovery()
+                == Some(backend_client::StartupRecovery::RetryOriginalCommand)
+        {
+            let call = json!({
+                "name": name,
+                "arguments": arguments.cloned().unwrap_or_else(|| json!({})),
+            });
+            let mut structured = fault_value(fault);
+            structured["call"] = call.clone();
+            structured
+                .as_object_mut()
+                .expect("fault object")
+                .remove("shell");
+            let text = format!(
+                "Retry the exact tool call in structuredContent.call; this command was not submitted.\n{}",
+                markdown::fault(fault),
+            );
+            let result = tool_result(&bounded_text(&text), structured, true);
+            if result
+                .get("structuredContent")
+                .and_then(|content| content.get("call"))
+                == Some(&call)
+            {
+                return Ok(result);
+            }
+
+            // The request frame can be larger than the result budget. Keep
+            // the typed startup refusal and its not-submitted meaning, but do
+            // not emit a truncated or fabricated call when the exact one
+            // cannot fit in structuredContent.
+            let structured = bounded_startup_fault(fault);
+            let explanation = format!(
+                "The command was not submitted. The exact tool call could not be included in the {}-byte response budget, so no retry was performed.",
+                MCP_RESULT_BUDGET_BYTES,
+            );
+            let text = format!(
+                "{explanation}\nStartup failure: {}",
+                bounded_fault_field(fault.cause().sentence()),
+            );
+            return Ok(tool_result(&text, structured, true));
+        }
+        self.into_tool_result()
+    }
+
     const fn new(code: i64, message: &'static str) -> Self {
         Self {
             code,
@@ -1860,6 +1912,37 @@ impl RpcError {
         }
         error_reply(id, self.code, self.message, Some(Value::Object(data)))
     }
+}
+
+/// Projects the startup fault when its exact input call cannot fit the MCP
+/// result budget. Large user operands and diagnostics are shortened with an
+/// explicit marker so the typed refusal itself remains within the hard cap.
+fn bounded_startup_fault(fault: &Fault) -> Value {
+    const FIELDS: [&str; 2] = ["operand", "detail"];
+    let mut structured = fault_value(fault);
+    if let Some(fields) = structured.as_object_mut() {
+        fields.remove("shell");
+        fields.remove("call");
+        for field in FIELDS {
+            if let Some(Value::String(value)) = fields.get_mut(field) {
+                *value = bounded_fault_field(value);
+            }
+        }
+    }
+    structured
+}
+
+fn bounded_fault_field(text: &str) -> String {
+    const MAX_BYTES: usize = 1024;
+    const MARKER: &str = "…[shortened for response budget]";
+    if text.len() <= MAX_BYTES {
+        return text.to_owned();
+    }
+    let mut end = MAX_BYTES.saturating_sub(MARKER.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{MARKER}", &text[..end])
 }
 
 fn list_prompts(params: &Value) -> Result<Value, RpcError> {

@@ -483,6 +483,7 @@ pub struct Fault {
     compiler_failure: Option<PackageCompilerFailure>,
     partial_publication: Option<backend_library::IndexJobPartialPublication>,
     query_preparation: Option<(ViewRevision, backend_library::QueryPreparationState)>,
+    startup_recovery: Option<backend_client::StartupRecovery>,
 }
 
 impl Fault {
@@ -502,6 +503,7 @@ impl Fault {
             compiler_failure: None,
             partial_publication: None,
             query_preparation: None,
+            startup_recovery: None,
         }
     }
 
@@ -527,6 +529,13 @@ impl Fault {
     #[must_use]
     pub const fn affordance(&self) -> &Affordance {
         &self.affordance
+    }
+
+    /// Returns recovery for a startup failure before any command was submitted.
+    /// Ordinary transport failures do not provide this guarantee.
+    #[must_use]
+    pub const fn startup_recovery(&self) -> Option<backend_client::StartupRecovery> {
+        self.startup_recovery
     }
 
     /// Returns the exact bounded compiler refusal, when the producer supplied one.
@@ -946,6 +955,14 @@ impl Fault {
                 format!("the local daemon could not be started or reached: {failure}"),
                 Affordance::startup(failure.recovery()),
             ),
+            ClientError::MutationOutcomeUnknown(kind) => (
+                FaultSlug::Endpoint,
+                CauseSlug::Unreachable,
+                format!(
+                    "the endpoint closed while a mutation was in flight ({kind}); its outcome is unknown. Inspect owner state before deciding whether to submit it again"
+                ),
+                Affordance::None,
+            ),
             ClientError::Io(detail) => (
                 FaultSlug::Endpoint,
                 CauseSlug::Unreachable,
@@ -999,7 +1016,11 @@ impl Fault {
                 Affordance::Retry,
             ),
         };
-        Self::new(slug, operand, Cause::new(cause, sentence), affordance)
+        let mut fault = Self::new(slug, operand, Cause::new(cause, sentence), affordance);
+        if let ClientError::Startup(failure) = error {
+            fault.startup_recovery = Some(failure.recovery());
+        }
+        fault
     }
 
     /// Builds the fault for one rejected product operand.

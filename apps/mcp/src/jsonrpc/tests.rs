@@ -3452,7 +3452,17 @@ fn typed_startup_failures_preserve_recovery_and_original_diagnostic_in_mcp() {
         assert_eq!(observation.cause(), cause);
         assert_eq!(observation.detail(), original);
         let fault = backend_present::probe_fault(&client, Probe::Graph(DECLARATION));
-        let expected_dto = backend_present::fault_value(&fault);
+        let mut expected_dto = backend_present::fault_value(&fault);
+        if retry {
+            expected_dto["call"] = json!({
+                "name": "backend.graph",
+                "arguments": {"coordinate": DECLARATION, "limit": 1}
+            });
+            expected_dto
+                .as_object_mut()
+                .expect("fault object")
+                .remove("shell");
+        }
         let text = backend_present::text::fault(&fault, backend_present::Theme::plain());
         let markdown = backend_present::markdown::fault(&fault);
         assert!(text.contains(&original));
@@ -3485,18 +3495,29 @@ fn typed_startup_failures_preserve_recovery_and_original_diagnostic_in_mcp() {
                 serde_json::from_slice(&payload.bytes).expect("encoded fault envelope");
             assert_eq!(envelope["detail"], result["structuredContent"]["detail"]);
             assert_eq!(envelope["responseDetail"], projection.name());
-            for field in ["slug", "operand", "cause", "shell", "call"] {
+            for field in ["slug", "operand", "cause"] {
                 assert_eq!(envelope[field], result["structuredContent"][field]);
             }
+            if !retry {
+                for field in ["shell", "call"] {
+                    assert_eq!(envelope[field], result["structuredContent"][field]);
+                }
+            }
         }
-        assert_eq!(text_of(result), markdown);
         assert_context_bounded(&response);
         if retry {
             assert_eq!(
-                result["structuredContent"]["shell"],
-                "re-run the same command"
+                result["structuredContent"]["call"]["arguments"],
+                json!({"coordinate": DECLARATION, "limit": 1})
             );
+            assert!(text_of(result).starts_with("Retry the exact tool call"));
+            assert!(text_of(result).contains(&markdown));
+            assert!(
+                text_of(result).contains("Retry the exact tool call in structuredContent.call")
+            );
+            assert!(result["structuredContent"].get("shell").is_none());
         } else {
+            assert_eq!(text_of(result), markdown);
             assert!(result["structuredContent"].get("shell").is_none());
             assert!(result["structuredContent"].get("call").is_none());
             assert!(!text.contains("→"));
@@ -3516,6 +3537,103 @@ fn an_unreachable_endpoint_is_a_fault_with_the_retry_affordance() {
     let text = text_of(&result);
     assert!(text.starts_with("✗ endpoint `ferris`"), "{text}");
     assert_eq!(result["structuredContent"]["cause"], "unreachable");
+    assert!(result["structuredContent"].get("call").is_none());
+}
+
+#[test]
+fn an_unsent_startup_retry_preserves_exact_mutation_arguments_as_advice() {
+    let error = ClientError::from(backend_runtime::RuntimeError::StartTimeout(
+        "/socket".into(),
+    ));
+    let fault = Fault::from_client_error(&error, backend_present::Operand::Argument("path".into()));
+    let arguments = json!({
+        "package": "/abs/project with spaces/β`",
+        "operation_key": "ab".repeat(32),
+        "execution_intent": "interactive",
+        "detail": "full"
+    });
+    let result = RpcError::from_fault(&fault)
+        .into_tool_result_for_call("backend.index_start", Some(&arguments))
+        .expect("typed startup refusal");
+    assert_eq!(result["isError"], true);
+    assert_eq!(
+        result["structuredContent"]["call"],
+        json!({
+            "name": "backend.index_start", "arguments": arguments
+        })
+    );
+    assert!(result["structuredContent"].get("shell").is_none());
+    assert!(text_of(&result).contains("structuredContent.call"));
+    assert!(!text_of(&result).contains("/abs/project with spaces/β`"));
+    // Prose that resembles a startup diagnostic cannot grant retry authority.
+    let error = ClientError::Io("local-startup-pending; command_submitted:false".into());
+    let fault = Fault::from_client_error(&error, backend_present::Operand::Argument("path".into()));
+    let result = RpcError::from_fault(&fault)
+        .into_tool_result_for_call("backend.index_start", Some(&arguments))
+        .expect("ordinary transport refusal");
+    assert!(result["structuredContent"].get("call").is_none());
+}
+
+#[test]
+fn oversized_unsent_startup_call_keeps_typed_fault_without_a_partial_call() {
+    let query = "x".repeat(backend_library::MAX_GRAPH_QUERY_BYTES);
+    let arguments = json!({ "query": query, "variables": {} });
+    let message = json!({
+        "jsonrpc": "2.0",
+        "id": 9,
+        "method": "tools/call",
+        "params": { "name": QUERY_TOOL, "arguments": arguments },
+    });
+    let request = serde_json::to_vec(&message).expect("bounded graph query request");
+    assert!(request.len() <= crate::MAX_MCP_REQUEST_FRAME);
+    assert!(backend_library::MAX_GRAPH_QUERY_BYTES.saturating_mul(2) > MCP_RESULT_BUDGET_BYTES);
+
+    let startup = ClientError::from(backend_runtime::RuntimeError::StartTimeout(
+        "/socket".into(),
+    ));
+    let mut server = ready(Fake {
+        graph_query_error: Some(startup),
+        ..Fake::default()
+    });
+    let response = server
+        .handle(&request)
+        .map(encoded_stdio_reply)
+        .expect("bounded startup refusal response");
+    let result = &response["result"];
+    assert_eq!(result["isError"], true);
+    let structured = &result["structuredContent"];
+    assert_eq!(structured["slug"], "endpoint");
+    assert_eq!(structured["cause"], "unreachable");
+    assert!(
+        structured.get("call").is_none(),
+        "no partial call may escape"
+    );
+    assert!(structured.get("shell").is_none());
+    assert!(
+        structured["detail"]
+            .as_str()
+            .expect("startup detail")
+            .contains("/socket")
+    );
+    assert!(
+        structured["operand"]
+            .as_str()
+            .expect("bounded operand")
+            .contains("shortened for response budget")
+    );
+    let text = text_of(result);
+    assert!(text.contains("command was not submitted"), "{text}");
+    assert!(
+        text.contains("exact tool call could not be included"),
+        "{text}"
+    );
+    assert!(text.contains("no retry was performed"), "{text}");
+    assert!(
+        serde_json::to_vec(&response)
+            .expect("encode bounded response")
+            .len()
+            <= MCP_RESULT_BUDGET_BYTES
+    );
 }
 
 #[test]
