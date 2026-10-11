@@ -50,9 +50,17 @@ pub(crate) struct NativeTypeScriptInputs {
     pub(crate) libraries: Vec<std::sync::Arc<backend_frontend_typescript::TszLibFile>>,
     pub(crate) options: TszProjectOptions,
     pub(crate) closure_witness: TypeScriptProgramClosureWitness,
-    /// Package-relative source path to the exact workspace-root TSZ path.
-    pub(crate) package_paths: BTreeMap<Box<str>, Box<str>>,
+    /// Membership of every captured package source in the exact configured program.
+    pub(crate) package_membership: BTreeMap<Box<str>, TypeScriptPackageSourceMembership>,
     pub(crate) work_units: u64,
+}
+
+/// A captured source can retain provenance without being a Compiler API program member.
+/// Exclusion never admits that source to TSZ or supplies semantic authority for it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum TypeScriptPackageSourceMembership {
+    Selected { program_path: Box<str> },
+    ExcludedFromConfiguredProgram,
 }
 
 /// Owns both the admitted host reads and the exact Compiler API directory-query transcript.
@@ -857,6 +865,7 @@ pub(crate) fn build_native_inputs(
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<NativeTypeScriptInputs, TypeScriptProjectHostError> {
+    check_admission_control(deadline, cancelled)?;
     let config = select_config(inputs)?;
     // The admitted `compiler_path` is the executable CLI shim (`bin/tsc`). It
     // is probed separately to establish the selected tool identity, but it is
@@ -923,9 +932,9 @@ pub(crate) fn build_native_inputs(
             "compiler option {option:?} affects semantic analysis but is outside the TSZ option model"
         )));
     }
-    if report.files.is_empty() || report.files.len() > MAX_BRIDGE_FILES {
+    if report.files.len() > MAX_BRIDGE_FILES {
         return Err(bridge_error(
-            "compiler API program source count is empty or exceeds the admitted bound",
+            "compiler API program source count exceeds the admitted bound",
         ));
     }
     if report.resolutions.len() > MAX_BRIDGE_REQUESTS {
@@ -947,6 +956,7 @@ pub(crate) fn build_native_inputs(
     let mut files = report.files.iter().collect::<Vec<_>>();
     files.sort_unstable_by(|left, right| left.path.cmp(&right.path));
     for file in files {
+        check_admission_control(deadline, cancelled)?;
         let path = Path::new(&file.path);
         let Some(admitted) = resolver.try_load_source(path)? else {
             return Err(bridge_error(&format!(
@@ -989,8 +999,9 @@ pub(crate) fn build_native_inputs(
         }
     }
 
-    let mut package_paths = BTreeMap::new();
+    let mut package_membership = BTreeMap::new();
     for source in package_sources {
+        check_admission_control(deadline, cancelled)?;
         let package_path = source.relative_path();
         let absolute = inputs.package_root.join(package_path);
         let Some(admitted) = resolver.try_load_source(&absolute)? else {
@@ -998,24 +1009,35 @@ pub(crate) fn build_native_inputs(
                 package_relative_path: package_path.into(),
             });
         };
-        let canonical = normalize_path(&admitted.path);
-        let Some(virtual_path) = virtual_by_canonical.get(&canonical) else {
-            return Err(TypeScriptProjectHostError::CompilerProgramSourceMissing {
-                package_relative_path: package_path.into(),
-            });
-        };
         let expected = source.source().as_bytes();
         if admitted.bytes.as_ref() != expected {
             return Err(bridge_error(&format!(
-                "package source bytes differ from the compiler program at {package_path:?}"
+                "captured package source bytes differ from admitted bytes at {package_path:?}"
             )));
         }
-        package_paths.insert(package_path.into(), virtual_path.clone().into_boxed_str());
+        let canonical = normalize_path(&admitted.path);
+        let membership = match virtual_by_canonical.get(&canonical) {
+            Some(program_path) => TypeScriptPackageSourceMembership::Selected {
+                program_path: program_path.clone().into_boxed_str(),
+            },
+            None if config.is_some() => {
+                TypeScriptPackageSourceMembership::ExcludedFromConfiguredProgram
+            }
+            // Inferred programs are rooted in the complete captured frontier. Absence
+            // here is a broken handoff, not configured exclusion.
+            None => {
+                return Err(TypeScriptProjectHostError::CompilerProgramSourceMissing {
+                    package_relative_path: package_path.into(),
+                });
+            }
+        };
+        package_membership.insert(package_path.into(), membership);
     }
 
     let mut resolutions = Vec::with_capacity(report.resolutions.len());
     let mut resolution_keys = BTreeSet::new();
     for request in report.resolutions {
+        check_admission_control(deadline, cancelled)?;
         let importer =
             resolve_virtual_path(inputs, resolver, &virtual_by_canonical, &request.importer)?;
         let request_kind = match request.kind.as_str() {
@@ -1101,6 +1123,7 @@ pub(crate) fn build_native_inputs(
     let compiler_accesses = report.accesses.into_boxed_slice();
     let directory_views = report.directory_views.into_boxed_slice();
     let access_digest = compiler_access_digest(&compiler_accesses, &directory_views, metrics)?;
+    check_admission_control(deadline, cancelled)?;
     let resolver_witness = resolver.seal()?;
     let environment = program_environment_fingerprint(
         inputs,
@@ -1131,9 +1154,29 @@ pub(crate) fn build_native_inputs(
             metrics,
             access_digest,
         },
-        package_paths,
+        package_membership,
         work_units,
     })
+}
+
+// Excluded sources do not reach TSZ's execution checkpoint, so admission itself
+// must still refuse cancellation/deadline expiry throughout the full frontier.
+fn check_admission_control(
+    deadline: Instant,
+    cancelled: &AtomicBool,
+) -> Result<(), TypeScriptProjectHostError> {
+    if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(bridge_error(
+            "TypeScript program source admission was cancelled",
+        ));
+    }
+    if Instant::now() >= deadline {
+        return Err(TypeScriptProjectHostError::CompilerIoClosureLimit {
+            phase: "TypeScript program source admission".into(),
+            detail: "deadline elapsed while admitting the exact source frontier".into(),
+        });
+    }
+    Ok(())
 }
 
 fn run_program_bridge(
@@ -2908,3 +2951,7 @@ fn bridge_error(message: &str) -> TypeScriptProjectHostError {
         message: message.into(),
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "typescript_program/membership_tests.rs"]
+mod membership_tests;

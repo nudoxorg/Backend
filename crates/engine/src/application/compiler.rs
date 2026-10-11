@@ -378,6 +378,8 @@ pub struct PackageSource<'source> {
 pub enum PackageSourceCoverageGapCause {
     /// Rust-analyzer found the source in the package VFS but outside every active Cargo target.
     RustSourceOutsideActiveCargoTarget,
+    /// Exact captured source is outside the selected TypeScript Compiler API program.
+    TypeScriptSourceExcludedFromConfiguredProgram,
     /// Exact Python source was captured but its grammar rejected semantic lowering.
     PythonSourceSyntaxUnavailable,
     /// Exact Python source was captured but its declared codec was unavailable.
@@ -2236,6 +2238,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         let mut tsz_authority = None;
         let mut tsz_budget = None;
         let mut tsz_package_paths = std::collections::BTreeMap::<Box<str>, Box<str>>::new();
+        let mut tsz_package_membership = BTreeMap::new();
         let mut typescript_closure_witness = None;
         let mut native_program_sources = None;
         if let Some(project) = typescript_project.as_ref() {
@@ -2296,7 +2299,15 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                         terminal: Box::new(terminal),
                     }
                 })?;
-            tsz_package_paths = native.package_paths;
+            for (package_path, membership) in &native.package_membership {
+                if let crate::application::typescript_program::TypeScriptPackageSourceMembership::Selected {
+                    program_path,
+                } = membership
+                {
+                    tsz_package_paths.insert(package_path.clone(), program_path.clone());
+                }
+            }
+            tsz_package_membership = native.package_membership;
             tsz_budget = Some(budget);
             tsz_authority = Some(authority);
         }
@@ -2888,6 +2899,47 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     path: source.relative_path.into(),
                     terminal: Box::new(terminal),
                 })?;
+            if let Some(budget) = tsz_budget.as_ref() {
+                backend_frontend_typescript::TszExecutionCheckpoint::checkpoint(budget, 1)
+                    .map_err(|cause| PackageSemanticError::Compile {
+                        path: source.relative_path.into(),
+                        terminal: Box::new(package_authority_terminal(
+                            package.package_target.target(),
+                            application_request,
+                            source_authority,
+                            self.toolchain_for_package(application_request, typescript_toolchain)
+                                .unwrap_or(ToolchainSelection::ExplicitlyUnavailable {
+                                    tool: NativeTool::TypeScriptCompiler,
+                                }),
+                            PackageAuthorityError::TypeScriptTsz(
+                                backend_frontend_typescript::TszAuthorityError::ExecutionStopped(
+                                    cause,
+                                ),
+                            ),
+                        )),
+                    })?;
+            }
+            if typescript_project.is_some() {
+                use crate::application::typescript_program::TypeScriptPackageSourceMembership;
+                let membership = tsz_package_membership.get(source.relative_path()).ok_or(
+                    PackageSemanticError::Capacity {
+                        lane: "TypeScript package source membership",
+                    },
+                )?;
+                if matches!(
+                    membership,
+                    TypeScriptPackageSourceMembership::ExcludedFromConfiguredProgram
+                ) {
+                    coverage_gaps.push(PackageSourceCoverageGap {
+                        source: source_authority,
+                        relative_path: source.relative_path.into(),
+                        cause: PackageSourceCoverageGapCause::TypeScriptSourceExcludedFromConfiguredProgram,
+                        python_source_status: None,
+                        native_python_diagnostics: Box::new([]),
+                    });
+                    continue;
+                }
+            }
             if let Some(project) = python_project.as_ref() {
                 use backend_frontend_python::legacy::checker::PythonProjectSourceStatus;
                 let status = project.source_status(source.relative_path).ok_or(
