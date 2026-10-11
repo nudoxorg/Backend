@@ -122,11 +122,19 @@ impl CheckerState<'_> {
         }
         let module_name = alias_symbol.import_module().map(str::to_string)?;
         let import_name = alias_symbol.import_name().unwrap_or(name).to_owned();
-        let target_sym_id = self.resolve_cross_file_export_from_file(
-            &module_name,
-            &import_name,
-            Some(self.ctx.current_file_idx),
-        )?;
+        let target_sym_id = if self.ctx.project_module_resolution_outcomes.is_some() {
+            // A generic type application retains the import declaration's
+            // request kind and derived mode, just like ordinary alias lowering.
+            let request = self.ctx.bound_module_request_for_alias(alias_sym_id)?;
+            let selected = self.ctx.select_module_request(request)?;
+            self.resolve_member_for_selected_request(selected, &import_name)?
+        } else {
+            self.resolve_cross_file_export_from_file(
+                &module_name,
+                &import_name,
+                Some(self.ctx.current_file_idx),
+            )?
+        };
         if let Some(file_idx) = self.ctx.resolve_symbol_file_index_stable(target_sym_id) {
             self.ctx
                 .register_symbol_file_target(target_sym_id, file_idx);
