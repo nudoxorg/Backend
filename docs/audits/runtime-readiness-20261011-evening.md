@@ -23,6 +23,7 @@ The installer candidate validates an existing same-release Mac installation befo
 | Installed HTTPie, earlier `71eef72724` | 133 Python sources genuinely Published | Fresh Ubuntu home; exact operation and view identities retained |
 | Closed HTTPie selected reads, earlier `71eef72724` | 60 actual responses; first two searches fail with Preparing | Root independently rehashed every raw response, IDs, publication identity, and recorded budgets |
 | Installer reuse regressions on Root's integrated source | 63 passed, zero failed | CPython 3.9.6; the later bootstrap integration has a separate rerun |
+| Complete bootstrap/installer regressions on Root's integrated source | 67 passed, zero failed, 39.654 seconds | Includes the one-line launcher handoff, same-release no-download reuse, newer release, corruption and downgrade controls; synthetic transport, not a public release proof |
 
 The client fixture repairs retain the original refusal and single-send assertions. The wrong-basis control now changes captured row content and proves that the revision differs. An additional control proves that unchanged canonical rows can share a revision while their producer certificates differ. Socket tests retain authenticated owner admission and deadlines while using a unique owner-only short directory. Their native rerun is pending.
 

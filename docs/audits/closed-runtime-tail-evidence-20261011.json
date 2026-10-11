@@ -1003,5 +1003,15 @@
     "public_channel_promoted": false,
     "real_current_mac_runtime_proven": false
   },
+  "bootstrap_installer_regressions": {
+    "source": "6c6d609238",
+    "interpreter": "/usr/bin/python3",
+    "passed": 67,
+    "failed": 0,
+    "seconds": 39.654,
+    "stderr_sha256": "e77a1cfdd815d75257f03bef6ea55fbc0d7cd862379ce49d3de9377923b4a36c",
+    "transport": "Pinned R2 launcher and bootstrap handing off to synthetic candidate channel; not public candidate delivery.",
+    "public_channel_promoted": false
+  },
   "production_ready": false
 }
