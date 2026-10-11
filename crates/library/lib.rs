@@ -62,7 +62,7 @@ mod wire;
 /// Maximum number of events admitted from one bounded subscription payload.
 pub const MAX_SUBSCRIPTION_EVENTS: usize = 256;
 
-pub use arrangement::QueryWork;
+pub use arrangement::{QueryWork, declaration_name_priority};
 pub use backend_advisory::{
     AcquisitionDecision, AdvisoryCategory, AdvisoryCoverage, AdvisoryDecisionDto,
     AdvisoryPackageDto, AdvisoryStatus, AdvisorySurfaceDto, AffectedRange, FreshnessState,

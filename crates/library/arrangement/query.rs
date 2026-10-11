@@ -30,7 +30,7 @@ impl RankedRow {
 #[derive(Eq, PartialEq)]
 struct NameRanked {
     candidate: RankedRow,
-    exact: bool,
+    placement: (bool, bool, u8),
 }
 
 impl NameRanked {
@@ -46,8 +46,12 @@ impl NameRanked {
                     .is_some_and(|prefix| prefix.ends_with("::"))
         });
         Self {
+            placement: (
+                exact,
+                row.row.source.captured().is_some(),
+                row.row.kind.map_or(1, super::declaration_name_priority),
+            ),
             candidate: row,
-            exact,
         }
     }
 }
@@ -55,8 +59,8 @@ impl NameRanked {
 impl Ord for NameRanked {
     fn cmp(&self, other: &Self) -> Ordering {
         other
-            .exact
-            .cmp(&self.exact)
+            .placement
+            .cmp(&self.placement)
             .then_with(|| {
                 self.candidate
                     .normalized_label

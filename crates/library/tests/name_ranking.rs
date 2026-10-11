@@ -165,3 +165,58 @@ fn exact_name_ranking_keeps_query_credit_and_predecessor_snapshot_binding() {
         Err(LibraryError::CursorMismatch)
     ));
 }
+
+#[test]
+fn exact_source_declarations_precede_inferred_aliases_fields_and_imports() {
+    let (root, object) = source();
+    let basis = Basis::new(root, object);
+    let cases = [
+        ("a::Environment", DeclarationKind::Type, false),
+        ("b::Environment", DeclarationKind::Import, true),
+        ("c::Environment", DeclarationKind::Field, true),
+        ("z::Environment", DeclarationKind::Class, true),
+        ("zz::MockEnvironment", DeclarationKind::Class, true),
+    ];
+    let ids = cases.map(|(label, _, _)| RowId::Symbol(symbol_key(label)));
+    let library = projection(
+        cases
+            .into_iter()
+            .zip(ids)
+            .map(|((label, kind, sourced), id)| {
+                let row = Row::new(id, basis, label).with_kind(kind);
+                if sourced {
+                    row.with_source(
+                        SourceLocation::new("captured.py", 1)
+                            .expect("fixture captured site"),
+                    )
+                } else {
+                    row
+                }
+            })
+            .collect(),
+    );
+    let expected = [ids[3], ids[2], ids[1], ids[0], ids[4]];
+    for credit in [1, 2, 5] {
+        let query = NameQuery::new(
+            "Environment",
+            library.revision_root(),
+            QueryLimit::new(credit).expect("credit"),
+        );
+        let mut continued = query.clone();
+        let mut seen = Vec::new();
+        loop {
+            let page = library.names(&continued).expect("typed ranked page");
+            seen.extend(ordered_ids(&page));
+            let Some(next) = page.next else { break };
+            continued = query.clone().with_cursor(next);
+        }
+        assert_eq!(seen, expected, "credit {credit}");
+    }
+    let alias = library
+        .view()
+        .row_ref(ids[0])
+        .expect("alias remains selected");
+    assert_eq!(alias.kind, Some(DeclarationKind::Type));
+    assert!(alias.source.captured().is_none());
+    assert_eq!(library.work_counters().scan_rows, 0);
+}

@@ -10,6 +10,34 @@ use backend_flow::MaterializedWork;
 use backend_version::TreeError;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Preference for the declaration a queried name denotes, ahead of mentions
+/// such as fields and imports. This is a ranking hint, never kind authority.
+#[must_use]
+pub const fn declaration_name_priority(kind: crate::DeclarationKind) -> u8 {
+    use crate::DeclarationKind;
+    match kind {
+        DeclarationKind::Class
+        | DeclarationKind::Interface
+        | DeclarationKind::Enum
+        | DeclarationKind::Struct
+        | DeclarationKind::Trait
+        | DeclarationKind::Union => 4,
+        DeclarationKind::Type
+        | DeclarationKind::Function
+        | DeclarationKind::Method
+        | DeclarationKind::Macro
+        | DeclarationKind::Constant
+        | DeclarationKind::Constructor => 3,
+        DeclarationKind::Field
+        | DeclarationKind::Property
+        | DeclarationKind::Variant
+        | DeclarationKind::Variable
+        | DeclarationKind::Module => 2,
+        DeclarationKind::Import => 0,
+        DeclarationKind::Unknown => 1,
+    }
+}
+
 mod query;
 mod schema;
 mod update;
