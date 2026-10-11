@@ -3,6 +3,7 @@
 
 use super::*;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use std::io::Write;
 
 /// Token bound leaves room for rows in the existing presentation budget.
 pub(super) const MAX_PORTABLE_QUERY_TOKEN_BYTES: usize = 32 * 1024;
@@ -68,7 +69,7 @@ struct ProofBudget {
     bytes: usize,
     refused: bool,
 }
-impl std::io::Write for ProofBudget {
+impl Write for ProofBudget {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         if bytes.len() > backend_library::MAX_COMMAND_BODY.saturating_sub(self.bytes) {
             self.refused = true;
