@@ -1086,7 +1086,7 @@ fn structural_fixtures(
         }
         file_keys.sort_unstable();
         file_records.sort_unstable_by_key(|(key, _)| *key);
-        let frontier =
+        let _frontier =
             backend_engine::ProductSourceRecord::project(label.clone(), [4; 32], file_keys.clone())
                 .expect("project frontier");
         let files = Arc::<[[u8; 32]]>::from(file_keys);

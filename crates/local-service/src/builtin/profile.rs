@@ -1333,7 +1333,7 @@ impl BuiltinIntent {
         let capture_basis = decoder.capture_basis()?;
         let source_facts_changes = decoder.source_facts_changes()?;
         decoder.finish()?;
-        let mut intent = Self::new_with_version(
+        let intent = Self::new_with_version(
             encoding_version,
             operation,
             package,

@@ -380,7 +380,7 @@ impl IndexOperationJournal {
         &mut self,
     ) -> Result<PublicationJournalWriter, JournalError> {
         self.require_writer()?;
-        let mut connection = self._database.connect().map_err(database_error)?;
+        let connection = self._database.connect().map_err(database_error)?;
         connection
             .busy_timeout(BUSY_TIMEOUT)
             .map_err(database_error)?;
