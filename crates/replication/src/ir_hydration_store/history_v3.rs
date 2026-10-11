@@ -912,7 +912,7 @@ impl FileSemanticRangeStore {
             ));
         }
 
-        let (inventory, metrics) = receipt_inventory(produced)?;
+        let (inventory, _metrics) = receipt_inventory(produced)?;
         let mut changes = Vec::new();
         changes
             .try_reserve_exact(inventory.len())
@@ -984,11 +984,11 @@ impl FileSemanticRangeStore {
             closure_objects: u64::try_from(inventory.len())
                 .map_err(|error| format!("typed V3 closure object count: {error}"))?,
             closure_payload_bytes,
-            admitted_envelope_bytes: metrics.envelope_bytes,
-            newly_created_objects: metrics.created_objects,
-            newly_created_envelope_bytes: metrics.created_envelope_bytes,
-            reused_objects: metrics.reused_objects,
-            reused_envelope_bytes: metrics.reused_envelope_bytes,
+            admitted_envelope_bytes: _metrics.envelope_bytes,
+            newly_created_objects: _metrics.created_objects,
+            newly_created_envelope_bytes: _metrics.created_envelope_bytes,
+            reused_objects: _metrics.reused_objects,
+            reused_envelope_bytes: _metrics.reused_envelope_bytes,
             reopened_objects: u64::try_from(reopened_objects)
                 .map_err(|error| format!("typed V3 reopened object count: {error}"))?,
             reopened_payload_bytes,
