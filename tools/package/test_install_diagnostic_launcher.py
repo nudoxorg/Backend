@@ -13,7 +13,7 @@ import test_install_forgejo_preview as mirror_tests
 
 ROOT = Path(__file__).parent
 LAUNCHER = ROOT / "install_diagnostic_preview.sh"
-BOOTSTRAP = ROOT / "install_forgejo_preview.py"
+BOOTSTRAP = mirror_tests.PUBLISHED_BOOTSTRAP_FIXTURE
 
 
 class LauncherTests(unittest.TestCase):
@@ -126,6 +126,29 @@ urllib.request.build_opener=lambda *handlers: Opener()
         self.assertEqual(args[args.index("--proto")+1], "=https")
         self.assertEqual(args[args.index("--proto-redir")+1], "=https")
         self.assertEqual(args[args.index("--max-filesize")+1], str(BOOTSTRAP.stat().st_size))
+
+    def test_one_line_launcher_reaches_candidate_bootstrap_and_skips_repeat_archive(self):
+        entry, archive = mirror_tests.mac_fixture(self.root)
+        entry, value, candidate_environment = mirror_tests.candidate_mac_transport(self.root, entry, archive)
+        self.environment.update(candidate_environment)
+        prefix = self.root / "candidate preview"
+
+        first = self.run_launcher("--prefix", str(prefix))
+        self.assertEqual(first.returncode, 0, first.stderr)
+        requests = Path(self.environment["FIXTURE_REQUESTS"])
+        first_requests = requests.read_text().splitlines()
+        self.assertIn(value["bootstrap"]["url"], first_requests)
+        self.assertIn(entry["installer"]["url"], first_requests)
+        self.assertIn(entry["archive"]["url"], first_requests)
+        requests.unlink()
+
+        repeated = self.run_launcher("--prefix", str(prefix))
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assertIn("skipped its archive download", repeated.stderr)
+        repeat_requests = requests.read_text().splitlines()
+        self.assertIn(value["bootstrap"]["url"], repeat_requests)
+        self.assertIn(entry["installer"]["url"], repeat_requests)
+        self.assertNotIn(entry["archive"]["url"], repeat_requests)
 
     def test_update_refusal_preserves_pointer_and_explicit_flag_is_forwarded(self):
         entry, archive = self.fixture_transport()

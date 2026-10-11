@@ -16,9 +16,13 @@ import urllib.request
 
 ROOT = Path(__file__).parent
 PUBLISHED_MAC_LIBRARY_FIXTURE = ROOT / "fixtures/install-macos-arm64-r2-pinned.py"
-spec = importlib.util.spec_from_file_location("mirror", ROOT / "install_forgejo_preview.py")
+PUBLISHED_BOOTSTRAP_FIXTURE = ROOT / "fixtures/install-forgejo-bootstrap-r2-pinned.py"
+spec = importlib.util.spec_from_file_location("mirror", PUBLISHED_BOOTSTRAP_FIXTURE)
 boot = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(boot)
+candidate_spec = importlib.util.spec_from_file_location("candidate_mirror", ROOT / "install_forgejo_preview.py")
+candidate_boot = importlib.util.module_from_spec(candidate_spec)
+candidate_spec.loader.exec_module(candidate_boot)
 
 
 def channel():
@@ -34,11 +38,76 @@ def published_mac_library_bytes():
     return body
 
 
+def published_bootstrap_bytes():
+    """Return the exact R2 bootstrap bytes pinned by the unchanged channel."""
+    body = PUBLISHED_BOOTSTRAP_FIXTURE.read_bytes()
+    expected = channel()["bootstrap"]
+    if (hashlib.sha256(body).hexdigest(), len(body)) != (expected["sha256"], expected["bytes"]):
+        raise AssertionError("historical bootstrap source does not match the immutable R2 pin")
+    return body
+
+
 def published_mac_library(root):
     """Materialize the exact R2 library bytes pinned by the unchanged channel."""
     path = Path(root) / "published-r2-install-macos-preview.py"
     path.write_bytes(published_mac_library_bytes())
     return path
+
+
+def candidate_mac_transport(root, entry, archive):
+    """Make a next-bootstrap channel that pins the current candidate sources."""
+    bootstrap_body = (ROOT / "install_forgejo_preview.py").read_bytes()
+    bootstrap_sha = hashlib.sha256(bootstrap_body).hexdigest()
+    installer_body = (ROOT / "install_macos_preview.py").read_bytes()
+    installer_sha = hashlib.sha256(installer_body).hexdigest()
+    if (installer_sha, len(installer_body)) != candidate_boot.LIBRARIES["macos-arm64"][:2]:
+        raise AssertionError("candidate Mac library differs from the candidate bootstrap pin")
+    entry = copy.deepcopy(entry)
+    entry["installer"] = {
+        "url": candidate_boot.release_url(entry["tag"], "install-macos-arm64-" + installer_sha[:16] + ".py"),
+        "sha256": installer_sha,
+        "bytes": len(installer_body),
+    }
+    value = channel()
+    value["bootstrap"] = {
+        "url": candidate_boot.release_url(candidate_boot.BOOTSTRAP_TAG,
+                                            "install-forgejo-bootstrap-" + bootstrap_sha[:16] + ".py"),
+        "sha256": bootstrap_sha,
+        "bytes": len(bootstrap_body),
+    }
+    value["platforms"]["macos-arm64"] = entry
+    candidate_boot.validate_channel(value)
+    candidate_boot.admit_libraries(value)
+    metadata = Path(root) / "candidate-channel.json"
+    metadata.write_text(json.dumps(value))
+    bootstrap_path = Path(root) / "candidate-bootstrap.py"
+    bootstrap_path.write_bytes(bootstrap_body)
+    installer_path = Path(root) / "candidate-mac-library.py"
+    installer_path.write_bytes(installer_body)
+    mapping = {
+        candidate_boot.CHANNEL: str(metadata),
+        value["bootstrap"]["url"]: str(bootstrap_path),
+        entry["installer"]["url"]: str(installer_path),
+        entry["archive"]["url"]: str(archive),
+    }
+    mapping_path = Path(root) / "candidate-mapping.json"
+    mapping_path.write_text(json.dumps(mapping))
+    (Path(root) / "sitecustomize.py").write_text('''import io,json,os,pathlib,platform,urllib.request
+platform.system=lambda: 'Darwin'
+platform.machine=lambda: 'arm64'
+mapping=json.loads(pathlib.Path(os.environ['FIXTURE_MAPPING']).read_text())
+class Response(io.BytesIO):
+ def __init__(self,url): super().__init__(pathlib.Path(mapping[url]).read_bytes()); self.url=url
+ def geturl(self): return self.url
+class Opener:
+ def open(self,request,timeout):
+  with open(os.environ['FIXTURE_REQUESTS'],'a') as log: log.write(request.full_url+'\\n')
+  return Response(request.full_url)
+urllib.request.build_opener=lambda *handlers: Opener()
+''')
+    environment = {**os.environ, "PYTHONPATH": str(root), "PYTHONDONTWRITEBYTECODE": "1",
+                   "FIXTURE_MAPPING": str(mapping_path), "FIXTURE_REQUESTS": str(Path(root) / "candidate-requests")}
+    return entry, value, environment
 
 
 class Response(io.BytesIO):
@@ -98,9 +167,118 @@ class Tests(unittest.TestCase):
         self.assertNotEqual((hashlib.sha256(candidate_mac).hexdigest(), len(candidate_mac)),
                             boot.LIBRARIES["macos-arm64"][:2])
         self.assertEqual((hashlib.sha256(linux).hexdigest(), len(linux)), boot.LIBRARIES["linux-x64"][:2])
-        script = (ROOT / "install_forgejo_preview.py").read_bytes()
+        script = published_bootstrap_bytes()
+        candidate_script = (ROOT / "install_forgejo_preview.py").read_bytes()
         self.assertEqual(channel()["bootstrap"]["sha256"], hashlib.sha256(script).hexdigest())
         self.assertEqual(channel()["bootstrap"]["bytes"], len(script))
+        self.assertNotEqual((hashlib.sha256(candidate_script).hexdigest(), len(candidate_script)),
+                            (channel()["bootstrap"]["sha256"], channel()["bootstrap"]["bytes"]))
+
+    def test_candidate_bootstrap_repeat_reuses_verified_mac_install_before_archive_fetch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(); entry, archive = mac_fixture(root)
+            entry, value, environment = candidate_mac_transport(root, entry, archive)
+            prefix = root / "prefix"
+            command = [sys.executable, str(PUBLISHED_BOOTSTRAP_FIXTURE), "--prefix", str(prefix)]
+            first = subprocess.run(command, text=True, capture_output=True, env=environment, timeout=25)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            requests = Path(environment["FIXTURE_REQUESTS"])
+            first_requests = requests.read_text().splitlines()
+            self.assertIn(value["bootstrap"]["url"], first_requests)
+            self.assertIn(entry["installer"]["url"], first_requests)
+            self.assertIn(entry["archive"]["url"], first_requests)
+            requests.unlink()
+
+            repeated = subprocess.run(command, text=True, capture_output=True, env=environment, timeout=25)
+            self.assertEqual(repeated.returncode, 0, repeated.stderr)
+            self.assertIn("skipped its archive download", repeated.stderr)
+            repeat_requests = requests.read_text().splitlines()
+            self.assertIn(value["bootstrap"]["url"], repeat_requests)
+            self.assertIn(entry["installer"]["url"], repeat_requests)
+            self.assertNotIn(entry["archive"]["url"], repeat_requests)
+            self.assertTrue((prefix / "lib/nudox/current").is_symlink())
+            self.assertEqual(value["bootstrap"]["sha256"], hashlib.sha256(
+                (ROOT / "install_forgejo_preview.py").read_bytes()).hexdigest())
+            self.assertIn("Downloading", repeated.stderr)
+
+    def test_candidate_bootstrap_new_release_downloads_archive_and_corruption_fails_before_fetch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve(); entry, archive = mac_fixture(root)
+            entry, value, environment = candidate_mac_transport(root, entry, archive)
+            prefix = root / "prefix"
+            command = [sys.executable, str(PUBLISHED_BOOTSTRAP_FIXTURE), "--prefix", str(prefix)]
+            first = subprocess.run(command, text=True, capture_output=True, env=environment, timeout=25)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            requests = Path(environment["FIXTURE_REQUESTS"])
+            requests.unlink()
+
+            newer = copy.deepcopy(entry)
+            newer["tag"] = newer["tag"].replace("20261006", "20261010")
+            newer["installer"]["url"] = candidate_boot.release_url(
+                newer["tag"], Path(newer["installer"]["url"]).name)
+            newer["archive"]["url"] = candidate_boot.release_url(
+                newer["tag"], Path(newer["archive"]["url"]).name)
+            value["platforms"]["macos-arm64"] = newer
+            candidate_boot.validate_channel(value)
+            (root / "candidate-channel.json").write_text(json.dumps(value))
+            mapping = json.loads((root / "candidate-mapping.json").read_text())
+            mapping[newer["installer"]["url"]] = mapping[entry["installer"]["url"]]
+            mapping[newer["archive"]["url"]] = mapping[entry["archive"]["url"]]
+            (root / "candidate-mapping.json").write_text(json.dumps(mapping))
+
+            updated = subprocess.run(command, text=True, capture_output=True, env=environment, timeout=25)
+            self.assertEqual(updated.returncode, 0, updated.stderr)
+            self.assertIn(newer["archive"]["url"], requests.read_text().splitlines())
+            self.assertEqual((prefix / "lib/nudox/current").resolve().name, newer["tag"])
+            requests.unlink()
+
+            installed = (prefix / "lib/nudox/current").resolve()
+            (installed / "bin/backend-cli").write_bytes(b"corrupted after a successful install")
+            refused = subprocess.run(command, text=True, capture_output=True, env=environment, timeout=25)
+            self.assertEqual(refused.returncode, 1, refused.stdout + refused.stderr)
+            self.assertIn("integrity/startup recheck", refused.stderr)
+            self.assertNotIn(newer["archive"]["url"], requests.read_text().splitlines())
+            requests.unlink()
+
+            installed = (prefix / "lib/nudox/current").resolve()
+            (installed / "bin/backend-cli").write_bytes(b"#!/bin/sh\nexit 0\n")
+            value["platforms"]["macos-arm64"] = entry
+            candidate_boot.validate_channel(value)
+            (root / "candidate-channel.json").write_text(json.dumps(value))
+            downgrade = subprocess.run(command, text=True, capture_output=True, env=environment, timeout=25)
+            self.assertEqual(downgrade.returncode, 1, downgrade.stdout + downgrade.stderr)
+            self.assertIn("older", downgrade.stderr)
+            self.assertNotIn(entry["archive"]["url"], requests.read_text().splitlines())
+
+    def test_candidate_bootstrap_transport_reports_progress_with_bounded_timeout(self):
+        class StreamingResponse(io.BytesIO):
+            def geturl(self):
+                return candidate_boot.CHANNEL
+
+        class StreamingOpener:
+            def __init__(self, body):
+                self.response = StreamingResponse(body)
+                self.timeouts = []
+
+            def open(self, request, timeout):
+                self.timeouts.append(timeout)
+                return self.response
+
+        body = b"x" * (candidate_boot.DOWNLOAD_PROGRESS_BYTES + 7)
+        with tempfile.TemporaryDirectory() as temporary:
+            destination = Path(temporary) / "archive.tar.gz"
+            opener = StreamingOpener(body)
+            with patch.object(candidate_boot.urllib.request, "build_opener", return_value=opener), \
+                    patch.object(candidate_boot.sys, "stderr", new_callable=io.StringIO) as stderr:
+                candidate_boot.download(candidate_boot.CHANNEL, destination, len(body),
+                                         expected_size=len(body), expected_sha256=hashlib.sha256(body).hexdigest())
+            output = stderr.getvalue()
+            self.assertIn("0%", output)
+            self.assertIn(f"{candidate_boot.DOWNLOAD_PROGRESS_BYTES:,}/", output)
+            self.assertIn("100%", output)
+            self.assertIn("checking declared size and digest", output)
+            self.assertEqual(opener.timeouts, [candidate_boot.DOWNLOAD_TIMEOUT_SECONDS])
+            self.assertEqual(destination.read_bytes(), body)
 
     def test_closed_initial_roles_reject_credentials_encoding_and_other_repositories(self):
         initial = boot.release_url(boot.BOOTSTRAP_TAG, "preview-channel.json")
@@ -285,7 +463,7 @@ class Tests(unittest.TestCase):
             root = Path(temporary); entry, archive = mac_fixture(root)
             value = channel(); value["platforms"]["macos-arm64"] = entry
             metadata = root / "channel.json"; metadata.write_text(json.dumps(value))
-            mapping = {boot.CHANNEL: str(metadata), value["bootstrap"]["url"]: str(ROOT / "install_forgejo_preview.py"),
+            mapping = {boot.CHANNEL: str(metadata), value["bootstrap"]["url"]: str(PUBLISHED_BOOTSTRAP_FIXTURE),
                        entry["installer"]["url"]: str(published_mac_library(root)), entry["archive"]["url"]: str(archive)}
             (root / "mapping.json").write_text(json.dumps(mapping))
             (root / "sitecustomize.py").write_text('''import io,json,os,pathlib,platform,urllib.request
@@ -305,19 +483,19 @@ urllib.request.build_opener=lambda *handlers: Opener()
                            "FIXTURE_MAPPING": str(root / "mapping.json"), "FIXTURE_REQUESTS": str(root / "requests")}
             private = root / "temporary"; private.mkdir(mode=0o700)
             environment["TMPDIR"] = str(private)
-            source = (ROOT / "install_forgejo_preview.py").read_text()
+            source = published_bootstrap_bytes().decode()
             prefix = root / "prefix"
             newer = copy.deepcopy(entry)
             newer["tag"] = newer["tag"].replace("20261006", "20261010")
             boot.install_verified(newer, "macos-arm64", published_mac_library(root), archive, None, prefix, False)
             original = (prefix / "lib/nudox/current").resolve()
-            refusal = subprocess.run([sys.executable, str(ROOT / "install_forgejo_preview.py"), "--prefix", str(prefix)],
+            refusal = subprocess.run([sys.executable, str(PUBLISHED_BOOTSTRAP_FIXTURE), "--prefix", str(prefix)],
                                      text=True, capture_output=True, env=environment, timeout=20)
             self.assertEqual(refusal.returncode, 1, refusal.stderr)
             self.assertIn("older", refusal.stderr)
             self.assertEqual((prefix / "lib/nudox/current").resolve(), original)
             for mode in ["stdin", "file"]:
-                command = [sys.executable, "-" if mode == "stdin" else str(ROOT / "install_forgejo_preview.py"),
+                command = [sys.executable, "-" if mode == "stdin" else str(PUBLISHED_BOOTSTRAP_FIXTURE),
                            "--prefix", str(prefix), "--allow-downgrade"]
                 result = subprocess.run(command, input=source if mode == "stdin" else None,
                                         text=True, capture_output=True, env=environment, timeout=20)
@@ -338,7 +516,7 @@ urllib.request.build_opener=lambda *handlers: Opener()
             # Owned future-version fixture: only a library comment and the new
             # bootstrap's literal reviewed SHA/size constants differ. Its full
             # install() and every ownership/inventory/lease check remain normal.
-            old_source = (ROOT / "install_forgejo_preview.py").read_bytes()
+            old_source = published_bootstrap_bytes()
             library_body = (ROOT / "install_macos_preview.py").read_bytes() + b"\n# Reviewed future-version Python fixture only.\n"
             library = root / "new-library.py"; library.write_bytes(library_body)
             library_sha = hashlib.sha256(library_body).hexdigest()
@@ -389,7 +567,7 @@ urllib.request.build_opener=lambda *handlers: Opener()
     def test_r2_bootstrap_updates_old_linux_pin_before_library_admission(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); entry, archive = mac_fixture(root)
-            new_source = (ROOT / "install_forgejo_preview.py").read_bytes()
+            new_source = published_bootstrap_bytes()
             new_sha = hashlib.sha256(new_source).hexdigest()
             old_pin = ("e11fcc271fc3a8feb676b9f8c383bbf5bdc215578ffc399774819184908ed071", 49954)
             current_pin = boot.LIBRARIES["linux-x64"][:2]
