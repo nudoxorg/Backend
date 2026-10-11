@@ -7,7 +7,7 @@ use crate::state::BinderState;
 use crate::{ContainerKind, SymbolTable, symbol_flags};
 use std::sync::Arc;
 use tsz_parser::NodeIndex;
-use tsz_parser::parser::node::{Node, NodeArena};
+use tsz_parser::parser::node::{Node, NodeAccess, NodeArena};
 use tsz_parser::parser::syntax_kind_ext;
 use tsz_scanner::SyntaxKind;
 
