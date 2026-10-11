@@ -97,6 +97,13 @@ two-job developer default stays unchanged. QEMU runtime execution uses four
 test threads to avoid fsync and short-deadline contention. `compile-and-list`
 timing separates compilation from the subsequent runtime tests.
 
+Embedding protocol fixtures allow ten seconds for supervised Python startup
+and positive inference under QEMU. Explicit deadline tests retain their short
+budgets. The blocked-stdin test gives process creation a separate five-second
+lifetime while preserving its 100 ms write deadline and two-second completion
+assertion; previously a 100 ms process lifetime could expire during startup
+before the blocked write was tested. Production process limits are unchanged.
+
 ### Wine private-storage limitation
 
 Runtime build 2558 on PR131 ran 588 Windows cases: 519 passed and 69 failed.

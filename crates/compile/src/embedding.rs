@@ -3201,7 +3201,10 @@ while True:
         environment: ProcessEnvironment,
     ) -> Result<(PathBuf, EmbeddingRuntimeSpecV1, EmbeddingExecutable), Box<dyn std::error::Error>>
     {
-        let limits = ProcessLimits::new(256, 64, Duration::from_secs(2), 256)?
+        // Positive protocol fixtures need room for supervised Python startup
+        // under QEMU. Tests of deadline enforcement provide their own short
+        // limits and retain their exact timing assertions.
+        let limits = ProcessLimits::new(256, 64, Duration::from_secs(10), 256)?
             .with_input_bytes_limit(2_048)?;
         activate_fixture_with_limits(root, program, arguments, environment, limits)
     }
@@ -4044,7 +4047,10 @@ while True:
         fs::set_permissions(&program, fs::Permissions::from_mode(0o700))?;
         let executable = ToolchainArtifact::from_path(&program, Vec::new())?;
         let environment = ProcessEnvironment::new(vec![("PATH".into(), "/usr/bin:/bin".into())])?;
-        let limits = ProcessLimits::new(64, 64, Duration::from_millis(100), 128)?
+        // The 100 ms deadline below bounds the blocked write, not process
+        // creation. A 100 ms process lifetime could expire during startup
+        // before the test ever exercises that write (observed under QEMU).
+        let limits = ProcessLimits::new(64, 64, Duration::from_secs(5), 128)?
             .with_input_bytes_limit(2 * 1024 * 1024)?;
         let command = SupervisedCommand::for_authority_with_artifact(
             program,
