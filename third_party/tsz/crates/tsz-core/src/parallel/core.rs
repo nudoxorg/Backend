@@ -67,4 +67,5 @@ include!("core/merge_support.rs");
 include!("core/bind_result_reducer.rs");
 include!("core/checking.rs");
 
+include!("core/project_resolution_execution.rs");
 include!("core/project_checker_partitions.rs");

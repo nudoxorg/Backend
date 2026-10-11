@@ -337,6 +337,9 @@ impl CheckerState<'_> {
         extension_filter: Option<&FxHashSet<String>>,
     ) {
         for &stmt_idx in statements {
+            if self.ctx.types.execution_checkpoint(1).is_err() {
+                return;
+            }
             let Some(stmt_node) = self.ctx.arena.get(stmt_idx) else {
                 continue;
             };

@@ -268,7 +268,6 @@ impl std::error::Error for ProjectCheckerSessionError {}
 /// used to create this session.
 pub struct ProjectCheckerSession<'a> {
     plan: ParallelCheckPlan<'a>,
-    execution_checkpoint: &'a dyn tsz_common::ExecutionCheckpoint,
 }
 
 impl<'a> ProjectCheckerSession<'a> {
@@ -296,17 +295,12 @@ impl<'a> ProjectCheckerSession<'a> {
             Some(project_module_resolution_outcomes),
             Some(execution_checkpoint),
         );
-        execution_checkpoint
-            .checkpoint(0)
+        plan.checkpoint(0)
             .map_err(ProjectCheckerSessionError::ExecutionStopped)?;
         plan.prime_module_augmentation_bodies();
-        execution_checkpoint
-            .checkpoint(0)
+        plan.checkpoint(0)
             .map_err(ProjectCheckerSessionError::ExecutionStopped)?;
-        Ok(Self {
-            plan,
-            execution_checkpoint,
-        })
+        Ok(Self { plan })
     }
 
     /// Lend the exact configured checker for one file and its type database.
@@ -332,14 +326,12 @@ impl<'a> ProjectCheckerSession<'a> {
                 file_index,
                 file_count: self.plan.program.files.len(),
             })?;
-        self.execution_checkpoint
-            .checkpoint(0)
+        self.plan.checkpoint(0)
             .map_err(ProjectCheckerSessionError::ExecutionStopped)?;
         let output = self
             .plan
             .with_bound_file_checker_and_types(file_index, file, consume);
-        self.execution_checkpoint
-            .checkpoint(0)
+        self.plan.checkpoint(0)
             .map_err(ProjectCheckerSessionError::ExecutionStopped)?;
         Ok(output)
     }
@@ -726,12 +718,22 @@ pub fn check_files_parallel_with_project_inputs_and_execution_checkpoint(
     resolutions: &[ProjectModuleResolution],
     execution_checkpoint: &dyn tsz_common::ExecutionCheckpoint,
 ) -> Result<CheckResult, ProjectProgramCheckError> {
-    let outcomes = build_project_module_resolution_outcomes(program, resolutions)
-        .map_err(ProjectProgramCheckError::ModuleResolution)?;
+    let execution_scope = tsz_common::LatchedExecutionCheckpoint::new(execution_checkpoint);
+    let execution_checkpoint = &execution_scope as &dyn tsz_common::ExecutionCheckpoint;
     execution_checkpoint
         .checkpoint(0)
         .map_err(ProjectProgramCheckError::ExecutionStopped)?;
-    let result = check_files_parallel_with_optional_project_inputs(
+    let outcomes = build_project_module_resolution_outcomes_with_poll(
+        program,
+        resolutions,
+        |work| {
+            execution_checkpoint
+                .checkpoint(work)
+                .map_err(ProjectProgramCheckError::ExecutionStopped)
+        },
+        |path, poll| validate_project_virtual_path_with_poll(path, poll),
+    )?;
+    let plan = ParallelCheckPlan::build(
         program,
         checker_options,
         lib_files,
@@ -739,9 +741,23 @@ pub fn check_files_parallel_with_project_inputs_and_execution_checkpoint(
         Some(Arc::new(outcomes)),
         Some(execution_checkpoint),
     );
-    execution_checkpoint
-        .checkpoint(0)
+    let poll = || {
+        execution_checkpoint
+            .checkpoint(0)
+            .map_err(ProjectProgramCheckError::ExecutionStopped)
+    };
+    poll()?;
+    ensure_rayon_global_pool();
+    plan.prime_module_augmentation_bodies();
+    poll()?;
+    let mut file_results = plan.run_file_checks();
+    poll()?;
+    plan.run_lib_checks_with_execution_checkpoint(&mut file_results)
         .map_err(ProjectProgramCheckError::ExecutionStopped)?;
+    let result = plan
+        .aggregate_with_poll(file_results, |work| execution_checkpoint.checkpoint(work))
+        .map_err(ProjectProgramCheckError::ExecutionStopped)?;
+    poll()?;
     Ok(result)
 }
 
@@ -770,79 +786,12 @@ fn build_project_module_resolution_outcomes(
     resolutions: &[ProjectModuleResolution],
 ) -> Result<crate::checker::context::ResolvedModuleRequestOutcomeMap, ProjectModuleResolutionError>
 {
-    use crate::checker::context::{
-        ResolutionRequestKind, ResolvedModuleRequestOutcome, ResolvedModuleRequestOutcomeMap,
-    };
-
-    let mut file_indices = FxHashMap::default();
-    for (file_idx, file) in program.files.iter().enumerate() {
-        validate_project_virtual_path(&file.file_name)?;
-        if file_indices
-            .insert(file.file_name.as_str(), file_idx)
-            .is_some()
-        {
-            return Err(ProjectModuleResolutionError::DuplicateProgramPath {
-                path: file.file_name.clone(),
-            });
-        }
-    }
-
-    let mut outcomes = ResolvedModuleRequestOutcomeMap::default();
-    for resolution in resolutions {
-        validate_project_virtual_path(&resolution.importer_path)?;
-        let importer_idx = *file_indices
-            .get(resolution.importer_path.as_str())
-            .ok_or_else(|| ProjectModuleResolutionError::ImporterNotInProgram {
-                path: resolution.importer_path.clone(),
-            })?;
-        if resolution.specifier.is_empty() {
-            return Err(ProjectModuleResolutionError::EmptySpecifier);
-        }
-
-        let request_kind = match &resolution.request_kind {
-            ProjectModuleRequestKind::EsmImport => ResolutionRequestKind::EsmImport,
-            ProjectModuleRequestKind::DynamicImport => ResolutionRequestKind::DynamicImport,
-            ProjectModuleRequestKind::CjsRequire => ResolutionRequestKind::CjsRequire,
-            ProjectModuleRequestKind::EsmReExport => ResolutionRequestKind::EsmReExport,
-            ProjectModuleRequestKind::Unsupported { syntax_kind } => {
-                return Err(ProjectModuleResolutionError::UnsupportedRequestKind {
-                    syntax_kind: syntax_kind.clone(),
-                });
-            }
-        };
-        let outcome = match &resolution.target {
-            ProjectModuleResolutionTarget::File { path } => {
-                validate_project_virtual_path(path)?;
-                let target_idx = *file_indices.get(path.as_str()).ok_or_else(|| {
-                    ProjectModuleResolutionError::TargetNotInProgram { path: path.clone() }
-                })?;
-                ResolvedModuleRequestOutcome::File(target_idx)
-            }
-            ProjectModuleResolutionTarget::External { identity } => {
-                if identity.trim().is_empty() {
-                    return Err(ProjectModuleResolutionError::EmptyExternalIdentity);
-                }
-                ResolvedModuleRequestOutcome::External {
-                    identity: identity.clone(),
-                }
-            }
-            ProjectModuleResolutionTarget::Unresolved => ResolvedModuleRequestOutcome::Unresolved,
-        };
-        let key = (
-            importer_idx,
-            resolution.specifier.clone(),
-            resolution.resolution_mode,
-            request_kind,
-        );
-        if outcomes.insert(key, outcome).is_some() {
-            return Err(ProjectModuleResolutionError::DuplicateRequest {
-                importer_path: resolution.importer_path.clone(),
-                specifier: resolution.specifier.clone(),
-            });
-        }
-    }
-
-    Ok(outcomes)
+    build_project_module_resolution_outcomes_with_poll(
+        program,
+        resolutions,
+        |_| Ok(()),
+        |path, _poll| validate_project_virtual_path(path),
+    )
 }
 
 /// Project legacy post-processing's `(file, specifier)` view only from exact
@@ -946,7 +895,7 @@ struct ParallelCheckPlan<'a> {
     project_semantic_options: ProjectSemanticOptions,
     project_module_resolution_outcomes:
         Option<Arc<crate::checker::context::ResolvedModuleRequestOutcomeMap>>,
-    execution_checkpoint: Option<&'a dyn tsz_common::ExecutionCheckpoint>,
+    execution_scope: Option<tsz_common::LatchedExecutionCheckpoint<'a>>,
     resolved_module_paths: Arc<FxHashMap<(usize, String), usize>>,
     resolved_modules: Arc<FxHashSet<String>>,
     checker_lib_files: Vec<Arc<LibFile>>,
@@ -977,6 +926,10 @@ impl<'a> ParallelCheckPlan<'a> {
         >,
         execution_checkpoint: Option<&'a dyn tsz_common::ExecutionCheckpoint>,
     ) -> Self {
+        let execution_scope = execution_checkpoint.map(tsz_common::LatchedExecutionCheckpoint::new);
+        let execution_checkpoint = execution_scope
+            .as_ref()
+            .map(|scope| scope as &dyn tsz_common::ExecutionCheckpoint);
         let mut file_names = Vec::with_capacity(program.files.len());
         for file in &program.files {
             if !project_plan_checkpoint(execution_checkpoint, 1) {
@@ -1118,7 +1071,7 @@ impl<'a> ParallelCheckPlan<'a> {
             checker_options,
             project_semantic_options,
             project_module_resolution_outcomes,
-            execution_checkpoint,
+            execution_scope,
             resolved_module_paths,
             resolved_modules,
             checker_lib_files,
@@ -1132,6 +1085,17 @@ impl<'a> ParallelCheckPlan<'a> {
             affected_lib_interfaces,
             affected_lib_extension_interfaces,
         }
+    }
+
+    fn execution_control(&self) -> Option<&dyn tsz_common::ExecutionCheckpoint> {
+        self.execution_scope
+            .as_ref()
+            .map(|scope| scope as &dyn tsz_common::ExecutionCheckpoint)
+    }
+
+    fn checkpoint(&self, work_units: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+        self.execution_control()
+            .map_or(Ok(()), |scope| scope.checkpoint(work_units))
     }
 
     /// Build a per-worker `QueryCache`, attaching the shared cross-file cache
@@ -1153,7 +1117,7 @@ impl<'a> ParallelCheckPlan<'a> {
         let cache = cache
             .with_project_semantic_options(self.project_semantic_options)
             .with_definition_store(&self.program.definition_store);
-        match self.execution_checkpoint {
+        match self.execution_control() {
             Some(checkpoint) => cache.with_execution_checkpoint(checkpoint),
             None => cache,
         }
@@ -1166,7 +1130,7 @@ impl<'a> ParallelCheckPlan<'a> {
 
         let file = &self.program.files[0];
         if self
-            .execution_checkpoint
+            .execution_control()
             .is_some_and(|checkpoint| checkpoint.checkpoint(1).is_err())
         {
             return;
@@ -1174,7 +1138,7 @@ impl<'a> ParallelCheckPlan<'a> {
         self.with_bound_file_checker_and_types(0, file, |checker, _binder, _file, _types| {
             checker.prime_module_augmentation_bodies();
         });
-        if let Some(checkpoint) = self.execution_checkpoint {
+        if let Some(checkpoint) = self.execution_control() {
             let _ = checkpoint.checkpoint(0);
         }
     }
@@ -1404,6 +1368,18 @@ impl<'a> ParallelCheckPlan<'a> {
         self.lib_file_result(lib_idx, lib_file, diagnostics)
     }
 
+    fn make_lib_baseline_query_cache(&self) -> tsz_solver::construction::QueryCache<'_> {
+        // Baseline remains isolated from the augmented/shared L2 cache, but
+        // must observe the same execution budget as the augmented lib run.
+        let query_cache = tsz_solver::construction::QueryCache::new(&self.program.type_interner)
+            .with_project_semantic_options(self.project_semantic_options)
+            .with_definition_store(&self.program.definition_store);
+        match self.execution_control() {
+            Some(checkpoint) => query_cache.with_execution_checkpoint(checkpoint),
+            None => query_cache,
+        }
+    }
+
     /// Check a lib file in isolation to capture its pre-existing diagnostics.
     ///
     /// The resulting diagnostics form the baseline that [`check_one_lib`] output
@@ -1414,9 +1390,7 @@ impl<'a> ParallelCheckPlan<'a> {
             return self.lib_file_result(lib_idx, lib_file, Vec::new());
         }
 
-        let query_cache = tsz_solver::construction::QueryCache::new(&self.program.type_interner)
-            .with_project_semantic_options(self.project_semantic_options)
-            .with_definition_store(&self.program.definition_store);
+        let query_cache = self.make_lib_baseline_query_cache();
 
         let mut checker = CheckerState::with_options(
             &lib_file.arena,
@@ -1516,29 +1490,50 @@ impl<'a> ParallelCheckPlan<'a> {
 
     /// Apply cross-file augmentation diagnostics and fold per-file results into
     /// the final [`CheckResult`].
-    fn aggregate(&self, mut file_results: Vec<FileCheckResult>) -> CheckResult {
+    fn aggregate(&self, file_results: Vec<FileCheckResult>) -> CheckResult {
+        self.aggregate_with_poll(file_results, |_| Ok::<(), std::convert::Infallible>(()))
+            .unwrap_or_else(|never| match never {})
+    }
+
+    // Whole augmentation/suppression passes are cooperative boundaries. Their
+    // existing internal walks are not force-interruptible; no partial result is
+    // returned when a stop is observed after a pass.
+    fn aggregate_with_poll<E>(
+        &self,
+        mut file_results: Vec<FileCheckResult>,
+        mut poll: impl FnMut(u64) -> Result<(), E>,
+    ) -> Result<CheckResult, E> {
+        poll(0)?;
         add_reexported_module_augmentation_enum_conflict_diagnostics(
             self.program,
             self.resolved_module_paths.as_ref(),
             &mut file_results,
         );
+        poll(0)?;
         suppress_parallel_import_shadowing_namespace_type_diagnostics(
             self.program,
             self.resolved_module_paths.as_ref(),
             &mut file_results,
         );
+        poll(0)?;
         add_parallel_global_augmentation_member_conflict_diagnostics(
             self.program,
             &mut file_results,
         );
 
-        let diagnostic_count: usize = file_results.iter().map(|r| r.diagnostics.len()).sum();
+        poll(0)?;
+        let mut diagnostic_count = 0;
+        for result in &file_results {
+            poll(1)?;
+            diagnostic_count += result.diagnostics.len();
+        }
+        poll(0)?;
 
-        CheckResult {
+        Ok(CheckResult {
             file_results,
             function_count: 0,
             diagnostic_count,
-        }
+        })
     }
 }
 
