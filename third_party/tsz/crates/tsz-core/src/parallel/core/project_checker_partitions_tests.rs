@@ -298,10 +298,11 @@ fn stop_after_completed_file_prevents_starting_later_partition_files() {
     )
     .unwrap();
     let mut completed = Vec::new();
-    let result = plan.check_file_partition_observing_completion(0, &program.files, |index| {
-        completed.push(index);
-        cancelled.store(true, Ordering::Release);
-    });
+    let result =
+        plan.check_file_partition_observing_completion(0, &program.files, &|_| {}, |index| {
+            completed.push(index);
+            cancelled.store(true, Ordering::Release);
+        });
     assert!(matches!(result, Err(ProjectExecutionStop::Cancelled)));
     assert_eq!(
         completed,
@@ -746,4 +747,167 @@ fn library_name_index_stop_drops_partial_names_and_legacy_index_is_unchanged() {
     .unwrap()
     .unwrap();
     assert_eq!(complete, expected);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn two_worker_cold_consumer_finishes_before_interface_owner_starts() {
+    use std::sync::{Mutex, mpsc};
+    let semantic = ProjectSemanticOptions::declaration_scoped();
+    let binds = parse_and_bind_parallel_with_libs(vec![
+        ("src/consumer.ts".to_owned(), "import type { Derived } from './owner'; export function inherited(value: Derived<number>): number { return value.base; }".to_owned()),
+        ("src/owner.ts".to_owned(), "export interface Base<T> { base: T } export interface Derived<T> extends Base<T> { own: T }".to_owned()),
+    ], &[]);
+    let refs = binds.iter().collect::<Vec<_>>();
+    let program = merge_bind_results_ref_with_project_semantic_options(&refs, semantic);
+    assert_eq!(program.files[0].file_name, "src/consumer.ts");
+    assert_eq!(program.files[1].file_name, "src/owner.ts");
+    let options = CheckerOptions::default();
+    let resolutions = [ProjectModuleResolution {
+        importer_path: "src/consumer.ts".to_owned(),
+        specifier: "./owner".to_owned(),
+        request_kind: ProjectModuleRequestKind::EsmImport,
+        resolution_mode: None,
+        target: ProjectModuleResolutionTarget::File {
+            path: "src/owner.ts".to_owned(),
+        },
+    }];
+    let cancelled = AtomicBool::new(false);
+    let budget = execution_budget(&cancelled);
+    let (sender, receiver) = mpsc::channel();
+    let receiver = Mutex::new(receiver);
+    let (owner_entered_sender, owner_entered_receiver) = mpsc::channel();
+    let owner_entered_receiver = Mutex::new(owner_entered_receiver);
+    let consumer_complete = AtomicBool::new(false);
+    let owner_started_after_consumer = AtomicBool::new(false);
+    let threads = Mutex::new(Vec::new());
+    let starting = |index| {
+        threads
+            .lock()
+            .unwrap()
+            .push(std::thread::current().name().unwrap().to_owned());
+        if index == 0 {
+            owner_entered_receiver
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(10))
+                .expect("provider gate must occupy the other real private worker");
+        } else if index == 1 {
+            owner_entered_sender.send(()).unwrap();
+            receiver
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(10))
+                .expect("consumer must finish on the other admitted worker");
+            assert!(consumer_complete.load(Ordering::Acquire));
+            owner_started_after_consumer.store(true, Ordering::Release);
+        }
+    };
+    let completed = |index| {
+        if index == 0 {
+            consumer_complete.store(true, Ordering::Release);
+            sender.send(()).unwrap();
+        }
+    };
+    let result = check_project_partitions_observing_file_boundaries(
+        ProjectCheckerInputs {
+            program: &program,
+            options: &options,
+            libraries: &[],
+            semantics: semantic,
+            resolutions: &resolutions,
+        },
+        ProjectCheckerExecution {
+            checkpoint: &budget,
+            workers: NonZeroUsize::new(2).unwrap(),
+        },
+        &starting,
+        &completed,
+    )
+    .expect("complete real two-worker check");
+    assert!(consumer_complete.load(Ordering::Acquire));
+    assert!(owner_started_after_consumer.load(Ordering::Acquire));
+    let threads = threads.lock().unwrap();
+    assert_eq!(threads.len(), 2);
+    assert!(
+        threads
+            .iter()
+            .all(|name| name == "tsz-checker-0" || name == "tsz-checker-1")
+    );
+    assert_ne!(
+        threads[0], threads[1],
+        "the bounded gate requires two real private workers"
+    );
+    assert_eq!(result.file_results.len(), 2);
+    assert_eq!(
+        result.diagnostic_count, 0,
+        "cold function-annotation inherited member must resolve before provider checking: {:?}",
+        result.file_results
+    );
+    assert!(
+        result
+            .file_results
+            .iter()
+            .all(|file| file.diagnostics.is_empty())
+    );
+}
+
+#[test]
+fn exhausted_library_materialization_rolls_back_completed_library_pushes() {
+    let (program, libs, options) = pristine_library_fixture();
+    let cancelled = AtomicBool::new(false);
+    let budget = execution_budget(&cancelled);
+    let plan = ParallelCheckPlan::build(
+        &program,
+        &options,
+        &libs,
+        ProjectSemanticOptions::declaration_scoped(),
+        Some(Arc::new(
+            build_project_module_resolution_outcomes(&program, &[]).unwrap(),
+        )),
+        Some(&budget),
+    )
+    .unwrap();
+    assert!(plan.affected_lib_interfaces.contains("Shared"));
+    let mut results = vec![plan.lib_file_result(
+        99,
+        &libs[0],
+        vec![Diagnostic::error(
+            "sentinel.ts",
+            7,
+            1,
+            "previous complete file",
+            2322,
+        )],
+    )];
+    let original = results[0].diagnostics.clone();
+    let mut completed = Vec::new();
+    let stop = plan.run_lib_checks_observing_completion(&mut results, |completion| {
+        completed.push(completion);
+        if completion == LibraryCheckCompletion::Augmented(1) {
+            let remaining = budget.remaining_work_units();
+            assert!(remaining > 1);
+            budget.checkpoint(remaining - 1).unwrap();
+        }
+    });
+    assert_eq!(
+        completed,
+        [
+            LibraryCheckCompletion::Baseline(0),
+            LibraryCheckCompletion::Baseline(1),
+            LibraryCheckCompletion::Augmented(0),
+            LibraryCheckCompletion::Augmented(1)
+        ]
+    );
+    assert!(matches!(
+        stop,
+        Err(ProjectExecutionStop::WorkBudgetExhausted)
+    ));
+    assert_eq!(
+        budget.remaining_work_units(),
+        0,
+        "first completed library consumed the remaining move allowance before second push stopped"
+    );
+    assert_eq!(results.len(), 1, "append failure rolls back library pushes");
+    assert_eq!(results[0].diagnostics, original);
 }

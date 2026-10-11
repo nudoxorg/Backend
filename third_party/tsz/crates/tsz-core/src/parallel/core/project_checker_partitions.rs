@@ -81,6 +81,15 @@ fn check_project_partitions_observing_completion(
     execution: ProjectCheckerExecution<'_>,
     completed: &(impl Fn(usize) + Sync),
 ) -> std::result::Result<CheckResult, ProjectPartitionCheckError> {
+    check_project_partitions_observing_file_boundaries(inputs, execution, &|_| {}, completed)
+}
+
+fn check_project_partitions_observing_file_boundaries(
+    inputs: ProjectCheckerInputs<'_>,
+    execution: ProjectCheckerExecution<'_>,
+    starting: &(impl Fn(usize) + Sync),
+    completed: &(impl Fn(usize) + Sync),
+) -> std::result::Result<CheckResult, ProjectPartitionCheckError> {
     let ProjectCheckerInputs {
         program,
         options: checker_options,
@@ -129,6 +138,7 @@ fn check_project_partitions_observing_completion(
             plan.check_file_partition_observing_completion(
                 partition_idx * partition_size,
                 files,
+                starting,
                 completed,
             )
         };
@@ -247,12 +257,18 @@ impl ParallelCheckPlan<'_> {
             }
         }
         poll(0)?;
-        // The final complete-library vector append is one indivisible move
-        // boundary. An Err above leaves the caller's result contents intact;
-        // the outer project operation polls immediately after this append and
-        // discards its entire local result if a stop arrived during the move.
-        file_results.extend(library_results);
-        Ok(())
+        let previous_len = file_results.len();
+        let appended = (|| {
+            for result in library_results {
+                poll(1)?;
+                file_results.push(result);
+            }
+            poll(0)
+        })();
+        if appended.is_err() {
+            file_results.truncate(previous_len);
+        }
+        appended
     }
 
     #[cfg(test)]
@@ -261,13 +277,14 @@ impl ParallelCheckPlan<'_> {
         first_file_idx: usize,
         files: &[BoundFile],
     ) -> std::result::Result<Vec<FileCheckResult>, tsz_common::ProjectExecutionStop> {
-        self.check_file_partition_observing_completion(first_file_idx, files, |_| {})
+        self.check_file_partition_observing_completion(first_file_idx, files, &|_| {}, |_| {})
     }
 
     fn check_file_partition_observing_completion(
         &self,
         first_file_idx: usize,
         files: &[BoundFile],
+        starting: &(impl Fn(usize) + Sync),
         mut completed: impl FnMut(usize),
     ) -> std::result::Result<Vec<FileCheckResult>, tsz_common::ProjectExecutionStop> {
         let poll = || self.checkpoint(0);
@@ -291,6 +308,7 @@ impl ParallelCheckPlan<'_> {
                     file_idx,
                 );
             }
+            starting(file_idx);
             // Reset/switch may clear large local maps. Poll again so a stop
             // observed during that boundary cannot start the next file.
             poll()?;
