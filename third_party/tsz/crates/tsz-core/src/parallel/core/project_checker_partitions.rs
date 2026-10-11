@@ -247,10 +247,15 @@ impl ParallelCheckPlan<'_> {
             }
         }
         poll(0)?;
+        // The final complete-library vector append is one indivisible move
+        // boundary. An Err above leaves the caller's result contents intact;
+        // the outer project operation polls immediately after this append and
+        // discards its entire local result if a stop arrived during the move.
         file_results.extend(library_results);
         Ok(())
     }
 
+    #[cfg(test)]
     fn check_file_partition(
         &self,
         first_file_idx: usize,

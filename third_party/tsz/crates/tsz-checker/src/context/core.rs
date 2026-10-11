@@ -37,6 +37,9 @@ pub fn build_lib_file_local_names(lib_contexts: &[LibContext]) -> Option<Arc<FxH
 
 /// Build the exact library-name index under the caller's cooperative control.
 /// A stop discards the local index; no incomplete name set is returned.
+///
+/// # Errors
+/// Returns the exact caller polling error before publishing a name set.
 pub fn build_lib_file_local_names_with_poll<E>(
     lib_contexts: &[LibContext],
     mut poll: impl FnMut(u64) -> Result<(), E>,
