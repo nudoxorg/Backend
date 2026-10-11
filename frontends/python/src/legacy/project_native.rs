@@ -191,18 +191,21 @@ pub(super) fn analyze(
                     for component in module.as_str().split('.').filter(|part| !part.is_empty()) {
                         prefix.push(component);
                         let mut paths = vec![
-                            (prefix.clone(), true),
-                            (prefix.join("__init__.pyi"), true),
-                            (prefix.join("__init__.py"), true),
-                            (prefix.with_extension("pyi"), true),
-                            (prefix.with_extension("py"), true),
+                            (prefix.clone(), ImportCandidateKind::NamespaceDirectory),
+                            (prefix.join("__init__.pyi"), ImportCandidateKind::PythonSource),
+                            (prefix.join("__init__.py"), ImportCandidateKind::PythonSource),
+                            (prefix.with_extension("pyi"), ImportCandidateKind::PythonSource),
+                            (prefix.with_extension("py"), ImportCandidateKind::PythonSource),
                         ];
                         paths.extend(
-                            pyrefly_python::COMPILED_FILE_SUFFIXES
-                                .iter()
-                                .map(|suffix| (prefix.with_extension(suffix), false)),
+                            pyrefly_python::COMPILED_FILE_SUFFIXES.iter().map(|suffix| {
+                                (
+                                    prefix.with_extension(suffix),
+                                    ImportCandidateKind::CompiledExtension,
+                                )
+                            }),
                         );
-                        for (captured_path, requires_source_capture) in paths {
+                        for (captured_path, kind) in paths {
                             checkpoint(control)?;
                             let Some(path) = layout.original_source(&captured_path, original_root)
                             else {
@@ -228,16 +231,22 @@ pub(super) fn analyze(
                             let relative = path
                                 .strip_prefix(original_root)
                                 .expect("configured package-local root");
-                            if probe.is_present() && !requires_source_capture {
+                            if kind == ImportCandidateKind::CompiledExtension && probe.is_file() {
                                 compiled_imports.insert((
                                     source.relative_path,
                                     import.span.start,
                                     import.span.end,
                                 ));
                             }
-                            if requires_source_capture
-                                && probe.is_present()
-                                && !mirror.join(relative).exists()
+                            // A directory is a namespace membership candidate, not
+                            // evidence that Python source bytes were omitted. In
+                            // particular an excluded, uninitialized `venv/` beside
+                            // `import venv` must not reject the standard-library
+                            // import. The original node kind still enters the
+                            // candidate witness and is revalidated before publish.
+                            if kind == ImportCandidateKind::PythonSource
+                                && probe.is_file()
+                                && !mirror.join(relative).is_file()
                             {
                                 return Err(CheckerError::IncompleteSourceFrontier {
                                     source_path: source.relative_path.into(),
@@ -853,6 +862,17 @@ fn annotated_function_returns(
     Ok(sites)
 }
 
+/// Candidate shape is separate from the observed filesystem node kind.
+/// Only an actual regular Python source requires captured source authority;
+/// directories witness namespace membership and compiled files have no Python
+/// source authority. Symlinks and special nodes remain refused by the witness.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ImportCandidateKind {
+    NamespaceDirectory,
+    PythonSource,
+    CompiledExtension,
+}
+
 struct ImportProbe {
     binding: String,
     module: ModuleName,
@@ -1187,7 +1207,7 @@ fn captured_finder(
     let mut effective = BTreeMap::new();
     let mut scope_identity = blake3::Hasher::new();
     scope_identity.update(b"compiler.python.effective-config-scope.v1\0");
-    scope_identity.update(b"root-isolated;named-package-import-root.v1;captured-diagnostic-baseline.v1;native-priority;candidate-presence+absence;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
+    scope_identity.update(b"root-isolated;named-package-import-root.v1;captured-diagnostic-baseline.v1;native-priority;candidate-kind+presence+absence;namespace-membership-only.v2;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
     for directory in directories {
         let mut candidates = Vec::new();
         for (depth, ancestor) in directory

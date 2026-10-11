@@ -561,8 +561,8 @@ impl CandidateWitness {
         Ok(Self { path, kind })
     }
 
-    pub(super) fn is_present(&self) -> bool {
-        self.kind.is_some()
+    pub(super) fn is_file(&self) -> bool {
+        self.kind == Some(false)
     }
 
     fn validate_current(&self) -> Result<(), CheckerError> {
