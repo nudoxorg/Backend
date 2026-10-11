@@ -169,6 +169,7 @@ pub fn encode_answer(
                     identity: IdentityDto::new(page.identity()),
                     kind: page.kind().map(|kind| kind.name().to_owned()),
                     language: page.language().name().to_owned(),
+                    signature: page.signature().map(crate::signature::Signature::text),
                 },
                 budget,
             ),
@@ -511,6 +512,8 @@ struct SummaryPageDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     kind: Option<String>,
     language: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signature: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -543,7 +546,7 @@ struct SummaryShelfEntryDto {
     readiness: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     rows: Option<u64>,
-    declarations: u64,
+    declarations: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     fault: Option<FaultDto>,
 }
@@ -620,6 +623,48 @@ impl Write for CountingWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usability_document_summary_retains_the_standard_signature() {
+        let page = crate::page::Page::new(
+            crate::Identity::parse("/abs/app::src/entry.ts:1::entrySummary"),
+            Some(backend_library::DeclarationKind::Function),
+            crate::page::Source::Absent {
+                fault: crate::Fault::lane(
+                    backend_library::Lane::Exact,
+                    backend_library::Reason::NoIndex,
+                ),
+            },
+        )
+        .with_signature(crate::signature::Signature::tokenize(
+            "function entrySummary(entry: Entry): string",
+            crate::Language::TypeScript,
+        ));
+        let answer = Answer::Page(Box::new(page));
+        let summary = encode_answer(
+            &answer,
+            Detail::Summary,
+            None,
+            DEFAULT_RESPONSE_BUDGET_BYTES,
+        )
+        .expect("summary fits");
+        let standard = encode_answer(
+            &answer,
+            Detail::Standard,
+            None,
+            DEFAULT_RESPONSE_BUDGET_BYTES,
+        )
+        .expect("standard fits");
+        let summary: Value = serde_json::from_slice(&summary.bytes).expect("summary JSON");
+        let standard: Value = serde_json::from_slice(&standard.bytes).expect("standard JSON");
+        assert_eq!(summary["identity"], standard["identity"]);
+        assert_eq!(summary["signature"], standard["signature"]);
+        assert_eq!(
+            summary["signature"],
+            "function entrySummary(entry: Entry): string"
+        );
+        assert!(summary.get("source").is_none());
+    }
 
     fn membership_answer(count: usize, path_bytes: usize) -> Answer {
         let package = backend_library::PackageReference::parse("budget-fixture")

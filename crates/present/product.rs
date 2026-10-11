@@ -51,6 +51,7 @@ pub struct ProductRecord {
     local_declaration: Option<LocalDeclarationSearchRecord>,
     history_status: Option<ProductSemanticHistoryStatus>,
     compiler_profile: Option<SemanticLanguageProfile>,
+    extent: Option<backend_library::DeclarationReadExtent>,
 }
 
 impl ProductRecord {
@@ -70,7 +71,24 @@ impl ProductRecord {
             local_declaration: None,
             history_status: None,
             compiler_profile: None,
+            extent: None,
         }
+    }
+
+    /// Retains the source completeness reported by the batch read authority.
+    #[must_use]
+    pub fn with_extent(mut self, extent: backend_library::DeclarationReadExtent) -> Self {
+        let mut tags = self.tags.into_vec();
+        tags.push(format!("extent: {}", extent.name()));
+        self.tags = tags.into_boxed_slice();
+        self.extent = Some(extent);
+        self
+    }
+
+    /// Returns source completeness for a batch read, when captured.
+    #[must_use]
+    pub const fn extent(&self) -> Option<backend_library::DeclarationReadExtent> {
+        self.extent
     }
 
     /// Attaches typed native registry facts to one registry row.
@@ -2547,14 +2565,18 @@ fn declaration_row(record: &DeclarationRecord) -> ProductRecord {
         || vec!["not found".to_owned()],
         |id| vec![format!("key {}", KeyTag::from_key(&id))],
     );
-    ProductRecord::new(
+    let row = ProductRecord::new(
         record.signature.as_ref().map_or_else(
             || record.label.as_str().to_owned(),
             |signature| signature.as_str().to_owned(),
         ),
         Some(record.label.as_str().to_owned()),
         tags,
-    )
+    );
+    match record.extent {
+        Some(extent) => row.with_extent(extent),
+        None => row,
+    }
 }
 
 /// Renders one source-verified use of the queried declaration.
@@ -2887,6 +2909,53 @@ fn operand(package: &PackageReference) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usability_batch_read_extent_survives_json_and_both_text_surfaces() {
+        for extent in [
+            backend_library::DeclarationReadExtent::Complete,
+            backend_library::DeclarationReadExtent::Truncated,
+        ] {
+            let reply = SurfaceReply::Read(Box::new([DeclarationRecord {
+                label: backend_library::ProductText::new(
+                    "/abs/app::src/weight.ts:1::WeightBurndownComponent",
+                )
+                .expect("coordinate"),
+                stable_id: Some([7; 32]),
+                signature: Some(
+                    backend_library::ProductText::new(
+                        "class WeightBurndownComponent { /* bounded source",
+                    )
+                    .expect("source"),
+                ),
+                extent: Some(extent),
+            }]));
+            let view = product_view(&reply);
+            let marker = format!("extent: {}", extent.name());
+            assert!(crate::render::text::product(&view, crate::Theme::plain()).contains(&marker));
+            assert!(crate::render::markdown::product(&view).contains(&marker));
+            for detail in [
+                crate::Detail::Summary,
+                crate::Detail::Standard,
+                crate::Detail::Full,
+            ] {
+                let encoded = crate::encode_answer(
+                    &crate::Answer::Product(Box::new(view.clone())),
+                    detail,
+                    None,
+                    crate::DEFAULT_RESPONSE_BUDGET_BYTES,
+                )
+                .expect("bounded read fits");
+                let json: serde_json::Value =
+                    serde_json::from_slice(&encoded.bytes).expect("typed read JSON");
+                assert_eq!(json["records"][0]["extent"], extent.name());
+                assert_eq!(
+                    json["records"][0]["operand"],
+                    "/abs/app::src/weight.ts:1::WeightBurndownComponent"
+                );
+            }
+        }
+    }
     use backend_library::{
         PackageCoordinate, PackageReference, RegistryDownloadCount, RegistryEcosystem,
         RegistryFactAvailability, RegistryNativeMetadata, RegistryPackageSearchGroup,

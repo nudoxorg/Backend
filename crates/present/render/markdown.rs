@@ -316,8 +316,12 @@ pub fn shelf(shelf: &Shelf) -> String {
         if let Readiness::Indexing { rows } = entry.readiness() {
             let _ = write!(head, " · {} row(s)", rows.get());
         }
-        if entry.declarations().get() > 0 {
-            let _ = write!(head, " · {} declaration(s)", entry.declarations().get());
+        match entry.declarations() {
+            Some(count) if count.get() > 0 => {
+                let _ = write!(head, " · {} declaration(s)", count.get());
+            }
+            Some(_) => {}
+            None => head.push_str(" · declaration count unavailable"),
         }
         for language in entry.languages() {
             let _ = write!(

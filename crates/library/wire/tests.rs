@@ -1831,6 +1831,108 @@ fn dto_versions_and_outer_fields_are_strict() {
 }
 
 #[test]
+fn usability_batch_read_wire_extent_is_versioned_and_older_records_stay_honest() {
+    use crate::{DeclarationReadExtent, DeclarationRecord, ProductText, SurfaceReply};
+    let legacy_record = serde_json::json!({
+        "label": "WeekService", "stable_id": null, "signature": "class WeekService {}"
+    });
+    let decoded: DeclarationRecord =
+        serde_json::from_value(legacy_record.clone()).expect("older record omits extent");
+    assert_eq!(decoded.extent, None, "absence cannot claim complete source");
+    assert_eq!(
+        serde_json::to_value(&decoded).expect("old shape"),
+        legacy_record
+    );
+    for extent in [
+        DeclarationReadExtent::Complete,
+        DeclarationReadExtent::Truncated,
+    ] {
+        let record = DeclarationRecord {
+            label: ProductText::new("WeekService").expect("label"),
+            stable_id: Some([8; 32]),
+            signature: Some(ProductText::new("class WeekService {").expect("source")),
+            extent: Some(extent),
+        };
+        let reply = ReplyDto::new(
+            41,
+            CommandReply::Surface(SurfaceReply::Read(Box::new([record]))),
+        );
+        let encoded = serde_json::to_vec(&reply).expect("current wire read");
+        let decoded = crate::wire::decode_reply_body(&encoded).expect("strict current decode");
+        assert_eq!(decoded, reply);
+        assert!(crate::reply_memory_bound(&reply) >= encoded.len());
+        let mut old: serde_json::Value = serde_json::from_slice(&encoded).expect("read JSON");
+        assert_eq!(old["version"], DTO_VERSION);
+        old["version"] = serde_json::json!(26);
+        let error = serde_json::from_value::<ReplyDto>(old)
+            .expect_err("old live DTO refused")
+            .to_string();
+        assert!(error.contains("reply DTO version 26"));
+        assert!(error.contains(&format!("this build supports {DTO_VERSION}")));
+    }
+    let grammar = crate::JournalViewGrammarV3::from_checked_container(3).expect("checked grammar");
+    for historical in 21..=26 {
+        grammar
+            .check_envelope_version(historical)
+            .expect("maintained journal law");
+    }
+    grammar
+        .check_envelope_version(DTO_VERSION)
+        .expect("current journal law");
+    assert!(grammar.check_envelope_version(20).is_err());
+    assert!(grammar.check_envelope_version(DTO_VERSION + 1).is_err());
+    let basis = Basis::new(
+        view_state_root(&[]),
+        object_version(b"journal-26-read-extent-control"),
+    );
+    let root = ViewRoot::empty_checked(
+        view_key(b"journal-26-read-extent-control"),
+        basis,
+        Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+        capability(basis.object),
+    )
+    .expect("checked empty producer snapshot");
+    let snapshot = ViewDto::new(
+        0,
+        ViewSnapshot {
+            root: root.clone(),
+            freshness: Freshness::Current,
+            next: None,
+            graph_relations: None,
+            rich_graph: None,
+        },
+    )
+    .with_certificate(certificate(&root));
+    let mut historical = serde_json::to_value(&snapshot).expect("current snapshot JSON");
+    historical["version"] = serde_json::json!(26);
+    let bytes = serde_json::to_vec(&historical).expect("historical snapshot JSON");
+    let restored = grammar
+        .decode_snapshot(&bytes, capability(basis.object))
+        .expect("strict historical26 journal snapshot");
+    assert_eq!(restored.snapshot.root, root);
+    assert!(
+        ViewDto::decode_with_certificate(&bytes, Some(capability(basis.object))).is_err(),
+        "journal compatibility cannot authorize an old live peer"
+    );
+
+    for (stable_id, signature) in [
+        (None, Some(ProductText::new("source").expect("text"))),
+        (Some([8; 32]), None),
+    ] {
+        let invalid = SurfaceReply::Read(Box::new([DeclarationRecord {
+            label: ProductText::new("WeekService").expect("label"),
+            stable_id,
+            signature,
+            extent: Some(DeclarationReadExtent::Truncated),
+        }]));
+        assert_eq!(
+            invalid.admit(crate::CommandId::Read),
+            Err(crate::ProductAdmissionError::DeclarationReadShape)
+        );
+    }
+}
+
+#[test]
 fn subscription_projection_rejects_cursor_mutation_and_unknown_fields() {
     let previous = Cursor::new();
     let subscription = SubscriptionDto::try_events(previous, previous, Vec::<EventDto>::new())

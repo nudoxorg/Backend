@@ -248,7 +248,8 @@ pub use source_membership::{
 };
 pub use surface::{
     AuthorityClassFact, AuthorityPhaseFact, CompilerAuthorityDiagnosticFacts, CompilerLanguageFact,
-    CompilerNativeToolFact, CompilerStageFact, DeclarationChange, DeclarationRecord, DiffRecord,
+    CompilerNativeToolFact, CompilerStageFact, DeclarationChange, DeclarationReadExtent,
+    DeclarationRecord, DiffRecord,
     ForgeDiscoveryCandidate, ForgeFact, ForgeManifestRecord, ForgePackageDetailRecord,
     ForgePackageManifestDetail, ForgePackagePin, ForgePackageRecord, ForgePackageRegistryEvidence,
     ForgeRepositoryMetadataRecord, IndexCancelReceipt, IndexCancelStatus, IndexJobObservation,

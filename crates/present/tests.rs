@@ -1018,6 +1018,58 @@ fn the_shelf_states_readiness_for_every_project() {
 }
 
 #[test]
+fn usability_package_only_shelf_keeps_readiness_and_marks_count_unavailable() {
+    let basis = basis();
+    let package = backend_library::Row::new(RowId::Package(package_key(PROJECT)), basis, PROJECT);
+    let root = backend_library::ViewRoot::new_incomplete(
+        backend_library::view_key(b"package-only-count-control"),
+        basis,
+        backend_library::Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+        vec![package],
+        vec![Coverage::Unavailable {
+            lane: Lane::Exact,
+            reason: Reason::NoIndex,
+        }],
+    )
+    .expect("explicit incomplete fixture");
+    let shelf = shelf_from_root(&root, KeyTag::from_key(&[1; 32]));
+    assert_eq!(shelf.entries()[0].readiness(), &Readiness::Ready);
+    assert_eq!(shelf.entries()[0].declarations(), None);
+    assert!(text::shelf(&shelf, Theme::plain()).contains("declaration count unavailable"));
+    assert!(markdown::shelf(&shelf).contains("declaration count unavailable"));
+    for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+        let encoded = encode_answer(
+            &Answer::Shelf(Box::new(shelf.clone())),
+            detail,
+            None,
+            DEFAULT_RESPONSE_BUDGET_BYTES,
+        )
+        .expect("shelf fits");
+        let json: serde_json::Value = serde_json::from_slice(&encoded.bytes).expect("shelf JSON");
+        assert_eq!(json["projects"][0]["readiness"], "ready");
+        assert!(json["projects"][0]["declarations"].is_null());
+    }
+    let known =
+        ShelfEntry::new(Identity::parse(PROJECT), Readiness::Ready).with_languages(Vec::new());
+    assert_eq!(known.declarations().map(RowCount::get), Some(0));
+    let declarations =
+        backend_library::Row::new(RowId::Symbol(symbol_key(DECLARATION)), basis, DECLARATION);
+    let full = backend_library::ViewRoot::new_incomplete(
+        backend_library::view_key(b"declaration-count-control"),
+        basis,
+        backend_library::Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+        vec![root.rows()[0].clone(), declarations],
+        Vec::new(),
+    )
+    .expect("explicit incomplete fixture with declaration evidence");
+    let shelf = shelf_from_root(&full, KeyTag::from_key(&[2; 32]));
+    assert_eq!(
+        shelf.entries()[0].declarations().map(RowCount::get),
+        Some(1)
+    );
+}
+
+#[test]
 fn an_empty_graph_names_the_missing_edges() {
     let list = RecordList::new(
         "/abs/pkg::session.h:1::Session",
