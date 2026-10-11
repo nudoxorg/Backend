@@ -140,13 +140,33 @@ fn timed_stat(timing: Option<&TransactionTimingCounters>, f: impl FnOnce() -> bo
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CachedNodeKind {
+    File,
+    Directory,
+    Other,
+}
+
+impl CachedNodeKind {
+    fn from_file_type(kind: std::fs::FileType) -> Self {
+        if kind.is_file() {
+            Self::File
+        } else if kind.is_dir() {
+            Self::Directory
+        } else {
+            Self::Other
+        }
+    }
+}
+
 /// Cache of directory listings to avoid repeated stat() calls during module resolution.
 ///
 /// Each directory is read at most once via readdir(). Subsequent lookups for files
 /// in that directory use the cached entry set. This is especially beneficial on
 /// FUSE/EdenFS where stat() calls have high latency.
 ///
-/// Entries store the file type (is_dir) alongside the name. On Linux this comes
+/// Entries distinguish regular files, directories, and other filesystem nodes.
+/// On Linux this comes
 /// from d_type in the dirent struct, so DirEntry::file_type() requires no extra
 /// stat call. Symlinks are followed via metadata() (stat) to determine the true
 /// type of the target, preserving the behavior of the old path.is_dir() checks.
@@ -154,7 +174,7 @@ fn timed_stat(timing: Option<&TransactionTimingCounters>, f: impl FnOnce() -> bo
 /// The cache lives inside `LoaderFindCache` and is never invalidated —
 /// file-change events cause `invalidate_find` to replace loaders in the state.
 pub struct DirEntryCache {
-    cache: LockedMap<PathBuf, Option<Arc<SmallMap<OsString, bool>>>>,
+    cache: LockedMap<PathBuf, Option<Arc<SmallMap<OsString, CachedNodeKind>>>>,
     enabled: bool,
 }
 
@@ -180,13 +200,13 @@ impl DirEntryCache {
 
     pub fn file_exists(&self, path: &Path) -> bool {
         if !self.enabled {
-            return path.exists();
+            return path.is_file();
         }
         match (path.parent(), path.file_name()) {
             (Some(parent), Some(name)) => self
                 .get_entries(parent)
-                .is_some_and(|entries| matches!(entries.get(name), Some(false))),
-            _ => path.exists(),
+                .is_some_and(|entries| matches!(entries.get(name), Some(CachedNodeKind::File))),
+            _ => path.is_file(),
         }
     }
 
@@ -197,7 +217,7 @@ impl DirEntryCache {
         match (dir.parent(), dir.file_name()) {
             (Some(parent), Some(name)) => {
                 if let Some(entries) = self.get_entries(parent) {
-                    return matches!(entries.get(name), Some(true));
+                    return matches!(entries.get(name), Some(CachedNodeKind::Directory));
                 }
                 self.get_entries(dir).is_some()
             }
@@ -205,7 +225,7 @@ impl DirEntryCache {
         }
     }
 
-    fn get_entries(&self, dir: &Path) -> Option<Arc<SmallMap<OsString, bool>>> {
+    fn get_entries(&self, dir: &Path) -> Option<Arc<SmallMap<OsString, CachedNodeKind>>> {
         let key = dir.to_path_buf();
         if let Some(cached) = self.cache.get(&key) {
             return cached.clone();
@@ -215,23 +235,26 @@ impl DirEntryCache {
         self.cache.get(&key).and_then(|v| v.clone())
     }
 
-    fn read_dir_entries(dir: &Path) -> Option<Arc<SmallMap<OsString, bool>>> {
+    fn read_dir_entries(dir: &Path) -> Option<Arc<SmallMap<OsString, CachedNodeKind>>> {
         std::fs::read_dir(dir).ok().map(|entries| {
             Arc::new(
                 entries
                     .filter_map(|e| e.ok())
                     .map(|e| {
-                        let is_dir = e.file_type().is_ok_and(|ft| {
-                            if ft.is_symlink() {
-                                // DirEntry::file_type() reads d_type from readdir which
-                                // does not follow symlinks. Follow the symlink via
-                                // metadata() (stat) to determine the true type.
-                                std::fs::metadata(e.path()).is_ok_and(|m| m.file_type().is_dir())
-                            } else {
-                                ft.is_dir()
-                            }
-                        });
-                        (e.file_name(), is_dir)
+                        let kind = e
+                            .file_type()
+                            .ok()
+                            .and_then(|kind| {
+                                if kind.is_symlink() {
+                                    // Match the uncached predicates by following symlinks.
+                                    // Broken links and special targets remain Other.
+                                    std::fs::metadata(e.path()).ok().map(|m| m.file_type())
+                                } else {
+                                    Some(kind)
+                                }
+                            })
+                            .map_or(CachedNodeKind::Other, CachedNodeKind::from_file_type);
+                        (e.file_name(), kind)
                     })
                     .collect(),
             )
@@ -5302,6 +5325,93 @@ mod tests {
         assert!(!cache.file_exists(&root.join("missing.py")));
         assert!(cache.file_exists(&root.join("foo").join("bar.py")));
         assert!(cache.file_exists(&root.join("foo").join("__init__.py")));
+    }
+
+    #[test]
+    fn test_cached_and_uncached_file_candidates_require_regular_files() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let root = tempdir.path();
+        std::fs::create_dir(root.join("venv")).unwrap();
+        std::fs::create_dir(root.join("venv/__init__.py")).unwrap();
+        std::fs::create_dir(root.join("venv/__init__.pyi")).unwrap();
+        for suffix in COMPILED_FILE_SUFFIXES.iter().chain(["py", "pyi"].iter()) {
+            std::fs::create_dir(root.join(format!("venv.{suffix}"))).unwrap();
+        }
+        for enabled in [false, true] {
+            let cache = DirEntryCache::new(enabled);
+            assert!(cache.dir_exists(&root.join("venv")));
+            assert!(!cache.file_exists(&root.join("venv/__init__.py")));
+            assert!(!cache.file_exists(&root.join("venv/__init__.pyi")));
+            for suffix in COMPILED_FILE_SUFFIXES.iter().chain(["py", "pyi"].iter()) {
+                let path = root.join(format!("venv.{suffix}"));
+                assert!(
+                    !cache.file_exists(&path),
+                    "directory {path:?}, cache={enabled}"
+                );
+                assert!(cache.dir_exists(&path));
+            }
+            assert!(
+                matches!(
+                    find_one_part_in_root(&Name::new("venv"), root, None, &mut None, &cache, None),
+                    Some(FindResult::ImplicitNamespacePackage(_))
+                ),
+                "directories preserve namespace authority, cache={enabled}"
+            );
+        }
+        let compiled = root.join("venv.pyx");
+        std::fs::remove_dir(&compiled).unwrap();
+        std::fs::write(&compiled, b"opaque compiled bytes").unwrap();
+        for enabled in [false, true] {
+            let cache = DirEntryCache::new(enabled);
+            assert!(cache.file_exists(&compiled));
+            assert!(!cache.dir_exists(&compiled));
+            assert_eq!(
+                find_one_part_in_root(&Name::new("venv"), root, None, &mut None, &cache, None),
+                Some(FindResult::CompiledModule(compiled.clone()))
+            );
+        }
+        std::fs::remove_dir(root.join("venv.pyi")).unwrap();
+        std::fs::write(root.join("venv.pyi"), b"value: int\n").unwrap();
+        for enabled in [false, true] {
+            assert_eq!(
+                find_one_part_in_root(
+                    &Name::new("venv"),
+                    root,
+                    None,
+                    &mut None,
+                    &DirEntryCache::new(enabled),
+                    None
+                ),
+                Some(FindResult::SingleFilePyiModule(root.join("venv.pyi")))
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_cached_and_uncached_candidates_reject_special_nodes_and_directory_links() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let root = tempdir.path();
+        std::fs::create_dir(root.join("directory")).unwrap();
+        std::fs::write(root.join("regular.pyx"), b"opaque compiled bytes").unwrap();
+        std::os::unix::fs::symlink("directory", root.join("dir.pyx")).unwrap();
+        std::os::unix::fs::symlink("regular.pyx", root.join("file.pyx")).unwrap();
+        std::os::unix::fs::symlink("absent", root.join("dangling.pyx")).unwrap();
+        let socket = std::os::unix::net::UnixListener::bind(root.join("socket.pyx")).unwrap();
+        for enabled in [false, true] {
+            let cache = DirEntryCache::new(enabled);
+            assert!(!cache.file_exists(&root.join("dir.pyx")));
+            assert!(cache.dir_exists(&root.join("dir.pyx")));
+            assert!(cache.file_exists(&root.join("file.pyx")));
+            assert!(!cache.file_exists(&root.join("dangling.pyx")));
+            assert!(!cache.file_exists(&root.join("socket.pyx")));
+            assert!(!cache.dir_exists(&root.join("socket.pyx")));
+            assert!(
+                find_one_part_in_root(&Name::new("socket"), root, None, &mut None, &cache, None)
+                    .is_none()
+            );
+        }
+        drop(socket);
     }
 
     #[test]
