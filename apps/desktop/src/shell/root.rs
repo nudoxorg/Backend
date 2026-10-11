@@ -1422,12 +1422,14 @@ impl Shell {
     /// RenderOnce can mount a newly focused control after Shell.render, while
     /// a removed Spine control can leave the window focused on a dead node.
     fn rehome_orphaned_reader_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.zone != Zone::Reader { return; }
+        if self.zone != Zone::Reader || !window.is_window_active() { return; }
         let Some(focus) = window.focused(cx) else { return; };
         if focus == self.focus { return; }
+        let focus_epoch = window.focus_epoch();
         let shell = cx.weak_entity();
         window.defer(cx, move |window, app| {
-            if window.focused(app).as_ref() != Some(&focus)
+            if !window.is_window_active() || window.focus_epoch() != focus_epoch
+                || window.focused(app).as_ref() != Some(&focus)
                 || window.is_focus_handle_mounted(&focus) { return; }
             let Some(shell) = shell.upgrade() else { return; };
             shell.update(app, |shell, cx| {
@@ -2989,6 +2991,63 @@ mod keyboard_claim_tests {
         });
         rig.settle();
         rig
+    }
+
+    #[gpui::test]
+    fn a_current_orphaned_reader_focus_returns_to_the_mounted_shell(cx: &mut gpui::TestAppContext) {
+        let mut rig = mounted_root(cx);
+        let shell = rig.shell.clone();
+        rig.cx.update(|window, app| {
+            let orphan = app.focus_handle();
+            orphan.focus(window, app);
+            assert!(!window.is_focus_handle_mounted(&orphan));
+            shell.update(app, |shell, cx| {
+                assert_eq!(shell.zone, Zone::Reader);
+                shell.rehome_orphaned_reader_focus(window, cx);
+            });
+        });
+        assert!(rig.cx.update(|window, cx| shell.read(cx).focus.is_focused(window)),
+            "the unchanged orphan receives a mounted keyboard owner after the effect cycle");
+    }
+
+    #[gpui::test]
+    fn a_later_focus_intent_cancels_the_deferred_orphan_handoff(cx: &mut gpui::TestAppContext) {
+        for blur in [false, true] {
+            let mut rig = mounted_root(cx);
+            let shell = rig.shell.clone();
+            let orphan = rig.cx.update(|window, app| {
+                let orphan = app.focus_handle();
+                orphan.focus(window, app);
+                shell.update(app, |shell, cx| shell.rehome_orphaned_reader_focus(window, cx));
+                let scheduled_epoch = window.focus_epoch();
+                if blur { window.blur(); } else { orphan.focus(window, app); }
+                assert_ne!(window.focus_epoch(), scheduled_epoch,
+                    "even requesting the same handle is a new native focus intent");
+                orphan
+            });
+            assert_eq!(rig.cx.update(|window, cx| window.focused(cx)),
+                (!blur).then_some(orphan), "the later intent owns the completed effect cycle");
+        }
+    }
+
+    #[gpui::test]
+    fn an_inactive_window_keeps_its_orphaned_focus_until_a_new_active_intent(cx: &mut gpui::TestAppContext) {
+        let mut rig = mounted_root(cx);
+        let shell = rig.shell.clone();
+        let orphan = rig.cx.update(|window, app| {
+            let orphan = app.focus_handle();
+            orphan.focus(window, app);
+            orphan
+        });
+        rig.cx.deactivate_window();
+        let epoch = rig.cx.update(|window, app| {
+            assert!(!window.is_window_active());
+            let epoch = window.focus_epoch();
+            shell.update(app, |shell, cx| shell.rehome_orphaned_reader_focus(window, cx));
+            epoch
+        });
+        assert_eq!(rig.cx.update(|window, cx| (window.focused(cx), window.focus_epoch())),
+            (Some(orphan), epoch), "a passive render must not make an inactive focus request");
     }
 
     fn opened_before_first_paint(cx: &mut gpui::TestAppContext) -> super::super::tests::Rig {
