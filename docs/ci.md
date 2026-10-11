@@ -177,3 +177,18 @@ kept its serial slot for about 121 s after posting its fast verdict while
 finalizing the approximately 15 GiB Cargo cache. The cache is reused, but
 Concourse's cache-copy/finalization cost can delay a closely following push.
 These timings cover the required fast gate, not full runtime or release delivery.
+
+### Linux cold packaging and C dependency configuration
+
+The root Nix packaging check has a 75-minute bound. The previous 45-minute
+bound expired while compiling the GUI runtime closure, before the native
+workspace tests. This allows the cold release build to complete without
+removing packaging checks; warm packaging duration must still be measured.
+
+Native CI tests append `-O2` to their C dependency flags. The backend wrapper
+restores a pinned Nix compiler environment, including fortify, so an outer
+`NIX_HARDENING_ENABLE` override did not disable it. Jemalloc's `-O0`, `-Werror`
+configure probes then failed with “cannot determine return type of strerror_r”.
+The pinned compiler probe reproduces the fortify warning at `-O0` and passes
+at `-O2`. Hardening and supplied C flags remain enabled; Rust test debug info
+remains disabled to keep output size bounded.

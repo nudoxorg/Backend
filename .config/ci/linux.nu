@@ -153,7 +153,7 @@ def main [
         true
     } else {
         ci-step "linux" "root flake check" {||
-            with-plain-tmp {|| run-bounded 45min "nix" "flake" "check" "-L" "--keep-going" "path:." }
+            with-plain-tmp {|| run-bounded 75min "nix" "flake" "check" "-L" "--keep-going" "path:." }
         }
     }
 
@@ -177,22 +177,18 @@ def main [
     # disk (2026-10-05, build 54). Panics still name their file and line
     # (Rust embeds that apart from debug info); only RUST_BACKTRACE frames
     # lose line numbers. It also shortens every link.
-    # jemalloc's -O0 configure probes reject fortify's optimization warning
-    # under -Werror. Remove those flags only for this development test build;
-    # packaged/release derivations retain their declared hardening.
-    let test_hardening = (
-        $env.NIX_HARDENING_ENABLE?
-        | default ""
-        | split row " "
-        | where {|flag| $flag not-in ["fortify" "fortify3"] }
-        | str join " "
-    )
+    # The backend wrapper restores its pinned compiler environment, including
+    # fortify, so overriding NIX_HARDENING_ENABLE outside it is ineffective.
+    # jemalloc's configure probes use -Werror and reject fortify at -O0.
+    # Optimize this CI test build's C dependencies, retaining hardening and
+    # any explicitly supplied C flags. Rust debug information stays disabled.
+    let test_cflags = ($env.CFLAGS? | default "") + " -O2"
     let test_env = {
         BACKEND_PROCESS_ARTIFACT_POLICY: "private-debug"
         CARGO_PROFILE_DEV_DEBUG: "0"
         CARGO_PROFILE_TEST_DEBUG: "0"
         CARGO_BUILD_JOBS: "8"
-        NIX_HARDENING_ENABLE: $test_hardening
+        CFLAGS: $test_cflags
     }
     | merge (
         if ($cargo_home | path exists) { {NUDOX_CARGO_HOME: $cargo_home} } else { {} }
