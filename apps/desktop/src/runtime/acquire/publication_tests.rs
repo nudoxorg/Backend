@@ -2,7 +2,8 @@
 
 #![allow(clippy::expect_used)]
 
-use super::{Landed, Stage, additions, drain};
+use super::{Landed, Stage, additions, drain_in};
+use crate::host::registry::CompositionGeneration;
 use crate::model::pages::{GapReason, Known, PackageRef, PageKey, PageValue, ReadFailure};
 use crate::model::release::Release;
 use crate::navigation::{PackageLane, PackageRoute, Route};
@@ -70,10 +71,40 @@ fn land(rig: &mut Rig, release: &Release, stage: Stage) {
     rig.cx.update(|_, cx| {
         let additions = additions(cx);
         additions.root = Some(root);
-        additions.mailbox.lock().expect("acquisition mailbox").push(Landed::Stage(release.clone(), stage));
-        drain(cx);
+        let producer = CompositionGeneration(17);
+        additions.mailbox.lock().expect("acquisition mailbox").push((producer, Landed::Stage(release.clone(), stage)));
+        drain_in(Some(producer), cx);
     });
     rig.settle();
+}
+
+#[gpui::test]
+fn acquisition_receipts_retire_with_their_producer_before_stage_or_publication(cx: &mut TestAppContext) {
+    let release = Release::new("present", "0.4.2").expect("release");
+    let page = PackageRef::parse(PACKAGE).expect("package");
+    let old = CompositionGeneration(71);
+    let current = CompositionGeneration(72);
+    cx.update(|cx| {
+        let ledger = additions(cx);
+        ledger.entries.insert(release.clone(), super::Entry { generation: Some(old), stage: Stage::Added(page.clone()), askers: vec![] });
+        assert_eq!(super::stage_in(&release, super::Asker::Everyone, Some(old), cx), Some(Stage::Added(page.clone())));
+        assert_eq!(super::stage_in(&release, super::Asker::Everyone, Some(current), cx), None, "a new view cannot borrow the old owner's completed addition");
+        let ledger = additions(cx);
+        ledger.entries.insert(release.clone(), super::Entry { generation: Some(current), stage: Stage::Queued, askers: vec![] });
+        ledger.mailbox.lock().expect("mailbox").extend([
+            (old, Landed::Stage(release.clone(), Stage::Added(page.clone()))),
+            (old, Landed::Stage(release.clone(), Stage::Failed("old failure".into()))),
+            (current, Landed::Stage(release.clone(), Stage::Indexing)),
+        ]);
+        drain_in(Some(current), cx);
+        assert_eq!(super::stage_in(&release, super::Asker::Everyone, Some(current), cx), Some(Stage::Indexing), "old success/failure cannot overwrite the new request");
+        additions(cx).mailbox.lock().expect("mailbox").push((current, Landed::Stage(release.clone(), Stage::Partial { page: page.clone(), words: "one profile refused".into() })));
+        drain_in(Some(current), cx);
+        assert!(matches!(super::stage_in(&release, super::Asker::Everyone, Some(current), cx), Some(Stage::Partial { page: admitted, .. }) if admitted == page));
+        additions(cx).mailbox.lock().expect("mailbox").push((current, Landed::Stage(release.clone(), Stage::Added(page.clone()))));
+        drain_in(None, cx);
+        assert_eq!(super::stage_in(&release, super::Asker::Everyone, None, cx), None, "withdrawal does not let a late completion become a current stage");
+    });
 }
 
 #[gpui::test]
@@ -163,4 +194,14 @@ fn acquisition_publications_repair_the_mounted_dossier_at_the_same_authority(cx:
         });
         assert_eq!(observed.roots.load(Ordering::Relaxed), root_reads);
     }
+    rig.cx.update(|_, cx| {
+        additions(cx).mailbox.lock().expect("mailbox").push((CompositionGeneration(16), Landed::Stage(release.clone(), Stage::Added(source.clone()))));
+        drain_in(Some(CompositionGeneration(17)), cx);
+    });
+    rig.settle();
+    assert_eq!(observed.roots.load(Ordering::Relaxed), root_reads, "a retired producer cannot refresh the live root");
+    rig.graph.store.read_with(rig.cx, |store, _| {
+        assert_eq!((store.stats().submitted, store.stamp(&active_key), store.stamp(&source_key)), unchanged,
+            "a retired acquisition success cannot invalidate either address's current observation");
+    });
 }

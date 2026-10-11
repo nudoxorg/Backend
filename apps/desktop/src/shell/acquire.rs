@@ -18,6 +18,7 @@ use std::rc::Rc;
 /// The actions for the view `view`: it redraws as an addition moves.
 pub(crate) fn add_actions(links: &Links, view: EntityId) -> AddActions {
     let (adding, opening) = (links.clone(), links.clone());
+    let generation = crate::host::registry::composed().map(|composition| composition.generation);
     AddActions {
         state: Rc::new(move |release, cx| adding_state(release, Asker::View(view), cx)),
         add: Rc::new(move |release, _, cx| {
@@ -33,13 +34,18 @@ pub(crate) fn add_actions(links: &Links, view: EntityId) -> AddActions {
             }
         }),
         cancel: None,
-    }
+    }.admitted(Rc::new(move |_, _| generation.is_some()
+        && crate::host::registry::composed().map(|composition| composition.generation) == generation))
 }
 
 /// Where adding the release at `purl` stands, in facet's words.
 fn adding_state(purl: &SharedString, asker: Asker, cx: &mut App) -> Adding {
     let Some(release) = Release::from_purl(purl) else { return Adding::Idle };
-    match acquire::stage(&release, asker, cx) {
+    facet_stage(acquire::stage(&release, asker, cx))
+}
+
+pub(crate) fn facet_stage(stage: Option<Stage>) -> Adding {
+    match stage {
         None => Adding::Idle,
         Some(Stage::Queued) => Adding::Working(Step::Waiting),
         Some(Stage::Resolving) => Adding::Working(Step::Resolving),

@@ -29,7 +29,7 @@ use super::offload::Asker;
 use super::ui_graph::UiRootEntity;
 use super::wake::{WakeSender, wake_channel};
 use crate::core::LocalProjectId;
-use crate::host::registry::Composition;
+use crate::host::registry::{Composition, CompositionGeneration};
 use crate::model::pages::PackageRef;
 use crate::model::release::Release;
 use crate::model::{AppSnapshot, ProjectPhase};
@@ -129,12 +129,23 @@ impl ProjectPackages {
 
 /// One addition and the views waiting on it.
 struct Entry {
+    generation: Option<CompositionGeneration>,
     stage: Stage,
     askers: Vec<Asker>,
 }
 
+impl Entry {
+    fn renew(&mut self, generation: Option<CompositionGeneration>) {
+        if self.generation != generation {
+            self.generation = generation;
+            self.stage = Stage::Queued;
+        }
+    }
+}
+
 /// One project whose packages are being added.
 struct Project {
+    generation: Option<CompositionGeneration>,
     read: Result<Option<Arc<[Dependency]>>, Arc<str>>,
     askers: Vec<Asker>,
 }
@@ -144,12 +155,14 @@ struct Additions {
     entries: HashMap<Release, Entry>,
     projects: HashMap<LocalProjectId, Project>,
     queue: Arc<Queue>,
-    mailbox: Arc<Mutex<Vec<Landed>>>,
+    mailbox: Arc<Mutex<Vec<(CompositionGeneration, Landed)>>>,
     wake: WakeSender,
     /// The one task that lands what the worker posts.
     _drain: Task<()>,
     /// The window root, to read its root again once a release is indexed.
     root: Option<WeakEntity<UiRootEntity>>,
+    #[cfg(test)]
+    producer: Option<Arc<std::sync::RwLock<Option<crate::host::registry::ServingComposition>>>>,
 }
 
 impl Global for Additions {}
@@ -170,6 +183,8 @@ fn additions(cx: &mut App) -> &mut Additions {
             wake,
             _drain: drain,
             root: None,
+            #[cfg(test)]
+            producer: None,
         });
     }
     cx.global_mut::<Additions>()
@@ -177,24 +192,60 @@ fn additions(cx: &mut App) -> &mut Additions {
 
 /// Queues `job` on the window's worker.
 fn push(job: Job, composition: Composition, cx: &mut App) {
+    let generation = composition.generation;
     let additions = additions(cx);
     let (mailbox, wake) = (Arc::clone(&additions.mailbox), additions.wake.clone());
     let post: Arc<dyn Fn(Landed) + Send + Sync> = Arc::new(move |landed| {
-        mailbox.lock().unwrap_or_else(PoisonError::into_inner).push(landed);
+        mailbox.lock().unwrap_or_else(PoisonError::into_inner).push((generation, landed));
         wake.wake();
     });
+    #[cfg(test)]
+    if let Some(producer) = &additions.producer {
+        additions.queue.push_fixture(job, composition, post, Arc::clone(producer));
+        return;
+    }
     additions.queue.push(job, composition, post);
+}
+
+fn current_generation(_cx: &App) -> Option<CompositionGeneration> {
+    #[cfg(test)]
+    if let Some(producer) = _cx.try_global::<Additions>().and_then(|additions| additions.producer.as_ref()) {
+        return crate::host::registry::test_registry_in(producer).map(|composition| composition.generation);
+    }
+    crate::host::registry::composed().map(|composition| composition.generation)
+}
+
+#[cfg(test)]
+pub(crate) fn test_install_producer(composition: Composition, cx: &mut App) -> Composition {
+    let producer = additions(cx).producer.get_or_insert_with(|| Arc::new(std::sync::RwLock::new(None)));
+    crate::host::registry::test_install_registry(producer, composition)
 }
 
 /// Where adding `release` stands, if it was ever asked for; `asker` is told
 /// when it moves.
 pub(crate) fn stage(release: &Release, asker: Asker, cx: &mut App) -> Option<Stage> {
+    stage_in(release, asker, current_generation(cx), cx)
+}
+
+fn stage_in(release: &Release, asker: Asker, generation: Option<CompositionGeneration>, cx: &mut App) -> Option<Stage> {
     cx.try_global::<Additions>()?;
     let entry = cx.global_mut::<Additions>().entries.get_mut(release)?;
+    if entry.generation != generation { return None; }
     if !entry.askers.contains(&asker) {
         entry.askers.push(asker);
     }
     Some(entry.stage.clone())
+}
+
+#[cfg(test)]
+pub(crate) fn test_stage_in(release: &Release, generation: Option<CompositionGeneration>, cx: &mut App) -> Option<Stage> {
+    stage_in(release, Asker::Everyone, generation, cx)
+}
+
+#[cfg(test)]
+pub(crate) fn test_land_stage(current: Option<CompositionGeneration>, producer: CompositionGeneration, release: Release, stage: Stage, cx: &mut App) {
+    additions(cx).mailbox.lock().expect("acquisition mailbox").push((producer, Landed::Stage(release, stage)));
+    drain_in(current, cx);
 }
 
 /// Adds `release` to the library, ahead of any project's packages. Asking
@@ -207,18 +258,19 @@ pub(crate) fn add(release: Release, root: WeakEntity<UiRootEntity>, cx: &mut App
 
 /// [`add`] through `composition` (the process's, or a test's own).
 pub(crate) fn add_with(release: Release, composition: Option<Composition>, root: WeakEntity<UiRootEntity>, cx: &mut App) {
+    let generation = composition.as_ref().map(|composition| composition.generation);
     let additions = additions(cx);
     additions.root = Some(root);
-    if additions.entries.get(&release).is_some_and(|entry| !matches!(entry.stage, Stage::Failed(_) | Stage::Partial { .. })) {
+    if additions.entries.get(&release).is_some_and(|entry| entry.generation == generation && !matches!(entry.stage, Stage::Failed(_) | Stage::Partial { .. })) {
         return;
     }
     let askers = additions.entries.remove(&release).map(|entry| entry.askers).unwrap_or_default();
     let Some(composition) = composition else {
-        additions.entries.insert(release, Entry { stage: Stage::Failed(Arc::from("the index is not open yet")), askers });
+        additions.entries.insert(release, Entry { generation, stage: Stage::Failed(Arc::from("the index is not open yet")), askers });
         cx.refresh_windows();
         return;
     };
-    additions.entries.insert(release.clone(), Entry { stage: Stage::Queued, askers });
+    additions.entries.insert(release.clone(), Entry { generation, stage: Stage::Queued, askers });
     push(Job::Release(release), composition, cx);
     cx.refresh_windows();
 }
@@ -254,6 +306,7 @@ pub(crate) fn just_indexed(before: &AppSnapshot, now: &AppSnapshot) -> Vec<Local
 /// not compiled again (`work::Listed::Any`), so a relaunch costs one read of each
 /// project's packages and nothing more.
 pub(crate) fn resume(now: &AppSnapshot, root: WeakEntity<UiRootEntity>, cx: &mut App) {
+    let generation = current_generation(cx);
     let answered = now
         .workspace()
         .projects
@@ -262,7 +315,7 @@ pub(crate) fn resume(now: &AppSnapshot, root: WeakEntity<UiRootEntity>, cx: &mut
         .map(|row| row.id.clone())
         .collect::<Vec<_>>();
     for project in answered {
-        let asked = cx.try_global::<Additions>().is_some_and(|additions| additions.projects.contains_key(&project));
+        let asked = cx.try_global::<Additions>().is_some_and(|additions| additions.projects.get(&project).is_some_and(|project| project.generation == generation));
         if !asked {
             add_dependencies_with(project, crate::host::registry::composed(), root.clone(), cx);
         }
@@ -280,23 +333,26 @@ pub(crate) fn working(cx: &App) -> bool {
 
 /// Adds every registry package `project` builds with, through `composition`.
 pub(crate) fn add_dependencies_with(project: LocalProjectId, composition: Option<Composition>, root: WeakEntity<UiRootEntity>, cx: &mut App) {
+    let generation = composition.as_ref().map(|composition| composition.generation);
     let additions = additions(cx);
     additions.root = Some(root);
     let askers = additions.projects.remove(&project).map(|project| project.askers).unwrap_or_default();
     let Some(composition) = composition else {
-        additions.projects.insert(project, Project { read: Err(Arc::from("the index is not open yet")), askers });
+        additions.projects.insert(project, Project { generation, read: Err(Arc::from("the index is not open yet")), askers });
         return;
     };
-    additions.projects.insert(project.clone(), Project { read: Ok(None), askers });
+    additions.projects.insert(project.clone(), Project { generation, read: Ok(None), askers });
     push(Job::Dependencies(project), composition, cx);
 }
 
 /// What adding `project`'s packages has come to, if it was ever asked for;
 /// `asker` is told when it moves.
 pub(crate) fn project_packages(project: &LocalProjectId, asker: Asker, cx: &mut App) -> Option<ProjectPackages> {
+    let generation = current_generation(cx);
     cx.try_global::<Additions>()?;
     let additions = cx.global_mut::<Additions>();
     let entry = additions.projects.get_mut(project)?;
+    if entry.generation != generation { return None; }
     if !entry.askers.contains(&asker) {
         entry.askers.push(asker);
     }
@@ -305,7 +361,7 @@ pub(crate) fn project_packages(project: &LocalProjectId, asker: Asker, cx: &mut 
         Ok(None) => ProjectPackages::Reading,
         Ok(Some(found)) => {
             let found = Arc::clone(found);
-            ProjectPackages::Read(found.iter().map(|dependency| (dependency.clone(), additions.entries.get(&dependency.release).map(|entry| entry.stage.clone()))).collect())
+            ProjectPackages::Read(found.iter().map(|dependency| (dependency.clone(), additions.entries.get(&dependency.release).filter(|entry| entry.generation == generation).map(|entry| entry.stage.clone()))).collect())
         }
     })
 }
@@ -337,6 +393,10 @@ pub(crate) fn land_now(cx: &mut App) {
 /// Lands everything the worker posted: the views that asked redraw, and a
 /// release the owner indexed makes the window read its root again.
 fn drain(cx: &mut App) {
+    drain_in(current_generation(cx), cx);
+}
+
+fn drain_in(generation: Option<CompositionGeneration>, cx: &mut App) {
     let Some(additions) = cx.try_global::<Additions>() else { return };
     let landed = std::mem::take(&mut *additions.mailbox.lock().unwrap_or_else(PoisonError::into_inner));
     if landed.is_empty() {
@@ -352,10 +412,12 @@ fn drain(cx: &mut App) {
     };
     let mut published = BTreeSet::new();
     let additions = cx.global_mut::<Additions>();
-    for landed in landed {
+    for (producer, landed) in landed {
+        if Some(producer) != generation { continue; }
         match landed {
             Landed::Stage(release, stage) => {
-                let entry = additions.entries.entry(release.clone()).or_insert_with(|| Entry { stage: Stage::Queued, askers: Vec::new() });
+                let entry = additions.entries.entry(release.clone()).or_insert_with(|| Entry { generation, stage: Stage::Queued, askers: Vec::new() });
+                entry.renew(generation);
                 if entry.stage != stage {
                     let page = match &stage {
                         Stage::Added(page) | Stage::Partial { page, .. } => Some(page),
@@ -373,24 +435,26 @@ fn drain(cx: &mut App) {
                 }
                 entry.stage = stage;
                 tell(&entry.askers);
-                for project in additions.projects.values() {
+                for project in additions.projects.values().filter(|project| project.generation == generation) {
                     if project.read.as_ref().is_ok_and(|read| read.as_ref().is_some_and(|found| found.iter().any(|dependency| dependency.release == release))) {
                         tell(&project.askers);
                     }
                 }
             }
             Landed::Dependencies(project, read) => {
+                let entry = additions.projects.entry(project).or_insert_with(|| Project { generation, read: Ok(None), askers: Vec::new() });
+                if entry.generation != generation { continue; }
+                entry.read = read.as_ref().map(|found| Some(Arc::clone(found))).map_err(Arc::clone);
+                tell(&entry.askers);
                 if let Ok(found) = &read {
                     for dependency in found.iter().filter(|dependency| matches!(dependency.origin, Origin::Registry(_))) {
-                        let entry = additions.entries.entry(dependency.release.clone()).or_insert_with(|| Entry { stage: Stage::Queued, askers: Vec::new() });
+                        let entry = additions.entries.entry(dependency.release.clone()).or_insert_with(|| Entry { generation, stage: Stage::Queued, askers: Vec::new() });
+                        entry.renew(generation);
                         if let Stage::Failed(_) = entry.stage {
                             entry.stage = Stage::Queued;
                         }
                     }
                 }
-                let entry = additions.projects.entry(project).or_insert_with(|| Project { read: Ok(None), askers: Vec::new() });
-                entry.read = read.map(Some);
-                tell(&entry.askers);
             }
         }
     }

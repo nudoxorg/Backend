@@ -411,12 +411,16 @@ fn find_acquire_actions(source: &FindActionSource, mut actions: facet::browse::a
         }
     });
     let open = Rc::clone(&actions.open);
+    let state = Rc::clone(&actions.state);
     let opening = source.clone();
     actions.open = Rc::new(move |package, window, cx| {
-        match opening.current(cx, |find| find.prepared.candidates.iter()
+        let offers = opening.current(cx, |find| Some(find.prepared.candidates.iter()
             .filter_map(|candidate| candidate.offer.as_ref())
-            .find(|offer| offer.library.as_ref() == Some(&package)).map(|_| ())) {
-            Ok(()) => open(package, window, cx),
+            .map(|offer| (offer.release.clone(), offer.library.clone())).collect::<Vec<_>>()));
+        match offers {
+            Ok(offers) if offers.iter().any(|(release, library)| library.as_ref() == Some(&package)
+                || matches!(state(release, cx), facet::browse::acquire::Adding::Added { open } if open == package)) => open(package, window, cx),
+            Ok(_) => find_action_notice("That addition is no longer in the current Find reading.", window, cx),
             Err(reason) => find_action_notice(reason, window, cx),
         }
     });

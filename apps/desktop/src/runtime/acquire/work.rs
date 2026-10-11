@@ -9,7 +9,7 @@
 
 use super::Stage;
 use crate::core::LocalProjectId;
-use crate::host::registry::{Availability, Composition, RegistrySource};
+use crate::host::registry::{Availability, Composition, CompositionGeneration, RegistrySource};
 use crate::model::pages::PackageRef;
 use crate::model::release::Release;
 use backend_client::Session;
@@ -59,8 +59,31 @@ pub(crate) enum Landed {
 /// The jobs waiting, and whether a worker is draining them.
 #[derive(Default)]
 struct Pending {
-    jobs: VecDeque<Job>,
+    jobs: VecDeque<Queued>,
     running: bool,
+}
+
+/// The producer and destination belong to this job, not to the thread that
+/// happened to begin draining the queue.
+struct Queued {
+    job: Job,
+    composition: Composition,
+    post: Arc<dyn Fn(Landed) + Send + Sync>,
+    #[cfg(test)]
+    producer: Option<Arc<std::sync::RwLock<Option<crate::host::registry::ServingComposition>>>>,
+}
+
+impl Queued {
+    fn serving_generation(&self) -> Option<CompositionGeneration> {
+        #[cfg(test)]
+        if let Some(slot) = &self.producer {
+            return crate::host::registry::test_registry_in(slot).map(|composition| composition.generation);
+        }
+        crate::host::registry::composed().map(|composition| composition.generation)
+    }
+    fn current(&self, generation: Option<CompositionGeneration>) -> bool {
+        generation == Some(self.composition.generation)
+    }
 }
 
 /// The job queue a window's additions go through.
@@ -76,20 +99,35 @@ impl Queue {
     /// Queues `job` (first when a person asked for it) and starts a worker
     /// when none runs. Returns whether the job was new.
     pub(crate) fn push(self: &Arc<Self>, job: Job, composition: Composition, post: Arc<dyn Fn(Landed) + Send + Sync>) -> bool {
+        #[cfg(test)]
+        return self.push_in(job, composition, post, None);
+        #[cfg(not(test))]
+        self.push_in(job, composition, post)
+    }
+
+    #[cfg(test)]
+    pub(super) fn push_fixture(self: &Arc<Self>, job: Job, composition: Composition, post: Arc<dyn Fn(Landed) + Send + Sync>, producer: Arc<std::sync::RwLock<Option<crate::host::registry::ServingComposition>>>) -> bool {
+        self.push_in(job, composition, post, Some(producer))
+    }
+
+    fn push_in(self: &Arc<Self>, job: Job, composition: Composition, post: Arc<dyn Fn(Landed) + Send + Sync>, #[cfg(test)] producer: Option<Arc<std::sync::RwLock<Option<crate::host::registry::ServingComposition>>>>) -> bool {
         let start = {
             let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
-            if pending.jobs.contains(&job) {
+            if pending.jobs.iter().any(|queued| queued.job == job && queued.composition.generation == composition.generation) {
                 return false;
             }
-            match job {
-                Job::Release(_) => pending.jobs.push_front(job),
-                Job::Dependencies(_) => pending.jobs.push_back(job),
+            let release = matches!(&job, Job::Release(_));
+            let queued = Queued { job, composition, post, #[cfg(test)] producer };
+            if release {
+                pending.jobs.push_front(queued);
+            } else {
+                pending.jobs.push_back(queued);
             }
             !std::mem::replace(&mut pending.running, true)
         };
         if start {
             let queue = Arc::clone(self);
-            let spawned = std::thread::Builder::new().name("nudox-acquire".to_owned()).spawn(move || queue.drain(&composition, post.as_ref()));
+            let spawned = std::thread::Builder::new().name("nudox-acquire".to_owned()).spawn(move || queue.drain());
             if spawned.is_err() {
                 self.pending.lock().unwrap_or_else(PoisonError::into_inner).running = false;
             }
@@ -103,7 +141,7 @@ impl Queue {
         self.pending.lock().unwrap_or_else(PoisonError::into_inner).running
     }
 
-    fn next(&self) -> Option<Job> {
+    fn next(&self) -> Option<Queued> {
         let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
         let job = pending.jobs.pop_front();
         if job.is_none() {
@@ -112,10 +150,12 @@ impl Queue {
         job
     }
 
-    fn drain(&self, composition: &Composition, post: &(dyn Fn(Landed) + Send + Sync)) {
-        while let Some(job) = self.next() {
+    fn drain(&self) {
+        while let Some(queued) = self.next() {
+            if !queued.current(queued.serving_generation()) { continue; }
+            let Queued { job, composition, post, .. } = queued;
             // A panic is that job's failure, never a worker that silently stops.
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&job, composition, post)));
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&job, &composition, post.as_ref())));
             if let Err(panic) = outcome {
                 let words: Arc<str> = Arc::from(format!("the work panicked: {}", super::super::offload::describe(panic.as_ref())));
                 match job {
@@ -124,6 +164,86 @@ impl Queue {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+    use crate::host::registry::{CrateName, Published, SourceError, SourceTree};
+    use std::path::PathBuf;
+
+    struct RefusingSource(&'static str);
+    impl RegistrySource for RefusingSource {
+        fn releases(&self, _: &CrateName) -> Vec<Published> { vec![] }
+        fn offline(&self, _: &str, _: usize) -> Vec<Release> { vec![] }
+        fn availability(&self, _: &Release) -> Availability {
+            Availability::Ambiguous { indexes: vec![PathBuf::from(self.0)] }
+        }
+        fn release_of(&self, _: &Path) -> Option<Release> { None }
+        fn resolve(&self, release: &Release) -> Result<SourceTree, SourceError> { Err(SourceError::NeedsDownload(release.clone())) }
+    }
+    fn composition(generation: u64, source: &'static str) -> Composition {
+        Composition { endpoint: PathBuf::from(format!("/owner/{generation}")), source: Arc::new(RefusingSource(source)),
+            authority: source.into(), generation: CompositionGeneration(generation), refusals: None }
+    }
+    fn held_queue() -> Arc<Queue> {
+        let queue = Queue::new();
+        queue.pending.lock().expect("queue").running = true;
+        queue
+    }
+
+    #[test]
+    fn queued_jobs_keep_their_own_composition_and_progress_destination() {
+        let queue = held_queue();
+        let producer = Arc::new(std::sync::RwLock::new(None));
+        let release = Release::new("present", "0.4.2").expect("release");
+        let first = Arc::new(Mutex::new(Vec::new()));
+        let second = Arc::new(Mutex::new(Vec::new()));
+        let first_sink = Arc::clone(&first);
+        let first_composition = crate::host::registry::test_install_registry(&producer, composition(31, "first-source"));
+        assert!(queue.push_fixture(Job::Release(release.clone()), first_composition, Arc::new(move |stage| first_sink.lock().expect("first").push(stage)), Arc::clone(&producer)));
+        let first_job = queue.next().expect("first job");
+        assert!(first_job.current(first_job.serving_generation()));
+        run(&first_job.job, &first_job.composition, first_job.post.as_ref());
+        let second_sink = Arc::clone(&second);
+        let second_composition = crate::host::registry::test_install_registry(&producer, composition(32, "second-source"));
+        assert!(queue.push_fixture(Job::Release(release), second_composition, Arc::new(move |stage| second_sink.lock().expect("second").push(stage)), Arc::clone(&producer)));
+        let second_job = queue.next().expect("second job");
+        assert!(second_job.current(second_job.serving_generation()));
+        assert!(!first_job.current(first_job.serving_generation()));
+        assert_eq!(first_job.composition.authority.as_ref(), "first-source");
+        assert_eq!(second_job.composition.authority.as_ref(), "second-source");
+        run(&second_job.job, &second_job.composition, second_job.post.as_ref());
+        for (posted, expected, absent) in [(&first, "first-source", "second-source"), (&second, "second-source", "first-source")] {
+            let posted = posted.lock().expect("own progress");
+            assert!(matches!(posted.first(), Some(Landed::Stage(_, Stage::Resolving))));
+            let Some(Landed::Stage(_, Stage::Failed(words))) = posted.last() else { panic!("own terminal stage missing") };
+            assert!(words.contains(expected));
+            assert!(!words.contains(absent), "a queued job used the first drainer's source or destination");
+        }
+    }
+
+    #[test]
+    fn a_replaced_queued_job_is_not_admitted_or_deduplicated_against_its_successor() {
+        let queue = held_queue();
+        let producer = Arc::new(std::sync::RwLock::new(None));
+        let job = Job::Release(Release::new("present", "0.4.2").expect("release"));
+        let original = composition(41, "same-source");
+        let old = crate::host::registry::test_install_registry(&producer, original.clone());
+        assert!(queue.push_fixture(job.clone(), old.clone(), Arc::new(|_| {}), Arc::clone(&producer)));
+        let next = crate::host::registry::test_install_registry(&producer, original);
+        assert_ne!(old.generation, next.generation);
+        assert_eq!(old.endpoint, next.endpoint);
+        assert_eq!(old.authority, next.authority);
+        assert!(queue.push_fixture(job.clone(), next.clone(), Arc::new(|_| {}), Arc::clone(&producer)), "a new owner can queue the same release");
+        assert!(!queue.push_fixture(job, next, Arc::new(|_| {}), Arc::clone(&producer)), "the current identical request is still deduplicated");
+        let current = queue.next().expect("current priority request");
+        assert!(current.current(current.serving_generation()));
+        let retired = queue.next().expect("retired request");
+        assert!(!retired.current(retired.serving_generation()), "queued work cannot run under the replacement owner");
+        *producer.write().expect("producer") = None;
+        assert!(!retired.current(retired.serving_generation()), "withdrawal cannot admit queued work");
     }
 }
 

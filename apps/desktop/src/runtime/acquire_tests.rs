@@ -197,6 +197,7 @@ fn a_registry_only_release_needs_the_owner_to_fetch_it(cx: &mut TestAppContext) 
         generation: crate::host::registry::CompositionGeneration::default(),
         refusals: None,
     };
+    let composition = cx.update(|cx| acquire::test_install_producer(composition, cx));
     cx.update(|cx| {
         acquire::add_with(
             wanted.clone(),
@@ -225,15 +226,14 @@ fn an_owner_that_does_not_answer_is_a_failure_with_its_words_and_can_be_tried_ag
 ) {
     cx.executor().allow_parking();
     let wanted = release("anyhow", "1.0.104");
-    let compose = || {
-        Some(Composition {
+    let composition = cx.update(|cx| acquire::test_install_producer(Composition {
             endpoint: PathBuf::from("/nonexistent/owner.sock"),
             source: Arc::new(Shelf),
             authority: Arc::from("shelf"),
             generation: crate::host::registry::CompositionGeneration::default(),
             refusals: None,
-        })
-    };
+        }, cx));
+    let compose = || Some(composition.clone());
     cx.update(|cx| acquire::add_with(wanted.clone(), compose(), WeakEntity::new_invalid(), cx));
     let Some(Stage::Failed(words)) = settled(&wanted, cx) else {
         panic!("an unreachable source is a failure")

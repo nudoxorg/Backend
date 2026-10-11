@@ -583,6 +583,58 @@ fn find_acquisition_rechecks_current_offer_visit_and_owner_before_dispatch(cx: &
 }
 
 #[gpui::test]
+fn a_current_owned_addition_opens_before_find_catches_up_but_never_borrows_an_old_producer(cx: &mut TestAppContext) {
+    use std::{cell::{Cell, RefCell}, rc::Rc};
+    use crate::{host::registry::CompositionGeneration, runtime::acquire::{Stage, test_stage_in, test_land_stage}};
+    let release = crate::model::release::Release::new("smallvec", "1.16.2").expect("release");
+    let package = PackageRef::parse("/cache/smallvec-1.16.2").expect("source package");
+    let browse = BrowseRoute::Find(SearchQuery::new("smallvec", SearchQuery::DEFAULT_LIMIT).expect("query"));
+    let route = Route::Orbit(OrbitRoute::Browse(browse.clone()));
+    let mut rig = rig(cx, Some(route.clone()), 1200.0, 800.0);
+    land_find_offer(&mut rig, &browse, &release.purl(), None, true);
+    let old = CompositionGeneration(81);
+    let next = CompositionGeneration(82);
+    let owner = Rc::new(Cell::new(Some(old)));
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    let raw = || {
+        let owner = Rc::clone(&owner);
+        let opened = Rc::clone(&opened);
+        facet::browse::acquire::AddActions {
+            state: Rc::new(move |purl, cx| crate::shell::acquire::facet_stage(
+                crate::model::release::Release::from_purl(purl).and_then(|release| test_stage_in(&release, owner.get(), cx)))),
+            add: Rc::new(|_, _, _| {}), cancel: None,
+            open: Rc::new(move |target, _, _| opened.borrow_mut().push(target)),
+        }
+    };
+    let actions = super::find_acquire_actions(&find_callback(&mut rig, &browse), raw());
+    for stage in [Stage::Added(package.clone()), Stage::Partial { page: package.clone(), words: "one profile refused".into() }] {
+        rig.cx.update(|_, cx| test_land_stage(Some(old), old, release.clone(), stage, cx));
+        rig.cx.update(|window, cx| (actions.open)("/cache/foreign-1.16.2".into(), window, cx));
+        assert!(opened.borrow().is_empty(), "the exact release receipt cannot lend another source target");
+        rig.cx.update(|window, cx| (actions.open)(package.as_str().to_owned().into(), window, cx));
+        assert_eq!(&*opened.borrow(), &[SharedString::from(package.as_str().to_owned())], "own completed stage opens while the current Find offer still has library=None");
+        opened.borrow_mut().clear();
+    }
+    rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
+    rig.graph.store.update(rig.cx, |store, cx| store.owner_ready(cx));
+    owner.set(Some(next));
+    land_find_offer(&mut rig, &browse, &release.purl(), None, true);
+    let current = super::find_acquire_actions(&find_callback(&mut rig, &browse), raw());
+    rig.cx.update(|window, cx| (current.open)(package.as_str().to_owned().into(), window, cx));
+    assert!(opened.borrow().is_empty(), "a freshly mounted offer cannot borrow the previous composition's completed stage");
+    rig.cx.update(|_, cx| test_land_stage(Some(next), next, release.clone(), Stage::Added(package.clone()), cx));
+    rig.cx.update(|window, cx| (actions.open)(package.as_str().to_owned().into(), window, cx));
+    assert!(opened.borrow().is_empty(), "old painted visit cannot adopt even a new owned addition");
+    rig.cx.update(|window, cx| (current.open)(package.as_str().to_owned().into(), window, cx));
+    assert_eq!(opened.borrow().len(), 1, "current offer and current owned stage agree before a Find read refresh");
+    opened.borrow_mut().clear();
+    land_find(&mut rig, &browse, "smallvec", false);
+    let missing = super::find_acquire_actions(&find_callback(&mut rig, &browse), raw());
+    rig.cx.update(|window, cx| (missing.open)(package.as_str().to_owned().into(), window, cx));
+    assert!(opened.borrow().is_empty(), "owned stage alone cannot open a release absent from this Find reading");
+}
+
+#[gpui::test]
 fn find_source_callback_opens_a_member_of_the_unchanged_live_reading(cx: &mut TestAppContext) {
     let query = SearchQuery::new("RelationLabel", SearchQuery::DEFAULT_LIMIT).expect("query");
     let browse = BrowseRoute::Find(query);

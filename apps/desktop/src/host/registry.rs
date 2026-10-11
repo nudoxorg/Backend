@@ -1143,10 +1143,28 @@ pub(crate) fn composed() -> Option<Composition> {
 /// The one serving snapshot for owner paths and configuration, including
 /// owners whose closed host selection has no Cargo registry authority.
 pub(crate) fn serving_composed() -> Option<ServingComposition> {
-    COMPOSED
+    serving_composed_in(&COMPOSED)
+}
+
+fn serving_composed_in(slot: &RwLock<Option<ServingComposition>>) -> Option<ServingComposition> {
+    slot
         .read()
         .unwrap_or_else(PoisonError::into_inner)
         .clone()
+}
+
+/// A test's own installed producer. It uses the production generation
+/// renewal without replacing another test's process-wide host.
+#[cfg(test)]
+pub(crate) fn test_install_registry(slot: &RwLock<Option<ServingComposition>>, composition: Composition) -> Composition {
+    let endpoint = composition.endpoint.clone();
+    install_into(slot, ServingComposition { endpoint, data: None, generation: CompositionGeneration::default(), registry: Some(composition), owner_context: None });
+    test_registry_in(slot).expect("installed fixture registry")
+}
+
+#[cfg(test)]
+pub(crate) fn test_registry_in(slot: &RwLock<Option<ServingComposition>>) -> Option<Composition> {
+    serving_composed_in(slot)?.registry
 }
 
 #[cfg(test)]
