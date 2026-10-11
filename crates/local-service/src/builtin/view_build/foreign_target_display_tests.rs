@@ -6,7 +6,8 @@ use super::call_join::foreign_display_name;
 use super::identity::external_semantic_symbol;
 use super::semantic::project_image_rows;
 use backend_engine::application::DocumentationSession;
-use backend_engine::{Row, RowId, SourceAvailability, SourceExcerpt};
+use backend_engine::{Row, RowId};
+use backend_library::{SourceAvailability, SourceExcerpt};
 use backend_semantic::ir::{
     BorrowedTree, Confidence, CorePayloadHash, DeclarationFamilyId, EntityAuthorityFacts, EntityId,
     EntityVersion, ExternalDeclarationIdentity, ExternalId, ExternalTarget, ExternalTargetIdentity,
@@ -69,12 +70,10 @@ fn retained_httpie_environment_ten_outgoing_foreign_names_keep_original_native_k
         "Environment"
     );
     let identity = environment.entity.version.identity();
+    let mut encoded_identity = String::new();
+    super::identity::push_declaration_identity(&mut encoded_identity, identity);
     assert_eq!(
-        format!(
-            "{}{}",
-            backend_engine::encode_id(identity.family.as_bytes()),
-            backend_engine::encode_id(identity.variant.as_bytes())
-        ),
+        encoded_identity,
         "ee415fc203e1cb2ba7464c299efee7d6accc6b5ccdcbcedc6a878b43c65cf29d"
     );
     let project = project(HTTP_PROJECT);

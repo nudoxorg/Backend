@@ -6378,7 +6378,10 @@ mod tests {
                 CommandReply::Failed(backend_library::CommandFailure::NotFound)
             );
         }
-        let stale = backend_library::view_state_root(&[("fixture".to_owned(), "foreign-outline-view".to_owned())]);
+        let stale = backend_library::view_state_root(&[(
+            "fixture".to_owned(),
+            "foreign-outline-view".to_owned(),
+        )]);
         let command = Command::Outline(backend_library::OutlineQuery::new(package, stale));
         assert!(matches!(
             adapter
@@ -9468,7 +9471,7 @@ mod tests {
         for (id, command) in [
             (
                 603,
-                Command::Name(backend_engine::NameQuery::new(
+                Command::Name(backend_library::NameQuery::new(
                     "project",
                     daemon.engine().daemon().library().view().root(),
                     backend_engine::QueryLimit::default(),

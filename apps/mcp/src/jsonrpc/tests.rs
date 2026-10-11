@@ -5000,7 +5000,7 @@ fn cold_cursor_verification_never_initializes_authority_for_a_forged_token() {
 
 #[test]
 fn query_preparation_is_a_typed_transient_tool_result_with_exact_retry_not_index_failure() {
-    let basis = backend_library::ViewRevision::from_bytes([41; 32]);
+    let basis: backend_library::ViewRevision = view_state_root(&[]).into();
     for state in [
         backend_library::QueryPreparationState::Preparing,
         backend_library::QueryPreparationState::Retiring,
@@ -5019,7 +5019,10 @@ fn query_preparation_is_a_typed_transient_tool_result_with_exact_retry_not_index
         assert_eq!(result["isError"], true);
         let dto = &result["structuredContent"];
         assert_eq!(dto["slug"], "query-preparation");
-        assert_eq!(dto["query_preparation"]["basis"], "29".repeat(32));
+        assert_eq!(
+            dto["query_preparation"]["basis"],
+            backend_library::encode_id(basis.as_bytes())
+        );
         assert_eq!(dto["query_preparation"]["state"], state.as_str());
         assert_eq!(
             dto["call"],
