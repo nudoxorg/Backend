@@ -218,18 +218,25 @@ impl CommandTransport for Transport {
             }
             for row in root.rows() {
                 // The fixture acts as the producer here. Carry every typed
-                // key referenced by the selected rows, including packages
-                // and structural parents outside this bounded page.
-                if let RowId::Package(package) = row.id {
-                    proof = proof.with_claim_once(WireClaim::KeyCommitment {
-                        schema: WireSchema::Package,
-                        id: encode_id(package.as_bytes()),
-                    });
-                }
-                if let RowId::Symbol(symbol) = row.id {
-                    proof = proof.with_claim_once(WireClaim::KeyCommitment {
-                        schema: WireSchema::Symbol,
-                        id: encode_id(symbol.as_bytes()),
+                // key and identity witness in the canonical snapshot rows,
+                // including packages and parents outside this bounded page.
+                let row_key = match row.id {
+                    RowId::Package(package) => {
+                        Some((WireSchema::Package, encode_id(package.as_bytes())))
+                    }
+                    RowId::Symbol(symbol) => {
+                        Some((WireSchema::Symbol, encode_id(symbol.as_bytes())))
+                    }
+                    RowId::Object(_) => None,
+                };
+                if let Some((schema, id)) = row_key {
+                    proof = proof.with_claim_once(match row.identity_preimage() {
+                        Some(preimage) => WireClaim::RowIdentity {
+                            schema,
+                            id,
+                            preimage: preimage.as_str().to_owned(),
+                        },
+                        None => WireClaim::KeyCommitment { schema, id },
                     });
                 }
                 if let Some(package) = row.package {
