@@ -294,7 +294,7 @@ impl<'a> ProjectCheckerSession<'a> {
             project_semantic_options,
             Some(project_module_resolution_outcomes),
             Some(execution_checkpoint),
-        );
+        ).map_err(ProjectCheckerSessionError::ExecutionStopped)?;
         plan.checkpoint(0)
             .map_err(ProjectCheckerSessionError::ExecutionStopped)?;
         plan.prime_module_augmentation_bodies();
@@ -679,7 +679,6 @@ pub fn check_files_parallel_with_project_semantic_options(
         lib_files,
         project_semantic_options,
         program.project_module_resolution_outcomes.clone(),
-        None,
     )
 }
 
@@ -704,7 +703,6 @@ pub fn check_files_parallel_with_project_inputs(
         lib_files,
         project_semantic_options,
         Some(Arc::new(outcomes)),
-        None,
     ))
 }
 
@@ -740,7 +738,8 @@ pub fn check_files_parallel_with_project_inputs_and_execution_checkpoint(
         project_semantic_options,
         Some(Arc::new(outcomes)),
         Some(execution_checkpoint),
-    );
+    )
+    .map_err(ProjectProgramCheckError::ExecutionStopped)?;
     let poll = || {
         execution_checkpoint
             .checkpoint(0)
@@ -837,7 +836,6 @@ fn check_files_parallel_with_optional_project_inputs<'a>(
     project_module_resolution_outcomes: Option<
         Arc<crate::checker::context::ResolvedModuleRequestOutcomeMap>,
     >,
-    execution_checkpoint: Option<&'a dyn tsz_common::ExecutionCheckpoint>,
 ) -> CheckResult {
     // Ensure Rayon global pool has adequate stack size for deep type-checking recursion.
     ensure_rayon_global_pool();
@@ -848,8 +846,9 @@ fn check_files_parallel_with_optional_project_inputs<'a>(
         lib_files,
         project_semantic_options,
         project_module_resolution_outcomes,
-        execution_checkpoint,
-    );
+        None,
+    )
+    .expect("unmetered project plan cannot observe an execution stop");
     plan.prime_module_augmentation_bodies();
     let mut file_results = plan.run_file_checks();
     plan.run_lib_checks(&mut file_results);
@@ -885,8 +884,8 @@ fn lib_diagnostic_fingerprint(file_name: &str, diag: &Diagnostic) -> (String, u3
 fn project_plan_checkpoint(
     checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
     work_units: u64,
-) -> bool {
-    checkpoint.is_none_or(|checkpoint| checkpoint.checkpoint(work_units).is_ok())
+) -> Result<(), tsz_common::ProjectExecutionStop> {
+    checkpoint.map_or(Ok(()), |checkpoint| checkpoint.checkpoint(work_units))
 }
 
 struct ParallelCheckPlan<'a> {
@@ -925,16 +924,15 @@ impl<'a> ParallelCheckPlan<'a> {
             Arc<crate::checker::context::ResolvedModuleRequestOutcomeMap>,
         >,
         execution_checkpoint: Option<&'a dyn tsz_common::ExecutionCheckpoint>,
-    ) -> Self {
+    ) -> Result<Self, tsz_common::ProjectExecutionStop> {
         let execution_scope = execution_checkpoint.map(tsz_common::LatchedExecutionCheckpoint::new);
         let execution_checkpoint = execution_scope
             .as_ref()
             .map(|scope| scope as &dyn tsz_common::ExecutionCheckpoint);
+        project_plan_checkpoint(execution_checkpoint, 0)?;
         let mut file_names = Vec::with_capacity(program.files.len());
         for file in &program.files {
-            if !project_plan_checkpoint(execution_checkpoint, 1) {
-                break;
-            }
+            project_plan_checkpoint(execution_checkpoint, 1)?;
             file_names.push(file.file_name.clone());
         }
         let (resolved_module_paths, resolved_modules) =
@@ -946,6 +944,7 @@ impl<'a> ParallelCheckPlan<'a> {
             } else {
                 crate::checker::module_resolution::build_module_resolution_maps(&file_names)
             };
+        project_plan_checkpoint(execution_checkpoint, 0)?;
         let resolved_module_paths = Arc::new(resolved_module_paths);
         let resolved_modules = Arc::new(resolved_modules);
 
@@ -953,14 +952,13 @@ impl<'a> ParallelCheckPlan<'a> {
         let checker_lib_files =
             clone_lib_files_for_checker(lib_files, should_clone_libs_in_parallel);
 
+        project_plan_checkpoint(execution_checkpoint, 0)?;
         // Create fresh checker lib contexts from cloned lib files (contains both arena and binder).
         // Wrapped in Arc so that per-file checkers and child delegations share
         // the same Vec with O(1) clone cost (single atomic refcount increment).
         let mut lib_contexts_vec = Vec::with_capacity(checker_lib_files.len());
         for lib in &checker_lib_files {
-            if !project_plan_checkpoint(execution_checkpoint, 1) {
-                break;
-            }
+            project_plan_checkpoint(execution_checkpoint, 1)?;
             lib_contexts_vec.push(LibContext {
                 arena: Arc::clone(&lib.arena),
                 binder: Arc::clone(&lib.binder),
@@ -972,30 +970,26 @@ impl<'a> ParallelCheckPlan<'a> {
         // every per-file checker, so type/value-position identifier resolution
         // can skip the per-identifier `O(num_lib_files)` lib scan for names no
         // lib declares (the common case for a project's own symbols).
-        let lib_file_local_names = tsz_checker::context::build_lib_file_local_names(&lib_contexts);
+        let lib_file_local_names =
+            tsz_checker::context::build_lib_file_local_names_with_poll(&lib_contexts, |work| {
+                project_plan_checkpoint(execution_checkpoint, work)
+            })?;
 
-        // PERF: Pre-compute merged augmentation data ONCE instead of per-file.
-        // This reduces augmentation merging from O(N_files^2) to O(N_files).
-        let shared_binder_data = SharedBinderData::from_program(&program.files);
-
+        // The binder constructor reads the program's existing shared maps.
+        // The legacy with_shared wrapper no longer consumes SharedBinderData,
+        // so do not allocate a redundant merged augmentation copy here.
+        project_plan_checkpoint(execution_checkpoint, 0)?;
         let mut all_binders_vec = Vec::with_capacity(program.files.len());
         for (file_idx, file) in program.files.iter().enumerate() {
-            if !project_plan_checkpoint(execution_checkpoint, 1) {
-                break;
-            }
-            all_binders_vec.push(Arc::new(create_binder_from_bound_file_with_shared(
-                file,
-                program,
-                file_idx,
-                &shared_binder_data,
+            project_plan_checkpoint(execution_checkpoint, 1)?;
+            all_binders_vec.push(Arc::new(create_binder_from_bound_file(
+                file, program, file_idx,
             )));
         }
         let all_binders = Arc::new(all_binders_vec);
         let mut all_arenas_vec = Vec::with_capacity(program.files.len());
         for file in &program.files {
-            if !project_plan_checkpoint(execution_checkpoint, 1) {
-                break;
-            }
+            project_plan_checkpoint(execution_checkpoint, 1)?;
             all_arenas_vec.push(Arc::clone(&file.arena));
         }
         let all_arenas = Arc::new(all_arenas_vec);
@@ -1004,16 +998,12 @@ impl<'a> ParallelCheckPlan<'a> {
         // Total: O(S + F) instead of the previous O(S * F) nested iteration.
         let mut arena_to_file_idx = FxHashMap::default();
         for (idx, arena) in all_arenas.iter().enumerate() {
-            if !project_plan_checkpoint(execution_checkpoint, 1) {
-                break;
-            }
+            project_plan_checkpoint(execution_checkpoint, 1)?;
             arena_to_file_idx.insert(Arc::as_ptr(arena) as usize, idx);
         }
         let mut symbol_file_targets = Vec::with_capacity(program.symbol_arenas.len());
         for (sym_id, arena) in program.symbol_arenas.iter() {
-            if !project_plan_checkpoint(execution_checkpoint, 1) {
-                break;
-            }
+            project_plan_checkpoint(execution_checkpoint, 1)?;
             if let Some(&file_idx) = arena_to_file_idx.get(&(Arc::as_ptr(arena) as usize)) {
                 symbol_file_targets.push((*sym_id, file_idx));
             }
@@ -1021,12 +1011,12 @@ impl<'a> ParallelCheckPlan<'a> {
 
         // Pre-compute the symbol->file index as a shared read-only map.
         // Each checker gets an Arc clone (O(1)) instead of O(N) per-checker insertion.
-        let global_symbol_file_index: Arc<FxHashMap<tsz_binder::SymbolId, usize>> = Arc::new(
-            symbol_file_targets
-                .iter()
-                .copied()
-                .collect::<FxHashMap<_, _>>(),
-        );
+        let mut global_symbol_file_index = FxHashMap::default();
+        for (symbol, file_index) in symbol_file_targets {
+            project_plan_checkpoint(execution_checkpoint, 1)?;
+            global_symbol_file_index.insert(symbol, file_index);
+        }
+        let global_symbol_file_index = Arc::new(global_symbol_file_index);
 
         // Pre-compute skeleton-derived declared modules ONCE and share via Arc.
         // Previously this was computed per-file inside the closure, rebuilding the
@@ -1039,11 +1029,13 @@ impl<'a> ParallelCheckPlan<'a> {
                 )
             });
 
+        project_plan_checkpoint(execution_checkpoint, 0)?;
         // Initialize per-file delegation locks for parallel correctness.
         program
             .definition_store
             .init_file_locks(program.files.len());
 
+        project_plan_checkpoint(execution_checkpoint, 0)?;
         // Create a shared cross-file query cache for multi-file projects.
         // In projects like ts-toolbelt (242 files), the same type evaluations and
         // subtype checks are performed across many files. The shared cache uses
@@ -1055,7 +1047,9 @@ impl<'a> ParallelCheckPlan<'a> {
             None
         };
 
+        project_plan_checkpoint(execution_checkpoint, 0)?;
         let affected_lib_interfaces = affected_lib_interface_names(program, &checker_lib_files);
+        project_plan_checkpoint(execution_checkpoint, 0)?;
         let affected_lib_extension_interfaces = if affected_lib_interfaces.is_empty() {
             FxHashSet::default()
         } else {
@@ -1066,7 +1060,8 @@ impl<'a> ParallelCheckPlan<'a> {
             )
         };
 
-        Self {
+        project_plan_checkpoint(execution_checkpoint, 0)?;
+        Ok(Self {
             program,
             checker_options,
             project_semantic_options,
@@ -1084,7 +1079,7 @@ impl<'a> ParallelCheckPlan<'a> {
             shared_query_cache,
             affected_lib_interfaces,
             affected_lib_extension_interfaces,
-        }
+        })
     }
 
     fn execution_control(&self) -> Option<&dyn tsz_common::ExecutionCheckpoint> {

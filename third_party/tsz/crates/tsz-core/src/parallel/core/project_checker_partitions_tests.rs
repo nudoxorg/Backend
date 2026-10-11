@@ -295,7 +295,8 @@ fn stop_after_completed_file_prevents_starting_later_partition_files() {
             build_project_module_resolution_outcomes(&program, &[]).unwrap(),
         )),
         Some(&budget),
-    );
+    )
+    .unwrap();
     let mut completed = Vec::new();
     let result = plan.check_file_partition_observing_completion(0, &program.files, |index| {
         completed.push(index);
@@ -461,7 +462,8 @@ fn isolated_library_baseline_observes_budget_and_mid_library_stop_discards_outpu
             build_project_module_resolution_outcomes(&program, &[]).unwrap(),
         )),
         Some(&budget),
-    );
+    )
+    .unwrap();
     assert!(
         plan.affected_lib_interfaces.contains("Shared"),
         "real user declaration must engage the library baseline"
@@ -504,7 +506,8 @@ fn isolated_library_baseline_observes_budget_and_mid_library_stop_discards_outpu
             build_project_module_resolution_outcomes(&program, &[]).unwrap(),
         )),
         Some(&budget),
-    );
+    )
+    .unwrap();
     assert!(
         plan.affected_lib_interfaces.contains("Shared"),
         "real user declaration must engage the library baseline"
@@ -567,7 +570,8 @@ fn cold_consumer_before_interface_owner_keeps_inherited_member_semantics() {
             build_project_module_resolution_outcomes(&program, &[resolution]).unwrap(),
         )),
         Some(&budget),
-    );
+    )
+    .unwrap();
     let consumer = plan.check_file_partition(0, &program.files[..1]).unwrap();
     assert!(
         consumer[0].diagnostics.is_empty(),
@@ -714,4 +718,32 @@ fn project_session_latches_one_shot_database_stop_and_discards_callback_output()
         !later_ran.load(Ordering::Acquire),
         "latched scope must reject later callbacks"
     );
+}
+
+#[test]
+fn library_name_index_stop_drops_partial_names_and_legacy_index_is_unchanged() {
+    let lib = in_memory_lib();
+    let contexts = [LibContext {
+        arena: Arc::clone(&lib.arena),
+        binder: Arc::clone(&lib.binder),
+    }];
+    let expected = tsz_checker::context::build_lib_file_local_names(&contexts).unwrap();
+    assert!(expected.len() > 3);
+    let mut remaining = 2_u64;
+    let stopped = tsz_checker::context::build_lib_file_local_names_with_poll(&contexts, |work| {
+        remaining = remaining
+            .checked_sub(work)
+            .ok_or(ProjectExecutionStop::WorkBudgetExhausted)?;
+        Ok(())
+    });
+    assert!(matches!(
+        stopped,
+        Err(ProjectExecutionStop::WorkBudgetExhausted)
+    ));
+    let complete = tsz_checker::context::build_lib_file_local_names_with_poll(&contexts, |_| {
+        Ok::<(), ProjectExecutionStop>(())
+    })
+    .unwrap()
+    .unwrap();
+    assert_eq!(complete, expected);
 }

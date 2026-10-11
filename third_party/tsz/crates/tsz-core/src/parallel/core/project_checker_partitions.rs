@@ -49,7 +49,7 @@ struct ProjectCheckerInputs<'program> {
 /// as fresh-file checking. A stopped partition produces no publishable partial
 /// result. This is cooperative cancellation: already-running solver work must
 /// reach a checkpoint before this function can return. Plan-building helpers
-/// (including binder construction and library-name indexing) and complete
+/// (including single-file binder construction and library arena cloning) and complete
 /// diagnostic augmentation/suppression passes remain indivisible polling
 /// boundaries. This API promises neither a hard deadline nor a total heap bound.
 ///
@@ -110,28 +110,65 @@ fn check_project_partitions_observing_completion(
     )
     .map_err(Program)?;
     poll()?;
-    let plan = ParallelCheckPlan::build(
-        program,
-        checker_options,
-        lib_files,
-        project_semantic_options,
-        Some(Arc::new(outcomes)),
-        Some(execution_checkpoint),
-    );
-    poll()?;
-    plan.prime_module_augmentation_bodies();
-    poll()?;
     let worker_count = workers.get().min(program.files.len().max(1));
-    let partition_size = program.files.len().div_ceil(worker_count).max(1);
-    let check_partition = |partition_idx: usize, files: &[BoundFile]| {
-        plan.check_file_partition_observing_completion(
-            partition_idx * partition_size,
-            files,
-            completed,
+    let run = || -> Result<CheckResult, ProjectPartitionCheckError> {
+        let plan = ParallelCheckPlan::build(
+            program,
+            checker_options,
+            lib_files,
+            project_semantic_options,
+            Some(Arc::new(outcomes)),
+            Some(execution_checkpoint),
         )
+        .map_err(|reason| Program(ProjectProgramCheckError::ExecutionStopped(reason)))?;
+        poll()?;
+        plan.prime_module_augmentation_bodies();
+        poll()?;
+        let partition_size = program.files.len().div_ceil(worker_count).max(1);
+        let check_partition = |partition_idx: usize, files: &[BoundFile]| {
+            plan.check_file_partition_observing_completion(
+                partition_idx * partition_size,
+                files,
+                completed,
+            )
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let partitions = program
+            .files
+            .par_chunks(partition_size)
+            .enumerate()
+            .map(|(index, files)| check_partition(index, files))
+            .collect::<Vec<_>>();
+        #[cfg(target_arch = "wasm32")]
+        let partitions = program
+            .files
+            .chunks(partition_size)
+            .enumerate()
+            .map(|(index, files)| check_partition(index, files))
+            .collect::<Vec<_>>();
+        let mut file_results = Vec::with_capacity(program.files.len() + lib_files.len());
+        for partition in partitions {
+            for result in partition
+                .map_err(|reason| Program(ProjectProgramCheckError::ExecutionStopped(reason)))?
+            {
+                execution_checkpoint.checkpoint(1).map_err(|reason| {
+                    Program(ProjectProgramCheckError::ExecutionStopped(reason))
+                })?;
+                file_results.push(result);
+            }
+        }
+        poll()?;
+        plan.run_lib_checks_with_execution_checkpoint(&mut file_results)
+            .map_err(|reason| Program(ProjectProgramCheckError::ExecutionStopped(reason)))?;
+        poll()?;
+        let result = plan
+            .aggregate_with_poll(file_results, |work| execution_checkpoint.checkpoint(work))
+            .map_err(|reason| Program(ProjectProgramCheckError::ExecutionStopped(reason)))?;
+        poll()?;
+        Ok(result)
     };
     #[cfg(not(target_arch = "wasm32"))]
-    let partitions = {
+    {
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(worker_count)
             .stack_size(tsz_common::limits::THREAD_STACK_SIZE_BYTES)
@@ -140,38 +177,13 @@ fn check_project_partitions_observing_completion(
             .map_err(|error| {
                 ProjectPartitionCheckError::WorkerPoolUnavailable(error.to_string())
             })?;
-        pool.install(|| {
-            program
-                .files
-                .par_chunks(partition_size)
-                .enumerate()
-                .map(|(index, files)| check_partition(index, files))
-                .collect::<Vec<_>>()
-        })
-    };
-    #[cfg(target_arch = "wasm32")]
-    let partitions = program
-        .files
-        .chunks(partition_size)
-        .enumerate()
-        .map(|(index, files)| check_partition(index, files))
-        .collect::<Vec<_>>();
-    let mut file_results = Vec::with_capacity(program.files.len() + lib_files.len());
-    for partition in partitions {
-        file_results.extend(
-            partition
-                .map_err(|reason| Program(ProjectProgramCheckError::ExecutionStopped(reason)))?,
-        );
+        poll()?;
+        pool.install(run)
     }
-    poll()?;
-    plan.run_lib_checks_with_execution_checkpoint(&mut file_results)
-        .map_err(|reason| Program(ProjectProgramCheckError::ExecutionStopped(reason)))?;
-    poll()?;
-    let result = plan
-        .aggregate_with_poll(file_results, |work| execution_checkpoint.checkpoint(work))
-        .map_err(|reason| Program(ProjectProgramCheckError::ExecutionStopped(reason)))?;
-    poll()?;
-    Ok(result)
+    #[cfg(target_arch = "wasm32")]
+    {
+        run()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -274,6 +286,9 @@ impl ParallelCheckPlan<'_> {
                     file_idx,
                 );
             }
+            // Reset/switch may clear large local maps. Poll again so a stop
+            // observed during that boundary cannot start the next file.
+            poll()?;
             checker.check_source_file(file.source_file);
             poll()?;
             let diagnostics = std::mem::take(&mut checker.ctx.diagnostics);
