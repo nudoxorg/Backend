@@ -311,10 +311,16 @@ pub(super) fn analyze(
     // authority through otherwise valid importing files. Use this committed
     // State's exact Handle dependency graph, preserving configured path/style
     // selection; no textual module-name matching supplies the reverse closure.
+    let mut compiled_sources = BTreeSet::new();
+    for (path, _, _) in &compiled_imports {
+        checkpoint(control)?;
+        compiled_sources.insert(*path);
+    }
     let unavailable_paths = raw_sources
         .iter()
         .filter(|source| !syntax.contains_key(source.relative_path))
         .map(|source| source.relative_path)
+        .chain(compiled_sources.iter().copied())
         .collect::<BTreeSet<_>>();
     let selected_native_paths = raw_sources
         .iter()
@@ -322,6 +328,16 @@ pub(super) fn analyze(
         .map(|(source, handle)| (handle.path().as_path(), source.relative_path))
         .collect::<BTreeMap<_, _>>();
     let mut unavailable_dependencies = BTreeMap::<Box<str>, BTreeSet<Box<str>>>::new();
+    // Seed the importing resources themselves even before inspecting rdeps.
+    // Dependency names here identify the selected resource that became
+    // unavailable, not an invented captured file for the compiled candidate.
+    for path in &compiled_sources {
+        checkpoint(control)?;
+        unavailable_dependencies
+            .entry((*path).into())
+            .or_default()
+            .insert((*path).into());
+    }
     for loaded in read.handles() {
         checkpoint(control)?;
         let Some(path) = selected_native_paths
@@ -331,6 +347,8 @@ pub(super) fn analyze(
             continue;
         };
         let unavailable_path: Box<str> = (*path).into();
+        // The committed Handle graph is the only authority for the reverse
+        // dependency closure of unavailable syntax and compiled-shadow sources.
         for dependent in read.get_transitive_rdeps(loaded) {
             checkpoint(control)?;
             let Some(dependent_path) = selected_native_paths
@@ -400,7 +418,30 @@ pub(super) fn analyze(
             ));
         }
         if unavailable_dependencies.contains_key(source.relative_path) {
-            modules.insert(source.relative_path.into(), CheckerReport::default());
+            let mut unavailable_report = CheckerReport::default();
+            if compiled_sources.contains(source.relative_path) {
+                for import in &imports[source.relative_path] {
+                    checkpoint(control)?;
+                    if compiled_imports.contains(&(
+                        source.relative_path,
+                        import.span.start,
+                        import.span.end,
+                    )) {
+                        coverage_gaps.push(PythonProjectCoverageGap {
+                            relative_path: source.relative_path.into(),
+                            span: import.span,
+                            kind: PythonProjectCoverageGapKind::UnavailableCompiledImport,
+                        });
+                    }
+                    unavailable_report.imports.push(ImportResolution {
+                        binding: import.binding.clone(),
+                        module: import.module.as_str().to_owned(),
+                        module_span: import.span,
+                        resolved: false,
+                    });
+                }
+            }
+            modules.insert(source.relative_path.into(), unavailable_report);
             coverage_gaps.push(PythonProjectCoverageGap {
                 relative_path: source.relative_path.into(),
                 span: Span {
@@ -1207,7 +1248,7 @@ fn captured_finder(
     let mut effective = BTreeMap::new();
     let mut scope_identity = blake3::Hasher::new();
     scope_identity.update(b"compiler.python.effective-config-scope.v1\0");
-    scope_identity.update(b"root-isolated;named-package-import-root.v1;captured-diagnostic-baseline.v1;native-priority;candidate-kind+presence+absence;namespace-membership-only.v2;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
+    scope_identity.update(b"root-isolated;named-package-import-root.v1;captured-diagnostic-baseline.v1;native-priority;candidate-kind+presence+absence;namespace-membership-only+compiled-shadow-unavailable-rdeps.v3;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
     for directory in directories {
         let mut candidates = Vec::new();
         for (depth, ancestor) in directory
