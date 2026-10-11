@@ -984,11 +984,19 @@ fn graph_fixture(selected_neighbors: bool, context: u8, sequence: u64) -> Librar
     let prototype = owner(context, 1, sequence);
     let view = prototype.view();
     let basis = view.basis();
-    let package = backend_library::package_key("graph-package");
+    let package = backend_library::package_key("graph");
     let source = symbol_key("graph::source");
+    let center = Row::in_package(RowId::Symbol(source), basis, package, "graph::source");
+    let center = if selected_neighbors {
+        center.with_source(
+            backend_library::SourceLocation::new("src/source.go", 7).expect("captured source"),
+        )
+    } else {
+        center
+    };
     let mut rows = vec![
-        Row::new(RowId::Package(package), basis, "graph-package"),
-        Row::in_package(RowId::Symbol(source), basis, package, "graph::source"),
+        Row::new(RowId::Package(package), basis, "graph"),
+        center,
     ];
     rows.extend((0..6).map(|i| {
         let row = Row::in_package(
@@ -1014,6 +1022,33 @@ fn graph_fixture(selected_neighbors: bool, context: u8, sequence: u64) -> Librar
     .expect("graph fixture root");
     Library::from_view(root.clone(), Cursor::for_view_root_at(&root, sequence))
         .expect("graph owner")
+}
+
+#[test]
+fn graph_portable_fixture_owns_its_captured_alias_and_refuses_an_invented_locator() {
+    let library = graph_fixture(true, 1, 7);
+    let native = symbol_key("graph::source");
+    let center = library.view().row(RowId::Symbol(native)).expect("native center");
+    let package = library.view().row(RowId::Package(backend_library::package_key("graph")))
+        .expect("owned package");
+    let proof = backend_library::CapturedSourceCoordinate::from_row_and_package(&center, &package)
+        .expect("actual captured ownership");
+    let alias = "graph::src/source.go:7::source";
+    assert!(proof.matches(alias));
+    assert!(!proof.matches("copied::semantic::source"));
+    assert_ne!(proof.address_key(), Some(native));
+    let mut ids = library.view().row_refs().filter_map(|row| {
+        matches!(row.id, RowId::Symbol(_)).then_some(row.id)
+    }).collect::<Vec<_>>();
+    ids.sort();
+    let page = backend_library::PageRequest::new(
+        library.revision_root(), QueryLimit::new(2).expect("credit"),
+    );
+    library.graph_page_from_ids(native, SymbolAddress::canonical(symbol_key(alias)), page, &ids)
+        .expect("real alias admits the exact native center");
+    assert!(library.graph_page_from_ids(
+        native, SymbolAddress::canonical(symbol_key("copied::semantic::source")), page, &ids,
+    ).is_err());
 }
 
 fn graph_session(
@@ -1054,7 +1089,7 @@ fn plain_graph_portable_continuation_reopens_exact_page_in_fresh_owner() {
         // In the selected case the canonical copied coordinate differs from the
         // producer key, and neighbors have no structural parent relationship.
         let coordinate = if selected_neighbors {
-            "copied::semantic::source"
+            "graph::src/source.go:7::source"
         } else {
             "graph::source"
         };
