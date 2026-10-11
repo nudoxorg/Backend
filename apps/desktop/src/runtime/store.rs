@@ -1173,14 +1173,9 @@ impl DataStore {
                     .unwrap_or(PageKey::Orbit),
             ),
         };
-        let unchanged_notice = self.notice.as_ref() == Some(&notice);
         self.set_notice(Some(notice), cx);
-        // The gate still publishes every failure and invalidates the old
-        // Retry attachment. Repaint capabilities even when the resource and
-        // notice are identical; their stamps/events need not churn.
-        if unchanged_notice {
-            self.emit(StoreEvent::Snapshot(Branch::GraphFocus), cx);
-        }
+        // Exact Retry capability movement belongs to Owner. GraphFocus only
+        // announces changed selection or notice content through set_notice.
         if !repeated || retry_changed {
             self.emit(StoreEvent::Snapshot(Branch::Owner), cx);
         }
@@ -1700,13 +1695,12 @@ mod tests {
             assert_ne!(store.current_owner_retry(), Some(former));
             assert_eq!(store.stats.submitted, 0);
         });
-        assert_eq!(events.borrow().iter().filter(|event| event.is_branch(Branch::Owner)).count(), 1,
+        assert_eq!(*events.borrow(), [StoreEvent::Snapshot(Branch::Owner)],
             "exact Retry replacement independently wakes cached consumers");
-        assert!(!events.borrow().iter().any(|event| matches!(event, StoreEvent::Resource(_))));
         events.borrow_mut().clear();
         store.update(cx, |store, cx| store.owner_failed(&fault, cx));
         cx.run_until_parked();
-        assert!(!events.borrow().iter().any(|event| event.is_branch(Branch::Owner)), "same observed failure/capability stays silent");
+        assert!(events.borrow().is_empty(), "same observed failure/capability stays silent");
     }
 
     fn rig(cx: &mut TestAppContext, workers: usize) -> Rig {
