@@ -87,6 +87,8 @@ object lacked a protected DACL. An independent MinGW Win32 probe in the same
 container created a directory, applied an owner-only ACL through its handle
 with `SetSecurityInfo(DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION)`,
 and read it back using `GetSecurityInfo` and `GetSecurityDescriptorControl`.
+The standalone source is `.config/ci/probes/windows-dacl.c`. It creates a new
+unique temporary directory and refuses to change an existing one.
 Setting and reading both returned success, but the control word was `0x8004`: the
 `SE_DACL_PROTECTED` bit (`0x1000`) was absent. Wine 11.0's `server/file.c` maps
 file ACLs to Unix mode bits and reconstructs a descriptor with `SE_DACL_PRESENT`;
