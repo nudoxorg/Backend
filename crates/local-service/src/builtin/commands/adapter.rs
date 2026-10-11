@@ -8838,6 +8838,7 @@ mod tests {
             let (adapter, daemon) = fixture.parts();
             assert!(!project_is_admitted(daemon, package));
             for (request, ticket) in [(882, 9882), (883, 9883)] {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
                 assert!(matches!(
                     adapter.execute_or_defer(daemon, &add_body(request, package, &label), ticket),
                     Ok(Executed::Deferred)
@@ -9181,10 +9182,20 @@ mod tests {
                 let (reply, _) = adapter
                     .search(daemon, &query, None)
                     .expect("Pending owner query");
-                assert!(
-                    matches!(reply, backend_engine::CommandReply::Search(_)),
-                    "{reply:?}"
-                );
+                match reply {
+                    backend_engine::CommandReply::Search(_) => {}
+                    backend_engine::CommandReply::Failed(
+                        backend_engine::CommandFailure::QueryPreparation { basis, state },
+                    ) => {
+                        assert_eq!(basis, view.root());
+                        assert_eq!(
+                            state,
+                            backend_library::QueryPreparationState::Preparing,
+                            "the first nonblocking query may report readiness preparation"
+                        );
+                    }
+                    other => panic!("current pending-view query answer: {other:?}"),
+                }
                 observed_inflight_capture = true;
             }
             assert!(std::time::Instant::now() < deadline, "refused add terminal");
