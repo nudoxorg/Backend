@@ -115,6 +115,9 @@ fn world_header_renews_after_coalesced_same_root_owner_replacement(cx: &mut Test
     let retired = captured_back(&mut rig);
     let former = rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_attachment())
         .expect("first serving attachment");
+    let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let before_focus = rig.graph.store.read_with(rig.cx, |store, _| store.graph_focus().cloned());
+    let before_notice = rig.graph.store.read_with(rig.cx, |store, _| store.notice().cloned());
     let renders = rig.counts().titlebar;
     let frame = rig.cx.update(|window, _| window.a11y_frame_number());
     let events = Rc::new(RefCell::new(Vec::new()));
@@ -133,7 +136,10 @@ fn world_header_renews_after_coalesced_same_root_owner_replacement(cx: &mut Test
     assert!(events.borrow().iter().any(|event| event.is_branch(Branch::Owner)));
     assert!(!events.borrow().iter().any(|event| [Branch::Root, Branch::Route, Branch::Overlay,
         Branch::Settings, Branch::GraphFocus].iter().any(|branch| event.is_branch(*branch))),
-        "the owner branch alone renews World chrome with no incidental branch wake");
+        "the owner branch alone renews World chrome with no incidental branch wake: events={:?}; settings {:?} -> {:?}; focus {:?} -> {:?}; notice {:?} -> {:?}",
+        events.borrow(), before.settings(), rig.graph.store.read_with(rig.cx, |store, _| store.snapshot()).settings(),
+        before_focus, rig.graph.store.read_with(rig.cx, |store, _| store.graph_focus().cloned()),
+        before_notice, rig.graph.store.read_with(rig.cx, |store, _| store.notice().cloned()));
     let submitted = rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted);
     rig.graph.store.update(rig.cx, |store, cx| store.owner_ready(cx));
     rig.cx.run_until_parked();
