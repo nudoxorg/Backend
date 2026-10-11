@@ -152,7 +152,8 @@ fn world_header_renews_after_coalesced_same_root_owner_replacement(cx: &mut Test
 }
 
 /// Read the existing committed native Retry button without drawing a frame.
-fn passive_retry_bounds(rig: &mut Rig, enabled: bool) -> gpui::Bounds<gpui::Pixels> {
+#[track_caller]
+fn passive_retry_bounds(rig: &mut Rig, gate: &crate::runtime::owner::OwnerGate, enabled: bool) -> gpui::Bounds<gpui::Pixels> {
     let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("committed Retry tree");
     let tree: serde_json::Value = serde_json::from_str(&json).expect("native Retry JSON");
     let id = format!("{:?}", gpui::ElementId::Name("status-retry".into()));
@@ -160,7 +161,8 @@ fn passive_retry_bounds(rig: &mut Rig, enabled: bool) -> gpui::Bounds<gpui::Pixe
         node["element_id"].as_str() == Some(id.as_str())
             && node["aria"]["role"].as_str() == Some("Button")
             && node["aria"]["label"].as_str() == Some("Try again")
-    ).expect("mounted status Retry control");
+    ).expect(&format!("mounted status Retry control requested_enabled={enabled}; owner={:?}; notice={:?}; committed_tree={json}",
+        gate.state(), rig.graph.store.read_with(rig.cx, |store, _| store.notice().cloned())));
     let clickable = node["aria"]["on_action"].as_array().is_some_and(|actions|
         actions.iter().any(|action| action.as_str() == Some("Click")));
     assert_eq!(clickable, enabled, "Retry activation follows the exact owner capability");
@@ -201,7 +203,7 @@ fn world_header_recovers_after_native_retry_with_exact_same_root_proof(cx: &mut 
     rig.cx.run_until_parked();
     let old_retry = rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_retry())
         .expect("first failure capability");
-    let old_bounds = passive_retry_bounds(&mut rig, true);
+    let old_bounds = passive_retry_bounds(&mut rig, &gate, true);
     let renders = rig.counts().titlebar;
     let frame = rig.cx.update(|window, _| window.a11y_frame_number());
     let events = Rc::new(RefCell::new(Vec::new()));
@@ -220,7 +222,7 @@ fn world_header_recovers_after_native_retry_with_exact_same_root_proof(cx: &mut 
     assert_ne!(rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_retry()), Some(old_retry.clone()));
     assert!(!rig.graph.store.update(rig.cx, |store, cx| store.retry_owner_at(&old_retry, PageKey::Orbit, cx)),
         "a retired failure callback cannot consume the replacement failure");
-    let retry = passive_retry_bounds(&mut rig, true);
+    let retry = passive_retry_bounds(&mut rig, &gate, true);
     rig.cx.simulate_mouse_up(retry.center(), MouseButton::Left, Modifiers::default());
     rig.cx.run_until_parked();
     assert!(matches!(gate.state(), OwnerState::Failed(_)), "new listeners cannot inherit the old pointer press");
@@ -228,7 +230,7 @@ fn world_header_recovers_after_native_retry_with_exact_same_root_proof(cx: &mut 
     rig.cx.run_until_parked();
     assert!(matches!(gate.state(), OwnerState::Starting), "fresh native Retry consumes the current failure");
     assert!(rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_retry()).is_none());
-    passive_retry_bounds(&mut rig, false);
+    passive_retry_bounds(&mut rig, &gate, false);
     let recovering_renders = rig.counts().titlebar;
     let recovering_frame = rig.cx.update(|window, _| window.a11y_frame_number());
     gate.publish(OwnerState::Ready { key: root, mode: ServiceMode::Attached });
