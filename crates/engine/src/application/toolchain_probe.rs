@@ -772,9 +772,9 @@ pub enum ToolchainProbeError {
     },
 }
 
-/// Exact files and module closure that authorize an interpreted TypeScript launch.
+/// Role of a file whose selected TypeScript invocation identity failed admission.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ToolchainProbeFileRole {
+pub enum ToolchainProbeFileRole {
     /// TypeScript compiler JavaScript source.
     Script,
     /// Node executable used to interpret that source.
