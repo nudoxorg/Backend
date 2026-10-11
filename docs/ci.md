@@ -78,3 +78,22 @@ testing. End-to-end latency requires a recorded push/webhook timestamp joined
 to the exact head's final status. A commit's authored timestamp is not a push
 timestamp. Until that link is measured, do not advertise a push-to-green average
 or p99. Report full-runtime and fast-gate results separately.
+
+### Wine private-storage limitation
+
+Runtime build 2558 on PR131 ran 588 Windows cases: 519 passed and 69 failed.
+For 52 failures, captured diagnostics explicitly reported that a workspace
+object lacked a protected DACL. An independent MinGW Win32 probe in the same
+container created a directory, applied an owner-only ACL through its handle
+with `SetSecurityInfo(DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION)`,
+and read it back using `GetSecurityInfo` and `GetSecurityDescriptorControl`.
+Setting and reading both returned success, but the control word was `0x8004`: the
+`SE_DACL_PROTECTED` bit (`0x1000`) was absent. Wine 11.0's `server/file.c` maps
+file ACLs to Unix mode bits and reconstructs a descriptor with `SE_DACL_PRESENT`;
+it does not preserve protected DACL semantics. This is an emulation limitation,
+not a reason to weaken Backend's private-directory admission rules.
+
+The Windows emulation exclusion file lists each confirmed affected case
+individually. These tests remain enabled on native Windows and Linux where
+applicable. Other failures without captured causes still require diagnosis.
+Wine coverage cannot certify the native Windows access-control boundary.

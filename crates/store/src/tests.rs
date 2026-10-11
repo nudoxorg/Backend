@@ -7,6 +7,7 @@ fn must<T, E: fmt::Debug>(result: Result<T, E>) -> T {
     match result {
         Ok(value) => value,
         Err(error) => {
+            eprintln!("test operation failed: {error:?}");
             std::panic::resume_unwind(Box::new(format!("test operation failed: {error:?}")))
         }
     }

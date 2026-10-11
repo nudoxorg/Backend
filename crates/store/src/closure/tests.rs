@@ -354,6 +354,7 @@ fn relation_node_cas_is_schema_parametric_and_reopens_children() {
     let _ = std::fs::remove_dir_all(&path);
     let store = crate::durable::FileStore::open_with_registry(&path, 1_000_000, registry)
         .unwrap_or_else(|error| {
+            eprintln!("test store open failed: {error:?}");
             std::panic::resume_unwind(Box::new(format!("test store open failed: {error:?}")))
         });
     let write_stats = store.write_relation_state(&state).unwrap_or_else(|error| {
