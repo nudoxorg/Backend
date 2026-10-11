@@ -203,6 +203,15 @@ fn unknown_header_fields_noncanonical_json_and_dto_versions_refuse() {
         bad.extend_from_slice(tail);
         assert!(expand_binary_certificate_command(&bad).is_err());
     }
+    let mut future = MAGIC.to_vec();
+    write_bytes(
+        &mut future,
+        br#"{"request_id":1,"command":{"kind":"packages","data":{"future_nested":true}},"version":65535}"#,
+    )
+    .expect("bounded future header");
+    future.extend_from_slice(tail);
+    let error = expand_binary_certificate_command(&future).expect_err("future version refusal");
+    assert!(error.contains("unsupported command DTO version 65535"), "{error}");
 }
 
 #[test]

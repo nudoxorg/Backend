@@ -5,7 +5,7 @@
 //! evidence are exact length-delimited bytes. Expansion borrows those fields,
 //! emits the existing CommandDto JSON, and grants no identities or authority.
 
-use super::{CommandDto, CommandWire, command_to_wire, ensure_version};
+use super::{CommandDto, CommandWire, command_to_wire};
 use crate::{DTO_VERSION, MAX_COMMAND_BODY, WireCertificate, WireClaim, WireSchema};
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeSeq};
 use std::fmt;
@@ -84,8 +84,10 @@ pub fn expand_binary_certificate_command(bytes: &[u8]) -> Result<Vec<u8>, String
         return Err("unknown binary certificate command version".to_owned());
     }
     let header_bytes = reader.bytes()?;
+    // Preserve the existing command codec's version-refusal precedence even
+    // when a future-version command contains fields this reader cannot know.
+    super::super::codec::check_live_version(header_bytes, "command")?;
     let header: Header = serde_json::from_slice(header_bytes).map_err(codec_error)?;
-    ensure_version(header.version, "command")?;
     // One encoding per header. JSON aliases, whitespace and reordered fields
     // cannot silently produce another binary spelling of the same request.
     let canonical_header = encode_json(&header)?;
