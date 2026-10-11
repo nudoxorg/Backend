@@ -299,6 +299,18 @@ impl ProductSourceFileFactsUpdate {
         &self.pages
     }
 
+    /// Transfers the manifest and every deterministic page row to their next
+    /// owner without cloning decoded records or retaining the scan's page array.
+    /// The receiver must still admit each exact key and record at its boundary.
+    #[must_use]
+    pub fn into_rows(self) -> impl Iterator<Item = ([u8; 32], ProductSourceFileFactsRecord)> {
+        std::iter::once((
+            self.manifest_key,
+            ProductSourceFileFactsRecord::Manifest(self.manifest),
+        ))
+        .chain(self.pages.into_vec())
+    }
+
     /// Total encoded bytes of the manifest and all page rows.
     #[must_use]
     pub const fn encoded_bytes(&self) -> usize {
@@ -1945,6 +1957,61 @@ mod tests {
         .expect("compact source row")
         .with_source_identity(source_identity)
         .expect("source identity")
+    }
+
+    #[test]
+    fn owned_facts_handoff_preserves_canonical_rows_and_manifest_allocation() {
+        let path = "src/owned.rs";
+        for count in [2, 900] {
+            let declarations = (0..count)
+                .map(|index| declaration(path, &format!("owned_{index:04}"), index + 1))
+                .collect::<Vec<_>>();
+            let update = build_product_source_file_facts(
+                [7; 32],
+                path,
+                SourceLanguage::Rust,
+                [3; 32],
+                [4; 32],
+                ContentId::<SourceFactDomain>::from_canonical_bytes(b"owned source"),
+                &declarations,
+            )
+            .expect("complete facts update");
+            if count == 900 {
+                assert!(
+                    !update.pages().is_empty(),
+                    "large fixture must exercise pages"
+                );
+            }
+            let manifest_path = update.manifest().path().as_ptr();
+            let expected = std::iter::once((
+                update.manifest_key(),
+                encode_record(&ProductSourceFileFactsRecord::Manifest(
+                    update.manifest().clone(),
+                )),
+            ))
+            .chain(
+                update
+                    .pages()
+                    .iter()
+                    .map(|(key, row)| (*key, encode_record(row))),
+            )
+            .collect::<Vec<_>>();
+            let rows = update.into_rows().collect::<Vec<_>>();
+            let ProductSourceFileFactsRecord::Manifest(manifest) = &rows[0].1 else {
+                panic!("manifest must precede the existing ordered pages");
+            };
+            assert_eq!(
+                manifest.path().as_ptr(),
+                manifest_path,
+                "handoff moves the original decoded path allocation"
+            );
+            assert_eq!(
+                rows.iter()
+                    .map(|(key, row)| (*key, encode_record(row)))
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
     }
 
     #[test]
