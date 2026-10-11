@@ -1,0 +1,355 @@
+{
+  "schema": "nudox.runtime-live-tail-evidence.v1",
+  "checked_at_utc": "2026-10-11T10:39:16.393921+00:00",
+  "scope": "Root re-read actual native logs/receipts and independently audited retained raw runtime packets. Separate source, native-law and installed-product gates; no production-readiness claim.",
+  "native_gates": [
+    {
+      "source": {
+        "commit": "5483295b9a28dc9e70958d6d71209220be55a527",
+        "tree": "8b67ae25bd6f3b2dee6c4f33f8387cd11bde4e24",
+        "clean": true,
+        "cargo_lock_sha256": "8201d7cdb691e3ac5094bd9aef516fb96dc6f98fe40abf8d84163c6f16e75719"
+      },
+      "source_after": {
+        "commit": "5483295b9a28dc9e70958d6d71209220be55a527",
+        "status": "",
+        "cargo_lock_sha256": "8201d7cdb691e3ac5094bd9aef516fb96dc6f98fe40abf8d84163c6f16e75719"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-library",
+        "-p",
+        "backend-local-service",
+        "-p",
+        "backend-present",
+        "--lib"
+      ],
+      "started_utc": "2026-10-11T09:29:31.645380+00:00",
+      "finished_utc": "2026-10-11T09:45:23.948167+00:00",
+      "seconds": 952.2030404191464,
+      "exit": 101,
+      "guard_age_seconds": 23.232385,
+      "receipt": {
+        "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/selected-remaining-libraries-5483-21/receipt.json",
+        "bytes": 22284,
+        "sha256": "549d0adb9422a9fd8eaa6c5ec389175c30ef9b496dc99ef3b623255dc340e3c7"
+      },
+      "stdout": {
+        "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/selected-remaining-libraries-5483-21/stdout.log",
+        "bytes": 229021,
+        "sha256": "13b2811500d9708084d3537184f725dd566b043afedafd7a9d46861b00a1d2c0"
+      },
+      "stderr": {
+        "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/selected-remaining-libraries-5483-21/stderr.log",
+        "bytes": 367798,
+        "sha256": "d9409667884601ba256b98748526c36c854828d375ef5642e8b6d38bfb39844d"
+      },
+      "outer_result_lines": [
+        "test result: ok. 350 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 11.53s",
+        "test result: FAILED. 1168 passed; 77 failed; 17 ignored; 0 measured; 0 filtered out; finished in 911.70s"
+      ],
+      "all_result_lines_including_embedded_children": [
+        "test result: ok. 350 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 11.53s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1261 filtered out; finished in 0.01s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1262 filtered out; finished in 0.00s",
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1261 filtered out; finished in 0.49s",
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1261 filtered out; finished in 0.54s",
+        "test result: FAILED. 1168 passed; 77 failed; 17 ignored; 0 measured; 0 filtered out; finished in 911.70s"
+      ]
+    },
+    {
+      "source": {
+        "commit": "5483295b9a28dc9e70958d6d71209220be55a527",
+        "tree": "8b67ae25bd6f3b2dee6c4f33f8387cd11bde4e24",
+        "clean": true,
+        "cargo_lock_sha256": "8201d7cdb691e3ac5094bd9aef516fb96dc6f98fe40abf8d84163c6f16e75719"
+      },
+      "source_after": {
+        "commit": "5483295b9a28dc9e70958d6d71209220be55a527",
+        "status": "",
+        "cargo_lock_sha256": "8201d7cdb691e3ac5094bd9aef516fb96dc6f98fe40abf8d84163c6f16e75719"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-present",
+        "--lib",
+        "--",
+        "--nocapture"
+      ],
+      "started_utc": "2026-10-11T09:51:12.189547+00:00",
+      "finished_utc": "2026-10-11T09:54:40.236556+00:00",
+      "seconds": 207.97649265802465,
+      "exit": 0,
+      "guard_age_seconds": 29.343442,
+      "receipt": {
+        "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/selected-present-5483-22/receipt.json",
+        "bytes": 22240,
+        "sha256": "0321459e3a305af694211c3c910e10dd4be70d69e03026bef4da0f1db14caa1e"
+      },
+      "stdout": {
+        "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/selected-present-5483-22/stdout.log",
+        "bytes": 12783,
+        "sha256": "b823913e0d1ab0935d479e8fce8f30180bda20d0da353e381b30d487f853a127"
+      },
+      "stderr": {
+        "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/selected-present-5483-22/stderr.log",
+        "bytes": 200386,
+        "sha256": "6df4655220821d20bf927bd2e479567f9a09d8a6dc866e15739dbf7ff895e4f8"
+      },
+      "outer_result_lines": [
+        "test result: ok. 137 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.34s"
+      ],
+      "all_result_lines_including_embedded_children": [
+        "test result: ok. 137 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.34s"
+      ]
+    },
+    {
+      "source": {
+        "commit": "e5f2af5ce8d3a6641ce90af1e4f7ae8d5af889e8",
+        "tree": "31f2c653a57c30baac8162aea5810486e113f645",
+        "clean": true,
+        "cargo_lock_sha256": "dc55c9c72c4e6f21e89c881ddd1fd65934166317c1e54ca88a77a8bd352460e8"
+      },
+      "source_after": {
+        "commit": "e5f2af5ce8d3a6641ce90af1e4f7ae8d5af889e8",
+        "status": "M Cargo.lock",
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "-p",
+        "backend-client",
+        "-p",
+        "backend-library",
+        "-p",
+        "backend-present",
+        "--lib",
+        "--no-fail-fast",
+        "-j2",
+        "--",
+        "--nocapture"
+      ],
+      "started_utc": "2026-10-11T10:03:36.679625+00:00",
+      "finished_utc": "2026-10-11T10:09:29.006299+00:00",
+      "seconds": 352.25171168195084,
+      "exit": 101,
+      "guard_age_seconds": 24.679862,
+      "receipt": {
+        "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/selected-pc4-three-libraries-e5f2-23/receipt.json",
+        "bytes": 22307,
+        "sha256": "ab321680ff6bbde27106b3fcb942979d1f933e341a13bf212bbf96a00a892b04"
+      },
+      "stdout": {
+        "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/selected-pc4-three-libraries-e5f2-23/stdout.log",
+        "bytes": 60070,
+        "sha256": "a97e1e0b447dd1d4dcaa501ab3a30dd4c478a23fd09a245a0dec599bdc1d5ae5"
+      },
+      "stderr": {
+        "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/selected-pc4-three-libraries-e5f2-23/stderr.log",
+        "bytes": 211796,
+        "sha256": "85c38eb327ef568b6b327b3365a9b85feacc166153676d68e58fca0e60c9e73f"
+      },
+      "outer_result_lines": [
+        "test result: FAILED. 122 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.91s",
+        "test result: ok. 357 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 6.87s",
+        "test result: ok. 137 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.40s"
+      ],
+      "all_result_lines_including_embedded_children": [
+        "test result: FAILED. 122 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.91s",
+        "test result: ok. 357 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 6.87s",
+        "test result: ok. 137 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.40s"
+      ]
+    },
+    {
+      "source": {
+        "commit": "a42a127b304b5eaf91e9ecf798d6be4672eb322b",
+        "tree": "ec2bda23bd6fd9e37c875b5325962fbfae9cfcc6",
+        "clean": true,
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd"
+      },
+      "source_after": {
+        "commit": "a42a127b304b5eaf91e9ecf798d6be4672eb322b",
+        "status": "",
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "backend-mcp",
+        "--lib",
+        "actual_",
+        "-j2",
+        "--",
+        "--nocapture"
+      ],
+      "started_utc": "2026-10-11T10:20:42.626952+00:00",
+      "finished_utc": "2026-10-11T10:21:38.527324+00:00",
+      "seconds": 55.81052981107496,
+      "exit": 101,
+      "guard_age_seconds": 20.883374,
+      "receipt": {
+        "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/selected-pc4-mcp-packet-a42-25/receipt.json",
+        "bytes": 22444,
+        "sha256": "d3fd6c3a490434e06143e82d5330b96d92f2202f1bdd9fae8e26b0074b3c82c1"
+      },
+      "stdout": {
+        "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/selected-pc4-mcp-packet-a42-25/stdout.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stderr": {
+        "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/selected-pc4-mcp-packet-a42-25/stderr.log",
+        "bytes": 11330,
+        "sha256": "d1dd94a75444379fb1147c054124bf2ee31bcd7832ff5e0d44dcab1bdd1fc33b"
+      },
+      "outer_result_lines": [],
+      "all_result_lines_including_embedded_children": [],
+      "scope": "Compilation failed on three E0599 errors before tests; no authenticated MCP packet emitted."
+    }
+  ],
+  "independent_retained_raw_audits": {
+    "go_cold_04": {
+      "path": "/private/tmp/nudox-root-go-cold-04-independent-raw-audit.json",
+      "bytes": 3651,
+      "sha256": "232276c0e34328dfd414406381f39599a0046c4e85374a67ff1495e11203000e",
+      "summary": {
+        "scope": "Root independent retained raw-byte, JSON-RPC pairing and pinned-tokenizer audit; not a new runtime run.",
+        "responses": 7,
+        "calls_sha256": "7b4d5c6856417509375d88ca1f4f7a1cb1588c74f8f0972f51651c317795e72e",
+        "all_recorded_responses_successful": true,
+        "token_target_failures": 1,
+        "maximum_tokens": 23797,
+        "prior_stall_fix_proven": false
+      }
+    },
+    "mealie_positive_03": {
+      "path": "/private/tmp/nudox-root-mealie-positive-03-independent-raw-audit.json",
+      "bytes": 389607,
+      "sha256": "b59ea310eb700d56ebaccbdf3980c65989a0e6f2f6ecce2c8b7e5f6b61a756d3",
+      "summary": {
+        "scope": "Root independent saved-byte, paired request, JSON-RPC and actual cl100k retokenization audit; no new product run.",
+        "response_count": 2293,
+        "paired_mcp_requests": 2292,
+        "operation_bindings": 2291,
+        "operation_key": "61d84cb57f0c34dfd158ab3dfa30153b839e4a074345d023a20ad0169007a8a4",
+        "request_digest": "df74a6cc6248908ed43433c2de9d8e66328b202eeceeaa4e063526607963c3aa",
+        "states": [
+          "active"
+        ],
+        "stages": [
+          "compiling",
+          "scanning"
+        ],
+        "publication_seen": false,
+        "byte_budget_failures": 0,
+        "token_budget_failures": 0,
+        "maximum_bytes": 2785,
+        "maximum_tokens": 1011,
+        "tokenizer": {
+          "package": "tiktoken",
+          "version": "0.11.0",
+          "encoding": "cl100k_base",
+          "artifact_sha256": "8613f818e5af318d868379772ce5234e3a3e8519b6c611d94cf708fdfc580fbc"
+        },
+        "events_sha256": "f004bffab33089639aa6e3188b4785c10b59ef34a326b274f96a2d1ac0118cf7"
+      }
+    },
+    "httpie_first_01": {
+      "path": "/private/tmp/nudox-root-httpie-01-independent-raw-audit.json",
+      "bytes": 1110,
+      "sha256": "089241a7ad8f859ed97b2f62f459fa149eda67c1b941696d9aa3ff95692fdff0",
+      "summary": {
+        "scope": "Root independent exact CLI byte hashes and pinned token audit; no new runtime execution.",
+        "events_sha256": "5b14749bc46751316ea2df3e52a2269ec46a0051edb64fc70813a9da0626d5dd",
+        "responses": 2,
+        "tokenizer": {
+          "package": "tiktoken",
+          "version": "0.11.0",
+          "encoding": "cl100k_base",
+          "artifact_sha256": "8613f818e5af318d868379772ce5234e3a3e8519b6c611d94cf708fdfc580fbc"
+        },
+        "original_add_attempt_failed": true,
+        "command_submitted": false,
+        "publication_seen": false,
+        "maximum_tokens": 45
+      }
+    },
+    "httpie_cold_retry_02": {
+      "path": "/private/tmp/nudox-root-httpie-retry-02-independent-raw-audit.json",
+      "bytes": 2955,
+      "sha256": "de9257512cc7c7154facbf6f68140b4ba8067c56892dd733b4a66ada8df33d09",
+      "summary": {
+        "scope": "Root independently rehashed and retokenized saved CLI/MCP responses; no new runtime execution.",
+        "packet_sha256": "ea5697bcece1a4ef273e3688b5a826a52fdf11dba7d3e3f066c2c4cb8f4e135a",
+        "events_sha256": "4af17e1dca67da213bbd591a406128293571522f9368946dc04b5617d1ffe816",
+        "responses": 6,
+        "tokenizer": {
+          "package": "tiktoken",
+          "version": "0.11.0",
+          "encoding": "cl100k_base",
+          "artifact_sha256": "8613f818e5af318d868379772ce5234e3a3e8519b6c611d94cf708fdfc580fbc"
+        },
+        "total_bytes": 15128,
+        "total_tokens": 4695,
+        "actual_cli_start_binding": {
+          "operation_key": "385bd8610506dae8f5d1e5eea8a44c1497c8c9c6fbf38263afc0e50e65085d2d",
+          "request_digest": "5520c80521a7dac834dbd5b74479cfd7b4b3ca2a459fc43a0910d2f5fbf43189",
+          "package": {
+            "kind": "local",
+            "value": "/work/httpie-pure"
+          },
+          "canonical64hex_validated": true
+        },
+        "publication_seen": false,
+        "indexing_acceptance_passed": false
+      }
+    }
+  },
+  "lock_order": {
+    "actual_native23_post_lock": {
+      "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/selected-pc4-three-libraries-e5f2-23/Cargo.lock.after",
+      "bytes": 422959,
+      "sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd"
+    },
+    "actual_patch": {
+      "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/selected-pc4-three-libraries-e5f2-23/Cargo.lock.after.patch",
+      "bytes": 907,
+      "sha256": "f2c833f8f205ebaf4da4289e3f5788cdbfecb770e69c962acdec5ecdaae8aed1"
+    },
+    "source_after_dirty": true,
+    "all_1577_package_records_and_other_toml_values_unchanged": true,
+    "source_repair_commit": "f080b1ff8f"
+  },
+  "reviewed_source_candidate": {
+    "commit": "a42a127b304b5eaf91e9ecf798d6be4672eb322b",
+    "tree": "ec2bda23bd6fd9e37c875b5325962fbfae9cfcc6",
+    "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+    "pull_request": "https://dev.nudox.org/git/Nudox/Backend/pulls/143",
+    "native_successor_tests": "UNRUN at this evidence freeze"
+  },
+  "open_gates": [
+    "native TypeScript pool/union/latch controls and real Mealie replay",
+    "HTTPie exact local Python frontier diagnosis and genuine publication",
+    "supported Nix Cargo wrapper metadata authority",
+    "two native AfterGrant failures with exact terminal diagnostics",
+    "actual signed MCP binary-cursor packet and fresh-session traversal",
+    "current matching installed trio and public release",
+    "configured semantic search and embedding producer setup",
+    "current live GUI, screenshot transitions, keyboard and resize acceptance",
+    "complete warnings and Clippy gate"
+  ]
+}
