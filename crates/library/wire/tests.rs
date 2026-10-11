@@ -1881,12 +1881,11 @@ fn usability_batch_read_wire_extent_is_versioned_and_older_records_stay_honest()
         .expect("current journal law");
     assert!(grammar.check_envelope_version(20).is_err());
     assert!(grammar.check_envelope_version(DTO_VERSION + 1).is_err());
-    let basis = Basis::new(
-        view_state_root(&[]),
-        object_version(b"journal-26-read-extent-control"),
-    );
+    // The shared certificate supplies these exact recipe and object preimages.
+    // Prove its admission before changing only the historical envelope version.
+    let basis = Basis::new(view_state_root(&[]), object_version(b"source"));
     let root = ViewRoot::empty_checked(
-        view_key(b"journal-26-read-extent-control"),
+        view_key(b"view"),
         basis,
         Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
         capability(basis.object),
@@ -1903,6 +1902,10 @@ fn usability_batch_read_wire_extent_is_versioned_and_older_records_stay_honest()
         },
     )
     .with_certificate(certificate(&root));
+    let current = serde_json::to_vec(&snapshot).expect("current snapshot wire");
+    let admitted = ViewDto::decode_with_certificate(&current, Some(capability(basis.object)))
+        .expect("strict current snapshot certificate");
+    assert_eq!(admitted.snapshot.root, root);
     let mut historical = serde_json::to_value(&snapshot).expect("current snapshot JSON");
     historical["version"] = serde_json::json!(26);
     let bytes = serde_json::to_vec(&historical).expect("historical snapshot JSON");
