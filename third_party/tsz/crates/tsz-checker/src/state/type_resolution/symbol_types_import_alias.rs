@@ -36,9 +36,18 @@ impl<'a> CheckerState<'a> {
                 .unwrap_or(self.ctx.current_file_idx)
         };
 
-        let target_idx = self
-            .ctx
-            .resolve_import_target_from_file(source_file_idx, module_specifier)?;
+        let target_idx = if self.ctx.project_module_resolution_outcomes.is_some() {
+            let request = self.ctx.bound_module_request_for_alias(sym_id)?;
+            self.ctx.resolve_import_target_from_file_for_request(
+                request.importer,
+                request.specifier,
+                request.mode,
+                request.kind,
+            )?
+        } else {
+            self.ctx
+                .resolve_import_target_from_file(source_file_idx, module_specifier)?
+        };
         let target_binder = self.ctx.get_binder_for_file(target_idx)?;
         let target_arena = self.ctx.get_arena_for_file(target_idx as u32);
         let file_name = &target_arena.source_files.first()?.file_name;

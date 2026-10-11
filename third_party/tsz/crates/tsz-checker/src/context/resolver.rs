@@ -51,6 +51,15 @@ thread_local! {
         std::cell::RefCell::new(rustc_hash::FxHashSet::default());
 }
 
+/// Borrowed syntactic provenance for one retained module request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct BoundModuleRequest<'source> {
+    pub importer: usize,
+    pub specifier: &'source str,
+    pub mode: Option<ResolutionModeOverride>,
+    pub kind: ResolutionRequestKind,
+}
+
 impl<'a> CheckerContext<'a> {
     /// Borrow the exact compiler-owned outcome, including authoritative
     /// negatives. A missing request cannot borrow another kind or mode.
@@ -99,6 +108,170 @@ impl<'a> CheckerContext<'a> {
                 .iter()
                 .any(|candidate| resolved.contains(candidate))
         })
+    }
+
+    fn bound_module_request_at(
+        &self,
+        importer: usize,
+        declaration: NodeIndex,
+    ) -> Option<BoundModuleRequest<'_>> {
+        use tsz_parser::parser::syntax_kind_ext;
+        let arena = self.all_arenas.as_ref()?.get(importer)?;
+        let node = arena.get(declaration)?;
+        let (specifier, attributes, kind) = if let Some(export) = arena.get_export_decl(node) {
+            (
+                export.module_specifier,
+                export.attributes,
+                ResolutionRequestKind::EsmReExport,
+            )
+        } else if let Some(import) = arena.get_import_decl(node) {
+            (
+                import.module_specifier,
+                import.attributes,
+                if node.kind == syntax_kind_ext::IMPORT_EQUALS_DECLARATION {
+                    ResolutionRequestKind::CjsRequire
+                } else {
+                    ResolutionRequestKind::EsmImport
+                },
+            )
+        } else {
+            return None;
+        };
+        let specifier = arena
+            .get(specifier)
+            .and_then(|node| arena.get_literal(node))?
+            .text
+            .as_str();
+        let mut explicit_mode = None;
+        if let Some(attributes) = arena
+            .get(attributes)
+            .and_then(|node| arena.get_import_attributes_data(node))
+        {
+            for &element in &attributes.elements.nodes {
+                let attribute = arena
+                    .get(element)
+                    .and_then(|node| arena.get_import_attribute_data(node))?;
+                let name = arena
+                    .get(attribute.name)
+                    .and_then(|node| arena.get_identifier(node))
+                    .map(|name| name.escaped_text.as_str())
+                    .or_else(|| arena.get_literal_text(attribute.name))?;
+                if name.trim_matches('"').trim_matches('\'') == "resolution-mode" {
+                    explicit_mode = match arena
+                        .get_literal_text(attribute.value)?
+                        .trim_matches('"')
+                        .trim_matches('\'')
+                    {
+                        "import" => Some(ResolutionModeOverride::Import),
+                        "require" => Some(ResolutionModeOverride::Require),
+                        _ => return None,
+                    };
+                }
+            }
+        }
+        let mode = if explicit_mode.is_none()
+            && self
+                .project_module_outcome_for_request(importer, specifier, None, kind)
+                .is_some()
+        {
+            None
+        } else {
+            self.resolution_mode_for_request_from_file(importer, kind, explicit_mode)
+        };
+        Some(BoundModuleRequest {
+            importer,
+            specifier,
+            mode,
+            kind,
+        })
+    }
+
+    /// Recover an alias request from its real file/range and bound declaration.
+    /// No current-request state or all-kind target fallback participates.
+    pub(crate) fn bound_module_request_for_alias(
+        &self,
+        symbol: tsz_binder::SymbolId,
+    ) -> Option<BoundModuleRequest<'_>> {
+        let importer = self.resolve_symbol_declaring_file_index(symbol)?;
+        let binder = self.get_binder_for_file(importer)?;
+        let alias = binder.get_symbol(symbol)?;
+        let arena = self.all_arenas.as_ref()?.get(importer)?;
+        let mut selected = None;
+        for (&declaration, stable) in alias.declarations.iter().zip(&alias.stable_declarations) {
+            let node = arena.get(declaration)?;
+            if stable.file_idx as usize != importer
+                || (node.pos, node.end) != (stable.pos, stable.end)
+                || binder.node_symbols.get(&declaration.0) != Some(&symbol)
+            {
+                return None;
+            }
+            let mut ancestor = declaration;
+            let mut request = None;
+            for _ in 0..arena.len() {
+                self.types.execution_checkpoint(1).ok()?;
+                if let Some(found) = self.bound_module_request_at(importer, ancestor) {
+                    request = Some(found);
+                    break;
+                }
+                ancestor = arena.parent_of(ancestor)?;
+            }
+            let request = request?;
+            if alias.import_module() != Some(request.specifier) {
+                return None;
+            }
+            if selected.is_some_and(|previous| previous != request) {
+                return None;
+            }
+            selected = Some(request);
+        }
+        selected
+    }
+
+    /// Recover a re-export edge's syntax. Conflicting requests stay ambiguous.
+    pub(crate) fn bound_reexport_request(
+        &self,
+        importer: usize,
+        specifier: &str,
+    ) -> Option<BoundModuleRequest<'_>> {
+        let arena = self.all_arenas.as_ref()?.get(importer)?;
+        let mut selected = None;
+        let source_file = arena.source_files.first()?;
+        for &declaration in &source_file.statements.nodes {
+            self.types.execution_checkpoint(1).ok()?;
+            let node = arena.get(declaration)?;
+            if arena.get_export_decl(node).is_none() {
+                continue;
+            }
+            let Some(request) = self.bound_module_request_at(importer, declaration) else {
+                continue;
+            };
+            if request.specifier != specifier {
+                continue;
+            }
+            if selected.is_some_and(|previous| previous != request) {
+                return None;
+            }
+            selected = Some(request);
+        }
+        selected
+    }
+
+    pub(crate) fn resolve_reexport_target_from_file(
+        &self,
+        importer: usize,
+        specifier: &str,
+    ) -> Option<usize> {
+        if self.project_module_resolution_outcomes.is_some() {
+            let request = self.bound_reexport_request(importer, specifier)?;
+            self.resolve_import_target_from_file_for_request(
+                importer,
+                request.specifier,
+                request.mode,
+                request.kind,
+            )
+        } else {
+            self.resolve_import_target_from_file(importer, specifier)
+        }
     }
 
     /// Whether `def_id` was classified as a force-eligible simple lib interface
@@ -636,6 +809,19 @@ impl<'a> CheckerContext<'a> {
         request_kind: ResolutionRequestKind,
         resolution_mode_override: Option<ResolutionModeOverride>,
     ) -> Option<ResolutionModeOverride> {
+        self.resolution_mode_for_request_from_file(
+            self.current_file_idx,
+            request_kind,
+            resolution_mode_override,
+        )
+    }
+
+    fn resolution_mode_for_request_from_file(
+        &self,
+        source_file_idx: usize,
+        request_kind: ResolutionRequestKind,
+        resolution_mode_override: Option<ResolutionModeOverride>,
+    ) -> Option<ResolutionModeOverride> {
         if resolution_mode_override.is_some() {
             return resolution_mode_override;
         }
@@ -649,7 +835,7 @@ impl<'a> CheckerContext<'a> {
         let file_name = self
             .all_arenas
             .as_ref()
-            .and_then(|arenas| arenas.get(self.current_file_idx))
+            .and_then(|arenas| arenas.get(source_file_idx))
             .and_then(|arena| arena.source_files.first())
             .map(|source_file| source_file.file_name.as_str())
             .unwrap_or(self.file_name.as_str());
@@ -684,11 +870,13 @@ impl<'a> CheckerContext<'a> {
                 ResolutionModeOverride::Require
             });
         }
-        Some(if self.file_is_esm == Some(true) {
-            ResolutionModeOverride::Import
-        } else {
-            ResolutionModeOverride::Require
-        })
+        Some(
+            if source_file_idx == self.current_file_idx && self.file_is_esm == Some(true) {
+                ResolutionModeOverride::Import
+            } else {
+                ResolutionModeOverride::Require
+            },
+        )
     }
 
     /// Check if a lib interface has a heritage-merged version in the cache.

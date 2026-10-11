@@ -11,6 +11,31 @@ impl<'a> CheckerState<'a> {
     // Import Member Validation
     // =========================================================================
 
+    fn resolve_import_member_target(
+        &self,
+        module_name: &str,
+        resolution_mode: Option<crate::context::ResolutionModeOverride>,
+    ) -> Option<usize> {
+        if self.ctx.project_module_resolution_outcomes.is_some() {
+            self.ctx.resolve_import_target_from_file_for_request(
+                self.ctx.current_file_idx,
+                module_name,
+                resolution_mode,
+                crate::context::ResolutionRequestKind::EsmImport,
+            )
+        } else if resolution_mode.is_some() {
+            self.ctx.resolve_import_target_from_file_with_mode(
+                self.ctx.current_file_idx,
+                module_name,
+                resolution_mode,
+            )
+        } else {
+            self.ctx
+                .resolve_import_target_from_file(self.ctx.current_file_idx, module_name)
+                .or_else(|| self.ctx.resolve_import_target(module_name))
+        }
+    }
+
     /// Check an already-resolved source file for an `export =` assignment
     /// without materializing its whole namespace export table.
     fn resolved_source_file_has_export_equals(&self, target_idx: usize, module_name: &str) -> bool {
@@ -54,8 +79,37 @@ impl<'a> CheckerState<'a> {
     ) {
         use crate::diagnostics::{diagnostic_codes, diagnostic_messages, format_message};
 
-        let is_ambient_module = self.is_ambient_module_match(module_name)
-            || self.any_ambient_module_declared(module_name);
+        let request_kind = crate::context::ResolutionRequestKind::EsmImport;
+        let resolution_mode = if self.ctx.project_module_resolution_outcomes.is_some() {
+            self.ctx.resolution_mode_for_project_request(
+                module_name,
+                request_kind,
+                self.get_resolution_mode_override(import.attributes),
+            )
+        } else {
+            let type_only = self
+                .ctx
+                .arena
+                .get(import.import_clause)
+                .and_then(|node| self.ctx.arena.get_import_clause(node))
+                .is_some_and(|clause| clause.is_type_only);
+            self.requested_resolution_mode(import.attributes, type_only)
+        };
+        if self.ctx.project_module_resolution_outcomes.is_some()
+            && !self
+                .ctx
+                .module_resolved_for_request(module_name, resolution_mode, request_kind)
+        {
+            return;
+        }
+        let is_ambient_module = (self.ctx.project_module_resolution_outcomes.is_none()
+            || self.ctx.module_resolved_without_program_file_for_request(
+                module_name,
+                resolution_mode,
+                request_kind,
+            ))
+            && (self.is_ambient_module_match(module_name)
+                || self.any_ambient_module_declared(module_name));
         if is_ambient_module {
             self.check_js_type_only_imports_for_ambient_module(import, module_name);
             if self
@@ -146,22 +200,10 @@ impl<'a> CheckerState<'a> {
 
         // Only whole-declaration type-only imports keep a `resolution-mode` override
         // when the current module kind would otherwise reject import attributes.
-        let resolution_mode =
-            self.requested_resolution_mode(import.attributes, clause.is_type_only);
         let uses_fallback_branch_resolution = resolution_mode.is_some()
             && !self.resolution_mode_override_is_effective(import.attributes, clause.is_type_only);
 
-        let resolved_target = if resolution_mode.is_some() {
-            self.ctx.resolve_import_target_from_file_with_mode(
-                self.ctx.current_file_idx,
-                module_name,
-                resolution_mode,
-            )
-        } else {
-            self.ctx
-                .resolve_import_target_from_file(self.ctx.current_file_idx, module_name)
-                .or_else(|| self.ctx.resolve_import_target(module_name))
-        };
+        let resolved_target = self.resolve_import_member_target(module_name, resolution_mode);
 
         // Default-only imports only need to know whether a default-like binding exists.
         // Building the full export surface for large declaration bundles such as React
@@ -170,18 +212,16 @@ impl<'a> CheckerState<'a> {
             || has_non_default_named_imports
             || (!has_default_import && has_named_default_binding);
         let exports_table = if needs_full_exports {
-            if resolution_mode.is_some() {
-                self.resolve_effective_module_exports_with_mode(module_name, resolution_mode)
-            } else {
-                self.resolve_effective_module_exports_from_file(
-                    module_name,
-                    Some(self.ctx.current_file_idx),
-                )
-            }
+            self.resolve_effective_module_exports_for_request(
+                module_name,
+                resolution_mode,
+                request_kind,
+            )
             .or_else(|| {
-                (self
-                    .ctx
-                    .declared_modules_contains(self.ctx.binder, module_name)
+                (self.ctx.project_module_resolution_outcomes.is_none()
+                    && self
+                        .ctx
+                        .declared_modules_contains(self.ctx.binder, module_name)
                     && !self
                         .ctx
                         .binder
@@ -1618,17 +1658,7 @@ impl<'a> CheckerState<'a> {
             return true;
         }
 
-        let resolved_target = if resolution_mode.is_some() {
-            self.ctx.resolve_import_target_from_file_with_mode(
-                self.ctx.current_file_idx,
-                module_name,
-                resolution_mode,
-            )
-        } else {
-            self.ctx
-                .resolve_import_target_from_file(self.ctx.current_file_idx, module_name)
-                .or_else(|| self.ctx.resolve_import_target(module_name))
-        };
+        let resolved_target = self.resolve_import_member_target(module_name, resolution_mode);
         let Some(target_idx) = resolved_target else {
             return false;
         };
@@ -1655,11 +1685,7 @@ impl<'a> CheckerState<'a> {
         tracing::trace!("Checking if symbol exists locally and is renamed");
 
         // Try to get the target module's binder
-        let resolved_target = self.ctx.resolve_import_target_from_file_with_mode(
-            self.ctx.current_file_idx,
-            module_name,
-            resolution_mode,
-        );
+        let resolved_target = self.resolve_import_member_target(module_name, resolution_mode);
         let target_binder = if let Some(target_idx) = resolved_target {
             tracing::trace!(target_idx, "Resolved import target");
             self.ctx.get_binder_for_file(target_idx)
@@ -1679,7 +1705,9 @@ impl<'a> CheckerState<'a> {
                 // but get_binder_for_file returned None, we still know which
                 // file the module points to — scanning all binders would find
                 // symbols from unrelated files and cause false TS2459.
-                if resolved_target.is_some() {
+                if resolved_target.is_some()
+                    || self.ctx.project_module_resolution_outcomes.is_some()
+                {
                     tracing::trace!(
                         "Import target resolved but binder not found, returning (false, None)"
                     );
@@ -1768,12 +1796,7 @@ impl<'a> CheckerState<'a> {
         // can return true for a name declared in an unrelated file.
         // Verify the symbol's declaration is from THIS file (decl_file_idx).
         let target_file_idx = self
-            .ctx
-            .resolve_import_target_from_file_with_mode(
-                self.ctx.current_file_idx,
-                module_name,
-                resolution_mode,
-            )
+            .resolve_import_member_target(module_name, resolution_mode)
             .map(|i| i as u32);
         let mut symbol_exists = binder.file_locals.has(import_name)
             && match (
@@ -1821,11 +1844,8 @@ impl<'a> CheckerState<'a> {
 
         // Also try to get the target file's name if available
         let (file_name, target_arena) = if let Some(target_idx) =
-            self.ctx.resolve_import_target_from_file_with_mode(
-                self.ctx.current_file_idx,
-                module_name,
-                resolution_mode,
-            ) {
+            self.resolve_import_member_target(module_name, resolution_mode)
+        {
             let arena = self.ctx.get_arena_for_file(target_idx as u32);
             (
                 arena.source_files.first().map(|sf| sf.file_name.as_str()),

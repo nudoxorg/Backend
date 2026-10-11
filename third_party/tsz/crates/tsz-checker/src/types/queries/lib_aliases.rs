@@ -93,18 +93,52 @@ impl<'a> CheckerState<'a> {
             return None;
         }
         visited_aliases.push(sym_id);
+        let project_request = if self.ctx.project_module_resolution_outcomes.is_some()
+            && symbol.import_module().is_some()
+        {
+            Some(self.ctx.bound_module_request_for_alias(sym_id)?)
+        } else {
+            None
+        };
+        let mut configured_file_alias = false;
+        if let Some(request) = project_request {
+            match self.ctx.project_module_outcome_for_request(
+                request.importer,
+                request.specifier,
+                request.mode,
+                request.kind,
+            ) {
+                Some(crate::context::ResolvedModuleRequestOutcome::File(target)) => {
+                    configured_file_alias = true;
+                    if let Some(export_name) = symbol.import_name().filter(|name| *name != "*") {
+                        let mut visited = rustc_hash::FxHashSet::default();
+                        let selected = self.ctx.resolve_export_in_target_file(
+                            *target,
+                            export_name,
+                            &mut visited,
+                        )?;
+                        return self.resolve_alias_symbol(selected, visited_aliases);
+                    }
+                }
+                Some(crate::context::ResolvedModuleRequestOutcome::External { .. }) => {}
+                _ => return None,
+            }
+        }
         // First, try using the binder's resolve_import_symbol which follows re-export chains
         // This handles both named re-exports (`export { foo } from 'bar'`) and wildcard
         // re-exports (`export * from 'bar'`), properly following chains like:
         // a.ts exports { x } from 'b.ts'
         // b.ts exports { x } from 'c.ts'
         // c.ts exports { x }
-        if let Some(resolved_sym_id) = self.ctx.binder.resolve_import_symbol(sym_id) {
+        if !configured_file_alias
+            && let Some(resolved_sym_id) = self.ctx.binder.resolve_import_symbol(sym_id)
+        {
             // Prevent infinite loops in re-export chains
             if !visited_aliases.contains(&resolved_sym_id) {
                 let mut preferred_target = resolved_sym_id;
                 if let Some(module_name) = symbol.import_module() {
                     let export_name = symbol.import_name().unwrap_or(symbol.escaped_name.as_str());
+
                     if export_name != "*"
                         && self.symbol_is_namespace_only_tracked(resolved_sym_id, visited_aliases)
                         && let Some(member_sym_id) = self
@@ -153,7 +187,7 @@ impl<'a> CheckerState<'a> {
             // import_name is None and escaped_name could accidentally match
             // a specific export, resolving the alias to that export instead
             // of the module namespace.
-            if symbol.import_name().is_some() {
+            if !configured_file_alias && symbol.import_name().is_some() {
                 let export_equals_member = self.resolve_named_export_via_export_equals_tracked(
                     module_name,
                     export_name,
@@ -235,7 +269,8 @@ impl<'a> CheckerState<'a> {
                 }
             }
 
-            if symbol.import_name().is_some()
+            if !configured_file_alias
+                && symbol.import_name().is_some()
                 && let Some(target_sym_id) = self.resolve_named_export_via_export_equals_tracked(
                     module_name,
                     export_name,
@@ -251,7 +286,7 @@ impl<'a> CheckerState<'a> {
             // module's `export =` value (key `"export="`), falling back to
             // `"module.exports"` for Node20/NodeNext CJS-of-ESM consumers —
             // see `export_equals_target_for_require_consumer`.
-            if symbol.import_name().is_none() {
+            if !configured_file_alias && symbol.import_name().is_none() {
                 let lookup = |binder: &tsz_binder::BinderState| {
                     binder.module_exports.get(module_name).and_then(|exports| {
                         self.export_equals_target_for_require_consumer(exports, module_name)
@@ -287,11 +322,22 @@ impl<'a> CheckerState<'a> {
                 .ctx
                 .resolve_symbol_file_index_stable(sym_id)
                 .unwrap_or(self.ctx.current_file_idx);
-            if let Some(target_idx) = self.ctx.resolve_import_target_from_file_with_mode(
-                source_file_idx,
-                module_name,
-                resolution_mode_override,
-            ) && let Some(target_binder) = self.ctx.get_binder_for_file(target_idx)
+            let target = if let Some(request) = project_request {
+                self.ctx.resolve_import_target_from_file_for_request(
+                    request.importer,
+                    request.specifier,
+                    request.mode,
+                    request.kind,
+                )
+            } else {
+                self.ctx.resolve_import_target_from_file_with_mode(
+                    source_file_idx,
+                    module_name,
+                    resolution_mode_override,
+                )
+            };
+            if let Some(target_idx) = target
+                && let Some(target_binder) = self.ctx.get_binder_for_file(target_idx)
             {
                 let target_arena = self.ctx.get_arena_for_file(target_idx as u32);
                 if let Some(file_name) = target_arena.source_files.first().map(|f| &f.file_name) {

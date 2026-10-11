@@ -302,6 +302,36 @@ impl<'a> CheckerState<'a> {
         self.resolve_effective_module_exports_from_file(module_specifier, None)
     }
 
+    /// Resolve a syntax-owned request without borrowing another kind's target.
+    pub(crate) fn resolve_effective_module_exports_for_request(
+        &self,
+        module_specifier: &str,
+        resolution_mode: Option<crate::context::ResolutionModeOverride>,
+        request_kind: crate::context::ResolutionRequestKind,
+    ) -> Option<tsz_binder::SymbolTable> {
+        if self.ctx.project_module_resolution_outcomes.is_some() {
+            return match self.ctx.project_module_outcome_for_request(
+                self.ctx.current_file_idx,
+                module_specifier,
+                resolution_mode,
+                request_kind,
+            ) {
+                Some(crate::context::ResolvedModuleRequestOutcome::File(target)) => Some(
+                    self.resolve_cross_file_namespace_exports_for_file(
+                        *target,
+                        Some(module_specifier),
+                    )
+                    .unwrap_or_default(),
+                ),
+                Some(crate::context::ResolvedModuleRequestOutcome::External { .. }) => {
+                    self.resolve_ambient_module_namespace_exports(module_specifier)
+                }
+                _ => None,
+            };
+        }
+        self.resolve_effective_module_exports_with_mode(module_specifier, resolution_mode)
+    }
+
     /// Like `resolve_effective_module_exports` but uses an explicit `resolution-mode`
     /// override from import attributes (e.g., `with { "resolution-mode": "require" }`).
     /// Falls back to the non-mode-aware path when no override is provided.

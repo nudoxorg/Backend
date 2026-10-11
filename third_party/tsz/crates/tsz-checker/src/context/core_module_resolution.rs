@@ -325,7 +325,17 @@ impl CheckerContext<'_> {
         member_name: &str,
     ) -> Option<tsz_binder::SymbolId> {
         let source_file_idx = self.resolve_symbol_file_index(alias_id)?;
-        let target_idx = self.resolve_import_target_from_file(source_file_idx, module_specifier)?;
+        let target_idx = if self.project_module_resolution_outcomes.is_some() {
+            let request = self.bound_module_request_for_alias(alias_id)?;
+            self.resolve_import_target_from_file_for_request(
+                request.importer,
+                request.specifier,
+                request.mode,
+                request.kind,
+            )?
+        } else {
+            self.resolve_import_target_from_file(source_file_idx, module_specifier)?
+        };
         let mut visited = FxHashSet::default();
         self.resolve_export_in_target_file(target_idx, member_name, &mut visited)
     }
@@ -371,7 +381,7 @@ impl CheckerContext<'_> {
         {
             let name = original_name.as_deref().unwrap_or(export_name);
             if let Some(source_idx) =
-                self.resolve_import_target_from_file(target_idx, source_module)
+                self.resolve_reexport_target_from_file(target_idx, source_module)
                 && let Some(resolved) =
                     self.resolve_export_in_target_file(source_idx, name, visited)
             {
@@ -384,7 +394,7 @@ impl CheckerContext<'_> {
             let source_modules = source_modules.clone();
             for (source_module, _is_type_only) in &source_modules {
                 if let Some(source_idx) =
-                    self.resolve_import_target_from_file(target_idx, source_module)
+                    self.resolve_reexport_target_from_file(target_idx, source_module)
                     && let Some(resolved) =
                         self.resolve_export_in_target_file(source_idx, export_name, visited)
                 {
@@ -396,6 +406,9 @@ impl CheckerContext<'_> {
         // Fallback: the target binder's own re-export resolution for
         // single-file / ambient-module binders whose local tables are
         // populated (e.g. `declare module "x" { ... }`).
+        if self.project_module_resolution_outcomes.is_some() {
+            return None;
+        }
         target_binder
             .resolve_import_with_reexports_type_only(&file_name, export_name)
             .map(|(sym_id, _)| {
@@ -439,7 +452,7 @@ impl CheckerContext<'_> {
         {
             let name = original_name.as_deref().unwrap_or(export_name);
             if let Some(source_idx) =
-                self.resolve_import_target_from_file(target_idx, source_module)
+                self.resolve_reexport_target_from_file(target_idx, source_module)
                 && let Some(resolved) = self.resolve_export_in_target_file_with_owner(
                     source_idx,
                     name,
@@ -456,7 +469,7 @@ impl CheckerContext<'_> {
             let source_modules = source_modules.clone();
             for (source_module, _is_type_only) in &source_modules {
                 if let Some(source_idx) =
-                    self.resolve_import_target_from_file(target_idx, source_module)
+                    self.resolve_reexport_target_from_file(target_idx, source_module)
                     && let Some(resolved) = self.resolve_export_in_target_file_with_owner(
                         source_idx,
                         export_name,
@@ -570,6 +583,6 @@ impl CheckerContext<'_> {
             return None;
         }
         let ns_module = ns_sym.import_module()?;
-        self.resolve_import_target_from_file(target_idx, ns_module)
+        self.resolve_reexport_target_from_file(target_idx, ns_module)
     }
 }

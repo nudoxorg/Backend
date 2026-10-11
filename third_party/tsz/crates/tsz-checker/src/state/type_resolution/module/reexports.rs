@@ -125,7 +125,7 @@ impl<'a> CheckerState<'a> {
             let name = original_name.as_deref().unwrap_or(export_name);
             if let Some(source_idx) = self
                 .ctx
-                .resolve_import_target_from_file(file_idx, source_module)
+                .resolve_reexport_target_from_file(file_idx, source_module)
                 && let Some(result) = self.resolve_export_in_file_with_module_key(
                     source_idx,
                     Some(source_module),
@@ -171,7 +171,7 @@ impl<'a> CheckerState<'a> {
             for (source_module, source_is_type_only) in &source_modules {
                 if let Some(source_idx) = self
                     .ctx
-                    .resolve_import_target_from_file(file_idx, source_module)
+                    .resolve_reexport_target_from_file(file_idx, source_module)
                     && let Some(result) = self.resolve_export_in_file_with_module_key(
                         source_idx,
                         Some(source_module),
@@ -280,9 +280,18 @@ impl<'a> CheckerState<'a> {
             match next_hop {
                 None => return Some((sym_id, actual_file)),
                 Some((next_mod, next_name, decl_file)) => {
-                    let next_file = self
-                        .ctx
-                        .resolve_import_target_from_file(decl_file, &next_mod)?;
+                    let next_file = if self.ctx.project_module_resolution_outcomes.is_some() {
+                        let request = self.ctx.bound_module_request_for_alias(sym_id)?;
+                        self.ctx.resolve_import_target_from_file_for_request(
+                            request.importer,
+                            request.specifier,
+                            request.mode,
+                            request.kind,
+                        )?
+                    } else {
+                        self.ctx
+                            .resolve_import_target_from_file(decl_file, &next_mod)?
+                    };
                     current_file = next_file;
                     current_name = next_name;
                 }
@@ -330,7 +339,7 @@ impl<'a> CheckerState<'a> {
                 }
                 if let Some(source_idx) = self
                     .ctx
-                    .resolve_import_target_from_file(file_idx, source_module)
+                    .resolve_reexport_target_from_file(file_idx, source_module)
                     && let Some(source_binder) = self.ctx.get_binder_for_file(source_idx)
                 {
                     let source_file_name = self
@@ -392,7 +401,7 @@ impl<'a> CheckerState<'a> {
                     let name = original_name.as_deref().unwrap_or(exported_name);
                     if let Some(source_idx) = self
                         .ctx
-                        .resolve_import_target_from_file(file_idx, source_module)
+                        .resolve_reexport_target_from_file(file_idx, source_module)
                     {
                         let mut inner_visited = rustc_hash::FxHashSet::default();
                         inner_visited.extend(visited.iter().copied());

@@ -76,9 +76,6 @@ impl<'a> CheckerState<'a> {
             return;
         }
 
-        let resolution_mode =
-            self.requested_resolution_mode(export_decl.attributes, export_decl.is_type_only);
-
         // Get module specifier string
         let Some(spec_node) = self.ctx.arena.get(export_decl.module_specifier) else {
             return;
@@ -89,6 +86,16 @@ impl<'a> CheckerState<'a> {
         };
 
         let module_name = &literal.text;
+        let request_kind = crate::context::ResolutionRequestKind::EsmReExport;
+        let resolution_mode = if self.ctx.project_module_resolution_outcomes.is_some() {
+            self.ctx.resolution_mode_for_project_request(
+                module_name,
+                request_kind,
+                self.get_resolution_mode_override(export_decl.attributes),
+            )
+        } else {
+            self.requested_resolution_mode(export_decl.attributes, export_decl.is_type_only)
+        };
 
         // TS2846/TS5097: re-export module specifiers with TypeScript
         // extensions follow the same rule as imports — tsc's
@@ -106,6 +113,7 @@ impl<'a> CheckerState<'a> {
             spec_node.end.saturating_sub(spec_node.pos),
             export_decl.is_type_only,
             resolution_mode,
+            request_kind,
         );
 
         if !self.ctx.report_unresolved_imports {
@@ -149,13 +157,15 @@ impl<'a> CheckerState<'a> {
         self.ctx.import_resolution_stack.push(module_name.clone());
 
         // Check if the module was resolved by the CLI driver (multi-file mode)
-        if let Some(ref resolved) = self.ctx.resolved_modules
-            && resolved.contains(module_name)
+        if self
+            .ctx
+            .module_resolved_for_request(module_name, resolution_mode, request_kind)
         {
             self.check_export_target_is_module(
                 export_decl.module_specifier,
                 module_name,
                 resolution_mode,
+                request_kind,
             );
             // Check for circular re-export chains
             if let Some(source_modules) = self.ctx.binder.wildcard_reexports.get(module_name) {
@@ -170,57 +180,62 @@ impl<'a> CheckerState<'a> {
             return;
         }
 
-        // Check if the module exists in the module_exports map (cross-file module resolution)
-        if self.ctx.binder.module_exports.contains_key(module_name)
-            && self
-                .ctx
-                .get_resolution_error_with_mode(module_name, resolution_mode)
-                .is_none()
-        {
-            self.check_export_target_is_module(
-                export_decl.module_specifier,
-                module_name,
-                resolution_mode,
-            );
-            // Check for circular re-export chains
-            if let Some(source_modules) = self.ctx.binder.wildcard_reexports.get(module_name) {
-                let mut visited = FxHashSet::default();
-                for (source_module, _is_type_only) in source_modules {
-                    self.check_reexport_chain_for_cycles(source_module, &mut visited);
-                }
-            }
-            // Validate named re-exports exist in target module
-            self.validate_reexported_members(export_decl, module_name, resolution_mode);
-            self.ctx.import_resolution_stack.pop();
-            return;
-        }
-
-        // Skip TS2307 for ambient module declarations
-        if self
-            .ctx
-            .binder
-            .shorthand_ambient_modules
-            .contains(module_name)
-        {
-            self.ctx.import_resolution_stack.pop();
-            return;
-        }
-
-        if self
-            .ctx
-            .declared_modules_contains(self.ctx.binder, module_name)
-        {
-            let wrong_context_allows_module_semantics = self
-                .is_in_non_module_element_context(stmt_idx)
-                && !self.is_inside_function_body(stmt_idx)
-                && !self.is_inside_namespace_declaration(stmt_idx);
-            if !self.is_in_non_module_element_context(stmt_idx)
-                || wrong_context_allows_module_semantics
+        // Binder/ambient fallback belongs only to standalone checking. The host
+        // must admit configured ambient modules with an exact External outcome.
+        if self.ctx.project_module_resolution_outcomes.is_none() {
+            // Check if the module exists in the module_exports map (cross-file module resolution)
+            if self.ctx.binder.module_exports.contains_key(module_name)
+                && self
+                    .ctx
+                    .get_resolution_error_for_request(module_name, resolution_mode, request_kind)
+                    .is_none()
             {
+                self.check_export_target_is_module(
+                    export_decl.module_specifier,
+                    module_name,
+                    resolution_mode,
+                    request_kind,
+                );
+                // Check for circular re-export chains
+                if let Some(source_modules) = self.ctx.binder.wildcard_reexports.get(module_name) {
+                    let mut visited = FxHashSet::default();
+                    for (source_module, _is_type_only) in source_modules {
+                        self.check_reexport_chain_for_cycles(source_module, &mut visited);
+                    }
+                }
+                // Validate named re-exports exist in target module
                 self.validate_reexported_members(export_decl, module_name, resolution_mode);
+                self.ctx.import_resolution_stack.pop();
+                return;
             }
-            self.ctx.import_resolution_stack.pop();
-            return;
+
+            // Skip TS2307 for ambient module declarations
+            if self
+                .ctx
+                .binder
+                .shorthand_ambient_modules
+                .contains(module_name)
+            {
+                self.ctx.import_resolution_stack.pop();
+                return;
+            }
+
+            if self
+                .ctx
+                .declared_modules_contains(self.ctx.binder, module_name)
+            {
+                let wrong_context_allows_module_semantics = self
+                    .is_in_non_module_element_context(stmt_idx)
+                    && !self.is_inside_function_body(stmt_idx)
+                    && !self.is_inside_namespace_declaration(stmt_idx);
+                if !self.is_in_non_module_element_context(stmt_idx)
+                    || wrong_context_allows_module_semantics
+                {
+                    self.validate_reexported_members(export_decl, module_name, resolution_mode);
+                }
+                self.ctx.import_resolution_stack.pop();
+                return;
+            }
         }
 
         // AMD/System/classic-resolution: same suppression rule as imports
@@ -243,7 +258,7 @@ impl<'a> CheckerState<'a> {
         // import-declaration path.
         if self
             .ctx
-            .get_resolution_error_with_mode(module_name, resolution_mode)
+            .get_resolution_error_for_request(module_name, resolution_mode, request_kind)
             .is_some()
         {
             let (message, code) = self.module_not_found_diagnostic(module_name);
@@ -320,15 +335,32 @@ impl<'a> CheckerState<'a> {
             return;
         };
         let module_name = literal.text.clone();
+        let request_kind = crate::context::ResolutionRequestKind::EsmReExport;
+        let resolution_mode = self.ctx.resolution_mode_for_project_request(
+            &module_name,
+            request_kind,
+            self.get_resolution_mode_override(export_decl.attributes),
+        );
+        if self.ctx.project_module_resolution_outcomes.is_some()
+            && !self
+                .ctx
+                .module_resolved_for_request(&module_name, resolution_mode, request_kind)
+        {
+            return;
+        }
 
         // Check if the target module uses `export =`.
         // First check module_exports (covers identifier-based export assignments like
         // `export = React`). Fall back to checking the target file's AST for
         // EXPORT_ASSIGNMENT nodes (covers non-identifier forms like `export = {}`).
         let has_export_equals = self
-            .resolve_effective_module_exports(&module_name)
+            .resolve_effective_module_exports_for_request(
+                &module_name,
+                resolution_mode,
+                request_kind,
+            )
             .is_some_and(|exports| exports.has("export="))
-            || self.target_file_has_export_assignment(&module_name);
+            || self.target_file_has_export_assignment(&module_name, resolution_mode, request_kind);
 
         if has_export_equals {
             // TSC uses the resolved module name (without relative prefix or extension)
@@ -357,10 +389,25 @@ impl<'a> CheckerState<'a> {
     ///
     /// This covers non-identifier export assignments (e.g., `export = {}`) where
     /// the binder doesn't create an `"export="` entry in `module_exports`.
-    fn target_file_has_export_assignment(&self, module_name: &str) -> bool {
+    fn target_file_has_export_assignment(
+        &self,
+        module_name: &str,
+        resolution_mode: Option<crate::context::ResolutionModeOverride>,
+        request_kind: crate::context::ResolutionRequestKind,
+    ) -> bool {
         use tsz_parser::parser::syntax_kind_ext;
 
-        let Some(target_idx) = self.ctx.resolve_import_target(module_name) else {
+        let target = if self.ctx.project_module_resolution_outcomes.is_some() {
+            self.ctx.resolve_import_target_from_file_for_request(
+                self.ctx.current_file_idx,
+                module_name,
+                resolution_mode,
+                request_kind,
+            )
+        } else {
+            self.ctx.resolve_import_target(module_name)
+        };
+        let Some(target_idx) = target else {
             return false;
         };
         let target_arena = self.ctx.get_arena_for_file(target_idx as u32);
@@ -388,10 +435,18 @@ impl<'a> CheckerState<'a> {
         module_specifier_idx: NodeIndex,
         module_name: &str,
         resolution_mode: Option<crate::context::ResolutionModeOverride>,
+        request_kind: crate::context::ResolutionRequestKind,
     ) {
         use crate::diagnostics::diagnostic_codes;
 
-        let target_idx = if let Some(mode) = resolution_mode {
+        let target_idx = if self.ctx.project_module_resolution_outcomes.is_some() {
+            self.ctx.resolve_import_target_from_file_for_request(
+                self.ctx.current_file_idx,
+                module_name,
+                resolution_mode,
+                request_kind,
+            )
+        } else if let Some(mode) = resolution_mode {
             self.ctx.resolve_import_target_from_file_with_mode(
                 self.ctx.current_file_idx,
                 module_name,
@@ -650,11 +705,16 @@ impl<'a> CheckerState<'a> {
 
         // Get the module's canonical export surface.
         let module_exports = self
-            .resolve_effective_module_exports_with_mode(module_name, resolution_mode)
+            .resolve_effective_module_exports_for_request(
+                module_name,
+                resolution_mode,
+                crate::context::ResolutionRequestKind::EsmReExport,
+            )
             .or_else(|| {
-                (self
-                    .ctx
-                    .declared_modules_contains(self.ctx.binder, module_name)
+                (self.ctx.project_module_resolution_outcomes.is_none()
+                    && self
+                        .ctx
+                        .declared_modules_contains(self.ctx.binder, module_name)
                     && !self
                         .ctx
                         .binder

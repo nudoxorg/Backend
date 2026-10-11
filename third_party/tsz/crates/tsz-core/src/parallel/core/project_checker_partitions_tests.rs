@@ -994,3 +994,367 @@ fn exhausted_library_materialization_rolls_back_completed_library_pushes() {
     assert_eq!(results.len(), 1, "append failure rolls back library pushes");
     assert_eq!(results[0].diagnostics, original);
 }
+
+#[test]
+fn syntax_requests_cannot_borrow_other_kind_mode_or_ambient_success() {
+    use crate::checker::context::ResolutionModeOverride;
+    use tsz_common::common::ModuleKind;
+    let forms = [
+        (
+            ProjectModuleRequestKind::EsmImport,
+            None,
+            "import { value } from 'dep'; export const observed = value;",
+        ),
+        (
+            ProjectModuleRequestKind::EsmReExport,
+            None,
+            "export { value } from 'dep';",
+        ),
+        (
+            ProjectModuleRequestKind::DynamicImport,
+            Some(ResolutionModeOverride::Import),
+            "export const observed = import('dep');",
+        ),
+        (
+            ProjectModuleRequestKind::CjsRequire,
+            Some(ResolutionModeOverride::Require),
+            "import dependency = require('dep'); export const observed = dependency.value;",
+        ),
+    ];
+    for (kind, mode, source) in forms {
+        for case in 0..6 {
+            let program = compile_files_with_libs(
+                vec![
+                    ("src/main.ts".to_owned(), source.to_owned()),
+                    (
+                        "src/dep.ts".to_owned(),
+                        "export const value: number = 42;".to_owned(),
+                    ),
+                    (
+                        "ambient.d.ts".to_owned(),
+                        "declare module 'dep' { export const value: string; }".to_owned(),
+                    ),
+                ],
+                &[],
+            );
+            let mut resolution = ProjectModuleResolution {
+                importer_path: "src/main.ts".to_owned(),
+                specifier: "dep".to_owned(),
+                request_kind: kind.clone(),
+                resolution_mode: mode,
+                target: ProjectModuleResolutionTarget::File {
+                    path: "src/dep.ts".to_owned(),
+                },
+            };
+            match case {
+                0 => {} // Exact File positive.
+                1 => {
+                    resolution.target = ProjectModuleResolutionTarget::External {
+                        identity: "compiler-admitted-ambient:dep".to_owned(),
+                    }
+                }
+                2 => resolution.target = ProjectModuleResolutionTarget::Unresolved,
+                3 => {} // No request entry.
+                4 => {
+                    resolution.request_kind = if kind == ProjectModuleRequestKind::EsmImport {
+                        ProjectModuleRequestKind::EsmReExport
+                    } else {
+                        ProjectModuleRequestKind::EsmImport
+                    }
+                }
+                5 => {
+                    resolution.resolution_mode =
+                        Some(if mode == Some(ResolutionModeOverride::Require) {
+                            ResolutionModeOverride::Import
+                        } else {
+                            ResolutionModeOverride::Require
+                        })
+                }
+                _ => unreachable!(),
+            }
+            let resolutions = if case == 3 {
+                Vec::new()
+            } else {
+                vec![resolution]
+            };
+            let options = CheckerOptions {
+                module: ModuleKind::ESNext,
+                ..CheckerOptions::default()
+            };
+            let plan = ParallelCheckPlan::build(
+                &program,
+                &options,
+                &[],
+                ProjectSemanticOptions::structural(),
+                Some(Arc::new(
+                    build_project_module_resolution_outcomes(&program, &resolutions).unwrap(),
+                )),
+                None,
+            )
+            .unwrap();
+            let results = plan.check_file_partition(0, &program.files[..1]).unwrap();
+            let missing = results[0]
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| matches!(diagnostic.code, 2307 | 2792))
+                .count();
+            assert_eq!(
+                missing,
+                usize::from(case >= 2),
+                "request {kind:?}/{mode:?} case {case}: {:?}",
+                results[0].diagnostics
+            );
+        }
+    }
+}
+
+#[test]
+fn cold_barrel_consumer_preserves_number_and_string_discrimination() {
+    for barrel in [
+        "export { value } from './owner';",
+        "export * from './owner';",
+    ] {
+        for (result_type, expected_diagnostics) in [("number", 0), ("string", 1)] {
+            let program = compile_files_with_libs(
+                vec![
+                    (
+                        "src/consumer.ts".to_owned(),
+                        format!(
+                            "import {{ value }} from './barrel'; export function observed(): {result_type} {{ return value; }}"
+                        ),
+                    ),
+                    ("src/barrel.ts".to_owned(), barrel.to_owned()),
+                    (
+                        "src/owner.ts".to_owned(),
+                        "export const value: number = 42;".to_owned(),
+                    ),
+                ],
+                &[],
+            );
+            let resolutions = [
+                ProjectModuleResolution {
+                    importer_path: "src/consumer.ts".to_owned(),
+                    specifier: "./barrel".to_owned(),
+                    request_kind: ProjectModuleRequestKind::EsmImport,
+                    resolution_mode: None,
+                    target: ProjectModuleResolutionTarget::File {
+                        path: "src/barrel.ts".to_owned(),
+                    },
+                },
+                ProjectModuleResolution {
+                    importer_path: "src/barrel.ts".to_owned(),
+                    specifier: "./owner".to_owned(),
+                    request_kind: ProjectModuleRequestKind::EsmReExport,
+                    resolution_mode: None,
+                    target: ProjectModuleResolutionTarget::File {
+                        path: "src/owner.ts".to_owned(),
+                    },
+                },
+            ];
+            let options = CheckerOptions::default();
+            let plan = ParallelCheckPlan::build(
+                &program,
+                &options,
+                &[],
+                ProjectSemanticOptions::declaration_scoped(),
+                Some(Arc::new(
+                    build_project_module_resolution_outcomes(&program, &resolutions).unwrap(),
+                )),
+                None,
+            )
+            .unwrap();
+            let consumer = plan.check_file_partition(0, &program.files[..1]).unwrap();
+            assert_eq!(
+                consumer[0].diagnostics.len(),
+                expected_diagnostics,
+                "{barrel}: {:?}",
+                consumer[0].diagnostics
+            );
+            assert!(
+                consumer[0]
+                    .diagnostics
+                    .iter()
+                    .all(|diagnostic| diagnostic.code == 2322)
+            );
+            let file = &program.files[0];
+            let usage = file
+                .arena
+                .nodes
+                .iter()
+                .enumerate()
+                .filter_map(|(raw, node)| {
+                    file.arena
+                        .get_identifier(node)
+                        .filter(|identifier| identifier.escaped_text == "value")
+                        .map(|_| NodeIndex(raw as u32))
+                })
+                .max_by_key(|&index| file.arena.get(index).unwrap().pos)
+                .unwrap();
+            let value_type = plan.with_bound_file_checker_and_types(0, file, |checker, _, _, _| {
+                checker.get_type_of_node(usage)
+            });
+            assert_eq!(
+                value_type,
+                TypeId::NUMBER,
+                "cold barrel value has an exact numeric type"
+            );
+            let owners = plan.check_file_partition(1, &program.files[1..]).unwrap();
+            assert!(
+                owners.iter().all(|owner| owner.diagnostics.is_empty()),
+                "{:?}",
+                owners
+            );
+        }
+    }
+}
+
+#[test]
+fn ordinary_import_none_mode_keeps_its_exact_file_and_members() {
+    use crate::checker::context::ResolutionModeOverride;
+    use tsz_common::common::ModuleKind;
+    for (name, result_type, expected_code) in [
+        ("value", "number", None),
+        ("value", "string", Some(2322)),
+        ("foreignOnly", "number", Some(2305)),
+    ] {
+        let program = compile_files_with_libs(
+            vec![
+                (
+                    "src/main.ts".to_owned(),
+                    format!(
+                        "import {{ {name} }} from './dep'; export function observed(): {result_type} {{ return {name}; }}"
+                    ),
+                ),
+                (
+                    "src/dep.ts".to_owned(),
+                    "export const value: number = 42;".to_owned(),
+                ),
+                (
+                    "src/wrong.ts".to_owned(),
+                    "export const value: string = 'wrong'; export const foreignOnly: number = 1;"
+                        .to_owned(),
+                ),
+            ],
+            &[],
+        );
+        let resolution = |kind, mode, path: &str| ProjectModuleResolution {
+            importer_path: "src/main.ts".to_owned(),
+            specifier: "./dep".to_owned(),
+            request_kind: kind,
+            resolution_mode: mode,
+            target: ProjectModuleResolutionTarget::File {
+                path: path.to_owned(),
+            },
+        };
+        let resolutions = [
+            resolution(ProjectModuleRequestKind::EsmImport, None, "src/dep.ts"),
+            resolution(ProjectModuleRequestKind::EsmReExport, None, "src/wrong.ts"),
+            resolution(
+                ProjectModuleRequestKind::EsmImport,
+                Some(ResolutionModeOverride::Require),
+                "src/wrong.ts",
+            ),
+        ];
+        let options = CheckerOptions {
+            module: ModuleKind::ESNext,
+            ..CheckerOptions::default()
+        };
+        let plan = ParallelCheckPlan::build(
+            &program,
+            &options,
+            &[],
+            ProjectSemanticOptions::declaration_scoped(),
+            Some(Arc::new(
+                build_project_module_resolution_outcomes(&program, &resolutions).unwrap(),
+            )),
+            None,
+        )
+        .unwrap();
+        let result = plan.check_file_partition(0, &program.files[..1]).unwrap();
+        let codes = result[0]
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            codes,
+            expected_code.into_iter().collect::<Vec<_>>(),
+            "{name}/{result_type}: {:?}",
+            result[0].diagnostics
+        );
+        if name == "value" {
+            let file = &program.files[0];
+            let usage = file
+                .arena
+                .nodes
+                .iter()
+                .enumerate()
+                .filter_map(|(raw, node)| {
+                    file.arena
+                        .get_identifier(node)
+                        .filter(|identifier| identifier.escaped_text == "value")
+                        .map(|_| NodeIndex(raw as u32))
+                })
+                .max_by_key(|&index| file.arena.get(index).unwrap().pos)
+                .unwrap();
+            assert_eq!(
+                plan.with_bound_file_checker_and_types(0, file, |checker, _, _, _| checker
+                    .get_type_of_node(usage)),
+                TypeId::NUMBER
+            );
+        }
+    }
+}
+
+#[test]
+fn export_star_cannot_inspect_other_kind_export_equals_target() {
+    let program = compile_files_with_libs(
+        vec![
+            (
+                "src/barrel.ts".to_owned(),
+                "export * from './dep';".to_owned(),
+            ),
+            (
+                "src/dep.ts".to_owned(),
+                "const value = 42; export = value;".to_owned(),
+            ),
+        ],
+        &[],
+    );
+    let resolutions = [ProjectModuleResolution {
+        importer_path: "src/barrel.ts".to_owned(),
+        specifier: "./dep".to_owned(),
+        request_kind: ProjectModuleRequestKind::EsmImport,
+        resolution_mode: None,
+        target: ProjectModuleResolutionTarget::File {
+            path: "src/dep.ts".to_owned(),
+        },
+    }];
+    let options = CheckerOptions {
+        module: tsz_common::common::ModuleKind::ESNext,
+        ..CheckerOptions::default()
+    };
+    let plan = ParallelCheckPlan::build(
+        &program,
+        &options,
+        &[],
+        ProjectSemanticOptions::structural(),
+        Some(Arc::new(
+            build_project_module_resolution_outcomes(&program, &resolutions).unwrap(),
+        )),
+        None,
+    )
+    .unwrap();
+    let results = plan.check_file_partition(0, &program.files[..1]).unwrap();
+    let codes = results[0]
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        codes,
+        vec![2307],
+        "wrong-kind export-equals target cannot lend TS2498: {:?}",
+        results[0].diagnostics
+    );
+}

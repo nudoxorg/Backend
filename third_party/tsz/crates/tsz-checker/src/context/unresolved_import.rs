@@ -62,6 +62,23 @@ impl CheckerContext<'_> {
         let Some(module_name) = symbol.import_module() else {
             return false;
         };
+        if self.project_module_resolution_outcomes.is_some() {
+            let Some(request) = self.bound_module_request_for_alias(sym_id) else {
+                return true;
+            };
+            return !matches!(
+                self.project_module_outcome_for_request(
+                    request.importer,
+                    request.specifier,
+                    request.mode,
+                    request.kind
+                ),
+                Some(
+                    crate::context::ResolvedModuleRequestOutcome::File(_)
+                        | crate::context::ResolvedModuleRequestOutcome::External { .. }
+                )
+            );
+        }
         if self.module_exports_contains_module(self.binder, module_name) {
             return false;
         }
