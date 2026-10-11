@@ -21,6 +21,11 @@ mod page_wire;
 mod read_manifest_wire;
 #[path = "command/semantic_shape_wire.rs"]
 mod semantic_shape_wire;
+#[path = "command/binary_certificate.rs"]
+mod binary_certificate;
+pub use binary_certificate::{
+    encode_binary_certificate_command, expand_binary_certificate_command,
+};
 pub(crate) use cursor_wire::{
     cursor_from_wire, cursor_from_wire_with_capability, cursor_to_wire, frontier_from_wire,
     frontier_from_wire_with_capability, frontier_to_wire,

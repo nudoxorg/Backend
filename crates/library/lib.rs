@@ -308,8 +308,8 @@ pub use wire::{
     WireSchema, admit_reply, admit_reply_with_capability, admit_request, admit_surface_reply,
     command_request_id, decode_command_body, decode_command_body_for_owner,
     decode_compact_view_event, decode_reply_body, decode_reply_body_with_verifier,
-    encode_command_body, encode_compact_subscription, encode_compact_view_event,
-    encode_view_root_descriptor, reply_memory_bound, semantic_shape_batch_key,
+    encode_binary_certificate_command, encode_command_body, encode_compact_subscription, encode_compact_view_event,
+    encode_view_root_descriptor, expand_binary_certificate_command, reply_memory_bound, semantic_shape_batch_key,
 };
 
 /// Returns the current command/reply/event wire schema version.
