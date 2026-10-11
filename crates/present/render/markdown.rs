@@ -80,6 +80,42 @@ pub fn answer_with_detail(
     }
 }
 
+/// Previews a structured Summary list without duplicating its complete rows.
+/// Other answers retain their existing readable representation.
+#[must_use]
+pub fn summary_with_cursor(
+    value: &Answer,
+    cursor: Option<&str>,
+    target: ContinuationTarget<'_>,
+) -> String {
+    if matches!(target, ContinuationTarget::CliOption) {
+        return answer_with_cursor(value, cursor, target);
+    }
+    let Answer::Records(list) = value else {
+        return answer_with_detail(value, Detail::Summary, cursor, target);
+    };
+    let mut lines = Lines::new();
+    lines.push(coverage(list.coverage()));
+    if list.is_empty() {
+        lines.push(list.empty_explanation());
+    } else {
+        lines.push(format!(
+            "{} row(s); complete records and native operands are in `structuredContent.records`.",
+            list.records().len(),
+        ));
+    }
+    if list.has_more() && list.continuation().is_some() {
+        if let Some(cursor) = cursor {
+            lines.push(continuation_note(target, cursor));
+        } else {
+            lines.push("… more rows; this rendering does not include the continuation token");
+        }
+    } else if list.has_more() {
+        lines.push("… more rows at this revision; raise `limit` to see them");
+    }
+    lines.finish()
+}
+
 /// Renders one fault, with its affordance as the exact next tool call.
 #[must_use]
 pub fn fault(fault: &Fault) -> String {

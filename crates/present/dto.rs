@@ -143,7 +143,7 @@ impl IdentityDto {
             coordinate: identity.coordinate().as_str().to_owned(),
             trail: identity.trail_within(None),
             name: identity.name().to_owned(),
-            shape: shape_name(identity),
+            shape: shape_name(identity).to_owned(),
             project: identity.project().map(|project| project.root().to_owned()),
             path: identity.path().map(|path| path.as_str().to_owned()),
             line: identity.line().map(crate::identity::LineNumber::get),
@@ -154,19 +154,23 @@ impl IdentityDto {
                 .map(|segment| segment.as_str().to_owned())
                 .collect(),
             key: identity.key().tag().map(|tag| tag.to_string()),
-            semantic_data: match identity.key() {
-                crate::IdentityKey::Symbol(key) if key.as_bytes() != &[0; 32] => Some(
-                    IdentitySemanticData::SelectedSymbolId(SelectedSymbolIdDto(*key.as_bytes())),
-                ),
-                crate::IdentityKey::Package(_)
-                | crate::IdentityKey::Symbol(_)
-                | crate::IdentityKey::Absent => None,
-            },
+            semantic_data: identity_semantic_data(identity),
         }
     }
 }
 
-fn shape_name(identity: &Identity) -> String {
+pub(crate) fn identity_semantic_data(identity: &Identity) -> Option<IdentitySemanticData> {
+    match identity.key() {
+        crate::IdentityKey::Symbol(key) if key.as_bytes() != &[0; 32] => Some(
+            IdentitySemanticData::SelectedSymbolId(SelectedSymbolIdDto(*key.as_bytes())),
+        ),
+        crate::IdentityKey::Package(_)
+        | crate::IdentityKey::Symbol(_)
+        | crate::IdentityKey::Absent => None,
+    }
+}
+
+pub(crate) const fn shape_name(identity: &Identity) -> &'static str {
     match identity.shape() {
         crate::identity::IdentityShape::Package => "package",
         crate::identity::IdentityShape::Module => "module",
@@ -175,7 +179,6 @@ fn shape_name(identity: &Identity) -> String {
         crate::identity::IdentityShape::External => "external",
         crate::identity::IdentityShape::Opaque => "opaque",
     }
-    .to_owned()
 }
 
 /// One classified signature token.

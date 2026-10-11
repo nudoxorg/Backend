@@ -1179,12 +1179,20 @@ impl<P: Product> Server<P> {
         };
         let structured: Value = serde_json::from_slice(&payload.bytes)
             .map_err(|error| RpcError::tool(format!("typed projection decode failed: {error}")))?;
-        let text = bounded_text(&markdown::answer_with_detail(
-            answer,
-            detail,
-            next.as_deref(),
-            ContinuationTarget::McpTool(tool_name),
-        ));
+        let preview = match detail {
+            Detail::Summary => markdown::summary_with_cursor(
+                answer,
+                next.as_deref(),
+                ContinuationTarget::McpTool(tool_name),
+            ),
+            Detail::Standard | Detail::Full => markdown::answer_with_detail(
+                answer,
+                detail,
+                next.as_deref(),
+                ContinuationTarget::McpTool(tool_name),
+            ),
+        };
+        let text = bounded_text(&preview);
         Ok(tool_result(&text, structured, answer.fault().is_some()))
     }
 

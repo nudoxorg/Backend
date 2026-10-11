@@ -2985,9 +2985,13 @@ fn page_projection_mcp_combined_summary_retains_real_faults_and_section_notes() 
 }
 
 #[test]
-fn a_search_call_leads_with_honest_coverage_then_two_lines_per_record() {
+fn a_standard_search_call_leads_with_honest_coverage_then_two_lines_per_record() {
     let mut server = ready(Fake::default());
-    let result = call(&mut server, "backend.search", &json!({ "query": "ferris" }));
+    let result = call(
+        &mut server,
+        "backend.search",
+        &json!({ "query": "ferris", "detail": "standard" }),
+    );
     let text = text_of(&result);
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(
@@ -3013,7 +3017,7 @@ fn a_search_call_leads_with_honest_coverage_then_two_lines_per_record() {
 }
 
 #[test]
-fn mcp_text_is_the_same_shared_markdown_the_cli_renders() {
+fn standard_mcp_text_is_the_same_shared_markdown_the_cli_renders() {
     let mut direct = Fake::default();
     let answer = backend_present::answer(
         &mut direct,
@@ -3026,8 +3030,44 @@ fn mcp_text_is_the_same_shared_markdown_the_cli_renders() {
     let expected = bounded_text(&backend_present::markdown::answer(&answer));
 
     let mut server = ready(Fake::default());
-    let result = call(&mut server, "backend.search", &json!({ "query": "ferris" }));
+    let result = call(
+        &mut server,
+        "backend.search",
+        &json!({ "query": "ferris", "detail": "standard" }),
+    );
     assert_eq!(text_of(&result), expected);
+}
+
+#[test]
+fn default_search_summary_keeps_exact_native_records_with_a_concise_coverage_preview() {
+    let mut server = ready(Fake::default());
+    let result = call(&mut server, "backend.search", &json!({"query":"ferris"}));
+    let preview = text_of(&result);
+    assert!(preview.starts_with("~lanes exact· names· graph· semantic✗ unconfigured"));
+    assert!(preview.contains("1 row(s)"));
+    assert!(preview.contains("`structuredContent.records`"));
+    assert!(!preview.contains(DECLARATION));
+    let structured = &result["structuredContent"];
+    assert_eq!(structured["detail"], "summary");
+    assert_eq!(structured["more"], false);
+    let records = structured["records"]
+        .as_array()
+        .expect("complete selected page");
+    assert_eq!(records.len(), 1);
+    let row = &records[0];
+    assert_eq!(row["identity"]["coordinate"], DECLARATION);
+    assert_eq!(row["identity"]["name"], "ferris");
+    assert_eq!(row["identity"]["path"], "src/lib.rs");
+    assert_eq!(row["identity"]["line"], 2);
+    let retained: backend_present::IdentitySemanticData =
+        serde_json::from_value(row["identity"]["semantic_data"].clone())
+            .expect("the existing selected-operand type still accepts the full ID");
+    let backend_present::IdentitySemanticData::SelectedSymbolId(id) = retained;
+    assert_eq!(id.bytes(), symbol_key(DECLARATION).as_bytes());
+    assert_eq!(row["kind"], "function");
+    assert_eq!(row["language"], "rust");
+    assert_eq!(row["state"], "ready");
+    assert!(structured.get("nextCursor").is_none());
 }
 
 #[test]

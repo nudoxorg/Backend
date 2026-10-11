@@ -320,10 +320,14 @@ fn selected_symbol_operand_uses_retained_row_bytes_and_preserves_key_families() 
             .expect("bounded actual row projection");
         let value: serde_json::Value = serde_json::from_slice(&encoded.bytes).expect("JSON");
         let identity = &value["records"][0]["identity"];
-        assert_eq!(
-            identity["key"],
-            IdentityKey::Symbol(key).tag().expect("tag").to_string()
-        );
+        if detail == Detail::Full {
+            assert_eq!(
+                identity["key"],
+                IdentityKey::Symbol(key).tag().expect("tag").to_string()
+            );
+        } else {
+            assert!(identity.get("key").is_none());
+        }
         assert_eq!(
             identity["semantic_data"],
             serde_json::json!({
@@ -1172,6 +1176,53 @@ fn structured_continuation_previews_do_not_scale_with_the_opaque_token() {
         cli.contains(&token),
         "a text-only CLI must retain the exact operand"
     );
+}
+
+#[test]
+fn mcp_summary_list_previews_preserve_scope_count_and_continuation_without_repeating_rows() {
+    use backend_library::{Cursor, PageContinuation};
+
+    let row = declaration_row();
+    let record = Record::from_row(&row).with_summary("a long retained description ".repeat(1024));
+    let list = RecordList::new(
+        "ferris",
+        CoverageLine::new(&[Coverage::Complete], Some(25)),
+        vec![record; 25],
+    )
+    .with_continuation(Some(PageContinuation::from_cursor(Cursor::new())));
+    let coverage = list.coverage().render();
+    let answer = Answer::Records(Box::new(list));
+    let cursor = "exact opaque signed cursor";
+    let preview = markdown::summary_with_cursor(
+        &answer,
+        Some(cursor),
+        ContinuationTarget::McpTool("backend.graph"),
+    );
+    assert!(preview.starts_with(&coverage));
+    assert!(preview.contains("25 row(s)"));
+    assert!(preview.contains("`structuredContent.records`"));
+    assert!(preview.contains("Continue `backend.graph` with the same arguments"));
+    assert!(!preview.contains(cursor));
+    assert!(!preview.contains(DECLARATION));
+    assert!(!preview.contains("a long retained description"));
+    assert!(preview.len() < 512);
+    assert_eq!(
+        markdown::summary_with_cursor(&answer, Some(cursor), ContinuationTarget::CliOption),
+        markdown::answer_with_cursor(&answer, Some(cursor), ContinuationTarget::CliOption),
+        "text-only callers retain all readable rows and the exact cursor",
+    );
+    let empty = Answer::Records(Box::new(
+        RecordList::new(
+            "ferris",
+            CoverageLine::new(&[], Some(0)),
+            Vec::<Record>::new(),
+        )
+        .with_empty_reason("no graph edges at this coordinate; the authority recorded none"),
+    ));
+    let preview =
+        markdown::summary_with_cursor(&empty, None, ContinuationTarget::McpTool("backend.graph"));
+    assert!(preview.contains("no graph edges at this coordinate"));
+    assert!(!preview.contains("Continue"));
 }
 
 #[test]
