@@ -112,7 +112,7 @@ def validate(directory, source=None, platform=None, require_qa=True):
     if manifest.get("platform") == "linux-x64" and "minimum_glibc" in manifest:
         if platform and platform != "linux-x64":
             raise ValueError("candidate belongs to the wrong platform lane")
-        return validate_linux(directory, manifest, source)
+        return validate_linux(directory, manifest, source, require_qa=require_qa)
     required = {"schema", "version", "source_sha", "source_tree", "cargo_lock_sha256", "platform", "target", "asset", "sha256", "size_bytes", "minimum_os", "build_manifest_sha256", "signed", "notarized"}
     if set(manifest) != required or manifest["schema"] != 1:
         raise ValueError("invalid release manifest schema")
@@ -184,8 +184,8 @@ def validate(directory, source=None, platform=None, require_qa=True):
     return manifest
 
 
-def validate_linux(directory, manifest, source=None):
-    """Validate a receipted Ubuntu x86-64 archive and its native QA record."""
+def validate_linux(directory, manifest, source=None, *, require_qa=True):
+    """Validate a receipted Ubuntu x86-64 package and, by default, its native QA."""
     required = {"schema", "version", "source_sha", "source_tree", "cargo_lock_sha256", "platform", "target", "asset", "sha256", "size_bytes", "minimum_glibc", "build_manifest_sha256", "packaging_manifest_sha256"}
     if set(manifest) != required or manifest["schema"] != 1:
         raise ValueError("invalid Linux release manifest schema")
@@ -218,7 +218,9 @@ def validate_linux(directory, manifest, source=None):
                 raise ValueError("Linux archive has too many members")
             for member in members:
                 path = Path(member.name)
-                if member.name.startswith("/") or "\\" in member.name or ".." in path.parts or not member.name.startswith("nudox-linux-x86_64/"):
+                archive_root = member.name == "nudox-linux-x86_64" and member.isdir()
+                if (member.name.startswith("/") or "\\" in member.name or ".." in path.parts
+                        or not (archive_root or member.name.startswith("nudox-linux-x86_64/"))):
                     raise ValueError("Linux archive contains an unsafe path")
                 if member.issym() or member.islnk() or not (member.isdir() or member.isreg()):
                     raise ValueError("Linux archive contains links or special files")
@@ -246,17 +248,18 @@ def validate_linux(directory, manifest, source=None):
                 raise ValueError("Linux package has no source-bound immutable checkpoint tag")
     except (tarfile.TarError, OSError, json.JSONDecodeError) as error:
         raise ValueError(f"could not validate Linux archive: {error}") from error
-    qa = read_json(directory / "native-qa-linux-x64.json")
-    qa_fields = {"schema", "platform", "archive_sha256", "source_sha", "tested_by", "tested_at", "ubuntu_release", "glibc_version", "cases"}
-    if set(qa) != qa_fields or qa["schema"] != 1 or qa["platform"] != "linux-x64":
-        raise ValueError("invalid Linux native acceptance record")
-    if qa["archive_sha256"] != manifest["sha256"] or qa["source_sha"] != manifest["source_sha"]:
-        raise ValueError("Linux native QA does not attest this exact archive and source")
-    for name in ("tested_by", "tested_at", "ubuntu_release", "glibc_version"):
-        if not isinstance(qa[name], str) or not qa[name]:
-            raise ValueError("Linux native QA requires operator, timestamp, Ubuntu release and glibc version")
-    if set(qa["cases"]) != LINUX_QA_CASES or any(value is not True for value in qa["cases"].values()):
-        raise ValueError("Linux native acceptance has missing or failed cases")
+    if require_qa:
+        qa = read_json(directory / "native-qa-linux-x64.json")
+        qa_fields = {"schema", "platform", "archive_sha256", "source_sha", "tested_by", "tested_at", "ubuntu_release", "glibc_version", "cases"}
+        if set(qa) != qa_fields or qa["schema"] != 1 or qa["platform"] != "linux-x64":
+            raise ValueError("invalid Linux native acceptance record")
+        if qa["archive_sha256"] != manifest["sha256"] or qa["source_sha"] != manifest["source_sha"]:
+            raise ValueError("Linux native QA does not attest this exact archive and source")
+        for name in ("tested_by", "tested_at", "ubuntu_release", "glibc_version"):
+            if not isinstance(qa[name], str) or not qa[name]:
+                raise ValueError("Linux native QA requires operator, timestamp, Ubuntu release and glibc version")
+        if set(qa["cases"]) != LINUX_QA_CASES or any(value is not True for value in qa["cases"].values()):
+            raise ValueError("Linux native acceptance has missing or failed cases")
     installer = directory / "install-linux-x64.py"
     channel_installer = directory / "install-linux-x64-channel.py"
     if installer.is_symlink() or not installer.is_file() or channel_installer.is_symlink() or not channel_installer.is_file():

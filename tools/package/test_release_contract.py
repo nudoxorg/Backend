@@ -2,6 +2,7 @@ import io
 import hashlib
 import json
 import plistlib
+import tarfile
 import tempfile
 import urllib.error
 import unittest
@@ -10,6 +11,54 @@ from unittest.mock import patch
 from pathlib import Path
 
 import release_contract as release
+
+
+def linux_diagnostic_package(directory):
+    root = Path(directory)
+    source = "a" * 40
+    build = json.dumps({"source": {"commit": source}}).encode()
+    package = json.dumps({"schema": "nudox.linux-portable-package.v1",
+                          "release_tag": f"checkpoint-20261011-{source[:10]}-linux-x64"}).encode()
+    members = {
+        "nudox-linux-x86_64/bin/backend-cli": (b"cli", 0o755),
+        "nudox-linux-x86_64/bin/backend-mcp": (b"mcp", 0o755),
+        "nudox-linux-x86_64/bin/backend-locald": (b"locald", 0o755),
+        "nudox-linux-x86_64/build-manifest.json": (build, 0o644),
+        "nudox-linux-x86_64/packaging-manifest.json": (package, 0o644),
+        "nudox-linux-x86_64/README.txt": (b"synthetic diagnostic package", 0o644),
+    }
+    archive = root / f"nudox-linux-x86_64-{source[:10]}.tar.gz"
+    with tarfile.open(archive, "w:gz") as bundle:
+        root_member = tarfile.TarInfo("nudox-linux-x86_64")
+        root_member.type = tarfile.DIRTYPE
+        bundle.addfile(root_member)
+        for name, (body, mode) in members.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(body)
+            member.mode = mode
+            bundle.addfile(member, io.BytesIO(body))
+    manifest = {
+        "schema": 1, "version": "0.2.0", "source_sha": source,
+        "source_tree": "b" * 40, "cargo_lock_sha256": "c" * 64,
+        "platform": "linux-x64", "target": "x86_64-unknown-linux-gnu",
+        "asset": archive.name, "sha256": release.sha256(archive),
+        "size_bytes": archive.stat().st_size, "minimum_glibc": "2.39",
+        "build_manifest_sha256": hashlib.sha256(build).hexdigest(),
+        "packaging_manifest_sha256": hashlib.sha256(package).hexdigest(),
+    }
+    (root / "release-manifest.json").write_text(json.dumps(manifest))
+    (root / (archive.name + ".sha256")).write_text(f'{manifest["sha256"]}  {archive.name}\n')
+    (root / "install-linux-x64.py").write_text("# synthetic pinned installer\n")
+    (root / "install-linux-x64-channel.py").write_text("# synthetic channel installer\n")
+    qa = {
+        "schema": 1, "platform": "linux-x64",
+        "archive_sha256": "replace-with-the-release-manifest-sha256",
+        "source_sha": "replace-with-the-release-source-commit",
+        "tested_by": "", "tested_at": "", "ubuntu_release": "", "glibc_version": "",
+        "cases": {name: False for name in release.LINUX_QA_CASES},
+    }
+    (root / "native-qa-linux-x64.json").write_text(json.dumps(qa))
+    return manifest
 
 
 def candidate(directory):
@@ -64,6 +113,18 @@ class FakeGitHub(release.GitHub):
 
 
 class CandidateTests(unittest.TestCase):
+    def test_diagnostic_linux_validation_checks_package_without_claiming_native_qa(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = linux_diagnostic_package(directory)
+            self.assertEqual(release.validate_linux(Path(directory), manifest, require_qa=False), manifest)
+            with self.assertRaisesRegex(ValueError, "native QA does not attest"):
+                release.validate_linux(Path(directory), manifest)
+            archive = Path(directory) / manifest["asset"]
+            with archive.open("ab") as stream:
+                stream.write(b"corruption")
+            with self.assertRaisesRegex(ValueError, "archive differs from its immutable manifest"):
+                release.validate_linux(Path(directory), manifest, require_qa=False)
+
     def test_missing_release_lookup_closes_http_response(self):
         github = FakeGitHub()
         missing = urllib.error.HTTPError("https://api.example/releases/tag", 404, "missing", {}, io.BytesIO(b"not found"))
