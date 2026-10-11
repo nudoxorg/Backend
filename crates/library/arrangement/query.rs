@@ -28,14 +28,41 @@ impl RankedRow {
 }
 
 #[derive(Eq, PartialEq)]
-struct NameRanked(RankedRow);
+struct NameRanked {
+    candidate: RankedRow,
+    exact: bool,
+}
+
+impl NameRanked {
+    fn new(row: RankedRow, text: Option<&str>) -> Self {
+        // Coordinates carry an opaque identity before the declaration name.
+        // Compare a complete name segment (including relative qualification),
+        // never a suffix within a name such as `MockEnvironment`.
+        let exact = text.is_some_and(|text| {
+            row.normalized_label == text
+                || row
+                    .normalized_label
+                    .strip_suffix(text)
+                    .is_some_and(|prefix| prefix.ends_with("::"))
+        });
+        Self {
+            candidate: row,
+            exact,
+        }
+    }
+}
 
 impl Ord for NameRanked {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.0
-            .normalized_label
-            .cmp(&other.0.normalized_label)
-            .then_with(|| self.0.row.id.cmp(&other.0.row.id))
+        other
+            .exact
+            .cmp(&self.exact)
+            .then_with(|| {
+                self.candidate
+                    .normalized_label
+                    .cmp(&other.candidate.normalized_label)
+            })
+            .then_with(|| self.candidate.row.id.cmp(&other.candidate.row.id))
     }
 }
 
@@ -71,15 +98,15 @@ fn retained_page_capacity(start: usize, limit: usize) -> usize {
     start.saturating_add(limit).saturating_add(1)
 }
 
-fn retain_best_names(rows: impl Iterator<Item = RankedRow>, capacity: usize) -> Vec<RankedRow> {
+fn retain_best_names(rows: impl Iterator<Item = NameRanked>, capacity: usize) -> Vec<NameRanked> {
     let mut retained = BinaryHeap::with_capacity(capacity.min(usize::from(crate::QueryLimit::MAX)));
     for row in rows {
-        retained.push(NameRanked(row));
+        retained.push(row);
         if retained.len() > capacity {
             retained.pop();
         }
     }
-    retained.into_iter().map(|row| row.0).collect()
+    retained.into_iter().collect()
 }
 
 fn retain_best_search(rows: impl Iterator<Item = RankedRow>, capacity: usize) -> Vec<RankedRow> {
@@ -93,12 +120,8 @@ fn retain_best_search(rows: impl Iterator<Item = RankedRow>, capacity: usize) ->
     retained.into_iter().map(|row| row.0).collect()
 }
 
-fn sort_names(rows: &mut [RankedRow]) {
-    rows.sort_unstable_by(|left, right| {
-        left.normalized_label
-            .cmp(&right.normalized_label)
-            .then_with(|| left.row.id.cmp(&right.row.id))
-    });
+fn sort_names(rows: &mut [NameRanked]) {
+    rows.sort_unstable();
 }
 
 fn sort_search(rows: &mut [RankedRow]) {
@@ -378,14 +401,15 @@ fn select_name_matches_page(
                 name_text
                     .as_ref()
                     .is_none_or(|text| row.normalized_label.contains(text))
-            }),
+            })
+            .map(|row| NameRanked::new(row, name_text.as_deref())),
         capacity,
     );
     work.record_sort(rows.len());
     sort_names(&mut rows);
     let mut ids = rows
         .into_iter()
-        .map(|row| row.row.id)
+        .map(|row| row.candidate.row.id)
         .skip(start)
         .take(limit.saturating_add(1))
         .collect::<Vec<_>>();
