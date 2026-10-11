@@ -864,7 +864,7 @@ mod tests {
             std::io::Error::from(std::io::ErrorKind::InvalidData),
         ));
         assert!(
-            matches!(mapped, ClientError::Io(_)),
+            matches!(mapped, ClientError::Startup(_)),
             "a configuration/data error must be surfaced, not retried: {mapped}"
         );
     }

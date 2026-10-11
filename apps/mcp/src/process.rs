@@ -439,6 +439,14 @@ mod tests {
             "the owner-startup refusal must reach the caller: {}",
             replies[1]
         );
+        let fault = &replies[1]["result"]["structuredContent"];
+        assert!(
+            fault.get("shell").is_none(),
+            "a setup refusal cannot be repaired by blind retry: {}",
+            replies[1]
+        );
+        assert!(fault.get("call").is_none());
+        assert!(!replies[1].to_string().contains("re-run the same command"));
     }
 
     #[test]

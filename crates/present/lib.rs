@@ -12,8 +12,8 @@
 //! cannot name one.
 //!
 //! It sits at DAG order 10, in the `core` layer, above `backend-library` and
-//! `backend-client`. It names exactly one client type — [`backend_client::ClientError`]
-//! — because the lowering of a transport failure into a [`Fault`] is shared. If
+//! `backend-client`. It names the shared client error and its startup recovery policy
+//! because the lowering of a transport failure into a [`Fault`] is shared. If
 //! each surface mapped transport failures itself, the two surfaces would
 //! disagree about what a dropped endpoint is called the first time someone
 //! edited one of them; here they cannot. It does *not* name a session, a

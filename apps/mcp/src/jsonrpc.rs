@@ -275,31 +275,14 @@ pub(super) fn disconnected_reconnecting_product(
 
 /// Converts a daemon restart window into the same reconnectable class as a
 /// reset on an established stream. Startup/configuration failures remain
-/// ordinary client errors so a broken workspace is reported directly instead
+/// typed startup observations so a broken workspace is reported directly instead
 /// of being retried forever by a long-lived MCP process.
 fn map_runtime_connect_error(error: backend_runtime::RuntimeError) -> ClientError {
-    match error {
-        backend_runtime::RuntimeError::Io(error)
-            if is_disconnect_kind(error.kind()) || error.kind() == io::ErrorKind::NotFound =>
-        {
-            ClientError::Disconnected(error.kind())
-        }
-        other => ClientError::Io(other.to_string()),
+    if let Some(kind) = error.reconnect_kind() {
+        ClientError::Disconnected(kind)
+    } else {
+        ClientError::from(error)
     }
-}
-
-const fn is_disconnect_kind(kind: io::ErrorKind) -> bool {
-    matches!(
-        kind,
-        io::ErrorKind::ConnectionReset
-            | io::ErrorKind::ConnectionAborted
-            | io::ErrorKind::ConnectionRefused
-            | io::ErrorKind::BrokenPipe
-            | io::ErrorKind::NotConnected
-            | io::ErrorKind::UnexpectedEof
-            | io::ErrorKind::TimedOut
-            | io::ErrorKind::WouldBlock
-    )
 }
 
 /// Runs newline-delimited MCP stdio until the client closes stdin.

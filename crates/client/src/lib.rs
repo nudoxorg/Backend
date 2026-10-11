@@ -65,6 +65,7 @@ pub use backend_replication::SelectedGenerationStamp as SelectedStamp;
 use backend_replication::{
     LocalControlError, LocalControlLimits, ReplicationError, read_frame, write_frame,
 };
+pub use backend_runtime::{StartupFailure, StartupFailureCause, StartupRecovery};
 pub use index_operation::{index_with_journal, surface_with_index_journal};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -187,6 +188,8 @@ pub const MAX_EVENTS: usize = backend_library::MAX_SUBSCRIPTION_EVENTS;
 pub enum ClientError {
     /// The endpoint or stream could not be used.
     Io(String),
+    /// The actual automatic owner-startup cause and its runtime recovery policy.
+    Startup(StartupFailure),
     /// The connection is gone: the peer closed it, reset it, or stopped
     /// answering on it.
     ///
@@ -246,6 +249,7 @@ impl fmt::Display for ClientError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(message) => write!(formatter, "local endpoint: {message}"),
+            Self::Startup(failure) => write!(formatter, "local startup: {failure}"),
             Self::Disconnected(kind) => {
                 write!(formatter, "endpoint disconnected: {kind}")
             }
@@ -280,6 +284,12 @@ impl fmt::Display for ClientError {
                 formatter.write_str("remote grant was revoked by its owner")
             }
         }
+    }
+}
+
+impl From<backend_runtime::RuntimeError> for ClientError {
+    fn from(error: backend_runtime::RuntimeError) -> Self {
+        Self::Startup(error.into())
     }
 }
 
@@ -2017,6 +2027,43 @@ fn map_reply(error: ReplyAdmissionError) -> ClientError {
 #[allow(clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_startup_conversion_preserves_typed_cause_and_original_diagnostic() {
+        use backend_runtime::RuntimeError;
+        use std::io::{Error, ErrorKind};
+        let cases = [
+            (
+                RuntimeError::MissingExecutable("/debug/deps/backend-locald".into()),
+                StartupFailureCause::MissingCompanion,
+                StartupRecovery::RepairCompanion,
+            ),
+            (
+                RuntimeError::Io(Error::new(
+                    ErrorKind::PermissionDenied,
+                    "private state parent /state refused",
+                )),
+                StartupFailureCause::Io(ErrorKind::PermissionDenied),
+                StartupRecovery::RepairConfiguration,
+            ),
+            (
+                RuntimeError::Io(Error::from(ErrorKind::ConnectionRefused)),
+                StartupFailureCause::Io(ErrorKind::ConnectionRefused),
+                StartupRecovery::RetryOriginalCommand,
+            ),
+        ];
+        for (error, cause, recovery) in cases {
+            let detail = error.to_string();
+            let client = ClientError::from(error);
+            let ClientError::Startup(observation) = &client else {
+                panic!("runtime startup was flattened: {client}");
+            };
+            assert_eq!(observation.cause(), cause);
+            assert_eq!(observation.recovery(), recovery);
+            assert_eq!(observation.detail(), detail);
+            assert_eq!(client.to_string(), format!("local startup: {detail}"));
+        }
+    }
 
     #[test]
     fn typed_command_failure_survives_the_client_boundary() {

@@ -36,7 +36,9 @@ pub mod server;
 
 #[cfg(unix)]
 mod bootstrap;
+mod recovery;
 mod startup;
+pub use recovery::{StartupFailure, StartupFailureCause, StartupRecovery};
 #[cfg(unix)]
 pub use bootstrap::{
     LocaldStartup, SpawnedOwnerBootstrap, StartupPending, StartupPendingAction, StartupPendingCause,

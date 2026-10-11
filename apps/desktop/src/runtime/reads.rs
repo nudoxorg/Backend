@@ -816,6 +816,7 @@ pub fn failure(error: &ClientError) -> ReadFailure {
         }
         ClientError::Disconnected(_)
         | ClientError::Io(_)
+        | ClientError::Startup(_)
         | ClientError::Transport(_)
         | ClientError::RemoteDeadlineExceeded => FaultCode::Transport,
         ClientError::BasisMismatch { .. }

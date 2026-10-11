@@ -321,6 +321,16 @@ pub enum Affordance {
 }
 
 impl Affordance {
+    /// Renders the shared runtime recovery policy using existing fault actions.
+    #[must_use]
+    pub const fn startup(recovery: backend_client::StartupRecovery) -> Self {
+        match recovery {
+            backend_client::StartupRecovery::RetryOriginalCommand => Self::Retry,
+            backend_client::StartupRecovery::RepairCompanion
+            | backend_client::StartupRecovery::RepairConfiguration => Self::None,
+        }
+    }
+
     /// Suggests re-reading the shelf status.
     #[must_use]
     pub fn status() -> Self {
@@ -895,6 +905,12 @@ impl Fault {
 
     fn from_simple_client_error(error: &ClientError, operand: Operand) -> Self {
         let (slug, cause, sentence, affordance) = match error {
+            ClientError::Startup(failure) => (
+                FaultSlug::Endpoint,
+                CauseSlug::Unreachable,
+                format!("the local daemon could not be started or reached: {failure}"),
+                Affordance::startup(failure.recovery()),
+            ),
             ClientError::Io(detail) => (
                 FaultSlug::Endpoint,
                 CauseSlug::Unreachable,

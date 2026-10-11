@@ -3127,6 +3127,102 @@ fn an_unknown_coordinate_is_refused_with_the_operand_and_a_next_tool_call() {
 }
 
 #[test]
+fn typed_startup_failures_preserve_recovery_and_original_diagnostic_in_mcp() {
+    use backend_runtime::RuntimeError;
+    use std::io::{Error, ErrorKind};
+    let cases = [
+        (
+            RuntimeError::MissingExecutable("/debug/deps/backend-locald".into()),
+            backend_client::StartupFailureCause::MissingCompanion,
+            false,
+        ),
+        (
+            RuntimeError::InvalidPath("endpoint path is empty; ConnectionRefused; retry"),
+            backend_client::StartupFailureCause::Configuration,
+            false,
+        ),
+        (
+            RuntimeError::Io(Error::new(
+                ErrorKind::PermissionDenied,
+                "private state parent /state refused",
+            )),
+            backend_client::StartupFailureCause::Io(ErrorKind::PermissionDenied),
+            false,
+        ),
+        (
+            RuntimeError::Spawn {
+                executable: "/bin/backend-locald".into(),
+                source: Error::from(ErrorKind::NotFound),
+            },
+            backend_client::StartupFailureCause::Spawn(ErrorKind::NotFound),
+            false,
+        ),
+        (
+            RuntimeError::DaemonExited {
+                code: Some(70),
+                diagnostic: None,
+            },
+            backend_client::StartupFailureCause::OwnerExited(Some(70)),
+            false,
+        ),
+        (
+            RuntimeError::StartTimeout("/socket".into()),
+            backend_client::StartupFailureCause::StartTimeout,
+            true,
+        ),
+        #[cfg(unix)]
+        (
+            RuntimeError::CompanionProtocolMismatch,
+            backend_client::StartupFailureCause::CompanionMismatch,
+            false,
+        ),
+    ];
+    for (error, cause, retry) in cases {
+        let original = error.to_string();
+        let client = map_runtime_connect_error(error);
+        let ClientError::Startup(observation) = &client else {
+            panic!("startup cause was erased or treated as a disconnect: {client}");
+        };
+        assert_eq!(observation.cause(), cause);
+        assert_eq!(observation.detail(), original);
+        let fault = backend_present::probe_fault(&client, Probe::Graph(DECLARATION));
+        let expected_dto = backend_present::fault_value(&fault);
+        let text = backend_present::text::fault(&fault, backend_present::Theme::plain());
+        let markdown = backend_present::markdown::fault(&fault);
+        assert!(text.contains(&original));
+        assert!(markdown.contains(&original));
+        let mut server = ready(Fake {
+            adapter_error: Some(client),
+            ..Fake::default()
+        });
+        let response = request(
+            &mut server,
+            "tools/call",
+            &json!({
+                "name": "backend.graph", "arguments": {"coordinate": DECLARATION, "limit": 1}
+            }),
+        );
+        assert_eq!(response["id"], 9);
+        let result = &response["result"];
+        assert_eq!(result["isError"], true);
+        assert_eq!(result["structuredContent"], expected_dto);
+        assert_eq!(text_of(result), markdown);
+        assert_context_bounded(&response);
+        if retry {
+            assert_eq!(
+                result["structuredContent"]["shell"],
+                "re-run the same command"
+            );
+        } else {
+            assert!(result["structuredContent"].get("shell").is_none());
+            assert!(result["structuredContent"].get("call").is_none());
+            assert!(!text.contains("→"));
+            assert!(!markdown.contains("→"));
+        }
+    }
+}
+
+#[test]
 fn an_unreachable_endpoint_is_a_fault_with_the_retry_affordance() {
     let mut server = ready(Fake {
         offline: true,
