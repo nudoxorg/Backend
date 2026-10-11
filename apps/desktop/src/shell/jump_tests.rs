@@ -6,6 +6,248 @@ use super::tests::{Rig, page_route, rig};
 use crate::navigation::{Intent, OrbitRoute, Route};
 use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
 
+/// Controlled root hydration that supplies no new producer revision. A
+/// generation advance here would hide a missing same-root attachment wake.
+struct StableRoot;
+
+impl crate::runtime::actor::EngineClient for StableRoot {
+    fn execute(
+        &mut self,
+        request: &crate::runtime::actor::EngineRequest,
+    ) -> Result<crate::runtime::actor::EngineDto, crate::runtime::actor::EngineFault> {
+        use crate::runtime::actor::{EngineDto, EngineFault, EngineRequest};
+        let EngineRequest::Root { request, basis, .. } = request else {
+            return Err(EngineFault::Cancelled);
+        };
+        Ok(EngineDto::Root {
+            request: *request,
+            basis: *basis,
+            key: *basis,
+            revision: basis.revision(),
+            delta: None,
+            project: None,
+            catalog: None,
+        })
+    }
+}
+
+fn captured_back(rig: &mut Rig) -> super::focus::Act {
+    rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_action("jump-back", cx))
+        .expect("painted native Back action")
+}
+
+/// Read the already committed frame. This must not call `painted`,
+/// `native_bounds`, `repaint`, `settle`, or another explicit draw: the
+/// notification under test alone must renew the mounted header.
+fn press_passively_renewed_back(rig: &mut Rig, former_renders: u64, former_frame: u64) {
+    rig.cx.run_until_parked();
+    assert!(rig.counts().titlebar > former_renders, "producer context movement must repaint the cached header");
+    rig.cx.update(|window, _| {
+        assert!(window.a11y_frame_number() > former_frame, "an ordinary dirty frame actually committed");
+        let tree = window.a11y_tree().expect("renewed native header tree");
+        assert!(tree.nodes.iter().any(|(_, node)| node.label() == Some("Back")
+            && node.supports_action(gpui::AccessibleAction::Click)), "the committed Back control has native activation");
+    });
+    let bounds = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("jump-back", cx))
+        .expect("freshly painted Back bounds");
+    rig.cx.simulate_click(bounds.center(), Modifiers::default());
+    rig.settle();
+    assert!(matches!(rig.route(), Route::Orbit(OrbitRoute::Home)), "the renewed pointer control returns to its real previous route");
+}
+
+#[gpui::test]
+fn world_header_renews_after_authority_changes_without_chrome_resources(cx: &mut TestAppContext) {
+    use crate::model::ServiceMode;
+    use crate::runtime::reads::ReadPool;
+    use crate::runtime::store::{Branch, StoreEvent};
+    use gpui::AppContext as _;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let mut rig = super::tests::rig_with_engine(cx, Some(Route::World), 1440.0, 900.0,
+        ReadPool::start(2, |_| super::tests::Fixture).expect("controlled page pool"), StableRoot);
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+    let former_root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    // Make the next OwnerReady a pure authority movement; settings must not
+    // accidentally renew the header through its existing Settings watch.
+    rig.go(Intent::OwnerReady { key: former_root, mode: ServiceMode::Attached });
+    assert!(crate::runtime::store::RouteDependencies::chrome_keys(&Route::World).is_empty());
+    let retired = captured_back(&mut rig);
+    let renders = rig.counts().titlebar;
+    let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&events);
+    let _subscription = rig.cx.update(|_, cx| cx.subscribe(&rig.graph.store,
+        move |_, event: &StoreEvent, _| observed.borrow_mut().push(event.clone())));
+    let next = former_root.with_generation(former_root.generation().saturating_add(1));
+    rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture(next, cx));
+    rig.graph.root.update(rig.cx, |root, cx| root.dispatch(Intent::OwnerReady { key: next, mode: ServiceMode::Attached }, cx));
+    rig.cx.update(|window, cx| retired(window, cx));
+    assert_eq!(rig.route(), Route::World, "a previously painted action cannot borrow the new root");
+    rig.cx.run_until_parked();
+    assert!(events.borrow().iter().any(|event| event.is_branch(Branch::Root)));
+    assert!(!events.borrow().iter().any(|event| [Branch::Owner, Branch::Route, Branch::Overlay,
+        Branch::Settings, Branch::GraphFocus].iter().any(|branch| event.is_branch(*branch))),
+        "no unrelated branch may hide the missing Root watch");
+    press_passively_renewed_back(&mut rig, renders, frame);
+}
+
+#[gpui::test]
+fn world_header_renews_after_coalesced_same_root_owner_replacement(cx: &mut TestAppContext) {
+    use crate::core::VersionedRoot;
+    use crate::model::ServiceMode;
+    use crate::runtime::owner::{OwnerGate, OwnerState};
+    use crate::runtime::reads::ReadPool;
+    use crate::runtime::store::{Branch, StoreEvent};
+    use gpui::AppContext as _;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let root = VersionedRoot::synthetic(
+        backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
+    let gate = OwnerGate::ready(root, ServiceMode::Attached);
+    let mut rig = super::tests::rig_with_engine_gate(cx, Some(Route::World), 1440.0, 900.0,
+        ReadPool::start(2, |_| super::tests::Fixture).expect("controlled page pool"), StableRoot, Some(gate.clone()));
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key()), root);
+    let retired = captured_back(&mut rig);
+    let former = rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_attachment())
+        .expect("first serving attachment");
+    let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    assert_eq!(before.settings().confirmed_service_mode, Some(ServiceMode::Attached),
+        "the documented pre-ready gate must have admitted its initial answer before this replacement");
+    assert_eq!(before.settings().connection, crate::model::ConnectionStatus::Connected);
+    let before_focus = rig.graph.store.read_with(rig.cx, |store, _| store.graph_focus().cloned());
+    let before_notice = rig.graph.store.read_with(rig.cx, |store, _| store.notice().cloned());
+    let renders = rig.counts().titlebar;
+    let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&events);
+    let _subscription = rig.cx.update(|_, cx| cx.subscribe(&rig.graph.store,
+        move |_, event: &StoreEvent, _| observed.borrow_mut().push(event.clone())));
+    // No executor turn between these publications: the owner watcher sees
+    // only the replacement Ready, with identical settings and root.
+    gate.publish(OwnerState::Starting);
+    gate.publish(OwnerState::Ready { key: root, mode: ServiceMode::Attached });
+    rig.cx.update(|window, cx| retired(window, cx));
+    assert_eq!(rig.route(), Route::World, "the retired native action cannot use a replacement owner");
+    rig.cx.run_until_parked();
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key()), root);
+    assert!(!rig.graph.store.read_with(rig.cx, |store, _| store.admits_owner_attachment(&former)));
+    assert!(events.borrow().iter().any(|event| event.is_branch(Branch::Owner)));
+    assert!(!events.borrow().iter().any(|event| [Branch::Root, Branch::Route, Branch::Overlay,
+        Branch::Settings, Branch::GraphFocus].iter().any(|branch| event.is_branch(*branch))),
+        "the owner branch alone renews World chrome with no incidental branch wake: events={:?}; settings {:?} -> {:?}; focus {:?} -> {:?}; notice {:?} -> {:?}",
+        events.borrow(), before.settings(), rig.graph.store.read_with(rig.cx, |store, _| store.snapshot()).settings(),
+        before_focus, rig.graph.store.read_with(rig.cx, |store, _| store.graph_focus().cloned()),
+        before_notice, rig.graph.store.read_with(rig.cx, |store, _| store.notice().cloned()));
+    let submitted = rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted);
+    rig.graph.store.update(rig.cx, |store, cx| store.owner_ready(cx));
+    rig.cx.run_until_parked();
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted), submitted,
+        "an unchanged owner does not submit extra reads");
+    press_passively_renewed_back(&mut rig, renders, frame);
+}
+
+/// Read the existing committed native Retry button without drawing a frame.
+#[track_caller]
+fn passive_retry_bounds(rig: &mut Rig, gate: &crate::runtime::owner::OwnerGate, enabled: bool) -> gpui::Bounds<gpui::Pixels> {
+    let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("committed Retry tree");
+    let tree: serde_json::Value = serde_json::from_str(&json).expect("native Retry JSON");
+    let id = format!("{:?}", gpui::ElementId::Name("status-retry".into()));
+    let node = tree["nodes"].as_object().expect("native nodes").values().find(|node|
+        node["element_id"].as_str() == Some(id.as_str())
+            && node["aria"]["role"].as_str() == Some("Button")
+            && node["aria"]["label"].as_str() == Some("Try again")
+    ).expect(&format!("mounted status Retry control requested_enabled={enabled}; owner={:?}; notice={:?}; committed_tree={json}",
+        gate.state(), rig.graph.store.read_with(rig.cx, |store, _| store.notice().cloned())));
+    let clickable = node["aria"]["on_action"].as_array().is_some_and(|actions|
+        actions.iter().any(|action| action.as_str() == Some("Click")));
+    assert_eq!(clickable, enabled, "Retry activation follows the exact owner capability");
+    let bounds = &node["bounds"];
+    let component = |key: &str| bounds[key].as_f64().expect("native Retry bound") as f32;
+    let bounds = gpui::Bounds::new(point(px(component("x")), px(component("y"))),
+        gpui::size(px(component("width")), px(component("height"))));
+    assert!(bounds.size.width > px(0.0) && bounds.size.height > px(0.0));
+    bounds
+}
+
+#[gpui::test]
+fn world_header_recovers_after_native_retry_with_exact_same_root_proof(cx: &mut TestAppContext) {
+    use crate::core::VersionedRoot;
+    use crate::model::ServiceMode;
+    use crate::model::pages::PageKey;
+    use crate::runtime::owner::{OwnerGate, OwnerState, PublicationAdmission};
+    use crate::runtime::reads::ReadPool;
+    use crate::runtime::store::{Branch, StoreEvent};
+    use gpui::AppContext as _;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::Arc;
+
+    // Recovery needs a coherent certified publication, even at an identical
+    // authority. A diagnostic Ready alone must not reopen failed resources.
+    let view = crate::runtime::owner::publication_tests::view();
+    let cursor = backend_library::Cursor::for_view_root_at(&view, 0);
+    let root = VersionedRoot::from_revision(4, cursor, 0);
+    let gate = OwnerGate::ready(root, ServiceMode::Attached);
+    let mut rig = super::tests::rig_with_engine_gate_at_root(cx, Some(Route::World), 1440.0, 900.0,
+        ReadPool::start(2, |_| super::tests::Fixture).expect("controlled page pool"), StableRoot, Some(gate.clone()), root);
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+    let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let retired_back = captured_back(&mut rig);
+    gate.publish(OwnerState::Failed("same owner failure".into()));
+    rig.cx.run_until_parked();
+    let old_retry = rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_retry())
+        .expect("first failure capability");
+    let old_bounds = passive_retry_bounds(&mut rig, &gate, true);
+    let renders = rig.counts().titlebar;
+    let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&events);
+    let _subscription = rig.cx.update(|_, cx| cx.subscribe(&rig.graph.store,
+        move |_, event: &StoreEvent, _| observed.borrow_mut().push(event.clone())));
+    // Retire an actual held pointer press with another identical failure.
+    // Neither resource stamps nor notice words may supply this wake.
+    rig.cx.simulate_mouse_down(old_bounds.center(), MouseButton::Left, Modifiers::default());
+    gate.publish(OwnerState::Failed("same owner failure".into()));
+    rig.cx.run_until_parked();
+    assert_eq!(*events.borrow(), [StoreEvent::Snapshot(Branch::Owner)],
+        "only exact Retry-capability movement wakes the mounted controls");
+    assert!(rig.counts().titlebar > renders);
+    assert!(rig.cx.update(|window, _| window.a11y_frame_number()) > frame);
+    assert_ne!(rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_retry()), Some(old_retry.clone()));
+    assert!(!rig.graph.store.update(rig.cx, |store, cx| store.retry_owner_at(&old_retry, PageKey::Orbit, cx)),
+        "a retired failure callback cannot consume the replacement failure");
+    let retry = passive_retry_bounds(&mut rig, &gate, true);
+    rig.cx.simulate_mouse_up(retry.center(), MouseButton::Left, Modifiers::default());
+    rig.cx.run_until_parked();
+    assert!(matches!(gate.state(), OwnerState::Failed(_)), "new listeners cannot inherit the old pointer press");
+    rig.cx.simulate_click(retry.center(), Modifiers::default());
+    rig.cx.run_until_parked();
+    assert!(matches!(gate.state(), OwnerState::Starting), "fresh native Retry consumes the current failure");
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_retry()).is_none());
+    passive_retry_bounds(&mut rig, &gate, false);
+    let recovering_renders = rig.counts().titlebar;
+    let recovering_frame = rig.cx.update(|window, _| window.a11y_frame_number());
+    gate.publish(OwnerState::Ready { key: root, mode: ServiceMode::Attached });
+    let replacement = gate.ready_epoch().expect("new responding owner");
+    assert_eq!(gate.publish_view(replacement, Arc::clone(&view), cursor), PublicationAdmission::Admitted);
+    rig.cx.run_until_parked();
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.owner_serving()), "exact publication admits recovery");
+    rig.graph.store.read_with(rig.cx, |store, _| {
+        assert_eq!(store.snapshot().key(), root);
+        assert_eq!(store.snapshot().route(), before.route());
+        assert_eq!(store.snapshot().session().back, before.session().back);
+    });
+    rig.cx.update(|window, cx| retired_back(window, cx));
+    assert_eq!(rig.route(), Route::World, "the predecessor's Back callback stays retired after recovery");
+    press_passively_renewed_back(&mut rig, recovering_renders, recovering_frame);
+}
+
 /// A shell on `name`'s page, recording what it paints.
 fn open(cx: &mut TestAppContext, name: &str) -> Rig {
     let rig = rig(cx, Some(page_route(name)), 1440.0, 900.0);

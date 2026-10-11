@@ -324,6 +324,9 @@ fn store_relation(
     let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(&directory)
         .map_err(|error| BuiltinModelError(format!("create source store directory: {error}")))?;
+    #[cfg(test)]
+    crate::test_support::make_private(&directory)
+        .map_err(|error| BuiltinModelError(format!("make source-store fixture private: {error}")))?;
     let registry = backend_engine::RelationAdmissionRegistry::new()
         .with_relation::<backend_engine::ProductSourceRelation>()
         .map_err(|error| BuiltinModelError(format!("register source relation: {error:?}")))?;

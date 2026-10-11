@@ -52,6 +52,7 @@ fn explicit_owner_recovery_encodes_only_the_exact_shell_context() {
     assert_eq!(value["operand"], paths[2]);
     assert_eq!(value["cause"], "unreachable");
     assert_eq!(value["detail"], fault.cause().sentence());
+    assert_eq!(value["responseDetail"], "full");
     assert!(text::fault(&fault, Theme::plain()).ends_with(&format!("→ {shell}")));
     let markdown = markdown::fault(&fault);
     assert!(markdown.ends_with(&format!(

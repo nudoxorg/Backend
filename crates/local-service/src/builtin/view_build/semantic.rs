@@ -559,7 +559,9 @@ fn semantic_rows(
         .map_err(|error| {
             BuiltinModelError(format!("open semantic publication relation: {error}"))
         })?;
-    let capture_relation = semantic_capture_relation(snapshot)
+    // Open the exact auxiliary closure even though this projection only emits
+    // publication rows; malformed capture state must still refuse the view.
+    let _capture_relation = semantic_capture_relation(snapshot)
         .map_err(|error| BuiltinModelError(format!("open semantic capture relation: {error}")))?;
     let mut rows = Vec::new();
     let mut complete = BTreeSet::new();

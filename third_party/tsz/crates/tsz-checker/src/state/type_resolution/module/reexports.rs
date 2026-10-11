@@ -28,7 +28,7 @@ impl<'a> CheckerState<'a> {
         self.resolve_export_in_file_with_module_key(file_idx, None, export_name, visited)
     }
 
-    fn resolve_export_in_file_with_module_key(
+    pub(super) fn resolve_export_in_file_with_module_key(
         &self,
         file_idx: usize,
         module_key: Option<&str>,
@@ -83,6 +83,14 @@ impl<'a> CheckerState<'a> {
 
         let target_arena = self.ctx.get_arena_for_file(file_idx as u32);
         let target_file_name = target_arena.source_files.first()?.file_name.clone();
+        let target_file_name = module_key
+            .filter(|key| {
+                self.ctx
+                    .program_module_exports
+                    .as_ref()
+                    .is_some_and(|exports| exports.contains_key(*key))
+            })
+            .unwrap_or(&target_file_name);
 
         // Files with an unambiguous ESM extension (.mjs/.mts/.d.mts) generally
         // do not synthesize a `default` export from `export =`, because
@@ -90,7 +98,7 @@ impl<'a> CheckerState<'a> {
         // the exception: it permits CJS and ESM syntax side-by-side and tsc
         // treats `export =` as the default-import target there.
         let target_is_explicit_esm = {
-            let n = target_file_name.as_str();
+            let n = target_file_name;
             n.ends_with(".mjs") || n.ends_with(".mts")
         };
         let default_skips_export_equals = export_name == "default"
@@ -116,23 +124,32 @@ impl<'a> CheckerState<'a> {
             }
         }
 
-        if let Some(reexports) = self
+        if let Some((reexports, reexport_owner)) = self
             .ctx
             .reexports_for_file(target_binder, &target_file_name)
-            .or_else(|| module_key.and_then(|key| self.ctx.reexports_for_file(target_binder, key)))
+            .map(|rows| (rows, target_file_name))
+            .or_else(|| {
+                module_key.and_then(|key| {
+                    self.ctx
+                        .reexports_for_file(target_binder, key)
+                        .map(|rows| (rows, key))
+                })
+            })
             && let Some((source_module, original_name)) = reexports.get(export_name)
         {
             let name = original_name.as_deref().unwrap_or(export_name);
-            if let Some(source_idx) = self
-                .ctx
-                .resolve_import_target_from_file(file_idx, source_module)
-                && let Some(result) = self.resolve_export_in_file_with_module_key(
-                    source_idx,
-                    Some(source_module),
-                    name,
-                    visited,
-                )
-            {
+            if let Some(source_idx) = self.ctx.resolve_named_reexport_target_from_file(
+                file_idx,
+                reexport_owner,
+                source_module,
+                export_name,
+                name,
+            ) && let Some(result) = self.resolve_export_in_file_with_module_key(
+                source_idx,
+                Some(source_module),
+                name,
+                visited,
+            ) {
                 return Some(result);
             }
         }
@@ -150,15 +167,19 @@ impl<'a> CheckerState<'a> {
         // branch rather than filtering per-source, matching tsc's `visitExportedUnnamedExportBindings`
         // (called only when `specifier.name.escapedText !== InternalSymbolName.Default`).
         if export_name != "default"
-            && let Some(source_modules) = self
+            && let Some((source_modules, reexport_owner)) = self
                 .ctx
                 .wildcard_reexports_for_file(target_binder, &target_file_name)
+                .map(|rows| (rows, target_file_name))
                 .or_else(|| {
-                    module_key
-                        .and_then(|key| self.ctx.wildcard_reexports_for_file(target_binder, key))
+                    module_key.and_then(|key| {
+                        self.ctx
+                            .wildcard_reexports_for_file(target_binder, key)
+                            .map(|rows| (rows, key))
+                    })
                 })
         {
-            let source_modules = source_modules.clone();
+            let source_modules = source_modules.shared();
 
             // When multiple wildcard sources provide the same name, prefer a VALUE
             // export over type-only paths, including pure TYPE declarations and
@@ -168,17 +189,18 @@ impl<'a> CheckerState<'a> {
             // type-only path in the list.
             let mut type_only_fallback: Option<(tsz_binder::SymbolId, usize)> = None;
 
-            for (source_module, source_is_type_only) in &source_modules {
-                if let Some(source_idx) = self
-                    .ctx
-                    .resolve_import_target_from_file(file_idx, source_module)
-                    && let Some(result) = self.resolve_export_in_file_with_module_key(
-                        source_idx,
-                        Some(source_module),
-                        export_name,
-                        visited,
-                    )
-                {
+            for edge in source_modules.edges() {
+                let (source_module, source_is_type_only) = &edge.target;
+                if let Some(source_idx) = self.ctx.resolve_wildcard_reexport_target_from_file(
+                    file_idx,
+                    reexport_owner,
+                    edge,
+                ) && let Some(result) = self.resolve_export_in_file_with_module_key(
+                    source_idx,
+                    Some(source_module),
+                    export_name,
+                    visited,
+                ) {
                     let is_pure_type = self
                         .ctx
                         .get_binder_for_file(source_idx)
@@ -280,9 +302,18 @@ impl<'a> CheckerState<'a> {
             match next_hop {
                 None => return Some((sym_id, actual_file)),
                 Some((next_mod, next_name, decl_file)) => {
-                    let next_file = self
-                        .ctx
-                        .resolve_import_target_from_file(decl_file, &next_mod)?;
+                    let next_file = if self.ctx.project_module_resolution_outcomes.is_some() {
+                        let request = self.ctx.bound_module_request_for_alias(sym_id)?;
+                        self.ctx.resolve_import_target_from_file_for_request(
+                            request.importer,
+                            request.specifier,
+                            request.mode,
+                            request.kind,
+                        )?
+                    } else {
+                        self.ctx
+                            .resolve_import_target_from_file(decl_file, &next_mod)?
+                    };
                     current_file = next_file;
                     current_name = next_name;
                 }
@@ -315,23 +346,38 @@ impl<'a> CheckerState<'a> {
         else {
             return;
         };
+        let target_file_name = module_key
+            .filter(|key| {
+                self.ctx
+                    .program_module_exports
+                    .as_ref()
+                    .is_some_and(|exports| exports.contains_key(*key))
+            })
+            .unwrap_or(&target_file_name);
 
-        if let Some(source_modules) = self
+        if let Some((source_modules, reexport_owner)) = self
             .ctx
             .wildcard_reexports_for_file(target_binder, &target_file_name)
+            .map(|rows| (rows, target_file_name))
             .or_else(|| {
-                module_key.and_then(|key| self.ctx.wildcard_reexports_for_file(target_binder, key))
+                module_key.and_then(|key| {
+                    self.ctx
+                        .wildcard_reexports_for_file(target_binder, key)
+                        .map(|rows| (rows, key))
+                })
             })
         {
-            let source_modules = source_modules.clone();
-            for (source_module, is_type_only) in source_modules.iter() {
+            let source_modules = source_modules.shared();
+            for edge in source_modules.edges() {
+                let (source_module, is_type_only) = &edge.target;
                 if *is_type_only {
                     continue;
                 }
-                if let Some(source_idx) = self
-                    .ctx
-                    .resolve_import_target_from_file(file_idx, source_module)
-                    && let Some(source_binder) = self.ctx.get_binder_for_file(source_idx)
+                if let Some(source_idx) = self.ctx.resolve_wildcard_reexport_target_from_file(
+                    file_idx,
+                    reexport_owner,
+                    edge,
+                ) && let Some(source_binder) = self.ctx.get_binder_for_file(source_idx)
                 {
                     let source_file_name = self
                         .ctx
@@ -381,19 +427,29 @@ impl<'a> CheckerState<'a> {
             }
         }
 
-        if let Some(reexports) = self
+        if let Some((reexports, reexport_owner)) = self
             .ctx
             .reexports_for_file(target_binder, &target_file_name)
-            .or_else(|| module_key.and_then(|key| self.ctx.reexports_for_file(target_binder, key)))
+            .map(|rows| (rows, target_file_name))
+            .or_else(|| {
+                module_key.and_then(|key| {
+                    self.ctx
+                        .reexports_for_file(target_binder, key)
+                        .map(|rows| (rows, key))
+                })
+            })
         {
             let reexports = reexports.clone();
             for (exported_name, (source_module, original_name)) in &reexports {
                 if !result.has(exported_name) {
                     let name = original_name.as_deref().unwrap_or(exported_name);
-                    if let Some(source_idx) = self
-                        .ctx
-                        .resolve_import_target_from_file(file_idx, source_module)
-                    {
+                    if let Some(source_idx) = self.ctx.resolve_named_reexport_target_from_file(
+                        file_idx,
+                        reexport_owner,
+                        source_module,
+                        exported_name,
+                        name,
+                    ) {
                         let mut inner_visited = rustc_hash::FxHashSet::default();
                         inner_visited.extend(visited.iter().copied());
                         if let Some((sym_id, _actual_file_idx)) = self

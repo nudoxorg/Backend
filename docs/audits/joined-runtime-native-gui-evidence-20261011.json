@@ -1,0 +1,5012 @@
+{
+  "schema": "nudox.joined-runtime-and-native-gui-evidence.v1",
+  "observed_date": "2026-10-11",
+  "host": "ILO / root@95.217.56.147",
+  "builds": [
+    {
+      "number": 57,
+      "receipt": {
+        "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/native57/receipt.json",
+        "sha256": "0701ff89f646a0db77c3eb32aa4f3f388b2bdf3fa14a58ca0276def0fe0fcabe"
+      },
+      "source": {
+        "commit": "b96386972dcf1c0a98afe028ac4402392c010f17",
+        "tree": "7ce204978ca0374a1ad98ad1a6bcce9c08dab9cb",
+        "clean": true,
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350",
+        "clean_before": true,
+        "clean_after": true
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "build",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-cli",
+        "-p",
+        "backend-mcp",
+        "-p",
+        "backend-locald",
+        "--bins",
+        "--message-format=json-render-diagnostics"
+      ],
+      "seconds": 419.2465482649859,
+      "exit": 0,
+      "artifacts": {
+        "backend-mcp": {
+          "path": "/root/codex-worktrees/sol61-resident-fixture-20261011/.local/target/debug/backend-mcp",
+          "sha256": "cd692f227713aaba424c2de4c4140f5e3f10a11c38d3670318f2c8b91dfb6490",
+          "bytes": 135918152,
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": false
+          },
+          "features": [
+            "default"
+          ],
+          "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/apps/mcp/Cargo.toml"
+        },
+        "backend-cli": {
+          "path": "/root/codex-worktrees/sol61-resident-fixture-20261011/.local/target/debug/backend-cli",
+          "sha256": "a2ee2f1b601e2b476384e4f553f0e1981ff9a14a418055cedbdce8cd5d2830ce",
+          "bytes": 184908320,
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": false
+          },
+          "features": [],
+          "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/apps/cli/Cargo.toml"
+        },
+        "backend-locald": {
+          "path": "/root/codex-worktrees/sol61-resident-fixture-20261011/.local/target/debug/backend-locald",
+          "sha256": "b25f29028babd0fb9fe4691464b30a9729a69382498bb04035a9edd5177974e9",
+          "bytes": 502628904,
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": false
+          },
+          "features": [],
+          "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/apps/locald/Cargo.toml"
+        }
+      },
+      "raw": {
+        "stdout": {
+          "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/native57/stdout.log",
+          "sha256": "b99c8cf0895055bcb5726f5ba9e659f42212b0538d0e4780c89269a4d2ed872c"
+        },
+        "stderr": {
+          "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/native57/stderr.log",
+          "sha256": "04527f321ec703979985d9e7eac9c8844a91916a0db39fdf2247cf9e2ef80a0a"
+        }
+      },
+      "scope": "Actual unoptimized Linux trio build; no test, installation or indexing credit."
+    },
+    {
+      "number": 58,
+      "receipt": {
+        "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/native58/receipt.json",
+        "sha256": "a48627da4f2db6050d9e53771085681fba0d74f096f5864b37bdd4712fcd2e0f"
+      },
+      "source": {
+        "commit": "71eef727245e2257ad9d0e919522cfe14621fa1f",
+        "tree": "5acad5cbe933cbb17a9ee64401ec3cd2250aeb91",
+        "clean": true,
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350",
+        "clean_before": true,
+        "clean_after": true
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "build",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-cli",
+        "-p",
+        "backend-mcp",
+        "-p",
+        "backend-locald",
+        "--bins",
+        "--message-format=json-render-diagnostics"
+      ],
+      "seconds": 128.86284602805972,
+      "exit": 0,
+      "artifacts": {
+        "backend-mcp": {
+          "path": "/root/codex-worktrees/sol61-resident-fixture-20261011/.local/target/debug/backend-mcp",
+          "sha256": "cd692f227713aaba424c2de4c4140f5e3f10a11c38d3670318f2c8b91dfb6490",
+          "bytes": 135918152,
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": false
+          },
+          "features": [
+            "default"
+          ],
+          "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/apps/mcp/Cargo.toml"
+        },
+        "backend-cli": {
+          "path": "/root/codex-worktrees/sol61-resident-fixture-20261011/.local/target/debug/backend-cli",
+          "sha256": "8bc37d0e740d79424b30631a84e407f5855c3afaebb592aa445dbeef428216b3",
+          "bytes": 184914664,
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": false
+          },
+          "features": [],
+          "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/apps/cli/Cargo.toml"
+        },
+        "backend-locald": {
+          "path": "/root/codex-worktrees/sol61-resident-fixture-20261011/.local/target/debug/backend-locald",
+          "sha256": "d42fcb55cf74fa56107386d1e3455a26787c71bc20e27da52a4d8146a2126dff",
+          "bytes": 502668160,
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": false
+          },
+          "features": [],
+          "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/apps/locald/Cargo.toml"
+        }
+      },
+      "raw": {
+        "stdout": {
+          "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/native58/stdout.log",
+          "sha256": "28e755f0e81b47f6d4f1001f00dcaa036eb61fefa7567751b92dd406b65c2113"
+        },
+        "stderr": {
+          "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/native58/stderr.log",
+          "sha256": "c2a41e5ed4ec754d8689f09d70ddb0b03feee14e0f8a9a983c9534af27f46fa3"
+        }
+      },
+      "scope": "Actual unoptimized Linux trio build; no test, installation or indexing credit."
+    }
+  ],
+  "gui_controls": {
+    "receipt": {
+      "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/gui-six-10/native-receipt.json",
+      "sha256": "d84e7ef0e2e0ef0f29662cbf29aba0b7e0dd00699683a00f341d9bdd47ad2e7c"
+    },
+    "source": {
+      "commit": "d4d8bd73e7cc2d188f5f6e8a28ab41488b51f752",
+      "tree": "f512f73e4e84564d330285c29815f60af9b91101",
+      "status": "",
+      "lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd"
+    },
+    "stages": [
+      {
+        "filter": "shell::jump_tests::world_header_renews_after_authority_changes_without_chrome_resources",
+        "argv": [
+          "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+          "--config",
+          "build.build-dir=\"/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role\"",
+          "--config",
+          "build.target-dir=\"/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-target\"",
+          "test",
+          "--locked",
+          "--offline",
+          "-j2",
+          "-p",
+          "backend-desktop",
+          "--lib",
+          "--message-format=json-render-diagnostics",
+          "shell::jump_tests::world_header_renews_after_authority_changes_without_chrome_resources",
+          "--",
+          "--exact",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "binary": {
+          "path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role/debug/deps/backend_desktop-12121bb8b76207ba",
+          "sha256": "045ee199b9a4d73bc728c4d0f08bc5d75b703e55f50ed92a941d7060ac1a04d3",
+          "bytes": 783198448,
+          "manifest_path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/apps/desktop/Cargo.toml",
+          "features": [],
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        },
+        "exit_code": 0,
+        "single_test_passed": true,
+        "stdout_sha256": "73dff54fb6df62bf92aa7446ca7dac328f0497d4720af5f8dc2847744afc6c33",
+        "stderr_sha256": "426e1a0900395000613dbaac12fc69279383fbaea1ba03292038c77504a201f1"
+      },
+      {
+        "filter": "shell::jump_tests::world_header_renews_after_coalesced_same_root_owner_replacement",
+        "argv": [
+          "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+          "--config",
+          "build.build-dir=\"/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role\"",
+          "--config",
+          "build.target-dir=\"/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-target\"",
+          "test",
+          "--locked",
+          "--offline",
+          "-j2",
+          "-p",
+          "backend-desktop",
+          "--lib",
+          "--message-format=json-render-diagnostics",
+          "shell::jump_tests::world_header_renews_after_coalesced_same_root_owner_replacement",
+          "--",
+          "--exact",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "binary": {
+          "path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role/debug/deps/backend_desktop-12121bb8b76207ba",
+          "sha256": "045ee199b9a4d73bc728c4d0f08bc5d75b703e55f50ed92a941d7060ac1a04d3",
+          "bytes": 783198448,
+          "manifest_path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/apps/desktop/Cargo.toml",
+          "features": [],
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        },
+        "exit_code": 0,
+        "single_test_passed": true,
+        "stdout_sha256": "7961bb9b66d7e8b8f1e160f710b92193878a780118d03ea016f7b9d65b5966dd",
+        "stderr_sha256": "898a6687c459e257f19103c236bd2eb2c28d3f8fa0951852db10a0d233c0c2c6"
+      },
+      {
+        "filter": "shell::jump_tests::world_header_recovers_after_native_retry_with_exact_same_root_proof",
+        "argv": [
+          "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+          "--config",
+          "build.build-dir=\"/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role\"",
+          "--config",
+          "build.target-dir=\"/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-target\"",
+          "test",
+          "--locked",
+          "--offline",
+          "-j2",
+          "-p",
+          "backend-desktop",
+          "--lib",
+          "--message-format=json-render-diagnostics",
+          "shell::jump_tests::world_header_recovers_after_native_retry_with_exact_same_root_proof",
+          "--",
+          "--exact",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "binary": {
+          "path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role/debug/deps/backend_desktop-12121bb8b76207ba",
+          "sha256": "045ee199b9a4d73bc728c4d0f08bc5d75b703e55f50ed92a941d7060ac1a04d3",
+          "bytes": 783198448,
+          "manifest_path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/apps/desktop/Cargo.toml",
+          "features": [],
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        },
+        "exit_code": 0,
+        "single_test_passed": true,
+        "stdout_sha256": "ee21f9e09af45214778626da97dca8f1419f3388b58a188c7bd36364bd11c271",
+        "stderr_sha256": "7388ebc5d4c73de52a70ec4793fe71b2d47df9b7ccdb628c6fd20abf0b6efa49"
+      },
+      {
+        "filter": "shell::tests::publication::mounted_header_publication_renews_native_actions_at_the_same_authority",
+        "argv": [
+          "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+          "--config",
+          "build.build-dir=\"/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role\"",
+          "--config",
+          "build.target-dir=\"/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-target\"",
+          "test",
+          "--locked",
+          "--offline",
+          "-j2",
+          "-p",
+          "backend-desktop",
+          "--lib",
+          "--message-format=json-render-diagnostics",
+          "shell::tests::publication::mounted_header_publication_renews_native_actions_at_the_same_authority",
+          "--",
+          "--exact",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "binary": {
+          "path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role/debug/deps/backend_desktop-12121bb8b76207ba",
+          "sha256": "045ee199b9a4d73bc728c4d0f08bc5d75b703e55f50ed92a941d7060ac1a04d3",
+          "bytes": 783198448,
+          "manifest_path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/apps/desktop/Cargo.toml",
+          "features": [],
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        },
+        "exit_code": 0,
+        "single_test_passed": true,
+        "stdout_sha256": "d8dc199af920c7e513ce1859a1ce27902fdb5808078fd6be9378c959157f043b",
+        "stderr_sha256": "7388ebc5d4c73de52a70ec4793fe71b2d47df9b7ccdb628c6fd20abf0b6efa49"
+      },
+      {
+        "filter": "runtime::store::tests::owner_eligibility_wakes_cached_consumers_without_resource_or_root_movement",
+        "argv": [
+          "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+          "--config",
+          "build.build-dir=\"/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role\"",
+          "--config",
+          "build.target-dir=\"/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-target\"",
+          "test",
+          "--locked",
+          "--offline",
+          "-j2",
+          "-p",
+          "backend-desktop",
+          "--lib",
+          "--message-format=json-render-diagnostics",
+          "runtime::store::tests::owner_eligibility_wakes_cached_consumers_without_resource_or_root_movement",
+          "--",
+          "--exact",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "binary": {
+          "path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role/debug/deps/backend_desktop-12121bb8b76207ba",
+          "sha256": "045ee199b9a4d73bc728c4d0f08bc5d75b703e55f50ed92a941d7060ac1a04d3",
+          "bytes": 783198448,
+          "manifest_path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/apps/desktop/Cargo.toml",
+          "features": [],
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        },
+        "exit_code": 0,
+        "single_test_passed": true,
+        "stdout_sha256": "f292e5d362b94ae9251762469cc0d9421fb11fbb49a79d2b391b03d4e915f29b",
+        "stderr_sha256": "898a6687c459e257f19103c236bd2eb2c28d3f8fa0951852db10a0d233c0c2c6"
+      },
+      {
+        "filter": "runtime::store::tests::empty_owner_failure_and_identical_retry_replacement_emit_the_owner_branch",
+        "argv": [
+          "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+          "--config",
+          "build.build-dir=\"/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role\"",
+          "--config",
+          "build.target-dir=\"/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-target\"",
+          "test",
+          "--locked",
+          "--offline",
+          "-j2",
+          "-p",
+          "backend-desktop",
+          "--lib",
+          "--message-format=json-render-diagnostics",
+          "runtime::store::tests::empty_owner_failure_and_identical_retry_replacement_emit_the_owner_branch",
+          "--",
+          "--exact",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "binary": {
+          "path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role/debug/deps/backend_desktop-12121bb8b76207ba",
+          "sha256": "045ee199b9a4d73bc728c4d0f08bc5d75b703e55f50ed92a941d7060ac1a04d3",
+          "bytes": 783198448,
+          "manifest_path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/apps/desktop/Cargo.toml",
+          "features": [],
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        },
+        "exit_code": 0,
+        "single_test_passed": true,
+        "stdout_sha256": "6930bd747b87047590f6f8ba7496262c2691a18c06ca1961948fac6311f5e608",
+        "stderr_sha256": "898a6687c459e257f19103c236bd2eb2c28d3f8fa0951852db10a0d233c0c2c6"
+      },
+      {
+        "filter": "runtime::owner::tests::a_pre_ready_gate_publishes_its_initial_answer_once",
+        "argv": [
+          "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+          "--config",
+          "build.build-dir=\"/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role\"",
+          "--config",
+          "build.target-dir=\"/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-target\"",
+          "test",
+          "--locked",
+          "--offline",
+          "-j2",
+          "-p",
+          "backend-desktop",
+          "--lib",
+          "--message-format=json-render-diagnostics",
+          "runtime::owner::tests::a_pre_ready_gate_publishes_its_initial_answer_once",
+          "--",
+          "--exact",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "binary": {
+          "path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role/debug/deps/backend_desktop-12121bb8b76207ba",
+          "sha256": "045ee199b9a4d73bc728c4d0f08bc5d75b703e55f50ed92a941d7060ac1a04d3",
+          "bytes": 783198448,
+          "manifest_path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/apps/desktop/Cargo.toml",
+          "features": [],
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        },
+        "exit_code": 0,
+        "single_test_passed": true,
+        "stdout_sha256": "eb73e75cba3415e06ad2fa7051c76f7b2b0aad42c167b18715a4139b66a4406f",
+        "stderr_sha256": "898a6687c459e257f19103c236bd2eb2c28d3f8fa0951852db10a0d233c0c2c6"
+      },
+      {
+        "filter": "runtime::owner::tests::the_ui_future_resolves_on_each_new_state_only",
+        "argv": [
+          "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+          "--config",
+          "build.build-dir=\"/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role\"",
+          "--config",
+          "build.target-dir=\"/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-target\"",
+          "test",
+          "--locked",
+          "--offline",
+          "-j2",
+          "-p",
+          "backend-desktop",
+          "--lib",
+          "--message-format=json-render-diagnostics",
+          "runtime::owner::tests::the_ui_future_resolves_on_each_new_state_only",
+          "--",
+          "--exact",
+          "--nocapture",
+          "--test-threads=1"
+        ],
+        "binary": {
+          "path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role/debug/deps/backend_desktop-12121bb8b76207ba",
+          "sha256": "045ee199b9a4d73bc728c4d0f08bc5d75b703e55f50ed92a941d7060ac1a04d3",
+          "bytes": 783198448,
+          "manifest_path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/apps/desktop/Cargo.toml",
+          "features": [],
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        },
+        "exit_code": 0,
+        "single_test_passed": true,
+        "stdout_sha256": "16c18b6b61d2dcdb8fe71129fee2dd0a0715bff1eba63a4bc46006fd4da360b0",
+        "stderr_sha256": "898a6687c459e257f19103c236bd2eb2c28d3f8fa0951852db10a0d233c0c2c6"
+      }
+    ],
+    "passed": 8,
+    "failed": 0
+  },
+  "native_window": {
+    "receipt": {
+      "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/gui-window-09/native/receipt.json",
+      "sha256": "851245c6eacc834710318c484b2d5776bd5a3d7cfd547ec9a9de32d290090c21"
+    },
+    "source": {
+      "commit": "d4d8bd73e7cc2d188f5f6e8a28ab41488b51f752",
+      "tree": "f512f73e4e84564d330285c29815f60af9b91101",
+      "status": "",
+      "lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd"
+    },
+    "binary": {
+      "path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role/debug/deps/backend_desktop-12121bb8b76207ba",
+      "sha256": "045ee199b9a4d73bc728c4d0f08bc5d75b703e55f50ed92a941d7060ac1a04d3",
+      "bytes": 783198448,
+      "manifest_path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/apps/desktop/Cargo.toml",
+      "features": [],
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 0,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "images": [
+      {
+        "phase": "initial_ready_world",
+        "png": {
+          "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/gui-window-09/native/window/initial_ready_world_attempt_1.png",
+          "sha256": "fe725db3b02a468ffae4e8cfd64277d2ca46d89b075a25593dfc3110df0f2b13"
+        },
+        "source": {
+          "commit": "d4d8bd73e7cc2d188f5f6e8a28ab41488b51f752",
+          "tree": "f512f73e4e84564d330285c29815f60af9b91101",
+          "status": "",
+          "lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd"
+        },
+        "binary": {
+          "path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role/debug/deps/backend_desktop-12121bb8b76207ba",
+          "sha256": "045ee199b9a4d73bc728c4d0f08bc5d75b703e55f50ed92a941d7060ac1a04d3",
+          "bytes": 783198448,
+          "manifest_path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/apps/desktop/Cargo.toml",
+          "features": [],
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        },
+        "committed_evidence": {
+          "schema": "nudox-native-owner-window-fixture.v1",
+          "source_claim": "d4d8bd73e7cc2d188f5f6e8a28ab41488b51f752",
+          "controlled_owner": true,
+          "platform": "Linux native GPUI",
+          "pixel_source": "external window capture",
+          "command_seq": 0,
+          "frame": 7,
+          "titlebar_renders": 7,
+          "route": "World",
+          "root": "VersionedRoot { authority: ProducerAuthority { root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, producer_epoch: 4, cursor: Cursor { recipe: ObjectKey:3f24a9f586a9d2bdf6fa453a2f71977471c3689a3bf0f1fd457c0f5a87165ff4, version: ObjectVersion:c0ee20d6106d6a7de24eb43c2a900b5f7b7efcc99cea17aaa9d7533a898ded1f, branch: ObjectKey:4650a5d2d38c507c621bb7adec963afac7bd740bbc85007b1cd609a67fb2482f, log: ObjectKey:12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760, schema: 3, root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, sequence: 0, query_offset: 0 } }, observation: 0 }",
+          "back": "RouteHistory { head: Some(Node { route: Orbit(Home), reading: ReadingVisit { id: VisitId(1), presentation: Library(ReadingControls { shelf: ShelfReading { lens: Contents, narrow: None, via: None, folds: {}, offset: ReadingOffset { x: 0, y: 0 }, anchor: Some(ShelfRowAnchor { kind: Heading, key: ReadingText(\"Find\"), occurrence: 0, fraction: 0 }) }, lens: Reference, offset: ReadingOffset { x: 0, y: 0 }, focus: None, source_line_draft: SourceLineDraft(\"\") }) }, previous: None, length: 1 }) }",
+          "owner_state": "Ready { key: VersionedRoot { authority: ProducerAuthority { root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, producer_epoch: 4, cursor: Cursor { recipe: ObjectKey:3f24a9f586a9d2bdf6fa453a2f71977471c3689a3bf0f1fd457c0f5a87165ff4, version: ObjectVersion:c0ee20d6106d6a7de24eb43c2a900b5f7b7efcc99cea17aaa9d7533a898ded1f, branch: ObjectKey:4650a5d2d38c507c621bb7adec963afac7bd740bbc85007b1cd609a67fb2482f, log: ObjectKey:12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760, schema: 3, root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, sequence: 0, query_offset: 0 } }, observation: 0 }, mode: Attached }",
+          "owner_serving": true,
+          "retry_current": false,
+          "store_events": [
+            "Resource(Orbit)",
+            "Snapshot(Settings)"
+          ],
+          "native_tree": {
+            "root": "z",
+            "accesskit_focus": "y",
+            "gpui_focus": "y",
+            "active_descendant_focus": null,
+            "frame": {
+              "rendered_at": "2026-10-11T12:43:55.776-04:00",
+              "frame_number": 7,
+              "window_title": "Nudox controlled native owner",
+              "node_count": 26,
+              "tab_stop_count": 5,
+              "viewport_size": {
+                "width": 1440.0,
+                "height": 900.0
+              },
+              "scale_factor": 1.0
+            },
+            "nodes": {
+              "a": {
+                "accesskit_id": "9021967968643190926",
+                "bounds": {
+                  "x": 13.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-shelf\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Toggle the shelf"
+                }
+              },
+              "b": {
+                "accesskit_id": "12276507839632830038",
+                "bounds": {
+                  "x": 50.0,
+                  "y": 10.0,
+                  "width": 73.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"view-graph\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:894:28",
+                "aria": {
+                  "role": "Label",
+                  "label": "Graph view selected"
+                }
+              },
+              "c": {
+                "accesskit_id": "1861968823920260491",
+                "bounds": {
+                  "x": 125.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"view-page\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:894:28",
+                "aria": {
+                  "role": "Label",
+                  "label": "Page unavailable: Choose a graph symbol to open Page or Code."
+                }
+              },
+              "d": {
+                "accesskit_id": "13592214726801071364",
+                "bounds": {
+                  "x": 155.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"view-code\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:894:28",
+                "aria": {
+                  "role": "Label",
+                  "label": "Code unavailable: Choose a graph symbol to open Page or Code."
+                }
+              },
+              "e": {
+                "accesskit_id": "14003500921150262599",
+                "bounds": {
+                  "x": 323.0,
+                  "y": 12.0,
+                  "width": 24.0,
+                  "height": 24.0
+                },
+                "element_id": "Name(\"jump-back\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:470:17",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Back"
+                }
+              },
+              "f": {
+                "accesskit_id": "5620227138846059464",
+                "bounds": {
+                  "x": 1087.0,
+                  "y": 17.0,
+                  "width": 14.0,
+                  "height": 14.0
+                },
+                "element_id": "Name(\"here\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:676:40",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Ask anything, or find a package"
+                }
+              },
+              "g": {
+                "accesskit_id": "17862042663140770612",
+                "bounds": {
+                  "x": 1367.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-find-packages\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Add package"
+                }
+              },
+              "h": {
+                "accesskit_id": "3463699809529227690",
+                "bounds": {
+                  "x": 1399.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-inbox\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Inbox"
+                }
+              },
+              "i": {
+                "accesskit_id": "13410769277501201540",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 58.0,
+                  "width": 263.0,
+                  "height": 46.0
+                },
+                "element_id": "Name(\"shelf-title\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:1138:5",
+                "aria": {
+                  "role": "Heading",
+                  "label": "Library, 0 projects \u00b7 1 package",
+                  "level": 1
+                }
+              },
+              "j": {
+                "accesskit_id": "15102311854658685159",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 50.0,
+                  "width": 263.0,
+                  "height": 54.0
+                },
+                "children": [
+                  "i"
+                ],
+                "element_id": "Name(\"shelf-package\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:149:13",
+                "aria": {
+                  "role": "Group",
+                  "label": "Package context"
+                }
+              },
+              "k": {
+                "accesskit_id": "11719900601024829496",
+                "bounds": {
+                  "x": 5.0,
+                  "y": 104.0,
+                  "width": 62.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-contents\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Contents",
+                  "selected": true
+                }
+              },
+              "l": {
+                "accesskit_id": "2984465339549608451",
+                "bounds": {
+                  "x": 82.0,
+                  "y": 104.0,
+                  "width": 49.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-versions\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Versions",
+                  "selected": false
+                }
+              },
+              "m": {
+                "accesskit_id": "14294587242523979149",
+                "bounds": {
+                  "x": 147.0,
+                  "y": 104.0,
+                  "width": 50.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-rests-on\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Rests on",
+                  "selected": false
+                }
+              },
+              "n": {
+                "accesskit_id": "6727312835027982544",
+                "bounds": {
+                  "x": 212.0,
+                  "y": 104.0,
+                  "width": 47.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-used-by\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Used by",
+                  "selected": false
+                }
+              },
+              "o": {
+                "accesskit_id": "881039323815436514",
+                "bounds": {
+                  "x": 5.0,
+                  "y": 104.0,
+                  "width": 254.0,
+                  "height": 27.0
+                },
+                "children": [
+                  "k",
+                  "l",
+                  "m",
+                  "n"
+                ],
+                "element_id": "Name(\"shelf-lenses\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:575:23",
+                "aria": {
+                  "role": "TabList",
+                  "label": "Library views"
+                }
+              },
+              "p": {
+                "accesskit_id": "16439747460289396869",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 104.0,
+                  "width": 263.0,
+                  "height": 62.0
+                },
+                "children": [
+                  "o"
+                ],
+                "element_id": "Name(\"shelf-controls\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:149:13",
+                "aria": {
+                  "role": "Group",
+                  "label": "Library view controls"
+                }
+              },
+              "q": {
+                "accesskit_id": "9352074208393550554",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 166.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"shelf-heading-0\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:747:55",
+                "aria": {
+                  "role": "Heading",
+                  "label": "Find, 1",
+                  "level": 2
+                }
+              },
+              "r": {
+                "accesskit_id": "10611637468660233109",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 196.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"shelf-find\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:809:27",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Find packages and declarations",
+                  "selected": false
+                }
+              },
+              "s": {
+                "accesskit_id": "14015444097281984641",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 226.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"shelf-heading-2\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:747:55",
+                "aria": {
+                  "role": "Heading",
+                  "label": "In the library, 1",
+                  "level": 2
+                }
+              },
+              "t": {
+                "accesskit_id": "16161377495772724581",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 256.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"package-/fixture/present\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:809:27",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "present",
+                  "selected": false
+                }
+              },
+              "u": {
+                "accesskit_id": "7933540442206585097",
+                "bounds": {
+                  "x": 8.0,
+                  "y": 853.0,
+                  "width": 248.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"shelf-trail-0\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:424:17",
+                "aria": {
+                  "role": "Link",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Library"
+                }
+              },
+              "v": {
+                "accesskit_id": "13147414475411334139",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 832.0,
+                  "width": 263.0,
+                  "height": 42.0
+                },
+                "children": [
+                  "u"
+                ],
+                "element_id": "Name(\"shelf-trail\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:149:13",
+                "aria": {
+                  "role": "Group",
+                  "label": "Reading trail"
+                }
+              },
+              "w": {
+                "accesskit_id": "16375311856519542227",
+                "bounds": {
+                  "x": 747.0,
+                  "y": 454.0,
+                  "width": 210.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"graph-terminal-message\")",
+                "source_location": "apps/desktop/src/shell/kit.rs:30:14",
+                "aria": {
+                  "role": "Status",
+                  "label": "Waiting for the local index connection."
+                }
+              },
+              "x": {
+                "accesskit_id": "9595700620455720648",
+                "bounds": {
+                  "x": 1154.0,
+                  "y": 850.0,
+                  "width": 270.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"graph-projection-status\")",
+                "source_location": "apps/desktop/src/shell/kit.rs:30:14",
+                "aria": {
+                  "role": "Status",
+                  "label": "Waiting for the local index connection."
+                }
+              },
+              "y": {
+                "accesskit_id": "12939293368810251633",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 0.0,
+                  "width": 1440.0,
+                  "height": 900.0
+                },
+                "children": [
+                  "a",
+                  "b",
+                  "c",
+                  "d",
+                  "e",
+                  "f",
+                  "g",
+                  "h",
+                  "j",
+                  "p",
+                  "q",
+                  "r",
+                  "s",
+                  "t",
+                  "v",
+                  "w",
+                  "x"
+                ],
+                "element_id": "Name(\"shell\")",
+                "source_location": "apps/desktop/src/shell/root.rs:2661:24",
+                "aria": {
+                  "role": "Application",
+                  "on_action": [
+                    "Focus"
+                  ],
+                  "label": "Nudox"
+                }
+              },
+              "z": {
+                "accesskit_id": "0",
+                "children": [
+                  "y"
+                ],
+                "aria": {
+                  "role": "Window",
+                  "label": "Nudox controlled native owner"
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "phase": "same_root_owner_replacement",
+        "png": {
+          "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/gui-window-09/native/window/same_root_owner_replacement_attempt_1.png",
+          "sha256": "fe725db3b02a468ffae4e8cfd64277d2ca46d89b075a25593dfc3110df0f2b13"
+        },
+        "source": {
+          "commit": "d4d8bd73e7cc2d188f5f6e8a28ab41488b51f752",
+          "tree": "f512f73e4e84564d330285c29815f60af9b91101",
+          "status": "",
+          "lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd"
+        },
+        "binary": {
+          "path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role/debug/deps/backend_desktop-12121bb8b76207ba",
+          "sha256": "045ee199b9a4d73bc728c4d0f08bc5d75b703e55f50ed92a941d7060ac1a04d3",
+          "bytes": 783198448,
+          "manifest_path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/apps/desktop/Cargo.toml",
+          "features": [],
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        },
+        "committed_evidence": {
+          "schema": "nudox-native-owner-window-fixture.v1",
+          "source_claim": "d4d8bd73e7cc2d188f5f6e8a28ab41488b51f752",
+          "controlled_owner": true,
+          "platform": "Linux native GPUI",
+          "pixel_source": "external window capture",
+          "command_seq": 1,
+          "frame": 11,
+          "titlebar_renders": 11,
+          "route": "World",
+          "root": "VersionedRoot { authority: ProducerAuthority { root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, producer_epoch: 4, cursor: Cursor { recipe: ObjectKey:3f24a9f586a9d2bdf6fa453a2f71977471c3689a3bf0f1fd457c0f5a87165ff4, version: ObjectVersion:c0ee20d6106d6a7de24eb43c2a900b5f7b7efcc99cea17aaa9d7533a898ded1f, branch: ObjectKey:4650a5d2d38c507c621bb7adec963afac7bd740bbc85007b1cd609a67fb2482f, log: ObjectKey:12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760, schema: 3, root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, sequence: 0, query_offset: 0 } }, observation: 0 }",
+          "back": "RouteHistory { head: Some(Node { route: Orbit(Home), reading: ReadingVisit { id: VisitId(1), presentation: Library(ReadingControls { shelf: ShelfReading { lens: Contents, narrow: None, via: None, folds: {}, offset: ReadingOffset { x: 0, y: 0 }, anchor: Some(ShelfRowAnchor { kind: Heading, key: ReadingText(\"Find\"), occurrence: 0, fraction: 0 }) }, lens: Reference, offset: ReadingOffset { x: 0, y: 0 }, focus: None, source_line_draft: SourceLineDraft(\"\") }) }, previous: None, length: 1 }) }",
+          "owner_state": "Ready { key: VersionedRoot { authority: ProducerAuthority { root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, producer_epoch: 4, cursor: Cursor { recipe: ObjectKey:3f24a9f586a9d2bdf6fa453a2f71977471c3689a3bf0f1fd457c0f5a87165ff4, version: ObjectVersion:c0ee20d6106d6a7de24eb43c2a900b5f7b7efcc99cea17aaa9d7533a898ded1f, branch: ObjectKey:4650a5d2d38c507c621bb7adec963afac7bd740bbc85007b1cd609a67fb2482f, log: ObjectKey:12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760, schema: 3, root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, sequence: 0, query_offset: 0 } }, observation: 0 }, mode: Attached }",
+          "owner_serving": true,
+          "retry_current": false,
+          "store_events": [
+            "Resource(Orbit)",
+            "Snapshot(Settings)",
+            "Resource(Orbit)",
+            "Resource(Health)",
+            "Resource(Orbit)",
+            "Snapshot(Owner)",
+            "Resource(Orbit)"
+          ],
+          "native_tree": {
+            "root": "z",
+            "accesskit_focus": "e",
+            "gpui_focus": "e",
+            "active_descendant_focus": null,
+            "frame": {
+              "rendered_at": "2026-10-11T12:43:57.277-04:00",
+              "frame_number": 11,
+              "window_title": "Nudox controlled native owner",
+              "node_count": 26,
+              "tab_stop_count": 5,
+              "viewport_size": {
+                "width": 1440.0,
+                "height": 900.0
+              },
+              "scale_factor": 1.0
+            },
+            "nodes": {
+              "a": {
+                "accesskit_id": "9021967968643190926",
+                "bounds": {
+                  "x": 13.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-shelf\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Toggle the shelf"
+                }
+              },
+              "b": {
+                "accesskit_id": "12276507839632830038",
+                "bounds": {
+                  "x": 50.0,
+                  "y": 10.0,
+                  "width": 73.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"view-graph\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:894:28",
+                "aria": {
+                  "role": "Label",
+                  "label": "Graph view selected"
+                }
+              },
+              "c": {
+                "accesskit_id": "1861968823920260491",
+                "bounds": {
+                  "x": 125.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"view-page\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:894:28",
+                "aria": {
+                  "role": "Label",
+                  "label": "Page unavailable: Choose a graph symbol to open Page or Code."
+                }
+              },
+              "d": {
+                "accesskit_id": "13592214726801071364",
+                "bounds": {
+                  "x": 155.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"view-code\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:894:28",
+                "aria": {
+                  "role": "Label",
+                  "label": "Code unavailable: Choose a graph symbol to open Page or Code."
+                }
+              },
+              "e": {
+                "accesskit_id": "14003500921150262599",
+                "bounds": {
+                  "x": 323.0,
+                  "y": 12.0,
+                  "width": 24.0,
+                  "height": 24.0
+                },
+                "element_id": "Name(\"jump-back\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:470:17",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Back"
+                }
+              },
+              "f": {
+                "accesskit_id": "5620227138846059464",
+                "bounds": {
+                  "x": 1087.0,
+                  "y": 17.0,
+                  "width": 14.0,
+                  "height": 14.0
+                },
+                "element_id": "Name(\"here\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:676:40",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Ask anything, or find a package"
+                }
+              },
+              "g": {
+                "accesskit_id": "17862042663140770612",
+                "bounds": {
+                  "x": 1367.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-find-packages\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Add package"
+                }
+              },
+              "h": {
+                "accesskit_id": "3463699809529227690",
+                "bounds": {
+                  "x": 1399.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-inbox\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Inbox"
+                }
+              },
+              "i": {
+                "accesskit_id": "13410769277501201540",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 58.0,
+                  "width": 263.0,
+                  "height": 46.0
+                },
+                "element_id": "Name(\"shelf-title\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:1138:5",
+                "aria": {
+                  "role": "Heading",
+                  "label": "Library, 0 projects \u00b7 1 package",
+                  "level": 1
+                }
+              },
+              "j": {
+                "accesskit_id": "15102311854658685159",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 50.0,
+                  "width": 263.0,
+                  "height": 54.0
+                },
+                "children": [
+                  "i"
+                ],
+                "element_id": "Name(\"shelf-package\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:149:13",
+                "aria": {
+                  "role": "Group",
+                  "label": "Package context"
+                }
+              },
+              "k": {
+                "accesskit_id": "11719900601024829496",
+                "bounds": {
+                  "x": 5.0,
+                  "y": 104.0,
+                  "width": 62.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-contents\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Contents",
+                  "selected": true
+                }
+              },
+              "l": {
+                "accesskit_id": "2984465339549608451",
+                "bounds": {
+                  "x": 82.0,
+                  "y": 104.0,
+                  "width": 49.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-versions\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Versions",
+                  "selected": false
+                }
+              },
+              "m": {
+                "accesskit_id": "14294587242523979149",
+                "bounds": {
+                  "x": 147.0,
+                  "y": 104.0,
+                  "width": 50.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-rests-on\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Rests on",
+                  "selected": false
+                }
+              },
+              "n": {
+                "accesskit_id": "6727312835027982544",
+                "bounds": {
+                  "x": 212.0,
+                  "y": 104.0,
+                  "width": 47.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-used-by\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Used by",
+                  "selected": false
+                }
+              },
+              "o": {
+                "accesskit_id": "881039323815436514",
+                "bounds": {
+                  "x": 5.0,
+                  "y": 104.0,
+                  "width": 254.0,
+                  "height": 27.0
+                },
+                "children": [
+                  "k",
+                  "l",
+                  "m",
+                  "n"
+                ],
+                "element_id": "Name(\"shelf-lenses\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:575:23",
+                "aria": {
+                  "role": "TabList",
+                  "label": "Library views"
+                }
+              },
+              "p": {
+                "accesskit_id": "16439747460289396869",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 104.0,
+                  "width": 263.0,
+                  "height": 62.0
+                },
+                "children": [
+                  "o"
+                ],
+                "element_id": "Name(\"shelf-controls\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:149:13",
+                "aria": {
+                  "role": "Group",
+                  "label": "Library view controls"
+                }
+              },
+              "q": {
+                "accesskit_id": "9352074208393550554",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 166.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"shelf-heading-0\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:747:55",
+                "aria": {
+                  "role": "Heading",
+                  "label": "Find, 1",
+                  "level": 2
+                }
+              },
+              "r": {
+                "accesskit_id": "10611637468660233109",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 196.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"shelf-find\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:809:27",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Find packages and declarations",
+                  "selected": false
+                }
+              },
+              "s": {
+                "accesskit_id": "14015444097281984641",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 226.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"shelf-heading-2\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:747:55",
+                "aria": {
+                  "role": "Heading",
+                  "label": "In the library, 1",
+                  "level": 2
+                }
+              },
+              "t": {
+                "accesskit_id": "16161377495772724581",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 256.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"package-/fixture/present\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:809:27",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "present",
+                  "selected": false
+                }
+              },
+              "u": {
+                "accesskit_id": "7933540442206585097",
+                "bounds": {
+                  "x": 8.0,
+                  "y": 853.0,
+                  "width": 248.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"shelf-trail-0\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:424:17",
+                "aria": {
+                  "role": "Link",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Library"
+                }
+              },
+              "v": {
+                "accesskit_id": "13147414475411334139",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 832.0,
+                  "width": 263.0,
+                  "height": 42.0
+                },
+                "children": [
+                  "u"
+                ],
+                "element_id": "Name(\"shelf-trail\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:149:13",
+                "aria": {
+                  "role": "Group",
+                  "label": "Reading trail"
+                }
+              },
+              "w": {
+                "accesskit_id": "16375311856519542227",
+                "bounds": {
+                  "x": 747.0,
+                  "y": 454.0,
+                  "width": 210.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"graph-terminal-message\")",
+                "source_location": "apps/desktop/src/shell/kit.rs:30:14",
+                "aria": {
+                  "role": "Status",
+                  "label": "Waiting for the local index connection."
+                }
+              },
+              "x": {
+                "accesskit_id": "9595700620455720648",
+                "bounds": {
+                  "x": 1154.0,
+                  "y": 850.0,
+                  "width": 270.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"graph-projection-status\")",
+                "source_location": "apps/desktop/src/shell/kit.rs:30:14",
+                "aria": {
+                  "role": "Status",
+                  "label": "Waiting for the local index connection."
+                }
+              },
+              "y": {
+                "accesskit_id": "12939293368810251633",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 0.0,
+                  "width": 1440.0,
+                  "height": 900.0
+                },
+                "children": [
+                  "a",
+                  "b",
+                  "c",
+                  "d",
+                  "e",
+                  "f",
+                  "g",
+                  "h",
+                  "j",
+                  "p",
+                  "q",
+                  "r",
+                  "s",
+                  "t",
+                  "v",
+                  "w",
+                  "x"
+                ],
+                "element_id": "Name(\"shell\")",
+                "source_location": "apps/desktop/src/shell/root.rs:2661:24",
+                "aria": {
+                  "role": "Application",
+                  "on_action": [
+                    "Focus"
+                  ],
+                  "label": "Nudox"
+                }
+              },
+              "z": {
+                "accesskit_id": "0",
+                "children": [
+                  "y"
+                ],
+                "aria": {
+                  "role": "Window",
+                  "label": "Nudox controlled native owner"
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "phase": "owner_failed",
+        "png": {
+          "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/gui-window-09/native/window/owner_failed_attempt_1.png",
+          "sha256": "733ca031115c271263b77f6834ae49182a63e5b7612f59f98a615d063f94e6bc"
+        },
+        "source": {
+          "commit": "d4d8bd73e7cc2d188f5f6e8a28ab41488b51f752",
+          "tree": "f512f73e4e84564d330285c29815f60af9b91101",
+          "status": "",
+          "lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd"
+        },
+        "binary": {
+          "path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role/debug/deps/backend_desktop-12121bb8b76207ba",
+          "sha256": "045ee199b9a4d73bc728c4d0f08bc5d75b703e55f50ed92a941d7060ac1a04d3",
+          "bytes": 783198448,
+          "manifest_path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/apps/desktop/Cargo.toml",
+          "features": [],
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        },
+        "committed_evidence": {
+          "schema": "nudox-native-owner-window-fixture.v1",
+          "source_claim": "d4d8bd73e7cc2d188f5f6e8a28ab41488b51f752",
+          "controlled_owner": true,
+          "platform": "Linux native GPUI",
+          "pixel_source": "external window capture",
+          "command_seq": 2,
+          "frame": 12,
+          "titlebar_renders": 12,
+          "route": "World",
+          "root": "VersionedRoot { authority: ProducerAuthority { root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, producer_epoch: 4, cursor: Cursor { recipe: ObjectKey:3f24a9f586a9d2bdf6fa453a2f71977471c3689a3bf0f1fd457c0f5a87165ff4, version: ObjectVersion:c0ee20d6106d6a7de24eb43c2a900b5f7b7efcc99cea17aaa9d7533a898ded1f, branch: ObjectKey:4650a5d2d38c507c621bb7adec963afac7bd740bbc85007b1cd609a67fb2482f, log: ObjectKey:12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760, schema: 3, root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, sequence: 0, query_offset: 0 } }, observation: 0 }",
+          "back": "RouteHistory { head: Some(Node { route: Orbit(Home), reading: ReadingVisit { id: VisitId(1), presentation: Library(ReadingControls { shelf: ShelfReading { lens: Contents, narrow: None, via: None, folds: {}, offset: ReadingOffset { x: 0, y: 0 }, anchor: Some(ShelfRowAnchor { kind: Heading, key: ReadingText(\"Find\"), occurrence: 0, fraction: 0 }) }, lens: Reference, offset: ReadingOffset { x: 0, y: 0 }, focus: None, source_line_draft: SourceLineDraft(\"\") }) }, previous: None, length: 1 }) }",
+          "owner_state": "Failed(Host(\"controlled identical owner failure\"))",
+          "owner_serving": false,
+          "retry_current": true,
+          "store_events": [
+            "Resource(Orbit)",
+            "Snapshot(Settings)",
+            "Resource(Orbit)",
+            "Resource(Health)",
+            "Resource(Orbit)",
+            "Snapshot(Owner)",
+            "Resource(Orbit)",
+            "Snapshot(Settings)",
+            "Resource(Orbit)",
+            "Resource(Orbit)",
+            "Snapshot(GraphFocus)",
+            "Snapshot(Owner)"
+          ],
+          "native_tree": {
+            "root": "aa",
+            "accesskit_focus": "e",
+            "gpui_focus": "e",
+            "active_descendant_focus": null,
+            "frame": {
+              "rendered_at": "2026-10-11T12:43:58.682-04:00",
+              "frame_number": 12,
+              "window_title": "Nudox controlled native owner",
+              "node_count": 27,
+              "tab_stop_count": 5,
+              "viewport_size": {
+                "width": 1440.0,
+                "height": 900.0
+              },
+              "scale_factor": 1.0
+            },
+            "nodes": {
+              "a": {
+                "accesskit_id": "9021967968643190926",
+                "bounds": {
+                  "x": 13.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-shelf\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Toggle the shelf"
+                }
+              },
+              "b": {
+                "accesskit_id": "12276507839632830038",
+                "bounds": {
+                  "x": 50.0,
+                  "y": 10.0,
+                  "width": 73.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"view-graph\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:894:28",
+                "aria": {
+                  "role": "Label",
+                  "label": "Graph view selected"
+                }
+              },
+              "c": {
+                "accesskit_id": "1861968823920260491",
+                "bounds": {
+                  "x": 125.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"view-page\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:894:28",
+                "aria": {
+                  "role": "Label",
+                  "label": "Page unavailable: Choose a graph symbol to open Page or Code."
+                }
+              },
+              "d": {
+                "accesskit_id": "13592214726801071364",
+                "bounds": {
+                  "x": 155.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"view-code\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:894:28",
+                "aria": {
+                  "role": "Label",
+                  "label": "Code unavailable: Choose a graph symbol to open Page or Code."
+                }
+              },
+              "e": {
+                "accesskit_id": "14003500921150262599",
+                "bounds": {
+                  "x": 323.0,
+                  "y": 12.0,
+                  "width": 24.0,
+                  "height": 24.0
+                },
+                "element_id": "Name(\"jump-back\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:470:17",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Back"
+                }
+              },
+              "f": {
+                "accesskit_id": "5620227138846059464",
+                "bounds": {
+                  "x": 1087.0,
+                  "y": 17.0,
+                  "width": 14.0,
+                  "height": 14.0
+                },
+                "element_id": "Name(\"here\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:676:40",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Ask anything, or find a package"
+                }
+              },
+              "g": {
+                "accesskit_id": "17862042663140770612",
+                "bounds": {
+                  "x": 1367.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-find-packages\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Add package"
+                }
+              },
+              "h": {
+                "accesskit_id": "3463699809529227690",
+                "bounds": {
+                  "x": 1399.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-inbox\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Inbox"
+                }
+              },
+              "i": {
+                "accesskit_id": "13410769277501201540",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 58.0,
+                  "width": 263.0,
+                  "height": 46.0
+                },
+                "element_id": "Name(\"shelf-title\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:1138:5",
+                "aria": {
+                  "role": "Heading",
+                  "label": "Library, 0 projects \u00b7 packages unavailable",
+                  "level": 1
+                }
+              },
+              "j": {
+                "accesskit_id": "15102311854658685159",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 50.0,
+                  "width": 263.0,
+                  "height": 54.0
+                },
+                "children": [
+                  "i"
+                ],
+                "element_id": "Name(\"shelf-package\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:149:13",
+                "aria": {
+                  "role": "Group",
+                  "label": "Package context"
+                }
+              },
+              "k": {
+                "accesskit_id": "11719900601024829496",
+                "bounds": {
+                  "x": 5.0,
+                  "y": 104.0,
+                  "width": 52.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-contents\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Contents",
+                  "selected": true
+                }
+              },
+              "l": {
+                "accesskit_id": "2984465339549608451",
+                "bounds": {
+                  "x": 76.0,
+                  "y": 104.0,
+                  "width": 49.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-versions\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Versions",
+                  "selected": false
+                }
+              },
+              "m": {
+                "accesskit_id": "14294587242523979149",
+                "bounds": {
+                  "x": 143.0,
+                  "y": 104.0,
+                  "width": 50.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-rests-on\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Rests on",
+                  "selected": false
+                }
+              },
+              "n": {
+                "accesskit_id": "6727312835027982544",
+                "bounds": {
+                  "x": 212.0,
+                  "y": 104.0,
+                  "width": 47.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-used-by\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Used by",
+                  "selected": false
+                }
+              },
+              "o": {
+                "accesskit_id": "881039323815436514",
+                "bounds": {
+                  "x": 5.0,
+                  "y": 104.0,
+                  "width": 254.0,
+                  "height": 27.0
+                },
+                "children": [
+                  "k",
+                  "l",
+                  "m",
+                  "n"
+                ],
+                "element_id": "Name(\"shelf-lenses\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:575:23",
+                "aria": {
+                  "role": "TabList",
+                  "label": "Library views"
+                }
+              },
+              "p": {
+                "accesskit_id": "16439747460289396869",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 104.0,
+                  "width": 263.0,
+                  "height": 62.0
+                },
+                "children": [
+                  "o"
+                ],
+                "element_id": "Name(\"shelf-controls\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:149:13",
+                "aria": {
+                  "role": "Group",
+                  "label": "Library view controls"
+                }
+              },
+              "q": {
+                "accesskit_id": "9352074208393550554",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 166.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"shelf-heading-0\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:747:55",
+                "aria": {
+                  "role": "Heading",
+                  "label": "Find, 1",
+                  "level": 2
+                }
+              },
+              "r": {
+                "accesskit_id": "10611637468660233109",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 196.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"shelf-find\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:809:27",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Find packages and declarations",
+                  "selected": false
+                }
+              },
+              "s": {
+                "accesskit_id": "3709076110197550765",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 226.0,
+                  "width": 263.0,
+                  "height": 82.0
+                },
+                "element_id": "Name(\"shelf-note-2\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:772:33",
+                "aria": {
+                  "role": "Label",
+                  "label": "The current reading failed. The index could not start. controlled identical owner failure An earlier reading is retained; it does not establish current relationships."
+                }
+              },
+              "t": {
+                "accesskit_id": "7933540442206585097",
+                "bounds": {
+                  "x": 8.0,
+                  "y": 853.0,
+                  "width": 248.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"shelf-trail-0\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:424:17",
+                "aria": {
+                  "role": "Link",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Library"
+                }
+              },
+              "u": {
+                "accesskit_id": "13147414475411334139",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 832.0,
+                  "width": 263.0,
+                  "height": 42.0
+                },
+                "children": [
+                  "t"
+                ],
+                "element_id": "Name(\"shelf-trail\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:149:13",
+                "aria": {
+                  "role": "Group",
+                  "label": "Reading trail"
+                }
+              },
+              "v": {
+                "accesskit_id": "16375311856519542227",
+                "bounds": {
+                  "x": 747.0,
+                  "y": 454.0,
+                  "width": 210.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"graph-terminal-message\")",
+                "source_location": "apps/desktop/src/shell/kit.rs:30:14",
+                "aria": {
+                  "role": "Status",
+                  "label": "Waiting for the local index connection."
+                }
+              },
+              "w": {
+                "accesskit_id": "9595700620455720648",
+                "bounds": {
+                  "x": 1154.0,
+                  "y": 850.0,
+                  "width": 270.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"graph-projection-status\")",
+                "source_location": "apps/desktop/src/shell/kit.rs:30:14",
+                "aria": {
+                  "role": "Status",
+                  "label": "Waiting for the local index connection."
+                }
+              },
+              "x": {
+                "accesskit_id": "11674478005657706087",
+                "bounds": {
+                  "x": 13.0,
+                  "y": 879.0,
+                  "width": 1330.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"status-message\")",
+                "source_location": "apps/desktop/src/shell/status.rs:351:27",
+                "aria": {
+                  "role": "Status",
+                  "label": "The index could not start. controlled identical owner failure"
+                }
+              },
+              "y": {
+                "accesskit_id": "3699182266881088998",
+                "bounds": {
+                  "x": 1356.0,
+                  "y": 875.0,
+                  "width": 71.0,
+                  "height": 24.0
+                },
+                "element_id": "Name(\"status-retry\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Try again"
+                }
+              },
+              "z": {
+                "accesskit_id": "12939293368810251633",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 0.0,
+                  "width": 1440.0,
+                  "height": 900.0
+                },
+                "children": [
+                  "a",
+                  "b",
+                  "c",
+                  "d",
+                  "e",
+                  "f",
+                  "g",
+                  "h",
+                  "j",
+                  "p",
+                  "q",
+                  "r",
+                  "s",
+                  "u",
+                  "v",
+                  "w",
+                  "x",
+                  "y"
+                ],
+                "element_id": "Name(\"shell\")",
+                "source_location": "apps/desktop/src/shell/root.rs:2661:24",
+                "aria": {
+                  "role": "Application",
+                  "on_action": [
+                    "Focus"
+                  ],
+                  "label": "Nudox"
+                }
+              },
+              "aa": {
+                "accesskit_id": "0",
+                "children": [
+                  "z"
+                ],
+                "aria": {
+                  "role": "Window",
+                  "label": "Nudox controlled native owner"
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "phase": "identical_failure_renews_retry",
+        "png": {
+          "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/gui-window-09/native/window/identical_failure_renews_retry_attempt_1.png",
+          "sha256": "5684096be974c1b3e12c78963aea765169ee46bc7ff9c2c2a99445aa311306c5"
+        },
+        "source": {
+          "commit": "d4d8bd73e7cc2d188f5f6e8a28ab41488b51f752",
+          "tree": "f512f73e4e84564d330285c29815f60af9b91101",
+          "status": "",
+          "lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd"
+        },
+        "binary": {
+          "path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role/debug/deps/backend_desktop-12121bb8b76207ba",
+          "sha256": "045ee199b9a4d73bc728c4d0f08bc5d75b703e55f50ed92a941d7060ac1a04d3",
+          "bytes": 783198448,
+          "manifest_path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/apps/desktop/Cargo.toml",
+          "features": [],
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        },
+        "committed_evidence": {
+          "schema": "nudox-native-owner-window-fixture.v1",
+          "source_claim": "d4d8bd73e7cc2d188f5f6e8a28ab41488b51f752",
+          "controlled_owner": true,
+          "platform": "Linux native GPUI",
+          "pixel_source": "external window capture",
+          "command_seq": 3,
+          "frame": 15,
+          "titlebar_renders": 15,
+          "route": "World",
+          "root": "VersionedRoot { authority: ProducerAuthority { root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, producer_epoch: 4, cursor: Cursor { recipe: ObjectKey:3f24a9f586a9d2bdf6fa453a2f71977471c3689a3bf0f1fd457c0f5a87165ff4, version: ObjectVersion:c0ee20d6106d6a7de24eb43c2a900b5f7b7efcc99cea17aaa9d7533a898ded1f, branch: ObjectKey:4650a5d2d38c507c621bb7adec963afac7bd740bbc85007b1cd609a67fb2482f, log: ObjectKey:12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760, schema: 3, root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, sequence: 0, query_offset: 0 } }, observation: 0 }",
+          "back": "RouteHistory { head: Some(Node { route: Orbit(Home), reading: ReadingVisit { id: VisitId(1), presentation: Library(ReadingControls { shelf: ShelfReading { lens: Contents, narrow: None, via: None, folds: {}, offset: ReadingOffset { x: 0, y: 0 }, anchor: Some(ShelfRowAnchor { kind: Heading, key: ReadingText(\"Find\"), occurrence: 0, fraction: 0 }) }, lens: Reference, offset: ReadingOffset { x: 0, y: 0 }, focus: None, source_line_draft: SourceLineDraft(\"\") }) }, previous: None, length: 1 }) }",
+          "owner_state": "Failed(Host(\"controlled identical owner failure\"))",
+          "owner_serving": false,
+          "retry_current": true,
+          "store_events": [
+            "Resource(Orbit)",
+            "Snapshot(Settings)",
+            "Resource(Orbit)",
+            "Resource(Health)",
+            "Resource(Orbit)",
+            "Snapshot(Owner)",
+            "Resource(Orbit)",
+            "Snapshot(Settings)",
+            "Resource(Orbit)",
+            "Resource(Orbit)",
+            "Snapshot(GraphFocus)",
+            "Snapshot(Owner)",
+            "Snapshot(Owner)"
+          ],
+          "native_tree": {
+            "root": "aa",
+            "accesskit_focus": "y",
+            "gpui_focus": "y",
+            "active_descendant_focus": null,
+            "frame": {
+              "rendered_at": "2026-10-11T12:44:00.122-04:00",
+              "frame_number": 15,
+              "window_title": "Nudox controlled native owner",
+              "node_count": 27,
+              "tab_stop_count": 5,
+              "viewport_size": {
+                "width": 1440.0,
+                "height": 900.0
+              },
+              "scale_factor": 1.0
+            },
+            "nodes": {
+              "a": {
+                "accesskit_id": "9021967968643190926",
+                "bounds": {
+                  "x": 13.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-shelf\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Toggle the shelf"
+                }
+              },
+              "b": {
+                "accesskit_id": "12276507839632830038",
+                "bounds": {
+                  "x": 50.0,
+                  "y": 10.0,
+                  "width": 73.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"view-graph\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:894:28",
+                "aria": {
+                  "role": "Label",
+                  "label": "Graph view selected"
+                }
+              },
+              "c": {
+                "accesskit_id": "1861968823920260491",
+                "bounds": {
+                  "x": 125.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"view-page\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:894:28",
+                "aria": {
+                  "role": "Label",
+                  "label": "Page unavailable: Choose a graph symbol to open Page or Code."
+                }
+              },
+              "d": {
+                "accesskit_id": "13592214726801071364",
+                "bounds": {
+                  "x": 155.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"view-code\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:894:28",
+                "aria": {
+                  "role": "Label",
+                  "label": "Code unavailable: Choose a graph symbol to open Page or Code."
+                }
+              },
+              "e": {
+                "accesskit_id": "14003500921150262599",
+                "bounds": {
+                  "x": 323.0,
+                  "y": 12.0,
+                  "width": 24.0,
+                  "height": 24.0
+                },
+                "element_id": "Name(\"jump-back\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:470:17",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Back"
+                }
+              },
+              "f": {
+                "accesskit_id": "5620227138846059464",
+                "bounds": {
+                  "x": 1087.0,
+                  "y": 17.0,
+                  "width": 14.0,
+                  "height": 14.0
+                },
+                "element_id": "Name(\"here\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:676:40",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Ask anything, or find a package"
+                }
+              },
+              "g": {
+                "accesskit_id": "17862042663140770612",
+                "bounds": {
+                  "x": 1367.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-find-packages\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Add package"
+                }
+              },
+              "h": {
+                "accesskit_id": "3463699809529227690",
+                "bounds": {
+                  "x": 1399.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-inbox\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Inbox"
+                }
+              },
+              "i": {
+                "accesskit_id": "13410769277501201540",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 58.0,
+                  "width": 263.0,
+                  "height": 46.0
+                },
+                "element_id": "Name(\"shelf-title\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:1138:5",
+                "aria": {
+                  "role": "Heading",
+                  "label": "Library, 0 projects \u00b7 packages unavailable",
+                  "level": 1
+                }
+              },
+              "j": {
+                "accesskit_id": "15102311854658685159",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 50.0,
+                  "width": 263.0,
+                  "height": 54.0
+                },
+                "children": [
+                  "i"
+                ],
+                "element_id": "Name(\"shelf-package\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:149:13",
+                "aria": {
+                  "role": "Group",
+                  "label": "Package context"
+                }
+              },
+              "k": {
+                "accesskit_id": "11719900601024829496",
+                "bounds": {
+                  "x": 5.0,
+                  "y": 104.0,
+                  "width": 52.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-contents\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Contents",
+                  "selected": true
+                }
+              },
+              "l": {
+                "accesskit_id": "2984465339549608451",
+                "bounds": {
+                  "x": 76.0,
+                  "y": 104.0,
+                  "width": 49.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-versions\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Versions",
+                  "selected": false
+                }
+              },
+              "m": {
+                "accesskit_id": "14294587242523979149",
+                "bounds": {
+                  "x": 143.0,
+                  "y": 104.0,
+                  "width": 50.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-rests-on\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Rests on",
+                  "selected": false
+                }
+              },
+              "n": {
+                "accesskit_id": "6727312835027982544",
+                "bounds": {
+                  "x": 212.0,
+                  "y": 104.0,
+                  "width": 47.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-used-by\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Used by",
+                  "selected": false
+                }
+              },
+              "o": {
+                "accesskit_id": "881039323815436514",
+                "bounds": {
+                  "x": 5.0,
+                  "y": 104.0,
+                  "width": 254.0,
+                  "height": 27.0
+                },
+                "children": [
+                  "k",
+                  "l",
+                  "m",
+                  "n"
+                ],
+                "element_id": "Name(\"shelf-lenses\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:575:23",
+                "aria": {
+                  "role": "TabList",
+                  "label": "Library views"
+                }
+              },
+              "p": {
+                "accesskit_id": "16439747460289396869",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 104.0,
+                  "width": 263.0,
+                  "height": 62.0
+                },
+                "children": [
+                  "o"
+                ],
+                "element_id": "Name(\"shelf-controls\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:149:13",
+                "aria": {
+                  "role": "Group",
+                  "label": "Library view controls"
+                }
+              },
+              "q": {
+                "accesskit_id": "9352074208393550554",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 166.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"shelf-heading-0\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:747:55",
+                "aria": {
+                  "role": "Heading",
+                  "label": "Find, 1",
+                  "level": 2
+                }
+              },
+              "r": {
+                "accesskit_id": "10611637468660233109",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 196.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"shelf-find\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:809:27",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Find packages and declarations",
+                  "selected": false
+                }
+              },
+              "s": {
+                "accesskit_id": "3709076110197550765",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 226.0,
+                  "width": 263.0,
+                  "height": 82.0
+                },
+                "element_id": "Name(\"shelf-note-2\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:772:33",
+                "aria": {
+                  "role": "Label",
+                  "label": "The current reading failed. The index could not start. controlled identical owner failure An earlier reading is retained; it does not establish current relationships."
+                }
+              },
+              "t": {
+                "accesskit_id": "7933540442206585097",
+                "bounds": {
+                  "x": 8.0,
+                  "y": 853.0,
+                  "width": 248.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"shelf-trail-0\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:424:17",
+                "aria": {
+                  "role": "Link",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Library"
+                }
+              },
+              "u": {
+                "accesskit_id": "13147414475411334139",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 832.0,
+                  "width": 263.0,
+                  "height": 42.0
+                },
+                "children": [
+                  "t"
+                ],
+                "element_id": "Name(\"shelf-trail\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:149:13",
+                "aria": {
+                  "role": "Group",
+                  "label": "Reading trail"
+                }
+              },
+              "v": {
+                "accesskit_id": "16375311856519542227",
+                "bounds": {
+                  "x": 747.0,
+                  "y": 454.0,
+                  "width": 210.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"graph-terminal-message\")",
+                "source_location": "apps/desktop/src/shell/kit.rs:30:14",
+                "aria": {
+                  "role": "Status",
+                  "label": "Waiting for the local index connection."
+                }
+              },
+              "w": {
+                "accesskit_id": "9595700620455720648",
+                "bounds": {
+                  "x": 1154.0,
+                  "y": 850.0,
+                  "width": 270.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"graph-projection-status\")",
+                "source_location": "apps/desktop/src/shell/kit.rs:30:14",
+                "aria": {
+                  "role": "Status",
+                  "label": "Waiting for the local index connection."
+                }
+              },
+              "x": {
+                "accesskit_id": "11674478005657706087",
+                "bounds": {
+                  "x": 13.0,
+                  "y": 879.0,
+                  "width": 1330.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"status-message\")",
+                "source_location": "apps/desktop/src/shell/status.rs:351:27",
+                "aria": {
+                  "role": "Status",
+                  "label": "The index could not start. controlled identical owner failure"
+                }
+              },
+              "y": {
+                "accesskit_id": "3699182266881088998",
+                "bounds": {
+                  "x": 1356.0,
+                  "y": 875.0,
+                  "width": 71.0,
+                  "height": 24.0
+                },
+                "element_id": "Name(\"status-retry\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Try again"
+                }
+              },
+              "z": {
+                "accesskit_id": "12939293368810251633",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 0.0,
+                  "width": 1440.0,
+                  "height": 900.0
+                },
+                "children": [
+                  "a",
+                  "b",
+                  "c",
+                  "d",
+                  "e",
+                  "f",
+                  "g",
+                  "h",
+                  "j",
+                  "p",
+                  "q",
+                  "r",
+                  "s",
+                  "u",
+                  "v",
+                  "w",
+                  "x",
+                  "y"
+                ],
+                "element_id": "Name(\"shell\")",
+                "source_location": "apps/desktop/src/shell/root.rs:2661:24",
+                "aria": {
+                  "role": "Application",
+                  "on_action": [
+                    "Focus"
+                  ],
+                  "label": "Nudox"
+                }
+              },
+              "aa": {
+                "accesskit_id": "0",
+                "children": [
+                  "z"
+                ],
+                "aria": {
+                  "role": "Window",
+                  "label": "Nudox controlled native owner"
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "phase": "native_retry_starting",
+        "png": {
+          "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/gui-window-09/native/window/native_retry_starting_attempt_1.png",
+          "sha256": "1dcd2daf4e7f2647e93c32c5d67791bfba783abcc7e96cb1266f1d09537c96a6"
+        },
+        "source": {
+          "commit": "d4d8bd73e7cc2d188f5f6e8a28ab41488b51f752",
+          "tree": "f512f73e4e84564d330285c29815f60af9b91101",
+          "status": "",
+          "lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd"
+        },
+        "binary": {
+          "path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role/debug/deps/backend_desktop-12121bb8b76207ba",
+          "sha256": "045ee199b9a4d73bc728c4d0f08bc5d75b703e55f50ed92a941d7060ac1a04d3",
+          "bytes": 783198448,
+          "manifest_path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/apps/desktop/Cargo.toml",
+          "features": [],
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        },
+        "committed_evidence": {
+          "schema": "nudox-native-owner-window-fixture.v1",
+          "source_claim": "d4d8bd73e7cc2d188f5f6e8a28ab41488b51f752",
+          "controlled_owner": true,
+          "platform": "Linux native GPUI",
+          "pixel_source": "external window capture",
+          "command_seq": 3,
+          "frame": 19,
+          "titlebar_renders": 19,
+          "route": "World",
+          "root": "VersionedRoot { authority: ProducerAuthority { root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, producer_epoch: 4, cursor: Cursor { recipe: ObjectKey:3f24a9f586a9d2bdf6fa453a2f71977471c3689a3bf0f1fd457c0f5a87165ff4, version: ObjectVersion:c0ee20d6106d6a7de24eb43c2a900b5f7b7efcc99cea17aaa9d7533a898ded1f, branch: ObjectKey:4650a5d2d38c507c621bb7adec963afac7bd740bbc85007b1cd609a67fb2482f, log: ObjectKey:12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760, schema: 3, root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, sequence: 0, query_offset: 0 } }, observation: 0 }",
+          "back": "RouteHistory { head: Some(Node { route: Orbit(Home), reading: ReadingVisit { id: VisitId(1), presentation: Library(ReadingControls { shelf: ShelfReading { lens: Contents, narrow: None, via: None, folds: {}, offset: ReadingOffset { x: 0, y: 0 }, anchor: Some(ShelfRowAnchor { kind: Heading, key: ReadingText(\"Find\"), occurrence: 0, fraction: 0 }) }, lens: Reference, offset: ReadingOffset { x: 0, y: 0 }, focus: None, source_line_draft: SourceLineDraft(\"\") }) }, previous: None, length: 1 }) }",
+          "owner_state": "Starting",
+          "owner_serving": false,
+          "retry_current": false,
+          "store_events": [
+            "Resource(Orbit)",
+            "Snapshot(Settings)",
+            "Resource(Orbit)",
+            "Resource(Health)",
+            "Resource(Orbit)",
+            "Snapshot(Owner)",
+            "Resource(Orbit)",
+            "Snapshot(Settings)",
+            "Resource(Orbit)",
+            "Resource(Orbit)",
+            "Snapshot(GraphFocus)",
+            "Snapshot(Owner)",
+            "Snapshot(Owner)",
+            "Resource(Orbit)",
+            "Snapshot(Settings)",
+            "Resource(Orbit)",
+            "Snapshot(Owner)"
+          ],
+          "native_tree": {
+            "root": "aa",
+            "accesskit_focus": "aa",
+            "gpui_focus": null,
+            "active_descendant_focus": null,
+            "frame": {
+              "rendered_at": "2026-10-11T12:44:01.640-04:00",
+              "frame_number": 19,
+              "window_title": "Nudox controlled native owner",
+              "node_count": 27,
+              "tab_stop_count": 4,
+              "viewport_size": {
+                "width": 1440.0,
+                "height": 900.0
+              },
+              "scale_factor": 1.0
+            },
+            "nodes": {
+              "a": {
+                "accesskit_id": "9021967968643190926",
+                "bounds": {
+                  "x": 13.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-shelf\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Toggle the shelf"
+                }
+              },
+              "b": {
+                "accesskit_id": "12276507839632830038",
+                "bounds": {
+                  "x": 50.0,
+                  "y": 10.0,
+                  "width": 73.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"view-graph\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:894:28",
+                "aria": {
+                  "role": "Label",
+                  "label": "Graph view selected"
+                }
+              },
+              "c": {
+                "accesskit_id": "1861968823920260491",
+                "bounds": {
+                  "x": 125.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"view-page\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:894:28",
+                "aria": {
+                  "role": "Label",
+                  "label": "Page unavailable: Choose a graph symbol to open Page or Code."
+                }
+              },
+              "d": {
+                "accesskit_id": "13592214726801071364",
+                "bounds": {
+                  "x": 155.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"view-code\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:894:28",
+                "aria": {
+                  "role": "Label",
+                  "label": "Code unavailable: Choose a graph symbol to open Page or Code."
+                }
+              },
+              "e": {
+                "accesskit_id": "14003500921150262599",
+                "bounds": {
+                  "x": 323.0,
+                  "y": 12.0,
+                  "width": 24.0,
+                  "height": 24.0
+                },
+                "element_id": "Name(\"jump-back\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:470:17",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Back"
+                }
+              },
+              "f": {
+                "accesskit_id": "5620227138846059464",
+                "bounds": {
+                  "x": 1087.0,
+                  "y": 17.0,
+                  "width": 14.0,
+                  "height": 14.0
+                },
+                "element_id": "Name(\"here\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:676:40",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Ask anything, or find a package"
+                }
+              },
+              "g": {
+                "accesskit_id": "17862042663140770612",
+                "bounds": {
+                  "x": 1367.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-find-packages\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Add package"
+                }
+              },
+              "h": {
+                "accesskit_id": "3463699809529227690",
+                "bounds": {
+                  "x": 1399.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-inbox\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Inbox"
+                }
+              },
+              "i": {
+                "accesskit_id": "13410769277501201540",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 58.0,
+                  "width": 263.0,
+                  "height": 46.0
+                },
+                "element_id": "Name(\"shelf-title\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:1138:5",
+                "aria": {
+                  "role": "Heading",
+                  "label": "Library, 0 projects \u00b7 packages unavailable",
+                  "level": 1
+                }
+              },
+              "j": {
+                "accesskit_id": "15102311854658685159",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 50.0,
+                  "width": 263.0,
+                  "height": 54.0
+                },
+                "children": [
+                  "i"
+                ],
+                "element_id": "Name(\"shelf-package\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:149:13",
+                "aria": {
+                  "role": "Group",
+                  "label": "Package context"
+                }
+              },
+              "k": {
+                "accesskit_id": "11719900601024829496",
+                "bounds": {
+                  "x": 5.0,
+                  "y": 104.0,
+                  "width": 52.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-contents\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Contents",
+                  "selected": true
+                }
+              },
+              "l": {
+                "accesskit_id": "2984465339549608451",
+                "bounds": {
+                  "x": 76.0,
+                  "y": 104.0,
+                  "width": 49.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-versions\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Versions",
+                  "selected": false
+                }
+              },
+              "m": {
+                "accesskit_id": "14294587242523979149",
+                "bounds": {
+                  "x": 143.0,
+                  "y": 104.0,
+                  "width": 50.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-rests-on\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Rests on",
+                  "selected": false
+                }
+              },
+              "n": {
+                "accesskit_id": "6727312835027982544",
+                "bounds": {
+                  "x": 212.0,
+                  "y": 104.0,
+                  "width": 47.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-used-by\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Used by",
+                  "selected": false
+                }
+              },
+              "o": {
+                "accesskit_id": "881039323815436514",
+                "bounds": {
+                  "x": 5.0,
+                  "y": 104.0,
+                  "width": 254.0,
+                  "height": 27.0
+                },
+                "children": [
+                  "k",
+                  "l",
+                  "m",
+                  "n"
+                ],
+                "element_id": "Name(\"shelf-lenses\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:575:23",
+                "aria": {
+                  "role": "TabList",
+                  "label": "Library views"
+                }
+              },
+              "p": {
+                "accesskit_id": "16439747460289396869",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 104.0,
+                  "width": 263.0,
+                  "height": 62.0
+                },
+                "children": [
+                  "o"
+                ],
+                "element_id": "Name(\"shelf-controls\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:149:13",
+                "aria": {
+                  "role": "Group",
+                  "label": "Library view controls"
+                }
+              },
+              "q": {
+                "accesskit_id": "9352074208393550554",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 166.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"shelf-heading-0\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:747:55",
+                "aria": {
+                  "role": "Heading",
+                  "label": "Find, 1",
+                  "level": 2
+                }
+              },
+              "r": {
+                "accesskit_id": "10611637468660233109",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 196.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"shelf-find\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:809:27",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Find packages and declarations",
+                  "selected": false
+                }
+              },
+              "s": {
+                "accesskit_id": "3709076110197550765",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 226.0,
+                  "width": 263.0,
+                  "height": 82.0
+                },
+                "element_id": "Name(\"shelf-note-2\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:772:33",
+                "aria": {
+                  "role": "Label",
+                  "label": "The current reading failed. The index could not start. controlled identical owner failure An earlier reading is retained; it does not establish current relationships."
+                }
+              },
+              "t": {
+                "accesskit_id": "7933540442206585097",
+                "bounds": {
+                  "x": 8.0,
+                  "y": 853.0,
+                  "width": 248.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"shelf-trail-0\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:424:17",
+                "aria": {
+                  "role": "Link",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Library"
+                }
+              },
+              "u": {
+                "accesskit_id": "13147414475411334139",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 832.0,
+                  "width": 263.0,
+                  "height": 42.0
+                },
+                "children": [
+                  "t"
+                ],
+                "element_id": "Name(\"shelf-trail\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:149:13",
+                "aria": {
+                  "role": "Group",
+                  "label": "Reading trail"
+                }
+              },
+              "v": {
+                "accesskit_id": "16375311856519542227",
+                "bounds": {
+                  "x": 747.0,
+                  "y": 454.0,
+                  "width": 210.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"graph-terminal-message\")",
+                "source_location": "apps/desktop/src/shell/kit.rs:30:14",
+                "aria": {
+                  "role": "Status",
+                  "label": "Waiting for the local index connection."
+                }
+              },
+              "w": {
+                "accesskit_id": "9595700620455720648",
+                "bounds": {
+                  "x": 1154.0,
+                  "y": 850.0,
+                  "width": 270.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"graph-projection-status\")",
+                "source_location": "apps/desktop/src/shell/kit.rs:30:14",
+                "aria": {
+                  "role": "Status",
+                  "label": "Waiting for the local index connection."
+                }
+              },
+              "x": {
+                "accesskit_id": "11674478005657706087",
+                "bounds": {
+                  "x": 13.0,
+                  "y": 879.0,
+                  "width": 1330.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"status-message\")",
+                "source_location": "apps/desktop/src/shell/status.rs:351:27",
+                "aria": {
+                  "role": "Status",
+                  "label": "The index could not start. controlled identical owner failure"
+                }
+              },
+              "y": {
+                "accesskit_id": "3699182266881088998",
+                "bounds": {
+                  "x": 1356.0,
+                  "y": 875.0,
+                  "width": 71.0,
+                  "height": 24.0
+                },
+                "element_id": "Name(\"status-retry\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "label": "Try again",
+                  "disabled": true
+                }
+              },
+              "z": {
+                "accesskit_id": "12939293368810251633",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 0.0,
+                  "width": 1440.0,
+                  "height": 900.0
+                },
+                "children": [
+                  "a",
+                  "b",
+                  "c",
+                  "d",
+                  "e",
+                  "f",
+                  "g",
+                  "h",
+                  "j",
+                  "p",
+                  "q",
+                  "r",
+                  "s",
+                  "u",
+                  "v",
+                  "w",
+                  "x",
+                  "y"
+                ],
+                "element_id": "Name(\"shell\")",
+                "source_location": "apps/desktop/src/shell/root.rs:2661:24",
+                "aria": {
+                  "role": "Application",
+                  "on_action": [
+                    "Focus"
+                  ],
+                  "label": "Nudox"
+                }
+              },
+              "aa": {
+                "accesskit_id": "0",
+                "children": [
+                  "z"
+                ],
+                "aria": {
+                  "role": "Window",
+                  "label": "Nudox controlled native owner"
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "phase": "certified_fixture_ready",
+        "png": {
+          "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/gui-window-09/native/window/certified_fixture_ready_attempt_1.png",
+          "sha256": "fe725db3b02a468ffae4e8cfd64277d2ca46d89b075a25593dfc3110df0f2b13"
+        },
+        "source": {
+          "commit": "d4d8bd73e7cc2d188f5f6e8a28ab41488b51f752",
+          "tree": "f512f73e4e84564d330285c29815f60af9b91101",
+          "status": "",
+          "lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd"
+        },
+        "binary": {
+          "path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role/debug/deps/backend_desktop-12121bb8b76207ba",
+          "sha256": "045ee199b9a4d73bc728c4d0f08bc5d75b703e55f50ed92a941d7060ac1a04d3",
+          "bytes": 783198448,
+          "manifest_path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/apps/desktop/Cargo.toml",
+          "features": [],
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        },
+        "committed_evidence": {
+          "schema": "nudox-native-owner-window-fixture.v1",
+          "source_claim": "d4d8bd73e7cc2d188f5f6e8a28ab41488b51f752",
+          "controlled_owner": true,
+          "platform": "Linux native GPUI",
+          "pixel_source": "external window capture",
+          "command_seq": 4,
+          "frame": 22,
+          "titlebar_renders": 22,
+          "route": "World",
+          "root": "VersionedRoot { authority: ProducerAuthority { root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, producer_epoch: 4, cursor: Cursor { recipe: ObjectKey:3f24a9f586a9d2bdf6fa453a2f71977471c3689a3bf0f1fd457c0f5a87165ff4, version: ObjectVersion:c0ee20d6106d6a7de24eb43c2a900b5f7b7efcc99cea17aaa9d7533a898ded1f, branch: ObjectKey:4650a5d2d38c507c621bb7adec963afac7bd740bbc85007b1cd609a67fb2482f, log: ObjectKey:12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760, schema: 3, root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, sequence: 0, query_offset: 0 } }, observation: 0 }",
+          "back": "RouteHistory { head: Some(Node { route: Orbit(Home), reading: ReadingVisit { id: VisitId(1), presentation: Library(ReadingControls { shelf: ShelfReading { lens: Contents, narrow: None, via: None, folds: {}, offset: ReadingOffset { x: 0, y: 0 }, anchor: Some(ShelfRowAnchor { kind: Heading, key: ReadingText(\"Find\"), occurrence: 0, fraction: 0 }) }, lens: Reference, offset: ReadingOffset { x: 0, y: 0 }, focus: None, source_line_draft: SourceLineDraft(\"\") }) }, previous: None, length: 1 }) }",
+          "owner_state": "Ready { key: VersionedRoot { authority: ProducerAuthority { root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, producer_epoch: 4, cursor: Cursor { recipe: ObjectKey:3f24a9f586a9d2bdf6fa453a2f71977471c3689a3bf0f1fd457c0f5a87165ff4, version: ObjectVersion:c0ee20d6106d6a7de24eb43c2a900b5f7b7efcc99cea17aaa9d7533a898ded1f, branch: ObjectKey:4650a5d2d38c507c621bb7adec963afac7bd740bbc85007b1cd609a67fb2482f, log: ObjectKey:12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760, schema: 3, root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, sequence: 0, query_offset: 0 } }, observation: 0 }, mode: Attached }",
+          "owner_serving": true,
+          "retry_current": false,
+          "store_events": [
+            "Resource(Orbit)",
+            "Snapshot(Settings)",
+            "Resource(Orbit)",
+            "Resource(Health)",
+            "Resource(Orbit)",
+            "Snapshot(Owner)",
+            "Resource(Orbit)",
+            "Snapshot(Settings)",
+            "Resource(Orbit)",
+            "Resource(Orbit)",
+            "Snapshot(GraphFocus)",
+            "Snapshot(Owner)",
+            "Snapshot(Owner)",
+            "Resource(Orbit)",
+            "Snapshot(Settings)",
+            "Resource(Orbit)",
+            "Snapshot(Owner)",
+            "Snapshot(Settings)",
+            "Resource(Orbit)",
+            "Snapshot(Owner)",
+            "Snapshot(GraphFocus)",
+            "Resource(Orbit)"
+          ],
+          "native_tree": {
+            "root": "z",
+            "accesskit_focus": "z",
+            "gpui_focus": null,
+            "active_descendant_focus": null,
+            "frame": {
+              "rendered_at": "2026-10-11T12:44:02.728-04:00",
+              "frame_number": 22,
+              "window_title": "Nudox controlled native owner",
+              "node_count": 26,
+              "tab_stop_count": 5,
+              "viewport_size": {
+                "width": 1440.0,
+                "height": 900.0
+              },
+              "scale_factor": 1.0
+            },
+            "nodes": {
+              "a": {
+                "accesskit_id": "9021967968643190926",
+                "bounds": {
+                  "x": 13.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-shelf\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Toggle the shelf"
+                }
+              },
+              "b": {
+                "accesskit_id": "12276507839632830038",
+                "bounds": {
+                  "x": 50.0,
+                  "y": 10.0,
+                  "width": 73.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"view-graph\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:894:28",
+                "aria": {
+                  "role": "Label",
+                  "label": "Graph view selected"
+                }
+              },
+              "c": {
+                "accesskit_id": "1861968823920260491",
+                "bounds": {
+                  "x": 125.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"view-page\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:894:28",
+                "aria": {
+                  "role": "Label",
+                  "label": "Page unavailable: Choose a graph symbol to open Page or Code."
+                }
+              },
+              "d": {
+                "accesskit_id": "13592214726801071364",
+                "bounds": {
+                  "x": 155.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"view-code\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:894:28",
+                "aria": {
+                  "role": "Label",
+                  "label": "Code unavailable: Choose a graph symbol to open Page or Code."
+                }
+              },
+              "e": {
+                "accesskit_id": "14003500921150262599",
+                "bounds": {
+                  "x": 323.0,
+                  "y": 12.0,
+                  "width": 24.0,
+                  "height": 24.0
+                },
+                "element_id": "Name(\"jump-back\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:470:17",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Back"
+                }
+              },
+              "f": {
+                "accesskit_id": "5620227138846059464",
+                "bounds": {
+                  "x": 1087.0,
+                  "y": 17.0,
+                  "width": 14.0,
+                  "height": 14.0
+                },
+                "element_id": "Name(\"here\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:676:40",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Ask anything, or find a package"
+                }
+              },
+              "g": {
+                "accesskit_id": "17862042663140770612",
+                "bounds": {
+                  "x": 1367.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-find-packages\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Add package"
+                }
+              },
+              "h": {
+                "accesskit_id": "3463699809529227690",
+                "bounds": {
+                  "x": 1399.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-inbox\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Inbox"
+                }
+              },
+              "i": {
+                "accesskit_id": "13410769277501201540",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 58.0,
+                  "width": 263.0,
+                  "height": 46.0
+                },
+                "element_id": "Name(\"shelf-title\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:1138:5",
+                "aria": {
+                  "role": "Heading",
+                  "label": "Library, 0 projects \u00b7 1 package",
+                  "level": 1
+                }
+              },
+              "j": {
+                "accesskit_id": "15102311854658685159",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 50.0,
+                  "width": 263.0,
+                  "height": 54.0
+                },
+                "children": [
+                  "i"
+                ],
+                "element_id": "Name(\"shelf-package\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:149:13",
+                "aria": {
+                  "role": "Group",
+                  "label": "Package context"
+                }
+              },
+              "k": {
+                "accesskit_id": "11719900601024829496",
+                "bounds": {
+                  "x": 5.0,
+                  "y": 104.0,
+                  "width": 62.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-contents\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Contents",
+                  "selected": true
+                }
+              },
+              "l": {
+                "accesskit_id": "2984465339549608451",
+                "bounds": {
+                  "x": 82.0,
+                  "y": 104.0,
+                  "width": 49.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-versions\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Versions",
+                  "selected": false
+                }
+              },
+              "m": {
+                "accesskit_id": "14294587242523979149",
+                "bounds": {
+                  "x": 147.0,
+                  "y": 104.0,
+                  "width": 50.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-rests-on\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Rests on",
+                  "selected": false
+                }
+              },
+              "n": {
+                "accesskit_id": "6727312835027982544",
+                "bounds": {
+                  "x": 212.0,
+                  "y": 104.0,
+                  "width": 47.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-used-by\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Used by",
+                  "selected": false
+                }
+              },
+              "o": {
+                "accesskit_id": "881039323815436514",
+                "bounds": {
+                  "x": 5.0,
+                  "y": 104.0,
+                  "width": 254.0,
+                  "height": 27.0
+                },
+                "children": [
+                  "k",
+                  "l",
+                  "m",
+                  "n"
+                ],
+                "element_id": "Name(\"shelf-lenses\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:575:23",
+                "aria": {
+                  "role": "TabList",
+                  "label": "Library views"
+                }
+              },
+              "p": {
+                "accesskit_id": "16439747460289396869",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 104.0,
+                  "width": 263.0,
+                  "height": 62.0
+                },
+                "children": [
+                  "o"
+                ],
+                "element_id": "Name(\"shelf-controls\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:149:13",
+                "aria": {
+                  "role": "Group",
+                  "label": "Library view controls"
+                }
+              },
+              "q": {
+                "accesskit_id": "9352074208393550554",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 166.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"shelf-heading-0\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:747:55",
+                "aria": {
+                  "role": "Heading",
+                  "label": "Find, 1",
+                  "level": 2
+                }
+              },
+              "r": {
+                "accesskit_id": "10611637468660233109",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 196.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"shelf-find\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:809:27",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Find packages and declarations",
+                  "selected": false
+                }
+              },
+              "s": {
+                "accesskit_id": "14015444097281984641",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 226.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"shelf-heading-2\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:747:55",
+                "aria": {
+                  "role": "Heading",
+                  "label": "In the library, 1",
+                  "level": 2
+                }
+              },
+              "t": {
+                "accesskit_id": "16161377495772724581",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 256.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"package-/fixture/present\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:809:27",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "present",
+                  "selected": false
+                }
+              },
+              "u": {
+                "accesskit_id": "7933540442206585097",
+                "bounds": {
+                  "x": 8.0,
+                  "y": 853.0,
+                  "width": 248.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"shelf-trail-0\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:424:17",
+                "aria": {
+                  "role": "Link",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Library"
+                }
+              },
+              "v": {
+                "accesskit_id": "13147414475411334139",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 832.0,
+                  "width": 263.0,
+                  "height": 42.0
+                },
+                "children": [
+                  "u"
+                ],
+                "element_id": "Name(\"shelf-trail\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:149:13",
+                "aria": {
+                  "role": "Group",
+                  "label": "Reading trail"
+                }
+              },
+              "w": {
+                "accesskit_id": "16375311856519542227",
+                "bounds": {
+                  "x": 747.0,
+                  "y": 454.0,
+                  "width": 210.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"graph-terminal-message\")",
+                "source_location": "apps/desktop/src/shell/kit.rs:30:14",
+                "aria": {
+                  "role": "Status",
+                  "label": "Waiting for the local index connection."
+                }
+              },
+              "x": {
+                "accesskit_id": "9595700620455720648",
+                "bounds": {
+                  "x": 1154.0,
+                  "y": 850.0,
+                  "width": 270.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"graph-projection-status\")",
+                "source_location": "apps/desktop/src/shell/kit.rs:30:14",
+                "aria": {
+                  "role": "Status",
+                  "label": "Waiting for the local index connection."
+                }
+              },
+              "y": {
+                "accesskit_id": "12939293368810251633",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 0.0,
+                  "width": 1440.0,
+                  "height": 900.0
+                },
+                "children": [
+                  "a",
+                  "b",
+                  "c",
+                  "d",
+                  "e",
+                  "f",
+                  "g",
+                  "h",
+                  "j",
+                  "p",
+                  "q",
+                  "r",
+                  "s",
+                  "t",
+                  "v",
+                  "w",
+                  "x"
+                ],
+                "element_id": "Name(\"shell\")",
+                "source_location": "apps/desktop/src/shell/root.rs:2661:24",
+                "aria": {
+                  "role": "Application",
+                  "on_action": [
+                    "Focus"
+                  ],
+                  "label": "Nudox"
+                }
+              },
+              "z": {
+                "accesskit_id": "0",
+                "children": [
+                  "y"
+                ],
+                "aria": {
+                  "role": "Window",
+                  "label": "Nudox controlled native owner"
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "phase": "owner_authority_advance",
+        "png": {
+          "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/gui-window-09/native/window/owner_authority_advance_attempt_1.png",
+          "sha256": "fe725db3b02a468ffae4e8cfd64277d2ca46d89b075a25593dfc3110df0f2b13"
+        },
+        "source": {
+          "commit": "d4d8bd73e7cc2d188f5f6e8a28ab41488b51f752",
+          "tree": "f512f73e4e84564d330285c29815f60af9b91101",
+          "status": "",
+          "lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd"
+        },
+        "binary": {
+          "path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role/debug/deps/backend_desktop-12121bb8b76207ba",
+          "sha256": "045ee199b9a4d73bc728c4d0f08bc5d75b703e55f50ed92a941d7060ac1a04d3",
+          "bytes": 783198448,
+          "manifest_path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/apps/desktop/Cargo.toml",
+          "features": [],
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        },
+        "committed_evidence": {
+          "schema": "nudox-native-owner-window-fixture.v1",
+          "source_claim": "d4d8bd73e7cc2d188f5f6e8a28ab41488b51f752",
+          "controlled_owner": true,
+          "platform": "Linux native GPUI",
+          "pixel_source": "external window capture",
+          "command_seq": 5,
+          "frame": 24,
+          "titlebar_renders": 24,
+          "route": "World",
+          "root": "VersionedRoot { authority: ProducerAuthority { root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, producer_epoch: 4, cursor: Cursor { recipe: ObjectKey:3f24a9f586a9d2bdf6fa453a2f71977471c3689a3bf0f1fd457c0f5a87165ff4, version: ObjectVersion:c0ee20d6106d6a7de24eb43c2a900b5f7b7efcc99cea17aaa9d7533a898ded1f, branch: ObjectKey:4650a5d2d38c507c621bb7adec963afac7bd740bbc85007b1cd609a67fb2482f, log: ObjectKey:12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760, schema: 3, root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, sequence: 1, query_offset: 0 } }, observation: 0 }",
+          "back": "RouteHistory { head: Some(Node { route: Orbit(Home), reading: ReadingVisit { id: VisitId(1), presentation: Library(ReadingControls { shelf: ShelfReading { lens: Contents, narrow: None, via: None, folds: {}, offset: ReadingOffset { x: 0, y: 0 }, anchor: Some(ShelfRowAnchor { kind: Heading, key: ReadingText(\"Find\"), occurrence: 0, fraction: 0 }) }, lens: Reference, offset: ReadingOffset { x: 0, y: 0 }, focus: None, source_line_draft: SourceLineDraft(\"\") }) }, previous: None, length: 1 }) }",
+          "owner_state": "Ready { key: VersionedRoot { authority: ProducerAuthority { root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, producer_epoch: 4, cursor: Cursor { recipe: ObjectKey:3f24a9f586a9d2bdf6fa453a2f71977471c3689a3bf0f1fd457c0f5a87165ff4, version: ObjectVersion:c0ee20d6106d6a7de24eb43c2a900b5f7b7efcc99cea17aaa9d7533a898ded1f, branch: ObjectKey:4650a5d2d38c507c621bb7adec963afac7bd740bbc85007b1cd609a67fb2482f, log: ObjectKey:12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760, schema: 3, root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, sequence: 1, query_offset: 0 } }, observation: 0 }, mode: Attached }",
+          "owner_serving": true,
+          "retry_current": false,
+          "store_events": [
+            "Resource(Orbit)",
+            "Snapshot(Settings)",
+            "Resource(Orbit)",
+            "Resource(Health)",
+            "Resource(Orbit)",
+            "Snapshot(Owner)",
+            "Resource(Orbit)",
+            "Snapshot(Settings)",
+            "Resource(Orbit)",
+            "Resource(Orbit)",
+            "Snapshot(GraphFocus)",
+            "Snapshot(Owner)",
+            "Snapshot(Owner)",
+            "Resource(Orbit)",
+            "Snapshot(Settings)",
+            "Resource(Orbit)",
+            "Snapshot(Owner)",
+            "Snapshot(Settings)",
+            "Resource(Orbit)",
+            "Snapshot(Owner)",
+            "Snapshot(GraphFocus)",
+            "Resource(Orbit)",
+            "Snapshot(Root)",
+            "Resource(Orbit)",
+            "Resource(Orbit)"
+          ],
+          "native_tree": {
+            "root": "z",
+            "accesskit_focus": "z",
+            "gpui_focus": null,
+            "active_descendant_focus": null,
+            "frame": {
+              "rendered_at": "2026-10-11T12:44:03.865-04:00",
+              "frame_number": 24,
+              "window_title": "Nudox controlled native owner",
+              "node_count": 26,
+              "tab_stop_count": 5,
+              "viewport_size": {
+                "width": 1440.0,
+                "height": 900.0
+              },
+              "scale_factor": 1.0
+            },
+            "nodes": {
+              "a": {
+                "accesskit_id": "9021967968643190926",
+                "bounds": {
+                  "x": 13.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-shelf\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Toggle the shelf"
+                }
+              },
+              "b": {
+                "accesskit_id": "12276507839632830038",
+                "bounds": {
+                  "x": 50.0,
+                  "y": 10.0,
+                  "width": 73.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"view-graph\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:894:28",
+                "aria": {
+                  "role": "Label",
+                  "label": "Graph view selected"
+                }
+              },
+              "c": {
+                "accesskit_id": "1861968823920260491",
+                "bounds": {
+                  "x": 125.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"view-page\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:894:28",
+                "aria": {
+                  "role": "Label",
+                  "label": "Page unavailable: Choose a graph symbol to open Page or Code."
+                }
+              },
+              "d": {
+                "accesskit_id": "13592214726801071364",
+                "bounds": {
+                  "x": 155.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"view-code\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:894:28",
+                "aria": {
+                  "role": "Label",
+                  "label": "Code unavailable: Choose a graph symbol to open Page or Code."
+                }
+              },
+              "e": {
+                "accesskit_id": "14003500921150262599",
+                "bounds": {
+                  "x": 323.0,
+                  "y": 12.0,
+                  "width": 24.0,
+                  "height": 24.0
+                },
+                "element_id": "Name(\"jump-back\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:470:17",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Back"
+                }
+              },
+              "f": {
+                "accesskit_id": "5620227138846059464",
+                "bounds": {
+                  "x": 1087.0,
+                  "y": 17.0,
+                  "width": 14.0,
+                  "height": 14.0
+                },
+                "element_id": "Name(\"here\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:676:40",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Ask anything, or find a package"
+                }
+              },
+              "g": {
+                "accesskit_id": "17862042663140770612",
+                "bounds": {
+                  "x": 1367.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-find-packages\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Add package"
+                }
+              },
+              "h": {
+                "accesskit_id": "3463699809529227690",
+                "bounds": {
+                  "x": 1399.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-inbox\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Inbox"
+                }
+              },
+              "i": {
+                "accesskit_id": "13410769277501201540",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 58.0,
+                  "width": 263.0,
+                  "height": 46.0
+                },
+                "element_id": "Name(\"shelf-title\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:1138:5",
+                "aria": {
+                  "role": "Heading",
+                  "label": "Library, 0 projects \u00b7 1 package",
+                  "level": 1
+                }
+              },
+              "j": {
+                "accesskit_id": "15102311854658685159",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 50.0,
+                  "width": 263.0,
+                  "height": 54.0
+                },
+                "children": [
+                  "i"
+                ],
+                "element_id": "Name(\"shelf-package\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:149:13",
+                "aria": {
+                  "role": "Group",
+                  "label": "Package context"
+                }
+              },
+              "k": {
+                "accesskit_id": "11719900601024829496",
+                "bounds": {
+                  "x": 5.0,
+                  "y": 104.0,
+                  "width": 62.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-contents\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Contents",
+                  "selected": true
+                }
+              },
+              "l": {
+                "accesskit_id": "2984465339549608451",
+                "bounds": {
+                  "x": 82.0,
+                  "y": 104.0,
+                  "width": 49.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-versions\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Versions",
+                  "selected": false
+                }
+              },
+              "m": {
+                "accesskit_id": "14294587242523979149",
+                "bounds": {
+                  "x": 147.0,
+                  "y": 104.0,
+                  "width": 50.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-rests-on\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Rests on",
+                  "selected": false
+                }
+              },
+              "n": {
+                "accesskit_id": "6727312835027982544",
+                "bounds": {
+                  "x": 212.0,
+                  "y": 104.0,
+                  "width": 47.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-used-by\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Used by",
+                  "selected": false
+                }
+              },
+              "o": {
+                "accesskit_id": "881039323815436514",
+                "bounds": {
+                  "x": 5.0,
+                  "y": 104.0,
+                  "width": 254.0,
+                  "height": 27.0
+                },
+                "children": [
+                  "k",
+                  "l",
+                  "m",
+                  "n"
+                ],
+                "element_id": "Name(\"shelf-lenses\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:575:23",
+                "aria": {
+                  "role": "TabList",
+                  "label": "Library views"
+                }
+              },
+              "p": {
+                "accesskit_id": "16439747460289396869",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 104.0,
+                  "width": 263.0,
+                  "height": 62.0
+                },
+                "children": [
+                  "o"
+                ],
+                "element_id": "Name(\"shelf-controls\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:149:13",
+                "aria": {
+                  "role": "Group",
+                  "label": "Library view controls"
+                }
+              },
+              "q": {
+                "accesskit_id": "9352074208393550554",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 166.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"shelf-heading-0\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:747:55",
+                "aria": {
+                  "role": "Heading",
+                  "label": "Find, 1",
+                  "level": 2
+                }
+              },
+              "r": {
+                "accesskit_id": "10611637468660233109",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 196.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"shelf-find\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:809:27",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Find packages and declarations",
+                  "selected": false
+                }
+              },
+              "s": {
+                "accesskit_id": "14015444097281984641",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 226.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"shelf-heading-2\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:747:55",
+                "aria": {
+                  "role": "Heading",
+                  "label": "In the library, 1",
+                  "level": 2
+                }
+              },
+              "t": {
+                "accesskit_id": "16161377495772724581",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 256.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"package-/fixture/present\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:809:27",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "present",
+                  "selected": false
+                }
+              },
+              "u": {
+                "accesskit_id": "7933540442206585097",
+                "bounds": {
+                  "x": 8.0,
+                  "y": 853.0,
+                  "width": 248.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"shelf-trail-0\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:424:17",
+                "aria": {
+                  "role": "Link",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Library"
+                }
+              },
+              "v": {
+                "accesskit_id": "13147414475411334139",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 832.0,
+                  "width": 263.0,
+                  "height": 42.0
+                },
+                "children": [
+                  "u"
+                ],
+                "element_id": "Name(\"shelf-trail\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:149:13",
+                "aria": {
+                  "role": "Group",
+                  "label": "Reading trail"
+                }
+              },
+              "w": {
+                "accesskit_id": "16375311856519542227",
+                "bounds": {
+                  "x": 747.0,
+                  "y": 454.0,
+                  "width": 210.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"graph-terminal-message\")",
+                "source_location": "apps/desktop/src/shell/kit.rs:30:14",
+                "aria": {
+                  "role": "Status",
+                  "label": "Waiting for the local index connection."
+                }
+              },
+              "x": {
+                "accesskit_id": "9595700620455720648",
+                "bounds": {
+                  "x": 1154.0,
+                  "y": 850.0,
+                  "width": 270.0,
+                  "height": 16.0
+                },
+                "element_id": "Name(\"graph-projection-status\")",
+                "source_location": "apps/desktop/src/shell/kit.rs:30:14",
+                "aria": {
+                  "role": "Status",
+                  "label": "Waiting for the local index connection."
+                }
+              },
+              "y": {
+                "accesskit_id": "12939293368810251633",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 0.0,
+                  "width": 1440.0,
+                  "height": 900.0
+                },
+                "children": [
+                  "a",
+                  "b",
+                  "c",
+                  "d",
+                  "e",
+                  "f",
+                  "g",
+                  "h",
+                  "j",
+                  "p",
+                  "q",
+                  "r",
+                  "s",
+                  "t",
+                  "v",
+                  "w",
+                  "x"
+                ],
+                "element_id": "Name(\"shell\")",
+                "source_location": "apps/desktop/src/shell/root.rs:2661:24",
+                "aria": {
+                  "role": "Application",
+                  "on_action": [
+                    "Focus"
+                  ],
+                  "label": "Nudox"
+                }
+              },
+              "z": {
+                "accesskit_id": "0",
+                "children": [
+                  "y"
+                ],
+                "aria": {
+                  "role": "Window",
+                  "label": "Nudox controlled native owner"
+                }
+              }
+            }
+          }
+        }
+      },
+      {
+        "phase": "native_back_returned_home",
+        "png": {
+          "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/gui-window-09/native/window/native_back_returned_home_attempt_1.png",
+          "sha256": "90068a5b7cb364df5c9d93a5728f137b9c9e45f2a42d7e3b5a1d5f403d04a43e"
+        },
+        "source": {
+          "commit": "d4d8bd73e7cc2d188f5f6e8a28ab41488b51f752",
+          "tree": "f512f73e4e84564d330285c29815f60af9b91101",
+          "status": "",
+          "lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd"
+        },
+        "binary": {
+          "path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role/debug/deps/backend_desktop-12121bb8b76207ba",
+          "sha256": "045ee199b9a4d73bc728c4d0f08bc5d75b703e55f50ed92a941d7060ac1a04d3",
+          "bytes": 783198448,
+          "manifest_path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/apps/desktop/Cargo.toml",
+          "features": [],
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        },
+        "committed_evidence": {
+          "schema": "nudox-native-owner-window-fixture.v1",
+          "source_claim": "d4d8bd73e7cc2d188f5f6e8a28ab41488b51f752",
+          "controlled_owner": true,
+          "platform": "Linux native GPUI",
+          "pixel_source": "external window capture",
+          "command_seq": 5,
+          "frame": 28,
+          "titlebar_renders": 28,
+          "route": "Orbit(Home)",
+          "root": "VersionedRoot { authority: ProducerAuthority { root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, producer_epoch: 4, cursor: Cursor { recipe: ObjectKey:3f24a9f586a9d2bdf6fa453a2f71977471c3689a3bf0f1fd457c0f5a87165ff4, version: ObjectVersion:c0ee20d6106d6a7de24eb43c2a900b5f7b7efcc99cea17aaa9d7533a898ded1f, branch: ObjectKey:4650a5d2d38c507c621bb7adec963afac7bd740bbc85007b1cd609a67fb2482f, log: ObjectKey:12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760, schema: 3, root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, sequence: 1, query_offset: 0 } }, observation: 0 }",
+          "back": "RouteHistory { head: None }",
+          "owner_state": "Ready { key: VersionedRoot { authority: ProducerAuthority { root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, producer_epoch: 4, cursor: Cursor { recipe: ObjectKey:3f24a9f586a9d2bdf6fa453a2f71977471c3689a3bf0f1fd457c0f5a87165ff4, version: ObjectVersion:c0ee20d6106d6a7de24eb43c2a900b5f7b7efcc99cea17aaa9d7533a898ded1f, branch: ObjectKey:4650a5d2d38c507c621bb7adec963afac7bd740bbc85007b1cd609a67fb2482f, log: ObjectKey:12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760, schema: 3, root: StateRoot:589712f9f9b1c79c450d9fa012a2769166be0fb2e15ceceffc03191a1771abc3, sequence: 1, query_offset: 0 } }, observation: 0 }, mode: Attached }",
+          "owner_serving": true,
+          "retry_current": false,
+          "store_events": [
+            "Resource(Orbit)",
+            "Snapshot(Settings)",
+            "Resource(Orbit)",
+            "Resource(Health)",
+            "Resource(Orbit)",
+            "Snapshot(Owner)",
+            "Resource(Orbit)",
+            "Snapshot(Settings)",
+            "Resource(Orbit)",
+            "Resource(Orbit)",
+            "Snapshot(GraphFocus)",
+            "Snapshot(Owner)",
+            "Snapshot(Owner)",
+            "Resource(Orbit)",
+            "Snapshot(Settings)",
+            "Resource(Orbit)",
+            "Snapshot(Owner)",
+            "Snapshot(Settings)",
+            "Resource(Orbit)",
+            "Snapshot(Owner)",
+            "Snapshot(GraphFocus)",
+            "Resource(Orbit)",
+            "Snapshot(Root)",
+            "Resource(Orbit)",
+            "Resource(Orbit)",
+            "Snapshot(Route)",
+            "Snapshot(Reading)",
+            "Resource(Health)",
+            "Resource(Health)"
+          ],
+          "native_tree": {
+            "root": "u",
+            "accesskit_focus": "t",
+            "gpui_focus": "t",
+            "active_descendant_focus": null,
+            "frame": {
+              "rendered_at": "2026-10-11T12:44:05.033-04:00",
+              "frame_number": 28,
+              "window_title": "Nudox controlled native owner",
+              "node_count": 21,
+              "tab_stop_count": 8,
+              "viewport_size": {
+                "width": 1440.0,
+                "height": 900.0
+              },
+              "scale_factor": 1.0
+            },
+            "nodes": {
+              "a": {
+                "accesskit_id": "9021967968643190926",
+                "bounds": {
+                  "x": 13.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-shelf\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Toggle the shelf"
+                }
+              },
+              "b": {
+                "accesskit_id": "10606290950192185508",
+                "bounds": {
+                  "x": 474.0,
+                  "y": 8.0,
+                  "width": 460.0,
+                  "height": 32.0
+                },
+                "element_id": "Name(\"ask\")",
+                "source_location": "apps/desktop/src/shell/titlebar.rs:829:17",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Ask anything, or find a package"
+                }
+              },
+              "c": {
+                "accesskit_id": "17862042663140770612",
+                "bounds": {
+                  "x": 1367.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-find-packages\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Add package"
+                }
+              },
+              "d": {
+                "accesskit_id": "3463699809529227690",
+                "bounds": {
+                  "x": 1399.0,
+                  "y": 10.0,
+                  "width": 28.0,
+                  "height": 28.0
+                },
+                "element_id": "Name(\"tb-inbox\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Inbox"
+                }
+              },
+              "e": {
+                "accesskit_id": "13410769277501201540",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 58.0,
+                  "width": 263.0,
+                  "height": 46.0
+                },
+                "element_id": "Name(\"shelf-title\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:1138:5",
+                "aria": {
+                  "role": "Heading",
+                  "label": "Library, 0 projects \u00b7 1 package",
+                  "level": 1
+                }
+              },
+              "f": {
+                "accesskit_id": "15102311854658685159",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 50.0,
+                  "width": 263.0,
+                  "height": 54.0
+                },
+                "children": [
+                  "e"
+                ],
+                "element_id": "Name(\"shelf-package\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:149:13",
+                "aria": {
+                  "role": "Group",
+                  "label": "Package context"
+                }
+              },
+              "g": {
+                "accesskit_id": "11719900601024829496",
+                "bounds": {
+                  "x": 5.0,
+                  "y": 104.0,
+                  "width": 62.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-contents\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Contents",
+                  "selected": true
+                }
+              },
+              "h": {
+                "accesskit_id": "2984465339549608451",
+                "bounds": {
+                  "x": 82.0,
+                  "y": 104.0,
+                  "width": 49.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-versions\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Versions",
+                  "selected": false
+                }
+              },
+              "i": {
+                "accesskit_id": "14294587242523979149",
+                "bounds": {
+                  "x": 147.0,
+                  "y": 104.0,
+                  "width": 50.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-rests-on\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Rests on",
+                  "selected": false
+                }
+              },
+              "j": {
+                "accesskit_id": "6727312835027982544",
+                "bounds": {
+                  "x": 212.0,
+                  "y": 104.0,
+                  "width": 47.0,
+                  "height": 26.0
+                },
+                "element_id": "Name(\"shelf-lens-used-by\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:595:27",
+                "aria": {
+                  "role": "Tab",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Used by",
+                  "selected": false
+                }
+              },
+              "k": {
+                "accesskit_id": "881039323815436514",
+                "bounds": {
+                  "x": 5.0,
+                  "y": 104.0,
+                  "width": 254.0,
+                  "height": 27.0
+                },
+                "children": [
+                  "g",
+                  "h",
+                  "i",
+                  "j"
+                ],
+                "element_id": "Name(\"shelf-lenses\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:575:23",
+                "aria": {
+                  "role": "TabList",
+                  "label": "Library views"
+                }
+              },
+              "l": {
+                "accesskit_id": "16439747460289396869",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 104.0,
+                  "width": 263.0,
+                  "height": 62.0
+                },
+                "children": [
+                  "k"
+                ],
+                "element_id": "Name(\"shelf-controls\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:149:13",
+                "aria": {
+                  "role": "Group",
+                  "label": "Library view controls"
+                }
+              },
+              "m": {
+                "accesskit_id": "9352074208393550554",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 166.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"shelf-heading-0\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:747:55",
+                "aria": {
+                  "role": "Heading",
+                  "label": "Find, 1",
+                  "level": 2
+                }
+              },
+              "n": {
+                "accesskit_id": "10611637468660233109",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 196.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"shelf-find\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:809:27",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Find packages and declarations",
+                  "selected": false
+                }
+              },
+              "o": {
+                "accesskit_id": "14015444097281984641",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 226.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"shelf-heading-2\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:747:55",
+                "aria": {
+                  "role": "Heading",
+                  "label": "In the library, 1",
+                  "level": 2
+                }
+              },
+              "p": {
+                "accesskit_id": "16161377495772724581",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 256.0,
+                  "width": 263.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"package-/fixture/present\")",
+                "source_location": "apps/desktop/src/shell/side/view.rs:809:27",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "present",
+                  "selected": false
+                }
+              },
+              "q": {
+                "accesskit_id": "16973407782784384224",
+                "bounds": {
+                  "x": 679.0,
+                  "y": 95.0,
+                  "width": 121.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"add-folder\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Add a folder"
+                }
+              },
+              "r": {
+                "accesskit_id": "8265160435444768776",
+                "bounds": {
+                  "x": 898.0,
+                  "y": 95.0,
+                  "width": 126.0,
+                  "height": 30.0
+                },
+                "element_id": "Name(\"find-packages\")",
+                "source_location": "apps/facet/src/paint/cut.rs:488:14",
+                "aria": {
+                  "role": "Button",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "Add package"
+                }
+              },
+              "s": {
+                "accesskit_id": "1652949383303818083",
+                "bounds": {
+                  "x": 808.0,
+                  "y": 205.0,
+                  "width": 87.0,
+                  "height": 27.0
+                },
+                "element_id": "Name(\"orbit-package-/fixture/present\")",
+                "source_location": "apps/desktop/src/shell/focus.rs:135:19",
+                "aria": {
+                  "role": "Link",
+                  "on_action": [
+                    "Click",
+                    "Focus"
+                  ],
+                  "label": "present (/fixture/present)"
+                }
+              },
+              "t": {
+                "accesskit_id": "12939293368810251633",
+                "bounds": {
+                  "x": 0.0,
+                  "y": 0.0,
+                  "width": 1440.0,
+                  "height": 900.0
+                },
+                "children": [
+                  "a",
+                  "b",
+                  "c",
+                  "d",
+                  "f",
+                  "l",
+                  "m",
+                  "n",
+                  "o",
+                  "p",
+                  "q",
+                  "r",
+                  "s"
+                ],
+                "element_id": "Name(\"shell\")",
+                "source_location": "apps/desktop/src/shell/root.rs:2661:24",
+                "aria": {
+                  "role": "Application",
+                  "on_action": [
+                    "Focus"
+                  ],
+                  "label": "Nudox"
+                }
+              },
+              "u": {
+                "accesskit_id": "0",
+                "children": [
+                  "t"
+                ],
+                "aria": {
+                  "role": "Window",
+                  "label": "Nudox controlled native owner"
+                }
+              }
+            }
+          }
+        }
+      }
+    ],
+    "scope": "Actual GPUI Linux X11 pointer/accessibility/frame captures. Controlled owner and reduced motion; not live ingestion, production desktop, animations or macOS."
+  },
+  "open_gates": [
+    "Fresh current-trio install and real HTTPie/Excalidraw publication",
+    "All 17 MCP tools on real apps and exact copied-operand identity",
+    "Cold restart, cancellation, offline and paged continuation runtime controls",
+    "New queue, MCP retry and shortcut-paint regression execution",
+    "TypeScript failures 38/39/41 successor execution",
+    "Full local-service suite and Clippy",
+    "Configured production semantic search",
+    "Matched production GUI, live ingest, resize and animations",
+    "Current macOS package and broad Go/Rust application acceptance"
+  ],
+  "readiness": "Open; successful builds and isolated GUI captures do not prove production readiness."
+}

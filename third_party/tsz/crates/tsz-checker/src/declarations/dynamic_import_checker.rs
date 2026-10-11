@@ -530,7 +530,9 @@ impl<'a> CheckerState<'a> {
         let module_name = &literal.text;
 
         let request_kind = crate::context::ResolutionRequestKind::DynamicImport;
-        let request_resolution_mode = self.ctx.resolution_mode_for_request(request_kind, None);
+        let request_resolution_mode =
+            self.ctx
+                .resolution_mode_for_project_request(module_name, request_kind, None);
 
         // TS2846/TS5097: a dynamic `import()` specifier obeys the same
         // TypeScript-extension rule as `import ... from`, `export ... from`,
@@ -554,6 +556,7 @@ impl<'a> CheckerState<'a> {
             arg_length,
             /* is_type_only */ false,
             request_resolution_mode,
+            request_kind,
         ) {
             return;
         }
@@ -586,36 +589,39 @@ impl<'a> CheckerState<'a> {
             return; // Module exists
         }
 
-        // Check if the module exists in the module_exports map (cross-file module resolution)
-        if self
-            .ctx
-            .module_exports_contains_module(self.ctx.binder, module_name)
-        {
-            return; // Module exists
-        }
+        // Exact project negatives cannot borrow standalone binder/ambient success.
+        if self.ctx.project_module_resolution_outcomes.is_none() {
+            // Check if the module exists in the module_exports map (cross-file module resolution)
+            if self
+                .ctx
+                .module_exports_contains_module(self.ctx.binder, module_name)
+            {
+                return; // Module exists
+            }
 
-        // Check if this is a shorthand ambient module (declare module "foo")
-        if self
-            .ctx
-            .binder
-            .shorthand_ambient_modules
-            .contains(module_name)
-        {
-            return; // Ambient module exists
-        }
+            // Check if this is a shorthand ambient module (declare module "foo")
+            if self
+                .ctx
+                .binder
+                .shorthand_ambient_modules
+                .contains(module_name)
+            {
+                return; // Ambient module exists
+            }
 
-        // Check declared modules (regular ambient modules with body)
-        if self
-            .ctx
-            .declared_modules_contains(self.ctx.binder, module_name)
-        {
-            return; // Declared module exists
-        }
+            // Check declared modules (regular ambient modules with body)
+            if self
+                .ctx
+                .declared_modules_contains(self.ctx.binder, module_name)
+            {
+                return; // Declared module exists
+            }
 
-        if self.ctx.resolved_module_request_paths.is_none()
-            && self.ctx.resolve_import_target(module_name).is_some()
-        {
-            return; // Module exists via driver/module resolution candidate matching
+            if self.ctx.resolved_module_request_paths.is_none()
+                && self.ctx.resolve_import_target(module_name).is_some()
+            {
+                return; // Module exists via driver/module resolution candidate matching
+            }
         }
 
         // Check for specific resolution error from driver (TS2834, TS2835, TS2792, etc.)

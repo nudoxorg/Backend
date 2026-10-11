@@ -45,10 +45,11 @@ mod project_configuration;
 pub use project_configuration::PythonProjectConfigurationFault;
 pub use project::{
     DefinitionTarget, NativePythonProducerIdentity, NativePythonProjectAuthority,
-    PythonProjectBytesSource, PythonProjectControl, PythonProjectCoverageGap,
-    PythonProjectCoverageGapKind, PythonProjectDiagnostic, PythonProjectFingerprint,
-    PythonProjectReport, PythonProjectSource, PythonProjectSourceStatus, PythonProjectWitness,
-    PythonTypeProjectionFault, is_ignored_python_source_directory, is_ignored_python_source_path,
+    PythonCompiledImportUnavailable, PythonProjectBytesSource, PythonProjectControl,
+    PythonProjectCoverageGap, PythonProjectCoverageGapKind, PythonProjectDiagnostic,
+    PythonProjectFingerprint, PythonProjectReport, PythonProjectSource, PythonProjectSourceStatus,
+    PythonProjectWitness, PythonTypeProjectionFault, is_ignored_python_source_directory,
+    is_ignored_python_source_path,
 };
 
 use std::path::{Path, PathBuf};
@@ -82,7 +83,7 @@ const REVEAL_HEADER: &[u8] = b"from typing import reveal_type\n";
 /// The `reveal_type(` call spelling prefix.
 const REVEAL_CALL: &[u8] = b"reveal_type(";
 /// Versioned identity of package-scoped Pyrefly env and working-directory policy.
-pub const PYTHON_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str = "pyrefly-native-project-state-30b5ca52.classdef-declaration+constructor-callee.exact-source-coordinate.no-import-call-fallback.named-package-mirror-only.captured-baseline.root-pinned-inputs.v11";
+pub const PYTHON_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str = "pyrefly-native-project-state-30b5ca52.classdef-declaration+constructor-callee.exact-source-coordinate.no-import-call-fallback.named-package-mirror-only.captured-baseline.root-pinned-inputs.namespace-membership-not-source.compiled-shadow-unavailable.binding-site-compiled-cause.parse-only-tainted-diagnostics.regular-file-finder.v15";
 
 /// Exact upstream revision of the compiled native Python State authority.
 pub const PYTHON_NATIVE_PROJECT_SOURCE_REVISION: &str = "30b5ca5250db9f2d9264d5e889662cf1224a75b7";

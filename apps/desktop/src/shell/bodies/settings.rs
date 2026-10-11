@@ -632,7 +632,7 @@ fn keys(ctx: &mut Ctx<'_>) -> Vec<Leaf> {
         let caps = crate::shell::keys::TABLE
             .iter()
             .filter(|other| other.command == key.command)
-            .map(|other| other.cap)
+            .map(crate::shell::keys::Key::cap)
             .collect::<Vec<_>>()
             .join("  ");
         let palette = ctx.palette;

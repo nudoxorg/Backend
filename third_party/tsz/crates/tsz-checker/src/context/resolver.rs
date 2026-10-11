@@ -38,6 +38,7 @@ use crate::query_boundaries::common::{IntrinsicKind, TypeDatabase, TypeResolver}
 use crate::query_boundaries::variance::Variance;
 use std::sync::Arc;
 use tsz_parser::parser::base::{NodeIndex, NodeList};
+use tsz_parser::parser::node::NodeAccess;
 use tsz_solver::def::{DefId, DefKind};
 use tsz_solver::{SymbolRef, TypeId, TypeParamInfo};
 
@@ -51,7 +52,569 @@ thread_local! {
         std::cell::RefCell::new(rustc_hash::FxHashSet::default());
 }
 
+/// Borrowed syntactic provenance for one retained module request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct BoundModuleRequest<'source> {
+    pub importer: usize,
+    pub specifier: &'source str,
+    pub mode: Option<ResolutionModeOverride>,
+    pub kind: ResolutionRequestKind,
+}
+
+/// Successful compiler admission for one exact retained request. Construction
+/// stays at the outcome boundary; consumers cannot substitute a generic target.
+#[derive(Clone, Copy)]
+pub(crate) struct SelectedModuleRequest<'source> {
+    request: BoundModuleRequest<'source>,
+    outcome: &'source crate::context::ResolvedModuleRequestOutcome,
+}
+
+impl<'source> SelectedModuleRequest<'source> {
+    pub(crate) fn request(self) -> BoundModuleRequest<'source> {
+        self.request
+    }
+    pub(crate) fn file_target(self) -> Option<usize> {
+        match self.outcome {
+            crate::context::ResolvedModuleRequestOutcome::File(target) => Some(*target),
+            _ => None,
+        }
+    }
+    pub(crate) fn external_identity(self) -> Option<&'source str> {
+        match self.outcome {
+            crate::context::ResolvedModuleRequestOutcome::External { identity } => Some(identity),
+            _ => None,
+        }
+    }
+}
+
 impl<'a> CheckerContext<'a> {
+    pub(crate) fn select_module_request<'source>(
+        &'source self,
+        request: BoundModuleRequest<'source>,
+    ) -> Option<SelectedModuleRequest<'source>> {
+        let outcome = self.project_module_outcome_for_request(
+            request.importer,
+            request.specifier,
+            request.mode,
+            request.kind,
+        )?;
+        match outcome {
+            crate::context::ResolvedModuleRequestOutcome::File(_)
+            | crate::context::ResolvedModuleRequestOutcome::External { .. } => {
+                Some(SelectedModuleRequest { request, outcome })
+            }
+            crate::context::ResolvedModuleRequestOutcome::Unresolved => None,
+        }
+    }
+
+    /// In Node module modes a plain .ts file's format requires package evidence.
+    /// Without that evidence an implicit syntax edge cannot select another
+    /// edge's explicit mode, even when it is the sole compiler-owned outcome.
+    fn bound_request_mode(
+        &self,
+        importer: usize,
+        specifier: &str,
+        kind: ResolutionRequestKind,
+        explicit: Option<ResolutionModeOverride>,
+    ) -> Option<Option<ResolutionModeOverride>> {
+        if explicit.is_some() {
+            return Some(explicit);
+        }
+        if self
+            .project_module_outcome_for_request(importer, specifier, None, kind)
+            .is_some()
+        {
+            return Some(None);
+        }
+        let file_name = self
+            .all_arenas
+            .as_ref()
+            .and_then(|arenas| arenas.get(importer))
+            .and_then(|arena| arena.source_files.first())
+            .map(|source| source.file_name.as_str())
+            .unwrap_or(self.file_name.as_str());
+        let admitted_format = self
+            .file_is_esm_map
+            .as_ref()
+            .and_then(|map| super::lookup_file_is_esm_in_map(map, file_name))
+            .or_else(|| {
+                (importer == self.current_file_idx)
+                    .then_some(self.file_is_esm)
+                    .flatten()
+            });
+        if self.project_module_resolution_outcomes.is_some()
+            && self.compiler_options.module.is_node_module()
+            && admitted_format.is_none()
+            && matches!(
+                kind,
+                ResolutionRequestKind::EsmImport | ResolutionRequestKind::EsmReExport
+            )
+        {
+            return None;
+        }
+        Some(self.resolution_mode_for_request_from_file(importer, kind, explicit))
+    }
+
+    /// Borrow the exact compiler-owned outcome, including authoritative
+    /// negatives. A missing request cannot borrow another kind or mode.
+    pub fn project_module_outcome_for_request(
+        &self,
+        source_file_idx: usize,
+        specifier: &str,
+        resolution_mode: Option<ResolutionModeOverride>,
+        request_kind: ResolutionRequestKind,
+    ) -> Option<&crate::context::ResolvedModuleRequestOutcome> {
+        let outcomes = self.project_module_resolution_outcomes.as_ref()?;
+        for candidate in module_specifier_candidates(specifier) {
+            if let Some(outcome) =
+                outcomes.get(&(source_file_idx, candidate, resolution_mode, request_kind))
+            {
+                return Some(outcome);
+            }
+        }
+        None
+    }
+
+    /// Exact project outcomes dominate the standalone specifier-only set.
+    /// Neither an unresolved nor an absent request is a successful resolution.
+    pub fn module_resolved_for_request(
+        &self,
+        specifier: &str,
+        resolution_mode: Option<ResolutionModeOverride>,
+        request_kind: ResolutionRequestKind,
+    ) -> bool {
+        if self.project_module_resolution_outcomes.is_some() {
+            return matches!(
+                self.project_module_outcome_for_request(
+                    self.current_file_idx,
+                    specifier,
+                    resolution_mode,
+                    request_kind,
+                ),
+                Some(
+                    crate::context::ResolvedModuleRequestOutcome::File(_)
+                        | crate::context::ResolvedModuleRequestOutcome::External { .. }
+                )
+            );
+        }
+        self.resolved_modules.as_ref().is_some_and(|resolved| {
+            module_specifier_candidates(specifier)
+                .iter()
+                .any(|candidate| resolved.contains(candidate))
+        })
+    }
+
+    fn bound_module_request_at(
+        &self,
+        importer: usize,
+        declaration: NodeIndex,
+    ) -> Option<BoundModuleRequest<'_>> {
+        use tsz_parser::parser::syntax_kind_ext;
+        let arena = self.all_arenas.as_ref()?.get(importer)?;
+        let node = arena.get(declaration)?;
+        let (specifier, attributes, kind) = if let Some(export) = arena.get_export_decl(node) {
+            (
+                export.module_specifier,
+                export.attributes,
+                ResolutionRequestKind::EsmReExport,
+            )
+        } else if let Some(import) = arena.get_import_decl(node) {
+            (
+                import.module_specifier,
+                import.attributes,
+                if node.kind == syntax_kind_ext::IMPORT_EQUALS_DECLARATION {
+                    ResolutionRequestKind::CjsRequire
+                } else {
+                    ResolutionRequestKind::EsmImport
+                },
+            )
+        } else {
+            return None;
+        };
+        let specifier = arena
+            .get(specifier)
+            .and_then(|node| arena.get_literal(node))?
+            .text
+            .as_str();
+        let mut explicit_mode = None;
+        if attributes.is_some() {
+            let attributes = arena
+                .get(attributes)
+                .and_then(|node| arena.get_import_attributes_data(node))?;
+            for &element in &attributes.elements.nodes {
+                let attribute = arena
+                    .get(element)
+                    .and_then(|node| arena.get_import_attribute_data(node))?;
+                let name = arena
+                    .get(attribute.name)
+                    .and_then(|node| arena.get_identifier(node))
+                    .map(|name| name.escaped_text.as_str())
+                    .or_else(|| arena.get_literal_text(attribute.name))?;
+                if name.trim_matches('"').trim_matches('\'') == "resolution-mode" {
+                    if explicit_mode.is_some() {
+                        return None;
+                    }
+                    explicit_mode = match arena
+                        .get_literal_text(attribute.value)?
+                        .trim_matches('"')
+                        .trim_matches('\'')
+                    {
+                        "import" => Some(ResolutionModeOverride::Import),
+                        "require" => Some(ResolutionModeOverride::Require),
+                        _ => return None,
+                    };
+                }
+            }
+        }
+        let mode = self.bound_request_mode(importer, specifier, kind, explicit_mode)?;
+        Some(BoundModuleRequest {
+            importer,
+            specifier,
+            mode,
+            kind,
+        })
+    }
+
+    /// Recover an import-type request from its real call, qualifier, or typeof annotation.
+    pub(crate) fn bound_import_type_request_at(
+        &self,
+        importer: usize,
+        annotation: NodeIndex,
+    ) -> Option<BoundModuleRequest<'_>> {
+        use tsz_parser::parser::syntax_kind_ext;
+        let arena = self.all_arenas.as_ref()?.get(importer)?;
+        let mut call_index = arena
+            .get(annotation)
+            .and_then(|node| arena.get_type_query(node))
+            .map_or(annotation, |query| query.expr_name);
+        for _ in 0..64 {
+            self.types.execution_checkpoint(1).ok()?;
+            let node = arena.get(call_index)?;
+            if let Some(parenthesized) = arena.get_parenthesized(node) {
+                call_index = parenthesized.expression;
+                continue;
+            }
+            if let Some(access) = arena.get_access_expr(node) {
+                call_index = access.expression;
+                continue;
+            }
+            if let Some(qualified) = arena.get_qualified_name(node) {
+                call_index = qualified.left;
+                continue;
+            }
+            let call = arena.get_call_expr(node)?;
+            if arena.get(call.expression)?.kind != tsz_scanner::SyntaxKind::ImportKeyword as u16 {
+                return None;
+            }
+            let args = &call.arguments.as_ref()?.nodes;
+            if args.is_empty() || args.len() > 2 {
+                return None;
+            }
+            let specifier = arena.get_literal_text(args[0])?;
+            let property = |object, expected: &str| -> Option<Option<NodeIndex>> {
+                if arena.get(object)?.kind != syntax_kind_ext::OBJECT_LITERAL_EXPRESSION {
+                    return None;
+                }
+                let mut selected = None;
+                let literal = arena
+                    .get(object)
+                    .and_then(|node| arena.get_literal_expr(node))?;
+                for &child in &literal.elements.nodes {
+                    let assignment = arena
+                        .get(child)
+                        .and_then(|node| arena.get_property_assignment(node))?;
+                    let name = arena
+                        .get(assignment.name)
+                        .and_then(|node| arena.get_identifier(node))
+                        .map(|identifier| identifier.escaped_text.as_str())
+                        .or_else(|| arena.get_literal_text(assignment.name))?;
+                    if name == expected {
+                        if selected.is_some() {
+                            return None;
+                        }
+                        selected = Some(assignment.initializer);
+                    }
+                }
+                Some(selected)
+            };
+            let mut explicit = None;
+            if let Some(&options) = args.get(1) {
+                if let Some(with) = property(options, "with")? {
+                    if let Some(value) = property(with, "resolution-mode")? {
+                        explicit = match arena.get_literal_text(value)? {
+                            "import" => Some(ResolutionModeOverride::Import),
+                            "require" => Some(ResolutionModeOverride::Require),
+                            _ => return None,
+                        };
+                    }
+                }
+            }
+            let kind = ResolutionRequestKind::EsmImport;
+            let mode = self.bound_request_mode(importer, specifier, kind, explicit)?;
+            return Some(BoundModuleRequest {
+                importer,
+                specifier,
+                mode,
+                kind,
+            });
+        }
+        None
+    }
+
+    /// Recover an alias request from its real file/range and bound declaration.
+    /// No current-request state or all-kind target fallback participates.
+    pub(crate) fn bound_module_request_for_alias(
+        &self,
+        symbol: tsz_binder::SymbolId,
+    ) -> Option<BoundModuleRequest<'_>> {
+        let importer = self.resolve_symbol_declaring_file_index(symbol)?;
+        let binder = self.get_binder_for_file(importer)?;
+        let alias = binder.get_symbol(symbol)?;
+        let arena = self.all_arenas.as_ref()?.get(importer)?;
+        if alias.declarations.is_empty()
+            || alias.declarations.len() != alias.stable_declarations.len()
+        {
+            return None;
+        }
+        let mut selected = None;
+        for (&declaration, stable) in alias.declarations.iter().zip(&alias.stable_declarations) {
+            let node = arena.get(declaration)?;
+            if stable.file_idx as usize != importer
+                || (node.pos, node.end) != (stable.pos, stable.end)
+                || binder.node_symbols.get(&declaration.0) != Some(&symbol)
+            {
+                return None;
+            }
+            let mut ancestor = declaration;
+            let mut request = None;
+            for _ in 0..arena.len() {
+                self.types.execution_checkpoint(1).ok()?;
+                if let Some(found) = self.bound_module_request_at(importer, ancestor) {
+                    request = Some(found);
+                    break;
+                }
+                ancestor = arena.parent_of(ancestor)?;
+            }
+            let request = request?;
+            if alias.import_module() != Some(request.specifier) {
+                return None;
+            }
+            if selected.is_some_and(|previous| previous != request) {
+                return None;
+            }
+            selected = Some(request);
+        }
+        selected
+    }
+
+    /// Exact source-key membership, using the existing immutable index. Every
+    /// fallback iteration is charged even when no source matches the key.
+    pub(crate) fn is_captured_program_file_key(&self, key: &str) -> Option<bool> {
+        self.types.execution_checkpoint(1 + key.len() as u64).ok()?;
+        let arenas = self.all_arenas.as_ref()?;
+        if let Some(index) = self.global_file_name_index.as_ref() {
+            return Some(
+                index
+                    .get(key)
+                    .and_then(|&file| arenas.get(file))
+                    .and_then(|arena| arena.source_files.first())
+                    .is_some_and(|source| source.file_name == key),
+            );
+        }
+        for arena in arenas.iter() {
+            self.types.execution_checkpoint(1).ok()?;
+            if arena
+                .source_files
+                .first()
+                .is_some_and(|source| source.file_name == key)
+            {
+                return Some(true);
+            }
+        }
+        Some(false)
+    }
+
+    /// Legacy export tables share string keys for files and ambient modules.
+    /// A collision cannot prove which lexical owner supplied a retained row.
+    fn reexport_owner_is_ambiguous(&self, importer: usize, owner: &str) -> Option<bool> {
+        if !self.is_captured_program_file_key(owner)? {
+            return Some(false);
+        }
+        self.get_binder_for_file(importer)?;
+        for binder in self.all_binders.as_ref()?.iter() {
+            self.types.execution_checkpoint(1).ok()?;
+            if binder.declared_modules.contains(owner) {
+                return Some(true);
+            }
+        }
+        Some(false)
+    }
+
+    /// The exact lexical owner of an export edge. A file export cannot borrow
+    /// a same-spelled export inside an ambient module, or vice versa.
+    fn reexport_owner_matches(
+        &self,
+        importer: usize,
+        declaration: NodeIndex,
+        owner: &str,
+    ) -> Option<bool> {
+        let arena = self.all_arenas.as_ref()?.get(importer)?;
+        let mut ancestor = arena.parent_of(declaration)?;
+        for _ in 0..arena.len() {
+            self.types.execution_checkpoint(1).ok()?;
+            let node = arena.get(ancestor)?;
+            if let Some(module) = arena.get_module(node) {
+                return Some(arena.get_literal_text(module.name) == Some(owner));
+            }
+            if node.kind == tsz_parser::parser::syntax_kind_ext::SOURCE_FILE {
+                return Some(arena.source_files.first()?.file_name == owner);
+            }
+            ancestor = arena.parent_of(ancestor)?;
+        }
+        None
+    }
+
+    /// Match the owning named alias, including the original imported name.
+    /// Its stable declaration supplies the exact ExportDecl request attributes.
+    pub(crate) fn bound_named_reexport_request(
+        &self,
+        importer: usize,
+        owner: &str,
+        specifier: &str,
+        exported_name: &str,
+        original_name: &str,
+    ) -> Option<BoundModuleRequest<'_>> {
+        if self.reexport_owner_is_ambiguous(importer, owner)? {
+            return None;
+        }
+        let arena = self.all_arenas.as_ref()?.get(importer)?;
+        let binder = self.get_binder_for_file(importer)?;
+        let table = self
+            .program_module_exports
+            .as_ref()
+            .and_then(|exports| exports.get(owner))
+            .or_else(|| binder.module_exports.get(owner))?;
+        let alias = table.get(exported_name)?;
+        let symbol = binder.get_symbol(alias)?;
+        if symbol.import_module() != Some(specifier) || symbol.import_name() != Some(original_name)
+        {
+            return None;
+        }
+        let request = self.bound_module_request_for_alias(alias)?;
+        if request.importer != importer
+            || request.kind != ResolutionRequestKind::EsmReExport
+            || request.specifier != specifier
+        {
+            return None;
+        }
+        for &declaration in &symbol.declarations {
+            let mut export = declaration;
+            let mut matched_owner = false;
+            for _ in 0..arena.len() {
+                self.types.execution_checkpoint(1).ok()?;
+                if arena
+                    .get(export)
+                    .and_then(|node| arena.get_export_decl(node))
+                    .is_some()
+                {
+                    matched_owner = self.reexport_owner_matches(importer, export, owner)?;
+                    break;
+                }
+                export = arena.parent_of(export)?;
+            }
+            if !matched_owner {
+                return None;
+            }
+        }
+        Some(request)
+    }
+
+    /// Admit the exact bound edge; table ordering is never source provenance.
+    pub(crate) fn bound_wildcard_reexport_request(
+        &self,
+        importer: usize,
+        owner: &str,
+        edge: &tsz_binder::RetainedWildcardReexport,
+    ) -> Option<BoundModuleRequest<'_>> {
+        self.types.execution_checkpoint(1).ok()?;
+        if self.reexport_owner_is_ambiguous(importer, owner)? {
+            return None;
+        }
+        let retained = edge.declaration?;
+        if retained.location.file_idx as usize != importer
+            || retained.owner_location.file_idx != retained.location.file_idx
+            || !retained.location.is_known()
+            || !retained.owner_location.is_known()
+        {
+            return None;
+        }
+        let arena = self.all_arenas.as_ref()?.get(importer)?;
+        let node = arena.get(retained.declaration)?;
+        let owner_node = arena.get(retained.owner)?;
+        if (node.pos, node.end) != (retained.location.pos, retained.location.end)
+            || (owner_node.pos, owner_node.end)
+                != (retained.owner_location.pos, retained.owner_location.end)
+            || node.pos < owner_node.pos
+            || node.end > owner_node.end
+        {
+            return None;
+        }
+        let matches_owner = if let Some(module) = arena.get_module(owner_node) {
+            arena.get_literal_text(module.name) == Some(owner)
+        } else {
+            owner_node.kind == tsz_parser::parser::syntax_kind_ext::SOURCE_FILE
+                && arena.source_files.first()?.file_name == owner
+        };
+        if !matches_owner {
+            return None;
+        }
+        let export = arena.get_export_decl(node)?;
+        if export.export_clause.is_some()
+            || export.module_specifier.is_none()
+            || export.is_type_only != edge.target.1
+        {
+            return None;
+        }
+        let request = self.bound_module_request_at(importer, retained.declaration)?;
+        (request.specifier == edge.target.0).then_some(request)
+    }
+
+    pub(crate) fn resolve_named_reexport_target_from_file(
+        &self,
+        importer: usize,
+        owner: &str,
+        specifier: &str,
+        exported_name: &str,
+        original_name: &str,
+    ) -> Option<usize> {
+        if self.project_module_resolution_outcomes.is_some() {
+            let request = self.bound_named_reexport_request(
+                importer,
+                owner,
+                specifier,
+                exported_name,
+                original_name,
+            )?;
+            self.select_module_request(request)?.file_target()
+        } else {
+            self.resolve_import_target_from_file(importer, specifier)
+        }
+    }
+
+    pub(crate) fn resolve_wildcard_reexport_target_from_file(
+        &self,
+        importer: usize,
+        owner: &str,
+        edge: &tsz_binder::RetainedWildcardReexport,
+    ) -> Option<usize> {
+        if self.project_module_resolution_outcomes.is_some() {
+            let request = self.bound_wildcard_reexport_request(importer, owner, edge)?;
+            self.select_module_request(request)?.file_target()
+        } else {
+            self.resolve_import_target_from_file(importer, &edge.target.0)
+        }
+    }
+
     /// Whether `def_id` was classified as a force-eligible simple lib interface
     /// (the value-position / `ensure_refs_resolved` predicate
     /// `CheckerState::force_eligible_lib_def`). Reads the per-`DefId` cache only;
@@ -256,21 +819,16 @@ impl<'a> CheckerContext<'a> {
         resolution_mode_override: Option<ResolutionModeOverride>,
         request_kind: ResolutionRequestKind,
     ) -> bool {
-        if let Some(outcomes) = self.project_module_resolution_outcomes.as_ref() {
-            for candidate in module_specifier_candidates(specifier) {
-                if let Some(outcome) = outcomes.get(&(
+        if self.project_module_resolution_outcomes.is_some() {
+            return matches!(
+                self.project_module_outcome_for_request(
                     self.current_file_idx,
-                    candidate,
+                    specifier,
                     resolution_mode_override,
                     request_kind,
-                )) {
-                    return matches!(
-                        outcome,
-                        crate::context::ResolvedModuleRequestOutcome::External { .. }
-                    );
-                }
-            }
-            return false;
+                ),
+                Some(crate::context::ResolvedModuleRequestOutcome::External { .. })
+            );
         }
         let Some(resolved) = self.resolved_modules.as_ref() else {
             return false;
@@ -468,20 +1026,18 @@ impl<'a> CheckerContext<'a> {
         resolution_mode_override: Option<ResolutionModeOverride>,
         request_kind: ResolutionRequestKind,
     ) -> Option<usize> {
-        if let Some(outcomes) = self.project_module_resolution_outcomes.as_ref() {
-            for candidate in module_specifier_candidates(specifier) {
-                if let Some(crate::context::ResolvedModuleRequestOutcome::File(target_idx)) =
-                    outcomes.get(&(
-                        source_file_idx,
-                        candidate,
-                        resolution_mode_override,
-                        request_kind,
-                    ))
-                {
-                    return Some(*target_idx);
+        if self.project_module_resolution_outcomes.is_some() {
+            return match self.project_module_outcome_for_request(
+                source_file_idx,
+                specifier,
+                resolution_mode_override,
+                request_kind,
+            ) {
+                Some(crate::context::ResolvedModuleRequestOutcome::File(target_idx)) => {
+                    Some(*target_idx)
                 }
-            }
-            return None;
+                _ => None,
+            };
         }
         if let Some(paths) = self.resolved_module_request_paths.as_ref() {
             for candidate in module_specifier_candidates(specifier) {
@@ -562,9 +1118,42 @@ impl<'a> CheckerContext<'a> {
         if saw_request { target } else { None }
     }
 
+    /// A compiler-owned `None` outcome means mode is inapplicable to this exact
+    /// request kind, including dynamic/require requests if the producer supplies
+    /// that key. Preserve it instead of adopting a standalone CLI-inferred mode.
+    /// An explicit syntax override always remains exact. A missing `None` key
+    /// keeps the checker calculation; it never borrows a different kind/mode.
+    pub fn resolution_mode_for_project_request(
+        &self,
+        specifier: &str,
+        request_kind: ResolutionRequestKind,
+        resolution_mode_override: Option<ResolutionModeOverride>,
+    ) -> Option<ResolutionModeOverride> {
+        self.bound_request_mode(
+            self.current_file_idx,
+            specifier,
+            request_kind,
+            resolution_mode_override,
+        )
+        .flatten()
+    }
+
     /// Compute the checker-side resolution-mode key used by the CLI driver for a request.
     pub fn resolution_mode_for_request(
         &self,
+        request_kind: ResolutionRequestKind,
+        resolution_mode_override: Option<ResolutionModeOverride>,
+    ) -> Option<ResolutionModeOverride> {
+        self.resolution_mode_for_request_from_file(
+            self.current_file_idx,
+            request_kind,
+            resolution_mode_override,
+        )
+    }
+
+    fn resolution_mode_for_request_from_file(
+        &self,
+        source_file_idx: usize,
         request_kind: ResolutionRequestKind,
         resolution_mode_override: Option<ResolutionModeOverride>,
     ) -> Option<ResolutionModeOverride> {
@@ -581,7 +1170,7 @@ impl<'a> CheckerContext<'a> {
         let file_name = self
             .all_arenas
             .as_ref()
-            .and_then(|arenas| arenas.get(self.current_file_idx))
+            .and_then(|arenas| arenas.get(source_file_idx))
             .and_then(|arena| arena.source_files.first())
             .map(|source_file| source_file.file_name.as_str())
             .unwrap_or(self.file_name.as_str());
@@ -616,11 +1205,13 @@ impl<'a> CheckerContext<'a> {
                 ResolutionModeOverride::Require
             });
         }
-        Some(if self.file_is_esm == Some(true) {
-            ResolutionModeOverride::Import
-        } else {
-            ResolutionModeOverride::Require
-        })
+        Some(
+            if source_file_idx == self.current_file_idx && self.file_is_esm == Some(true) {
+                ResolutionModeOverride::Import
+            } else {
+                ResolutionModeOverride::Require
+            },
+        )
     }
 
     /// Check if a lib interface has a heritage-merged version in the cache.
@@ -2054,5 +2645,205 @@ impl<'a> TypeResolver for CheckerContext<'a> {
             "ctx_get_enum_namespace_type"
         );
         found
+    }
+}
+
+#[cfg(test)]
+mod retained_wildcard_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tsz_binder::BinderState;
+    use tsz_common::{ExecutionCheckpoint, ProjectExecutionStop};
+
+    struct Cancel(AtomicBool);
+    impl ExecutionCheckpoint for Cancel {
+        fn checkpoint(&self, _: u64) -> Result<(), ProjectExecutionStop> {
+            if self.0.load(Ordering::Relaxed) {
+                Err(ProjectExecutionStop::Cancelled)
+            } else {
+                Ok(())
+            }
+        }
+    }
+    use tsz_parser::parser::ParserState;
+    use tsz_solver::construction::{QueryCache, TypeInterner};
+
+    #[test]
+    fn exact_edge_admission_preserves_mode_and_refuses_source_lending() {
+        let text = "declare module 'pkg' { export type * from 'dep' with { 'resolution-mode': 'import' }; export type * from 'dep' with { 'resolution-mode': 'require' }; } declare module 'other' { export * from 'dep'; }";
+        let mut parser = ParserState::new("a.d.ts".into(), text.into());
+        let root = parser.parse_source_file();
+        assert!(parser.get_diagnostics().is_empty());
+        let arena = Arc::new(parser.into_arena());
+        let mut binder = BinderState::new();
+        binder.set_file_idx(0);
+        binder.bind_source_file(&arena, root);
+        let binder = Arc::new(binder);
+        let interner = TypeInterner::new();
+        let cancel = Cancel(AtomicBool::new(false));
+        let queries = QueryCache::new(&interner).with_execution_checkpoint(&cancel);
+        let mut ctx = CheckerContext::new(
+            &arena,
+            &binder,
+            &queries,
+            "a.d.ts".into(),
+            Default::default(),
+        );
+        ctx.all_arenas = Some(Arc::new(vec![arena.clone()]));
+        ctx.all_binders = Some(Arc::new(vec![binder.clone()]));
+        let edges = binder
+            .wildcard_reexports
+            .get("pkg")
+            .unwrap()
+            .edges()
+            .collect::<Vec<_>>();
+        let first = ctx
+            .bound_wildcard_reexport_request(0, "pkg", edges[0])
+            .unwrap();
+        let second = ctx
+            .bound_wildcard_reexport_request(0, "pkg", edges[1])
+            .unwrap();
+        assert_eq!(first.kind, ResolutionRequestKind::EsmReExport);
+        assert_eq!(first.mode, Some(ResolutionModeOverride::Import));
+        assert_eq!(second.mode, Some(ResolutionModeOverride::Require));
+        assert_eq!(first.specifier, "dep");
+        assert!(
+            ctx.bound_wildcard_reexport_request(0, "other", edges[0])
+                .is_none()
+        );
+        assert!(
+            ctx.bound_wildcard_reexport_request(1, "pkg", edges[0])
+                .is_none()
+        );
+        for changed in [0, 1, 2, 3, 4] {
+            let mut forged = edges[0].clone();
+            match changed {
+                0 => forged.declaration = None,
+                1 => forged.declaration.as_mut().unwrap().location.pos += 1,
+                2 => forged.declaration.as_mut().unwrap().owner_location.end -= 1,
+                3 => forged.target.0 = "absent".into(),
+                4 => forged.target.1 = false,
+                _ => unreachable!(),
+            }
+            assert!(
+                ctx.bound_wildcard_reexport_request(0, "pkg", &forged)
+                    .is_none(),
+                "mutation {changed}"
+            );
+        }
+        // Reordering rows cannot alter the source-owned mode attached to each.
+        for edge in edges.into_iter().rev() {
+            let request = ctx.bound_wildcard_reexport_request(0, "pkg", edge).unwrap();
+            assert_eq!(
+                request.mode,
+                Some(
+                    if edge.declaration
+                        == binder
+                            .wildcard_reexports
+                            .get("pkg")
+                            .unwrap()
+                            .edges()
+                            .next()
+                            .unwrap()
+                            .declaration
+                    {
+                        ResolutionModeOverride::Import
+                    } else {
+                        ResolutionModeOverride::Require
+                    }
+                )
+            );
+        }
+        cancel.0.store(true, Ordering::Relaxed);
+        let edge = binder
+            .wildcard_reexports
+            .get("pkg")
+            .unwrap()
+            .edges()
+            .next()
+            .unwrap();
+        assert!(
+            ctx.bound_wildcard_reexport_request(0, "pkg", edge)
+                .is_none()
+        );
+        cancel.0.store(false, Ordering::Relaxed);
+        assert_eq!(
+            ctx.types.execution_checkpoint(0),
+            Err(ProjectExecutionStop::Cancelled)
+        );
+        assert!(
+            ctx.bound_wildcard_reexport_request(0, "pkg", edge)
+                .is_none()
+        );
+    }
+}
+
+#[cfg(test)]
+mod retained_source_owner_tests {
+    use super::*;
+    use tsz_binder::BinderState;
+    use tsz_parser::parser::ParserState;
+    use tsz_solver::construction::{QueryCache, TypeInterner};
+
+    #[test]
+    fn source_root_and_identifier_namespace_keep_exact_file_owner() {
+        let name = "source.ts";
+        let text = "export type * from 'dep' with { 'resolution-mode': 'import' }; declare module 'pkg' { namespace Hidden { export type * from 'dep' with { 'resolution-mode': 'require' }; } export type * from 'dep' with { 'resolution-mode': 'import' }; }";
+        let mut parser = ParserState::new(name.into(), text.into());
+        let root = parser.parse_source_file();
+        assert!(parser.get_diagnostics().is_empty());
+        let arena = Arc::new(parser.into_arena());
+        let mut binder = BinderState::new();
+        binder.set_file_idx(0);
+        binder.bind_source_file(&arena, root);
+        let binder = Arc::new(binder);
+        let interner = TypeInterner::new();
+        let queries = QueryCache::new(&interner);
+        let mut ctx =
+            CheckerContext::new(&arena, &binder, &queries, name.into(), Default::default());
+        ctx.all_arenas = Some(Arc::new(vec![arena.clone()]));
+        ctx.all_binders = Some(Arc::new(vec![binder.clone()]));
+        let file_rows = binder.wildcard_reexports.get(name).unwrap();
+        assert_eq!(file_rows.len(), 2);
+        let mut modes = Vec::new();
+        for edge in file_rows.edges() {
+            let retained = edge.declaration.unwrap();
+            assert_eq!(retained.owner, root);
+            assert!(
+                arena
+                    .get_source_file(arena.get(retained.owner).unwrap())
+                    .is_some()
+            );
+            let request = ctx.bound_wildcard_reexport_request(0, name, edge).unwrap();
+            modes.push(request.mode);
+            assert_eq!(request.importer, 0);
+            assert!(ctx.bound_wildcard_reexport_request(1, name, edge).is_none());
+            assert!(
+                ctx.bound_wildcard_reexport_request(0, "other.ts", edge)
+                    .is_none()
+            );
+            assert!(
+                ctx.bound_wildcard_reexport_request(0, "pkg", edge)
+                    .is_none()
+            );
+        }
+        assert_eq!(
+            modes,
+            vec![
+                Some(ResolutionModeOverride::Import),
+                Some(ResolutionModeOverride::Require)
+            ]
+        );
+        let ambient = binder.wildcard_reexports.get("pkg").unwrap();
+        assert_eq!(ambient.len(), 1);
+        let edge = ambient.edges().next().unwrap();
+        assert_ne!(edge.declaration.unwrap().owner, root);
+        assert!(ctx.bound_wildcard_reexport_request(0, name, edge).is_none());
+        assert_eq!(
+            ctx.bound_wildcard_reexport_request(0, "pkg", edge)
+                .unwrap()
+                .mode,
+            Some(ResolutionModeOverride::Import)
+        );
     }
 }

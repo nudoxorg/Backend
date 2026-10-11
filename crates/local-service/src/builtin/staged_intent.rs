@@ -709,7 +709,7 @@ pub(super) fn visit_staged(
     receipt: &PinnedStoredClosureReceipt,
     expected: StageBasis,
     budget: ArtifactBudget,
-    mut visit: impl FnMut(EvidenceKind, &[u8]) -> Result<(), StoreError>,
+    visit: impl FnMut(EvidenceKind, &[u8]) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
     visit_staged_scope(
         store,

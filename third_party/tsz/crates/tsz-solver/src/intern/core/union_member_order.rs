@@ -16,8 +16,10 @@
 use super::interner::{
     AppComponentKey, CachedUnionMember, TYPE_LIST_INLINE, TypeInterner, TypeListBuffer,
 };
+use crate::intern::{UnionExecutionWork, tick_union_execution_work};
 use crate::types::{LiteralValue, TypeData, TypeId};
 use smallvec::SmallVec;
+use tsz_common::ProjectExecutionStop;
 
 impl TypeInterner {
     /// Sort key for union member ordering of built-in/intrinsic types.
@@ -46,15 +48,15 @@ impl TypeInterner {
         }
     }
 
-    /// Pre-compute cached data for a type to avoid repeated lookups during sort.
-    ///
-    /// This gathers `builtin_sort_key`, `lookup` (TypeData), object/callable symbol,
-    /// and `alloc_order` in a single pass per union member.
-    fn cache_union_member(&self, id: TypeId) -> CachedUnionMember {
+    fn cache_union_member_with_work(
+        &self,
+        id: TypeId,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<CachedUnionMember, ProjectExecutionStop> {
+        tick_union_execution_work(work, 1)?;
         let builtin_key = Self::builtin_sort_key(id);
         if builtin_key.is_some() {
-            // Builtins don't need further lookups
-            return CachedUnionMember {
+            return Ok(CachedUnionMember {
                 id,
                 builtin_key,
                 data: None,
@@ -65,12 +67,11 @@ impl TypeInterner {
                 app_components: None,
                 elem_components: None,
                 alloc_order: None,
-            };
+            });
         }
 
         let data = self.lookup(id);
         let alloc_order = self.lookup_alloc_order(id);
-
         let mut obj_symbol = None;
         let mut obj_anon_shape = None;
         let mut callable_symbol = None;
@@ -78,49 +79,54 @@ impl TypeInterner {
         let mut app_components = None;
         let mut elem_components = None;
 
-        if let Some(ref d) = data {
-            match d {
+        if let Some(ref data) = data {
+            match data {
                 TypeData::Literal(LiteralValue::String(atom)) => {
                     string_literal_text = Some(self.string_interner.resolve(*atom));
                 }
-                TypeData::Object(s) | TypeData::ObjectWithIndex(s) => {
-                    let shape = self.object_shape(*s);
-                    if let Some(sym) = shape.symbol {
-                        obj_symbol = Some(sym.0);
+                TypeData::Object(shape_id) | TypeData::ObjectWithIndex(shape_id) => {
+                    let shape = self.object_shape(*shape_id);
+                    if let Some(symbol) = shape.symbol {
+                        obj_symbol = Some(symbol.0);
                     } else {
-                        obj_anon_shape = Some(s.0);
+                        obj_anon_shape = Some(shape_id.0);
                     }
                 }
-                TypeData::Callable(s) => {
-                    let shape = self.callable_shape(*s);
-                    if let Some(sym) = shape.symbol {
-                        callable_symbol = Some(sym.0);
+                TypeData::Callable(shape_id) => {
+                    let shape = self.callable_shape(*shape_id);
+                    if let Some(symbol) = shape.symbol {
+                        callable_symbol = Some(symbol.0);
                     }
                 }
-                TypeData::Application(app) => {
-                    let app = self.type_application(*app);
-                    let mut keys = Vec::with_capacity(1 + app.args.len());
-                    keys.push(self.app_component_key(app.base));
-                    keys.extend(app.args.iter().map(|&arg| self.app_component_key(arg)));
+                TypeData::Application(application_id) => {
+                    let application = self.type_application(*application_id);
+                    tick_union_execution_work(work, 1 + application.args.len() as u64)?;
+                    let mut keys = Vec::with_capacity(1 + application.args.len());
+                    keys.push(self.app_component_key(application.base));
+                    for &argument in application.args.iter() {
+                        keys.push(self.app_component_key(argument));
+                    }
                     app_components = Some(keys.into_boxed_slice());
                 }
                 TypeData::Tuple(list_id) => {
-                    let elems = self.tuple_list(*list_id);
-                    let keys: Vec<AppComponentKey> = elems
-                        .iter()
-                        .map(|elem| self.widened_app_component_key(elem.type_id))
-                        .collect();
+                    let elements = self.tuple_list(*list_id);
+                    tick_union_execution_work(work, elements.len() as u64)?;
+                    let mut keys = Vec::with_capacity(elements.len());
+                    for element in elements.iter() {
+                        keys.push(self.widened_app_component_key(element.type_id));
+                    }
                     elem_components = Some(keys.into_boxed_slice());
                 }
-                TypeData::Array(elem) => {
+                TypeData::Array(element) => {
+                    tick_union_execution_work(work, 1)?;
                     elem_components =
-                        Some(vec![self.widened_app_component_key(*elem)].into_boxed_slice());
+                        Some(vec![self.widened_app_component_key(*element)].into_boxed_slice());
                 }
                 _ => {}
             }
         }
 
-        CachedUnionMember {
+        Ok(CachedUnionMember {
             id,
             builtin_key,
             data,
@@ -131,7 +137,7 @@ impl TypeInterner {
             app_components,
             elem_components,
             alloc_order,
-        }
+        })
     }
 
     /// Pre-fetch the ordering key for a single `Application` component (base or
@@ -396,6 +402,31 @@ impl TypeInterner {
         a.id.0.cmp(&b.id.0)
     }
 
+    fn cached_member_comparison_work(a: &CachedUnionMember, b: &CachedUnionMember) -> u64 {
+        match (&a.data, &b.data) {
+            (
+                Some(TypeData::Literal(LiteralValue::String(_))),
+                Some(TypeData::Literal(LiteralValue::String(_))),
+            ) => a
+                .string_literal_text
+                .as_deref()
+                .zip(b.string_literal_text.as_deref())
+                .map_or(1, |(left, right)| 1 + left.len().min(right.len()) as u64),
+            (Some(TypeData::Application(_)), Some(TypeData::Application(_))) => a
+                .app_components
+                .as_deref()
+                .zip(b.app_components.as_deref())
+                .map_or(1, |(left, right)| 1 + left.len().min(right.len()) as u64),
+            (Some(TypeData::Tuple(_)), Some(TypeData::Tuple(_)))
+            | (Some(TypeData::Array(_)), Some(TypeData::Array(_))) => a
+                .elem_components
+                .as_deref()
+                .zip(b.elem_components.as_deref())
+                .map_or(1, |(left, right)| 1 + left.len().min(right.len()) as u64),
+            _ => 1,
+        }
+    }
+
     fn compare_optional_u32(a: Option<u32>, b: Option<u32>) -> std::cmp::Ordering {
         match (a, b) {
             (Some(a), Some(b)) => a.cmp(&b),
@@ -452,26 +483,76 @@ impl TypeInterner {
         }
     }
 
-    /// Sort union members using pre-cached lookups to avoid redundant `DashMap` reads.
-    ///
-    /// Instead of `sort_by(compare_union_members)` which does 4-6 DashMap/arena lookups
-    /// per comparison (O(N log N * lookups)), this pre-caches all lookup data for each
-    /// member in O(N) reads, then sorts using the cached data with zero further lookups.
-    pub(crate) fn sort_union_members(&self, flat: &mut TypeListBuffer) {
+    pub(crate) fn sort_union_members_with_work(
+        &self,
+        flat: &mut TypeListBuffer,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<(), ProjectExecutionStop> {
         if flat.len() <= 1 {
-            return;
+            return Ok(());
         }
 
-        // Pre-cache all lookup data for each member in a single pass: O(N) reads
-        let mut cached: SmallVec<[CachedUnionMember; TYPE_LIST_INLINE]> =
-            flat.iter().map(|&id| self.cache_union_member(id)).collect();
-
-        // Sort using cached data: O(N log N) comparisons with zero further lookups.
-        cached.sort_by(Self::compare_cached_members);
-
-        // Write sorted TypeIds back
-        for (i, member) in cached.iter().enumerate() {
-            flat[i] = member.id;
+        tick_union_execution_work(work, flat.len() as u64)?;
+        let mut source: SmallVec<[Option<CachedUnionMember>; TYPE_LIST_INLINE]> =
+            SmallVec::with_capacity(flat.len());
+        for &id in flat.iter() {
+            source.push(Some(self.cache_union_member_with_work(id, work)?));
         }
+        let len = source.len();
+        tick_union_execution_work(work, len as u64)?;
+        let mut target: SmallVec<[Option<CachedUnionMember>; TYPE_LIST_INLINE]> =
+            SmallVec::with_capacity(len);
+        target.resize_with(len, || None);
+
+        // Stable bottom-up merge sort keeps the same comparator and tie order
+        // as slice::sort_by while allowing a stop to end the sort at a poll.
+        let mut width = 1usize;
+        while width < len {
+            let mut start = 0usize;
+            while start < len {
+                let middle = start.saturating_add(width).min(len);
+                let end = middle.saturating_add(width).min(len);
+                let (mut left, mut right, mut output) = (start, middle, start);
+                while left < middle && right < end {
+                    let left_member = source[left].as_ref().expect("source item is present");
+                    let right_member = source[right].as_ref().expect("source item is present");
+                    tick_union_execution_work(
+                        work,
+                        Self::cached_member_comparison_work(left_member, right_member),
+                    )?;
+                    if Self::compare_cached_members(left_member, right_member)
+                        != std::cmp::Ordering::Greater
+                    {
+                        target[output] = source[left].take();
+                        left += 1;
+                    } else {
+                        target[output] = source[right].take();
+                        right += 1;
+                    }
+                    output += 1;
+                }
+                while left < middle {
+                    tick_union_execution_work(work, 1)?;
+                    target[output] = source[left].take();
+                    left += 1;
+                    output += 1;
+                }
+                while right < end {
+                    tick_union_execution_work(work, 1)?;
+                    target[output] = source[right].take();
+                    right += 1;
+                    output += 1;
+                }
+                start = end;
+            }
+            std::mem::swap(&mut source, &mut target);
+            width = width.saturating_mul(2);
+        }
+
+        for (index, member) in source.into_iter().enumerate() {
+            tick_union_execution_work(work, 1)?;
+            flat[index] = member.expect("sorted source item is present").id;
+        }
+        Ok(())
     }
 }

@@ -295,6 +295,16 @@ pub enum Affordance {
         /// Project path to index.
         path: String,
     },
+    /// Start a fresh durable attempt for a terminal local index operation.
+    ///
+    /// The normal `add`/`backend.index` path owns the new caller-journal key;
+    /// this action deliberately carries no prior operation key.
+    RetryIndexAttempt {
+        /// Exact local project path from the durable request.
+        path: String,
+        /// Preserve the execution class of the completed request.
+        execution_intent: backend_library::CompileExecutionIntent,
+    },
     /// Open one path in the reader's file browser.
     OpenFolder {
         /// Path to reveal.
@@ -321,6 +331,16 @@ pub enum Affordance {
 }
 
 impl Affordance {
+    /// Renders the shared runtime recovery policy using existing fault actions.
+    #[must_use]
+    pub const fn startup(recovery: backend_client::StartupRecovery) -> Self {
+        match recovery {
+            backend_client::StartupRecovery::RetryOriginalCommand => Self::Retry,
+            backend_client::StartupRecovery::RepairCompanion
+            | backend_client::StartupRecovery::RepairConfiguration => Self::None,
+        }
+    }
+
     /// Suggests re-reading the shelf status.
     #[must_use]
     pub fn status() -> Self {
@@ -350,6 +370,14 @@ impl Affordance {
             Self::Reindex { path } => {
                 Some(format!("nudox add {}", crate::shell::quote_argument(path)))
             }
+            Self::RetryIndexAttempt {
+                path,
+                execution_intent,
+            } => Some(format!(
+                "nudox add {} --execution-intent {}",
+                crate::shell::quote_argument(path),
+                execution_intent_name(*execution_intent),
+            )),
             Self::OpenFolder { path } => {
                 Some(format!("open {}", crate::shell::quote_argument(path)))
             }
@@ -392,6 +420,16 @@ impl Affordance {
                 "name": "backend.index",
                 "arguments": { "path": path }
             })),
+            Self::RetryIndexAttempt {
+                path,
+                execution_intent,
+            } => Some(serde_json::json!({
+                "name": "backend.index",
+                "arguments": {
+                    "path": path,
+                    "execution_intent": execution_intent_name(*execution_intent),
+                }
+            })),
             Self::OpenFolder { path } => Some(serde_json::json!({
                 "name": "backend.packages",
                 "arguments": { "path": path }
@@ -412,6 +450,13 @@ impl Affordance {
                 "arguments": { "ticket": ticket, "after_sequence": after_sequence }
             })),
         }
+    }
+}
+
+const fn execution_intent_name(intent: backend_library::CompileExecutionIntent) -> &'static str {
+    match intent {
+        backend_library::CompileExecutionIntent::Interactive => "interactive",
+        backend_library::CompileExecutionIntent::Background => "background",
     }
 }
 
@@ -438,6 +483,7 @@ pub struct Fault {
     compiler_failure: Option<PackageCompilerFailure>,
     partial_publication: Option<backend_library::IndexJobPartialPublication>,
     query_preparation: Option<(ViewRevision, backend_library::QueryPreparationState)>,
+    startup_recovery: Option<backend_client::StartupRecovery>,
 }
 
 impl Fault {
@@ -457,6 +503,7 @@ impl Fault {
             compiler_failure: None,
             partial_publication: None,
             query_preparation: None,
+            startup_recovery: None,
         }
     }
 
@@ -482,6 +529,13 @@ impl Fault {
     #[must_use]
     pub const fn affordance(&self) -> &Affordance {
         &self.affordance
+    }
+
+    /// Returns recovery for a startup failure before any command was submitted.
+    /// Ordinary transport failures do not provide this guarantee.
+    #[must_use]
+    pub const fn startup_recovery(&self) -> Option<backend_client::StartupRecovery> {
+        self.startup_recovery
     }
 
     /// Returns the exact bounded compiler refusal, when the producer supplied one.
@@ -895,6 +949,20 @@ impl Fault {
 
     fn from_simple_client_error(error: &ClientError, operand: Operand) -> Self {
         let (slug, cause, sentence, affordance) = match error {
+            ClientError::Startup(failure) => (
+                FaultSlug::Endpoint,
+                CauseSlug::Unreachable,
+                format!("the local daemon could not be started or reached: {failure}"),
+                Affordance::startup(failure.recovery()),
+            ),
+            ClientError::MutationOutcomeUnknown(kind) => (
+                FaultSlug::Endpoint,
+                CauseSlug::Unreachable,
+                format!(
+                    "the endpoint closed while a mutation was in flight ({kind}); its outcome is unknown. Inspect owner state before deciding whether to submit it again"
+                ),
+                Affordance::None,
+            ),
             ClientError::Io(detail) => (
                 FaultSlug::Endpoint,
                 CauseSlug::Unreachable,
@@ -948,7 +1016,11 @@ impl Fault {
                 Affordance::Retry,
             ),
         };
-        Self::new(slug, operand, Cause::new(cause, sentence), affordance)
+        let mut fault = Self::new(slug, operand, Cause::new(cause, sentence), affordance);
+        if let ClientError::Startup(failure) = error {
+            fault.startup_recovery = Some(failure.recovery());
+        }
+        fault
     }
 
     /// Builds the fault for one rejected product operand.

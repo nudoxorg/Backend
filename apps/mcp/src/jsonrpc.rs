@@ -23,9 +23,9 @@ use backend_client::{ClientError, Session};
 use backend_library::protocol::mcp::{MCP_PROTOCOL_VERSION, negotiate_version};
 use backend_library::{
     AdmittedGraphQueryInput, CompileExecutionIntent, GraphQueryPage, GraphQueryRow, GraphValue,
-    HealthReport, IndexJobTicket, IndexSearchCursor, IndexSearchPage, PackageReference,
-    PageContinuation, PageTerminal, ProductText, ReplyDto, SurfaceCommand, SurfaceReply,
-    TreeOpener, ViewStateRoot, encode_id,
+    HealthReport, IndexJobTicket, IndexSearchCursor, PackageReference, PageContinuation,
+    PageTerminal, ProductText, ReplyDto, SurfaceCommand, SurfaceReply, TreeOpener, ViewStateRoot,
+    encode_id,
 };
 use backend_present::{
     Answer, BudgetExceeded, ContinuationCursor, ContinuationTarget, CursorTarget,
@@ -54,8 +54,8 @@ use codec::{
     read_line, string, success, valid_id, write_message,
 };
 use tools::{
-    INDEX_CANCEL_TOOL, INDEX_PROGRESS_TOOL, INDEX_START_TOOL, SURFACE_TOOL, ToolRoute, list_tools,
-    tool_route, validate_registry_arguments,
+    INDEX_CANCEL_TOOL, INDEX_PROGRESS_TOOL, INDEX_START_TOOL, QUERY_TOOL, SURFACE_TOOL, ToolRoute,
+    list_tools, tool_route, validate_registry_arguments,
 };
 
 #[cfg(feature = "token-budget")]
@@ -275,31 +275,14 @@ pub(super) fn disconnected_reconnecting_product(
 
 /// Converts a daemon restart window into the same reconnectable class as a
 /// reset on an established stream. Startup/configuration failures remain
-/// ordinary client errors so a broken workspace is reported directly instead
+/// typed startup observations so a broken workspace is reported directly instead
 /// of being retried forever by a long-lived MCP process.
 fn map_runtime_connect_error(error: backend_runtime::RuntimeError) -> ClientError {
-    match error {
-        backend_runtime::RuntimeError::Io(error)
-            if is_disconnect_kind(error.kind()) || error.kind() == io::ErrorKind::NotFound =>
-        {
-            ClientError::Disconnected(error.kind())
-        }
-        other => ClientError::Io(other.to_string()),
+    if let Some(kind) = error.reconnect_kind() {
+        ClientError::Disconnected(kind)
+    } else {
+        ClientError::from(error)
     }
-}
-
-const fn is_disconnect_kind(kind: io::ErrorKind) -> bool {
-    matches!(
-        kind,
-        io::ErrorKind::ConnectionReset
-            | io::ErrorKind::ConnectionAborted
-            | io::ErrorKind::ConnectionRefused
-            | io::ErrorKind::BrokenPipe
-            | io::ErrorKind::NotConnected
-            | io::ErrorKind::UnexpectedEof
-            | io::ErrorKind::TimedOut
-            | io::ErrorKind::WouldBlock
-    )
 }
 
 /// Runs newline-delimited MCP stdio until the client closes stdin.
@@ -580,7 +563,7 @@ impl<P: Product> Server<P> {
             return Err(RpcError::invalid("arguments must be an object"));
         }
         self.call_routed_tool(params, name, route)
-            .or_else(RpcError::into_tool_result)
+            .or_else(|error| error.into_tool_result_for_call(name, params.get("arguments")))
     }
     /// A recognized route owns input/domain refusals. Envelope and retained
     /// proof failures remain JSON-RPC errors; no display string classifies one.
@@ -1196,11 +1179,20 @@ impl<P: Product> Server<P> {
         };
         let structured: Value = serde_json::from_slice(&payload.bytes)
             .map_err(|error| RpcError::tool(format!("typed projection decode failed: {error}")))?;
-        let text = bounded_text(&markdown::answer_with_cursor(
-            answer,
-            next.as_deref(),
-            ContinuationTarget::McpTool(tool_name),
-        ));
+        let preview = match detail {
+            Detail::Summary => markdown::summary_with_cursor(
+                answer,
+                next.as_deref(),
+                ContinuationTarget::McpTool(tool_name),
+            ),
+            Detail::Standard | Detail::Full => markdown::answer_with_detail(
+                answer,
+                detail,
+                next.as_deref(),
+                ContinuationTarget::McpTool(tool_name),
+            ),
+        };
+        let text = bounded_text(&preview);
         Ok(tool_result(&text, structured, answer.fault().is_some()))
     }
 
@@ -1355,6 +1347,7 @@ fn valid_direct_cursor_owner(owner: &str) -> bool {
     }
     let (encoded, portable) = owner
         .strip_prefix("pc3-")
+        .or_else(|| owner.strip_prefix("pc4-"))
         .map_or((owner, false), |encoded| (encoded, true));
     if encoded.is_empty()
         || !encoded
@@ -1686,10 +1679,11 @@ fn graph_page_text(page: &GraphQueryPage, cursor: Option<&str>) -> String {
     match page.terminal {
         PageTerminal::More(_) => {
             if let Some(cursor) = cursor {
-                out.push_str("Continue `backend.query` with the same `query`, `variables`, and `limit`; copy `structuredContent.nextCursor` into `arguments.cursor`: ");
-                out.push('`');
-                out.push_str(cursor);
-                out.push_str("`\n");
+                out.push_str(&backend_present::continuation_note(
+                    ContinuationTarget::McpTool(QUERY_TOOL),
+                    cursor,
+                ));
+                out.push('\n');
             } else {
                 out.push_str("… more rows are available, but no continuation cursor was issued\n");
             }
@@ -1747,6 +1741,58 @@ struct RpcError {
 }
 
 impl RpcError {
+    /// Only a typed startup refusal proves that the original command was not
+    /// submitted. Attach the caller's exact call as advice, never execute it.
+    fn into_tool_result_for_call(
+        self,
+        name: &str,
+        arguments: Option<&Value>,
+    ) -> Result<Value, Self> {
+        if let Some(fault) = &self.fault
+            && fault.startup_recovery()
+                == Some(backend_client::StartupRecovery::RetryOriginalCommand)
+        {
+            let call = json!({
+                "name": name,
+                "arguments": arguments.cloned().unwrap_or_else(|| json!({})),
+            });
+            let mut structured = fault_value(fault);
+            structured["call"] = call.clone();
+            structured
+                .as_object_mut()
+                .expect("fault object")
+                .remove("shell");
+            let text = format!(
+                "Retry the exact tool call in structuredContent.call; this command was not submitted.\n{}",
+                markdown::fault(fault),
+            );
+            let result = tool_result(&bounded_text(&text), structured, true);
+            if result
+                .get("structuredContent")
+                .and_then(|content| content.get("call"))
+                == Some(&call)
+            {
+                return Ok(result);
+            }
+
+            // The request frame can be larger than the result budget. Keep
+            // the typed startup refusal and its not-submitted meaning, but do
+            // not emit a truncated or fabricated call when the exact one
+            // cannot fit in structuredContent.
+            let structured = bounded_startup_fault(fault);
+            let explanation = format!(
+                "The command was not submitted. The exact tool call could not be included in the {}-byte response budget, so no retry was performed.",
+                MCP_RESULT_BUDGET_BYTES,
+            );
+            let text = format!(
+                "{explanation}\nStartup failure: {}",
+                bounded_fault_field(fault.cause().sentence()),
+            );
+            return Ok(tool_result(&text, structured, true));
+        }
+        self.into_tool_result()
+    }
+
     const fn new(code: i64, message: &'static str) -> Self {
         Self {
             code,
@@ -1856,7 +1902,7 @@ impl RpcError {
         Err(self)
     }
     fn into_reply(self, id: Value) -> Value {
-        let mut data = serde_json::Map::new();
+        let mut data = Map::new();
         data.insert("kind".to_owned(), Value::String(self.kind.to_owned()));
         if let Some(detail) = self.detail {
             data.insert("detail".to_owned(), Value::String(bounded_text(&detail)));
@@ -1866,6 +1912,37 @@ impl RpcError {
         }
         error_reply(id, self.code, self.message, Some(Value::Object(data)))
     }
+}
+
+/// Projects the startup fault when its exact input call cannot fit the MCP
+/// result budget. Large user operands and diagnostics are shortened with an
+/// explicit marker so the typed refusal itself remains within the hard cap.
+fn bounded_startup_fault(fault: &Fault) -> Value {
+    const FIELDS: [&str; 2] = ["operand", "detail"];
+    let mut structured = fault_value(fault);
+    if let Some(fields) = structured.as_object_mut() {
+        fields.remove("shell");
+        fields.remove("call");
+        for field in FIELDS {
+            if let Some(Value::String(value)) = fields.get_mut(field) {
+                *value = bounded_fault_field(value);
+            }
+        }
+    }
+    structured
+}
+
+fn bounded_fault_field(text: &str) -> String {
+    const MAX_BYTES: usize = 1024;
+    const MARKER: &str = "…[shortened for response budget]";
+    if text.len() <= MAX_BYTES {
+        return text.to_owned();
+    }
+    let mut end = MAX_BYTES.saturating_sub(MARKER.len());
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{MARKER}", &text[..end])
 }
 
 fn list_prompts(params: &Value) -> Result<Value, RpcError> {

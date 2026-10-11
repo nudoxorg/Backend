@@ -47,6 +47,7 @@ use anyhow::{Context, Result, bail};
 #[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::{
     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
+    ParallelSlice,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::borrow::Cow;
@@ -65,3 +66,6 @@ include!("core/premerged_lib_compaction.rs");
 include!("core/merge_support.rs");
 include!("core/bind_result_reducer.rs");
 include!("core/checking.rs");
+
+include!("core/project_resolution_execution.rs");
+include!("core/project_checker_partitions.rs");

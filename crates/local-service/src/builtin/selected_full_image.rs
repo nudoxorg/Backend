@@ -574,6 +574,8 @@ mod tests {
             ));
             let _ = fs::remove_dir_all(&root);
             fs::create_dir_all(&root).expect("create selected-image CAS fixture");
+            crate::test_support::make_private(&root)
+                .expect("make selected-image CAS fixture current-user private");
             Self(root)
         }
     }

@@ -6,7 +6,7 @@ use super::super::{
     BuiltinIntent, BuiltinModel, BuiltinModelError, BuiltinSemanticChange, BuiltinSemanticRelation,
     Command, CommandReply, ForgeGateway, ProductDaemon, RegistryGateway, WireCertificate,
     WireClaim, WorkspaceModel, capture_basis_for_snapshot, ingest, projection,
-    publish_builtin_view,
+    publish_builtin_view, view_build,
 };
 use super::browse_lane::{BrowseLane, Terminal as BrowseTerminal};
 use super::diff::execute_semantic_diff;
@@ -4452,7 +4452,7 @@ impl CommandAdapter {
         query: &backend_library::DocumentQuery,
         certificate: Option<&WireCertificate>,
         recover_excerpt: bool,
-    ) -> Option<backend_library::Document> {
+    ) -> Result<Option<backend_library::Document>, backend_library::CommandFailure> {
         let library = daemon.engine().daemon().library();
         let root = library.revision_root();
         let source_basis = backend_library::Basis {
@@ -4464,7 +4464,7 @@ impl CommandAdapter {
                 .source_basis()
                 .is_some_and(|source| source != source_basis)
         {
-            return None;
+            return Ok(None);
         }
         let label = certificate.and_then(|certificate| {
             certificate.claims.iter().find_map(|claim| match claim {
@@ -4482,16 +4482,33 @@ impl CommandAdapter {
             })
         });
         let row = if query.symbol().is_selected() {
-            let symbol = query.resolve_symbol(library.view())?;
-            library
+            let Some(symbol) = query.resolve_symbol(library.view()) else {
+                return Ok(None);
+            };
+            let Some(row) = library
                 .view()
-                .row_ref(backend_engine::RowId::Symbol(symbol))?
+                .row_ref(backend_engine::RowId::Symbol(symbol))
+            else {
+                return Ok(None);
+            };
+            row
         } else {
-            symbol_row_by_label(library.view(), label?)?
+            let Some(label) = label else {
+                return Ok(None);
+            };
+            let Some(row) =
+                view_build::resolve_selected_view_address(library.view(), label).declaration()?
+            else {
+                return Ok(None);
+            };
+            row
         };
+        let requested_coordinate = label;
         let label = row.label.as_str();
         let backend_engine::RowId::Symbol(symbol) = row.id else {
-            return None;
+            return Err(backend_library::CommandFailure::InvalidQuery(
+                "coordinate does not name a declaration".to_owned(),
+            ));
         };
         let excerpt =
             if recover_excerpt && row.excerpt == backend_library::SourceExcerpt::NotHydrated {
@@ -4506,15 +4523,20 @@ impl CommandAdapter {
             .with_excerpt(excerpt)
             .with_facts(row.facts.clone());
         if !query.symbol().is_selected() {
-            document = document
-                .with_selection(backend_library::DocumentSelection::from_row(
-                    row,
-                    source_basis,
-                )?)
-                .ok()?;
+            let Some(selection) = backend_library::DocumentSelection::from_selected_view(
+                library.view(),
+                source_basis,
+                requested_coordinate.unwrap_or(label),
+            ) else {
+                return Ok(None);
+            };
+            let selected = document
+                .with_selection(selection)
+                .map_err(|error| backend_library::CommandFailure::InvalidQuery(error.to_owned()))?;
+            document = selected;
         }
         document.signature.clone_from(&row.signature);
-        Some(document)
+        Ok(Some(document))
     }
 
     /// Rehydrates a shed declaration excerpt from the exact package source
@@ -4762,7 +4784,12 @@ impl CommandAdapter {
         } else {
             Command::Graph(query)
         };
-        let query = Self::claimed_graph_source(daemon, query, certificate.as_ref());
+        let query = match Self::claimed_graph_source(daemon, query, certificate.as_ref()) {
+            Ok(query) => query,
+            Err(failure) => {
+                return Self::certify(daemon, &command, CommandReply::Failed(failure), certificate);
+            }
+        };
         let reply = self
             .graph_snapshot(daemon, query, include_incoming)?
             .map_or_else(
@@ -4771,7 +4798,8 @@ impl CommandAdapter {
                         .engine()
                         .daemon()
                         .library()
-                        .execute(command.clone())
+                        .graph(query)
+                        .map(CommandReply::Graph)
                         .unwrap_or_else(|error| CommandReply::Failed(error.into()))
                 },
                 CommandReply::Graph,
@@ -4828,7 +4856,17 @@ impl CommandAdapter {
         let command = Command::GraphPage { symbol, page };
         let library = daemon.engine().daemon().library();
         let selected =
-            Self::claimed_graph_symbol(daemon, symbol, page.basis(), certificate.as_ref());
+            match Self::claimed_graph_symbol(daemon, symbol, page.basis(), certificate.as_ref()) {
+                Ok(selected) => selected,
+                Err(failure) => {
+                    return Self::certify(
+                        daemon,
+                        &command,
+                        CommandReply::Failed(failure),
+                        certificate,
+                    );
+                }
+            };
         // A canonical address resolves to its key even when no selected row
         // exists. Check membership before opening semantic graph residence so
         // an absent source keeps the library's typed read refusal.
@@ -4880,11 +4918,12 @@ impl CommandAdapter {
         daemon: &ProductDaemon,
         query: backend_engine::GraphNeighborhoodQuery,
         certificate: Option<&WireCertificate>,
-    ) -> backend_engine::GraphNeighborhoodQuery {
-        let symbol = Self::claimed_graph_symbol(daemon, query.symbol(), query.basis(), certificate);
-        symbol
+    ) -> Result<backend_engine::GraphNeighborhoodQuery, backend_library::CommandFailure> {
+        let symbol =
+            Self::claimed_graph_symbol(daemon, query.symbol(), query.basis(), certificate)?;
+        Ok(symbol
             .resolve(daemon.engine().daemon().library().view())
-            .map_or(query, |symbol| query.with_resolved_symbol(symbol))
+            .map_or(query, |symbol| query.with_resolved_symbol(symbol)))
     }
 
     /// Shares the exact admitted coordinate lookup between complete and paged graphs.
@@ -4893,14 +4932,14 @@ impl CommandAdapter {
         address: backend_engine::SymbolAddress,
         basis: backend_library::ViewRevision,
         certificate: Option<&WireCertificate>,
-    ) -> backend_engine::SymbolAddress {
+    ) -> Result<backend_engine::SymbolAddress, backend_library::CommandFailure> {
         let library = daemon.engine().daemon().library();
         let view = library.view();
         let requested = address.resolve(view);
         if requested.is_some_and(|symbol| view.row(backend_engine::RowId::Symbol(symbol)).is_some())
             || !basis.matches(library.revision_root())
         {
-            return address;
+            return Ok(address);
         }
         let Some(label) = certificate.and_then(|certificate| {
             certificate.claims.iter().find_map(|claim| match claim {
@@ -4917,14 +4956,18 @@ impl CommandAdapter {
                 _ => None,
             })
         }) else {
-            return address;
+            return Ok(address);
         };
-        symbol_row_by_label(view, label)
-            .and_then(|row| match row.id {
-                backend_engine::RowId::Symbol(symbol) => Some(symbol),
-                _ => None,
-            })
-            .map_or(address, backend_engine::SymbolAddress::selected)
+        let Some(row) = view_build::resolve_selected_view_address(view, label).declaration()?
+        else {
+            return Ok(address);
+        };
+        let backend_engine::RowId::Symbol(symbol) = row.id else {
+            return Err(backend_library::CommandFailure::InvalidQuery(
+                "coordinate does not name a declaration".to_owned(),
+            ));
+        };
+        Ok(backend_engine::SymbolAddress::selected(symbol))
     }
 
     fn surface(
@@ -4934,6 +4977,21 @@ impl CommandAdapter {
         request_id: u64,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let reply = match surface {
+            backend_engine::SurfaceCommand::Read { locators } => {
+                // Input has passed the same strict owner-aware command codec
+                // as every surface command. The selected view is the complete
+                // capability needed for this local declaration read.
+                super::super::product_state::read_from_selected_view(
+                    daemon.engine().daemon().library().view(),
+                    &locators,
+                )
+                .map_or_else(
+                    |error| {
+                        CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error))
+                    },
+                    CommandReply::Surface,
+                )
+            }
             backend_engine::SurfaceCommand::ForgeAdd { coordinate } => {
                 self.forge.acquire(coordinate.as_str()).map_or_else(
                     |error| {
@@ -5389,18 +5447,22 @@ impl CommandAdapter {
         certificate: Option<WireCertificate>,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let reply = match command {
-            Command::Document(query) | Command::Source(query) => self
+            Command::Document(query) | Command::Source(query) => match self
                 .canonical_claim_document(
                     daemon,
                     query,
                     certificate.as_ref(),
                     matches!(command, Command::Source(_)),
-                )
-                .map_or_else(
-                    || daemon.engine().daemon().library().execute(command.clone()),
-                    |document| Ok(CommandReply::Document(document)),
-                )
-                .unwrap_or_else(|error| CommandReply::Failed(error.into())),
+                ) {
+                Ok(Some(document)) => CommandReply::Document(document),
+                Ok(None) => daemon
+                    .engine()
+                    .daemon()
+                    .library()
+                    .execute(command.clone())
+                    .unwrap_or_else(|error| CommandReply::Failed(error.into())),
+                Err(failure) => CommandReply::Failed(failure),
+            },
             _ => daemon
                 .engine()
                 .daemon()
@@ -5614,7 +5676,7 @@ pub(in crate::builtin) fn commit_prepared_builtin_intent(
     }
     let expected = owner.head().expectation();
     let request = prepared.request_identity;
-    let intent = prepared.intent;
+    let intent = prepared.intent.into_queue_carrier();
     let receiver = daemon
         .client()
         .request(
@@ -5707,13 +5769,6 @@ fn prepare_builtin_intent_at_snapshot(
         base_workspace_sequence: snapshot.sequence(),
         base_closure_id: *snapshot.closure().binding().closure().as_bytes(),
     })
-}
-
-fn symbol_row_by_label<'a>(
-    view: &'a backend_engine::ViewRoot,
-    label: &str,
-) -> Option<&'a backend_engine::Row> {
-    view.unique_symbol_by_label(label)
 }
 
 /// Resolves the source root named by the package's admitted project record.
@@ -5928,6 +5983,15 @@ mod tests {
 
     use super::{Command, WireCertificate, WireClaim};
 
+    fn symbol_coordinate_certificate(coordinate: &str) -> WireCertificate {
+        let symbol = backend_engine::symbol_key(coordinate);
+        WireCertificate::new().with_claim(WireClaim::Key {
+            schema: backend_engine::WireSchema::Symbol,
+            id: backend_engine::encode_id(symbol.as_bytes()),
+            value: coordinate.to_owned(),
+        })
+    }
+
     fn checked_resident_graph(reason: &'static str) -> backend_library::IndexedCheckedPackageGraph {
         backend_library::IndexedCheckedPackageGraph::new(
             vec![(
@@ -6044,6 +6108,12 @@ mod tests {
         };
         assert!(Arc::ptr_eq(catalog_after_failure, &catalog_before_failure));
     }
+
+    #[path = "public_coordinate_alias.rs"]
+    mod public_coordinate_alias_tests;
+
+    #[path = "selected_read.rs"]
+    mod selected_read_tests;
 
     #[path = "index_profile_worker.rs"]
     mod index_profile_worker_tests;
@@ -6311,6 +6381,34 @@ mod tests {
             let label = path.to_str().expect("UTF-8 fixture path").to_owned();
             (backend_engine::package_key(&label), label)
         }
+
+        fn publish_rows(&mut self, additional: Vec<backend_library::Row>) {
+            let (_, daemon) = self.parts();
+            let snapshot = daemon.engine().daemon().owner().snapshot();
+            let current = daemon.engine().daemon().library().view().clone();
+            let mut rows = current.row_refs().cloned().collect::<Vec<_>>();
+            rows.extend(additional);
+            let capability = current.capability().expect("selected view capability");
+            let view = backend_library::ViewRoot::new_checked(
+                current.recipe(),
+                current.basis(),
+                current.frontier(),
+                rows,
+                current.coverage().to_vec(),
+                capability,
+            )
+            .expect("checked test declarations");
+            let cursor = backend_library::Cursor::for_view_root(&view);
+            let admission = crate::builtin::BuiltinViewAdmission {
+                workspace_root: snapshot.root(),
+                source_root: view.basis().root,
+            };
+            daemon
+                .engine_mut()
+                .daemon_mut()
+                .publish_view(view, cursor, &admission, None)
+                .expect("publish checked test declarations");
+        }
     }
 
     impl Drop for AdapterFixture {
@@ -6378,7 +6476,10 @@ mod tests {
                 CommandReply::Failed(backend_library::CommandFailure::NotFound)
             );
         }
-        let stale = backend_library::view_state_root(&[("fixture".to_owned(), "foreign-outline-view".to_owned())]);
+        let stale = backend_library::view_state_root(&[(
+            "fixture".to_owned(),
+            "foreign-outline-view".to_owned(),
+        )]);
         let command = Command::Outline(backend_library::OutlineQuery::new(package, stale));
         assert!(matches!(
             adapter
@@ -6457,6 +6558,193 @@ mod tests {
             owner_cursor(daemon),
             before,
             "reads never admit project work"
+        );
+    }
+
+    #[test]
+    fn public_address_commands_reject_package_coordinates_at_the_adapter() {
+        use backend_library::{CommandReply, SurfaceCommand};
+
+        let mut fixture = AdapterFixture::new();
+        let label = fixture.label.clone();
+        let package = fixture.package;
+        let (adapter, daemon) = fixture.parts();
+        let root = daemon.engine().daemon().library().revision_root();
+        let symbol = backend_library::symbol_key(&label);
+        let expected = CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+            "coordinate names a package, not a declaration".to_owned(),
+        ));
+
+        for source in [false, true] {
+            let query = backend_library::DocumentQuery::new(symbol, root);
+            let command = if source {
+                Command::Source(query)
+            } else {
+                Command::Document(query)
+            };
+            assert_eq!(
+                adapter
+                    .standard(
+                        daemon,
+                        &command,
+                        Some(symbol_coordinate_certificate(&label)),
+                    )
+                    .expect("package document refusal")
+                    .0,
+                expected
+            );
+        }
+        for incoming in [false, true] {
+            let query = backend_library::GraphNeighborhoodQuery::new(symbol, root);
+            assert_eq!(
+                adapter
+                    .graph(
+                        daemon,
+                        query,
+                        Some(symbol_coordinate_certificate(&label)),
+                        incoming,
+                    )
+                    .expect("package graph refusal")
+                    .0,
+                expected
+            );
+        }
+        let page = backend_library::PageRequest::new(root, backend_library::QueryLimit::default());
+        assert_eq!(
+            adapter
+                .graph_page(
+                    daemon,
+                    backend_library::SymbolAddress::canonical(symbol),
+                    page,
+                    Some(symbol_coordinate_certificate(&label)),
+                )
+                .expect("package graph page refusal")
+                .0,
+            expected
+        );
+        assert_eq!(
+            adapter
+                .surface(
+                    daemon,
+                    SurfaceCommand::References {
+                        target: backend_library::ProductText::new(label)
+                            .expect("package coordinate text"),
+                    },
+                    980,
+                )
+                .expect("package references refusal")
+                .0,
+            expected
+        );
+        assert!(
+            daemon
+                .engine()
+                .daemon()
+                .library()
+                .view()
+                .row_ref(backend_engine::RowId::Package(package))
+                .is_some(),
+            "the fixture includes an actual selected package row"
+        );
+    }
+
+    #[test]
+    fn public_address_commands_reject_ambiguous_sites_at_the_adapter() {
+        use backend_library::{CommandReply, SurfaceCommand};
+
+        let mut fixture = AdapterFixture::new();
+        let label = fixture.label.clone();
+        let package = fixture.package;
+        let basis = {
+            let (_, daemon) = fixture.parts();
+            daemon.engine().daemon().library().view().basis()
+        };
+        let location = backend_compile::SourceLocation::new("src/lib.rs", 9)
+            .expect("one-based captured source site");
+        let first = backend_library::Row::in_package(
+            backend_library::RowId::Symbol(backend_library::symbol_key("first-draw-identity")),
+            basis,
+            package,
+            format!("{label}::semantic::first-draw::draw"),
+        )
+        .with_source(location.clone());
+        let second = backend_library::Row::in_package(
+            backend_library::RowId::Symbol(backend_library::symbol_key("second-draw-identity")),
+            basis,
+            package,
+            format!("{label}::semantic::second-draw::draw"),
+        )
+        .with_source(location);
+        fixture.publish_rows(vec![first, second]);
+
+        let coordinate = format!("{label}::src/lib.rs:9::draw");
+        let (adapter, daemon) = fixture.parts();
+        let root = daemon.engine().daemon().library().revision_root();
+        let symbol = backend_library::symbol_key(&coordinate);
+        let expected = CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+            "coordinate is ambiguous in the selected view".to_owned(),
+        ));
+
+        for source in [false, true] {
+            let query = backend_library::DocumentQuery::new(symbol, root);
+            let command = if source {
+                Command::Source(query)
+            } else {
+                Command::Document(query)
+            };
+            assert_eq!(
+                adapter
+                    .standard(
+                        daemon,
+                        &command,
+                        Some(symbol_coordinate_certificate(&coordinate)),
+                    )
+                    .expect("ambiguous document refusal")
+                    .0,
+                expected
+            );
+        }
+        for incoming in [false, true] {
+            let query = backend_library::GraphNeighborhoodQuery::new(symbol, root);
+            assert_eq!(
+                adapter
+                    .graph(
+                        daemon,
+                        query,
+                        Some(symbol_coordinate_certificate(&coordinate)),
+                        incoming,
+                    )
+                    .expect("ambiguous graph refusal")
+                    .0,
+                expected
+            );
+        }
+        let page = backend_library::PageRequest::new(root, backend_library::QueryLimit::default());
+        assert_eq!(
+            adapter
+                .graph_page(
+                    daemon,
+                    backend_library::SymbolAddress::canonical(symbol),
+                    page,
+                    Some(symbol_coordinate_certificate(&coordinate)),
+                )
+                .expect("ambiguous graph page refusal")
+                .0,
+            expected
+        );
+        assert_eq!(
+            adapter
+                .surface(
+                    daemon,
+                    SurfaceCommand::References {
+                        target: backend_library::ProductText::new(coordinate)
+                            .expect("ambiguous coordinate text"),
+                    },
+                    981,
+                )
+                .expect("ambiguous references refusal")
+                .0,
+            expected
         );
     }
 
@@ -6737,10 +7025,31 @@ mod tests {
     fn install_mixed_native_compiler(fixture: &mut AdapterFixture) {
         let compiler = backend_engine::application::LocalCompilerHost::new(
             MixedNativeEnvironment(fixture.root.0.join("compiler-native")),
-            backend_engine::application::LocalHostDiscovery::ExplicitOnly,
+            // ExplicitOnly deliberately permits TypeScript platform discovery;
+            // this control owns a closed host with an absent SDK on every host.
+            backend_engine::application::LocalHostDiscovery::ClosedSnapshot,
         )
         .open()
         .expect("compiled native Python producer and explicitly absent TypeScript SDK");
+        let capabilities = compiler.capabilities();
+        assert_eq!(
+            capabilities
+                .for_profile(backend_semantic::vocabulary::LanguageProfile::TypeScript(
+                    backend_semantic::vocabulary::TypeScriptSource::TypeScript,
+                ))
+                .state(),
+            backend_engine::application::LocalCompilerCapabilityState::Unavailable,
+            "closed fixture must retain an actual absent TypeScript SDK",
+        );
+        assert_eq!(
+            capabilities
+                .for_profile(backend_semantic::vocabulary::LanguageProfile::Python(
+                    backend_semantic::vocabulary::PythonVersion::Python314,
+                ))
+                .state(),
+            backend_engine::application::LocalCompilerCapabilityState::Ready,
+            "compiled native Python authority must be admitted by the actual owner",
+        );
         fixture.adapter.as_mut().expect("adapter").compiler = compiler;
     }
 
@@ -8550,6 +8859,7 @@ mod tests {
             let (adapter, daemon) = fixture.parts();
             assert!(!project_is_admitted(daemon, package));
             for (request, ticket) in [(882, 9882), (883, 9883)] {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
                 assert!(matches!(
                     adapter.execute_or_defer(daemon, &add_body(request, package, &label), ticket),
                     Ok(Executed::Deferred)
@@ -8893,10 +9203,20 @@ mod tests {
                 let (reply, _) = adapter
                     .search(daemon, &query, None)
                     .expect("Pending owner query");
-                assert!(
-                    matches!(reply, backend_engine::CommandReply::Search(_)),
-                    "{reply:?}"
-                );
+                match reply {
+                    backend_engine::CommandReply::Search(_) => {}
+                    backend_engine::CommandReply::Failed(
+                        backend_engine::CommandFailure::QueryPreparation { basis, state },
+                    ) => {
+                        assert_eq!(basis, view.root());
+                        assert_eq!(
+                            state,
+                            backend_library::QueryPreparationState::Preparing,
+                            "the first nonblocking query may report readiness preparation"
+                        );
+                    }
+                    other => panic!("current pending-view query answer: {other:?}"),
+                }
                 observed_inflight_capture = true;
             }
             assert!(std::time::Instant::now() < deadline, "refused add terminal");
@@ -9126,6 +9446,66 @@ mod tests {
                 .with_certificate(certificate),
         )
         .expect("certified search DTO")
+    }
+
+    // Use the same producer proof as a real revision reply, from this fixture's
+    // admitted root and cursor. Graph preparation also checks that exact cursor.
+    fn owner_query_body(daemon: &ProductDaemon, id: u64, command: Command) -> Vec<u8> {
+        let library = daemon.engine().daemon().library();
+        let certificate = crate::builtin::projection::certificate_for_snapshot_page(
+            library.view(),
+            library.cursor(),
+            None,
+            &[],
+            None,
+        )
+        .expect("owner revision certificate");
+        serde_json::to_vec(
+            &backend_engine::CommandDto::new(id, command).with_certificate(certificate),
+        )
+        .expect("owner-certified query DTO")
+    }
+
+    #[test]
+    fn preparation_query_requests_require_the_admitted_owner_proof() {
+        let mut fixture = AdapterFixture::new();
+        let (_, daemon) = fixture.parts();
+        let library = daemon.engine().daemon().library();
+        let basis = library.view().root();
+        let owner = library.cursor();
+        let graph = backend_engine::GraphQueryRequest::new(
+            "{ Package { coordinate @output } }",
+            BTreeMap::new(),
+            basis,
+            backend_engine::QueryLimit::default(),
+        )
+        .expect("bounded query");
+        for (id, command) in [
+            (
+                1,
+                Command::Name(backend_library::NameQuery::new(
+                    "project",
+                    basis,
+                    backend_engine::QueryLimit::default(),
+                )),
+            ),
+            (2, Command::GraphQuery(graph.clone())),
+            (3, Command::GraphQuery(graph.cancelled())),
+        ] {
+            let body = owner_query_body(daemon, id, command.clone());
+            let decoded = backend_engine::decode_command_dto_for_owner(&body, owner)
+                .expect("exact admitted owner proof");
+            assert_eq!(decoded.command, command);
+            assert_eq!(decoded.request_id, id);
+            let missing = serde_json::to_vec(&backend_engine::CommandDto::new(id, command))
+                .expect("uncertified request");
+            assert!(backend_engine::decode_command_dto_for_owner(&missing, owner).is_err());
+            if id != 1 {
+                let other_owner = backend_library::Cursor::new();
+                assert_ne!(owner, other_owner, "fixture has a seeded owner revision");
+                assert!(backend_engine::decode_command_dto_for_owner(&body, other_owner).is_err());
+            }
+        }
     }
 
     fn immediate_search(
@@ -9481,8 +9861,7 @@ mod tests {
                 },
             ),
         ] {
-            let body = serde_json::to_vec(&backend_engine::CommandDto::new(id, command))
-                .expect("direct DTO");
+            let body = owner_query_body(daemon, id, command);
             let started = std::time::Instant::now();
             let Executed::Reply(bytes) = adapter
                 .execute_or_defer(daemon, &body, id + 1000)
@@ -9548,11 +9927,7 @@ mod tests {
         entered
             .recv_timeout(Duration::from_secs(2))
             .expect("held corpus");
-        let body = serde_json::to_vec(&backend_engine::CommandDto::new(
-            802,
-            Command::GraphQuery(query.clone()),
-        ))
-        .expect("structured DTO");
+        let body = owner_query_body(daemon, 802, Command::GraphQuery(query.clone()));
         let Executed::Reply(bytes) = adapter
             .execute_or_defer(daemon, &body, 1802)
             .expect("shared readiness")
@@ -9564,11 +9939,7 @@ mod tests {
             "preparing",
             daemon,
         );
-        let body = serde_json::to_vec(&backend_engine::CommandDto::new(
-            803,
-            Command::GraphQuery(query.cancelled()),
-        ))
-        .expect("cancel DTO");
+        let body = owner_query_body(daemon, 803, Command::GraphQuery(query.cancelled()));
         let Executed::Reply(bytes) = adapter
             .execute_or_defer(daemon, &body, 1803)
             .expect("immediate cancel")

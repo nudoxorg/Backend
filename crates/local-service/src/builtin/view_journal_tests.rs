@@ -240,6 +240,8 @@ fn workspace_head_change_starts_with_a_snapshot_before_any_view_event() {
 #[test]
 fn stale_selected_head_rebuild_keeps_only_the_lineage_checked_cursor_sequence() {
     let temp = tempfile::tempdir().expect("private owner workspace");
+    crate::test_support::make_private(temp.path())
+        .expect("make journal-owner fixture current-user private");
     let profile =
         super::super::profile_descriptor(super::super::BuiltinProfile::Product).expect("profile");
     let dispatcher = super::super::builtin_dispatcher(
@@ -1114,6 +1116,8 @@ fn capture_only_generation_rebind_cold_recovers_then_retains_compact_events() {
     use backend_engine::builtin::{ProductSemanticCaptureOutcome, ProductSemanticPublicationKey};
     use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, TypeScriptSource};
     let temp = tempfile::tempdir().expect("private owner workspace");
+    crate::test_support::make_private(temp.path())
+        .expect("make journal-owner fixture current-user private");
     let profile =
         super::super::profile_descriptor(super::super::BuiltinProfile::Product).expect("profile");
     let dispatcher = super::super::builtin_dispatcher(
@@ -1363,7 +1367,7 @@ fn journal_v3_payload(bytes: &[u8], field: &str, version: u16) -> Vec<u8> {
 
 #[test]
 fn journal_v3_known_snapshots_events_chain_to_current_without_replacing_history() {
-    for version in [21, 22, 23, 24, 25, 26, backend_library::DTO_VERSION] {
+    for version in [21, 22, 23, 24, 25, 26, 27, backend_library::DTO_VERSION] {
         journal_v3_known_version_chain(version);
     }
 }
@@ -1588,7 +1592,7 @@ fn journal_v3_refuses_unknown_versions_fields_proof_basis_and_descriptor_changes
 
 #[test]
 fn journal_v3_native_v21_fixture_appends_checked_current_and_reopens_twice() {
-    assert_eq!(backend_library::DTO_VERSION, 27);
+    assert_eq!(backend_library::DTO_VERSION, 28);
     // Exact historical codec output: native ARM64 source 9b0001b3af, whose
     // production persisted grammar is still v21. No field/version rewrite.
     let native = include_bytes!("fixtures/view-journal-v3-native-v21.bin");

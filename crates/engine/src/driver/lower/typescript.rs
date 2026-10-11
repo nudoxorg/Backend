@@ -10437,6 +10437,58 @@ fn intern_native_tsz_associative<'source>(
     )
 }
 
+type NativeTszOwnerNameSources<'source> =
+    HashMap<TszSymbolId, HashMap<&'source str, Option<&'source str>>>;
+
+fn native_tsz_owner_name_sources<'source>(
+    project: Option<&'source TszProject>,
+    database: &dyn TszTypeDatabase,
+    shape: &TszObjectShape,
+) -> Result<Option<NativeTszOwnerNameSources<'source>>, TypeScriptCollectError> {
+    // Build a local borrowed index once for each exact declaring owner. All
+    // ownership scans finish before any object children are interned; a stopped
+    // scan drops its local index and propagates the shared typed stop reason.
+    let mut owner_names: HashMap<TszSymbolId, HashMap<&str, Option<&str>>> = HashMap::new();
+    for property in &shape.properties {
+        database.execution_checkpoint(1).map_err(|stop| {
+            TypeScriptCollectError::TszAuthority(TszAuthorityError::ExecutionStopped(stop))
+        })?;
+        if property.is_symbol_named || property.write_type != property.type_id {
+            return Ok(None);
+        }
+        if let Some(symbol) = property.parent_id {
+            if let std::collections::hash_map::Entry::Vacant(entry) = owner_names.entry(symbol) {
+                let mut names = HashMap::new();
+                if let Some(project) = project {
+                    project
+                        .with_property_name_sources_from_owner(
+                            symbol,
+                            |work| database.execution_checkpoint(work),
+                            |name, raw| match names.entry(name) {
+                                std::collections::hash_map::Entry::Vacant(entry) => {
+                                    entry.insert(Some(raw));
+                                }
+                                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                                    if entry.get().is_some_and(|previous| previous != raw) {
+                                        entry.insert(None);
+                                    }
+                                }
+                            },
+                        )
+                        .map_err(|stop| {
+                            TypeScriptCollectError::TszAuthority(
+                                TszAuthorityError::ExecutionStopped(stop),
+                            )
+                        })?;
+                }
+                entry.insert(names);
+            }
+        }
+    }
+
+    Ok(Some(owner_names))
+}
+
 fn intern_native_tsz_object<'source>(
     registry: &FactRegistry<'_, 'source>,
     facts: &mut FactSet<'source>,
@@ -10451,21 +10503,32 @@ fn intern_native_tsz_object<'source>(
         return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
     }
 
-    // Resolve every public named property through its TSZ declaration symbol
-    // when one exists. Anonymous structural members have no symbol in TSZ's
-    // PropertyInfo, so those names require a parsed property-name node within
-    // this exact owner declaration and source file. In either case the row
-    // borrows source bytes rather than formatting an atom into invented text.
+    let Some(owner_names) = native_tsz_owner_name_sources(registry.tsz_project, database, shape)?
+    else {
+        return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
+    };
+
+    // Anonymous structural properties retain their separate parsed declaration
+    // route. Owner-backed lookups use decoded names as borrowed index keys and
+    // refuse conflicting raw spellings without selecting a declaration by order.
     let mut members = Vec::with_capacity(shape.properties.len());
     for property in &shape.properties {
-        if property.is_symbol_named || property.write_type != property.type_id {
-            return intern_computed_leaf(facts, unknown_record(TypeReason::OracleGap), owner);
-        }
         let name = database.resolve_atom_ref(property.name);
+        database
+            .execution_checkpoint(
+                u64::try_from(name.len())
+                    .unwrap_or(u64::MAX)
+                    .saturating_add(1),
+            )
+            .map_err(|stop| {
+                TypeScriptCollectError::TszAuthority(TszAuthorityError::ExecutionStopped(stop))
+            })?;
         let spelling = match property.parent_id {
-            Some(symbol) => registry
-                .tsz_project
-                .and_then(|project| project.symbol_name_source(symbol, &name)),
+            Some(symbol) => owner_names
+                .get(&symbol)
+                .and_then(|names| names.get(name.as_ref()))
+                .copied()
+                .flatten(),
             None => usize::try_from(owner).ok().and_then(|owner_index| {
                 let start = *registry.decl_starts.get(owner_index)?;
                 let end = *registry.decl_ends.get(owner_index)?;
@@ -11225,6 +11288,7 @@ mod lane_tests {
             checker,
             semantic_options: TszProjectSemanticOptions::declaration_scoped(),
             module_resolutions: Vec::new(),
+            file_formats: Vec::new(),
             environment: TszEnvironmentFingerprint::from_sha256([0x5a; 32]),
         };
         let mut authority = TszProjectAuthority::new();
@@ -11281,6 +11345,7 @@ mod lane_tests {
             checker,
             semantic_options: TszProjectSemanticOptions::declaration_scoped(),
             module_resolutions: module_resolutions.to_vec(),
+            file_formats: Vec::new(),
             environment: TszEnvironmentFingerprint::from_sha256([0x71; 32]),
         };
         let mut authority = TszProjectAuthority::new();
@@ -11622,6 +11687,7 @@ mod lane_tests {
             checker,
             semantic_options: TszProjectSemanticOptions::declaration_scoped(),
             module_resolutions: Vec::new(),
+            file_formats: Vec::new(),
             environment: TszEnvironmentFingerprint::from_sha256([0x6b; 32]),
         };
         let mut authority = TszProjectAuthority::new();
@@ -12178,6 +12244,250 @@ describe('suite', () => {\n\
     }
 
     #[test]
+    fn native_tsz_owner_source_index_keeps_inherited_and_overridden_owners_distinct()
+    -> Result<(), LaneError> {
+        let authority = native_tsz_project_with_resolutions(
+            &[(
+                "input.ts",
+                concat!(
+                    r"export declare class Base { inherited: string; v\u0061lue: number; } ",
+                    "export declare class Child extends Base { value: number; café: string; } ",
+                    "export declare const settings: Child;",
+                ),
+            )],
+            &[],
+        )?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("inheritance project"))?;
+        project.with_file_checker_and_types(0, |checker, binder, file, database| -> Result<(), LaneError> {
+            let symbol = binder.file_locals.get("settings").ok_or(LaneError::Missing("bound inherited instance"))?;
+            let ty = checker.get_type_of_symbol(symbol);
+            let ty = checker.resolve_lazy_type(ty);
+            let shape_id = match database.lookup(ty) {
+                Some(super::TypeData::Object(shape)) | Some(super::TypeData::ObjectWithIndex(shape)) => shape,
+                _ => return Err(LaneError::Missing("actual inherited class shape")),
+            };
+            let shape = database.object_shape(shape_id);
+            assert!(shape.symbol.is_some(), "source-index test preserves actual nominal shape");
+            let bound_owner = |expected: &str| file.arena.nodes.iter().enumerate().find_map(|(raw, node)| {
+                let class = file.arena.get_class(node)?;
+                let name = file.arena.get_identifier(file.arena.get(class.name)?)?;
+                (name.escaped_text == expected).then(|| file.node_symbols.get(&u32::try_from(raw).ok()?).copied()).flatten()
+            }).expect("actual declaring class binding");
+            let base = bound_owner("Base");
+            let child = bound_owner("Child");
+            assert_ne!(base, child);
+            let names = super::native_tsz_owner_name_sources(Some(project), database, &shape)?
+                .ok_or(LaneError::Missing("complete inherited owner index"))?;
+            assert_eq!(names.len(), 2, "each captured declaring owner has a separate borrowed index");
+            assert_eq!(shape.properties.len(), 3);
+            for property in &shape.properties {
+                let name = database.resolve_atom_ref(property.name);
+                let (owner, raw) = match name.as_ref() {
+                    "inherited" => (base, "inherited"),
+                    "value" => (child, "value"),
+                    "café" => (child, "café"),
+                    _ => return Err(LaneError::Missing("actual inherited property")),
+                };
+                assert_eq!(property.parent_id, Some(owner));
+                assert_eq!(names.get(&owner).unwrap().get(name.as_ref()), Some(&Some(raw)));
+            }
+            assert_eq!(names.get(&base).unwrap().get("value"), Some(&Some(r"v\u0061lue")),
+                "an overridden same-spelled base property cannot lend its different raw token to the child's property");
+            assert!(!names.get(&base).unwrap().contains_key("café"));
+            assert!(!names.get(&child).unwrap().contains_key("inherited"));
+            Ok(())
+        }).map_err(|_| LaneError::Missing("checked inherited owner query"))?
+    }
+
+    #[test]
+    fn native_tsz_owner_source_index_charges_one_scan_and_latches_a_shared_stop()
+    -> Result<(), LaneError> {
+        use backend_frontend_typescript::{
+            TszExecutionCheckpoint, TszProjectExecutionBudget, TszProjectExecutionStop,
+            TszProjectQuerySessionError,
+        };
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        use std::time::{Duration, Instant};
+        struct ScanCheckpoint<'a> {
+            budget: TszProjectExecutionBudget<'a>,
+            record: AtomicBool,
+            charged: AtomicU64,
+            allowance: AtomicU64,
+        }
+        impl TszExecutionCheckpoint for ScanCheckpoint<'_> {
+            fn checkpoint(&self, work: u64) -> Result<(), TszProjectExecutionStop> {
+                self.budget.checkpoint(work)?;
+                if self.record.load(Ordering::Acquire) {
+                    self.charged.fetch_add(work, Ordering::AcqRel);
+                    self.allowance
+                        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                            remaining.checked_sub(work)
+                        })
+                        .map_err(|_| TszProjectExecutionStop::WorkBudgetExhausted)?;
+                }
+                Ok(())
+            }
+        }
+        let cancelled = AtomicBool::new(false);
+        let checkpoint = ScanCheckpoint {
+            budget: TszProjectExecutionBudget::new(
+                Instant::now() + Duration::from_secs(30),
+                &cancelled,
+                1_000_000,
+            ),
+            record: AtomicBool::new(false),
+            charged: AtomicU64::new(0),
+            allowance: AtomicU64::new(u64::MAX),
+        };
+        let source = r"export declare class Owner { café: string; v\u0061lue: number; } export declare const settings: Owner;";
+        let mut options = TszProjectOptions {
+            checker: TszCheckerOptions::default(),
+            semantic_options: TszProjectSemanticOptions::declaration_scoped(),
+            module_resolutions: Vec::new(),
+            file_formats: Vec::new(),
+            environment: TszEnvironmentFingerprint::from_sha256([0x79; 32]),
+        };
+        options.checker.no_lib = true;
+        let mut authority = TszProjectAuthority::new();
+        authority
+            .update_with_execution_checkpoint(
+                vec![TszFileInput {
+                    path: "input.ts".to_owned(),
+                    source: source.to_owned(),
+                }],
+                options,
+                &[],
+                &checkpoint,
+            )
+            .map_err(|_| LaneError::Missing("metered owner project"))?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("metered owner project result"))?;
+        let session = project
+            .checked_query_session(&checkpoint)
+            .map_err(|_| LaneError::Missing("shared metered query session"))?;
+        let result = session.with_file_checker_and_types(0, |checker, binder, _file, database| -> Result<(), LaneError> {
+            let symbol = binder.file_locals.get("settings").ok_or(LaneError::Missing("real class-typed declaration"))?;
+            let ty = checker.get_type_of_symbol(symbol);
+            let ty = checker.resolve_lazy_type(ty);
+            let shape_id = match database.lookup(ty) {
+                Some(super::TypeData::Object(shape)) | Some(super::TypeData::ObjectWithIndex(shape)) => shape,
+                _ => return Err(LaneError::Missing("real class shape")),
+            };
+            let shape = database.object_shape(shape_id);
+            assert!(shape.symbol.is_some(), "the actual nominal shape stays unchanged; this law tests only its source-index primitive");
+            assert_eq!(shape.properties.len(), 2);
+            checkpoint.record.store(true, Ordering::Release);
+            let complete = super::native_tsz_owner_name_sources(Some(project), database, &shape)?
+                .ok_or(LaneError::Missing("complete source index"))?;
+            checkpoint.record.store(false, Ordering::Release);
+            let tokens = complete.values().flat_map(|names| names.iter()).map(|(name, raw)| {
+                name.len() + raw.expect("unambiguous token").len()
+            }).sum::<usize>();
+            assert_eq!(checkpoint.charged.load(Ordering::Acquire), 2 + 1 + 2 + tokens as u64,
+                "two properties scan their one exact owner once and charge each token byte");
+            checkpoint.allowance.store(15, Ordering::Release);
+            checkpoint.record.store(true, Ordering::Release);
+            let stopped = super::native_tsz_owner_name_sources(Some(project), database, &shape);
+            assert!(matches!(stopped, Err(TypeScriptCollectError::TszAuthority(
+                backend_frontend_typescript::TszAuthorityError::ExecutionStopped(TszProjectExecutionStop::WorkBudgetExhausted)))),
+                "a stopped index returns the exact typed terminal, never a prefix or OracleGap");
+            assert_eq!(database.execution_checkpoint(0), Err(TszProjectExecutionStop::WorkBudgetExhausted),
+                "the same native QueryCache latches the source scan's stop");
+            checkpoint.record.store(false, Ordering::Release);
+            Ok(())
+        });
+        assert!(
+            matches!(
+                result,
+                Err(TszProjectQuerySessionError::ExecutionStopped(
+                    TszProjectExecutionStop::WorkBudgetExhausted
+                ))
+            ),
+            "the owning query-session boundary refuses the stopped callback output"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_property_parent_is_the_exact_cross_file_class_owner() -> Result<(), LaneError> {
+        let authority = native_tsz_project_with_resolutions(
+            &[
+                (
+                    "types.d.ts",
+                    r"export declare class Owner { café: string; v\u0061lue: number; }",
+                ),
+                (
+                    "foreign.d.ts",
+                    r"export declare class Owner { c\u0061fé: string; foreignOnly: number; }",
+                ),
+                (
+                    "src/main.ts",
+                    "import type { Owner } from '../types'; export declare const settings: Owner;",
+                ),
+            ],
+            &[module_resolution(
+                "src/main.ts",
+                "../types",
+                TszProjectModuleRequestKind::EsmImport,
+                TszProjectModuleResolutionTarget::File {
+                    path: "types.d.ts".to_owned(),
+                },
+            )],
+        )?;
+        let project = authority
+            .project()
+            .ok_or(LaneError::Missing("owner project"))?;
+        let importer = project
+            .program()
+            .files
+            .iter()
+            .position(|file| file.file_name == "src/main.ts")
+            .ok_or(LaneError::Missing("exact importer"))?;
+        project.with_file_checker_and_types(importer, |checker, binder, _file, database| {
+            let symbol = binder.file_locals.get("settings").ok_or(LaneError::Missing("bound settings"))?;
+            let ty = checker.get_type_of_symbol(symbol);
+            let ty = checker.resolve_lazy_type(ty);
+            let shape_id = match database.lookup(ty) {
+                Some(super::TypeData::Object(shape)) | Some(super::TypeData::ObjectWithIndex(shape)) => shape,
+                _ => return Err(LaneError::Missing("actual checker class instance shape")),
+            };
+            let shape = database.object_shape(shape_id);
+            let owner = shape.symbol.ok_or(LaneError::Missing("preserved nominal class identity"))?;
+            let declaration_file = project.program().files.iter().find(|file| file.file_name == "types.d.ts")
+                .ok_or(LaneError::Missing("owner declaration file"))?;
+            let owner_data = project.program().symbols.get(owner).ok_or(LaneError::Missing("captured owner symbol"))?;
+            assert!(owner_data.declarations.iter().any(|node| declaration_file.node_symbols.get(&node.0) == Some(&owner)),
+                "the nominal owner is bound to its actual dependency declaration");
+            assert_eq!(shape.properties.len(), 2);
+            let names = super::native_tsz_owner_name_sources(Some(project), database, &shape)?
+                .ok_or(LaneError::Missing("complete owner index"))?;
+            assert_eq!(names.len(), 1, "two real properties scan one captured owner");
+            assert_eq!(names.get(&owner).unwrap().get("café"), Some(&Some("café")));
+            assert_eq!(names.get(&owner).unwrap().get("value"), Some(&Some(r"v\u0061lue")));
+            assert!(!names.get(&owner).unwrap().contains_key("foreignOnly"));
+            for property in &shape.properties {
+                assert_eq!(property.parent_id, Some(owner),
+                    "the checker gives this engine consumer the class owner, not a property symbol");
+                let name = database.resolve_atom_ref(property.name);
+                let expected = match name.as_ref() {
+                    "café" => "café",
+                    "value" => r"v\u0061lue",
+                    _ => return Err(LaneError::Missing("exact owner property names")),
+                };
+                assert_eq!(project.symbol_name_source(owner, &name), None,
+                    "a member-bound spelling lookup cannot interpret this actual owner identity");
+                assert_eq!(project.property_name_source_from_owner(owner, &name), Some(expected),
+                    "the engine's owner-spelling boundary borrows the exact retained dependency token");
+            }
+            assert_eq!(project.property_name_source_from_owner(owner, "foreignOnly"), None);
+            Ok(())
+        }).map_err(|_| LaneError::Missing("checked owner query"))?
+    }
+
+    #[test]
     fn native_tsz_preserves_a_source_owned_mapped_type_node() -> Result<(), LaneError> {
         let source = "export type Labels<T> = { [K in keyof T]: string };";
         let ir = owned_tsz_ir(source)?;
@@ -12356,15 +12666,28 @@ describe('suite', () => {\n\
             .map_err(|error| {
                 LaneError::ConfiguredProject(format!("resolver witness: {error:?}"))
             })?;
-        let route_path = native
-            .package_paths
+        let package_membership = &native.package_membership;
+        assert_eq!(package_membership.len(), source_paths.len());
+        for path in source_paths {
+            package_membership
+                .get(path)
+                .ok_or(LaneError::Missing(
+                    "captured configured corpus source membership",
+                ))?
+                .selected_program_path()
+                .ok_or(LaneError::Missing(
+                    "configured corpus source excluded from selected program",
+                ))?;
+        }
+        let route_path = package_membership
             .get("src/app/api/route.ts")
-            .cloned()
+            .ok_or(LaneError::Missing("captured alias importer membership"))?
+            .selected_program_path()
             .ok_or(LaneError::Missing("exact alias importer TSZ path"))?;
-        let scheduler_path = native
-            .package_paths
+        let scheduler_path = package_membership
             .get("src/lib/scheduler.ts")
-            .cloned()
+            .ok_or(LaneError::Missing("captured aliased target membership"))?
+            .selected_program_path()
             .ok_or(LaneError::Missing("exact aliased target TSZ path"))?;
         assert!(
             !native.options.checker.no_lib,
@@ -12377,19 +12700,18 @@ describe('suite', () => {\n\
         );
         assert!(
             native.options.module_resolutions.iter().any(|resolution| {
-                resolution.importer_path == route_path.as_ref()
+                resolution.importer_path.as_str() == route_path
                     && resolution.specifier == "@/lib/scheduler"
                     && matches!(
                         &resolution.target,
                         TszProjectModuleResolutionTarget::File { path }
-                            if path == scheduler_path.as_ref()
+                            if path.as_str() == scheduler_path
                     )
             }),
             "the compiler's paths alias resolves to its exact source file"
         );
 
         let work_units = native.work_units;
-        let package_path_map = native.package_paths;
         let budget = TszProjectExecutionBudget::new(deadline, &cancelled, work_units);
         let mut authority = TszProjectAuthority::new();
         authority
@@ -12410,8 +12732,10 @@ describe('suite', () => {\n\
             .iter()
             .position(|path| *path == "src/app/api/route.ts")
             .ok_or(LaneError::Missing("alias importer source"))?;
-        let route_path = package_path_map
+        let route_path = package_membership
             .get(source_paths[route_index])
+            .ok_or(LaneError::Missing("captured alias importer membership"))?
+            .selected_program_path()
             .ok_or(LaneError::Missing("exact alias importer TSZ path"))?;
         let mut route_facts = FactSet::new();
         collect_with_tsz(
@@ -12428,7 +12752,7 @@ describe('suite', () => {\n\
             .ok_or(LaneError::Missing("aliased source declaration name"))?;
         assert!(
             targets.iter().any(|(_, path, _, _, name_start, _)| {
-                path == scheduler_path.as_ref() && *name_start == scheduler_name as u32
+                path.as_str() == scheduler_path && *name_start == scheduler_name as u32
             }),
             "aliased use must point to the exact dependency declaration: {targets:?}"
         );

@@ -31,18 +31,35 @@ use super::{
 /// so it is lifetime-free and can be shared (`Arc`) across per-file checkers.
 #[must_use]
 pub fn build_lib_file_local_names(lib_contexts: &[LibContext]) -> Option<Arc<FxHashSet<String>>> {
+    build_lib_file_local_names_with_poll(lib_contexts, |_| Ok::<(), std::convert::Infallible>(()))
+        .unwrap_or_else(|never| match never {})
+}
+
+/// Build the exact library-name index under the caller's cooperative control.
+/// A stop discards the local index; no incomplete name set is returned.
+///
+/// # Errors
+/// Returns the exact caller polling error before publishing a name set.
+pub fn build_lib_file_local_names_with_poll<E>(
+    lib_contexts: &[LibContext],
+    mut poll: impl FnMut(u64) -> Result<(), E>,
+) -> Result<Option<Arc<FxHashSet<String>>>, E> {
+    poll(0)?;
     if lib_contexts.is_empty() {
-        return None;
+        return Ok(None);
     }
     let mut names: FxHashSet<String> = FxHashSet::default();
     for lib_ctx in lib_contexts {
+        poll(1)?;
         for (name, _sym_id) in lib_ctx.binder.file_locals.iter() {
+            poll(1)?;
             if !names.contains(name.as_str()) {
                 names.insert(name.clone());
             }
         }
     }
-    Some(Arc::new(names))
+    poll(0)?;
+    Ok(Some(Arc::new(names)))
 }
 
 /// Kill-switch for order-independent cross-file alias/`export =` resolution.

@@ -21,6 +21,11 @@ mod page_wire;
 mod read_manifest_wire;
 #[path = "command/semantic_shape_wire.rs"]
 mod semantic_shape_wire;
+#[path = "command/binary_certificate.rs"]
+mod binary_certificate;
+pub use binary_certificate::{
+    encode_binary_certificate_command, expand_binary_certificate_command,
+};
 pub(crate) use cursor_wire::{
     cursor_from_wire, cursor_from_wire_with_capability, cursor_to_wire, frontier_from_wire,
     frontier_from_wire_with_capability, frontier_to_wire,
@@ -538,11 +543,15 @@ pub(crate) fn decode_journal_view(
 }
 
 pub(crate) fn ensure_version(version: u16, kind: &str) -> Result<(), String> {
-    if version == DTO_VERSION {
+    ensure_version_against(version, kind, DTO_VERSION)
+}
+
+pub(super) fn ensure_version_against(version: u16, kind: &str, supported: u16) -> Result<(), String> {
+    if version == supported {
         Ok(())
     } else {
         Err(format!(
-            "unsupported {kind} DTO version {version}; this build supports {DTO_VERSION}. Use Nudox clients and local service from the same build; rebuild your CLI/MCP client or restart the outdated service"
+            "unsupported {kind} DTO version {version}; this build supports {supported}. Use Nudox clients and local service from the same build; rebuild your CLI/MCP client or restart the outdated service"
         ))
     }
 }
@@ -562,6 +571,16 @@ struct CommandEnvelope {
     request_id: u64,
     command: CommandWire,
     certificate: Option<WireCertificate>,
+}
+
+// Serialization borrows the complete proof. The owned envelope above remains
+// the strict untrusted decoder grammar; both have exactly the same fields.
+#[derive(Serialize)]
+struct CommandEnvelopeRef<'a> {
+    version: u16,
+    request_id: u64,
+    command: &'a CommandWire,
+    certificate: Option<&'a WireCertificate>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -738,11 +757,11 @@ impl FrontierWire {}
 impl Serialize for CommandDto {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let command = command_to_wire(&self.command);
-        CommandEnvelope {
+        CommandEnvelopeRef {
             version: DTO_VERSION,
             request_id: self.request_id,
-            command,
-            certificate: self.certificate().cloned(),
+            command: &command,
+            certificate: self.certificate(),
         }
         .serialize(serializer)
     }

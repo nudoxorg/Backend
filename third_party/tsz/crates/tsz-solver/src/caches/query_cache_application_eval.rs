@@ -25,11 +25,15 @@ impl TypeApplicationEvalCache for QueryCache<'_> {
         def_id: DefId,
         params: std::sync::Arc<[crate::types::TypeParamInfo]>,
     ) {
-        self.interner
-            .register_provisional_class_instance(type_id, def_id, params);
+        if !self.execution_stopped() {
+            self.interner
+                .register_provisional_class_instance(type_id, def_id, params);
+        }
     }
 
     fn unregister_provisional_class_instances_for_def(&self, def_id: DefId) {
+        // Always run cleanup for provisional registrations, including while
+        // unwinding a stopped request.
         self.interner
             .unregister_provisional_class_instances_for_def(def_id);
     }
@@ -48,7 +52,9 @@ impl TypeApplicationEvalCache for QueryCache<'_> {
         key: crate::caches::instantiation_cache::InstantiationCacheKey,
         result: TypeId,
     ) {
-        self.interner.set_proto_instantiation_memo(key, result);
+        if !self.execution_stopped() {
+            self.interner.set_proto_instantiation_memo(key, result);
+        }
     }
 
     fn lookup_application_eval_cache(
@@ -126,13 +132,18 @@ impl TypeApplicationEvalCache for QueryCache<'_> {
     /// Write-through eval-memo store for plain evaluators (issue #13097).
     /// First write wins, matching the top-level boundary drain.
     fn insert_eval_memo(&self, type_id: TypeId, no_unchecked_indexed_access: bool, result: TypeId) {
+        if self.execution_stopped() {
+            return;
+        }
         let key = EvaluationCacheKey::new(
             type_id,
             no_unchecked_indexed_access,
             self.exact_optional_property_types(),
         );
         self.insert_eval_cache_entry_if_absent(key, result);
-        if let Some(shared) = self.shared {
+        if !self.execution_stopped()
+            && let Some(shared) = self.shared
+        {
             shared.insert_eval_cache_if_absent(self.interner, self.definition_store(), key, result);
         }
     }
@@ -194,6 +205,9 @@ impl TypeApplicationEvalCache for QueryCache<'_> {
         exact_optional_property_types: bool,
         verdict: bool,
     ) {
+        if self.execution_stopped() {
+            return;
+        }
         self.conditional_branch_verdict_cache.borrow_mut().insert(
             (
                 check,
@@ -231,6 +245,9 @@ impl TypeApplicationEvalCache for QueryCache<'_> {
         exact_optional_property_types: bool,
         verdict: bool,
     ) {
+        if self.execution_stopped() {
+            return;
+        }
         self.permissive_false_branch_cache.borrow_mut().insert(
             (
                 check,

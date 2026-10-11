@@ -33,11 +33,17 @@ pub(crate) struct RegionCore {
 impl RegionCore {
     /// A core watching `branches` and nothing else yet.
     pub(crate) fn new(store: &DataStore, branches: &[Branch]) -> Self {
+        // Each cached region paints owner-bound capabilities, including local
+        // controls whose resource neighbours may have no current page slot.
+        // Attachment movement must invalidate those painted capabilities even
+        // when no watched resource or snapshot content changes.
+        let mut branches = branches.to_vec();
+        branches.push(Branch::Owner);
         Self {
             width: px(0.0),
             modes: Modes::new(),
             renders: 0,
-            watch: Watch::new(store, [], branches),
+            watch: Watch::new(store, [], &branches),
             _events: None,
         }
     }

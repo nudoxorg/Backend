@@ -111,7 +111,7 @@ impl CheckerContext<'_> {
         &'b self,
         binder: &'b tsz_binder::BinderState,
         file_name: &str,
-    ) -> Option<&'b Vec<(String, bool)>> {
+    ) -> Option<&'b tsz_binder::WildcardReexportRows> {
         if let Some(ref idx) = self.program_wildcard_reexports {
             return Self::lookup_any_file_key(file_name, idx.as_ref());
         }
@@ -185,6 +185,55 @@ impl CheckerContext<'_> {
         // "*.svg"`) stores its exports under the pattern key. Resolve the
         // specifier onto its matching pattern as tsc does, else bindings = `any`.
         self.lookup_wildcard_module_exports(module_key, map)
+    }
+
+    /// Only the ambient surface admitted for this exact External request.
+    /// Program file keys and competing request kinds cannot lend exports.
+    pub(crate) fn ambient_exports_for_selected_request<'b>(
+        &'b self,
+        binder: &'b tsz_binder::BinderState,
+        selected: super::SelectedModuleRequest<'_>,
+    ) -> Option<(&'b str, &'b tsz_binder::SymbolTable)> {
+        selected.external_identity()?;
+        let spelling = selected.request().specifier;
+        let map = self
+            .program_module_exports
+            .as_ref()
+            .map(|map| map.as_ref())
+            .unwrap_or(binder.module_exports.as_ref());
+        if self.declared_modules_contains(binder, spelling)
+            && !self.is_captured_program_file_key(spelling)?
+        {
+            return map
+                .get_key_value(spelling)
+                .map(|(key, exports)| (key.as_str(), exports));
+        }
+        let key = if let Some(declared) = self.global_declared_modules.as_ref() {
+            declared.best_matching_pattern(spelling)?
+        } else {
+            crate::context::global_declared_modules::best_wildcard_match(
+                binder
+                    .declared_modules
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|name| name.contains('*')),
+                spelling,
+            )?
+        };
+        if self.is_captured_program_file_key(key)? {
+            return None;
+        }
+        map.get_key_value(key)
+            .map(|(key, exports)| (key.as_str(), exports))
+    }
+
+    pub(crate) fn module_exports_for_external_request<'b>(
+        &'b self,
+        binder: &'b tsz_binder::BinderState,
+        selected: super::SelectedModuleRequest<'_>,
+    ) -> Option<&'b tsz_binder::SymbolTable> {
+        self.ambient_exports_for_selected_request(binder, selected)
+            .map(|(_, exports)| exports)
     }
 
     /// Resolve a concrete module specifier onto a declared *wildcard* ambient
@@ -325,7 +374,25 @@ impl CheckerContext<'_> {
         member_name: &str,
     ) -> Option<tsz_binder::SymbolId> {
         let source_file_idx = self.resolve_symbol_file_index(alias_id)?;
-        let target_idx = self.resolve_import_target_from_file(source_file_idx, module_specifier)?;
+        let target_idx = if self.project_module_resolution_outcomes.is_some() {
+            let request = self.bound_module_request_for_alias(alias_id)?;
+            let selected = self.select_module_request(request)?;
+            if selected.external_identity().is_some() {
+                let binders = self.all_binders.as_ref()?;
+                for binder in binders.iter() {
+                    if let Some(symbol) = self
+                        .module_exports_for_external_request(binder, selected)
+                        .and_then(|exports| exports.get(member_name))
+                    {
+                        return Some(symbol);
+                    }
+                }
+                return None;
+            }
+            selected.file_target()?
+        } else {
+            self.resolve_import_target_from_file(source_file_idx, module_specifier)?
+        };
         let mut visited = FxHashSet::default();
         self.resolve_export_in_target_file(target_idx, member_name, &mut visited)
     }
@@ -370,10 +437,14 @@ impl CheckerContext<'_> {
             && let Some((source_module, original_name)) = reexports.get(export_name)
         {
             let name = original_name.as_deref().unwrap_or(export_name);
-            if let Some(source_idx) =
-                self.resolve_import_target_from_file(target_idx, source_module)
-                && let Some(resolved) =
-                    self.resolve_export_in_target_file(source_idx, name, visited)
+            if let Some(source_idx) = self.resolve_named_reexport_target_from_file(
+                target_idx,
+                &file_name,
+                source_module,
+                export_name,
+                name,
+            ) && let Some(resolved) =
+                self.resolve_export_in_target_file(source_idx, name, visited)
             {
                 return Some(resolved);
             }
@@ -381,10 +452,10 @@ impl CheckerContext<'_> {
 
         // Wildcard re-exports: `export * from './other'`.
         if let Some(source_modules) = self.wildcard_reexports_for_file(target_binder, &file_name) {
-            let source_modules = source_modules.clone();
-            for (source_module, _is_type_only) in &source_modules {
+            let source_modules = source_modules.shared();
+            for edge in source_modules.edges() {
                 if let Some(source_idx) =
-                    self.resolve_import_target_from_file(target_idx, source_module)
+                    self.resolve_wildcard_reexport_target_from_file(target_idx, &file_name, edge)
                     && let Some(resolved) =
                         self.resolve_export_in_target_file(source_idx, export_name, visited)
                 {
@@ -396,6 +467,9 @@ impl CheckerContext<'_> {
         // Fallback: the target binder's own re-export resolution for
         // single-file / ambient-module binders whose local tables are
         // populated (e.g. `declare module "x" { ... }`).
+        if self.project_module_resolution_outcomes.is_some() {
+            return None;
+        }
         target_binder
             .resolve_import_with_reexports_type_only(&file_name, export_name)
             .map(|(sym_id, _)| {
@@ -438,25 +512,28 @@ impl CheckerContext<'_> {
             && let Some((source_module, original_name)) = reexports.get(export_name)
         {
             let name = original_name.as_deref().unwrap_or(export_name);
-            if let Some(source_idx) =
-                self.resolve_import_target_from_file(target_idx, source_module)
-                && let Some(resolved) = self.resolve_export_in_target_file_with_owner(
-                    source_idx,
-                    name,
-                    visited,
-                    remaining_steps,
-                )
-            {
+            if let Some(source_idx) = self.resolve_named_reexport_target_from_file(
+                target_idx,
+                &file_name,
+                source_module,
+                export_name,
+                name,
+            ) && let Some(resolved) = self.resolve_export_in_target_file_with_owner(
+                source_idx,
+                name,
+                visited,
+                remaining_steps,
+            ) {
                 return Some(resolved);
             }
         }
 
         // Wildcard re-exports: `export * from './other'`.
         if let Some(source_modules) = self.wildcard_reexports_for_file(target_binder, &file_name) {
-            let source_modules = source_modules.clone();
-            for (source_module, _is_type_only) in &source_modules {
+            let source_modules = source_modules.shared();
+            for edge in source_modules.edges() {
                 if let Some(source_idx) =
-                    self.resolve_import_target_from_file(target_idx, source_module)
+                    self.resolve_wildcard_reexport_target_from_file(target_idx, &file_name, edge)
                     && let Some(resolved) = self.resolve_export_in_target_file_with_owner(
                         source_idx,
                         export_name,
@@ -472,6 +549,9 @@ impl CheckerContext<'_> {
         // Fallback: the target binder's own re-export resolution for
         // single-file / ambient-module binders whose local tables are
         // populated (e.g. `declare module "x" { ... }`).
+        if self.project_module_resolution_outcomes.is_some() {
+            return None;
+        }
         target_binder
             .resolve_import_with_reexports_type_only(&file_name, export_name)
             .map(|(sym_id, _)| {
@@ -508,6 +588,11 @@ impl CheckerContext<'_> {
         let import_name = alias.import_name()?;
         if import_name == "*" {
             return None;
+        }
+        if self.project_module_resolution_outcomes.is_some() {
+            let request = self.bound_module_request_for_alias(alias_id)?;
+            let target = self.select_module_request(request)?.file_target()?;
+            return self.namespace_reexport_anchor_backing_file_in_target(target, import_name);
         }
         let import_module = alias.import_module()?.to_string();
         let import_name = import_name.to_string();
@@ -554,7 +639,18 @@ impl CheckerContext<'_> {
         import_module: &str,
         import_name: &str,
     ) -> Option<usize> {
+        if self.project_module_resolution_outcomes.is_some() {
+            return None;
+        }
         let target_idx = self.resolve_import_target_from_file(source_file_idx, import_module)?;
+        self.namespace_reexport_anchor_backing_file_in_target(target_idx, import_name)
+    }
+
+    fn namespace_reexport_anchor_backing_file_in_target(
+        &self,
+        target_idx: usize,
+        import_name: &str,
+    ) -> Option<usize> {
         let target_binder = self.get_binder_for_file(target_idx)?;
         let target_arena = self.get_arena_for_file(target_idx as u32);
         let target_file_name = target_arena.source_files.first()?.file_name.clone();
@@ -570,6 +666,10 @@ impl CheckerContext<'_> {
             return None;
         }
         let ns_module = ns_sym.import_module()?;
+        if self.project_module_resolution_outcomes.is_some() {
+            let request = self.bound_module_request_for_alias(ns_sym_id)?;
+            return self.select_module_request(request)?.file_target();
+        }
         self.resolve_import_target_from_file(target_idx, ns_module)
     }
 }

@@ -66,6 +66,16 @@ fn drawn(rig: &mut Rig) -> Vec<String> {
     rig.cx.update(|_, cx| facet::probe::take(cx)).texts.into_iter().map(|text| text.content).collect()
 }
 
+/// Native text paint includes key caps that do not publish to FACET's probe.
+fn painted_words(rig: &mut Rig) -> Vec<String> {
+    rig.cx.update(|_, cx| cx.set_global(gpui::TextTrace));
+    rig.repaint();
+    rig.cx.update(|window, _| window.painted_texts().iter()
+        .filter(|text| text.alpha > 0.0 && text.bounds.size.width > gpui::px(0.0)
+            && text.bounds.size.height > gpui::px(0.0))
+        .map(|text| text.text.to_string()).collect())
+}
+
 fn overlay(rig: &mut Rig) -> Option<Overlay> {
     rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay())
 }
@@ -100,7 +110,10 @@ fn the_first_screen_says_what_the_app_is_for_and_offers_the_way_in(cx: &mut Test
     assert!(add.1.size.width > gpui::px(40.0) && add.1.size.height > gpui::px(16.0), "and it has a body: {:?}", add.1);
     let words = drawn(&mut rig);
     assert!(words.iter().any(|line| line == "or press"), "the key that does the same is offered: {words:#?}");
-    assert_eq!(crate::shell::keys::cap(crate::shell::keys::Command::AddFolder), "⌘O", "and it is ⌘O");
+    let cap = if cfg!(target_os = "macos") { "⌘O" } else { "Ctrl+O" };
+    let paint = painted_words(&mut rig);
+    assert!(paint.iter().any(|line| line == cap), "the native painted shortcut matches this platform: {paint:#?}");
+    assert_eq!(crate::shell::keys::cap(crate::shell::keys::Command::AddFolder), cap);
 }
 
 #[gpui::test]
@@ -213,6 +226,9 @@ fn enter_adds_the_folder_and_lands_on_the_library_saying_what_it_is_doing(cx: &m
         !said.iter().any(|line| line.contains('%')),
         "the owner reports no percentage, so none is drawn: {said:#?}"
     );
+    let paint = painted_words(&mut rig);
+    let cap = if cfg!(target_os = "macos") { "⌘O" } else { "Ctrl+O" };
+    assert!(paint.iter().any(|line| line == cap), "Add another folder paints the platform shortcut: {paint:#?}");
 }
 
 #[gpui::test]

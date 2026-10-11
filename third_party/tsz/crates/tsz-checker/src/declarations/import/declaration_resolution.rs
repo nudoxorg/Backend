@@ -2,7 +2,6 @@
 //! module/file resolution utilities.
 //!
 //! Contains:
-//! - `resolved_module_set_contains_specifier` — O(1) resolved-module lookup
 //! - `check_reexport_chain_for_cycles` — circular `export *` guard
 //! - `would_create_cycle` — import stack cycle test
 //! - `resolve_import_via_target_binder` / `resolve_import_via_all_binders` — cross-binder lookup
@@ -26,14 +25,6 @@ pub(crate) fn path_has_node_modules_segment(file_name: &str) -> bool {
 }
 
 impl<'a> CheckerState<'a> {
-    pub(crate) fn resolved_module_set_contains_specifier(&self, module_name: &str) -> bool {
-        self.ctx.resolved_modules.as_ref().is_some_and(|resolved| {
-            crate::module_resolution::module_specifier_candidates(module_name)
-                .iter()
-                .any(|candidate| resolved.contains(candidate))
-        })
-    }
-
     // =========================================================================
     // Re-export Cycle Detection
     // =========================================================================
@@ -51,6 +42,11 @@ impl<'a> CheckerState<'a> {
         module_name: &str,
         visited: &mut FxHashSet<String>,
     ) {
+        // Configured traversal uses the exact file/edge cycle guards in the
+        // export resolver. This standalone specifier graph cannot certify it.
+        if self.ctx.project_module_resolution_outcomes.is_some() {
+            return;
+        }
         if visited.contains(module_name) {
             return;
         }
@@ -204,10 +200,13 @@ impl<'a> CheckerState<'a> {
             && let Some((source_module, original_name)) = reexports.get(import_name)
         {
             let name = original_name.as_deref().unwrap_or(import_name);
-            if let Some(source_idx) = self
-                .ctx
-                .resolve_import_target_from_file(file_idx, source_module)
-                && self.resolve_import_in_file(source_idx, name, visited)
+            if let Some(source_idx) = self.ctx.resolve_named_reexport_target_from_file(
+                file_idx,
+                &target_file_name,
+                source_module,
+                import_name,
+                name,
+            ) && self.resolve_import_in_file(source_idx, name, visited)
             {
                 return true;
             }
@@ -218,12 +217,13 @@ impl<'a> CheckerState<'a> {
             .ctx
             .wildcard_reexports_for_file(target_binder, &target_file_name)
         {
-            let source_modules = source_modules.clone();
-            for (source_module, _is_type_only) in &source_modules {
-                if let Some(source_idx) = self
-                    .ctx
-                    .resolve_import_target_from_file(file_idx, source_module)
-                    && self.resolve_import_in_file(source_idx, import_name, visited)
+            let source_modules = source_modules.shared();
+            for edge in source_modules.edges() {
+                if let Some(source_idx) = self.ctx.resolve_wildcard_reexport_target_from_file(
+                    file_idx,
+                    &target_file_name,
+                    edge,
+                ) && self.resolve_import_in_file(source_idx, import_name, visited)
                 {
                     return true;
                 }

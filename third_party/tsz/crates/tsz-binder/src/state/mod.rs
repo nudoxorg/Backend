@@ -11,6 +11,10 @@ pub mod export_surface;
 mod flow_helpers;
 mod lib_merge;
 mod resolution;
+mod retained_reexport;
+pub use retained_reexport::{
+    RetainedReexportDeclaration, RetainedWildcardReexport, WildcardReexportRows,
+};
 
 use crate::modules::resolution_debug::ModuleResolutionDebugger;
 use crate::{FlowNodeArena, FlowNodeId, Scope, ScopeId, SymbolArena, SymbolId, SymbolTable};
@@ -52,9 +56,9 @@ pub type ReexportTarget = (String, Option<String>);
 pub type FileReexports = FxHashMap<String, ReexportTarget>;
 pub type FileReexportsMap = FxHashMap<String, FileReexports>;
 /// Per-file map of `export * from "X"` source modules with type-only provenance.
-/// Maps `current_file` -> `Vec<(source_module, is_type_only)>`.
+/// Maps lexical owner -> ordered semantic targets with inline source provenance.
 /// The `is_type_only` flag is `true` for `export type * from "X"` chains.
-pub type WildcardReexportsMap = FxHashMap<String, Vec<(String, bool)>>;
+pub type WildcardReexportsMap = FxHashMap<String, WildcardReexportRows>;
 type ExportCache = FxHashMap<String, FxHashMap<String, Option<SymbolId>>>;
 /// Cache for the type-only re-export resolver. Mirrors [`ExportCache`] but also
 /// records whether the resolution path crossed an `export type * from ...`

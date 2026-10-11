@@ -323,7 +323,7 @@ impl ProductState {
                 (SurfaceReply::Advisory(advisory), false)
             }
             SurfaceCommand::Read { locators } => {
-                (SurfaceReply::Read(read(view, &locators)?), false)
+                (read_from_selected_view(view, &locators)?, false)
             }
             SurfaceCommand::Diff { from, to } => {
                 let _ = (from, to);
@@ -882,6 +882,21 @@ fn unix_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
+}
+
+/// Reads admitted batch locators using only the owner's chosen immutable view.
+/// The command decoder (or ProductState entry point) admits the request;
+/// this boundary admits the typed reply without acquiring unrelated catalog,
+/// manifest, discovery, or dependency projection authority.
+pub(super) fn read_from_selected_view(
+    view: &ViewRoot,
+    locators: &[ProductText],
+) -> Result<SurfaceReply, String> {
+    let reply = SurfaceReply::Read(read(view, locators)?);
+    reply
+        .admit(backend_library::CommandId::Read)
+        .map_err(|error| error.to_string())?;
+    Ok(reply)
 }
 
 fn read(view: &ViewRoot, locators: &[ProductText]) -> Result<Box<[DeclarationRecord]>, String> {

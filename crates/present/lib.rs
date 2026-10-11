@@ -12,8 +12,8 @@
 //! cannot name one.
 //!
 //! It sits at DAG order 10, in the `core` layer, above `backend-library` and
-//! `backend-client`. It names exactly one client type — [`backend_client::ClientError`]
-//! — because the lowering of a transport failure into a [`Fault`] is shared. If
+//! `backend-client`. It names the shared client error and its startup recovery policy
+//! because the lowering of a transport failure into a [`Fault`] is shared. If
 //! each surface mapped transport failures itself, the two surfaces would
 //! disagree about what a dropped endpoint is called the first time someone
 //! edited one of them; here they cannot. It does *not* name a session, a
@@ -72,6 +72,9 @@ mod outline;
 mod owner_recovery_tests;
 mod page;
 mod product;
+mod projection;
+#[cfg(test)]
+mod projection_tests;
 mod record;
 mod render;
 mod sections;
@@ -107,7 +110,7 @@ pub use dto::{
     IdentitySemanticData, LanguageCountDto, MemberGroupDto, OutlineDto, OutlineNodeDto, PageDto,
     ProductDto, ProductIndexSearchPageDto, ProductRecordDto, ReasonDto, RecordDto, RecordListDto,
     RelationGroupDto, SelectedSymbolIdDto, ShelfDto, ShelfEntryDto, SignatureTokenDto, SourceDto,
-    StatusDto, answer_value, fault_value,
+    StatusDto, SummaryPageDto, answer_value, fault_value,
 };
 pub use fault::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand, OwnerContext};
 pub use glyph::{KindGlyph, LanguageGlyph, RelationDirection, RelationLabel, relation_label};
@@ -130,9 +133,11 @@ pub use product::{
     ProductSemanticData, ProductSemanticHistoryProofSummary, ProductSemanticHistoryStatus,
     ProductView, product_view, product_view_for_command,
 };
+pub use projection::{PageProjection, PageSection};
 pub use record::{Record, RecordList, RecordState, Score};
 pub use render::{
-    Colour, ContinuationTarget, Style, Theme, Width, display_width, markdown, text,
+    Colour, ContinuationTarget, Style, Theme, Width, continuation_note, display_width, markdown,
+    text,
 };
 pub use sections::{LineRole, SectionKind, SectionReader};
 pub use shelf::{LanguageCount, Readiness, RowCount, Shelf, ShelfEntry};

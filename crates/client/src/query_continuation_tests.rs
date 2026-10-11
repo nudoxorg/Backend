@@ -218,18 +218,25 @@ impl CommandTransport for Transport {
             }
             for row in root.rows() {
                 // The fixture acts as the producer here. Carry every typed
-                // key referenced by the selected rows, including packages
-                // and structural parents outside this bounded page.
-                if let RowId::Package(package) = row.id {
-                    proof = proof.with_claim_once(WireClaim::KeyCommitment {
-                        schema: WireSchema::Package,
-                        id: encode_id(package.as_bytes()),
-                    });
-                }
-                if let RowId::Symbol(symbol) = row.id {
-                    proof = proof.with_claim_once(WireClaim::KeyCommitment {
-                        schema: WireSchema::Symbol,
-                        id: encode_id(symbol.as_bytes()),
+                // key and identity witness in the canonical snapshot rows,
+                // including packages and parents outside this bounded page.
+                let row_key = match row.id {
+                    RowId::Package(package) => {
+                        Some((WireSchema::Package, encode_id(package.as_bytes())))
+                    }
+                    RowId::Symbol(symbol) => {
+                        Some((WireSchema::Symbol, encode_id(symbol.as_bytes())))
+                    }
+                    RowId::Object(_) => None,
+                };
+                if let Some((schema, id)) = row_key {
+                    proof = proof.with_claim_once(match row.identity_preimage() {
+                        Some(preimage) => WireClaim::RowIdentity {
+                            schema,
+                            id,
+                            preimage: preimage.as_str().to_owned(),
+                        },
+                        None => WireClaim::KeyCommitment { schema, id },
                     });
                 }
                 if let Some(package) = row.package {
@@ -617,7 +624,7 @@ fn portable_query_compressible_long_proof_preserves_every_canonical_byte() {
     let next = page(&reply).next.expect("successor exists");
     let exported = session.encode_query_continuation(PageContinuation::from_cursor(next));
     let token = exported.expect("bounded compact proof");
-    assert!(token.starts_with("pc3-"));
+    assert!(token.starts_with("pc4-"));
     let body = decode_portable_body(&token).expect("bounded expansion");
     backend_library::decode_command_body(&body).expect("strict canonical proof remains intact");
 }
@@ -780,6 +787,117 @@ fn portable_compact_proof_rejects_expansion_truncation_and_trailing_bytes() {
 }
 
 #[test]
+fn binary_portable_proof_bounds_canonical_encoding_and_format_are_closed_before_rpc() {
+    let (owner, requests) = fixture();
+    let good = first_token(&owner, &requests, false, 3);
+    assert!(good.starts_with("pc4-"));
+    let request = backend_library::decode_command_body(&decode_portable_body(&good).expect("JSON"))
+        .expect("strict command");
+    let binary = backend_library::encode_binary_certificate_command(&request).expect("binary");
+    let mut compressed = URL_SAFE_NO_PAD.decode(&good[4..]).expect("base64");
+    let mut trailing = compressed.clone();
+    trailing.push(0);
+    compressed.pop();
+    let mut bad_version = binary.clone();
+    bad_version[5] = 2;
+    let mut bad_length = binary.clone();
+    bad_length[6..10].copy_from_slice(&u32::MAX.to_be_bytes());
+    let mut corrupted = binary.clone();
+    // The complete predecessor root is the final claim in this issued proof.
+    assert_eq!(
+        token_value(&good)["certificate"]["claims"]
+            .as_array()
+            .expect("claims")
+            .last()
+            .expect("root")["kind"],
+        "root"
+    );
+    let end = corrupted.len() - 1;
+    corrupted[end] ^= 1;
+    let mut extended = binary.clone();
+    extended.push(0);
+    let json = decode_portable_body(&good).expect("original JSON");
+    let mutants = [
+        format!("pc4-{}", URL_SAFE_NO_PAD.encode(trailing)),
+        format!("pc4-{}", URL_SAFE_NO_PAD.encode(compressed)),
+        format!("{good}="),
+        "pc4-Zh".to_owned(),
+        good.replacen("pc4-", "pc3-", 1),
+        encode_portable_proof(&bad_version, "pc4-").expect("bad version compression"),
+        encode_portable_proof(&bad_length, "pc4-").expect("bad length compression"),
+        encode_portable_proof(&corrupted, "pc4-").expect("bad proof compression"),
+        encode_portable_proof(&extended, "pc4-").expect("trailing frame compression"),
+        encode_portable_proof(&json, "pc4-").expect("JSON is not binary"),
+    ];
+    for bad in mutants {
+        let before = requests.lock().expect("requests").len();
+        assert!(
+            session(&owner, &requests)
+                .decode_page_continuation(&bad)
+                .is_err()
+        );
+        assert_eq!(requests.lock().expect("requests").len(), before);
+    }
+    let oversized = vec![0; backend_library::MAX_COMMAND_BODY + 1];
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut encoder, &oversized).expect("compressed adversary");
+    let bomb = format!(
+        "pc4-{}",
+        URL_SAFE_NO_PAD.encode(encoder.finish().expect("finish"))
+    );
+    assert!(bomb.len() < MAX_PORTABLE_QUERY_TOKEN_BYTES);
+    let before = requests.lock().expect("requests").len();
+    assert!(matches!(
+        session(&owner, &requests).decode_page_continuation(&bomb),
+        Err(ClientError::Transport(ReplicationError::MessageTooLarge))
+    ));
+    assert_eq!(requests.lock().expect("requests").len(), before);
+}
+
+#[test]
+fn binary_and_legacy_query_proofs_reopen_exact_page_after_owner_and_session_restart() {
+    for names in [false, true] {
+        let owner = Arc::new(Mutex::new(self::owner(1, 4, 7)));
+        let requests = Arc::new(Mutex::new(vec![]));
+        let mut issuing = session(&owner, &requests);
+        let first = if names {
+            issuing.names_page("Thing", 1, None)
+        } else {
+            issuing.search_page("Thing", 1, None)
+        }
+        .expect("first");
+        let next = PageContinuation::from_cursor(page(&first).next.expect("next"));
+        let binary = issuing.encode_query_continuation(next).expect("pc4 export");
+        let body = decode_portable_body(&binary).expect("exact restored proof");
+        let expected = if names {
+            issuing.names_page("Thing", 1, Some(next))
+        } else {
+            issuing.search_page("Thing", 1, Some(next))
+        }
+        .expect("warm second");
+        drop(issuing);
+        for token in [
+            binary,
+            token_bytes(&body),
+            encode_compact_proof(&body).expect("pc3"),
+        ] {
+            *owner.lock().expect("owner") = self::owner(1, 4, 7);
+            let mut fresh = session(&owner, &requests);
+            assert!(fresh.continuations.is_empty());
+            let decoded = fresh.decode_page_continuation(&token).expect("cold proof");
+            assert_eq!(decoded, next);
+            let actual = if names {
+                fresh.names_page("Thing", 1, Some(decoded))
+            } else {
+                fresh.search_page("Thing", 1, Some(decoded))
+            }
+            .expect("cold exact page");
+            assert_eq!(page(&actual), page(&expected));
+        }
+    }
+}
+
+#[test]
 fn portable_names_public_rank_reproduces_full_rows_across_fresh_pages() {
     let owner = Arc::new(Mutex::new(owner_with_labels(
         1,
@@ -903,7 +1021,7 @@ fn graph_query_portable_continuation_reopens_in_fresh_session() {
     let token = first
         .encode_query_continuation(next)
         .expect("portable graph proof");
-    assert!(token.starts_with("pc3-"));
+    assert!(token.starts_with("pc4-"));
     assert!(token.len() <= MAX_PORTABLE_QUERY_TOKEN_BYTES);
     drop(first);
     // An intent-only owner advance retains the exact view and authority scope.
@@ -984,12 +1102,24 @@ fn graph_fixture(selected_neighbors: bool, context: u8, sequence: u64) -> Librar
     let prototype = owner(context, 1, sequence);
     let view = prototype.view();
     let basis = view.basis();
-    let package = backend_library::package_key("graph-package");
+    let package = backend_library::package_key("graph");
     let source = symbol_key("graph::source");
-    let mut rows = vec![
-        Row::new(RowId::Package(package), basis, "graph-package"),
-        Row::in_package(RowId::Symbol(source), basis, package, "graph::source"),
-    ];
+    let center = if selected_neighbors {
+        Row::in_package(
+            RowId::Symbol(source),
+            basis,
+            package,
+            "graph::semantic::compiler-origin::source",
+        )
+        .try_with_identity_preimage("graph::source")
+        .expect("exact native identity preimage")
+        .with_source(
+            backend_library::SourceLocation::new("src/source.go", 7).expect("captured source"),
+        )
+    } else {
+        Row::in_package(RowId::Symbol(source), basis, package, "graph::source")
+    };
+    let mut rows = vec![Row::new(RowId::Package(package), basis, "graph"), center];
     rows.extend((0..6).map(|i| {
         let row = Row::in_package(
             RowId::Symbol(symbol_key(&format!("graph::neighbor{i}"))),
@@ -1014,6 +1144,54 @@ fn graph_fixture(selected_neighbors: bool, context: u8, sequence: u64) -> Librar
     .expect("graph fixture root");
     Library::from_view(root.clone(), Cursor::for_view_root_at(&root, sequence))
         .expect("graph owner")
+}
+
+#[test]
+fn graph_portable_fixture_owns_its_captured_alias_and_refuses_an_invented_locator() {
+    let library = graph_fixture(true, 1, 7);
+    let native = symbol_key("graph::source");
+    let center = library
+        .view()
+        .row(RowId::Symbol(native))
+        .expect("native center");
+    let package = library
+        .view()
+        .row(RowId::Package(backend_library::package_key("graph")))
+        .expect("owned package");
+    let proof = backend_library::CapturedSourceCoordinate::from_row_and_package(&center, &package)
+        .expect("actual captured ownership");
+    let alias = "graph::src/source.go:7::source";
+    assert!(proof.matches(alias));
+    assert!(!proof.matches("copied::semantic::source"));
+    assert_ne!(proof.address_key(), Some(native));
+    let mut ids = library
+        .view()
+        .row_refs()
+        .filter_map(|row| matches!(row.id, RowId::Symbol(_)).then_some(row.id))
+        .collect::<Vec<_>>();
+    ids.sort();
+    let page = backend_library::PageRequest::new(
+        library.revision_root(),
+        QueryLimit::new(2).expect("credit"),
+    );
+    library
+        .graph_page_from_ids(
+            native,
+            SymbolAddress::canonical(symbol_key(alias)),
+            page,
+            &ids,
+        )
+        .expect("real alias admits the exact native center");
+    assert!(
+        library
+            .graph_page_from_ids(
+                native,
+                SymbolAddress::canonical(symbol_key("copied::semantic::source")),
+                page,
+                &ids,
+            )
+            .is_err()
+    );
 }
 
 fn graph_session(
@@ -1054,7 +1232,7 @@ fn plain_graph_portable_continuation_reopens_exact_page_in_fresh_owner() {
         // In the selected case the canonical copied coordinate differs from the
         // producer key, and neighbors have no structural parent relationship.
         let coordinate = if selected_neighbors {
-            "copied::semantic::source"
+            "graph::src/source.go:7::source"
         } else {
             "graph::source"
         };
@@ -1071,7 +1249,7 @@ fn plain_graph_portable_continuation_reopens_exact_page_in_fresh_owner() {
         let token = issuing
             .encode_query_continuation(next)
             .expect("portable graph");
-        assert!(token.starts_with("pc3-"));
+        assert!(token.starts_with("pc4-"));
         backend_library::decode_command_body(&decode_portable_body(&token).expect("bytes"))
             .expect("strict canonical graph proof");
         // Existing pc1 remains valid in the compatible issuing active session.

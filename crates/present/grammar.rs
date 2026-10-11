@@ -529,7 +529,7 @@ pub const GRAMMARS: [CommandGrammar; 53] = [
         aliases: &["projects-indexed"],
         positional: &[],
         options: &[],
-        when: "Call this first in a new session: it is the only way to learn which project roots exist and whether each one is ready to answer.",
+        when: "Call this first in a new session to learn which project roots exist and whether each one is ready to answer. Use backend.outline to inspect a package's shape or backend.search to find declarations.",
     },
     CommandGrammar {
         name: "add",

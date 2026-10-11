@@ -3,13 +3,20 @@
 //! controls below also require genuine compiled Python claims and partials.
 //! None of these controls simulates process death during publication.
 use super::*;
-use crate::builtin::BuiltinModelError;
+use crate::builtin::commands::adapter::index_profile_worker::{
+    ProfileCompletion, ProfileOutcome, ProfileWorker,
+};
 use crate::builtin::commands::adapter::index_publication_worker::{
     Completion, Disposition, Event, Head, TestHook, TestStage,
 };
-use crate::builtin::commands::adapter::{capture_recovery, commit_builtin_intent};
+use crate::builtin::commands::adapter::{
+    capture_recovery, commit_builtin_intent, prepare_builtin_intent_at_snapshot,
+    selected_semantic_removals,
+};
+use crate::builtin::{BuiltinModelError, BuiltinSemanticChange};
+use backend_engine::builtin::ProductSemanticPublicationRecord;
 use backend_library::CommandReply;
-use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::time::{Duration, Instant};
 
 struct Release(Option<SyncSender<()>>);
@@ -46,6 +53,173 @@ fn until(
             Instant::now() < deadline,
             "actual publication stage did not finish in30s"
         );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn profile_completion_state(completion: &ProfileCompletion) -> String {
+    let outcome = match &completion.outcome {
+        ProfileOutcome::Cancelled => "Cancelled".to_owned(),
+        ProfileOutcome::Admitted(result) => format!("Admitted({result:?})"),
+    };
+    format!(
+        "profile={:?}, ordinal={}/{}, outcome={outcome}, read_head_present={}, semantic_writer_present={}",
+        completion.work.identity.profile,
+        completion.work.identity.ordinal,
+        completion.work.identity.total,
+        completion.work.read_head.is_some(),
+        completion.work.semantic.is_some(),
+    )
+}
+
+fn profile_worker_state(worker: &ProfileWorker) -> String {
+    match worker {
+        ProfileWorker::Running(handle) => format!("Running(finished={})", handle.is_finished()),
+        ProfileWorker::Owned { handle, .. } => {
+            format!(
+                "Owned(finished={}, original_completion_channel)",
+                handle.is_finished()
+            )
+        }
+        ProfileWorker::Returned(completion) => {
+            format!("Returned({})", profile_completion_state(completion))
+        }
+        ProfileWorker::Retiring { handle, completion } => format!(
+            "Retiring(finished={}, {})",
+            handle.is_finished(),
+            profile_completion_state(completion)
+        ),
+    }
+}
+
+// Observe the original actor/worker channels. Reading keyed status here would
+// admit an explicit retry and could hide the attempt that missed this barrier.
+fn after_grant_state(
+    fixture: &mut AdapterFixture,
+    operation: backend_library::IndexOperationKey,
+    ticket: &backend_library::IndexJobTicket,
+) -> String {
+    let (adapter, daemon) = fixture.parts();
+    let work = adapter.indexing.as_ref().map(|job| {
+        let phase = match &job.work {
+            IndexJobWork::Acquiring(_) => "Acquiring".to_owned(),
+            IndexJobWork::Scanning(_) => "Scanning".to_owned(),
+            IndexJobWork::Compiling { worker } => {
+                format!("Compiling({})", profile_worker_state(worker))
+            }
+            IndexJobWork::Publishing { .. } => "Publishing".to_owned(),
+            IndexJobWork::PublicationWorker {
+                worker,
+                completion,
+                blocked,
+            } => {
+                let completed = completion.as_ref().map(|done| {
+                    let disposition = match &done.disposition {
+                        Disposition::Ready => "Ready".to_owned(),
+                        Disposition::Unselected(error) => format!("Unselected({error:?})"),
+                        Disposition::Pending(error) => format!("Pending({error:?})"),
+                    };
+                    let head = match &done.work.head {
+                        Head::Writer(_) => "Writer",
+                        Head::Pending(_) => "Pending",
+                        Head::Published(_) => "Published",
+                        Head::Moving => "Moving",
+                    };
+                    format!(
+                        "disposition={disposition}, head={head}, proof={}, outcome={:?}",
+                        done.work.proof.is_some(),
+                        done.work.outcome
+                    )
+                });
+                format!(
+                    "PublicationWorker(finished={:?}, blocked={}, completion={completed:?})",
+                    worker.as_ref().map(|worker| worker.is_finished()),
+                    blocked.is_some()
+                )
+            }
+            IndexJobWork::PublicationRetiring { worker, outcome } => {
+                format!(
+                    "PublicationRetiring(finished={}, outcome={outcome:?})",
+                    worker.is_finished()
+                )
+            }
+            IndexJobWork::Transition => "Transition".to_owned(),
+        };
+        format!(
+            "ticket={:?}, operation={:?}, progress={:?}/{}, cancelled={}, work={phase}",
+            job.owner_ticket,
+            job.operation_key,
+            job.progress_stage,
+            job.progress_sequence,
+            job.cancelled.load(Ordering::Acquire)
+        )
+    });
+    let terminal = adapter
+        .index_terminals
+        .iter()
+        .find(|terminal| &terminal.ticket == ticket);
+    let capabilities = adapter.compiler.capabilities();
+    let typescript = capabilities
+        .for_profile(backend_semantic::vocabulary::LanguageProfile::TypeScript(
+            backend_semantic::vocabulary::TypeScriptSource::TypeScript,
+        ))
+        .state();
+    let python = capabilities
+        .for_profile(backend_semantic::vocabulary::LanguageProfile::Python(
+            backend_semantic::vocabulary::PythonVersion::Python314,
+        ))
+        .state();
+    let receipt = match adapter.index_operations.entry(operation) {
+        Ok(Some(JournalEntry::Retained(entry))) => format!("Retained({entry:?})"),
+        Ok(Some(JournalEntry::OutsideReceiptWindow { request_digest })) => {
+            format!("OutsideReceiptWindow(request_digest={request_digest:?})")
+        }
+        Ok(None) => "Missing".to_owned(),
+        Err(error) => format!("ReadRefused({error})"),
+    };
+    format!(
+        "expected_ticket={ticket:?}, operation={operation:?}, active={work:?}, terminal={terminal:?}, \
+             readonly_receipt={receipt:?}, captured_typescript={typescript:?}, captured_python={python:?}, \
+             actor_hook_pending={}, owner_root={:?}, owner_sequence={}",
+        adapter.publication_test_hook.is_some(),
+        daemon.engine().daemon().owner().head().root(),
+        daemon.engine().daemon().owner().head().sequence()
+    )
+}
+
+fn await_after_grant(
+    fixture: &mut AdapterFixture,
+    entered: &Receiver<()>,
+    operation: backend_library::IndexOperationKey,
+    ticket: &backend_library::IndexJobTicket,
+) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        tick(fixture);
+        let reason = match entered.try_recv() {
+            Ok(()) => return Ok(()),
+            Err(TryRecvError::Disconnected) => Some("stage channel disconnected"),
+            Err(TryRecvError::Empty) => {
+                let adapter = fixture.adapter.as_ref().expect("adapter");
+                if adapter
+                    .index_terminals
+                    .iter()
+                    .any(|terminal| &terminal.ticket == ticket)
+                {
+                    Some("original ticket became terminal before the stage")
+                } else if Instant::now() >= deadline {
+                    Some("original 30s stage deadline elapsed")
+                } else {
+                    None
+                }
+            }
+        };
+        if let Some(reason) = reason {
+            return Err(format!(
+                "AfterGrant was not observed: {reason}; {}",
+                after_grant_state(fixture, operation, ticket)
+            ));
+        }
         std::thread::sleep(Duration::from_millis(1));
     }
 }
@@ -199,6 +373,31 @@ fn published(fixture: &mut AdapterFixture, ticket: &backend_library::IndexJobTic
         ),
         "{terminal:?}"
     );
+}
+
+#[test]
+fn index_publication_worker_after_grant_wait_reports_original_pregrant_cancellation() {
+    let mut fixture = AdapterFixture::new();
+    let before = fixture.parts().1.engine().daemon().owner().head().root();
+    let (entered, _release) = block_at(&mut fixture, TestStage::AfterGrant);
+    let (_, ticket, operation, _) = start(&mut fixture, true, true);
+    let operation = operation.expect("original accepted operation");
+    let detail = await_after_grant(&mut fixture, &entered, operation, &ticket)
+        .expect_err("pre-grant cancellation cannot satisfy the grant barrier");
+    assert!(detail.contains("AfterGrant was not observed"), "{detail}");
+    assert!(
+        detail.contains("Cancelled"),
+        "original cancellation is diagnosed: {detail}"
+    );
+    let (adapter, daemon) = fixture.parts();
+    assert_eq!(daemon.engine().daemon().owner().head().root(), before);
+    assert!(matches!(
+        adapter.index_operations.entry(operation).expect("original read-only receipt"),
+        Some(JournalEntry::Retained(entry)) if matches!(entry.state,
+            StoredOperationState::Failed {
+                reason: backend_library::IndexOperationFailureReason::Cancelled, ..
+            })
+    ));
 }
 
 #[test]
@@ -961,7 +1160,8 @@ fn index_publication_worker_native_grant_unwind_preserves_selector_for_next_publ
         .expect("native prior selector");
     let (entered, mut release) = block_at(&mut fixture, TestStage::AfterGrant);
     let (package, label, operation, ticket) = native_dispatch(&mut fixture, false, 0xb4);
-    until(&mut fixture, |_, _| entered.try_recv().is_ok());
+    await_after_grant(&mut fixture, &entered, operation, &ticket)
+        .unwrap_or_else(|detail| panic!("{detail}"));
     {
         let (adapter, daemon) = fixture.parts();
         adapter
@@ -1080,8 +1280,9 @@ fn failed_capture_cold_retry_control(refuse_receipt_refresh: bool) {
     let (entered, mut release) = block_at(&mut fixture, TestStage::AfterGrant);
     // Actual Python selection and a genuine absent TypeScript SDK create two
     // Pending profiles before the selected candidate is granted.
-    let (_, label, operation, _) = native_dispatch(&mut fixture, true, 0xc1);
-    until(&mut fixture, |_, _| entered.try_recv().is_ok());
+    let (_, label, operation, ticket) = native_dispatch(&mut fixture, true, 0xc1);
+    await_after_grant(&mut fixture, &entered, operation, &ticket)
+        .unwrap_or_else(|detail| panic!("{detail}"));
     let (old_root, old_sequence) = {
         let (adapter, daemon) = fixture.parts();
         let head = daemon.engine().daemon().owner().head();
@@ -1395,4 +1596,160 @@ fn index_publication_worker_panicking_payload_drop_preserves_exact_selector_and_
         }),
         "the next native publication must replace its actual generation"
     );
+}
+
+// Typed descriptor volume exercises the production stage boundary. Only the
+// initial selection is a native compiler claim; filler rows are unavailable.
+fn staged_selection_removal(fixture: &mut AdapterFixture) -> PreparedProductSelection {
+    use backend_engine::builtin::SemanticUnavailableReason;
+    use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, PythonVersion};
+    let package = fixture.package;
+    let label = fixture.label.clone();
+    let mut keys = fixture
+        .parts()
+        .0
+        .semantic_authority
+        .selected_product_keys_for_package(package)
+        .expect("actual prior selection");
+    assert!(!keys.is_empty(), "native prior generation is required");
+    let coordinate = keys[0]
+        .coordinate()
+        .as_str()
+        .split('#')
+        .next()
+        .unwrap()
+        .to_owned();
+    let reference = backend_engine::PackageReference::parse(label.clone()).unwrap();
+    let prefix = "directory/".repeat(20);
+    for index in 0..6_000 {
+        keys.push(
+            ProductSemanticPublicationKey::new(
+                reference.clone(),
+                PackageUrl::parse(format!("{coordinate}#{prefix}unavailable_{index:05}.py"))
+                    .unwrap(),
+                LanguageProfile::Python(PythonVersion::Python314),
+            )
+            .unwrap(),
+        );
+    }
+    let intent = BuiltinIntent::index_with_semantics(
+        package,
+        label,
+        Vec::new(),
+        keys.into_iter()
+            .map(|key| BuiltinSemanticChange {
+                key,
+                after: Some(ProductSemanticPublicationRecord::Unavailable(
+                    SemanticUnavailableReason::ProjectAuthority,
+                )),
+            })
+            .collect(),
+    )
+    .unwrap();
+    let base = fixture.parts().1.engine().daemon().owner().snapshot();
+    let staged =
+        prepare_builtin_intent_at_snapshot(&base, &intent, None, Arc::new(AtomicBool::new(false)))
+            .expect("actual production staging");
+    assert!(
+        staged.intent.staged().is_some(),
+        "must cross CAS staging threshold"
+    );
+    assert!(
+        !selected_semantic_removals(&staged.intent).is_empty(),
+        "selection planner must receive retained descriptors before queue transfer"
+    );
+    PreparedProductSelection {
+        intent: Some(intent),
+        selected: Vec::new(),
+        revision_fence: None,
+        profile_refusals: Box::new([]),
+        partial_plan: None,
+    }
+}
+
+fn assert_selection_removed(fixture: &mut AdapterFixture, keys: &[ProductSemanticPublicationKey]) {
+    let package = fixture.package;
+    let (adapter, daemon) = fixture.parts();
+    assert!(
+        adapter
+            .semantic_authority
+            .selected_product_keys_for_package(package)
+            .expect("actual selector after publication")
+            .is_empty()
+    );
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let relation = snapshot.relation::<BuiltinSemanticRelation>().unwrap();
+    for key in keys {
+        assert!(matches!(
+            relation.lookup(key).unwrap(),
+            Some(ProductSemanticPublicationRecord::Unavailable(_))
+        ));
+    }
+}
+
+#[test]
+fn legacy_finish_add_removes_native_selection_after_staging_before_queue_compaction() {
+    let mut fixture = native_fixture();
+    let package = fixture.package;
+    let keys = fixture
+        .parts()
+        .0
+        .semantic_authority
+        .selected_product_keys_for_package(package)
+        .unwrap();
+    let prepared = staged_selection_removal(&mut fixture);
+    let reference = backend_library::PackageReference::parse(fixture.label.clone()).unwrap();
+    let (adapter, daemon) = fixture.parts();
+    adapter
+        .finish_add(
+            daemon,
+            &prepared,
+            0xd1,
+            package,
+            reference,
+            None,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("actual legacy publication");
+    assert_selection_removed(&mut fixture, &keys);
+}
+
+#[test]
+fn publication_worker_removes_native_selection_after_staging() {
+    let mut fixture = native_fixture();
+    let package = fixture.package;
+    let label = fixture.label.clone();
+    let keys = fixture
+        .parts()
+        .0
+        .semantic_authority
+        .selected_product_keys_for_package(package)
+        .unwrap();
+    let prepared = staged_selection_removal(&mut fixture);
+    let reference = backend_library::PackageReference::parse(label.clone()).unwrap();
+    let (adapter, daemon) = fixture.parts();
+    let ticket = adapter.issue_index_ticket(reference).unwrap();
+    let mut job = IndexJob {
+        owner_ticket: ticket.clone(),
+        operation_key: None,
+        captures: BTreeMap::new(),
+        legacy_add: None,
+        awaiters: Vec::new(),
+        cancelled: Arc::new(AtomicBool::new(false)),
+        progress_sequence: 0,
+        progress_stage: Some(backend_library::IndexJobStage::Publishing),
+        request_id: 0xd2,
+        captured_package: package,
+        captured_label: label,
+        requested_package: package,
+        execution_intent: CompileExecutionIntent::Interactive,
+        _staged_project: None,
+        work: IndexJobWork::Transition,
+    };
+    adapter
+        .start_index_publication(daemon, &mut job, prepared)
+        .unwrap();
+    adapter.indexing = Some(job);
+    published(&mut fixture, &ticket);
+    assert_selection_removed(&mut fixture, &keys);
 }

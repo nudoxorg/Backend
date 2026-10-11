@@ -70,6 +70,11 @@ fn host_failure(error: &TypeScriptProjectHostError) -> F {
         TypeScriptProjectHostError::ConfigMissing { .. } => F::HostConfigMissing,
         TypeScriptProjectHostError::CompilerProgramSourceMissing { .. } => F::HostCompilerApiBridge,
         TypeScriptProjectHostError::CompilerApiBridge { .. } => F::HostCompilerApiBridge,
+        TypeScriptProjectHostError::CompilerProgramCancelled => F::HostProgramCancelled,
+        TypeScriptProjectHostError::CompilerProgramDeadline => F::HostProgramDeadline,
+        TypeScriptProjectHostError::CompilerProgramProbe { source } => {
+            program_probe_failure(source)
+        }
         TypeScriptProjectHostError::CompilerIoClosureLimit { .. } => F::HostCompilerIoClosureLimit,
         TypeScriptProjectHostError::CompilerIoClosureMismatch { .. } => {
             F::HostCompilerIoClosureMismatch
@@ -109,6 +114,56 @@ fn host_failure(error: &TypeScriptProjectHostError) -> F {
     }
 }
 
+// Keep process control typed through cleanup and stream wrappers. The original
+// process/cleanup error remains retained in CompilerProgramProbe for local diagnostics.
+fn program_probe_failure(error: &super::toolchain_probe::ToolchainProbeError) -> F {
+    use super::toolchain_probe::{ToolchainProbeError as E, ToolchainProbePrimary as P};
+    match error {
+        E::Bounded {
+            primary: P::Cancelled,
+            ..
+        } => F::HostProgramCancelled,
+        E::Bounded {
+            primary: P::Deadline { .. },
+            ..
+        } => F::HostProgramDeadline,
+        E::Cleanup { preceding, .. }
+        | E::Stream {
+            preceding: Some(preceding),
+            ..
+        }
+        | E::Streams {
+            preceding: Some(preceding),
+            ..
+        } => program_probe_failure(preceding),
+        E::TypeScriptInterpreterUnavailable { .. }
+        | E::TypeScriptModuleRootUnavailable { .. }
+        | E::TypeScriptModuleEntryMismatch { .. }
+        | E::RelativeExecutable { .. }
+        | E::ExecutableWitness { .. }
+        | E::ExecutableChanged { .. }
+        | E::Spawn { .. }
+        | E::ProbeWorkerSpawn { .. }
+        | E::ReaderSpawn { .. }
+        | E::MissingStream { .. }
+        | E::Wait { .. }
+        | E::Stream {
+            preceding: None, ..
+        }
+        | E::Streams {
+            preceding: None, ..
+        }
+        | E::Bounded {
+            primary: P::OutputLimit { .. },
+            ..
+        }
+        | E::MissingStatus { .. }
+        | E::Exit { .. }
+        | E::Empty { .. }
+        | E::Resolution { .. } => F::HostCompilerApiBridge,
+    }
+}
+
 fn native_failure(error: &TszAuthorityError) -> F {
     match error {
         TszAuthorityError::Source(error) => match error {
@@ -118,6 +173,7 @@ fn native_failure(error: &TszAuthorityError) -> F {
             TszSourceError::EmptyProject => F::NativeSourceEmptyProject,
             TszSourceError::InvalidUtf8 => F::NativeSourceInvalidUtf8,
         },
+        TszAuthorityError::CheckerWorkerPoolUnavailable(_) => F::NativeCheckerWorkerPoolUnavailable,
         TszAuthorityError::MissingFile(_) => F::NativeMissingFile,
         TszAuthorityError::MissingSource(_) => F::NativeMissingSource,
         TszAuthorityError::SourceMismatch { .. } => F::NativeSourceMismatch,
@@ -285,6 +341,23 @@ mod tests {
             failure_kind(&error),
             Some(F::NativeProjectCheckModuleTargetNotInProgram)
         );
+    }
+
+    #[test]
+    fn native_checker_worker_start_refusal_keeps_native_provenance() {
+        let error =
+            PackageAuthorityError::TypeScriptTsz(TszAuthorityError::CheckerWorkerPoolUnavailable(
+                "private OS thread failure /secret/path".into(),
+            ));
+        let kind = failure_kind(&error).expect("closed native failure");
+        assert_eq!(kind, F::NativeCheckerWorkerPoolUnavailable);
+        assert_ne!(kind, F::CheckerSpawn);
+        assert_eq!(
+            kind.kind_tag(),
+            "typescript_native_checker_worker_pool_unavailable"
+        );
+        assert!(!kind.detail().contains("/secret"));
+        assert!(!kind.is_cancelled());
     }
 
     #[test]

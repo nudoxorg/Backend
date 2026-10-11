@@ -1651,6 +1651,7 @@ mod tests {
                 authority: EntityAuthorityFacts {
                     parentage: ParentageAuthority::Root,
                     members: FactAvailability::Captured,
+                    visibility: FactAvailability::Captured,
                     ..EntityAuthorityFacts::default()
                 },
                 parent: None,
@@ -1668,6 +1669,7 @@ mod tests {
                 visibility: Visibility::Private,
                 authority: EntityAuthorityFacts {
                     parentage: ParentageAuthority::Bound(parent_identity),
+                    visibility: FactAvailability::Captured,
                     ..EntityAuthorityFacts::default()
                 },
                 parent: Some(TreeEntityId::new(0)),
@@ -1685,6 +1687,7 @@ mod tests {
                 visibility: Visibility::Private,
                 authority: EntityAuthorityFacts {
                     parentage: ParentageAuthority::Bound(parent_identity),
+                    visibility: FactAvailability::Captured,
                     ..EntityAuthorityFacts::default()
                 },
                 parent: Some(TreeEntityId::new(0)),
@@ -1696,6 +1699,31 @@ mod tests {
                 extension: None,
             },
         ];
+        // A present visibility value still requires its captured authority;
+        // anonymous naming does not waive any of the independent fact planes.
+        for index in 0..items.len() {
+            let mut contradictory = items;
+            contradictory[index].authority.visibility = FactAvailability::Unavailable;
+            let mut refused = IrBuilder::new();
+            refused
+                .add_borrowed_tree(BorrowedTree {
+                    versions: &versions,
+                    items: &contradictory,
+                    links: &[],
+                })
+                .expect("tree coordinates enter before authority validation");
+            assert!(matches!(
+                refused.finish(),
+                Err(backend_semantic::ir::BuildError::AuthorityFacts {
+                    entity,
+                    cause: backend_semantic::ir::AuthorityFactFault::Availability {
+                        plane: backend_semantic::ir::AuthorityFactPlane::Visibility,
+                        claimed: FactAvailability::Unavailable,
+                        present: true,
+                    },
+                }) if entity == EntityId::new(u32::try_from(index).expect("bounded fixture entity"))
+            ));
+        }
         builder
             .add_borrowed_tree(BorrowedTree {
                 versions: &versions,
@@ -1707,6 +1735,16 @@ mod tests {
         let mut image_bytes = vec![0; full_semantic_image_len(&ir).expect("image is bounded")];
         encode_full_semantic_image(&ir, &mut image_bytes).expect("image encodes");
         let image = SemanticImageView::reopen(&image_bytes).expect("image reopens");
+        for (index, item) in items.iter().enumerate() {
+            let entity = image
+                .entity(EntityId::new(
+                    u32::try_from(index).expect("bounded fixture entity"),
+                ))
+                .expect("stored entity");
+            assert_eq!(entity.authority, item.authority);
+            assert_eq!(entity.visibility, item.visibility);
+            assert_eq!(entity.version, versions[index]);
+        }
         let basis = backend_engine::Basis::new(
             backend_engine::view_state_root(&[]),
             backend_engine::object_version(b"anonymous-shape-member"),

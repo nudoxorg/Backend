@@ -51,6 +51,9 @@ pub(crate) use call_join::{
 #[cfg(test)]
 pub(crate) use call_join::{foreign_display_name, join_project_call};
 
+pub(crate) use backend_library::resolve_selected_view_address;
+#[cfg(test)]
+use backend_library::{AddressMatchKind, SelectedViewAddress};
 #[cfg(test)]
 pub(crate) use identity::query_semantic_id;
 #[cfg(test)]
@@ -210,11 +213,11 @@ mod tests {
     use super::super::{FileLane, IndexedProject, SemanticFreshness, StructuralCause};
     use super::ProfileStalePaths;
     use super::{
-        STALE_NOTE, SourceRowProjection, StructuralParent, StructuralProjectionPlan,
-        append_structural_query_facts, semantic_profile_is_complete,
-        structural_call_coordinate_pairs, structural_call_graph_relations,
-        structural_call_graph_relations_mapped, structural_excerpt_calls,
-        structural_reference_facts, view_row_for_structural_coordinate,
+        AddressMatchKind, STALE_NOTE, SelectedViewAddress, SourceRowProjection, StructuralParent,
+        StructuralProjectionPlan, append_structural_query_facts, resolve_selected_view_address,
+        semantic_profile_is_complete, structural_call_coordinate_pairs,
+        structural_call_graph_relations, structural_call_graph_relations_mapped,
+        structural_excerpt_calls, structural_reference_facts, view_row_for_structural_coordinate,
     };
     use backend_engine::{Row, RowId, ViewRoot, package_key, product_source_file_key, symbol_key};
     use backend_semantic::ir::{
@@ -2925,6 +2928,147 @@ pub fn decoy_mention() { let _ = "parse_config("; }
             return Err(format!(
                 "ambiguous callee must drop the edge, got {missed:?}"
             ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn public_coordinate_resolution_binds_legacy_sites_to_package_rows() -> Result<(), String> {
+        let (initial, _) = initial_view().map_err(|error| error.to_string())?;
+        let capability =
+            super::super::test_builtin_view_capability().map_err(|error| error.to_string())?;
+        let alpha = package_key("pkg:alpha");
+        let beta = package_key("pkg:beta");
+        let location = backend_compile::SourceLocation::new("src/lib.rs", 9)
+            .map_err(|error| error.to_string())?;
+        let alpha_label = "pkg:alpha::semantic::alpha-draw::draw";
+        let beta_label = "pkg:beta::semantic::beta-draw::draw";
+        let alpha_draw = Row::in_package(
+            RowId::Symbol(symbol_key("alpha-draw-id")),
+            initial.basis(),
+            alpha,
+            alpha_label,
+        )
+        .with_source(location.clone());
+        let beta_draw = Row::in_package(
+            RowId::Symbol(symbol_key("beta-draw-id")),
+            initial.basis(),
+            beta,
+            beta_label,
+        )
+        .with_source(location.clone());
+        let build = |rows| {
+            ViewRoot::new_checked(
+                initial.recipe(),
+                initial.basis(),
+                initial.frontier(),
+                rows,
+                initial.coverage().to_vec(),
+                capability.clone(),
+            )
+            .map_err(|error| format!("{error:?}"))
+        };
+        let view = build(vec![
+            Row::new(RowId::Package(alpha), initial.basis(), "pkg:alpha"),
+            Row::new(RowId::Package(beta), initial.basis(), "pkg:beta"),
+            alpha_draw.clone(),
+            beta_draw.clone(),
+        ])?;
+        let alpha_site = "pkg:alpha::src/lib.rs:9::draw";
+        let beta_site = "pkg:beta::src/lib.rs:9::draw";
+        match resolve_selected_view_address(&view, alpha_site) {
+            SelectedViewAddress::Declaration {
+                row,
+                matched_as: AddressMatchKind::LegacySourceSite,
+            } if row.id == alpha_draw.id => {}
+            result => return Err(format!("alpha site resolved as {result:?}")),
+        }
+        match resolve_selected_view_address(&view, beta_site) {
+            SelectedViewAddress::Declaration {
+                row,
+                matched_as: AddressMatchKind::LegacySourceSite,
+            } if row.id == beta_draw.id => {}
+            result => return Err(format!("beta site resolved as {result:?}")),
+        }
+        if !matches!(
+            resolve_selected_view_address(&view, alpha_label),
+            SelectedViewAddress::Declaration {
+                matched_as: AddressMatchKind::ExactLabel,
+                ..
+            }
+        ) {
+            return Err("a package-bound exact declaration label did not resolve".to_owned());
+        }
+        if !matches!(
+            resolve_selected_view_address(&view, "pkg:missing::src/lib.rs:9::draw"),
+            SelectedViewAddress::Absent
+        ) {
+            return Err("a missing package prefix selected a source row".to_owned());
+        }
+        if !matches!(
+            resolve_selected_view_address(&view, "pkg:alpha"),
+            SelectedViewAddress::Package { .. }
+        ) {
+            return Err("an exact package label was not distinguished".to_owned());
+        }
+
+        let no_package_row = build(vec![alpha_draw.clone()])?;
+        if !matches!(
+            resolve_selected_view_address(&no_package_row, alpha_site),
+            SelectedViewAddress::Absent
+        ) {
+            return Err("a legacy site resolved without a selected package row".to_owned());
+        }
+        if !matches!(
+            resolve_selected_view_address(&no_package_row, alpha_label),
+            SelectedViewAddress::Absent
+        ) {
+            return Err("an exact declaration label bypassed its package-row proof".to_owned());
+        }
+
+        let wrong_owner = Row::in_package(
+            RowId::Symbol(symbol_key("wrong-owner")),
+            initial.basis(),
+            beta,
+            alpha_label,
+        );
+        let mismatched_prefix = build(vec![
+            Row::new(RowId::Package(beta), initial.basis(), "pkg:beta"),
+            wrong_owner,
+        ])?;
+        if !matches!(
+            resolve_selected_view_address(&mismatched_prefix, alpha_label),
+            SelectedViewAddress::Absent
+        ) {
+            return Err("an exact label with a foreign package prefix resolved".to_owned());
+        }
+
+        let second_alpha = Row::in_package(
+            RowId::Symbol(symbol_key("alpha-draw-second-id")),
+            initial.basis(),
+            alpha,
+            "pkg:alpha::semantic::second-draw::draw",
+        )
+        .with_source(location);
+        let ambiguous = build(vec![
+            Row::new(RowId::Package(alpha), initial.basis(), "pkg:alpha"),
+            alpha_draw,
+            second_alpha,
+        ])?;
+        if !matches!(
+            resolve_selected_view_address(&ambiguous, alpha_site),
+            SelectedViewAddress::Ambiguous
+        ) {
+            return Err("two declarations at one captured site were not ambiguous".to_owned());
+        }
+        if !matches!(
+            resolve_selected_view_address(&ambiguous, alpha_label),
+            SelectedViewAddress::Declaration {
+                matched_as: AddressMatchKind::ExactLabel,
+                ..
+            }
+        ) {
+            return Err("exact label did not precede an ambiguous alias".to_owned());
         }
         Ok(())
     }

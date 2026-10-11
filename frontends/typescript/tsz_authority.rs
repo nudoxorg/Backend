@@ -20,6 +20,7 @@ use std::sync::Arc;
 use crate::Utf8Span;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+#[cfg(any(test, feature = "tsz-semantic-session-test-support"))]
 use tsz::tsz_solver::construction::TypeDatabase;
 use tsz_common::ExecutionCheckpoint;
 
@@ -30,6 +31,8 @@ pub use tsz::checker::diagnostics::Diagnostic as TszDiagnostic;
 pub use tsz::checker::state::CheckerState as TszCheckerState;
 pub use tsz::common::{ModuleKind as TszModuleKind, ScriptTarget as TszScriptTarget};
 pub use tsz::parallel::{
+    ProjectCheckerExecution as TszProjectCheckerExecution,
+    ProjectFileFormat as TszProjectFileFormat, ProjectFileFormatInput as TszProjectFileFormatInput,
     ProjectModuleRequestKind as TszProjectModuleRequestKind,
     ProjectModuleResolution as TszProjectModuleResolution,
     ProjectModuleResolutionError as TszProjectModuleResolutionError,
@@ -191,6 +194,9 @@ pub enum TszAuthorityError {
     /// shared execution checkpoint.
     #[error(transparent)]
     ProjectCheck(#[from] tsz::parallel::ProjectProgramCheckError),
+    /// The explicit private native checker workers could not be started.
+    #[error("TSZ checker worker pool unavailable: {0}")]
+    CheckerWorkerPoolUnavailable(String),
     /// A parse, bind, or project merge stopped under the shared execution
     /// checkpoint before a complete project could be published.
     #[error("TSZ project update stopped: {0:?}")]
@@ -246,6 +252,8 @@ pub struct TszProjectOptions {
     /// Empty is an explicit declaration that the admitted program has no
     /// requests; it does not enable filename-based fallback.
     pub module_resolutions: Vec<TszProjectModuleResolution>,
+    /// Actual Compiler API per-file format; missing entries remain unknown.
+    pub file_formats: Vec<TszProjectFileFormatInput>,
     /// Identity for all configuration and dependency inputs described above.
     pub environment: TszEnvironmentFingerprint,
 }
@@ -288,6 +296,7 @@ pub struct TszProject {
     checker_options_digest: [u8; 32],
     semantic_options_digest: [u8; 32],
     module_resolution_digest: [u8; 32],
+    file_format_digest: [u8; 32],
     library_digest: [u8; 32],
     bound_sources: BTreeMap<String, Arc<tsz::parallel::BindResult>>,
     lib_files: Vec<Arc<tsz::lib_loader::LibFile>>,
@@ -308,6 +317,23 @@ impl std::fmt::Debug for TszProject {
             .field("environment", &self.options.environment)
             .field("diagnostic_count", &self.check.diagnostic_count)
             .finish()
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TszUpdateExecution<'checkpoint> {
+    Unmetered,
+    Fresh(&'checkpoint dyn ExecutionCheckpoint),
+    Partitions(TszProjectCheckerExecution<'checkpoint>),
+}
+
+impl TszUpdateExecution<'_> {
+    fn checkpoint(&self) -> Option<&dyn ExecutionCheckpoint> {
+        match self {
+            Self::Unmetered => None,
+            Self::Fresh(checkpoint) => Some(*checkpoint),
+            Self::Partitions(execution) => Some(execution.checkpoint),
+        }
     }
 }
 
@@ -339,7 +365,7 @@ impl TszProjectAuthority {
         options: TszProjectOptions,
         lib_files: &[Arc<tsz::lib_loader::LibFile>],
     ) -> Result<TszUpdateReport, TszAuthorityError> {
-        self.update_inner(sources, options, lib_files, None)
+        self.update_inner(sources, options, lib_files, TszUpdateExecution::Unmetered)
     }
 
     /// Parses, binds, merges, and checks a caller-resolved project under one
@@ -360,7 +386,40 @@ impl TszProjectAuthority {
         lib_files: &[Arc<tsz::lib_loader::LibFile>],
         checkpoint: &dyn ExecutionCheckpoint,
     ) -> Result<TszUpdateReport, TszAuthorityError> {
-        self.update_inner(sources, options, lib_files, Some(checkpoint))
+        self.update_inner(
+            sources,
+            options,
+            lib_files,
+            TszUpdateExecution::Fresh(checkpoint),
+        )
+    }
+
+    /// Check a project with caller-admitted private checker workers and the
+    /// same borrowed deadline/cancellation/work checkpoint used by later
+    /// semantic query sessions. The worker bound covers checker planning,
+    /// file partitions, and library checking; parse/bind/merge retain their
+    /// existing cooperative execution APIs.
+    ///
+    /// No checked project is published after a stop or worker-start failure.
+    /// Worker count is execution policy and does not alter source membership,
+    /// exact resolutions, compiler options, or semantic identity.
+    ///
+    /// # Errors
+    /// Retains exact input/project-check/stopped reasons and reports a typed
+    /// worker-pool startup refusal without falling back to ambient workers.
+    pub fn update_with_checker_execution(
+        &mut self,
+        sources: Vec<TszFileInput>,
+        options: TszProjectOptions,
+        lib_files: &[Arc<tsz::lib_loader::LibFile>],
+        execution: TszProjectCheckerExecution<'_>,
+    ) -> Result<TszUpdateReport, TszAuthorityError> {
+        self.update_inner(
+            sources,
+            options,
+            lib_files,
+            TszUpdateExecution::Partitions(execution),
+        )
     }
 
     fn update_inner(
@@ -368,8 +427,14 @@ impl TszProjectAuthority {
         sources: Vec<TszFileInput>,
         options: TszProjectOptions,
         lib_files: &[Arc<tsz::lib_loader::LibFile>],
-        checkpoint: Option<&dyn ExecutionCheckpoint>,
+        execution: TszUpdateExecution<'_>,
     ) -> Result<TszUpdateReport, TszAuthorityError> {
+        let execution_scope = execution
+            .checkpoint()
+            .map(tsz_common::LatchedExecutionCheckpoint::new);
+        let checkpoint = execution_scope
+            .as_ref()
+            .map(|scope| scope as &dyn ExecutionCheckpoint);
         if let Some(checkpoint) = checkpoint {
             checkpoint
                 .checkpoint(0)
@@ -411,6 +476,11 @@ impl TszProjectAuthority {
             .project
             .as_ref()
             .is_some_and(|current| current.semantic_options_digest != semantic_digest);
+        let file_format_digest = file_format_digest(&options.file_formats);
+        let file_formats_changed = self
+            .project
+            .as_ref()
+            .is_some_and(|current| current.file_format_digest != file_format_digest);
         let module_resolution_digest = module_resolution_digest(&options.module_resolutions);
         let module_resolutions_changed = self
             .project
@@ -421,9 +491,9 @@ impl TszProjectAuthority {
             self.project = None;
             self.environment = Some(options.environment);
             self.libraries = Some(library_digest);
-        } else if semantic_options_changed || module_resolutions_changed {
-            // Semantic options and exact resolution outcomes affect merged
-            // identities/checking, but not parser/binder output. Reuse exact
+        } else if semantic_options_changed || module_resolutions_changed || file_formats_changed {
+            // Semantic options, exact resolution outcomes, and compiler file
+            // formats affect merged checking, but not parser/binder output. Reuse exact
             // source binds while rebuilding the merged/checker project.
             self.project = None;
         }
@@ -464,6 +534,7 @@ impl TszProjectAuthority {
                     && current.checker_options_digest == checker_digest
                     && current.semantic_options_digest == semantic_digest
                     && current.module_resolution_digest == module_resolution_digest
+                    && current.file_format_digest == file_format_digest
                     && current.library_digest == library_digest
             })
             && report.removed_sources == 0
@@ -540,9 +611,34 @@ impl TszProjectAuthority {
                 .checkpoint(0)
                 .map_err(TszAuthorityError::ExecutionStopped)?;
         }
+        program.set_project_file_formats(&options.file_formats)?;
         program.set_project_module_resolutions(&options.module_resolutions)?;
-        let check = match checkpoint {
-            Some(checkpoint) => {
+        let check = match execution {
+            TszUpdateExecution::Partitions(execution) => {
+                let checkpoint = checkpoint.expect("partition execution always owns a checkpoint");
+                tsz::parallel::check_files_with_project_inputs_and_checker_partitions(
+                    &program,
+                    &options.checker,
+                    lib_files,
+                    options.semantic_options,
+                    &options.module_resolutions,
+                    TszProjectCheckerExecution {
+                        checkpoint,
+                        workers: execution.workers,
+                    },
+                )
+                .map_err(|error| match error {
+                    tsz::parallel::ProjectPartitionCheckError::Program(error) => {
+                        TszAuthorityError::ProjectCheck(error)
+                    }
+                    tsz::parallel::ProjectPartitionCheckError::WorkerPoolUnavailable(detail) => {
+                        TszAuthorityError::CheckerWorkerPoolUnavailable(detail)
+                    }
+                })?
+            }
+            TszUpdateExecution::Fresh(_) => {
+                let checkpoint =
+                    checkpoint.expect("fresh metered execution always owns a checkpoint");
                 tsz::parallel::check_files_parallel_with_project_inputs_and_execution_checkpoint(
                     &program,
                     &options.checker,
@@ -553,12 +649,14 @@ impl TszProjectAuthority {
                 )
                 .map_err(TszAuthorityError::ProjectCheck)?
             }
-            None => tsz::parallel::check_files_parallel_with_project_semantic_options(
-                &program,
-                &options.checker,
-                lib_files,
-                options.semantic_options,
-            ),
+            TszUpdateExecution::Unmetered => {
+                tsz::parallel::check_files_parallel_with_project_semantic_options(
+                    &program,
+                    &options.checker,
+                    lib_files,
+                    options.semantic_options,
+                )
+            }
         };
         if let Some(checkpoint) = checkpoint {
             checkpoint
@@ -569,6 +667,7 @@ impl TszProjectAuthority {
             checker_options_digest: checker_digest,
             semantic_options_digest: semantic_digest,
             module_resolution_digest,
+            file_format_digest,
             library_digest,
             lib_files: lib_files.to_vec(),
             options,
@@ -752,6 +851,132 @@ impl TszProject {
         None
     }
 
+    /// Borrows one property's exact identifier token from its bound owner.
+    /// Repeated declarations with identical raw spellings agree; distinct raw
+    /// spellings of the same decoded name are ambiguous and return `None`.
+    /// Batch consumers should use [`Self::with_property_name_sources_from_owner`]
+    /// to scan an owner's direct members only once with their shared checkpoint.
+    #[must_use]
+    pub fn property_name_source_from_owner(
+        &self,
+        symbol: TszSymbolId,
+        expected: &str,
+    ) -> Option<&str> {
+        if expected.is_empty() {
+            return None;
+        }
+        let mut spelling = None;
+        self.with_property_name_sources_from_owner(
+            symbol,
+            |_| Ok(()),
+            |name, raw| {
+                if name == expected {
+                    match spelling {
+                        None => spelling = Some(Some(raw)),
+                        Some(Some(previous)) if previous != raw => spelling = Some(None),
+                        _ => {}
+                    }
+                }
+            },
+        )
+        .ok()?;
+        spelling.flatten()
+    }
+
+    /// Visits borrowed decoded names and raw tokens of an exact declaring owner.
+    ///
+    /// Only direct parsed class/interface members, or a directly bound member
+    /// declaration, may lend tokens. Raw declarations must align with their
+    /// stable file/spans and retain the exact declaration-node symbol binding.
+    /// No nested-member or global name scan participates. Each declaration,
+    /// direct member and token byte is charged before it is exposed.
+    ///
+    /// Callers must discard any local index populated by `consume` on error;
+    /// the visitor retains no cache or partial result. Duplicate decoded names
+    /// are visited separately so the caller can refuse conflicting raw tokens.
+    ///
+    /// # Errors
+    /// Propagates the shared execution checkpoint's exact stop reason.
+    pub fn with_property_name_sources_from_owner<'source>(
+        &'source self,
+        symbol: TszSymbolId,
+        mut checkpoint: impl FnMut(u64) -> Result<(), tsz_common::ProjectExecutionStop>,
+        mut consume: impl FnMut(&'source str, &'source str),
+    ) -> Result<(), tsz_common::ProjectExecutionStop> {
+        checkpoint(0)?;
+        let Some(owner) = self.program.symbols.get(symbol) else {
+            return Ok(());
+        };
+        if owner.declarations.len() != owner.stable_declarations.len() {
+            return Ok(());
+        }
+        for (declaration, stable) in owner.declarations.iter().zip(&owner.stable_declarations) {
+            checkpoint(1)?;
+            if stable.file_idx == u32::MAX || stable.pos >= stable.end {
+                continue;
+            }
+            let Some(file) = usize::try_from(stable.file_idx)
+                .ok()
+                .and_then(|index| self.program.files.get(index))
+            else {
+                continue;
+            };
+            let arena = &file.arena;
+            if arena.pos_end_at(*declaration) != Some((stable.pos, stable.end))
+                || file.node_symbols.get(&declaration.0) != Some(&symbol)
+            {
+                continue;
+            }
+            let Some(node) = arena.get(*declaration) else {
+                continue;
+            };
+            let Some(source) = arena
+                .get_source_file_at(file.source_file)
+                .map(|file| file.text.as_ref())
+            else {
+                continue;
+            };
+            let members = arena
+                .get_class(node)
+                .map(|class| &class.members)
+                .or_else(|| {
+                    arena
+                        .get_interface(node)
+                        .map(|interface| &interface.members)
+                });
+            if let Some(members) = members {
+                for &member in &members.nodes {
+                    checkpoint(1)?;
+                    if arena.get_extended(member).map(|node| node.parent) != Some(*declaration)
+                        || !arena.pos_end_at(member).is_some_and(|(start, end)| {
+                            stable.pos <= start && start < end && end <= stable.end
+                        })
+                    {
+                        continue;
+                    }
+                    if let Some((name, raw)) = exact_property_name_tokens(arena, source, member) {
+                        checkpoint(
+                            u64::try_from(name.len())
+                                .unwrap_or(u64::MAX)
+                                .saturating_add(u64::try_from(raw.len()).unwrap_or(u64::MAX)),
+                        )?;
+                        consume(name, raw);
+                    }
+                }
+            } else if let Some((name, raw)) =
+                exact_property_name_tokens(arena, source, *declaration)
+            {
+                checkpoint(
+                    u64::try_from(name.len())
+                        .unwrap_or(u64::MAX)
+                        .saturating_add(u64::try_from(raw.len()).unwrap_or(u64::MAX)),
+                )?;
+                consume(name, raw);
+            }
+        }
+        checkpoint(0)
+    }
+
     /// Content identity for one exact retained project or library source.
     /// The stable path is included in the digest, so moving byte-identical
     /// content to another owner does not preserve a declaration identity.
@@ -840,6 +1065,7 @@ impl TszProject {
     ///
     /// # Errors
     /// Returns [`TszAuthorityError::MissingFile`] for an invalid merged index.
+    #[cfg(any(test, feature = "tsz-semantic-session-test-support"))]
     pub fn with_file_checker<Output>(
         &self,
         file_index: usize,
@@ -854,6 +1080,10 @@ impl TszProject {
         })
     }
 
+    /// Unmetered regression helper using the exact shared project query context.
+    /// This helper is available only to unit tests or explicit semantic test support.
+    /// Production projection uses [`Self::checked_query_session`] and its shared budget.
+    ///
     /// Runs a typed checker query and exposes the same checker's native type
     /// database for direct structural IR mapping. All borrows remain scoped to
     /// this exact project/file transaction; no type handles escape the
@@ -861,6 +1091,7 @@ impl TszProject {
     ///
     /// # Errors
     /// Returns [`TszAuthorityError::MissingFile`] for an invalid merged index.
+    #[cfg(any(test, feature = "tsz-semantic-session-test-support"))]
     pub fn with_file_checker_and_types<Output>(
         &self,
         file_index: usize,
@@ -871,27 +1102,19 @@ impl TszProject {
             &dyn TypeDatabase,
         ) -> Output,
     ) -> Result<Output, TszAuthorityError> {
-        let file = self
-            .program
+        self.program
             .files
             .get(file_index)
             .ok_or(TszAuthorityError::MissingFile(file_index))?;
-        let binder = tsz::parallel::create_binder_from_bound_file(file, &self.program, file_index);
-        let query_cache =
-            tsz::tsz_solver::construction::QueryCache::new(&self.program.type_interner)
-                .with_definition_store(&self.program.definition_store)
-                .with_project_semantic_options(self.options.semantic_options);
-        let mut checker = TszCheckerState::new_with_shared_def_store(
-            &file.arena,
-            &binder,
-            &query_cache,
-            file.file_name.clone(),
-            self.options.checker.clone(),
-            Arc::clone(&self.program.definition_store),
-        );
-        checker.check_source_file(file.source_file);
-        let types = checker.ctx.types.as_type_database();
-        Ok(consume(&mut checker, &binder, file, types))
+        let session = self.checked_query_session_unmetered_for_test()?;
+        session
+            .with_file_checker_and_types(file_index, |checker, binder, file, types| {
+                // Preserve this legacy regression helper's eager file query semantics
+                // while borrowing the same exact context as bounded projection.
+                checker.check_source_file(file.source_file);
+                consume(checker, binder, file, types)
+            })
+            .map_err(TszAuthorityError::ProjectCheckerSession)
     }
 }
 
@@ -961,6 +1184,34 @@ fn digest_part(digest: &mut Sha256, part: &[u8]) {
     digest.update(part);
 }
 
+fn exact_property_name_tokens<'a>(
+    arena: &'a tsz::parser::NodeArena,
+    source: &'a str,
+    member: TszNodeIndex,
+) -> Option<(&'a str, &'a str)> {
+    let node = arena.get(member)?;
+    let name = arena
+        .get_property_decl(node)
+        .map(|property| property.name)
+        .or_else(|| arena.get_signature(node).map(|signature| signature.name))
+        .or_else(|| arena.get_method_decl(node).map(|method| method.name))
+        .or_else(|| arena.get_accessor(node).map(|accessor| accessor.name))?;
+    if arena.get_extended(name)?.parent != member {
+        return None;
+    }
+    let decoded = arena
+        .get_identifier(arena.get(name)?)?
+        .escaped_text
+        .as_str();
+    let (lower, upper) = arena.pos_end_at(member)?;
+    let (start, end) = arena.pos_end_at(name)?;
+    if start < lower || end > upper || start >= end {
+        return None;
+    }
+    let raw = source.get(usize::try_from(start).ok()?..usize::try_from(end).ok()?)?;
+    Some((decoded, raw))
+}
+
 fn symbol_name_in_arena<'a, 'symbols, I>(
     arena: &'a tsz::parser::NodeArena,
     node_symbols: I,
@@ -1018,6 +1269,13 @@ fn semantic_options_digest(options: TszProjectSemanticOptions) -> [u8; 32] {
     Sha256::digest(format!("{options:?}").as_bytes()).into()
 }
 
+fn file_format_digest(formats: &[TszProjectFileFormatInput]) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"compiler.typescript.tsz-file-formats.v1\0");
+    digest_part(&mut digest, format!("{formats:?}").as_bytes());
+    digest.finalize().into()
+}
+
 fn module_resolution_digest(resolutions: &[TszProjectModuleResolution]) -> [u8; 32] {
     // DTO Debug is a same-revision cache key only. The caller's durable
     // environment fingerprint remains responsible for resolved compiler
@@ -1041,6 +1299,7 @@ mod tests {
             checker,
             semantic_options: TszProjectSemanticOptions::structural(),
             module_resolutions: Vec::new(),
+            file_formats: Vec::new(),
             environment: TszEnvironmentFingerprint::from_sha256([0x5a; 32]),
         }
     }
@@ -1281,6 +1540,7 @@ mod tests {
                     checker: options().checker,
                     semantic_options: TszProjectSemanticOptions::declaration_scoped(),
                     module_resolutions: Vec::new(),
+                    file_formats: Vec::new(),
                     environment: TszEnvironmentFingerprint::from_sha256([0x5a; 32]),
                 },
                 &[],
@@ -1352,6 +1612,248 @@ mod tests {
                 TszProjectModuleResolutionError::TargetNotInProgram { .. }
             ))
         ));
+    }
+
+    #[test]
+    fn compiler_file_format_changes_recheck_with_shared_map_and_reuse_binds() {
+        use tsz::checker::context::{ResolutionModeOverride, ResolutionRequestKind};
+        let sources = vec![
+            input(
+                "src/main.ts",
+                "import { value } from './value'; export const result: number = value;",
+            ),
+            input("src/es.ts", "export const value = 'esm';"),
+            input("src/cjs.ts", "export const value = 42;"),
+        ];
+        let mut recipe = options();
+        recipe.checker.module = TszModuleKind::NodeNext;
+        recipe.module_resolutions = vec![
+            (ResolutionModeOverride::Import, "src/es.ts"),
+            (ResolutionModeOverride::Require, "src/cjs.ts"),
+        ]
+        .into_iter()
+        .map(|(mode, path)| TszProjectModuleResolution {
+            importer_path: "src/main.ts".into(),
+            specifier: "./value".into(),
+            request_kind: TszProjectModuleRequestKind::EsmImport,
+            resolution_mode: Some(mode),
+            target: TszProjectModuleResolutionTarget::File { path: path.into() },
+        })
+        .collect();
+        let mut authority = TszProjectAuthority::new();
+        for (format, expected, expected_error) in [
+            (TszProjectFileFormat::EsModule, "src/es.ts", true),
+            (TszProjectFileFormat::CommonJs, "src/cjs.ts", false),
+        ] {
+            recipe.file_formats = vec![TszProjectFileFormatInput {
+                path: "src/main.ts".into(),
+                format,
+            }];
+            let report = authority
+                .update(sources.clone(), recipe.clone(), &[])
+                .unwrap();
+            if format == TszProjectFileFormat::CommonJs {
+                assert_eq!(report.parsed_and_bound, 0);
+                assert_eq!(report.reused_binds, 3);
+                assert!(!report.reused_project_result);
+            }
+            let project = authority.project().unwrap();
+            let main = project
+                .program()
+                .files
+                .iter()
+                .position(|file| file.file_name == "src/main.ts")
+                .unwrap();
+            project
+                .with_file_checker_and_types(main, |checker, _, _, _| {
+                    assert_eq!(
+                        checker.ctx.file_is_esm,
+                        Some(format == TszProjectFileFormat::EsModule)
+                    );
+                    assert!(Arc::ptr_eq(
+                        checker.ctx.file_is_esm_map.as_ref().unwrap(),
+                        &project.program().file_is_esm_map
+                    ));
+                    let target = checker
+                        .ctx
+                        .resolve_import_target_from_file_for_request(
+                            main,
+                            "./value",
+                            None,
+                            ResolutionRequestKind::EsmImport,
+                        )
+                        .unwrap();
+                    assert_eq!(project.program().files[target].file_name, expected);
+                })
+                .unwrap();
+            let cancelled = AtomicBool::new(false);
+            let budget = execution_budget(&cancelled, 1_000_000);
+            let session = project.checked_query_session(&budget).unwrap();
+            session
+                .with_file_checker_and_types(main, |checker, _, _, _| {
+                    assert_eq!(
+                        checker.ctx.file_is_esm,
+                        Some(format == TszProjectFileFormat::EsModule)
+                    );
+                    assert!(Arc::ptr_eq(
+                        checker.ctx.file_is_esm_map.as_ref().unwrap(),
+                        &project.program().file_is_esm_map
+                    ));
+                    let target = checker
+                        .ctx
+                        .resolve_import_target_from_file_for_request(
+                            main,
+                            "./value",
+                            None,
+                            ResolutionRequestKind::EsmImport,
+                        )
+                        .unwrap();
+                    assert_eq!(project.program().files[target].file_name, expected);
+                })
+                .unwrap();
+            let actual_error = project
+                .check_result()
+                .file_results
+                .iter()
+                .filter(|file| file.file_name == "src/main.ts")
+                .flat_map(|file| &file.diagnostics)
+                .any(|diagnostic| diagnostic.code == 2322);
+            assert_eq!(actual_error, expected_error);
+        }
+        assert!(
+            authority
+                .update(sources.clone(), recipe.clone(), &[])
+                .unwrap()
+                .reused_project_result
+        );
+        recipe.file_formats[0].format = TszProjectFileFormat::Unknown;
+        let report = authority.update(sources, recipe, &[]).unwrap();
+        assert_eq!(report.reused_binds, 3);
+        assert!(!report.reused_project_result);
+        let project = authority.project().unwrap();
+        let main = project
+            .program()
+            .files
+            .iter()
+            .position(|file| file.file_name == "src/main.ts")
+            .unwrap();
+        project
+            .with_file_checker_and_types(main, |checker, _, _, _| {
+                assert_eq!(checker.ctx.file_is_esm, None);
+                assert!(checker.ctx.file_is_esm_map.as_ref().unwrap().is_empty());
+                assert_eq!(
+                    checker.ctx.resolve_import_target_from_file_for_request(
+                        main,
+                        "./value",
+                        None,
+                        ResolutionRequestKind::EsmImport
+                    ),
+                    None
+                );
+                assert!(
+                    checker
+                        .ctx
+                        .resolve_import_target_from_file_for_request(
+                            main,
+                            "./value",
+                            Some(ResolutionModeOverride::Import),
+                            ResolutionRequestKind::EsmImport
+                        )
+                        .is_some()
+                );
+            })
+            .unwrap();
+        assert!(
+            matches!(project.with_file_checker_and_types(usize::MAX, |_, _, _, _| ()), Err(TszAuthorityError::MissingFile(index)) if index == usize::MAX)
+        );
+        let cancelled = AtomicBool::new(false);
+        let budget = execution_budget(&cancelled, 1_000_000);
+        let session = project.checked_query_session(&budget).unwrap();
+        session
+            .with_file_checker_and_types(main, |checker, _, _, _| {
+                assert_eq!(checker.ctx.file_is_esm, None);
+                assert!(Arc::ptr_eq(
+                    checker.ctx.file_is_esm_map.as_ref().unwrap(),
+                    &project.program().file_is_esm_map
+                ));
+                assert_eq!(
+                    checker.ctx.resolve_import_target_from_file_for_request(
+                        main,
+                        "./value",
+                        None,
+                        ResolutionRequestKind::EsmImport
+                    ),
+                    None
+                );
+                assert!(
+                    checker
+                        .ctx
+                        .resolve_import_target_from_file_for_request(
+                            main,
+                            "./value",
+                            Some(ResolutionModeOverride::Import),
+                            ResolutionRequestKind::EsmImport
+                        )
+                        .is_some()
+                );
+            })
+            .unwrap();
+        assert!(matches!(
+            session.with_file_checker_and_types(usize::MAX, |_, _, _, _| ()),
+            Err(TszProjectQuerySessionError::FileIndexOutOfRange {
+                file_index: usize::MAX,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn compiler_file_format_admission_rejects_wrong_duplicate_and_noncanonical_paths() {
+        let sources = vec![
+            input("src/main.ts", "export {};"),
+            input("other/main.ts", "export {};"),
+        ];
+        let mut authority = TszProjectAuthority::new();
+        let row = |path: &str| TszProjectFileFormatInput {
+            path: path.into(),
+            format: TszProjectFileFormat::Unknown,
+        };
+        for (formats, expected) in [
+            (
+                vec![row("src/../src/main.ts")],
+                TszProjectModuleResolutionError::InvalidVirtualPath {
+                    path: "src/../src/main.ts".into(),
+                },
+            ),
+            (
+                vec![row("main.ts")],
+                TszProjectModuleResolutionError::ImporterNotInProgram {
+                    path: "main.ts".into(),
+                },
+            ),
+            (
+                vec![row("src/main.ts"), row("src/main.ts")],
+                TszProjectModuleResolutionError::DuplicateProgramPath {
+                    path: "src/main.ts".into(),
+                },
+            ),
+        ] {
+            let mut recipe = options();
+            recipe.file_formats = formats;
+            match authority.update(sources.clone(), recipe, &[]) {
+                Err(TszAuthorityError::ModuleResolution(actual)) => assert_eq!(actual, expected),
+                other => panic!("expected exact format admission failure, got {other:?}"),
+            }
+        }
+        let mut recipe = options();
+        recipe.file_formats = vec![TszProjectFileFormatInput {
+            path: "other/main.ts".into(),
+            format: TszProjectFileFormat::EsModule,
+        }];
+        authority.update(sources, recipe, &[]).unwrap();
+        let map = &authority.project().unwrap().program().file_is_esm_map;
+        assert_eq!(map.get("other/main.ts"), Some(&true));
+        assert_eq!(map.get("src/main.ts"), None);
     }
 
     #[test]
@@ -1472,43 +1974,445 @@ mod tests {
     }
 
     #[test]
+    fn property_owner_batch_preserves_ambiguity_and_stops_before_publishing_an_index() {
+        let mut authority = TszProjectAuthority::new();
+        authority.update(vec![input("input.ts", concat!(
+            r"export class Owner { same!: string; s\u0061me!: number; café!: string; ",
+            "identical(value: string): void; identical(value: number): void; identical(value: unknown): void {} }\n",
+            "export class Foreign { same!: boolean; foreignOnly!: string; }",
+        ))], options(), &[]).expect("actual conflicting member declarations");
+        let project = authority.project().unwrap();
+        let file = &project.program().files[0];
+        let owner_symbol = |expected: &str| {
+            file.arena
+                .nodes
+                .iter()
+                .enumerate()
+                .find_map(|(raw, node)| {
+                    let class = file.arena.get_class(node)?;
+                    let name = file.arena.get_identifier(file.arena.get(class.name)?)?;
+                    (name.escaped_text == expected)
+                        .then(|| file.node_symbols.get(&u32::try_from(raw).ok()?).copied())
+                        .flatten()
+                })
+                .expect("actual bound owner")
+        };
+        let owner = owner_symbol("Owner");
+        let foreign = owner_symbol("Foreign");
+        assert_ne!(owner, foreign);
+        assert_eq!(
+            project.property_name_source_from_owner(owner, "same"),
+            None,
+            "two raw spellings of a decoded name are ambiguous within this owner"
+        );
+        assert_eq!(
+            project.property_name_source_from_owner(owner, "identical"),
+            Some("identical"),
+            "repeated identical overload spelling is unambiguous"
+        );
+        assert_eq!(
+            project.property_name_source_from_owner(foreign, "same"),
+            Some("same")
+        );
+        assert_eq!(
+            project.property_name_source_from_owner(owner, "foreignOnly"),
+            None
+        );
+        let mut charged = 0;
+        let mut tokens = Vec::new();
+        project
+            .with_property_name_sources_from_owner(
+                owner,
+                |work| {
+                    charged += work;
+                    Ok(())
+                },
+                |name, raw| tokens.push((name, raw)),
+            )
+            .unwrap();
+        assert_eq!(
+            tokens.len(),
+            6,
+            "one visit per direct parsed member, including overloads"
+        );
+        let expected = 1
+            + tokens.len() as u64
+            + tokens
+                .iter()
+                .map(|(name, raw)| (name.len() + raw.len()) as u64)
+                .sum::<u64>();
+        assert_eq!(
+            charged, expected,
+            "one owner scan charges declarations, direct members and retained token bytes"
+        );
+        for stop in [
+            tsz_common::ProjectExecutionStop::Cancelled,
+            tsz_common::ProjectExecutionStop::Deadline,
+            tsz_common::ProjectExecutionStop::WorkBudgetExhausted,
+        ] {
+            let mut consumed = 0;
+            let mut build = || {
+                let mut remaining = 15_u64;
+                let mut local = Vec::new();
+                project.with_property_name_sources_from_owner(
+                    owner,
+                    |work| {
+                        remaining = remaining.checked_sub(work).ok_or(stop)?;
+                        Ok(())
+                    },
+                    |name, raw| {
+                        consumed += 1;
+                        local.push((name, raw));
+                    },
+                )?;
+                Ok::<_, tsz_common::ProjectExecutionStop>(local)
+            };
+            assert_eq!(
+                build(),
+                Err(stop),
+                "no prefix index is returned on a typed stop"
+            );
+            assert_eq!(
+                consumed, 1,
+                "the stop occurs during a scan after its first actual token"
+            );
+            let mut recovered = Vec::new();
+            project
+                .with_property_name_sources_from_owner(
+                    owner,
+                    |_| Ok(()),
+                    |name, raw| recovered.push((name, raw)),
+                )
+                .unwrap();
+            assert_eq!(
+                recovered, tokens,
+                "a stopped visitor has no persistent partial cache"
+            );
+        }
+    }
+
+    #[test]
+    fn property_owner_spelling_borrows_only_exact_direct_bound_members() {
+        let mut authority = TszProjectAuthority::new();
+        let mut project_options = options();
+        project_options
+            .module_resolutions
+            .push(TszProjectModuleResolution {
+                importer_path: "src/main.ts".to_owned(),
+                specifier: "../types".to_owned(),
+                request_kind: TszProjectModuleRequestKind::EsmImport,
+                resolution_mode: None,
+                target: TszProjectModuleResolutionTarget::File {
+                    path: "types.ts".to_owned(),
+                },
+            });
+        authority.update(vec![
+            input("types.ts", concat!(
+                "export class Owner { label!: string; café!: string; v\\u0061lue!: number; nested!: { nestedOnly: string }; method(): void { class Inner { nestedClassOnly!: string; } interface InnerFace { nestedInterfaceOnly: string } const localOnly = 0; } }\n",
+                "export interface Unbound { unbound: string; nested: { interfaceNested: string } }\n",
+                "export declare const nonMember: string;",
+            )),
+            input("foreign.d.ts", r"export declare class Owner { l\u0061bel: string; foreignOnly: string; }"),
+            input("src/main.ts", "import type { Owner } from '../types'; export declare const value: Owner;"),
+        ], project_options, &[]).expect("real cross-file owner project");
+        let (symbol, foreign_symbol, stable, declaration) = {
+            let project = authority.project().unwrap();
+            let owner_symbol =
+                |path: &str, expected: &str| {
+                    let file = project
+                        .program()
+                        .files
+                        .iter()
+                        .find(|file| file.file_name == path)
+                        .unwrap();
+                    file.arena
+                        .nodes
+                        .iter()
+                        .enumerate()
+                        .find_map(|(raw, node)| {
+                            let name = file.arena.get_class(node).map(|class| class.name).or_else(
+                                || {
+                                    file.arena
+                                        .get_interface(node)
+                                        .map(|interface| interface.name)
+                                },
+                            )?;
+                            let name = file.arena.get_identifier(file.arena.get(name)?)?;
+                            (name.escaped_text == expected)
+                                .then(|| file.node_symbols.get(&u32::try_from(raw).ok()?).copied())
+                                .flatten()
+                        })
+                        .expect("owner declaration itself has a real binder symbol")
+                };
+            let symbol = owner_symbol("types.ts", "Owner");
+            let foreign_symbol = owner_symbol("foreign.d.ts", "Owner");
+            let interface = owner_symbol("types.ts", "Unbound");
+            assert_ne!(symbol, foreign_symbol);
+            assert_eq!(
+                project.symbol_name_source(symbol, "label"),
+                None,
+                "the class symbol does not bind its property's identifier"
+            );
+            for (name, raw) in [
+                ("label", "label"),
+                ("café", "café"),
+                ("value", r"v\u0061lue"),
+            ] {
+                let token = project
+                    .property_name_source_from_owner(symbol, name)
+                    .expect("exact owner member");
+                assert_eq!(token, raw);
+                let source = project.source_text("types.ts").unwrap();
+                assert!(token.as_ptr() >= source.as_ptr());
+                assert!(
+                    token.as_bytes().as_ptr_range().end <= source.as_bytes().as_ptr_range().end,
+                    "spelling borrows the original retained UTF-8 bytes"
+                );
+            }
+            assert_eq!(
+                project.property_name_source_from_owner(interface, "unbound"),
+                Some("unbound"),
+                "an explicitly supplied bound interface owner may lend its direct member"
+            );
+            assert_eq!(
+                project.property_name_source_from_owner(foreign_symbol, "label"),
+                Some(r"l\u0061bel")
+            );
+            for name in [
+                "Owner",
+                "nonMember",
+                "nestedOnly",
+                "nestedClassOnly",
+                "nestedInterfaceOnly",
+                "localOnly",
+                "foreignOnly",
+                "missing",
+                "",
+            ] {
+                assert_eq!(
+                    project.property_name_source_from_owner(symbol, name),
+                    None,
+                    "wrong member {name}"
+                );
+            }
+            assert_eq!(
+                project.property_name_source_from_owner(interface, "interfaceNested"),
+                None
+            );
+            assert_eq!(
+                project.property_name_source_from_owner(foreign_symbol, "café"),
+                None
+            );
+            let file = project
+                .program()
+                .files
+                .iter()
+                .find(|file| file.file_name == "types.ts")
+                .unwrap();
+            let member_symbol = file
+                .node_symbols
+                .iter()
+                .find_map(|(&raw, &symbol)| {
+                    let node = file.arena.get(TszNodeIndex(raw))?;
+                    let identifier = file.arena.get_identifier(node)?;
+                    (identifier.escaped_text == "label").then_some(symbol)
+                })
+                .expect("class member has an actual bound name symbol");
+            assert_ne!(member_symbol, symbol);
+            assert_eq!(
+                project.property_name_source_from_owner(member_symbol, "label"),
+                Some("label")
+            );
+            assert_eq!(
+                project.property_name_source_from_owner(member_symbol, "café"),
+                None
+            );
+            assert!(
+                !file.node_symbols.keys().any(|&raw| file
+                    .arena
+                    .get(TszNodeIndex(raw))
+                    .and_then(|node| file.arena.get_identifier(node))
+                    .is_some_and(|name| name.escaped_text == "unbound")),
+                "interface member names have no member SymbolId to invent"
+            );
+            let data = project.program().symbols.get(symbol).unwrap();
+            assert_eq!(data.declarations.len(), 1);
+            assert_eq!(data.stable_declarations.len(), 1);
+            (
+                symbol,
+                foreign_symbol,
+                data.stable_declarations[0],
+                data.declarations[0],
+            )
+        };
+        // Corrupt only captured provenance for negative controls: no replacement
+        // symbol or positive authority is synthesized by the fixture.
+        let project = authority.project.as_mut().unwrap();
+        project
+            .program
+            .symbols
+            .get_mut(symbol)
+            .unwrap()
+            .stable_declarations
+            .clear();
+        assert_eq!(
+            project.property_name_source_from_owner(symbol, "label"),
+            None,
+            "a missing stable partner is refused before zipped lookup"
+        );
+        project
+            .program
+            .symbols
+            .get_mut(symbol)
+            .unwrap()
+            .stable_declarations
+            .push(stable);
+        project
+            .program
+            .symbols
+            .get_mut(symbol)
+            .unwrap()
+            .stable_declarations[0]
+            .file_idx = project
+            .program
+            .symbols
+            .get(foreign_symbol)
+            .unwrap()
+            .stable_declarations[0]
+            .file_idx;
+        assert_eq!(
+            project.property_name_source_from_owner(symbol, "label"),
+            None,
+            "same-spelled foreign source cannot replace this symbol's declaration"
+        );
+        project
+            .program
+            .symbols
+            .get_mut(symbol)
+            .unwrap()
+            .stable_declarations[0] = stable;
+        project
+            .program
+            .symbols
+            .get_mut(symbol)
+            .unwrap()
+            .stable_declarations[0]
+            .end -= 1;
+        assert_eq!(
+            project.property_name_source_from_owner(symbol, "label"),
+            None,
+            "a stale declaration span cannot lend spelling"
+        );
+        project
+            .program
+            .symbols
+            .get_mut(symbol)
+            .unwrap()
+            .stable_declarations[0] = stable;
+        let file = &mut project.program.files[stable.file_idx as usize];
+        Arc::make_mut(&mut file.node_symbols).insert(declaration.0, foreign_symbol);
+        assert_eq!(
+            project.property_name_source_from_owner(symbol, "label"),
+            None,
+            "even matching file/span needs the exact declaration-node symbol binding"
+        );
+    }
+
+    #[test]
     fn symbol_name_source_uses_the_exact_cross_file_declaration_binding() {
         let mut authority = TszProjectAuthority::new();
+        let mut project_options = options();
+        project_options
+            .module_resolutions
+            .push(TszProjectModuleResolution {
+                importer_path: "src/main.ts".to_owned(),
+                specifier: "../types".to_owned(),
+                request_kind: TszProjectModuleRequestKind::EsmImport,
+                resolution_mode: None,
+                target: TszProjectModuleResolutionTarget::File {
+                    path: "types.d.ts".to_owned(),
+                },
+            });
         authority
             .update(
                 vec![
                     input(
                         "types.d.ts",
-                        "export interface ExternalSettings { label: string }",
+                        "export declare class ExternalSettings { label: string }\nexport interface UnboundSettings { unbound: string }",
                     ),
+                    input("foreign.d.ts", r"export declare class ForeignSettings { l\u0061bel: string }"),
                     input(
                         "src/main.ts",
                         "import type { ExternalSettings } from '../types';\nexport const settings: ExternalSettings = { label: 'ready' };",
                     ),
                 ],
-                options(),
+                project_options,
                 &[],
             )
             .expect("TSZ should build the cross-file project");
         let project = authority.project().expect("project result exists");
+        let bound_property = |path: &str| {
+            let file = project
+                .program()
+                .files
+                .iter()
+                .find(|file| file.file_name == path)
+                .expect("declaration dependency is retained");
+            file.node_symbols
+                .iter()
+                .find_map(|(&raw, &symbol)| {
+                    let node = file.arena.get(TszNodeIndex(raw))?;
+                    let identifier = file.arena.get_identifier(node)?;
+                    (identifier.escaped_text == "label").then_some(symbol)
+                })
+                .expect("a class property-name node has an actual binder symbol")
+        };
+        let symbol = bound_property("types.d.ts");
+        let foreign_symbol = bound_property("foreign.d.ts");
+        assert_ne!(symbol, foreign_symbol);
+        assert_eq!(project.symbol_name_source(symbol, "label"), Some("label"));
+        assert_eq!(project.symbol_name_source(symbol, "ExternalSettings"), None);
+        assert_eq!(project.symbol_name_source(symbol, "unbound"), None);
+        assert_eq!(
+            project.symbol_name_source(foreign_symbol, "label"),
+            Some(r"l\u0061bel")
+        );
         let file = project
             .program()
             .files
             .iter()
             .find(|file| file.file_name == "types.d.ts")
-            .expect("declaration dependency is retained");
-        let symbol = file
-            .node_symbols
+            .unwrap();
+        let interface_range = file
+            .arena
+            .nodes
             .iter()
-            .find_map(|(&raw, &symbol)| {
-                let node = file.arena.get(TszNodeIndex(raw))?;
-                let identifier = file.arena.get_identifier(node)?;
-                (identifier.escaped_text == "label").then_some(symbol)
+            .find_map(|node| {
+                let interface = file.arena.get_interface(node)?;
+                let name = file
+                    .arena
+                    .get(interface.name)
+                    .and_then(|name| file.arena.get_identifier(name))?;
+                (name.escaped_text == "UnboundSettings").then_some((node.pos, node.end))
             })
-            .expect("the exact property-name node is bound to a symbol");
-
-        assert_eq!(project.symbol_name_source(symbol, "label"), Some("label"));
-        assert_eq!(project.symbol_name_source(symbol, "ExternalSettings"), None);
+            .expect("exact unbound interface declaration");
+        assert_eq!(
+            project.property_name_source_in_declaration("types.d.ts", interface_range, "unbound"),
+            Some("unbound")
+        );
+        assert_eq!(
+            project.property_name_source_in_declaration("foreign.d.ts", interface_range, "unbound"),
+            None
+        );
+        assert!(
+            !file.node_symbols.keys().any(|&raw| {
+                file.arena
+                    .get(TszNodeIndex(raw))
+                    .and_then(|node| file.arena.get_identifier(node))
+                    .is_some_and(|identifier| identifier.escaped_text == "unbound")
+            }),
+            "an interface property has no binder symbol and cannot lend one to the class property"
+        );
     }
 
     #[test]
@@ -1683,5 +2587,192 @@ mod tests {
             validate_source_path("src/.ts"),
             Err(TszSourceError::InvalidPath)
         );
+    }
+
+    #[test]
+    fn checker_execution_policy_preserves_exact_sources_resolutions_and_diagnostics() {
+        use std::num::NonZeroUsize;
+        fn fixture() -> (Vec<TszFileInput>, TszProjectOptions) {
+            let mut options = options();
+            options.module_resolutions.push(TszProjectModuleResolution {
+                importer_path: "src/consumer.ts".into(),
+                specifier: "./value".into(),
+                request_kind: TszProjectModuleRequestKind::EsmImport,
+                resolution_mode: None,
+                target: TszProjectModuleResolutionTarget::File {
+                    path: "src/value.ts".into(),
+                },
+            });
+            (
+                vec![
+                    input("src/value.ts", "export class Value { field = 1; }"),
+                    input(
+                        "src/consumer.ts",
+                        "import { Value } from './value'; export const invalid: string = new Value().field;",
+                    ),
+                ],
+                options,
+            )
+        }
+        let (sources, opts) = fixture();
+        let mut fresh = TszProjectAuthority::new();
+        fresh.update(sources, opts, &[]).unwrap();
+        let expected = fresh.project().unwrap();
+        assert!(
+            expected
+                .check_result()
+                .file_results
+                .iter()
+                .flat_map(|file| &file.diagnostics)
+                .any(|diagnostic| diagnostic.code == 2322)
+        );
+        for workers in [1, 2, 4] {
+            let (sources, opts) = fixture();
+            let cancelled = AtomicBool::new(false);
+            let budget = execution_budget(&cancelled, 1_000_000);
+            let mut bounded = TszProjectAuthority::new();
+            bounded
+                .update_with_checker_execution(
+                    sources,
+                    opts,
+                    &[],
+                    TszProjectCheckerExecution {
+                        checkpoint: &budget,
+                        workers: NonZeroUsize::new(workers).unwrap(),
+                    },
+                )
+                .unwrap();
+            let actual = bounded.project().unwrap();
+            assert!(!Arc::ptr_eq(
+                &expected.program().definition_store,
+                &actual.program().definition_store
+            ));
+            assert_eq!(
+                actual.check_result().diagnostic_count,
+                expected.check_result().diagnostic_count
+            );
+            assert_eq!(
+                actual.check_result().file_results.len(),
+                expected.check_result().file_results.len()
+            );
+            for (actual, expected) in actual
+                .check_result()
+                .file_results
+                .iter()
+                .zip(&expected.check_result().file_results)
+            {
+                assert_eq!(actual.file_name, expected.file_name);
+                assert_eq!(actual.file_idx, expected.file_idx);
+                assert_eq!(actual.diagnostics, expected.diagnostics);
+            }
+            for path in expected.source_paths() {
+                assert_eq!(actual.source_text(path), expected.source_text(path));
+                assert_eq!(
+                    actual.source_content_digest(path),
+                    expected.source_content_digest(path)
+                );
+            }
+            let session = actual.checked_query_session(&budget).unwrap();
+            let index = session.file_index("src/value.ts").unwrap();
+            let field = session
+                .with_file_checker_and_types(index, |checker, binder, _file, _types| {
+                    checker.get_type_of_symbol(binder.file_locals.get("Value").unwrap())
+                })
+                .unwrap();
+            assert_ne!(
+                field,
+                TszTypeId::UNKNOWN,
+                "bounded project retains native query authority"
+            );
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn checker_execution_one_shot_stop_after_merge_never_publishes_project() {
+        use std::sync::atomic::Ordering;
+        struct StopOnPrivateWorker {
+            emitted: AtomicBool,
+            entered: AtomicBool,
+        }
+        impl ExecutionCheckpoint for StopOnPrivateWorker {
+            fn checkpoint(&self, _work: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+                let private = std::thread::current()
+                    .name()
+                    .is_some_and(|name| name.starts_with("tsz-checker-"));
+                if private {
+                    self.entered.store(true, Ordering::Release);
+                    if !self.emitted.swap(true, Ordering::AcqRel) {
+                        return Err(tsz_common::ProjectExecutionStop::Cancelled);
+                    }
+                }
+                Ok(())
+            }
+        }
+        let source = StopOnPrivateWorker {
+            emitted: AtomicBool::new(false),
+            entered: AtomicBool::new(false),
+        };
+        let mut authority = TszProjectAuthority::new();
+        authority
+            .update(
+                vec![input("src/value.ts", "export const value = 1;")],
+                options(),
+                &[],
+            )
+            .unwrap();
+        let stopped = authority.update_with_checker_execution(
+            vec![input("src/value.ts", "export const value = 2;")],
+            options(),
+            &[],
+            TszProjectCheckerExecution {
+                checkpoint: &source,
+                workers: std::num::NonZeroUsize::new(2).unwrap(),
+            },
+        );
+        assert!(
+            source.entered.load(Ordering::Acquire),
+            "stop must occur in real private checker planning after parse/bind/merge"
+        );
+        assert!(matches!(
+            stopped,
+            Err(TszAuthorityError::ProjectCheck(
+                tsz::parallel::ProjectProgramCheckError::ExecutionStopped(
+                    tsz_common::ProjectExecutionStop::Cancelled
+                )
+            ))
+        ));
+        assert_eq!(
+            source.checkpoint(0),
+            Ok(()),
+            "source really stops only once"
+        );
+        assert!(
+            authority.project().is_none(),
+            "stopped changed project cannot publish or retain prior Ready"
+        );
+    }
+
+    #[test]
+    fn checker_execution_precancelled_admission_keeps_typed_stop() {
+        let cancelled = AtomicBool::new(true);
+        let budget = execution_budget(&cancelled, 1_000_000);
+        let mut authority = TszProjectAuthority::new();
+        let stopped = authority.update_with_checker_execution(
+            vec![input("../invalid.ts", "not admitted")],
+            options(),
+            &[],
+            TszProjectCheckerExecution {
+                checkpoint: &budget,
+                workers: std::num::NonZeroUsize::new(2).unwrap(),
+            },
+        );
+        assert!(matches!(
+            stopped,
+            Err(TszAuthorityError::ExecutionStopped(
+                tsz_common::ProjectExecutionStop::Cancelled
+            ))
+        ));
+        assert!(authority.project().is_none());
     }
 }

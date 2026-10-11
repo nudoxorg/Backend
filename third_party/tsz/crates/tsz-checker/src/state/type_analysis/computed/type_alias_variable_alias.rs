@@ -1097,6 +1097,22 @@ impl<'a> CheckerState<'a> {
 
             // For ES6 imports with import_module set, resolve using module_exports
             if let Some(module_name) = import_module {
+                let configured = self.ctx.project_module_resolution_outcomes.is_some();
+                let (configured_exports, configured_target, configured_external) = if configured {
+                    let Some(request) = self.ctx.bound_module_request_for_alias(sym_id) else {
+                        return (TypeId::ANY, Vec::new()); // unresolved-import recovery, no target selected
+                    };
+                    let Some(selected) = self.ctx.select_module_request(request) else {
+                        return (TypeId::ANY, Vec::new());
+                    };
+                    (
+                        self.resolve_exports_for_selected_request(selected),
+                        selected.file_target(),
+                        selected.external_identity().is_some(),
+                    )
+                } else {
+                    (None, None, false)
+                };
                 let import_source_file_idx = self
                     .ctx
                     .binder
@@ -1108,11 +1124,12 @@ impl<'a> CheckerState<'a> {
 
                 // Check if this is a shorthand ambient module (declare module "foo" without body)
                 // Imports from shorthand ambient modules are typed as `any`
-                if self
-                    .ctx
-                    .binder
-                    .shorthand_ambient_modules
-                    .contains(module_name)
+                if (!configured || configured_external)
+                    && self
+                        .ctx
+                        .binder
+                        .shorthand_ambient_modules
+                        .contains(module_name)
                 {
                     return (TypeId::ANY, Vec::new());
                 }
@@ -1122,9 +1139,17 @@ impl<'a> CheckerState<'a> {
                 // Namespace imports have import_name = None, namespace
                 // re-exports have import_name = Some("*").
                 if import_name.is_none() || import_name.as_deref() == Some("*") {
-                    if let Some(json_namespace_type) = self
-                        .json_module_namespace_type_for_module(module_name, import_source_file_idx)
-                    {
+                    let json_namespace = if configured {
+                        configured_target.and_then(|target| {
+                            self.json_module_namespace_type_for_file(target, import_source_file_idx)
+                        })
+                    } else {
+                        self.json_module_namespace_type_for_module(
+                            module_name,
+                            import_source_file_idx,
+                        )
+                    };
+                    if let Some(json_namespace_type) = json_namespace {
                         return (json_namespace_type, Vec::new());
                     }
 
@@ -1150,10 +1175,14 @@ impl<'a> CheckerState<'a> {
                     // another file), the module_name is relative to the declaring file,
                     // not the current file. Use the symbol's declaring file for resolution.
                     let declaring_file_idx = self.ctx.resolve_symbol_file_index(sym_id);
-                    let exports_table = self.resolve_effective_module_exports_from_file(
-                        module_name,
-                        declaring_file_idx,
-                    );
+                    let exports_table = if configured {
+                        configured_exports
+                    } else {
+                        self.resolve_effective_module_exports_from_file(
+                            module_name,
+                            declaring_file_idx,
+                        )
+                    };
                     if let Some(exports_table) = exports_table {
                         let ordered_exports = self.ordered_namespace_export_entries(&exports_table);
                         // Record cross-file symbol targets for all symbols in the table
@@ -1493,6 +1522,23 @@ impl<'a> CheckerState<'a> {
                     self.ctx.module_namespace_resolution_set.remove(module_name);
                     self.emit_module_not_found_error(module_name, value_decl);
                     return (TypeId::ANY, Vec::new());
+                }
+
+                if configured {
+                    let export_name = import_name.as_deref().unwrap_or(escaped_name);
+                    if let Some(target) = configured_exports
+                        .as_ref()
+                        .and_then(|exports| exports.get(export_name))
+                    {
+                        let mut visited = AliasCycleTracker::new();
+                        let target = self
+                            .resolve_alias_symbol(target, &mut visited)
+                            .unwrap_or(target);
+                        if target != sym_id {
+                            return (self.get_type_of_symbol(target), Vec::new());
+                        }
+                    }
+                    return (TypeId::ANY, Vec::new()); // absent member recovery; no other request target
                 }
 
                 // This is a named import: import { X } from 'module'

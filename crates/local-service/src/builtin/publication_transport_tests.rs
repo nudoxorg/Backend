@@ -10,6 +10,8 @@ use backend_engine::{
 use backend_library::CursorRead;
 
 fn owner(directory: &Path) -> EmptyOwner {
+    crate::test_support::make_private(directory)
+        .expect("make publication-owner fixture current-user private");
     let mut owner = open_empty_owner(directory).expect("actual product owner");
     let daemon = owner.daemon_mut();
     let snapshot = daemon.engine().daemon().owner().snapshot();

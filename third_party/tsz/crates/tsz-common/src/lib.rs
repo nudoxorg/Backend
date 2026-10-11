@@ -15,7 +15,8 @@ pub mod id;
 /// Shared cooperative cancellation/deadline/work budget for one project run.
 pub mod execution_budget;
 pub use execution_budget::{
-    ExecutionCheckpoint, ExecutionWorkMeter, ProjectExecutionBudget, ProjectExecutionStop,
+    ExecutionCheckpoint, ExecutionWorkMeter, LatchedExecutionCheckpoint, ProjectExecutionBudget,
+    ProjectExecutionStop,
 };
 
 // String interning for identifier deduplication

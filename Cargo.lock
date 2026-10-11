@@ -1364,6 +1364,7 @@ dependencies = [
  "rustix 1.1.4",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.20",
  "toml 1.1.5+spec-1.1.0",
  "tree-sitter-python",
@@ -1588,6 +1589,7 @@ dependencies = [
  "backend-version",
  "base64 0.22.1",
  "blake3",
+ "flate2",
  "futures-executor",
  "futures-util",
  "serde",
@@ -15014,6 +15016,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tsp_types"
+version = "1.2.0-dev.1"
+source = "git+https://github.com/facebook/pyrefly?rev=30b5ca5250db9f2d9264d5e889662cf1224a75b7#30b5ca5250db9f2d9264d5e889662cf1224a75b7"
+dependencies = [
+ "lsp-server",
+ "serde",
+ "serde_json",
+ "serde_repr",
+]
+
+[[package]]
 name = "tsz-binder"
 version = "0.1.75"
 dependencies = [
@@ -15173,17 +15186,6 @@ dependencies = [
  "tsz-binder",
  "tsz-common",
  "tsz-scanner",
-]
-
-[[package]]
-name = "tsp_types"
-version = "1.2.0-dev.1"
-source = "git+https://github.com/facebook/pyrefly?rev=30b5ca5250db9f2d9264d5e889662cf1224a75b7#30b5ca5250db9f2d9264d5e889662cf1224a75b7"
-dependencies = [
- "lsp-server",
- "serde",
- "serde_json",
- "serde_repr",
 ]
 
 [[package]]

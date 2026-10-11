@@ -39,6 +39,8 @@ impl TempWorkspace {
             .prefix("nudox-membership-owner-")
             .tempdir()
             .expect("create unique private temporary workspace");
+        crate::test_support::make_private(directory.path())
+            .expect("make product-owner fixture current-user private");
         Self(directory)
     }
 }

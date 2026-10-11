@@ -25,16 +25,21 @@ pub enum ContinuationTarget<'a> {
     CliOption,
     /// The named MCP tool accepts the token through its `cursor` argument.
     McpTool(&'a str),
+    /// The generic MCP surface accepts its nested index-search cursor.
+    McpSurfaceCommand,
 }
 
-fn continuation_note(target: ContinuationTarget<'_>, cursor: &str) -> String {
+/// Names the next call, retaining tokens only when there is no structured channel.
+#[must_use]
+pub fn continuation_note(target: ContinuationTarget<'_>, cursor: &str) -> String {
     match target {
         ContinuationTarget::CliOption => {
             format!("next cursor (continue the same command with `--cursor`): `{cursor}`")
         }
         ContinuationTarget::McpTool(tool) => format!(
-            "Continue `{tool}` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`: `{cursor}`"
+            "Continue `{tool}` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`."
         ),
+        ContinuationTarget::McpSurfaceCommand => "Continue `backend.surface` with the same arguments; copy `structuredContent.surface.data.next_cursor` to `command.cursor`.".to_owned(),
     }
 }
 

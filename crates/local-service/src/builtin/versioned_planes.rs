@@ -2381,6 +2381,7 @@ mod tests {
     #[test]
     fn owned_selection_source_classifies_an_absent_committed_marker_as_stale() {
         let directory = path();
+        std::fs::create_dir_all(&directory).expect("create semantic authority workspace");
         let package = backend_engine::PackageReference::parse(
             "pkg:cargo/native-history-selection@1.0.0".to_owned(),
         )
@@ -2416,6 +2417,7 @@ mod tests {
     #[test]
     fn native_history_pair_distinguishes_absence_from_selector_lock_failure() {
         let directory = path();
+        std::fs::create_dir_all(&directory).expect("create semantic authority workspace");
         let package = backend_engine::PackageReference::parse(
             "pkg:cargo/native-history-pair-state@1.0.0".to_owned(),
         )

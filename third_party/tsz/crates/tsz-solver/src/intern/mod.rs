@@ -28,6 +28,7 @@ mod template;
 mod template_intersection;
 mod tuple_normalization;
 pub mod type_factory;
+mod union_execution;
 mod union_mode;
 
 // Re-export primary public type from core implementation
@@ -37,6 +38,10 @@ pub(crate) use self::core::apply_arity_optional_display_mask;
 pub use self::core::clear_thread_local_cache;
 pub(crate) use self::core::{PredicateCacheKind, TEMPLATE_LITERAL_EXPANSION_LIMIT, TypeListBuffer};
 pub(crate) use self::tuple_normalization::tuple_normalized;
+pub(crate) use self::union_execution::{
+    UnionExecutionWork, expect_unmetered_union, flush_union_execution_work,
+    tick_union_execution_work,
+};
 pub(crate) use self::union_mode::union_literal_default_enabled;
 // Used by intern_tests.rs (included via #[path] below).
 #[cfg(test)]
@@ -80,3 +85,7 @@ mod concurrent_tests;
 #[cfg(test)]
 #[path = "../../tests/intern_normalize_tests.rs"]
 mod intern_normalize_tests;
+
+#[cfg(test)]
+#[path = "union_execution_tests.rs"]
+mod union_execution_tests;

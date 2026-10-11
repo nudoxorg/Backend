@@ -143,6 +143,31 @@ pub enum PythonProjectSourceStatus {
         /// Sorted exact captured paths reached through the native dependency graph.
         dependencies: Box<[Box<str>]>,
     },
+    /// Original compiled candidates prevent this source's mirror fallback from
+    /// certifying facts. This is a direct import refusal, not a graph self-edge.
+    UnavailableCompiledImport {
+        /// Exact distinct importing bindings and their observed candidates.
+        imports: Box<[PythonCompiledImportUnavailable]>,
+        /// Sorted exact captured paths reached through the native dependency graph.
+        /// Direct compiled imports do not create a synthetic self-edge.
+        dependencies: Box<[Box<str>]>,
+    },
+}
+
+/// A positive compiled candidate observed for one exact native import probe.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PythonCompiledImportUnavailable {
+    /// Import binding (including an explicit alias), owned by this probe.
+    pub binding: Box<str>,
+    /// Native base module spelling, which can be shared by sibling probes.
+    pub module: Box<str>,
+    /// Exact module operand in the importing source.
+    pub module_span: Span,
+    /// Exact binding identifier, distinct even in a comma-separated import.
+    pub binding_span: Span,
+    /// Sorted original compiled candidate paths whose presence was witnessed.
+    /// Their unsupported bytes were never captured or interpreted.
+    pub candidates: Box<[PathBuf]>,
 }
 
 /// Cancellation and deadline shared by the entire project transaction.
@@ -561,8 +586,8 @@ impl CandidateWitness {
         Ok(Self { path, kind })
     }
 
-    pub(super) fn is_present(&self) -> bool {
-        self.kind.is_some()
+    pub(super) fn is_file(&self) -> bool {
+        self.kind == Some(false)
     }
 
     fn validate_current(&self) -> Result<(), CheckerError> {
@@ -1214,7 +1239,20 @@ impl NativePythonProjectAuthority {
             file.validate_current()?;
         }
         checkpoint(control)?;
-        for (path, dependencies) in native.unavailable_dependencies {
+        let mut unavailable_dependencies = native.unavailable_dependencies;
+        for (path, imports) in native.compiled_imports {
+            checkpoint(control)?;
+            let dependencies = unavailable_dependencies.remove(&path).unwrap_or_default();
+            source_statuses.insert(
+                path,
+                PythonProjectSourceStatus::UnavailableCompiledImport {
+                    imports,
+                    dependencies,
+                },
+            );
+        }
+        for (path, dependencies) in unavailable_dependencies {
+            checkpoint(control)?;
             source_statuses.insert(
                 path,
                 PythonProjectSourceStatus::UnavailableDependency { dependencies },

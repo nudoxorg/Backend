@@ -15,6 +15,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::future::IntoFuture;
 use std::io::{self, Read};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::{Path, PathBuf};
@@ -539,7 +540,7 @@ where
     // Pending responses while durable setup waits; no deadline pretends that
     // a token or owner has become ready.
     let initializer = tokio::task::spawn_blocking(move || initialize(&paths));
-    let server = std::future::IntoFuture::into_future(axum::serve(listener, app));
+    let server = IntoFuture::into_future(axum::serve(listener, app));
     tokio::pin!(server);
     tokio::select! {
         result = &mut server => result.map_err(|error| error.to_string()),

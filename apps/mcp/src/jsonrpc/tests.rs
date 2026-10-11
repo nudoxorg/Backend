@@ -101,88 +101,91 @@ fn direct_cursor_legacy_vectors_preserve_exact_mcp1_domain_and_encoding() {
 #[test]
 fn direct_cursor_authenticates_version_expiry_payload_and_existing_context() {
     let server = Server::with_authority(Fake::default(), PROJECT.to_owned(), [7; 32]);
-    let owner = format!("pc3-{}", URL_SAFE_NO_PAD.encode([0xfb, 0xff, 0xfe]));
-    assert!(
-        owner.contains('-') && owner.contains('_'),
-        "exercise owner separators"
-    );
-    assert!(
-        owner.ends_with('-'),
-        "MAC must split after a trailing owner separator"
-    );
-    let token = server
-        .sign_cursor_token_at(u64::MAX, &owner, b"query-role-project")
-        .expect("direct token");
-    assert_eq!(
-        token,
-        cursor_wrapper_vector(
-            "mcp2",
+    for prefix in ["pc3-", "pc4-"] {
+        let owner = format!("{prefix}{}", URL_SAFE_NO_PAD.encode([0xfb, 0xff, 0xfe]));
+        assert!(
+            owner.contains('-') && owner.contains('_'),
+            "exercise owner separators"
+        );
+        assert!(
+            owner.ends_with('-'),
+            "MAC must split after a trailing owner separator"
+        );
+        let token = server
+            .sign_cursor_token_at(u64::MAX, &owner, b"query-role-project")
+            .expect("direct token");
+        assert_eq!(
+            token,
+            cursor_wrapper_vector(
+                "mcp2",
+                &u64::MAX.to_string(),
+                &owner,
+                [7; 32],
+                b"query-role-project"
+            )
+        );
+        assert_eq!(
+            server
+                .verify_cursor_token(&token, b"query-role-project")
+                .expect("direct verification")
+                .as_deref(),
+            Some(owner.as_str())
+        );
+        for changed in [
+            token.replacen("mcp2-", "mcp1-", 1),
+            token.replacen("mcp2-", "mcp3-", 1),
+            token.replacen(&u64::MAX.to_string(), "18446744073709551614", 1),
+            token.replacen(prefix, "pc2-", 1),
+            token.replacen(&owner, &format!("{prefix}AA"), 1),
+        ] {
+            assert!(
+                server
+                    .verify_cursor_token(&changed, b"query-role-project")
+                    .expect("tampered wrapper")
+                    .is_none()
+            );
+        }
+        for expiry in [
+            "0",
+            "018446744073709551615",
+            "+18446744073709551615",
+            "18446744073709551616",
+        ] {
+            let changed =
+                cursor_wrapper_vector("mcp2", expiry, &owner, [7; 32], b"query-role-project");
+            assert!(
+                server
+                    .verify_cursor_token(&changed, b"query-role-project")
+                    .expect("closed expiry grammar")
+                    .is_none()
+            );
+        }
+        assert!(
+            server
+                .verify_cursor_token(&token, b"other-query-role-project")
+                .expect("context mutation")
+                .is_none()
+        );
+        let rotated = Server::with_authority(Fake::default(), PROJECT.to_owned(), [8; 32]);
+        assert!(
+            rotated
+                .verify_cursor_token(&token, b"query-role-project")
+                .expect("rotated key")
+                .is_none()
+        );
+        let old = cursor_wrapper_vector(
+            "mcp1",
             &u64::MAX.to_string(),
-            &owner,
+            &URL_SAFE_NO_PAD.encode(owner.as_bytes()),
             [7; 32],
-            b"query-role-project"
-        )
-    );
-    assert_eq!(
-        server
-            .verify_cursor_token(&token, b"query-role-project")
-            .expect("direct verification")
-            .as_deref(),
-        Some(owner.as_str())
-    );
-    for changed in [
-        token.replacen("mcp2-", "mcp1-", 1),
-        token.replacen("mcp2-", "mcp3-", 1),
-        token.replacen(&u64::MAX.to_string(), "18446744073709551614", 1),
-        token.replacen("pc3-", "pc2-", 1),
-        token.replacen(&owner, "pc3-AA", 1),
-    ] {
-        assert!(
-            server
-                .verify_cursor_token(&changed, b"query-role-project")
-                .expect("tampered wrapper")
-                .is_none()
+            b"query-role-project",
+        );
+        assert_eq!(
+            old.len() - token.len(),
+            URL_SAFE_NO_PAD.encode(owner.as_bytes()).len() - owner.len(),
+            "savings are exactly the removed outer encoding"
         );
     }
-    for expiry in [
-        "0",
-        "018446744073709551615",
-        "+18446744073709551615",
-        "18446744073709551616",
-    ] {
-        let changed = cursor_wrapper_vector("mcp2", expiry, &owner, [7; 32], b"query-role-project");
-        assert!(
-            server
-                .verify_cursor_token(&changed, b"query-role-project")
-                .expect("closed expiry grammar")
-                .is_none()
-        );
-    }
-    assert!(
-        server
-            .verify_cursor_token(&token, b"other-query-role-project")
-            .expect("context mutation")
-            .is_none()
-    );
-    let rotated = Server::with_authority(Fake::default(), PROJECT.to_owned(), [8; 32]);
-    assert!(
-        rotated
-            .verify_cursor_token(&token, b"query-role-project")
-            .expect("rotated key")
-            .is_none()
-    );
-    let old = cursor_wrapper_vector(
-        "mcp1",
-        &u64::MAX.to_string(),
-        &URL_SAFE_NO_PAD.encode(owner.as_bytes()),
-        [7; 32],
-        b"query-role-project",
-    );
-    assert_eq!(
-        old.len() - token.len(),
-        URL_SAFE_NO_PAD.encode(owner.as_bytes()).len() - owner.len(),
-        "savings are exactly the removed outer encoding"
-    );
 }
 
 #[test]
@@ -199,7 +202,12 @@ fn direct_cursor_encoding_boundaries_do_not_mint_or_load_cold_authority() {
         "pc3-",
         "pc3-Zg=",
         "pc3-Zh",
-        "pc4-AA",
+        "pc4-",
+        "pc4-Zg=",
+        "pc4-Zh",
+        "pc4-λ",
+        "pc4-AA\n",
+        "pc5-AA",
         "pc3-λ",
         "pc3-AA\n",
         "{\"raw\":true}",
@@ -254,6 +262,7 @@ fn direct_cursor_owner_encodings_and_exact_size_survive_authenticated_roundtrip(
         page,
         "pc2-00ff".to_owned(),
         "pc3-AA".to_owned(),
+        "pc4-AA".to_owned(),
         FIXTURE_INDEX_CURSOR.to_owned(),
         largest,
     ] {
@@ -274,7 +283,7 @@ fn direct_cursor_owner_encodings_and_exact_size_survive_authenticated_roundtrip(
         "pc1-00",
         "pc2-0",
         "pc2-FF",
-        "pc4-AA",
+        "pc5-AA",
         "cGxhaW50ZXh0",
         "pc3-AA\0",
     ] {
@@ -331,6 +340,209 @@ fn direct_cursor_legacy_named_request_context_survives_and_cannot_cross_roles() 
     );
     assert_eq!(refused["isError"], true);
     assert!(other_role.product.surface_index_search_seen.is_empty());
+}
+
+fn retained_go_binary_owner() -> String {
+    let original = include_bytes!(
+        "../../../../crates/library/wire/command/fixtures/current-go-graph-continuation.json"
+    );
+    // Keep the actual DTO27 capture unchanged. This is a derived current
+    // command with the exact original claims, not a historical-peer replay.
+    let mut current: Value = serde_json::from_slice(original).expect("retained producer envelope");
+    assert_eq!(current["version"], 27);
+    assert!(backend_library::decode_command_body(original).is_err());
+    let claims = current["certificate"].clone();
+    current["version"] = json!(backend_library::DTO_VERSION);
+    assert_eq!(current["certificate"], claims);
+    let request = backend_library::decode_command_body(
+        &serde_json::to_vec(&current).expect("current version envelope"),
+    )
+    .expect("unchanged producer claims pass current strict admission");
+    backend_library::encode_command_body(&request).expect("unchanged encoder admission");
+    let binary =
+        backend_library::encode_binary_certificate_command(&request).expect("binary proof");
+    let expanded =
+        backend_library::expand_binary_certificate_command(&binary).expect("exact expansion");
+    assert_eq!(
+        expanded,
+        serde_json::to_vec(&request).expect("canonical current envelope")
+    );
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut encoder, &binary).expect("bounded actual proof");
+    format!(
+        "pc4-{}",
+        URL_SAFE_NO_PAD.encode(encoder.finish().expect("finish"))
+    )
+}
+
+#[test]
+fn actual_binary_owner_mac_restarts_and_refuses_cross_surface_query_detail_and_key() {
+    let fixture = LazyAuthorityFixture::new();
+    let owner = retained_go_binary_owner();
+    let arguments =
+        json!({"coordinate":"/work/sol61-cli-proof/corpora/gorilla-mux::mux.go:47::Router"});
+    let arguments = arguments.as_object().expect("arguments");
+    let context = continuation_context(PROJECT, "backend.graph", arguments, Detail::Summary);
+    let first = Server::with_authority(
+        Fake::default(),
+        PROJECT.to_owned(),
+        CursorAuthority::workspace(&fixture.paths),
+    );
+    let token = first
+        .sign_cursor_token(&owner, &context)
+        .expect("real signer");
+    drop(first);
+    let fresh = Server::with_authority(
+        Fake::default(),
+        PROJECT.to_owned(),
+        CursorAuthority::workspace(&fixture.paths),
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            fresh
+                .verify_cursor_token(&token, &context)
+                .expect("durable authority")
+                .as_deref(),
+            Some(owner.as_str()),
+        );
+    }
+    let mut changed_coordinate = arguments.clone();
+    changed_coordinate.insert("coordinate".to_owned(), json!("/other::Router"));
+    let mut changed_limit = arguments.clone();
+    changed_limit.insert("limit".to_owned(), json!(3));
+    let mut changed_variables = arguments.clone();
+    changed_variables.insert("variables".to_owned(), json!({"scope":"other"}));
+    for other in [
+        continuation_context(
+            PROJECT,
+            "backend.graph",
+            &changed_coordinate,
+            Detail::Summary,
+        ),
+        continuation_context(PROJECT, "backend.graph", &changed_limit, Detail::Summary),
+        continuation_context(
+            PROJECT,
+            "backend.graph",
+            &changed_variables,
+            Detail::Summary,
+        ),
+        continuation_context(PROJECT, "backend.graph", arguments, Detail::Full),
+        continuation_context(PROJECT, "backend.search", arguments, Detail::Summary),
+        continuation_context(PROJECT, SURFACE_TOOL, arguments, Detail::Summary),
+        continuation_context(
+            "/other-workspace",
+            "backend.graph",
+            arguments,
+            Detail::Summary,
+        ),
+    ] {
+        assert!(
+            fresh
+                .verify_cursor_token(&token, &other)
+                .expect("changed context")
+                .is_none()
+        );
+    }
+    let foreign = LazyAuthorityFixture::new();
+    let foreign_server = Server::with_authority(
+        Fake::default(),
+        PROJECT.to_owned(),
+        CursorAuthority::workspace(&foreign.paths),
+    );
+    assert!(
+        foreign_server
+            .verify_cursor_token(&token, &context)
+            .expect("cold foreign authority")
+            .is_none()
+    );
+    assert!(
+        !foreign.paths.data().exists(),
+        "verification never mints an authority"
+    );
+    let rotated = Server::with_authority(Fake::default(), PROJECT.to_owned(), [8; 32]);
+    assert!(
+        rotated
+            .verify_cursor_token(&token, &context)
+            .expect("rotated key")
+            .is_none()
+    );
+    for changed in [
+        token.replacen("pc4-", "pc3-", 1),
+        token.replacen("mcp2-", "mcp1-", 1),
+    ] {
+        assert!(
+            fresh
+                .verify_cursor_token(&changed, &context)
+                .expect("changed version")
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn actual_go_25_row_summary_retains_typed_facts_and_a_valid_binary_owner_mac() {
+    // Egress fixture from actual Go 0066. It asserts preservation and signed
+    // transport, not that a fake product admits the captured native owner.
+    let fixture: Value =
+        serde_json::from_str(include_str!("fixtures/current-go-graph-summary-input.json"))
+            .expect("retained actual rows");
+    let body = &fixture["body"];
+    let typed: backend_present::RecordListDto =
+        serde_json::from_value(body.clone()).expect("typed Summary");
+    assert_eq!(typed.records.len(), 25);
+    assert!(typed.more);
+    let project = "/work/sol61-cli-proof/corpora/gorilla-mux";
+    let arguments = json!({"coordinate":&typed.query});
+    let context = continuation_context(
+        project,
+        "backend.graph",
+        arguments.as_object().expect("args"),
+        Detail::Summary,
+    );
+    let server = Server::with_authority(Fake::default(), project.to_owned(), [7; 32]);
+    let owner = retained_go_binary_owner();
+    let token = server
+        .sign_cursor_token_at(u64::MAX, &owner, &context)
+        .expect("production MAC");
+    assert_eq!(
+        server
+            .verify_cursor_token(&token, &context)
+            .expect("MAC admission")
+            .as_deref(),
+        Some(owner.as_str())
+    );
+    let payload = backend_present::encode_serializable(
+        "records",
+        Detail::Summary,
+        Some(&token),
+        body,
+        DEFAULT_RESPONSE_BUDGET_BYTES,
+    )
+    .expect("complete actual page fits byte budget");
+    let structured: Value = serde_json::from_slice(&payload.bytes).expect("typed envelope");
+    let preview = format!(
+        "{}\n25 row(s); complete records and native operands are in `structuredContent.records`.\nContinue `backend.graph` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.",
+        fixture["coverage_preview"]
+            .as_str()
+            .expect("actual coverage preview"),
+    );
+    let response = success(json!(45), tool_result(&preview, structured, false));
+    let restored: backend_present::RecordListDto =
+        serde_json::from_value(response["result"]["structuredContent"].clone())
+            .expect("typed retained rows");
+    assert_eq!(
+        restored, typed,
+        "all native operands, IDs, sites, facts, coverage and order"
+    );
+    assert_eq!(response["result"]["isError"], false);
+    assert_context_bounded(&response);
+    // Explicit opt-in evidence export lets the guarded native test supply a
+    // genuinely signed packet to the pinned tokenizer oracle. No token count
+    // is inferred from the byte estimate or claimed without that second check.
+    if let Some(path) = std::env::var_os("NUDOX_BINARY_CURSOR_PACKET") {
+        std::fs::write(path, serde_json::to_vec(&response).expect("exact packet"))
+            .expect("requested token-audit artifact");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1325,7 +1537,7 @@ fn default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapsho
                 "{tool}: {preview}"
             );
             assert!(
-                preview.contains(&format!("`{cursor}`")),
+                !preview.contains(&format!("`{cursor}`")),
                 "{tool}: {preview}"
             );
             assert!(!preview.contains("raise `limit`"), "{tool}: {preview}");
@@ -2582,6 +2794,10 @@ fn document_and_source_tools_advertise_their_useful_default_detail() {
             tool["inputSchema"]["properties"]["detail"]["default"], "standard",
             "{name} must advertise the same useful default that execution applies"
         );
+        assert_eq!(
+            tool["inputSchema"]["properties"]["detail"]["description"],
+            "Page text and structured fields: summary, standard, or full."
+        );
     }
     let search = tool_named(&listed["result"]["tools"], "backend.search");
     assert_eq!(
@@ -2740,9 +2956,268 @@ fn a_document_call_returns_the_markdown_page_and_the_typed_answer() {
 }
 
 #[test]
-fn a_search_call_leads_with_honest_coverage_then_two_lines_per_record() {
+fn page_projection_mcp_summary_omits_captured_body_and_preserves_exact_identity() {
+    // The adapter fixture controls an admitted display reply. This is a
+    // response-projection measurement, not native compiler/index evidence.
+    let body = format!(
+        "MCP_SOURCE_SENTINEL_λ\n{}",
+        "retained_source_only\n".repeat(240)
+    );
+    assert!(body.len() > SourceExcerpt::MAX_BYTES);
+    // Exercise the real producer-side prefix bound, rather than assigning a
+    // truncation marker to a shorter body. This still is not a native journey.
+    let excerpt = SourceExcerpt::capture_bounded(&body);
+    assert_eq!(excerpt.text(), Some(&body[..SourceExcerpt::MAX_BYTES]));
+    assert_eq!(excerpt.extent(), Some(SourceExcerptExtent::Truncated));
+    let mut document = document();
+    document.symbol = symbol_key("compiler-native-page-selection");
+    document.signature = Some("fn MCP_SIGNATURE_SENTINEL() -> Beacon".to_owned());
+    document = document.with_excerpt(excerpt);
+    let native = document.symbol;
+    let mut server = ready(Fake {
+        document_override: Some(document),
+        ..Fake::default()
+    });
+    for tool in ["backend.document", "backend.source"] {
+        let response = request(
+            &mut server,
+            "tools/call",
+            &json!({
+                "name": tool, "arguments": {"coordinate": DECLARATION, "detail": "summary"}
+            }),
+        );
+        assert_context_bounded(&response);
+        let summary_bytes = serde_json::to_vec(&response)
+            .expect("complete summary response")
+            .len();
+        let summary = &response["result"];
+        assert_eq!(summary["isError"], false);
+        assert_eq!(
+            summary["structuredContent"]["identity"]["coordinate"],
+            DECLARATION
+        );
+        assert_eq!(
+            summary["structuredContent"]["identity"]["semantic_data"]["value"],
+            json!(native.as_bytes())
+        );
+        assert_eq!(
+            summary["structuredContent"]["signature"],
+            "fn MCP_SIGNATURE_SENTINEL() -> Beacon"
+        );
+        assert!(summary["structuredContent"].get("source").is_none());
+        assert!(summary["structuredContent"].get("source_fault").is_none());
+        assert!(text_of(summary).contains("MCP_SIGNATURE_SENTINEL"));
+        assert!(text_of(summary).contains(DECLARATION));
+        for omitted in [
+            "MCP_SOURCE_SENTINEL",
+            "Lights the beacon.",
+            "## source",
+            "## members",
+            "## relations",
+        ] {
+            assert!(
+                !text_of(summary).contains(omitted),
+                "summary leaked {omitted}"
+            );
+        }
+        for level in [None, Some("standard"), Some("full")] {
+            let mut arguments = json!({"coordinate": DECLARATION});
+            if let Some(level) = level {
+                arguments["detail"] = json!(level);
+            }
+            let response = request(
+                &mut server,
+                "tools/call",
+                &json!({"name": tool, "arguments": arguments}),
+            );
+            assert_context_bounded(&response);
+            let full_bytes = serde_json::to_vec(&response)
+                .expect("complete source response")
+                .len();
+            assert!(
+                full_bytes > summary_bytes + SourceExcerpt::MAX_BYTES,
+                "combined response must remove both source copies at summary"
+            );
+            let full = &response["result"];
+            assert_eq!(full["isError"], false);
+            assert_eq!(
+                full["structuredContent"]["identity"]["semantic_data"]["value"],
+                json!(native.as_bytes())
+            );
+            assert_eq!(
+                full["structuredContent"]["signature"],
+                "fn MCP_SIGNATURE_SENTINEL() -> Beacon"
+            );
+            assert_eq!(full["structuredContent"]["source"]["extent"], "truncated");
+            assert_eq!(
+                full["structuredContent"]["source"]["lines"][0],
+                "MCP_SOURCE_SENTINEL_λ"
+            );
+            assert_eq!(full["structuredContent"]["source"]["path"], "src/lib.rs");
+            assert_eq!(full["structuredContent"]["source"]["line"], 2);
+            let retained_lines = full["structuredContent"]["source"]["lines"]
+                .as_array()
+                .expect("retained source lines")
+                .iter()
+                .map(|line| line.as_str().expect("source text"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert_eq!(
+                retained_lines,
+                body[..SourceExcerpt::MAX_BYTES].trim_end_matches('\n')
+            );
+            assert!(text_of(full).contains("MCP_SOURCE_SENTINEL_λ"));
+            assert!(text_of(full).contains("source continues past the retained bound"));
+            assert!(text_of(full).contains("Lights the beacon."));
+        }
+    }
+}
+
+#[test]
+fn page_projection_mcp_summary_keeps_source_failure_and_source_tool_refusal() {
+    for (location, excerpt, cause) in [
+        (
+            SourceAvailability::NotCaptured,
+            SourceExcerpt::NotCaptured,
+            "not-captured",
+        ),
+        (
+            SourceAvailability::Captured(SourceLocation::new("src/lib.rs", 2).expect("site")),
+            SourceExcerpt::NotHydrated,
+            "not-resident",
+        ),
+        (
+            SourceAvailability::Unconfigured,
+            SourceExcerpt::Unconfigured,
+            "unconfigured",
+        ),
+    ] {
+        let native = symbol_key("compiler-native-unavailable-page");
+        let mut document = Document::new(
+            native,
+            view_state_root(&[]),
+            [Fragment::Text("OMITTED_DOCUMENTATION_SENTINEL".to_owned())],
+        )
+        .with_location(location)
+        .with_excerpt(excerpt);
+        document.signature = Some("fn unavailable_page()".to_owned());
+        let mut server = ready(Fake {
+            document_override: Some(document),
+            ..Fake::default()
+        });
+        let arguments = json!({"coordinate": DECLARATION, "detail": "summary"});
+        let page = call(&mut server, "backend.document", &arguments);
+        assert_eq!(page["isError"], false);
+        assert_eq!(
+            page["structuredContent"]["signature"],
+            "fn unavailable_page()"
+        );
+        assert_eq!(
+            page["structuredContent"]["identity"]["semantic_data"]["value"],
+            json!(native.as_bytes())
+        );
+        assert_eq!(page["structuredContent"]["source_fault"]["cause"], cause);
+        assert!(page["structuredContent"].get("source").is_none());
+        assert!(text_of(&page).contains("source-unavailable"));
+        assert!(!text_of(&page).contains("OMITTED_DOCUMENTATION_SENTINEL"));
+        let source = call(&mut server, "backend.source", &arguments);
+        assert_eq!(source["isError"], true);
+        assert_eq!(source["structuredContent"]["answer"], "fault");
+        assert_eq!(source["structuredContent"]["slug"], "source-unavailable");
+        assert_eq!(source["structuredContent"]["cause"], cause);
+        assert_eq!(source["structuredContent"]["operand"], DECLARATION);
+    }
+}
+
+#[test]
+fn page_projection_mcp_combined_summary_retains_real_faults_and_section_notes() {
+    let native = symbol_key("selected-page-with-section-fault");
+    let identity = backend_present::Identity::parse_with_key(
+        DECLARATION,
+        backend_present::IdentityKey::Symbol(native),
+    );
+    let source_fault = Fault::source(
+        &SourceAvailability::Unconfigured,
+        backend_present::Operand::Coordinate(identity.coordinate().clone()),
+    )
+    .expect("actual source fault");
+    let page = backend_present::Page::new(
+        identity,
+        Some(DeclarationKind::Function),
+        backend_present::Source::Absent {
+            fault: source_fault,
+        },
+    )
+    .with_signature(backend_present::Signature::tokenize(
+        "fn PAGE_FAULT_SIGNATURE()",
+        backend_present::Language::Rust,
+    ))
+    .with_notes(vec![Fault::usage(
+        "relations",
+        "MCP_SECTION_FAULT_SENTINEL",
+    )]);
+    let answer = Answer::Page(Box::new(page));
     let mut server = ready(Fake::default());
-    let result = call(&mut server, "backend.search", &json!({ "query": "ferris" }));
+    let result = server
+        .rendered(
+            &answer,
+            Detail::Summary,
+            b"page-projection-context",
+            CursorTarget::CliOption,
+            "backend.document",
+        )
+        .expect("actual combined result projection");
+    assert_eq!(result["isError"], false);
+    assert_eq!(
+        result["structuredContent"]["identity"]["coordinate"],
+        DECLARATION
+    );
+    assert_eq!(
+        result["structuredContent"]["identity"]["semantic_data"]["value"],
+        json!(native.as_bytes())
+    );
+    assert_eq!(
+        result["structuredContent"]["signature"],
+        "fn PAGE_FAULT_SIGNATURE()"
+    );
+    assert_eq!(
+        result["structuredContent"]["source_fault"]["cause"],
+        "unconfigured"
+    );
+    assert_eq!(
+        result["structuredContent"]["source_fault"]["operand"],
+        DECLARATION
+    );
+    assert_eq!(
+        result["structuredContent"]["notes"][0]["detail"],
+        "MCP_SECTION_FAULT_SENTINEL"
+    );
+    let decoded: backend_present::SummaryPageDto =
+        serde_json::from_value(result["structuredContent"].clone())
+            .expect("Summary page retains its typed public fault grammar");
+    assert_eq!(decoded.identity.coordinate, DECLARATION);
+    let fault = decoded.source_fault.expect("retained source fault");
+    assert_eq!(fault.cause, "unconfigured");
+    assert_eq!(fault.operand, DECLARATION);
+    assert_eq!(decoded.notes.len(), 1);
+    assert_eq!(decoded.notes[0].detail, "MCP_SECTION_FAULT_SENTINEL");
+    assert!(result["structuredContent"].get("source").is_none());
+    let text = text_of(&result);
+    assert!(text.contains(DECLARATION));
+    assert!(text.contains("PAGE_FAULT_SIGNATURE"));
+    assert!(text.contains("source-unavailable"));
+    assert!(text.contains("this deployment has no source provider"));
+    assert!(text.contains("MCP_SECTION_FAULT_SENTINEL"));
+}
+
+#[test]
+fn a_standard_search_call_leads_with_honest_coverage_then_two_lines_per_record() {
+    let mut server = ready(Fake::default());
+    let result = call(
+        &mut server,
+        "backend.search",
+        &json!({ "query": "ferris", "detail": "standard" }),
+    );
     let text = text_of(&result);
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(
@@ -2768,7 +3243,7 @@ fn a_search_call_leads_with_honest_coverage_then_two_lines_per_record() {
 }
 
 #[test]
-fn mcp_text_is_the_same_shared_markdown_the_cli_renders() {
+fn standard_mcp_text_is_the_same_shared_markdown_the_cli_renders() {
     let mut direct = Fake::default();
     let answer = backend_present::answer(
         &mut direct,
@@ -2781,8 +3256,44 @@ fn mcp_text_is_the_same_shared_markdown_the_cli_renders() {
     let expected = bounded_text(&backend_present::markdown::answer(&answer));
 
     let mut server = ready(Fake::default());
-    let result = call(&mut server, "backend.search", &json!({ "query": "ferris" }));
+    let result = call(
+        &mut server,
+        "backend.search",
+        &json!({ "query": "ferris", "detail": "standard" }),
+    );
     assert_eq!(text_of(&result), expected);
+}
+
+#[test]
+fn default_search_summary_keeps_exact_native_records_with_a_concise_coverage_preview() {
+    let mut server = ready(Fake::default());
+    let result = call(&mut server, "backend.search", &json!({"query":"ferris"}));
+    let preview = text_of(&result);
+    assert!(preview.starts_with("~lanes exact· names· graph· semantic✗ unconfigured"));
+    assert!(preview.contains("1 row(s)"));
+    assert!(preview.contains("`structuredContent.records`"));
+    assert!(!preview.contains(DECLARATION));
+    let structured = &result["structuredContent"];
+    assert_eq!(structured["detail"], "summary");
+    assert_eq!(structured["more"], false);
+    let records = structured["records"]
+        .as_array()
+        .expect("complete selected page");
+    assert_eq!(records.len(), 1);
+    let row = &records[0];
+    assert_eq!(row["identity"]["coordinate"], DECLARATION);
+    assert_eq!(row["identity"]["name"], "ferris");
+    assert_eq!(row["identity"]["path"], "src/lib.rs");
+    assert_eq!(row["identity"]["line"], 2);
+    let retained: backend_present::IdentitySemanticData =
+        serde_json::from_value(row["identity"]["semantic_data"].clone())
+            .expect("the existing selected-operand type still accepts the full ID");
+    let backend_present::IdentitySemanticData::SelectedSymbolId(id) = retained;
+    assert_eq!(id.bytes(), symbol_key(DECLARATION).as_bytes());
+    assert_eq!(row["kind"], "function");
+    assert_eq!(row["language"], "rust");
+    assert_eq!(row["state"], "ready");
+    assert!(structured.get("nextCursor").is_none());
 }
 
 #[test]
@@ -2882,6 +3393,140 @@ fn an_unknown_coordinate_is_refused_with_the_operand_and_a_next_tool_call() {
 }
 
 #[test]
+fn typed_startup_failures_preserve_recovery_and_original_diagnostic_in_mcp() {
+    use backend_runtime::RuntimeError;
+    use std::io::{Error, ErrorKind};
+    let cases = [
+        (
+            RuntimeError::MissingExecutable("/debug/deps/backend-locald".into()),
+            backend_client::StartupFailureCause::MissingCompanion,
+            false,
+        ),
+        (
+            RuntimeError::InvalidPath("endpoint path is empty; ConnectionRefused; retry"),
+            backend_client::StartupFailureCause::Configuration,
+            false,
+        ),
+        (
+            RuntimeError::Io(Error::new(
+                ErrorKind::PermissionDenied,
+                "private state parent /state refused",
+            )),
+            backend_client::StartupFailureCause::Io(ErrorKind::PermissionDenied),
+            false,
+        ),
+        (
+            RuntimeError::Spawn {
+                executable: "/bin/backend-locald".into(),
+                source: Error::from(ErrorKind::NotFound),
+            },
+            backend_client::StartupFailureCause::Spawn(ErrorKind::NotFound),
+            false,
+        ),
+        (
+            RuntimeError::DaemonExited {
+                code: Some(70),
+                diagnostic: None,
+            },
+            backend_client::StartupFailureCause::OwnerExited(Some(70)),
+            false,
+        ),
+        (
+            RuntimeError::StartTimeout("/socket".into()),
+            backend_client::StartupFailureCause::StartTimeout,
+            true,
+        ),
+        #[cfg(unix)]
+        (
+            RuntimeError::CompanionProtocolMismatch,
+            backend_client::StartupFailureCause::CompanionMismatch,
+            false,
+        ),
+    ];
+    for (error, cause, retry) in cases {
+        let original = error.to_string();
+        let client = map_runtime_connect_error(error);
+        let ClientError::Startup(observation) = &client else {
+            panic!("startup cause was erased or treated as a disconnect: {client}");
+        };
+        assert_eq!(observation.cause(), cause);
+        assert_eq!(observation.detail(), original);
+        let fault = backend_present::probe_fault(&client, Probe::Graph(DECLARATION));
+        let mut expected_dto = backend_present::fault_value(&fault);
+        if retry {
+            expected_dto["call"] = json!({
+                "name": "backend.graph",
+                "arguments": {"coordinate": DECLARATION, "limit": 1}
+            });
+            expected_dto
+                .as_object_mut()
+                .expect("fault object")
+                .remove("shell");
+        }
+        let text = backend_present::text::fault(&fault, backend_present::Theme::plain());
+        let markdown = backend_present::markdown::fault(&fault);
+        assert!(text.contains(&original));
+        assert!(markdown.contains(&original));
+        let mut server = ready(Fake {
+            adapter_error: Some(client),
+            ..Fake::default()
+        });
+        let response = request(
+            &mut server,
+            "tools/call",
+            &json!({
+                "name": "backend.graph", "arguments": {"coordinate": DECLARATION, "limit": 1}
+            }),
+        );
+        assert_eq!(response["id"], 9);
+        let result = &response["result"];
+        assert_eq!(result["isError"], true);
+        assert_eq!(result["structuredContent"], expected_dto);
+        for projection in [Detail::Summary, Detail::Standard, Detail::Full] {
+            let payload = encode_serializable(
+                "fault",
+                projection,
+                None,
+                backend_present::FaultDto::new(&fault),
+                DEFAULT_RESPONSE_BUDGET_BYTES,
+            )
+            .expect("bounded typed fault envelope");
+            let envelope: Value =
+                serde_json::from_slice(&payload.bytes).expect("encoded fault envelope");
+            assert_eq!(envelope["detail"], result["structuredContent"]["detail"]);
+            assert_eq!(envelope["responseDetail"], projection.name());
+            for field in ["slug", "operand", "cause"] {
+                assert_eq!(envelope[field], result["structuredContent"][field]);
+            }
+            if !retry {
+                for field in ["shell", "call"] {
+                    assert_eq!(envelope[field], result["structuredContent"][field]);
+                }
+            }
+        }
+        assert_context_bounded(&response);
+        if retry {
+            assert_eq!(
+                result["structuredContent"]["call"]["arguments"],
+                json!({"coordinate": DECLARATION, "limit": 1})
+            );
+            assert!(text_of(result).starts_with("Retry the exact tool call"));
+            assert!(text_of(result).contains(&markdown));
+            assert!(
+                text_of(result).contains("Retry the exact tool call in structuredContent.call")
+            );
+            assert!(result["structuredContent"].get("shell").is_none());
+        } else {
+            assert_eq!(text_of(result), markdown);
+            assert!(result["structuredContent"].get("shell").is_none());
+            assert!(result["structuredContent"].get("call").is_none());
+            assert!(!text.contains("→"));
+            assert!(!markdown.contains("→"));
+        }
+    }
+}
+
+#[test]
 fn an_unreachable_endpoint_is_a_fault_with_the_retry_affordance() {
     let mut server = ready(Fake {
         offline: true,
@@ -2892,6 +3537,103 @@ fn an_unreachable_endpoint_is_a_fault_with_the_retry_affordance() {
     let text = text_of(&result);
     assert!(text.starts_with("✗ endpoint `ferris`"), "{text}");
     assert_eq!(result["structuredContent"]["cause"], "unreachable");
+    assert!(result["structuredContent"].get("call").is_none());
+}
+
+#[test]
+fn an_unsent_startup_retry_preserves_exact_mutation_arguments_as_advice() {
+    let error = ClientError::from(backend_runtime::RuntimeError::StartTimeout(
+        "/socket".into(),
+    ));
+    let fault = Fault::from_client_error(&error, backend_present::Operand::Argument("path".into()));
+    let arguments = json!({
+        "package": "/abs/project with spaces/β`",
+        "operation_key": "ab".repeat(32),
+        "execution_intent": "interactive",
+        "detail": "full"
+    });
+    let result = RpcError::from_fault(&fault)
+        .into_tool_result_for_call("backend.index_start", Some(&arguments))
+        .expect("typed startup refusal");
+    assert_eq!(result["isError"], true);
+    assert_eq!(
+        result["structuredContent"]["call"],
+        json!({
+            "name": "backend.index_start", "arguments": arguments
+        })
+    );
+    assert!(result["structuredContent"].get("shell").is_none());
+    assert!(text_of(&result).contains("structuredContent.call"));
+    assert!(!text_of(&result).contains("/abs/project with spaces/β`"));
+    // Prose that resembles a startup diagnostic cannot grant retry authority.
+    let error = ClientError::Io("local-startup-pending; command_submitted:false".into());
+    let fault = Fault::from_client_error(&error, backend_present::Operand::Argument("path".into()));
+    let result = RpcError::from_fault(&fault)
+        .into_tool_result_for_call("backend.index_start", Some(&arguments))
+        .expect("ordinary transport refusal");
+    assert!(result["structuredContent"].get("call").is_none());
+}
+
+#[test]
+fn oversized_unsent_startup_call_keeps_typed_fault_without_a_partial_call() {
+    let query = "x".repeat(backend_library::MAX_GRAPH_QUERY_BYTES);
+    let arguments = json!({ "query": query, "variables": {} });
+    let message = json!({
+        "jsonrpc": "2.0",
+        "id": 9,
+        "method": "tools/call",
+        "params": { "name": QUERY_TOOL, "arguments": arguments },
+    });
+    let request = serde_json::to_vec(&message).expect("bounded graph query request");
+    assert!(request.len() <= crate::MAX_MCP_REQUEST_FRAME);
+    assert!(backend_library::MAX_GRAPH_QUERY_BYTES.saturating_mul(2) > MCP_RESULT_BUDGET_BYTES);
+
+    let startup = ClientError::from(backend_runtime::RuntimeError::StartTimeout(
+        "/socket".into(),
+    ));
+    let mut server = ready(Fake {
+        graph_query_error: Some(startup),
+        ..Fake::default()
+    });
+    let response = server
+        .handle(&request)
+        .map(encoded_stdio_reply)
+        .expect("bounded startup refusal response");
+    let result = &response["result"];
+    assert_eq!(result["isError"], true);
+    let structured = &result["structuredContent"];
+    assert_eq!(structured["slug"], "endpoint");
+    assert_eq!(structured["cause"], "unreachable");
+    assert!(
+        structured.get("call").is_none(),
+        "no partial call may escape"
+    );
+    assert!(structured.get("shell").is_none());
+    assert!(
+        structured["detail"]
+            .as_str()
+            .expect("startup detail")
+            .contains("/socket")
+    );
+    assert!(
+        structured["operand"]
+            .as_str()
+            .expect("bounded operand")
+            .contains("shortened for response budget")
+    );
+    let text = text_of(result);
+    assert!(text.contains("command was not submitted"), "{text}");
+    assert!(
+        text.contains("exact tool call could not be included"),
+        "{text}"
+    );
+    assert!(text.contains("no retry was performed"), "{text}");
+    assert!(
+        serde_json::to_vec(&response)
+            .expect("encode bounded response")
+            .len()
+            <= MCP_RESULT_BUDGET_BYTES
+    );
 }
 
 #[test]
@@ -3881,13 +4623,9 @@ fn graph_continuation_round_trip_is_bounded_and_authorized() {
             .expect("first graph page carries a cursor")
             .to_owned();
         let preview = text_of(&first);
-        assert!(
-            preview.contains(
-                "Continue `backend.query` with the same `query`, `variables`, and `limit`"
-            )
-        );
-        assert!(preview.contains("copy `structuredContent.nextCursor` into `arguments.cursor`"));
-        assert!(preview.contains(&format!("`{cursor}`")));
+        assert!(preview.contains("Continue `backend.query` with the same arguments"));
+        assert!(preview.contains("copy `structuredContent.nextCursor` to `arguments.cursor`"));
+        assert!(!preview.contains(&format!("`{cursor}`")));
         assert!(!preview.contains("raise `limit`"), "{preview}");
         assert!(!preview.contains("narrow the query"), "{preview}");
 
@@ -3954,7 +4692,7 @@ fn surface_index_search_cursor_round_trips_through_the_mcp_projection() {
         .to_owned();
     assert!(cursor.starts_with("mcp2-"));
     assert!(cursor.contains(FIXTURE_INDEX_CURSOR));
-    assert!(text_of(&first).contains(&cursor));
+    assert!(!text_of(&first).contains(&cursor));
     assert!(text_of(&first).contains("`command.cursor`"));
     assert!(!text_of(&first).contains("`--cursor`"));
     assert!(
@@ -4035,7 +4773,7 @@ fn index_search_tool_round_trips_mcp_cursors_at_summary_and_full_detail() {
             first["structuredContent"]["nextCursor"].as_str(),
             Some(cursor.as_str())
         );
-        assert!(text_of(&first).contains(&cursor));
+        assert!(!text_of(&first).contains(&cursor));
         assert!(text_of(&first).contains("`backend.index_search`"));
         assert!(
             serde_json::to_string(&first)

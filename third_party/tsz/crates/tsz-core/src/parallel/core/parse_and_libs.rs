@@ -651,9 +651,10 @@ impl BindResult {
         for (k, v) in self.wildcard_reexports.iter() {
             tick!();
             size += k.capacity() + std::mem::size_of::<u64>();
-            for (s, _) in v {
+            size += v.allocation_size_bytes();
+            for edge in v.edges() {
                 tick!();
-                size += s.capacity() + std::mem::size_of::<bool>();
+                size += edge.target.0.capacity();
             }
         }
 

@@ -219,7 +219,7 @@ options
   --json                        Shorthand for --format json.
   --no-color                    Never paint; NO_COLOR and a non-terminal stdout do the same.
   --limit COUNT                 Bound any command that pages.
-  --detail LEVEL                JSON projection: summary, standard, or full.
+  --detail LEVEL                Response fields: summary, standard, or full; page text follows the same detail.
   --project PATH                Select the project; defaults to the current directory.
   --workspace PATH              Select durable state; defaults to this project's private app-data root.
   --endpoint PATH               Connect to a specific local daemon.

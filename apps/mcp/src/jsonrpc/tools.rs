@@ -633,11 +633,16 @@ fn detail_property(tool: &str) -> Value {
         Detail::Standard => "standard",
         Detail::Full => "full",
     };
+    let description = if matches!(tool, "backend.document" | "backend.source") {
+        "Page text and structured fields: summary, standard, or full."
+    } else {
+        "Response fields: summary, standard, or full."
+    };
     json!({
         "type": "string",
         "enum": ["summary", "standard", "full"],
         "default": default_detail,
-        "description": "Response fields: summary, standard, or full."
+        "description": description
     })
 }
 

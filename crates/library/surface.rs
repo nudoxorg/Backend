@@ -2,7 +2,7 @@
 
 use crate::interface::{
     CompilerAttempt, CompilerFragmentFailure, CompilerFragmentFaultFacts,
-    CompilerFragmentFaultKind, CompilerToolFailure, CompilerToolIssue, CompilerToolRequirement,
+    CompilerFragmentFaultKind, CompilerToolFailure, CompilerToolRequirement,
     MAX_COMPILER_FRAGMENT_DETAIL_BYTES,
 };
 use crate::{
@@ -24,8 +24,7 @@ use std::{fmt, str::FromStr};
 mod package_compiler_failure;
 pub use package_compiler_failure::{
     AuthorityClassFact, AuthorityPhaseFact, CompilerAuthorityDiagnosticFacts, CompilerLanguageFact,
-    CompilerNativeToolFact, CompilerStageFact, PackageAnonymousCallableAnchorFaultFacts,
-    PackageAnonymousCallableAnchorPoolFact, PackageCompilerFailureCause,
+    CompilerNativeToolFact, CompilerStageFact, PackageCompilerFailureCause,
     PackageCompilerFailurePhase, PackageCompilerFragmentFaultFacts, PackageForeignKeyFaultFacts,
     PackageLanguageProjectionFault, PackageLineageFaultFacts, PackageLoweringFaultFacts,
     PackageParentageFact, PackageProjectionAdmissionFaultFacts,
@@ -6434,6 +6433,7 @@ mod tests {
             F::CheckerExit,
             F::NativeProjectCheckDeadline,
             F::NativeProjectCheckWorkBudgetExhausted,
+            F::NativeCheckerWorkerPoolUnavailable,
         ] {
             let private = b"private absolute path /home/user/app/node_modules; native stderr";
             let terminal = CompilerTerminal::Compile {
@@ -7192,7 +7192,7 @@ mod tests {
         );
         assert_eq!(
             crate::DTO_VERSION,
-            27,
+            28,
             "partial publication remains in the current closed live DTO cohort"
         );
         let command = crate::CommandDto::new(
@@ -7212,7 +7212,7 @@ mod tests {
         assert_eq!(decoded_reply, reply);
         let mut old_peer: serde_json::Value =
             serde_json::from_slice(&encoded_reply).expect("encoded reply fields");
-        for old_version in [22, 23, 24, 25, 26] {
+        for old_version in [22, 23, 24, 25, 26, 27] {
             old_peer["version"] = serde_json::json!(old_version);
             let old_bytes = serde_json::to_vec(&old_peer).expect("old peer version header");
             let error = crate::decode_reply_body(&old_bytes).expect_err("old partial peer refused");

@@ -143,12 +143,12 @@ pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> 
         .map_err(|error| client_fault(&error, &args.package))?;
 
     let checkpoint_bytes = read_checkpoint(&args.checkpoint)?;
-    let (mut cursor, mut partial, mut poll) = match checkpoint_bytes {
+    let (mut cursor, mut poll) = match checkpoint_bytes {
         Some(bytes) => {
             let checkpoint = SemanticRangeClientCheckpoint::decode(&bytes).map_err(|error| {
                 endpoint_fault(&args.checkpoint.to_string_lossy(), error.to_string())
             })?;
-            let (cursor, coverage, poll) = client
+            let (cursor, _coverage, poll) = client
                 .resume_semantic_range(
                     &checkpoint,
                     &manifest,
@@ -157,7 +157,7 @@ pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> 
                     &mut store,
                 )
                 .map_err(|error| client_fault(&error, &args.package))?;
-            (cursor, Some(coverage), poll)
+            (cursor, poll)
         }
         None => {
             let mut cursor = client
@@ -166,7 +166,7 @@ pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> 
             let poll = client
                 .next_request(&mut cursor, None, HydrationCredits::new(1, 16 * 1024))
                 .map_err(|error| client_fault(&error, &args.package))?;
-            (cursor, None, poll)
+            (cursor, poll)
         }
     };
 
@@ -208,18 +208,16 @@ pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> 
                                 )
                             })?,
                         )?;
-                        partial = Some(coverage);
                         poll = client
                             .next_request(
                                 &mut cursor,
-                                partial.as_ref(),
+                                Some(&coverage),
                                 HydrationCredits::new(1, 16 * 1024),
                             )
                             .map_err(|error| client_fault(&error, &args.package))?;
                     }
                     SemanticRangeClientProgress::Complete(_) => {
                         completed_segments = completed_segments.saturating_add(1);
-                        partial = None;
                         clear_checkpoint(&args.checkpoint)?;
                         poll = client
                             .next_request(&mut cursor, None, HydrationCredits::new(1, 16 * 1024))
@@ -232,7 +230,6 @@ pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> 
                     .verify_local_segment(&mut cursor, &request, &mut store)
                     .map_err(|error| client_fault(&error, &args.package))?;
                 completed_segments = completed_segments.saturating_add(1);
-                partial = None;
                 clear_checkpoint(&args.checkpoint)?;
                 poll = client
                     .next_request(&mut cursor, None, HydrationCredits::new(1, 16 * 1024))

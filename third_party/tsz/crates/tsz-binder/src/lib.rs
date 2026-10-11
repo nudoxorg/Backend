@@ -25,7 +25,8 @@ pub use state::export_surface::{ExportSurface, ExportedSymbol, NamedReexport, Wi
 pub use state::{
     BinderOptions, BinderState, CrossFileNodeSymbols, DeclarationArenaMap, FileFeatures,
     FileReexports, FileReexportsMap, GlobalAugmentation, LibContext, ModuleAugmentation,
-    ReexportTarget, SemanticDefEntry, SemanticDefKind, SymToDeclIndicesMap, ValidationError,
+    ReexportTarget, RetainedReexportDeclaration, RetainedWildcardReexport, SemanticDefEntry,
+    SemanticDefKind, SymToDeclIndicesMap, ValidationError, WildcardReexportRows,
     WildcardReexportsMap,
 };
 pub use symbols::{StableLocation, Symbol, SymbolArena, SymbolId, SymbolTable, symbol_flags};

@@ -10,12 +10,17 @@
 
 use super::shallow_subtype::ShallowReduceKind;
 use super::{TypeInterner, TypeListBuffer};
+use super::{
+    UnionExecutionWork, expect_unmetered_union, flush_union_execution_work,
+    tick_union_execution_work,
+};
 use crate::types::{
     IntrinsicKind, LiteralValue, PropertyInfo, TemplateLiteralId, TypeData, TypeId, Visibility,
 };
 use crate::visitor::is_literal_type;
 use rustc_hash::{FxHashMap, FxHashSet};
 use smallvec::SmallVec;
+use tsz_common::ProjectExecutionStop;
 use tsz_common::interner::Atom;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -166,13 +171,23 @@ impl TypeInterner {
     /// is stripped anyway — so `null | never` reduces to `null`, not to `never`.
     #[inline]
     pub(crate) fn reduce_nonstrict_nullish_members(&self, flat: &mut TypeListBuffer) {
+        let mut work = None;
+        expect_unmetered_union(self.reduce_nonstrict_nullish_members_with_work(flat, &mut work))
+    }
+
+    fn reduce_nonstrict_nullish_members_with_work(
+        &self,
+        flat: &mut TypeListBuffer,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<(), ProjectExecutionStop> {
         if self.strict_null_checks() {
-            return;
+            return Ok(());
         }
         let mut has_null = false;
         let mut has_undefined = false;
         let mut has_non_nullish = false;
         for &id in flat.iter() {
+            tick_union_execution_work(work, 1)?;
             if id == TypeId::NULL {
                 has_null = true;
             } else if id == TypeId::UNDEFINED {
@@ -182,19 +197,20 @@ impl TypeInterner {
             }
         }
         if !has_null && !has_undefined {
-            return;
+            return Ok(());
         }
         if has_non_nullish {
-            // A surviving non-nullish sibling absorbs every nullish member.
-            flat.retain(|id| !id.is_nullish());
-            return;
+            let mut write = 0;
+            for read in 0..flat.len() {
+                tick_union_execution_work(work, 1)?;
+                if !flat[read].is_nullish() {
+                    flat[write] = flat[read];
+                    write += 1;
+                }
+            }
+            flat.truncate(write);
+            return Ok(());
         }
-        // All-nullish set (optionally with the `never` identity): collapse to the
-        // scalar survivor tsc's empty-`typeSet` branch yields — `null` preferred
-        // over `undefined` on presence, not written position. `narrowing`'s
-        // `collapse_pure_nullish_union_nonstrict` encodes the same survivor rule a
-        // layer up as a pre-construction origin gate; if this rule ever changes,
-        // both must move together.
         let survivor = if has_null {
             TypeId::NULL
         } else {
@@ -202,6 +218,7 @@ impl TypeInterner {
         };
         flat.clear();
         flat.push(survivor);
+        Ok(())
     }
 
     /// Apply [`reduce_nonstrict_nullish_members`](Self::reduce_nonstrict_nullish_members)
@@ -223,6 +240,19 @@ impl TypeInterner {
             1 => Some(flat[0]),
             _ => None,
         }
+    }
+
+    pub(crate) fn reduce_and_collapse_nonstrict_with_work(
+        &self,
+        flat: &mut TypeListBuffer,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<Option<TypeId>, ProjectExecutionStop> {
+        self.reduce_nonstrict_nullish_members_with_work(flat, work)?;
+        Ok(match flat.len() {
+            0 => Some(TypeId::NEVER),
+            1 => Some(flat[0]),
+            _ => None,
+        })
     }
 
     pub(crate) fn intersection_has_disjoint_primitives(&self, members: &[TypeId]) -> bool {
@@ -1041,12 +1071,17 @@ impl TypeInterner {
     ///
     /// This preserves the nominal enum wrapper when control-flow analysis
     /// splits and rejoins enum member types (e.g., `E1.a | E1.b` → `E1`).
-    pub(crate) fn merge_same_enum_parts(&self, flat: &mut TypeListBuffer) {
+    pub(crate) fn merge_same_enum_parts_with_work(
+        &self,
+        flat: &mut TypeListBuffer,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<(), ProjectExecutionStop> {
         if flat.len() < 2 {
-            return;
+            return Ok(());
         }
         let mut i = 0;
         while i < flat.len() {
+            tick_union_execution_work(work, 1)?;
             let Some(TypeData::Enum(def_a, _)) = self.lookup(flat[i]) else {
                 i += 1;
                 continue;
@@ -1054,6 +1089,7 @@ impl TypeInterner {
             // Collect consecutive enum members with the same DefId.
             let mut j = i + 1;
             while j < flat.len() {
+                tick_union_execution_work(work, 1)?;
                 if let Some(TypeData::Enum(def_b, _)) = self.lookup(flat[j])
                     && def_b == def_a
                 {
@@ -1064,19 +1100,26 @@ impl TypeInterner {
             }
             if j > i + 1 {
                 // Multiple same-def enum parts: merge their inners.
-                let inners: Vec<TypeId> = flat[i..j]
-                    .iter()
-                    .filter_map(|&id| match self.lookup(id) {
-                        Some(TypeData::Enum(_, inner)) => Some(inner),
-                        _ => None,
-                    })
-                    .collect();
-                let merged_inner = self.union_from_iter(inners);
+                let mut inners = Vec::with_capacity(j - i);
+                for &id in flat[i..j].iter() {
+                    tick_union_execution_work(work, 1)?;
+                    if let Some(TypeData::Enum(_, inner)) = self.lookup(id) {
+                        inners.push(inner);
+                    }
+                }
+                let merged_inner = self.union_from_iter_with_work(inners, work)?;
+                flush_union_execution_work(work)?;
                 flat[i] = self.intern(TypeData::Enum(def_a, merged_inner));
-                flat.drain(i + 1..j);
+                let removed = j - (i + 1);
+                for read in j..flat.len() {
+                    tick_union_execution_work(work, 1)?;
+                    flat[read - removed] = flat[read];
+                }
+                flat.truncate(flat.len() - removed);
             }
             i += 1;
         }
+        Ok(())
     }
 
     /// Absorb literal types into their corresponding primitive types.
@@ -1085,7 +1128,11 @@ impl TypeInterner {
     /// e.g., true | boolean => boolean
     ///
     /// This is called after deduplication and before creating the union.
-    pub(crate) fn absorb_literals_into_primitives(&self, flat: &mut TypeListBuffer) {
+    pub(crate) fn absorb_literals_into_primitives_with_work(
+        &self,
+        flat: &mut TypeListBuffer,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<(), ProjectExecutionStop> {
         // Group types by primitive class
         let mut has_string = false;
         let mut has_number = false;
@@ -1097,6 +1144,7 @@ impl TypeInterner {
 
         // First pass: identify which primitive types are present
         for &type_id in flat.iter() {
+            tick_union_execution_work(work, 1)?;
             match type_id {
                 TypeId::STRING => has_string = true,
                 TypeId::NUMBER => has_number = true,
@@ -1125,48 +1173,64 @@ impl TypeInterner {
         if has_true && has_false && !has_boolean {
             has_boolean = true;
             // Replace `true` with `boolean`, remove `false`
-            for type_id in flat.iter_mut() {
-                if *type_id == TypeId::BOOLEAN_TRUE {
-                    *type_id = TypeId::BOOLEAN;
+            let mut write = 0;
+            for read in 0..flat.len() {
+                tick_union_execution_work(work, 1)?;
+                let mut type_id = flat[read];
+                if type_id == TypeId::BOOLEAN_TRUE {
+                    type_id = TypeId::BOOLEAN;
+                }
+                if type_id != TypeId::BOOLEAN_FALSE {
+                    flat[write] = type_id;
+                    write += 1;
                 }
             }
-            flat.retain(|type_id| *type_id != TypeId::BOOLEAN_FALSE);
+            flat.truncate(write);
         }
 
         // Second pass: remove literal types that have a corresponding primitive
-        flat.retain(|type_id| {
+        let mut write = 0;
+        for read in 0..flat.len() {
+            tick_union_execution_work(work, 1)?;
+            let type_id = flat[read];
             // Check for boolean literal intrinsics
-            if *type_id == TypeId::BOOLEAN_TRUE || *type_id == TypeId::BOOLEAN_FALSE {
-                return !has_boolean;
-            }
-
-            match self.lookup(*type_id) {
-                // Remove literal if the corresponding primitive is present
-                Some(TypeData::Literal(literal)) => match literal {
-                    LiteralValue::String(_) => !has_string,
-                    LiteralValue::Number(_) => !has_number,
-                    LiteralValue::Boolean(_) => !has_boolean,
-                    LiteralValue::BigInt(_) => !has_bigint,
-                },
-                // tsc represents an enum member's type as a LiteralType
-                // carrying an extra `Enum` flag, not a distinct type kind, so
-                // `removeRedundantLiteralTypes` sweeps a numeric/string enum
-                // member into a co-present `number`/`string` the same way it
-                // sweeps a plain literal (`e | number` => `number`). tsz keeps
-                // enums as a nominal `Enum(DefId, member_type)` wrapper, so
-                // mirror that absorption here based on the wrapped member
-                // type's primitive domain instead.
-                Some(TypeData::Enum(_, member_type)) => {
-                    match self.enum_underlying_primitive_class(member_type) {
-                        Some(PrimitiveClass::String) => !has_string,
-                        Some(PrimitiveClass::Number) => !has_number,
-                        _ => true,
+            let keep = if type_id == TypeId::BOOLEAN_TRUE || type_id == TypeId::BOOLEAN_FALSE {
+                !has_boolean
+            } else {
+                match self.lookup(type_id) {
+                    // Remove literal if the corresponding primitive is present
+                    Some(TypeData::Literal(literal)) => match literal {
+                        LiteralValue::String(_) => !has_string,
+                        LiteralValue::Number(_) => !has_number,
+                        LiteralValue::Boolean(_) => !has_boolean,
+                        LiteralValue::BigInt(_) => !has_bigint,
+                    },
+                    // tsc represents an enum member's type as a LiteralType
+                    // carrying an extra `Enum` flag, not a distinct type kind, so
+                    // `removeRedundantLiteralTypes` sweeps a numeric/string enum
+                    // member into a co-present `number`/`string` the same way it
+                    // sweeps a plain literal (`e | number` => `number`). tsz keeps
+                    // enums as a nominal `Enum(DefId, member_type)` wrapper, so
+                    // mirror that absorption here based on the wrapped member
+                    // type's primitive domain instead.
+                    Some(TypeData::Enum(_, member_type)) => {
+                        match self.enum_underlying_primitive_class_with_work(member_type, work)? {
+                            Some(PrimitiveClass::String) => !has_string,
+                            Some(PrimitiveClass::Number) => !has_number,
+                            _ => true,
+                        }
                     }
+                    // Keep if it's not a literal or enum type
+                    _ => true,
                 }
-                // Keep if it's not a literal or enum type
-                _ => true,
+            };
+            if keep {
+                flat[write] = type_id;
+                write += 1;
             }
-        });
+        }
+        flat.truncate(write);
+        Ok(())
     }
 
     /// Classifies an enum's structural member type (the second field of
@@ -1198,6 +1262,38 @@ impl TypeInterner {
             }
         }
         result
+    }
+
+    fn enum_underlying_primitive_class_with_work(
+        &self,
+        member_type: TypeId,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<Option<PrimitiveClass>, ProjectExecutionStop> {
+        tick_union_execution_work(work, 1)?;
+        if let Some(class) = self.primitive_class_for(member_type) {
+            return Ok(
+                matches!(class, PrimitiveClass::String | PrimitiveClass::Number).then_some(class),
+            );
+        }
+        let Some(TypeData::Union(list_id)) = self.lookup(member_type) else {
+            return Ok(None);
+        };
+        let mut result = None;
+        for &member in self.type_list(list_id).iter() {
+            tick_union_execution_work(work, 1)?;
+            let Some(class) = self.primitive_class_for(member) else {
+                return Ok(None);
+            };
+            if !matches!(class, PrimitiveClass::String | PrimitiveClass::Number) {
+                return Ok(None);
+            }
+            match result {
+                None => result = Some(class),
+                Some(existing) if existing == class => {}
+                Some(_) => return Ok(None),
+            }
+        }
+        Ok(result)
     }
 
     /// TS2590 pairwise-iteration budget matching tsc `removeSubtypes`.
@@ -1246,147 +1342,12 @@ impl TypeInterner {
 
     /// Remove redundant types from a union using shallow subtype checks.
     /// If A <: B, then A | B = B (A is redundant).
+    ///
+    /// This unbudgeted entry delegates to the same reducer used by project
+    /// checking. With no work meter, checkpoint polls are inert.
     pub(crate) fn reduce_union_subtypes(&self, flat: &mut TypeListBuffer) {
-        let len = flat.len();
-        if len <= 1 {
-            return;
-        }
-
-        // Lift out *unevaluated deferred type-level operations* before the
-        // pairwise sweep. The shallow subtype engine (`is_subtype_shallow`) has
-        // no rules for any member of this family: it relates to a distinct peer
-        // only by identity (already removed by the upstream dedup), neither as
-        // source nor as target, so it is *fully inert* — it can neither be
-        // removed by reduction nor cause another member's removal. Running the
-        // O(N) pairwise scan over each one is pure waste.
-        //
-        // This is the eager-vs-deferred divergence #13242 targets: distributing
-        // `Exclude`/`Extract` over a wide union yields a union of deferred
-        // `Conditional`s tsc keeps lazy, and the same flat-slope reasoning holds
-        // for every other deferred operator that can stack up wide before it
-        // resolves — `keyof U` arms, `T[K]` index accesses, mapped/string-
-        // intrinsic/application/infer operands, `typeof`/namespace leaves, and
-        // the De Bruijn placeholders used while canonicalizing recursive aliases.
-        // #13667 proved the `Conditional`/`IndexAccess` slice; the full inert
-        // family (see `is_shallow_inert_member`) removes the same wasted
-        // N·(N−1) sweep for `keyof`-distribution and mapped-operand unions.
-        //
-        // Partition the inert members aside, reduce only the reducible remainder
-        // through the *unchanged* engine below (so discriminant partitioning,
-        // literal absorption, and structural object reduction are all preserved
-        // exactly as for an inert-free union), then splice the inert members
-        // back. An all-inert union short-circuits to zero pairwise checks; a
-        // mixed union (e.g. a JSX intrinsic-element props union carrying an
-        // `IndexAccess` arm) still reduces its concrete members. Reducing only
-        // the remainder — rather than skipping reduction for the whole union
-        // when any inert member is present — is what keeps the concrete arms
-        // collapsing the way tsc does.
-        let deferred_count = flat
-            .iter()
-            .filter(|&&id| self.is_shallow_inert_member(id))
-            .count();
-        if deferred_count > 0 {
-            if deferred_count == len {
-                // Every member is an inert deferred form: nothing to reduce.
-                return;
-            }
-            let mut deferred: TypeListBuffer = SmallVec::new();
-            let mut reducible: TypeListBuffer = SmallVec::new();
-            for &id in flat.iter() {
-                if self.is_shallow_inert_member(id) {
-                    deferred.push(id);
-                } else {
-                    reducible.push(id);
-                }
-            }
-            self.reduce_union_subtypes(&mut reducible);
-            reducible.extend(deferred);
-            // Reduction may have dropped reducible members; re-canonicalize the
-            // recombined list so union member identity (sort + dedup) stays stable.
-            self.sort_union_members(&mut reducible);
-            reducible.dedup();
-            *flat = reducible;
-            return;
-        }
-
-        let len = flat.len();
-        let pairwise = (len as u64) * (len as u64 - 1);
-        tsz_common::perf_counters::record_union_subtype_reduction(len as u64, pairwise);
-        tracing::trace!(len, "reduce_union_subtypes: entry");
-
-        // Skip structures tsc's default literal reduction would not structurally
-        // reduce. Template-literal members can only absorb matching string
-        // literals, so that family uses a targeted pass instead of O(N²).
-        {
-            let mut has_primitive = false;
-            let mut string_literals: Vec<(usize, Atom)> = Vec::new();
-            let mut templates: Vec<TemplateLiteralId> = Vec::new();
-            let all_non_reducible = flat.iter().enumerate().all(|(idx, &ty)| {
-                if self.is_identity_comparable_type(ty) {
-                    // A widened primitive can absorb literals of its kind.
-                    if ty == TypeId::STRING
-                        || ty == TypeId::NUMBER
-                        || ty == TypeId::BOOLEAN
-                        || ty == TypeId::BIGINT
-                        || ty == TypeId::SYMBOL
-                    {
-                        has_primitive = true;
-                    }
-                    if let Some(TypeData::Literal(LiteralValue::String(atom))) = self.lookup(ty) {
-                        string_literals.push((idx, atom));
-                    }
-                    return true;
-                }
-                match self.lookup(ty) {
-                    Some(TypeData::TemplateLiteral(template_id)) => {
-                        templates.push(template_id);
-                        true
-                    }
-                    Some(
-                        TypeData::Array(_)
-                        | TypeData::Tuple(_)
-                        | TypeData::Object(_)
-                        | TypeData::ObjectWithIndex(_)
-                        | TypeData::Enum(_, _)
-                        | TypeData::Lazy(_)
-                        | TypeData::Application(_)
-                        | TypeData::Callable(_)
-                        // Without a widened primitive peer, literals are inert.
-                        | TypeData::Literal(_),
-                    ) => true,
-                    _ => false,
-                }
-            });
-            if all_non_reducible && !has_primitive {
-                // Only string-literal × template absorption can still reduce.
-                if !templates.is_empty() && !string_literals.is_empty() {
-                    self.remove_string_literals_matched_by_templates(
-                        flat,
-                        &string_literals,
-                        &templates,
-                    );
-                }
-                return;
-            }
-        }
-
-        // TS2590 is sticky for checker diagnostics; internal construction keeps
-        // the large union instead of poisoning downstream with ERROR.
-        if pairwise >= Self::UNION_SUBTYPE_PAIRWISE_LIMIT {
-            self.set_union_too_complex();
-            return; // skip reduction, preserve the union members as-is
-        }
-
-        // Partition large discriminated unions before pairwise checks.
-        if len > 16
-            && let Some(partitioned) = self.try_partition_union_reduction(flat)
-        {
-            *flat = partitioned;
-            return;
-        }
-
-        // Dispatch on width: small unions use a u64 bitset; wider ones a Vec.
-        self.reduce_union_subtypes_sized(flat);
+        let mut work = None;
+        expect_unmetered_union(self.reduce_union_subtypes_with_work(flat, &mut work))
     }
 
     /// Derived query: return the `UnionReduction.Subtype` form of a union.
@@ -1463,230 +1424,6 @@ impl TypeInterner {
         self.subtype_reduced_cache
             .insert((union, resolver_generation), reduced);
         reduced
-    }
-
-    /// Size-dispatching union reduction: the bitset path caps at 64 members, so
-    /// anything wider must use the heap-backed large-row reducer. Every caller
-    /// that reduces a union of unbounded width — the top-level entry and each
-    /// discriminant/fallback/combined group in `try_partition_union_reduction`
-    /// — routes through this dispatcher so the `len <= 64` invariant of
-    /// `reduce_union_subtypes_quadratic` is never violated.
-    fn reduce_union_subtypes_sized(&self, flat: &mut TypeListBuffer) {
-        let len = flat.len();
-        if len <= 64 {
-            self.reduce_union_subtypes_quadratic(flat);
-        } else {
-            self.reduce_union_subtypes_large_row(flat);
-        }
-    }
-
-    /// Heap-backed union reduction for partitions wider than the 64-bit bitset.
-    /// Identical semantics to `reduce_union_subtypes_quadratic`
-    /// (`shallow_reduce_kind` / `may_relate` / `is_subtype_shallow`), only the
-    /// keep-set is a `Vec<bool>` instead of a `u64` so it is size-unbounded.
-    fn reduce_union_subtypes_large_row(&self, flat: &mut TypeListBuffer) {
-        let len = flat.len();
-        if len <= 1 {
-            return;
-        }
-        let mut keep = vec![true; len];
-        // Precompute one coarse structural bucket per member (O(N)). A pair
-        // whose buckets cannot relate (e.g. object-vs-literal, primitive-vs-
-        // object, literal-vs-literal) is skipped without the shallow subtype
-        // call: `is_subtype_shallow` would deterministically answer `false`.
-        // This subsumes the bare-literal-pair skip and collapses the dominant
-        // cross-kind term of the mixed object/primitive/literal large-row
-        // union shape from N(N-1) shallow calls toward the count of genuinely
-        // same-kind pairs, while object-vs-object / function-vs-function
-        // reductions are preserved exactly. The inert deferred family is
-        // already lifted out above, so the residual here is concrete; any
-        // member the classifier does not model precisely buckets as
-        // `Wildcard` and keeps the real check.
-        let kinds: Vec<ShallowReduceKind> = flat
-            .iter()
-            .map(|&id| self.shallow_reduce_kind(id))
-            .collect();
-        let shallow_checks = tsz_common::perf_counters::enabled_fast()
-            .then(|| &tsz_common::perf_counters::counters().union_subtype_reduction_shallow_checks);
-        for i in 0..len {
-            if !keep[i] {
-                continue;
-            }
-            for j in 0..len {
-                if i == j || !keep[j] {
-                    continue;
-                }
-                if !ShallowReduceKind::may_relate(kinds[i], kinds[j]) {
-                    // The bucket skip must never hide a real subtype
-                    // relation: validate the over-approximation against the
-                    // shallow engine in debug/test builds across the whole
-                    // corpus. Release builds pay only the `may_relate` match.
-                    debug_assert!(
-                        !self.is_subtype_shallow(flat[i], flat[j]),
-                        "shallow_reduce_kind skipped a relating pair: \
-                         {:?} <: {:?}",
-                        kinds[i],
-                        kinds[j],
-                    );
-                    continue;
-                }
-                if let Some(counter) = shallow_checks {
-                    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-                if self.is_subtype_shallow(flat[i], flat[j]) {
-                    keep[i] = false;
-                    break;
-                }
-            }
-        }
-        let mut write = 0;
-        for read in 0..len {
-            if keep[read] {
-                flat[write] = flat[read];
-                write += 1;
-            }
-        }
-        flat.truncate(write);
-    }
-
-    /// Reduce large object unions by likely discriminant property when useful.
-    fn try_partition_union_reduction(&self, members: &[TypeId]) -> Option<TypeListBuffer> {
-        // Candidate property appears in at least half of object members.
-        let mut prop_counts: FxHashMap<Atom, usize> = FxHashMap::default();
-        let mut object_count = 0;
-
-        for &member in members {
-            if let Some(shape_id) = crate::visitor::object_shape_id(self, member)
-                .or_else(|| crate::visitor::object_with_index_shape_id(self, member))
-            {
-                object_count += 1;
-                let shape = self.object_shape(shape_id);
-                for prop in &shape.properties {
-                    *prop_counts.entry(prop.name).or_insert(0) += 1;
-                }
-            }
-        }
-
-        if object_count < 8 {
-            return None;
-        }
-
-        let discriminant_prop = prop_counts
-            .into_iter()
-            .filter(|&(_, count)| count >= object_count / 2)
-            .max_by_key(|&(_, count)| count)
-            .map(|(name, _)| name)?;
-
-        // Missing/non-object members go into a fallback group.
-        let mut partitions: FxHashMap<TypeId, Vec<TypeId>> = FxHashMap::default();
-        let mut fallback: Vec<TypeId> = Vec::new();
-
-        for &member in members {
-            let val = crate::visitor::object_shape_id(self, member)
-                .or_else(|| crate::visitor::object_with_index_shape_id(self, member))
-                .and_then(|sid| {
-                    let shape = self.object_shape(sid);
-                    crate::utils::lookup_property(
-                        self,
-                        &shape.properties,
-                        Some(sid),
-                        discriminant_prop,
-                    )
-                    .map(|p| p.type_id)
-                });
-
-            if let Some(v) = val {
-                partitions.entry(v).or_default().push(member);
-            } else {
-                fallback.push(member);
-            }
-        }
-
-        // Reduce each partition independently. A single discriminant value can
-        // hold more than 64 members (the typebox >64-arm same-discriminant
-        // shape), so route through the width dispatcher rather than the bitset
-        // reducer directly.
-        let mut result: TypeListBuffer = SmallVec::new();
-        for (_, group) in partitions {
-            let mut group_buf = TypeListBuffer::from_vec(group);
-            self.reduce_union_subtypes_sized(&mut group_buf);
-            result.extend(group_buf);
-        }
-
-        // Reduce fallback, then check fallback against all winners.
-        if !fallback.is_empty() {
-            let mut fallback_buf = TypeListBuffer::from_vec(fallback);
-            self.reduce_union_subtypes_sized(&mut fallback_buf);
-            result.extend(fallback_buf);
-        }
-
-        // Final pass only when partitioning actually reduced the problem.
-        if result.len() < members.len() {
-            self.reduce_union_subtypes_sized(&mut result);
-            Some(result)
-        } else {
-            None
-        }
-    }
-
-    /// quadratic implementation of union reduction, used within partitions.
-    fn reduce_union_subtypes_quadratic(&self, flat: &mut TypeListBuffer) {
-        let len = flat.len();
-        if len <= 1 {
-            return;
-        }
-        // Use a u64 bitset; callers keep partitions within this size.
-        debug_assert!(len <= 64, "reduce_union_subtypes_quadratic: len={len} > 64");
-        let mut keep: u64 = if len >= 64 {
-            u64::MAX
-        } else {
-            (1u64 << len) - 1
-        };
-        // One coarse structural bucket per member (stack-allocated for the
-        // <=64-member partition). Pairs whose buckets cannot relate skip the
-        // shallow subtype call; see `ShallowReduceKind::may_relate`. This
-        // subsumes the bare-literal-pair skip (`may_relate(Literal, Literal)` is
-        // `false`) and every other cross-kind disjoint pair.
-        let kinds: SmallVec<[ShallowReduceKind; 64]> = flat
-            .iter()
-            .map(|&id| self.shallow_reduce_kind(id))
-            .collect();
-        let shallow_checks = tsz_common::perf_counters::enabled_fast()
-            .then(|| &tsz_common::perf_counters::counters().union_subtype_reduction_shallow_checks);
-        for i in 0..len {
-            if keep & (1u64 << i) == 0 {
-                continue;
-            }
-            for j in 0..len {
-                if i == j || keep & (1u64 << j) == 0 {
-                    continue;
-                }
-                if !ShallowReduceKind::may_relate(kinds[i], kinds[j]) {
-                    debug_assert!(
-                        !self.is_subtype_shallow(flat[i], flat[j]),
-                        "shallow_reduce_kind skipped a relating pair: {:?} <: {:?}",
-                        kinds[i],
-                        kinds[j],
-                    );
-                    continue;
-                }
-                if let Some(counter) = shallow_checks {
-                    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-                if self.is_subtype_shallow(flat[i], flat[j]) {
-                    keep &= !(1u64 << i);
-                    break;
-                }
-            }
-        }
-        let mut write = 0;
-        for read in 0..len {
-            if keep & (1u64 << read) != 0 {
-                flat[write] = flat[read];
-                write += 1;
-            }
-        }
-        flat.truncate(write);
     }
 
     /// Remove redundant types from an intersection using shallow subtype checks.
@@ -1830,3 +1567,5 @@ mod tests;
 
 #[cfg(test)]
 mod application_order_tests;
+
+include!("normalize_execution.rs");

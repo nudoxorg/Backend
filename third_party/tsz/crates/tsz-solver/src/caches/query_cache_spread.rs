@@ -60,6 +60,9 @@ impl QueryCache<'_> {
         key: PropertyAccessCacheKey,
         result: PropertyAccessResult,
     ) {
+        if self.execution_stopped() {
+            return;
+        }
         self.property_cache.borrow_mut().insert(key, result);
     }
 
@@ -75,6 +78,9 @@ impl QueryCache<'_> {
         key: ElementAccessTypeCacheKey,
         result: TypeId,
     ) {
+        if self.execution_stopped() {
+            return;
+        }
         self.element_access_cache.borrow_mut().insert(key, result);
     }
 
@@ -141,6 +147,9 @@ impl QueryCache<'_> {
     }
 
     pub(super) fn insert_closed_eval_cache_entry(&self, key: EvaluationCacheKey, result: TypeId) {
+        if self.execution_stopped() {
+            return;
+        }
         let old_result = self.closed_eval_cache.borrow_mut().insert(key, result);
         eval_dependency_index::record_dependencies(
             self.interner,
@@ -164,17 +173,19 @@ impl QueryCache<'_> {
             && shared.shares_instantiation_family()
         {
             if let Some(result) = shared.application_eval_cache.get(&key).map(|entry| *entry) {
-                self.application_eval_cache
-                    .borrow_mut()
-                    .insert(key.clone(), result);
-                application_eval_index::record_dependencies(
-                    self.interner,
-                    self.definition_store(),
-                    &self.application_eval_dependency_index,
-                    &key,
-                    None,
-                    result,
-                );
+                if !self.execution_stopped() {
+                    self.application_eval_cache
+                        .borrow_mut()
+                        .insert(key.clone(), result);
+                    application_eval_index::record_dependencies(
+                        self.interner,
+                        self.definition_store(),
+                        &self.application_eval_dependency_index,
+                        &key,
+                        None,
+                        result,
+                    );
+                }
                 self.application_eval_cache_stats.record_hit();
                 self.application_eval_cache_stats.record_shared_hit();
                 tsz_common::perf_counters::record_shared_application_eval_cache_hit();
@@ -194,8 +205,12 @@ impl QueryCache<'_> {
         key: ApplicationEvalCacheKey,
         result: TypeId,
     ) {
+        if self.execution_stopped() {
+            return;
+        }
         if let Some(shared) = self.shared
             && shared.shares_instantiation_family()
+            && !self.execution_stopped()
         {
             shared.insert_application_eval_cache(
                 self.interner,
@@ -205,6 +220,9 @@ impl QueryCache<'_> {
             );
             self.application_eval_cache_stats.record_shared_insert();
             tsz_common::perf_counters::record_shared_application_eval_cache_insert();
+        }
+        if self.execution_stopped() {
+            return;
         }
         let old_result = self
             .application_eval_cache
@@ -240,6 +258,9 @@ impl QueryCache<'_> {
         key: TypeId,
         value: Vec<PropertyInfo>,
     ) {
+        if self.execution_stopped() {
+            return;
+        }
         self.object_spread_properties_cache
             .borrow_mut()
             .insert(key, value);

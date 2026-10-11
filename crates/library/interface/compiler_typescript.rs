@@ -85,6 +85,10 @@ pub enum TypeScriptAuthorityFailureKind {
     HostConfigMissing,
     /// TypeScript admitted compiler API rejected its program input.
     HostCompilerApiBridge,
+    /// TypeScript compiler program admission observed cooperative cancellation.
+    HostProgramCancelled,
+    /// TypeScript compiler program admission exceeded its admitted deadline.
+    HostProgramDeadline,
     /// TypeScript compiler I/O closure exceeded an admitted bound.
     HostCompilerIoClosureLimit,
     /// TypeScript compiler I/O closure did not match admitted directory state.
@@ -207,6 +211,8 @@ pub enum TypeScriptAuthorityFailureKind {
     NativeProjectCheckDeadline,
     /// Native TypeScript project checking exhausted its admitted work budget.
     NativeProjectCheckWorkBudgetExhausted,
+    /// Native TypeScript private checker workers could not be started.
+    NativeCheckerWorkerPoolUnavailable,
     /// Native TypeScript project update was cancelled.
     NativeUpdateCancelled,
     /// Native TypeScript project update exceeded its admitted deadline.
@@ -260,6 +266,8 @@ impl TypeScriptAuthorityFailureKind {
             Self::HostConfigInvalid => "typescript_host_config_invalid",
             Self::HostConfigMissing => "typescript_host_config_missing",
             Self::HostCompilerApiBridge => "typescript_host_compiler_api_bridge",
+            Self::HostProgramCancelled => "typescript_host_program_cancelled",
+            Self::HostProgramDeadline => "typescript_host_program_deadline",
             Self::HostCompilerIoClosureLimit => "typescript_host_compiler_io_closure_limit",
             Self::HostCompilerIoClosureMismatch => "typescript_host_compiler_io_closure_mismatch",
             Self::HostConfigCycle => "typescript_host_config_cycle",
@@ -357,6 +365,9 @@ impl TypeScriptAuthorityFailureKind {
             Self::NativeProjectCheckWorkBudgetExhausted => {
                 "typescript_native_project_check_work_budget_exhausted"
             }
+            Self::NativeCheckerWorkerPoolUnavailable => {
+                "typescript_native_checker_worker_pool_unavailable"
+            }
             Self::NativeUpdateCancelled => "typescript_native_update_cancelled",
             Self::NativeUpdateDeadline => "typescript_native_update_deadline",
             Self::NativeUpdateWorkBudgetExhausted => {
@@ -450,6 +461,10 @@ impl TypeScriptAuthorityFailureKind {
             Self::HostConfigMissing => "TypeScript selected configuration file was absent",
             Self::HostCompilerApiBridge => {
                 "TypeScript admitted compiler API rejected its program input"
+            }
+            Self::HostProgramCancelled => "TypeScript compiler program admission was cancelled",
+            Self::HostProgramDeadline => {
+                "TypeScript compiler program admission exceeded its admitted deadline"
             }
             Self::HostCompilerIoClosureLimit => {
                 "TypeScript compiler I/O closure exceeded an admitted bound"
@@ -610,6 +625,9 @@ impl TypeScriptAuthorityFailureKind {
             Self::NativeProjectCheckWorkBudgetExhausted => {
                 "Native TypeScript project checking exhausted its admitted work budget"
             }
+            Self::NativeCheckerWorkerPoolUnavailable => {
+                "Native TypeScript private checker workers could not be started"
+            }
             Self::NativeUpdateCancelled => "Native TypeScript project update was cancelled",
             Self::NativeUpdateDeadline => {
                 "Native TypeScript project update exceeded its admitted deadline"
@@ -625,7 +643,8 @@ impl TypeScriptAuthorityFailureKind {
     pub const fn is_cancelled(self) -> bool {
         matches!(
             self,
-            Self::NativeSessionCancelled
+            Self::HostProgramCancelled
+                | Self::NativeSessionCancelled
                 | Self::NativeProjectCheckCancelled
                 | Self::NativeUpdateCancelled
         )

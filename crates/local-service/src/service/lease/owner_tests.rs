@@ -28,6 +28,8 @@ use std::time::Duration;
 const NANOSECOND: Duration = Duration::from_nanos(1);
 
 fn real_owner(directory: &tempfile::TempDir, clock: &Arc<ManualClock>) -> EmptyOwner {
+    crate::test_support::make_private(directory.path())
+        .expect("make actual owner fixture current-user private");
     open_empty_owner(directory.path())
         .expect("a real empty product owner")
         .with_lease_clock(clock.clone())

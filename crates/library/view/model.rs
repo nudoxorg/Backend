@@ -543,6 +543,33 @@ impl DocumentSelection {
         Self::from_admitted_parts(symbol, source, row.label.clone()).ok()
     }
 
+    /// Retains the exact requested address only when it uniquely selects an
+    /// actual declaration and owning package in this immutable source view.
+    #[must_use]
+    pub fn from_selected_view(
+        view: &super::ViewRoot,
+        source: Basis,
+        coordinate: &str,
+    ) -> Option<Self> {
+        if source
+            != (Basis {
+                root: view.root(),
+                ..view.basis()
+            })
+        {
+            return None;
+        }
+        let super::SelectedViewAddress::Declaration { row, .. } =
+            super::resolve_selected_view_address(view, coordinate)
+        else {
+            return None;
+        };
+        let RowId::Symbol(symbol) = row.id else {
+            return None;
+        };
+        Self::from_admitted_parts(symbol, source, coordinate.to_owned()).ok()
+    }
+
     pub(crate) fn from_admitted_parts(
         symbol: SymbolKey,
         source: Basis,

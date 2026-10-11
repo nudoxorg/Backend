@@ -302,6 +302,128 @@ impl<'a> CheckerState<'a> {
         self.resolve_effective_module_exports_from_file(module_specifier, None)
     }
 
+    /// Resolve a syntax-owned request without borrowing another kind's target.
+    pub(crate) fn resolve_effective_module_exports_for_request(
+        &self,
+        module_specifier: &str,
+        resolution_mode: Option<crate::context::ResolutionModeOverride>,
+        request_kind: crate::context::ResolutionRequestKind,
+    ) -> Option<tsz_binder::SymbolTable> {
+        if self.ctx.project_module_resolution_outcomes.is_some() {
+            let request = crate::context::BoundModuleRequest {
+                importer: self.ctx.current_file_idx,
+                specifier: module_specifier,
+                mode: resolution_mode,
+                kind: request_kind,
+            };
+            return self
+                .resolve_exports_for_selected_request(self.ctx.select_module_request(request)?);
+        }
+        self.resolve_effective_module_exports_with_mode(module_specifier, resolution_mode)
+    }
+
+    /// Type and value member lookup preserves the selected request and owner.
+    /// Runtime namespace collection separately filters type-only wildcard edges.
+    pub(crate) fn resolve_member_for_selected_request(
+        &self,
+        selected: crate::context::SelectedModuleRequest<'_>,
+        name: &str,
+    ) -> Option<tsz_binder::SymbolId> {
+        let mut visited = rustc_hash::FxHashSet::default();
+        if let Some(target) = selected.file_target() {
+            return self
+                .ctx
+                .resolve_export_in_target_file(target, name, &mut visited);
+        }
+        selected.external_identity()?;
+        for binder in self.ctx.all_binders.as_ref()?.iter() {
+            let Some((ambient_key, exports)) = self
+                .ctx
+                .ambient_exports_for_selected_request(binder, selected)
+            else {
+                continue;
+            };
+            if let Some(symbol) = exports.get(name) {
+                return Some(symbol);
+            }
+            // Index by the proven declared-ambient key, never by the requested
+            // spelling, which may also identify a program file.
+            if let Some(files) = self.ctx.files_for_module_specifier(ambient_key) {
+                for &owner in files {
+                    visited.clear();
+                    if let Some((symbol, _)) = self.resolve_export_in_file_with_module_key(
+                        owner,
+                        Some(ambient_key),
+                        name,
+                        &mut visited,
+                    ) {
+                        return Some(symbol);
+                    }
+                }
+            }
+            return None;
+        }
+        None
+    }
+
+    pub(crate) fn resolve_exports_for_selected_request(
+        &self,
+        selected: crate::context::SelectedModuleRequest<'_>,
+    ) -> Option<tsz_binder::SymbolTable> {
+        if let Some(target) = selected.file_target() {
+            return Some(
+                self.resolve_cross_file_namespace_exports_for_file(target, None)
+                    .unwrap_or_default(),
+            );
+        }
+        selected.external_identity()?;
+        for binder in self.ctx.all_binders.as_ref()?.iter() {
+            if let Some((ambient_key, exports)) = self
+                .ctx
+                .ambient_exports_for_selected_request(binder, selected)
+            {
+                let mut combined = exports.clone();
+                self.merge_export_equals_members(binder, exports, &mut combined);
+                if let Some(symbol) = exports.get("export=").and_then(|id| binder.get_symbol(id)) {
+                    let _ = self.merge_export_equals_import_type_members(
+                        symbol,
+                        exports
+                            .get("export=")
+                            .and_then(|id| self.ctx.resolve_symbol_declaring_file_index(id)),
+                        &mut combined,
+                    );
+                }
+                let mut visited = rustc_hash::FxHashSet::default();
+                // A direct export in one declaration does not certify the
+                // completeness of other declarations of this ambient owner.
+                if let Some(files) = self.ctx.files_for_module_specifier(ambient_key) {
+                    for &owner in files {
+                        self.collect_reexported_symbols(
+                            owner,
+                            Some(ambient_key),
+                            &mut combined,
+                            &mut visited,
+                        );
+                    }
+                }
+                // Retain the stable declaration fallback for contexts whose
+                // ambient file index is incomplete; the visited set deduplicates.
+                for (_, &symbol) in exports.iter() {
+                    if let Some(owner) = self.ctx.resolve_symbol_declaring_file_index(symbol) {
+                        self.collect_reexported_symbols(
+                            owner,
+                            Some(ambient_key),
+                            &mut combined,
+                            &mut visited,
+                        );
+                    }
+                }
+                return Some(combined);
+            }
+        }
+        None
+    }
+
     /// Like `resolve_effective_module_exports` but uses an explicit `resolution-mode`
     /// override from import attributes (e.g., `with { "resolution-mode": "require" }`).
     /// Falls back to the non-mode-aware path when no override is provided.
@@ -501,7 +623,7 @@ impl<'a> CheckerState<'a> {
         let binder = self.ctx.get_binder_for_file(decl_file_idx)?;
         let arena = self.ctx.get_arena_for_file(decl_file_idx as u32);
 
-        let module_specifier_from_decl = |decl_idx: NodeIndex| -> Option<String> {
+        let module_specifier_from_decl = |decl_idx: NodeIndex| -> Option<(String, NodeIndex)> {
             let node = arena.get(decl_idx)?;
             if node.kind != syntax_kind_ext::VARIABLE_DECLARATION {
                 return None;
@@ -511,6 +633,7 @@ impl<'a> CheckerState<'a> {
                 return None;
             }
             self.import_type_module_specifier_from_type_node(arena, var_decl.type_annotation)
+                .map(|specifier| (specifier, var_decl.type_annotation))
         };
 
         let mut module_specifier = export_equals_symbol
@@ -578,21 +701,42 @@ impl<'a> CheckerState<'a> {
             }
         }
 
-        let module_specifier = module_specifier?;
-
-        let Some(nested_exports) =
-            self.resolve_effective_module_exports_from_file(&module_specifier, Some(decl_file_idx))
-        else {
-            return Some(module_specifier);
-        };
-        let nested_target_idx = nested_exports
-            .iter()
-            .find_map(|(_, &sym_id)| self.ctx.resolve_symbol_file_index_stable(sym_id))
-            .or_else(|| {
-                self.ctx
-                    .resolve_import_target_from_file(decl_file_idx, &module_specifier)
+        let (module_specifier, annotation) = module_specifier?;
+        let (nested_exports, exact_target) =
+            if self.ctx.project_module_resolution_outcomes.is_some() {
+                let request = self
+                    .ctx
+                    .bound_import_type_request_at(decl_file_idx, annotation)?;
+                let selected = self.ctx.select_module_request(request)?;
+                (
+                    self.resolve_exports_for_selected_request(selected)?,
+                    selected.file_target(),
+                )
+            } else {
+                (
+                    self.resolve_effective_module_exports_from_file(
+                        &module_specifier,
+                        Some(decl_file_idx),
+                    )?,
+                    None,
+                )
+            };
+        let nested_target_idx = if self.ctx.project_module_resolution_outcomes.is_some() {
+            exact_target.or_else(|| {
+                nested_exports
+                    .iter()
+                    .find_map(|(_, &symbol)| self.ctx.resolve_symbol_file_index_stable(symbol))
             })
-            .or_else(|| self.ctx.resolve_import_target(&module_specifier));
+        } else {
+            nested_exports
+                .iter()
+                .find_map(|(_, &symbol)| self.ctx.resolve_symbol_file_index_stable(symbol))
+                .or_else(|| {
+                    self.ctx
+                        .resolve_import_target_from_file(decl_file_idx, &module_specifier)
+                })
+                .or_else(|| self.ctx.resolve_import_target(&module_specifier))
+        };
 
         for (name, sym_id) in nested_exports.iter() {
             if let Some(target_idx) = nested_target_idx {

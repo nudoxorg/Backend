@@ -89,6 +89,59 @@ fn query_cache_caches_evaluate_and_subtype() {
 }
 
 #[test]
+fn next_file_reset_clears_local_memos_and_retains_shared_policy_and_stop() {
+    use crate::caches::db::TypeCompilerOptions;
+    use crate::construction::{SharedQueryCache, TypeExecutionCheckpoint};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+    use tsz_common::{ProjectExecutionBudget, ProjectExecutionStop, ProjectSemanticOptions};
+
+    let interner = TypeInterner::new();
+    let shared = SharedQueryCache::new();
+    let cancelled = AtomicBool::new(false);
+    let budget = ProjectExecutionBudget::new(
+        Instant::now() + Duration::from_secs(30),
+        &cancelled,
+        100_000,
+    );
+    let semantic = ProjectSemanticOptions::declaration_scoped();
+    let db = QueryCache::new_with_shared(&interner, &shared)
+        .with_project_semantic_options(semantic)
+        .with_execution_checkpoint(&budget);
+    db.set_exact_optional_property_types(true);
+    db.set_no_unchecked_indexed_access(true);
+    db.set_strict_null_checks(true);
+    let literal = interner.literal_string("next-file-boundary");
+    assert!(db.is_subtype_of(literal, TypeId::STRING));
+    assert_eq!(db.subtype_cache_len(), 1);
+    let shared_entries = shared.subtype_cache.len();
+    assert!(shared_entries > 0);
+    assert_eq!(db.execution_checkpoint(1), Ok(()));
+    let remaining = budget.remaining_work_units();
+
+    db.reset_for_next_file();
+    assert_eq!(db.subtype_cache_len(), 0);
+    assert_eq!(db.eval_cache_len(), 0);
+    assert_eq!(shared.subtype_cache.len(), shared_entries);
+    assert_eq!(db.project_semantic_options, semantic);
+    assert!(db.exact_optional_property_types());
+    assert!(db.no_unchecked_indexed_access());
+    assert!(db.strict_null_checks());
+    assert_eq!(budget.remaining_work_units(), remaining);
+    assert!(db.is_subtype_of(literal, TypeId::STRING));
+    cancelled.store(true, Ordering::Release);
+    assert_eq!(
+        db.execution_checkpoint(0),
+        Err(ProjectExecutionStop::Cancelled)
+    );
+    db.reset_for_next_file();
+    assert_eq!(
+        db.execution_checkpoint(0),
+        Err(ProjectExecutionStop::Cancelled)
+    );
+}
+
+#[test]
 fn property_cache_skips_unresolved_lazy_result() {
     let interner = TypeInterner::new();
     let db = QueryCache::new(&interner);

@@ -598,10 +598,13 @@ mod tests {
     fn a_cached_parse_error_is_not_parsed_again_until_the_bytes_change() {
         let root = fixture("error");
         let project = root.join("broken");
-        write(&project.join("Cargo.toml"), "[workspace]\nmembers = []\n");
+        // An empty virtual workspace is a valid manifest and parses as
+        // `Ok(None)`. Use malformed TOML so this test actually exercises
+        // caching a parse failure.
+        write(&project.join("Cargo.toml"), "[workspace\n");
         let mut residence = LocalManifestResidence::default();
         let Err(first) = residence.refresh([project.as_path()]) else {
-            panic!("virtual workspace must fail");
+            panic!("malformed manifest must fail");
         };
         assert_eq!(residence.parses(), 1);
         let Err(second) = residence.refresh([project.as_path()]) else {

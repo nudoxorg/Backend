@@ -15,6 +15,72 @@ pub trait ExecutionCheckpoint: Send + Sync {
     fn checkpoint(&self, work_units: u64) -> Result<(), ProjectExecutionStop>;
 }
 
+/// Scope an arbitrary checkpoint so its first stop remains visible to every
+/// later poll, even when the wrapped implementation is one-shot.
+///
+/// This is useful at boundaries that translate a typed stop into a local
+/// sentinel such as `TypeId::UNKNOWN`: the owning operation can poll the same
+/// scope after a callback and refuse to publish the callback result.
+pub struct LatchedExecutionCheckpoint<'checkpoint> {
+    source: &'checkpoint dyn ExecutionCheckpoint,
+    stop: AtomicU8,
+}
+
+impl<'checkpoint> LatchedExecutionCheckpoint<'checkpoint> {
+    /// Creates a stop-latching scope over a borrowed checkpoint.
+    #[must_use]
+    pub const fn new(source: &'checkpoint dyn ExecutionCheckpoint) -> Self {
+        Self {
+            source,
+            stop: AtomicU8::new(0),
+        }
+    }
+
+    fn encode_stop(stop: ProjectExecutionStop) -> u8 {
+        match stop {
+            ProjectExecutionStop::Cancelled => 1,
+            ProjectExecutionStop::Deadline => 2,
+            ProjectExecutionStop::WorkBudgetExhausted => 3,
+        }
+    }
+
+    fn decode_stop(encoded: u8) -> Option<ProjectExecutionStop> {
+        match encoded {
+            1 => Some(ProjectExecutionStop::Cancelled),
+            2 => Some(ProjectExecutionStop::Deadline),
+            3 => Some(ProjectExecutionStop::WorkBudgetExhausted),
+            _ => None,
+        }
+    }
+
+    /// Returns the first stop observed in this scope, if any.
+    #[must_use]
+    pub fn stopped_reason(&self) -> Option<ProjectExecutionStop> {
+        Self::decode_stop(self.stop.load(Ordering::Acquire))
+    }
+}
+
+impl ExecutionCheckpoint for LatchedExecutionCheckpoint<'_> {
+    fn checkpoint(&self, work_units: u64) -> Result<(), ProjectExecutionStop> {
+        if let Some(stop) = self.stopped_reason() {
+            return Err(stop);
+        }
+
+        match self.source.checkpoint(work_units) {
+            Ok(()) => self.stopped_reason().map_or(Ok(()), Err),
+            Err(stop) => {
+                let _ = self.stop.compare_exchange(
+                    0,
+                    Self::encode_stop(stop),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+                Err(self.stopped_reason().unwrap_or(stop))
+            }
+        }
+    }
+}
+
 /// Amortizes cooperative checks inside synchronous compiler walks.
 ///
 /// Call [`Self::tick`] for each bounded unit of work and [`Self::finish`] at
@@ -111,12 +177,17 @@ impl<'cancel> ProjectExecutionBudget<'cancel> {
         if Instant::now() >= self.deadline {
             return Err(self.latch(ProjectExecutionStop::Deadline));
         }
-        if self
-            .remaining_work
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
-                remaining.checked_sub(work_units)
-            })
-            .is_err()
+        // A zero-work poll still observes cancellation, deadline, and a
+        // previously latched stop above and below. It does not consume any
+        // allowance, so avoid contending on the shared counter for the many
+        // cache-boundary polls that use this value.
+        if work_units != 0
+            && self
+                .remaining_work
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                    remaining.checked_sub(work_units)
+                })
+                .is_err()
         {
             return Err(self.latch(ProjectExecutionStop::WorkBudgetExhausted));
         }
@@ -167,9 +238,36 @@ impl ExecutionCheckpoint for ProjectExecutionBudget<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ExecutionWorkMeter, ProjectExecutionBudget, ProjectExecutionStop};
-    use std::sync::atomic::AtomicBool;
+    use super::{
+        ExecutionCheckpoint, ExecutionWorkMeter, LatchedExecutionCheckpoint,
+        ProjectExecutionBudget, ProjectExecutionStop,
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
+
+    struct OneShotStop(AtomicBool);
+
+    impl ExecutionCheckpoint for OneShotStop {
+        fn checkpoint(&self, _work_units: u64) -> Result<(), ProjectExecutionStop> {
+            if self.0.swap(false, Ordering::AcqRel) {
+                Err(ProjectExecutionStop::Cancelled)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn latched_checkpoint_preserves_one_shot_stop_for_outer_boundary() {
+        let source = OneShotStop(AtomicBool::new(true));
+        let scope = LatchedExecutionCheckpoint::new(&source);
+        assert_eq!(scope.checkpoint(1), Err(ProjectExecutionStop::Cancelled));
+        assert_eq!(
+            scope.stopped_reason(),
+            Some(ProjectExecutionStop::Cancelled)
+        );
+        assert_eq!(scope.checkpoint(0), Err(ProjectExecutionStop::Cancelled));
+    }
 
     #[test]
     fn work_is_shared_and_exhaustion_is_latched() {
@@ -190,6 +288,21 @@ mod tests {
             budget.checkpoint(0),
             Err(ProjectExecutionStop::WorkBudgetExhausted)
         );
+    }
+
+    #[test]
+    fn zero_work_checkpoint_observes_stops_without_charging_allowance() {
+        let cancelled = AtomicBool::new(false);
+        let budget =
+            ProjectExecutionBudget::new(Instant::now() + Duration::from_secs(2), &cancelled, 0);
+        assert_eq!(budget.remaining_work_units(), 0);
+        assert_eq!(budget.checkpoint(0), Ok(()));
+        assert_eq!(budget.remaining_work_units(), 0);
+        assert_eq!(
+            budget.checkpoint(1),
+            Err(ProjectExecutionStop::WorkBudgetExhausted)
+        );
+        assert_eq!(budget.remaining_work_units(), 0);
     }
 
     #[test]

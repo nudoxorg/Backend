@@ -70,27 +70,8 @@ pub fn main_entry() -> ExitCode {
 }
 
 fn early_exit(args: &[String]) -> Option<ExitCode> {
-    if args.first().is_some_and(|word| word == "semantic-hydrate")
-        && args
-            .iter()
-            .any(|word| matches!(word.as_str(), "--help" | "-h"))
-    {
-        println!("{}", crate::semantic_hydrate::help_text());
-        return Some(ExitCode::SUCCESS);
-    }
-    if args.is_empty() || args.iter().any(|word| word == "--help" || word == "-h") {
-        let topic = args
-            .iter()
-            .find(|word| !word.starts_with('-'))
-            .and_then(|word| grammar_for(word));
-        let is_cluster_command = options::split(args)
-            .ok()
-            .is_some_and(|(_, words)| words.first().is_some_and(|word| word == "cluster"));
-        if is_cluster_command {
-            println!("{}", crate::cluster::help_text());
-        } else {
-            println!("{}", topic.map_or_else(invoke::help, invoke::help_for));
-        }
+    if let Some(help) = help_output(args) {
+        println!("{help}");
         return Some(ExitCode::SUCCESS);
     }
     if args.iter().any(|word| word == "--version" || word == "-V") {
@@ -98,6 +79,34 @@ fn early_exit(args: &[String]) -> Option<ExitCode> {
         return Some(ExitCode::SUCCESS);
     }
     None
+}
+
+fn help_output(args: &[String]) -> Option<String> {
+    if !args.is_empty()
+        && !args
+            .iter()
+            .any(|word| matches!(word.as_str(), "--help" | "-h"))
+    {
+        return None;
+    }
+    // Global option values are paths or projection names, not help topics.
+    // Reuse the normal option split before selecting the command, while help
+    // still exits before workspace discovery or daemon startup.
+    let arguments = args
+        .iter()
+        .filter(|word| !matches!(word.as_str(), "--help" | "-h"))
+        .cloned()
+        .collect::<Vec<_>>();
+    let command = options::split(&arguments)
+        .ok()
+        .and_then(|(_, words)| words.into_iter().next());
+    Some(match command.as_deref() {
+        Some("cluster") => crate::cluster::help_text().to_owned(),
+        Some("semantic-hydrate") => crate::semantic_hydrate::help_text().to_owned(),
+        command => command
+            .and_then(grammar_for)
+            .map_or_else(invoke::help, invoke::help_for),
+    })
 }
 
 fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), Fault> {
@@ -147,7 +156,9 @@ fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), 
             FaultSlug::Endpoint,
             Operand::Path(workspace.endpoint().to_string_lossy().into_owned()),
             Cause::new(CauseSlug::Unreachable, message),
-            if options.passive() {
+            if options.passive()
+                && error.startup_recovery() == backend_client::StartupRecovery::RetryOriginalCommand
+            {
                 Affordance::RecoverOwner {
                     context: OwnerContext::new(
                         project.clone(),
@@ -182,17 +193,7 @@ fn startup_progress(phase: backend_runtime::StartupPhase) {
 }
 
 fn startup_error_action(error: &backend_runtime::RuntimeError) -> Affordance {
-    #[cfg(unix)]
-    if matches!(
-        error,
-        backend_runtime::RuntimeError::CompanionProtocolMismatch
-    ) {
-        // The closed runtime cause includes the matched install/build action.
-        // Retrying an incompatible executable pair cannot repair its grammar.
-        return Affordance::None;
-    }
-    let _ = error;
-    Affordance::Retry
+    Affordance::startup(error.startup_recovery())
 }
 
 #[cfg(unix)]
@@ -345,6 +346,52 @@ pub fn answer_with_session(
     run::execute(session, &request)
 }
 
+#[cfg(test)]
+mod help_tests {
+    use super::help_output;
+
+    #[test]
+    fn command_help_skips_global_option_values() {
+        for (arguments, command) in [
+            (vec!["--project", "/repo", "add", "--help"], "add"),
+            (vec!["--detail", "full", "graph", "--help"], "graph"),
+            (vec!["--format", "json", "search", "--help"], "search"),
+            (
+                vec![
+                    "--workspace",
+                    "/state",
+                    "--endpoint",
+                    "/socket",
+                    "resolve",
+                    "-h",
+                ],
+                "resolve",
+            ),
+            (vec!["--help", "--project", "/repo", "add"], "add"),
+            (vec!["--help", "--passive", "health"], "health"),
+            (vec!["--help", "--limit", "3", "search"], "search"),
+        ] {
+            let arguments = arguments.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            let help = help_output(&arguments).expect("help requested");
+            assert!(help.starts_with(&format!("backend {command} ")), "{help}");
+            assert!(!help.contains("quick start"), "expected command help");
+        }
+    }
+
+    #[test]
+    fn special_command_help_works_after_global_options() {
+        for (command, expected) in [
+            ("cluster", crate::cluster::help_text()),
+            ("semantic-hydrate", crate::semantic_hydrate::help_text()),
+        ] {
+            let arguments = ["--project", "/repo", command, "--help"].map(str::to_owned);
+            assert_eq!(help_output(&arguments).as_deref(), Some(expected));
+        }
+        assert!(help_output(&[]).expect("bare help").contains("quick start"));
+        assert!(help_output(&["add".to_owned(), ".".to_owned()]).is_none());
+    }
+}
+
 #[cfg(all(test, unix))]
 mod startup_tests {
     use super::*;
@@ -386,6 +433,158 @@ mod startup_tests {
         assert!(text.contains("no candidate was started"));
         assert!(text.contains("it has not been submitted"));
         assert!(!workspace.data().exists());
+        let error = backend_runtime::RuntimeError::StartupPending(pending);
+        assert_eq!(
+            error.startup_recovery(),
+            backend_client::StartupRecovery::RetryOriginalCommand
+        );
+        let fault = Fault::from_client_error(
+            &backend_client::ClientError::from(error),
+            Operand::Whole,
+        );
+        assert_eq!(fault.affordance(), &Affordance::Retry);
+        assert!(fault.cause().sentence().contains("it has not been submitted"));
+    }
+
+    #[test]
+    fn startup_policy_matches_client_faults_and_all_cli_renderers() {
+        use backend_runtime::RuntimeError;
+        use std::io::{Error, ErrorKind};
+        let cases = [
+            (
+                RuntimeError::MissingExecutable("/debug/deps/backend-locald".into()),
+                Affordance::None,
+            ),
+            (RuntimeError::CompanionProtocolMismatch, Affordance::None),
+            (
+                RuntimeError::InvalidPath("endpoint path is empty; ConnectionRefused; retry"),
+                Affordance::None,
+            ),
+            (
+                RuntimeError::InvalidCredential("/state/authority.secret".into()),
+                Affordance::None,
+            ),
+            (
+                RuntimeError::DefaultStateInitialization {
+                    path: "/profile/state".into(),
+                    source: Error::from(ErrorKind::PermissionDenied),
+                },
+                Affordance::None,
+            ),
+            (
+                RuntimeError::Spawn {
+                    executable: "/bin/backend-locald".into(),
+                    source: Error::from(ErrorKind::PermissionDenied),
+                },
+                Affordance::None,
+            ),
+            (
+                RuntimeError::Io(Error::new(
+                    ErrorKind::PermissionDenied,
+                    "private state parent /state refused",
+                )),
+                Affordance::None,
+            ),
+            (
+                RuntimeError::Io(Error::from(ErrorKind::ConnectionRefused)),
+                Affordance::Retry,
+            ),
+            (
+                RuntimeError::Io(Error::from(ErrorKind::NotFound)),
+                Affordance::None,
+            ),
+            (
+                RuntimeError::EndpointUnavailable {
+                    endpoint: "/socket".into(),
+                    source: Error::from(ErrorKind::NotFound),
+                },
+                Affordance::Retry,
+            ),
+            (
+                RuntimeError::EndpointUnavailable {
+                    endpoint: "/socket".into(),
+                    source: Error::from(ErrorKind::ConnectionRefused),
+                },
+                Affordance::Retry,
+            ),
+            (
+                RuntimeError::StartTimeout("/socket".into()),
+                Affordance::Retry,
+            ),
+            (
+                RuntimeError::DaemonExited {
+                    code: Some(70),
+                    diagnostic: None,
+                },
+                Affordance::None,
+            ),
+            (
+                RuntimeError::DaemonExited {
+                    code: Some(i32::from(backend_runtime::OWNER_CONTENDED_EXIT_CODE)),
+                    diagnostic: None,
+                },
+                Affordance::Retry,
+            ),
+        ];
+        for (error, expected) in cases {
+            let original = error.to_string();
+            assert_eq!(startup_error_action(&error), expected, "{original}");
+            let fault = Fault::from_client_error(
+                &backend_client::ClientError::from(error),
+                Operand::Path("/socket".into()),
+            );
+            assert_eq!(fault.affordance(), &expected);
+            assert_eq!(
+                fault.cause().sentence(),
+                format!("the local daemon could not be started or reached: {original}")
+            );
+            let json = render::fault(&fault, &Options::plain(options::Format::Json));
+            let dto: serde_json::Value = serde_json::from_str(&json).expect("actual fault JSON");
+            assert_eq!(dto["answer"], "fault");
+            assert_eq!(dto["slug"], "endpoint");
+            assert_eq!(dto["operand"], "/socket");
+            assert_eq!(dto["cause"], "unreachable");
+            assert_eq!(dto["detail"], fault.cause().sentence());
+            for projection in [
+                backend_present::Detail::Summary,
+                backend_present::Detail::Standard,
+                backend_present::Detail::Full,
+            ] {
+                let payload = backend_present::encode_serializable(
+                    "fault",
+                    projection,
+                    None,
+                    backend_present::FaultDto::new(&fault),
+                    backend_present::DEFAULT_RESPONSE_BUDGET_BYTES,
+                )
+                .expect("bounded typed fault envelope");
+                let envelope: serde_json::Value =
+                    serde_json::from_slice(&payload.bytes).expect("encoded fault envelope");
+                assert_eq!(envelope["detail"], dto["detail"]);
+                assert_eq!(envelope["responseDetail"], projection.name());
+                for field in ["slug", "operand", "cause", "shell", "call"] {
+                    assert_eq!(envelope[field], dto[field]);
+                }
+            }
+            assert!(dto.get("call").is_none());
+            let text = render::fault(&fault, &Options::fallback());
+            let markdown = render::fault(&fault, &Options::plain(options::Format::Markdown));
+            assert_eq!(
+                text,
+                backend_present::text::fault(&fault, backend_present::Theme::plain())
+            );
+            assert_eq!(markdown, backend_present::markdown::fault(&fault));
+            if expected == Affordance::Retry {
+                assert_eq!(dto["shell"], "re-run the same command");
+                assert!(text.contains("→ re-run the same command"));
+                // Markdown offers only actionable tool calls; Retry has no invented tool call.
+                assert!(!markdown.contains("→"));
+            } else {
+                assert!(dto.get("shell").is_none());
+                assert!(!text.contains("→"));
+                assert!(!markdown.contains("→"));
+            }
+        }
     }
 
     #[test]

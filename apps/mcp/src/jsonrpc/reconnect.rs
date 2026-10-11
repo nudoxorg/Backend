@@ -16,10 +16,11 @@
 //! * a read is retried once — repeating it observes the same daemon twice and
 //!   changes nothing;
 //! * a mutation is never retried. A disconnect cannot prove whether the
-//!   daemon had already admitted the command (see `ClientError::Disconnected`
-//!   and the write path in `crates/client`), and admitting a project twice is
-//!   not the same as admitting it once. The fresh connection is kept and the
-//!   fault is returned, so the agent's next attempt succeeds on it.
+//!   daemon had already admitted the command (see
+//!   `ClientError::MutationOutcomeUnknown` and the write path in
+//!   `crates/client`), and admitting a project twice is not the same as
+//!   admitting it once. A replacement connection is kept when one opens, but
+//!   the returned fault never recommends repeating the ambiguous mutation.
 //!
 //! One reconnect per call, never a loop: if the fresh connection fails the
 //! same way, that is the daemon's answer and it is reported.
@@ -123,9 +124,19 @@ impl<E: Endpoint> Reconnecting<E> {
                 // either way: the agent's next call must not meet the same
                 // socket, even if opening the replacement fails.
                 let previous = self.product.take();
-                let mut replacement = self.endpoint.connect(previous)?;
+                let replacement = match self.endpoint.connect(previous) {
+                    Ok(replacement) => replacement,
+                    // A failed replacement cannot prove the mutation was
+                    // unsent. Report the same ambiguous outcome whether the
+                    // next lease opened or not.
+                    Err(_) if repeatable == Repeatable::No => {
+                        return Err(ClientError::MutationOutcomeUnknown(kind));
+                    }
+                    Err(error) => return Err(error),
+                };
                 match repeatable {
                     Repeatable::Yes => {
+                        let mut replacement = replacement;
                         let result = call(&mut replacement);
                         // The replacement can itself be retired while the
                         // first retried read is in flight. Do not retain a
@@ -142,7 +153,7 @@ impl<E: Endpoint> Reconnecting<E> {
                     }
                     Repeatable::No => {
                         self.product = Some(replacement);
-                        Err(ClientError::Disconnected(kind))
+                        Err(ClientError::MutationOutcomeUnknown(kind))
                     }
                 }
             }
@@ -864,7 +875,7 @@ mod tests {
             std::io::Error::from(std::io::ErrorKind::InvalidData),
         ));
         assert!(
-            matches!(mapped, ClientError::Io(_)),
+            matches!(mapped, ClientError::Startup(_)),
             "a configuration/data error must be surfaced, not retried: {mapped}"
         );
     }
@@ -940,10 +951,7 @@ mod tests {
             .probe(Probe::Index("/abs/project"))
             .expect_err("a mutation whose admission is unknown must not be retried");
 
-        assert!(
-            matches!(error, ClientError::Disconnected(_)),
-            "the fault must say the connection went away, got {error}"
-        );
+        assert!(matches!(error, ClientError::MutationOutcomeUnknown(_)));
         assert_eq!(
             calls(&log),
             vec!["dead:index".to_owned()],
@@ -953,9 +961,31 @@ mod tests {
             handle.endpoint.connects, 1,
             "the connection must still be replaced so the next call works"
         );
+        assert!(error.to_string().contains("outcome is unknown"));
+        let fault = backend_present::Fault::from_client_error(
+            &error,
+            backend_present::Operand::Path("/abs/project".into()),
+        );
+        assert_eq!(fault.affordance(), &backend_present::Affordance::None);
+        let result = super::super::RpcError::from_fault(&fault)
+            .into_tool_result_for_call(
+                "backend.index",
+                Some(&serde_json::json!({"path":"/abs/project"})),
+            )
+            .expect("ambiguous mutation is a typed tool result");
+        assert!(result["structuredContent"].get("shell").is_none());
+        assert!(result["structuredContent"].get("call").is_none());
         assert!(
-            error.to_string().contains("disconnected"),
-            "the fault must read as a disconnect, got {error}"
+            result["structuredContent"]["detail"]
+                .as_str()
+                .expect("fault detail")
+                .contains("outcome is unknown")
+        );
+        assert!(
+            !result["structuredContent"]["detail"]
+                .as_str()
+                .expect("fault detail")
+                .contains("fresh connection was opened")
         );
     }
 
@@ -972,7 +1002,7 @@ mod tests {
             })
             .expect_err("a write surface command must not be retried");
 
-        assert!(matches!(error, ClientError::Disconnected(_)));
+        assert!(matches!(error, ClientError::MutationOutcomeUnknown(_)));
         assert_eq!(
             calls(&log),
             vec!["dead:subscribe".to_owned()],
@@ -980,10 +1010,10 @@ mod tests {
         );
     }
 
-    /// The call after a refused mutation succeeds, because the connection was
-    /// replaced even though the call was not retried.
+    /// An explicit following call can use the replacement lease, without the
+    /// reconnect layer replaying the ambiguous mutation.
     #[test]
-    fn the_call_after_a_refused_mutation_succeeds() {
+    fn the_next_explicit_mutation_uses_the_replacement_lease() {
         let (mut handle, log) = idle_out();
         drop(
             handle
@@ -993,11 +1023,11 @@ mod tests {
 
         let reply = handle
             .probe(Probe::Index("/abs/project"))
-            .expect("the agent's retry must land on the fresh connection");
+            .expect("an explicit follow-up call uses the fresh connection");
 
         assert!(
             matches!(reply.reply, CommandReply::Added(_)),
-            "the retried mutation must be admitted, got {:?}",
+            "the explicit follow-up mutation must be admitted, got {:?}",
             reply.reply
         );
         assert_eq!(
@@ -1153,5 +1183,106 @@ mod tests {
             vec!["dead:packages".to_owned(), "live:packages".to_owned(),]
         );
         assert_eq!(handle.endpoint.inner.connects, 1);
+    }
+
+    #[test]
+    fn failed_startup_after_ambiguous_mutation_does_not_offer_unsent_retry() {
+        struct Restarting(Fixture);
+        impl Endpoint for Restarting {
+            type Product = Connection;
+            fn connect(
+                &mut self,
+                _previous: Option<Connection>,
+            ) -> Result<Connection, ClientError> {
+                self.0.connects += 1;
+                Err(ClientError::from(
+                    backend_runtime::RuntimeError::StartTimeout("/socket".into()),
+                ))
+            }
+        }
+        let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let dead = Connection {
+            log: Arc::clone(&log),
+            alive: false,
+        };
+        let mut handle = Reconnecting::new(
+            Restarting(Fixture {
+                log: Arc::clone(&log),
+                connects: 0,
+            }),
+            dead,
+        );
+        let error = handle
+            .probe(Probe::Index("/abs/project"))
+            .expect_err("ambiguous mutation");
+        assert!(matches!(error, ClientError::MutationOutcomeUnknown(_)));
+        assert_eq!(calls(&log), vec!["dead:index".to_owned()]);
+        assert_eq!(handle.endpoint.0.connects, 1);
+        assert!(handle.product.is_none());
+        let fault = backend_present::Fault::from_client_error(
+            &error,
+            backend_present::Operand::Path("/abs/project".into()),
+        );
+        assert!(fault.startup_recovery().is_none());
+        assert_eq!(fault.affordance(), &backend_present::Affordance::None);
+        let result = super::super::RpcError::from_fault(&fault)
+            .into_tool_result_for_call(
+                "backend.index",
+                Some(&serde_json::json!({"path":"/abs/project"})),
+            )
+            .expect("ordinary ambiguous disconnect refusal");
+        assert!(result["structuredContent"].get("shell").is_none());
+        assert!(result["structuredContent"].get("call").is_none());
+        assert!(
+            result["structuredContent"]["detail"]
+                .as_str()
+                .expect("typed ambiguity detail")
+                .contains("outcome is unknown")
+        );
+        assert!(
+            !result["structuredContent"]["detail"]
+                .as_str()
+                .expect("typed ambiguity detail")
+                .contains("fresh connection was opened")
+        );
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .expect("text block")
+                .contains("outcome is unknown")
+        );
+        assert!(
+            !result["content"][0]["text"]
+                .as_str()
+                .expect("text block")
+                .contains("re-run the same command")
+        );
+        let next = handle
+            .probe(Probe::Index("/abs/project"))
+            .expect_err("fresh unsent startup");
+        assert!(matches!(next, ClientError::Startup(_)));
+        let next_fault = backend_present::Fault::from_client_error(
+            &next,
+            backend_present::Operand::Path("/abs/project".into()),
+        );
+        assert_eq!(
+            next_fault.startup_recovery(),
+            Some(backend_client::StartupRecovery::RetryOriginalCommand)
+        );
+        let next_result = super::super::RpcError::from_fault(&next_fault)
+            .into_tool_result_for_call(
+                "backend.index",
+                Some(&serde_json::json!({"path":"/abs/project"})),
+            )
+            .expect("the next explicit request failed before submission");
+        assert_eq!(
+            next_result["structuredContent"]["call"],
+            serde_json::json!({
+                "name": "backend.index",
+                "arguments": {"path":"/abs/project"}
+            })
+        );
+        assert_eq!(calls(&log), vec!["dead:index".to_owned()]);
+        assert_eq!(handle.endpoint.0.connects, 2);
     }
 }

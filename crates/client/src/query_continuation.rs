@@ -3,6 +3,7 @@
 
 use super::*;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use std::io::Write;
 
 /// Token bound leaves room for rows in the existing presentation budget.
 pub(super) const MAX_PORTABLE_QUERY_TOKEN_BYTES: usize = 32 * 1024;
@@ -68,7 +69,7 @@ struct ProofBudget {
     bytes: usize,
     refused: bool,
 }
-impl std::io::Write for ProofBudget {
+impl Write for ProofBudget {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         if bytes.len() > backend_library::MAX_COMMAND_BODY.saturating_sub(self.bytes) {
             self.refused = true;
@@ -119,8 +120,12 @@ impl Session {
                 ClientError::Protocol(error.to_string())
             });
         }
-        let body = backend_library::encode_command_body(request).map_err(ClientError::Protocol)?;
-        encode_compact_proof(&body)
+        // Keep the existing strict encoder admission before changing transport
+        // spelling. Binary packing never supplies authority of its own.
+        backend_library::encode_command_body(request).map_err(ClientError::Protocol)?;
+        let body = backend_library::encode_binary_certificate_command(request)
+            .map_err(ClientError::Protocol)?;
+        encode_portable_proof(&body, "pc4-")
     }
 
     pub(super) fn retain_portable_query(
@@ -440,7 +445,7 @@ mod tests;
 
 // Compression changes the presentation, not the canonical command or its proofs.
 // Both compressed input and expanded command have independent allocation bounds.
-fn encode_compact_proof(body: &[u8]) -> Result<String, ClientError> {
+fn encode_portable_proof(body: &[u8], prefix: &str) -> Result<String, ClientError> {
     if body.len() > backend_library::MAX_COMMAND_BODY {
         return Err(ClientError::Transport(ReplicationError::MessageTooLarge));
     }
@@ -456,7 +461,13 @@ fn encode_compact_proof(body: &[u8]) -> Result<String, ClientError> {
     if encoded_len > MAX_PORTABLE_QUERY_TOKEN_BYTES - 4 {
         return Err(ClientError::Transport(ReplicationError::MessageTooLarge));
     }
-    Ok(format!("pc3-{}", URL_SAFE_NO_PAD.encode(compressed)))
+    Ok(format!("{prefix}{}", URL_SAFE_NO_PAD.encode(compressed)))
+}
+
+// Legacy vectors and adversarial JSON envelopes continue to exercise pc3.
+#[cfg(test)]
+fn encode_compact_proof(body: &[u8]) -> Result<String, ClientError> {
+    encode_portable_proof(body, "pc3-")
 }
 
 fn decode_portable_body(token: &str) -> Result<Vec<u8>, ClientError> {
@@ -467,24 +478,56 @@ fn decode_portable_body(token: &str) -> Result<Vec<u8>, ClientError> {
         return decode_hex(encoded)
             .ok_or_else(|| ClientError::Protocol("malformed query token".to_owned()));
     }
+    let binary = token.starts_with("pc4-");
     let encoded = token
-        .strip_prefix("pc3-")
+        .strip_prefix("pc4-")
+        .or_else(|| token.strip_prefix("pc3-"))
         .ok_or_else(|| ClientError::Protocol("unknown query token version".to_owned()))?;
     let compressed = URL_SAFE_NO_PAD
         .decode(encoded)
         .map_err(|_| ClientError::Protocol("malformed compressed query token".to_owned()))?;
-    let mut body = Vec::with_capacity(backend_library::MAX_COMMAND_BODY + 1);
-    let mut decoder = flate2::Decompress::new(true);
-    let status = decoder
-        .decompress_vec(&compressed, &mut body, flate2::FlushDecompress::Finish)
-        .map_err(|error| ClientError::Protocol(error.to_string()))?;
-    if body.len() > backend_library::MAX_COMMAND_BODY {
-        return Err(ClientError::Transport(ReplicationError::MessageTooLarge));
-    }
-    if status != flate2::Status::StreamEnd || decoder.total_in() != compressed.len() as u64 {
+    if compressed.is_empty() || URL_SAFE_NO_PAD.encode(&compressed) != encoded {
         return Err(ClientError::Protocol(
-            "query token is incomplete or contains trailing compressed bytes".to_owned(),
+            "noncanonical compressed query token".to_owned(),
         ));
     }
-    Ok(body)
+    let mut body = Vec::new();
+    let mut decoder = flate2::Decompress::new(true);
+    let mut chunk = [0; 8192];
+    loop {
+        let input = decoder.total_in() as usize;
+        let output = decoder.total_out();
+        let status = decoder
+            // Finish on the first call requires one output buffer large
+            // enough for the entire stream; None preserves streaming state.
+            .decompress(
+                &compressed[input..],
+                &mut chunk,
+                flate2::FlushDecompress::None,
+            )
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        let written = (decoder.total_out() - output) as usize;
+        if written > backend_library::MAX_COMMAND_BODY.saturating_sub(body.len()) {
+            return Err(ClientError::Transport(ReplicationError::MessageTooLarge));
+        }
+        body.extend_from_slice(&chunk[..written]);
+        if status == flate2::Status::StreamEnd {
+            if decoder.total_in() != compressed.len() as u64 {
+                return Err(ClientError::Protocol(
+                    "query token contains trailing compressed bytes".to_owned(),
+                ));
+            }
+            break;
+        }
+        if decoder.total_in() as usize == input && written == 0 {
+            return Err(ClientError::Protocol(
+                "query token is incomplete".to_owned(),
+            ));
+        }
+    }
+    if binary {
+        backend_library::expand_binary_certificate_command(&body).map_err(ClientError::Protocol)
+    } else {
+        Ok(body)
+    }
 }

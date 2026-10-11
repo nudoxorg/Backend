@@ -46,8 +46,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use tsz_binder::SymbolId;
+use tsz_common::{ExecutionCheckpoint, ProjectSemanticOptions};
 use tsz_common::interner::Atom;
-use tsz_common::ProjectSemanticOptions;
 
 mod js_signature_display;
 mod predicate_cache;
@@ -235,7 +235,7 @@ impl SharedCacheCounter {
 pub struct QueryCache<'a> {
     interner: &'a TypeInterner,
     project_semantic_options: ProjectSemanticOptions,
-    execution_checkpoint: Option<&'a dyn tsz_common::ExecutionCheckpoint>,
+    execution_checkpoint: Option<tsz_common::LatchedExecutionCheckpoint<'a>>,
     eval_cache: RefCell<FxHashMap<EvaluationCacheKey, TypeId>>,
     eval_dependency_index: EvalDependencyIndex,
     /// Top-level `eval_cache` keys whose result passed the depth-agnostic gate
@@ -420,10 +420,7 @@ impl<'a> QueryCache<'a> {
     /// Attach the immutable TypeScript project semantics for every operation performed through
     /// this query database.
     #[must_use]
-    pub const fn with_project_semantic_options(
-        mut self,
-        options: ProjectSemanticOptions,
-    ) -> Self {
+    pub const fn with_project_semantic_options(mut self, options: ProjectSemanticOptions) -> Self {
         self.project_semantic_options = options;
         self
     }
@@ -434,7 +431,7 @@ impl<'a> QueryCache<'a> {
         mut self,
         checkpoint: &'a dyn tsz_common::ExecutionCheckpoint,
     ) -> Self {
-        self.execution_checkpoint = Some(checkpoint);
+        self.execution_checkpoint = Some(tsz_common::LatchedExecutionCheckpoint::new(checkpoint));
         self
     }
 
@@ -442,6 +439,7 @@ impl<'a> QueryCache<'a> {
     /// writes must stop because `TypeId` cannot encode execution provenance.
     pub(super) fn execution_stopped(&self) -> bool {
         self.execution_checkpoint
+            .as_ref()
             .is_some_and(|checkpoint| checkpoint.checkpoint(0).is_err())
     }
 
@@ -481,6 +479,14 @@ impl<'a> QueryCache<'a> {
         self.instantiation_cache.clear();
         self.subtype_reduction_cache.clear();
         self.reset_relation_cache_stats();
+    }
+
+    /// Start a new file scope while retaining allocation capacity and shared
+    /// immutable program inputs. No local memo entry crosses this boundary;
+    /// the shared L2 cache, semantic options, and execution checkpoint remain.
+    pub fn reset_for_next_file(&self) {
+        self.clear();
+        crate::evaluation::memo_audit::begin_file_scope();
     }
 
     pub fn relation_cache_stats(&self) -> RelationCacheStats {
@@ -625,9 +631,11 @@ impl<'a> QueryCache<'a> {
         if let Some(shared) = self.shared
             && let Some(result) = relation.shared_slot(shared).get(&key).map(|r| *r)
         {
-            self.relation_local_cache(relation)
-                .borrow_mut()
-                .insert(key, result);
+            if !self.execution_stopped() {
+                self.relation_local_cache(relation)
+                    .borrow_mut()
+                    .insert(key, result);
+            }
             self.relation_cache_counter(relation).record_hit();
             return Some(result);
         }
@@ -659,7 +667,9 @@ impl<'a> QueryCache<'a> {
         self.relation_local_cache(relation)
             .borrow_mut()
             .insert(key, value);
-        if let Some(shared) = self.shared {
+        if !self.execution_stopped()
+            && let Some(shared) = self.shared
+        {
             relation.shared_slot(shared).insert(key, value);
         }
     }
@@ -930,7 +940,9 @@ impl TypeWidenCache for QueryCache<'_> {
     }
 
     fn set_widen_type_memo(&self, type_id: TypeId, result: TypeId) {
-        self.interner.set_widen_type_memo(type_id, result);
+        if !self.execution_stopped() {
+            self.interner.set_widen_type_memo(type_id, result);
+        }
     }
 }
 
@@ -946,7 +958,9 @@ impl TypeExtractParamsCache for QueryCache<'_> {
     }
 
     fn set_extract_type_params_memo(&self, type_id: TypeId, params: Arc<[TypeParamInfo]>) {
-        self.interner.set_extract_type_params_memo(type_id, params);
+        if !self.execution_stopped() {
+            self.interner.set_extract_type_params_memo(type_id, params);
+        }
     }
 
     fn contravariant_infer_names_memo(&self, type_id: TypeId) -> Option<Arc<[Atom]>> {
@@ -954,8 +968,10 @@ impl TypeExtractParamsCache for QueryCache<'_> {
     }
 
     fn set_contravariant_infer_names_memo(&self, type_id: TypeId, names: Arc<[Atom]>) {
-        self.interner
-            .set_contravariant_infer_names_memo(type_id, names);
+        if !self.execution_stopped() {
+            self.interner
+                .set_contravariant_infer_names_memo(type_id, names);
+        }
     }
 }
 
@@ -965,8 +981,10 @@ impl TypeContainsByIdCache for QueryCache<'_> {
     }
 
     fn set_contains_type_by_id_memo(&self, root: TypeId, target: TypeId, result: bool) {
-        self.interner
-            .set_contains_type_by_id_memo(root, target, result);
+        if !self.execution_stopped() {
+            self.interner
+                .set_contains_type_by_id_memo(root, target, result);
+        }
     }
 }
 
@@ -976,7 +994,9 @@ impl TypePruneUnionCache for QueryCache<'_> {
     }
 
     fn set_prune_union_members_memo(&self, type_id: TypeId, result: TypeId) {
-        self.interner.set_prune_union_members_memo(type_id, result);
+        if !self.execution_stopped() {
+            self.interner.set_prune_union_members_memo(type_id, result);
+        }
     }
 }
 
@@ -1104,7 +1124,9 @@ impl TypeDatabase for QueryCache<'_> {
     }
 
     fn insert_shared_def_variance(&self, def_id: DefId, mask: Arc<[Variance]>, gaps: Arc<[DefId]>) {
-        self.interner.insert_shared_def_variance(def_id, mask, gaps);
+        if !self.execution_stopped() {
+            self.interner.insert_shared_def_variance(def_id, mask, gaps);
+        }
     }
 
     fn literal_string(&self, value: &str) -> TypeId {
@@ -1128,27 +1150,67 @@ impl TypeDatabase for QueryCache<'_> {
     }
 
     fn union(&self, members: Vec<TypeId>) -> TypeId {
-        self.interner.union(members)
+        // TypeDatabase's constructor contract cannot carry a stop error. UNKNOWN
+        // is the local sentinel; this cache latches the typed stop for direct
+        // callers, and ProjectCheckerSession's plan-owned checkpoint latches
+        // the same source error so its callback boundary can reject the result.
+        match self.execution_checkpoint.as_ref() {
+            Some(checkpoint) => self
+                .interner
+                .union_with_execution_checkpoint(members, checkpoint)
+                .unwrap_or(TypeId::UNKNOWN),
+            None => self.interner.union(members),
+        }
     }
 
     fn union_from_slice(&self, members: &[TypeId]) -> TypeId {
-        self.interner.union_from_slice(members)
+        match self.execution_checkpoint.as_ref() {
+            Some(checkpoint) => self
+                .interner
+                .union_from_slice_with_execution_checkpoint(members, checkpoint)
+                .unwrap_or(TypeId::UNKNOWN),
+            None => self.interner.union_from_slice(members),
+        }
     }
 
     fn union_literal_reduce(&self, members: Vec<TypeId>) -> TypeId {
-        self.interner.union_literal_reduce(members)
+        match self.execution_checkpoint.as_ref() {
+            Some(checkpoint) => self
+                .interner
+                .union_literal_reduce_with_execution_checkpoint(members, checkpoint)
+                .unwrap_or(TypeId::UNKNOWN),
+            None => self.interner.union_literal_reduce(members),
+        }
     }
 
     fn union_from_sorted_vec(&self, flat: Vec<TypeId>) -> TypeId {
-        self.interner.union_from_sorted_vec(flat)
+        match self.execution_checkpoint.as_ref() {
+            Some(checkpoint) => self
+                .interner
+                .union_from_sorted_vec_with_execution_checkpoint(flat, checkpoint)
+                .unwrap_or(TypeId::UNKNOWN),
+            None => self.interner.union_from_sorted_vec(flat),
+        }
     }
 
     fn union2(&self, left: TypeId, right: TypeId) -> TypeId {
-        self.interner.union2(left, right)
+        match self.execution_checkpoint.as_ref() {
+            Some(checkpoint) => self
+                .interner
+                .union2_with_execution_checkpoint(left, right, checkpoint)
+                .unwrap_or(TypeId::UNKNOWN),
+            None => self.interner.union2(left, right),
+        }
     }
 
     fn union3(&self, first: TypeId, second: TypeId, third: TypeId) -> TypeId {
-        self.interner.union3(first, second, third)
+        match self.execution_checkpoint.as_ref() {
+            Some(checkpoint) => self
+                .interner
+                .union3_with_execution_checkpoint(first, second, third, checkpoint)
+                .unwrap_or(TypeId::UNKNOWN),
+            None => self.interner.union3(first, second, third),
+        }
     }
 
     fn intersection(&self, members: Vec<TypeId>) -> TypeId {
@@ -1262,7 +1324,13 @@ impl TypeDatabase for QueryCache<'_> {
     }
 
     fn union_preserve_members(&self, members: Vec<TypeId>) -> TypeId {
-        self.interner.union_preserve_members(members)
+        match self.execution_checkpoint.as_ref() {
+            Some(checkpoint) => self
+                .interner
+                .union_preserve_members_with_execution_checkpoint(members, checkpoint)
+                .unwrap_or(TypeId::UNKNOWN),
+            None => self.interner.union_preserve_members(members),
+        }
     }
 
     fn readonly_type(&self, inner: TypeId) -> TypeId {
@@ -1328,7 +1396,7 @@ impl super::db_base_traits::TypeExecutionCheckpoint for QueryCache<'_> {
         &self,
         work_units: u64,
     ) -> Result<(), tsz_common::ProjectExecutionStop> {
-        match self.execution_checkpoint {
+        match self.execution_checkpoint.as_ref() {
             Some(checkpoint) => checkpoint.checkpoint(work_units),
             None => Ok(()),
         }
@@ -1359,6 +1427,9 @@ impl CollectPropertiesResultCache for QueryCache<'_> {
         resolver_generation: u64,
         result: PropertyCollectionResult,
     ) {
+        if self.execution_stopped() {
+            return;
+        }
         self.collect_properties_result_cache.borrow_mut().insert(
             type_id,
             resolver_generation,
@@ -1558,7 +1629,9 @@ impl QueryDatabase for QueryCache<'_> {
                     // partition, each a distinct window, so it must be evicted at
                     // the next file boundary rather than shadow the next file's
                     // authoritative answer (#16553).
-                    self.registration_window_eval_keys.borrow_mut().insert(key);
+                    if !self.execution_stopped() {
+                        self.registration_window_eval_keys.borrow_mut().insert(key);
+                    }
                 }
                 // The shared cache is the run-wide, cross-window cache other
                 // files/threads read without ever entering this window; per
@@ -1567,7 +1640,10 @@ impl QueryDatabase for QueryCache<'_> {
                 // write on run-wide stability, matching the intermediate drain
                 // below (previously it inherited only the looser
                 // `top_level_clean`, which tolerates `UnresolvedDef`).
-                if intermediates_clean && let Some(shared) = self.shared {
+                if intermediates_clean
+                    && !self.execution_stopped()
+                    && let Some(shared) = self.shared
+                {
                     shared.insert_eval_cache(self.interner, self.definition_store(), key, result);
                 }
             }
@@ -1578,7 +1654,9 @@ impl QueryDatabase for QueryCache<'_> {
                 {
                     let ikey = request.with_type_id(intermediate_id).cache_key();
                     self.insert_eval_cache_entry_if_absent(ikey, intermediate_result);
-                    if let Some(shared) = self.shared {
+                    if !self.execution_stopped()
+                        && let Some(shared) = self.shared
+                    {
                         shared.insert_eval_cache_if_absent(
                             self.interner,
                             self.definition_store(),
@@ -1671,7 +1749,9 @@ impl QueryDatabase for QueryCache<'_> {
                     && shared.shares_instantiation_family()
                 {
                     if let Some(result) = shared.instantiation_cache.get(key).map(|entry| *entry) {
-                        self.instantiation_cache.insert(key.clone(), result);
+                        if !self.execution_stopped() {
+                            self.instantiation_cache.insert(key.clone(), result);
+                        }
                         self.instantiation_cache_stats.record_hit();
                         self.instantiation_cache_stats.record_shared_hit();
                         tsz_common::perf_counters::record_shared_instantiation_cache_hit();
@@ -1695,13 +1775,20 @@ impl QueryDatabase for QueryCache<'_> {
         result: TypeId,
         stable_for_project_cache: bool,
     ) {
+        if self.execution_stopped() {
+            return;
+        }
         if let Some(shared) = self.shared
             && shared.shares_instantiation_family()
             && stable_for_project_cache
+            && !self.execution_stopped()
         {
             shared.instantiation_cache.insert(key.clone(), result);
             self.instantiation_cache_stats.record_shared_insert();
             tsz_common::perf_counters::record_shared_instantiation_cache_insert();
+        }
+        if self.execution_stopped() {
+            return;
         }
         self.instantiation_cache.insert(key, result);
     }
@@ -1731,6 +1818,9 @@ impl QueryDatabase for QueryCache<'_> {
         key: SubtypeReductionKey,
         result: std::sync::Arc<[TypeId]>,
     ) {
+        if self.execution_stopped() {
+            return;
+        }
         self.subtype_reduction_cache.insert(key, result);
     }
 
@@ -1779,6 +1869,9 @@ impl QueryDatabase for QueryCache<'_> {
     /// Never overwrites an existing definitive entry (a sibling checker may
     /// hold an honest `false`); upgrades an existing `LimitTrue` to definitive.
     fn promote_subtype_cache_true(&self, key: RelationCacheKey) {
+        if self.execution_stopped() {
+            return;
+        }
         {
             let mut local = self.subtype_cache.borrow_mut();
             match local.entry(key) {
@@ -1792,7 +1885,9 @@ impl QueryDatabase for QueryCache<'_> {
                 }
             }
         }
-        if let Some(shared) = self.shared {
+        if !self.execution_stopped()
+            && let Some(shared) = self.shared
+        {
             match shared.subtype_cache.entry(key) {
                 dashmap::mapref::entry::Entry::Occupied(mut entry) => {
                     if matches!(entry.get(), RelationCacheValue::LimitTrue { .. }) {
@@ -1811,6 +1906,9 @@ impl QueryDatabase for QueryCache<'_> {
     /// Never overwrites a definitive entry; merges with an existing
     /// `LimitTrue` by keeping the larger band (the stronger statement).
     fn insert_subtype_limit_true(&self, key: RelationCacheKey, fuel_band: u32) {
+        if self.execution_stopped() {
+            return;
+        }
         let merge = |existing: &mut RelationCacheValue| {
             if let RelationCacheValue::LimitTrue {
                 fuel_band: existing_band,
@@ -1828,7 +1926,9 @@ impl QueryDatabase for QueryCache<'_> {
                 }
             }
         }
-        if let Some(shared) = self.shared {
+        if !self.execution_stopped()
+            && let Some(shared) = self.shared
+        {
             match shared.subtype_cache.entry(key) {
                 dashmap::mapref::entry::Entry::Occupied(mut entry) => merge(entry.get_mut()),
                 dashmap::mapref::entry::Entry::Vacant(slot) => {
@@ -1869,6 +1969,9 @@ impl QueryDatabase for QueryCache<'_> {
         resolver_generation: u64,
         result: Option<TypeId>,
     ) {
+        if self.execution_stopped() {
+            return;
+        }
         self.intersection_merge_cache.borrow_mut().insert(
             intersection_id,
             resolver_generation,
@@ -2004,9 +2107,11 @@ impl QueryDatabase for QueryCache<'_> {
             .iter()
             .map(|param| crate::relations::variance::compute_variance(self, body, param.name))
             .collect();
-        self.variance_cache
-            .borrow_mut()
-            .insert(def_id, Arc::clone(&result));
+        if !self.execution_stopped() {
+            self.variance_cache
+                .borrow_mut()
+                .insert(def_id, Arc::clone(&result));
+        }
         Some(result)
     }
 
@@ -2015,7 +2120,9 @@ impl QueryDatabase for QueryCache<'_> {
     }
 
     fn insert_type_param_variance(&self, def_id: DefId, variance: Arc<[Variance]>) {
-        self.variance_cache.borrow_mut().insert(def_id, variance);
+        if !self.execution_stopped() {
+            self.variance_cache.borrow_mut().insert(def_id, variance);
+        }
     }
 
     fn canonical_id(&self, type_id: TypeId) -> TypeId {

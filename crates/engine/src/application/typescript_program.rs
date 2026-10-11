@@ -15,8 +15,9 @@ use std::{
 
 use backend_frontend_typescript::{
     TszCheckerOptions, TszEnvironmentFingerprint, TszFileInput, TszLibraryInput,
-    TszProjectModuleRequestKind, TszProjectModuleResolution, TszProjectModuleResolutionTarget,
-    TszProjectOptions, TszProjectSemanticOptions, checker_options_from_compiler_api_json,
+    TszProjectFileFormat, TszProjectFileFormatInput, TszProjectModuleRequestKind,
+    TszProjectModuleResolution, TszProjectModuleResolutionTarget, TszProjectOptions,
+    TszProjectSemanticOptions, checker_options_from_compiler_api_json,
 };
 use backend_version::{ContentId, SourceFactDomain};
 use serde::Deserialize;
@@ -50,9 +51,26 @@ pub(crate) struct NativeTypeScriptInputs {
     pub(crate) libraries: Vec<std::sync::Arc<backend_frontend_typescript::TszLibFile>>,
     pub(crate) options: TszProjectOptions,
     pub(crate) closure_witness: TypeScriptProgramClosureWitness,
-    /// Package-relative source path to the exact workspace-root TSZ path.
-    pub(crate) package_paths: BTreeMap<Box<str>, Box<str>>,
+    /// Membership of every captured package source in the exact configured program.
+    pub(crate) package_membership: BTreeMap<Box<str>, TypeScriptPackageSourceMembership>,
     pub(crate) work_units: u64,
+}
+
+/// A captured source can retain provenance without being a Compiler API program member.
+/// Exclusion never admits that source to TSZ or supplies semantic authority for it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum TypeScriptPackageSourceMembership {
+    Selected { program_path: Box<str> },
+    ExcludedFromConfiguredProgram,
+}
+
+impl TypeScriptPackageSourceMembership {
+    pub(crate) fn selected_program_path(&self) -> Option<&str> {
+        match self {
+            Self::Selected { program_path } => Some(program_path),
+            Self::ExcludedFromConfiguredProgram => None,
+        }
+    }
 }
 
 /// Owns both the admitted host reads and the exact Compiler API directory-query transcript.
@@ -128,6 +146,7 @@ struct ProgramFile {
     path: String,
     sha256: String,
     default_library: bool,
+    implied_node_format: TszProjectFileFormat,
 }
 
 #[derive(Debug, Deserialize)]
@@ -490,6 +509,10 @@ const add = value => { const k = JSON.stringify(value); observations.set(k, valu
 const result = value => { process.stdout.write(JSON.stringify(value)); };
 try {
   const ts = require(compilerApiPath);
+  if (typeof ts.getModeForUsageLocation !== 'function') throw new Error('selected TypeScript runtime does not expose its exact getModeForUsageLocation implementation');
+  for (const name of ['getEmitScriptTarget', 'getEmitModuleKind', 'getEmitModuleResolutionKind', 'getEmitModuleDetectionKind', 'getESModuleInterop', 'getAllowSyntheticDefaultImports']) {
+    if (typeof ts[name] !== 'function') throw new Error('selected TypeScript runtime does not expose its exact ' + name + ' implementation');
+  }
   if (typeof ts.matchFiles !== 'function') throw closureFault('mismatch', 'selected TypeScript runtime does not expose its exact matchFiles implementation');
   const finishDirectoryQuery = (context, queryPath, value, kind, args, environment) => {
     for (const view of context.views.values()) {
@@ -722,34 +745,28 @@ try {
     const sourceFiles = programFiles.map(file => ({
       path:path.resolve(file.fileName),
       sha256:digest(file.text),
-      default_library:program.isSourceFileDefaultLibrary(file)
+      default_library:program.isSourceFileDefaultLibrary(file),
+      implied_node_format:file.impliedNodeFormat === undefined ? 'unknown'
+        : file.impliedNodeFormat === ts.ModuleKind.CommonJS ? 'common_js'
+        : file.impliedNodeFormat === ts.ModuleKind.ESNext ? 'es_module'
+        : (() => { throw closureFault('mismatch', 'unsupported SourceFile.impliedNodeFormat'); })()
     }));
     const resolutions = [];
     const resolutionKeys = new Map();
-    const modeFor = (file, literal, kind) => {
-      const attributes = literal.parent && literal.parent.attributes;
-      if (attributes && Array.isArray(attributes.elements)) {
-        for (const item of attributes.elements) {
-          if (item.name && item.name.text === 'resolution-mode' && item.value && (item.value.text === 'import' || item.value.text === 'require')) return item.value.text;
-        }
-      }
-      if (kind === 'DynamicImport') return 'import';
-      if (kind === 'CjsRequire') return 'require';
-      const mr = options.moduleResolution === undefined ? undefined : ts.ModuleResolutionKind[options.moduleResolution];
-      if (mr !== 'Node16' && mr !== 'NodeNext') return null;
-      const format = file.impliedNodeFormat;
-      if (format === ts.ModuleKind.CommonJS) return 'require';
-      if (format === ts.ModuleKind.ESNext) return 'import';
-      const mod = options.module === undefined ? undefined : ts.ModuleKind[options.module];
-      if (mod === 'CommonJS' || mod === 'Node16' && kind === 'CjsRequire') return 'require';
-      if (mod === 'NodeNext' || mod === 'ESNext' || mod === 'ES2022' || mod === 'ES2020' || mod === 'ES2015') return 'import';
-      return null;
+    const modeFor = (file, literal) => {
+      // The owning compiler interprets defaults, import type attributes,
+      // require syntax, and dynamic imports for this exact AST usage.
+      const mode = ts.getModeForUsageLocation(file, literal, options);
+      if (mode === undefined) return null;
+      if (mode === ts.ModuleKind.CommonJS) return 'require';
+      if (mode === ts.ModuleKind.ESNext) return 'import';
+      throw new Error('selected TypeScript runtime returned an unsupported exact request resolution mode');
     };
     const addRequest = (file, literal, kind) => {
       if (!literal || typeof literal.text !== 'string') return;
       const resolution = program.getResolvedModuleFromModuleSpecifier(literal, file);
       const resolved = resolution && resolution.resolvedModule;
-      const mode = modeFor(file, literal, kind);
+      const mode = modeFor(file, literal);
       const value = {importer:path.resolve(file.fileName), specifier:literal.text, kind, mode,
         target_path:resolved ? path.resolve(resolved.resolvedFileName) : null,
         package_id:resolved && resolved.packageId ? [resolved.packageId.name, resolved.packageId.version, resolved.packageId.subModuleName || ''].join('/') : null};
@@ -776,20 +793,28 @@ try {
       if (typeof name !== 'string') throw new Error('compiler option enum has no canonical name');
       return name;
     };
-    const scriptTarget = options.target === undefined ? ts.ScriptTarget.ES5 : options.target;
-    const targetName = reverseName(ts.ScriptTarget, scriptTarget, 'ES5');
-    const resolutionValue = options.moduleResolution === undefined
-      ? ((options.module === ts.ModuleKind.Node16 || options.module === ts.ModuleKind.NodeNext) ? options.module : ts.ModuleResolutionKind.Node10)
-      : options.moduleResolution;
-    const moduleValue = options.module === undefined
-      ? (resolutionValue === ts.ModuleResolutionKind.Node16 ? ts.ModuleKind.Node16 : resolutionValue === ts.ModuleResolutionKind.NodeNext ? ts.ModuleKind.NodeNext : (scriptTarget >= ts.ScriptTarget.ES2015 ? ts.ModuleKind.ES2015 : ts.ModuleKind.CommonJS))
-      : options.module;
+    const computedEnumName = (table, value) => {
+      if (typeof value !== 'number' || typeof table[value] !== 'string') throw new Error('selected TypeScript computed option returned an unsupported enum value');
+      return table[value];
+    };
+    const computedFlag = name => {
+      const value = ts[name](options);
+      if (typeof value !== 'boolean') throw new Error('selected TypeScript computed option returned an unsupported boolean value');
+      return value;
+    };
+    const scriptTarget = ts.getEmitScriptTarget(options);
+    let targetName = computedEnumName(ts.ScriptTarget, scriptTarget);
+    // Numeric reverse enums expose the SDK's compatibility alias `Latest`.
+    // Preserve the named ESNext semantic identity accepted by the native DTO.
+    if (scriptTarget === ts.ScriptTarget.ESNext) targetName = 'ESNext';
+    const resolutionValue = ts.getEmitModuleResolutionKind(options);
+    const moduleValue = ts.getEmitModuleKind(options);
     const strictFlag = key => options[key] === undefined ? !!options.strict : !!options[key];
     const normalized = {
       target:targetName,
-      module:reverseName(ts.ModuleKind,moduleValue,'CommonJS'),
-      moduleResolution:reverseName(ts.ModuleResolutionKind,resolutionValue,'Node10'),
-      moduleDetection:reverseName(ts.ModuleDetectionKind,options.moduleDetection, 'Auto'),
+      module:computedEnumName(ts.ModuleKind,moduleValue),
+      moduleResolution:computedEnumName(ts.ModuleResolutionKind,resolutionValue),
+      moduleDetection:computedEnumName(ts.ModuleDetectionKind,ts.getEmitModuleDetectionKind(options)),
       strict:!!options.strict,
       noImplicitAny:strictFlag('noImplicitAny'), strictNullChecks:strictFlag('strictNullChecks'),
       strictFunctionTypes:strictFlag('strictFunctionTypes'), strictBindCallApply:strictFlag('strictBindCallApply'),
@@ -801,8 +826,8 @@ try {
       noImplicitOverride:!!options.noImplicitOverride, noUnusedLocals:!!options.noUnusedLocals,
       noUnusedParameters:!!options.noUnusedParameters, noFallthroughCasesInSwitch:!!options.noFallthroughCasesInSwitch,
       allowUnreachableCode:options.allowUnreachableCode, allowUnusedLabels:options.allowUnusedLabels,
-      experimentalDecorators:!!options.experimentalDecorators, esModuleInterop:!!options.esModuleInterop,
-      allowSyntheticDefaultImports:options.allowSyntheticDefaultImports === undefined ? !!options.esModuleInterop : !!options.allowSyntheticDefaultImports,
+      experimentalDecorators:!!options.experimentalDecorators, esModuleInterop:computedFlag('getESModuleInterop'),
+      allowSyntheticDefaultImports:computedFlag('getAllowSyntheticDefaultImports'),
       resolveJsonModule:!!options.resolveJsonModule, noResolve:!!options.noResolve, allowJs:!!options.allowJs,
       checkJs:!!options.checkJs, skipLibCheck:!!options.skipLibCheck,
       noUncheckedSideEffectImports:!!options.noUncheckedSideEffectImports,
@@ -857,6 +882,7 @@ pub(crate) fn build_native_inputs(
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<NativeTypeScriptInputs, TypeScriptProjectHostError> {
+    check_admission_control(deadline, cancelled)?;
     let config = select_config(inputs)?;
     // The admitted `compiler_path` is the executable CLI shim (`bin/tsc`). It
     // is probed separately to establish the selected tool identity, but it is
@@ -923,9 +949,9 @@ pub(crate) fn build_native_inputs(
             "compiler option {option:?} affects semantic analysis but is outside the TSZ option model"
         )));
     }
-    if report.files.is_empty() || report.files.len() > MAX_BRIDGE_FILES {
+    if report.files.len() > MAX_BRIDGE_FILES {
         return Err(bridge_error(
-            "compiler API program source count is empty or exceeds the admitted bound",
+            "compiler API program source count exceeds the admitted bound",
         ));
     }
     if report.resolutions.len() > MAX_BRIDGE_REQUESTS {
@@ -943,10 +969,12 @@ pub(crate) fn build_native_inputs(
     let mut libraries = Vec::new();
     let mut content_ids = BTreeMap::<String, ContentId<SourceFactDomain>>::new();
     let mut source_paths = BTreeSet::new();
+    let mut file_formats = Vec::new();
 
     let mut files = report.files.iter().collect::<Vec<_>>();
     files.sort_unstable_by(|left, right| left.path.cmp(&right.path));
     for file in files {
+        check_admission_control(deadline, cancelled)?;
         let path = Path::new(&file.path);
         let Some(admitted) = resolver.try_load_source(path)? else {
             return Err(bridge_error(&format!(
@@ -979,6 +1007,12 @@ pub(crate) fn build_native_inputs(
         }
         virtual_by_canonical.insert(normalize_path(&admitted.path), virtual_path.clone());
         content_ids.insert(virtual_path.clone(), admitted.content_id);
+        if !is_library {
+            file_formats.push(TszProjectFileFormatInput {
+                path: virtual_path.clone(),
+                format: file.implied_node_format,
+            });
+        }
         if is_library {
             let input = TszLibraryInput::from_utf8(virtual_path, admitted.bytes.to_vec()).map_err(
                 |error| bridge_error(&format!("compiler library input was rejected: {error}")),
@@ -989,8 +1023,9 @@ pub(crate) fn build_native_inputs(
         }
     }
 
-    let mut package_paths = BTreeMap::new();
+    let mut package_membership = BTreeMap::new();
     for source in package_sources {
+        check_admission_control(deadline, cancelled)?;
         let package_path = source.relative_path();
         let absolute = inputs.package_root.join(package_path);
         let Some(admitted) = resolver.try_load_source(&absolute)? else {
@@ -998,24 +1033,35 @@ pub(crate) fn build_native_inputs(
                 package_relative_path: package_path.into(),
             });
         };
-        let canonical = normalize_path(&admitted.path);
-        let Some(virtual_path) = virtual_by_canonical.get(&canonical) else {
-            return Err(TypeScriptProjectHostError::CompilerProgramSourceMissing {
-                package_relative_path: package_path.into(),
-            });
-        };
         let expected = source.source().as_bytes();
         if admitted.bytes.as_ref() != expected {
             return Err(bridge_error(&format!(
-                "package source bytes differ from the compiler program at {package_path:?}"
+                "captured package source bytes differ from admitted bytes at {package_path:?}"
             )));
         }
-        package_paths.insert(package_path.into(), virtual_path.clone().into_boxed_str());
+        let canonical = normalize_path(&admitted.path);
+        let membership = match virtual_by_canonical.get(&canonical) {
+            Some(program_path) => TypeScriptPackageSourceMembership::Selected {
+                program_path: program_path.clone().into_boxed_str(),
+            },
+            None if config.is_some() => {
+                TypeScriptPackageSourceMembership::ExcludedFromConfiguredProgram
+            }
+            // Inferred programs are rooted in the complete captured frontier. Absence
+            // here is a broken handoff, not configured exclusion.
+            None => {
+                return Err(TypeScriptProjectHostError::CompilerProgramSourceMissing {
+                    package_relative_path: package_path.into(),
+                });
+            }
+        };
+        package_membership.insert(package_path.into(), membership);
     }
 
     let mut resolutions = Vec::with_capacity(report.resolutions.len());
     let mut resolution_keys = BTreeSet::new();
     for request in report.resolutions {
+        check_admission_control(deadline, cancelled)?;
         let importer =
             resolve_virtual_path(inputs, resolver, &virtual_by_canonical, &request.importer)?;
         let request_kind = match request.kind.as_str() {
@@ -1101,6 +1147,7 @@ pub(crate) fn build_native_inputs(
     let compiler_accesses = report.accesses.into_boxed_slice();
     let directory_views = report.directory_views.into_boxed_slice();
     let access_digest = compiler_access_digest(&compiler_accesses, &directory_views, metrics)?;
+    check_admission_control(deadline, cancelled)?;
     let resolver_witness = resolver.seal()?;
     let environment = program_environment_fingerprint(
         inputs,
@@ -1111,6 +1158,7 @@ pub(crate) fn build_native_inputs(
         &compiler_api.content_id,
         &access_digest,
         &resolutions,
+        &file_formats,
         resolver_witness.digest(),
     )?;
     let work_units = calculate_work_units(inputs, &sources, &libraries, closure_work_units);
@@ -1118,8 +1166,10 @@ pub(crate) fn build_native_inputs(
         checker,
         semantic_options: TszProjectSemanticOptions::declaration_scoped(),
         module_resolutions: resolutions,
+        file_formats,
         environment,
     };
+    check_admission_control(deadline, cancelled)?;
     Ok(NativeTypeScriptInputs {
         sources,
         libraries,
@@ -1131,9 +1181,24 @@ pub(crate) fn build_native_inputs(
             metrics,
             access_digest,
         },
-        package_paths,
+        package_membership,
         work_units,
     })
+}
+
+// Excluded sources do not reach TSZ's execution checkpoint, so admission itself
+// must still refuse cancellation/deadline expiry throughout the full frontier.
+fn check_admission_control(
+    deadline: Instant,
+    cancelled: &AtomicBool,
+) -> Result<(), TypeScriptProjectHostError> {
+    if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(TypeScriptProjectHostError::CompilerProgramCancelled);
+    }
+    if Instant::now() >= deadline {
+        return Err(TypeScriptProjectHostError::CompilerProgramDeadline);
+    }
+    Ok(())
 }
 
 fn run_program_bridge(
@@ -1146,9 +1211,7 @@ fn run_program_bridge(
 ) -> Result<ProgramReport, TypeScriptProjectHostError> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
-        return Err(bridge_error(
-            "deadline elapsed before compiler API program construction",
-        ));
+        return Err(TypeScriptProjectHostError::CompilerProgramDeadline);
     }
     let limits = ToolchainProbeLimits::new(
         remaining,
@@ -1182,7 +1245,7 @@ fn run_program_bridge(
         limits,
         cancelled,
     )
-    .map_err(|error| bridge_error(&error.to_string()))?;
+    .map_err(|source| TypeScriptProjectHostError::CompilerProgramProbe { source })?;
     serde_json::from_slice(&output).map_err(|error| {
         bridge_error(&format!(
             "compiler API output was not bounded valid JSON: {error}"
@@ -1956,10 +2019,11 @@ fn program_environment_fingerprint(
     compiler_api_content_id: &ContentId<SourceFactDomain>,
     compiler_access_digest: &[u8; 32],
     resolutions: &[TszProjectModuleResolution],
+    file_formats: &[TszProjectFileFormatInput],
     resolver_digest: &[u8; 32],
 ) -> Result<TszEnvironmentFingerprint, TypeScriptProjectHostError> {
     let mut digest = blake3::Hasher::new();
-    digest.update(b"compiler.typescript.tsz-program.v2\0");
+    digest.update(b"compiler.typescript.tsz-program.v3\0");
     digest.update(&inputs.fingerprint);
     digest.update(compiler_version.as_bytes());
     match config {
@@ -1990,6 +2054,17 @@ fn program_environment_fingerprint(
         let encoded = format!("{resolution:?}");
         digest.update(&(encoded.len() as u64).to_le_bytes());
         digest.update(encoded.as_bytes());
+    }
+    digest.update(b"compiler.source-file.implied-node-format.v1\0");
+    digest.update(&(file_formats.len() as u64).to_le_bytes());
+    for input in file_formats {
+        digest.update(&(input.path.len() as u64).to_le_bytes());
+        digest.update(input.path.as_bytes());
+        digest.update(&[match input.format {
+            TszProjectFileFormat::Unknown => 0,
+            TszProjectFileFormat::CommonJs => 1,
+            TszProjectFileFormat::EsModule => 2,
+        }]);
     }
     Ok(TszEnvironmentFingerprint::from_sha256(
         *digest.finalize().as_bytes(),
@@ -2375,6 +2450,32 @@ outputs.linux_case_sensitive = caseSensitiveResult
   .map(item => path.isAbsolute(item) ? path.resolve(item) : path.resolve(caseRoot, item)).sort();
 process.stdout.write(JSON.stringify(outputs));
 "#;
+
+    #[test]
+    fn program_admission_controls_are_typed_before_any_compiler_launch() {
+        use super::TypeScriptProjectHostError;
+        use std::{
+            sync::atomic::AtomicBool,
+            time::{Duration, Instant},
+        };
+        let future = Instant::now() + Duration::from_secs(30);
+        assert!(matches!(
+            super::check_admission_control(future, &AtomicBool::new(true)),
+            Err(TypeScriptProjectHostError::CompilerProgramCancelled)
+        ));
+        assert!(matches!(
+            super::check_admission_control(Instant::now(), &AtomicBool::new(false)),
+            Err(TypeScriptProjectHostError::CompilerProgramDeadline)
+        ));
+        assert!(
+            matches!(
+                super::check_admission_control(Instant::now(), &AtomicBool::new(true)),
+                Err(TypeScriptProjectHostError::CompilerProgramCancelled)
+            ),
+            "cooperative cancellation retains precedence over elapsed time"
+        );
+        assert!(super::check_admission_control(future, &AtomicBool::new(false)).is_ok());
+    }
 
     #[test]
     fn compiler_api_library_filenames_map_to_tsconfig_library_names() {
@@ -2908,3 +3009,7 @@ fn bridge_error(message: &str) -> TypeScriptProjectHostError {
         message: message.into(),
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "typescript_program/membership_tests.rs"]
+mod membership_tests;

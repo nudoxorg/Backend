@@ -53,7 +53,8 @@ fn check_consumer_cold(program: &MergedProgram, file_name: &str) -> Vec<u32> {
         tsz_common::ProjectSemanticOptions::structural(),
         None,
         None,
-    );
+    )
+    .expect("unbudgeted test plan construction cannot stop");
     plan.check_one_file(file_idx, &program.files[file_idx])
         .diagnostics
         .into_iter()

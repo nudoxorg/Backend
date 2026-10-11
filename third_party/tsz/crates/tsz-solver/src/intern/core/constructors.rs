@@ -5,6 +5,10 @@
 
 use super::interner::{PredicateCacheEntry, TypeInterner, TypeListBuffer, TypeShard};
 use crate::def::DefId;
+use crate::intern::{
+    UnionExecutionWork, expect_unmetered_union, flush_union_execution_work,
+    tick_union_execution_work,
+};
 use crate::types::{
     CallableShape, ConditionalType, FunctionShape, FunctionShapeId, IntrinsicKind, LiteralValue,
     MappedType, ObjectFlags, ObjectShape, ObjectShapeId, OrderedFloat, PropertyInfo, SymbolRef,
@@ -16,6 +20,7 @@ use smallvec::SmallVec;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use tsz_common::interner::Atom;
+use tsz_common::{ExecutionCheckpoint, ProjectExecutionStop};
 
 impl TypeInterner {
     // =========================================================================
@@ -167,29 +172,8 @@ impl TypeInterner {
     /// Intern a union type from a vector that is already sorted and deduped.
     /// This is an O(N) operation that avoids redundant sorting.
     pub fn union_from_sorted_vec(&self, flat: Vec<TypeId>) -> TypeId {
-        if flat.is_empty() {
-            return TypeId::NEVER;
-        }
-        if flat.len() == 1 {
-            return flat[0];
-        }
-
-        // Non-strict absorption applies at every union seam, not just the
-        // normalizing ones, so a sorted-and-deduped list built by narrowing or
-        // object-literal construction reaches the same canonical identity as the
-        // `normalize_union` path. `retain` preserves the sort order. Gated on the
-        // mode so a strict run keeps its byte-identical fast path.
-        if !self.strict_null_checks() {
-            let mut reduced: TypeListBuffer = flat.iter().copied().collect();
-            if let Some(collapsed) = self.reduce_and_collapse_nonstrict(&mut reduced) {
-                return collapsed;
-            }
-            let list_id = self.intern_type_list_from_slice(&reduced);
-            return self.intern(TypeData::Union(list_id));
-        }
-
-        let list_id = self.intern_type_list(flat);
-        self.intern(TypeData::Union(list_id))
+        let mut work = None;
+        expect_unmetered_union(self.union_from_sorted_vec_with_work(flat, &mut work))
     }
 
     /// Intern a union type while preserving member structure.
@@ -208,517 +192,41 @@ impl TypeInterner {
     /// non-normalized `unknown | null`, which then mis-narrowed under a later
     /// `typeof` guard. `never` members are dropped (the identity of union).
     pub fn union_preserve_members(&self, members: Vec<TypeId>) -> TypeId {
-        if members.is_empty() {
-            return TypeId::NEVER;
-        }
-
-        let mut flat: TypeListBuffer = SmallVec::new();
-        for member in members {
-            if let Some(TypeData::Union(inner)) = self.lookup(member) {
-                let members = self.type_list(inner);
-                flat.extend(members.iter().copied());
-            } else {
-                flat.push(member);
-            }
-        }
-
-        // Absorb the universal sentinels before structural interning. These hold
-        // for any member set, so scanning the flattened list (which has already
-        // expanded nested unions) catches a sentinel nested inside a member union.
-        let mut has_any = false;
-        let mut has_unknown = false;
-        for &id in &flat {
-            if id == TypeId::ERROR {
-                return TypeId::ERROR; // error trumps everything
-            }
-            if id == TypeId::ANY {
-                has_any = true;
-            } else if id == TypeId::UNKNOWN {
-                has_unknown = true;
-            }
-        }
-        if has_any {
-            return TypeId::ANY;
-        }
-        if has_unknown {
-            return TypeId::UNKNOWN;
-        }
-
-        self.sort_union_members(&mut flat);
-        flat.dedup();
-        flat.retain(|id| *id != TypeId::NEVER);
-
-        // The structure this path preserves is *subtype* structure
-        // (`Derived1 | Derived2` stays split for narrowing); non-strict nullish
-        // absorption is orthogonal and still applies (tsc's narrowing unions run
-        // the same `addTypeToUnion` exclusion), holding one-universe identity
-        // against `normalize_union`. The shared helper also folds the post-`never`
-        // length collapse this path already needed.
-        if let Some(collapsed) = self.reduce_and_collapse_nonstrict(&mut flat) {
-            return collapsed;
-        }
-
-        let list_id = self.intern_type_list_from_slice(&flat);
-        self.intern(TypeData::Union(list_id))
+        let mut work = None;
+        expect_unmetered_union(self.union_preserve_members_with_work(members, &mut work))
     }
 
     /// Fast path for unions that already fit in registers.
     pub fn union2(&self, left: TypeId, right: TypeId) -> TypeId {
-        // Fast paths to avoid expensive normalize_union for trivial cases
-        if left == right {
-            return left;
-        }
-        if left == TypeId::NEVER {
-            return right;
-        }
-        if right == TypeId::NEVER {
-            return left;
-        }
-        // With `strictNullChecks` off, union construction drops `null`/`undefined`,
-        // so the identity fast paths below — which assume both operands survive —
-        // do not hold; route the pair through the normalizing constructor, which
-        // applies the drop (`reduce_nonstrict_nullish_members`). Strict is
-        // unchanged.
-        if !self.strict_null_checks() {
-            return self.union_from_iter([left, right]);
-        }
-        // Fast path: `T | undefined`, `T | null`, `T | void` where T is a union
-        // already containing the nullable member.  This avoids the full
-        // collect → sort → dedup → absorb → reduce pipeline for the extremely
-        // common optional-chain pattern `result_type | undefined`.
-        if right.is_nullable() {
-            if let Some(TypeData::Union(list_id)) = self.lookup(left) {
-                let members = self.type_list(list_id);
-                if members.contains(&right) {
-                    return left;
-                }
-            }
-        } else if left.is_nullable()
-            && let Some(TypeData::Union(list_id)) = self.lookup(right)
-        {
-            let members = self.type_list(list_id);
-            if members.contains(&left) {
-                return right;
-            }
-        }
-
-        // PERF: Fast path for `T | Union(members)` where T is a non-union, non-special type.
-        // Instead of full normalize_union (flatten + sort + dedup + absorb + reduce),
-        // directly insert T into the existing sorted member list. This turns the
-        // O(N log N) sort into O(N) for the common case of accumulating unions
-        // (e.g., deeply nested ternary chains where each level adds one type).
-        if let Some(result) = self.try_union2_insert(left, right) {
-            return result;
-        }
-        if let Some(result) = self.try_union2_insert(right, left) {
-            return result;
-        }
-
-        self.union_from_iter([left, right])
-    }
-
-    /// Fast path for `union2` that resolves *only* the cases where adding
-    /// `single` to `existing` leaves the union unchanged, so the already-interned
-    /// `existing` `TypeId` can be returned without re-normalizing.
-    ///
-    /// Returns `Some(existing)` for those no-op cases and `None` otherwise, which
-    /// routes the pair through `union2`'s documented contract — `union_from_iter`
-    /// → `normalize_union` (the same path the non-fast branch takes).
-    ///
-    /// It deliberately does **not** try to compute an inserted-member result
-    /// itself. Doing so requires reproducing `normalize_union`'s content-canonical
-    /// member ordering *and* its literal/subtype reduction, and the previous
-    /// hand-rolled insertion did neither: it ordered non-builtin members by
-    /// allocation order (thread- and interning-order dependent, not content), and
-    /// it skipped both primitive-absorbs-literal and structural subtype reduction.
-    /// That minted a different `TypeId` than `union` for the same member set —
-    /// breaking the one-semantic-universe identity invariant. Only the two
-    /// no-change cases below are canonical by construction, so only they stay on
-    /// the fast path.
-    fn try_union2_insert(&self, single: TypeId, existing: TypeId) -> Option<TypeId> {
-        // single must not be a special type
-        if single == TypeId::ANY
-            || single == TypeId::UNKNOWN
-            || single == TypeId::ERROR
-            || single == TypeId::NEVER
-        {
-            return None;
-        }
-
-        // single must not be a union.
-        let single_data = self.lookup(single);
-        if matches!(&single_data, Some(TypeData::Union(_))) {
-            return None;
-        }
-
-        // existing must be a union.
-        let Some(TypeData::Union(list_id)) = self.lookup(existing) else {
-            return None;
-        };
-        let members = self.type_list(list_id);
-
-        // No-change case 1: `single` is a literal absorbed by a primitive already
-        // in the union (`"hello" | string` → `string`). The primitive is present,
-        // so the normalized member set is exactly `existing`.
-        if let Some(TypeData::Literal(lit)) = single_data
-            && members.contains(&lit.primitive_type_id())
-        {
-            return Some(existing);
-        }
-
-        // No-change case 2: `single` is already a member (dedup).
-        if members.contains(&single) {
-            return Some(existing);
-        }
-
-        // Any genuine insertion may reorder or reduce the member set; defer to the
-        // canonical normalizer so `union2 == union` holds.
-        None
+        let mut work = None;
+        expect_unmetered_union(self.union2_with_work(left, right, &mut work))
     }
 
     /// Fast path for three-member unions without heap allocations.
     pub fn union3(&self, first: TypeId, second: TypeId, third: TypeId) -> TypeId {
-        self.union_from_iter([first, second, third])
+        let mut work = None;
+        expect_unmetered_union(self.union_from_iter_with_work([first, second, third], &mut work))
     }
 
     pub(crate) fn union_from_iter<I>(&self, members: I) -> TypeId
     where
         I: IntoIterator<Item = TypeId>,
     {
-        let flat = self.collect_union_members(members);
-        match flat.len() {
-            0 => TypeId::NEVER,
-            1 => flat[0],
-            _ => self.normalize_union(flat),
-        }
+        let mut work = None;
+        expect_unmetered_union(self.union_from_iter_with_work(members, &mut work))
     }
 
     fn union_literal_reduce_from_iter<I>(&self, members: I) -> TypeId
     where
         I: IntoIterator<Item = TypeId>,
     {
-        let flat = self.collect_union_members(members);
-        match flat.len() {
-            0 => TypeId::NEVER,
-            1 => flat[0],
-            _ => self.normalize_union_literal_only(flat),
-        }
-    }
-
-    fn collect_union_members<I>(&self, members: I) -> TypeListBuffer
-    where
-        I: IntoIterator<Item = TypeId>,
-    {
-        let mut iter = members.into_iter();
-        let Some(first) = iter.next() else {
-            return SmallVec::new();
-        };
-        let Some(second) = iter.next() else {
-            let mut buf = SmallVec::new();
-            buf.push(first);
-            return buf;
-        };
-
-        let mut flat: TypeListBuffer = SmallVec::new();
-        self.push_union_member(&mut flat, first);
-        self.push_union_member(&mut flat, second);
-        for member in iter {
-            self.push_union_member(&mut flat, member);
-        }
-        flat
-    }
-
-    pub(super) fn push_union_member(&self, flat: &mut TypeListBuffer, member: TypeId) {
-        if let Some(TypeData::Union(inner)) = self.lookup(member) {
-            let members = self.type_list(inner);
-            flat.extend(members.iter().copied());
-        } else {
-            flat.push(member);
-        }
-    }
-
-    /// Memoized union normalization.
-    ///
-    /// The full pipeline (callable-order probe, semantic sort, dedup, literal
-    /// absorption, enum merge, intersection absorption, subtype reduction,
-    /// interning) is deterministic in the flattened input list over immutable
-    /// interned types, and evaluation hot paths rebuild the same unions
-    /// constantly (the interner sees ~97% repeat hits on type-level-heavy
-    /// projects). Key is the exact pre-normalization member list, so repeats
-    /// skip straight to the previously interned result.
-    pub(super) fn normalize_union(&self, mut flat: TypeListBuffer) -> TypeId {
-        // Non-strict nullish absorption runs before the length gate and the result
-        // memo, so the cache key is the *reduced* member set: a `strictNullChecks`-off
-        // run keys `[number]` where a strict run keys `[number, null]`, never colliding.
-        if let Some(collapsed) = self.reduce_and_collapse_nonstrict(&mut flat) {
-            return collapsed;
-        }
-        // Union construction-mode campaign (#15809): under `TSZ_UNION_LITERAL_DEFAULT`
-        // the constructor is literal-mode and skips its construction-time pairwise
-        // subtype sweep (rationale in `intern::union_mode`). Read once here — the flag
-        // is a process-global constant, so the member-keyed `union_normalize_cache`
-        // never mixes modes; default-OFF keeps the historical reduction byte-identical.
-        let literal_only = crate::intern::union_literal_default_enabled();
-        if flat.len() > Self::UNION_NORMALIZE_CACHE_MAX_LEN {
-            return self.normalize_union_uncached(flat, literal_only);
-        }
-        if let Some(hit) = self.union_normalize_cache.get(flat.as_slice()) {
-            return *hit;
-        }
-        let key: Box<[TypeId]> = flat.as_slice().into();
-        let result = self.normalize_union_uncached(flat, literal_only);
-        self.insert_union_normalize_cache(key, result);
-        result
-    }
-
-    fn normalize_union_uncached(&self, mut flat: TypeListBuffer, literal_only: bool) -> TypeId {
-        // Callable unions feed signature-combining diagnostics, where tsc preserves
-        // the declaration/indexed-access order for intersected parameter display.
-        // The normal semantic union sort can invert class-backed function members
-        // such as `Node | Mark`, producing `Mark & Node` fingerprints.
-        let preserve_callable_order = self.should_preserve_callable_union_order(&flat);
-        if preserve_callable_order {
-            let mut seen = FxHashSet::default();
-            flat.retain(|id| seen.insert(*id));
-        } else {
-            // Deduplicate and sort for consistent identity.
-            // Sort order uses semantic comparison to match tsc's union display.
-            self.sort_union_members(&mut flat);
-            flat.dedup();
-        }
-
-        // Literal ladder (tsc `UnionReduction.Literal`): sentinel handling,
-        // `never` removal, and literal→primitive/enum/intersection absorption.
-        // Shared with `normalize_union_literal_only`; the `enriched` flag keeps
-        // the two absorptions that the literal-only path historically omitted.
-        if let Some(collapsed) = self.apply_union_literal_ladder(&mut flat, true) {
-            return collapsed;
-        }
-
-        // Large object unions are expensive to subtype-reduce (O(n²)), but they are
-        // still valid types. Preserve them and skip subtype reduction instead of
-        // collapsing the whole union to `error`, which poisons downstream computed
-        // types such as `keyof BigUnion` and `BigUnion["name"]`.
-        if flat.len() > 1000 {
-            let has_object_types = flat.iter().any(|&id| {
-                matches!(
-                    self.lookup(id),
-                    Some(
-                        TypeData::Object(_)
-                            | TypeData::ObjectWithIndex(_)
-                            | TypeData::Intersection(_)
-                    )
-                )
-            });
-            if has_object_types {
-                // Skipping subtype reduction here is an internal representation
-                // choice, not a TS2590 condition. Explicit large discriminated
-                // unions such as `BigUnion` remain representable and are used by
-                // indexed access and conditional-type helpers downstream.
-                return self.normalize_union_literal_only(flat);
-            }
-        }
-
-        // Reduce union using subtype checks (e.g., {a: 1} | {a: 1 | number} => {a: 1 | number})
-        // Skip reduction wholesale only when the union contains a `TypeParameter`
-        // or `Lazy` member: those interact with reduction non-locally (an
-        // unresolved type parameter can stand for a supertype/subtype of any
-        // concrete peer, and a `Lazy` ref names a symbol whose shape is not yet
-        // available), so reducing the surrounding concrete members against an
-        // arbitrary instantiation is unsound. Unevaluated *deferred operations*
-        // (`Conditional` / `IndexAccess`) are NOT skipped here: they are inert in
-        // the shallow engine (never relate as source or target except by
-        // identity), so `reduce_union_subtypes` short-circuits the pairwise work
-        // over them internally while still reducing the concrete members beside
-        // them — which is what tsc does when distributing `Exclude`/`Extract`
-        // over a wide union (the deferred arms stay lazy; the concrete arms still
-        // collapse). Folding them into a whole-union skip dropped legitimate
-        // concrete-vs-concrete reduction (e.g. JSX intrinsic-element props unions
-        // carrying an `IndexAccess` member), changing the union result.
-        let has_complex = flat.iter().any(|&id| {
-            matches!(
-                self.lookup(id),
-                Some(TypeData::TypeParameter(_) | TypeData::Lazy(_))
-            )
-        });
-        // `literal_only` (#15809, tsc `UnionReduction.Literal`) skips the pairwise sweep.
-        if !has_complex && !preserve_callable_order && !literal_only {
-            self.reduce_union_subtypes(&mut flat);
-        }
-
-        if flat.is_empty() {
-            return TypeId::NEVER;
-        }
-        if flat.len() == 1 {
-            return flat[0];
-        }
-
-        let list_id = self.intern_type_list_from_slice(&flat);
-        self.intern(TypeData::Union(list_id))
-    }
-
-    fn should_preserve_callable_union_order(&self, flat: &TypeListBuffer) -> bool {
-        let mut callable_count = 0;
-        for &id in flat.iter() {
-            if id == TypeId::NULL || id == TypeId::UNDEFINED || id == TypeId::NEVER {
-                continue;
-            }
-            match self.lookup(id) {
-                Some(TypeData::Function(func_id)) => {
-                    if !self.function_shape(func_id).type_params.is_empty() {
-                        return false;
-                    }
-                    callable_count += 1;
-                }
-                Some(TypeData::Callable(callable_id)) => {
-                    let shape = self.callable_shape(callable_id);
-                    if shape.call_signatures.len() != 1
-                        || !shape.construct_signatures.is_empty()
-                        || !shape.call_signatures[0].type_params.is_empty()
-                    {
-                        return false;
-                    }
-                    callable_count += 1;
-                }
-                _ => return false,
-            }
-        }
-        callable_count > 1
-    }
-
-    fn absorb_intersections_with_union_constituents(&self, flat: &mut TypeListBuffer) {
-        if flat.len() <= 1 {
-            return;
-        }
-
-        let present: FxHashSet<TypeId> = flat.iter().copied().collect();
-        flat.retain(|id| {
-            let Some(TypeData::Intersection(list_id)) = self.lookup(*id) else {
-                return true;
-            };
-            let parts = self.type_list(list_id);
-            !parts.iter().any(|part| present.contains(part))
-        });
-    }
-
-    /// Shared literal ladder for tsc's `UnionReduction.Literal` normalization,
-    /// applied by both `normalize_union` (the default path, before optional
-    /// subtype reduction) and `normalize_union_literal_only`.
-    ///
-    /// Callers pass `flat` already deduplicated (and, for the default path,
-    /// sorted). The ladder scans for sentinel members (`error`/`any`/`unknown`),
-    /// strips `never`, and absorbs literals into their primitives
-    /// (`"a" | string` → `string`). When `enriched` is set it additionally
-    /// merges split enum parts (`E.a | E.b` → `E`) and drops intersections whose
-    /// parts already appear as union constituents (`A | (A & B)` → `A | (A & B)`
-    /// keeps `A`; `A | (A & …)` with `A` present drops the intersection) — the
-    /// two steps `normalize_union_literal_only` historically omitted. Returns
-    /// `Some(id)` when the union collapses to a single terminal type, otherwise
-    /// `None` with `flat` holding the ≥2 normalized members.
-    fn apply_union_literal_ladder(
-        &self,
-        flat: &mut TypeListBuffer,
-        enriched: bool,
-    ) -> Option<TypeId> {
-        // Single-pass scan for special sentinel types instead of multiple
-        // contains() calls. Each contains() is O(N); scanning once is O(N).
-        let mut has_error = false;
-        let mut has_any = false;
-        let mut has_unknown = false;
-        let mut has_never = false;
-        for &id in flat.iter() {
-            if id == TypeId::ERROR {
-                has_error = true;
-                break; // ERROR trumps everything
-            }
-            if id == TypeId::ANY {
-                has_any = true;
-            } else if id == TypeId::UNKNOWN {
-                has_unknown = true;
-            } else if id == TypeId::NEVER {
-                has_never = true;
-            }
-        }
-        if has_error {
-            return Some(TypeId::ERROR);
-        }
-        if flat.is_empty() {
-            return Some(TypeId::NEVER);
-        }
-        if flat.len() == 1 {
-            return Some(flat[0]);
-        }
-        if has_any {
-            return Some(TypeId::ANY);
-        }
-        if has_unknown {
-            return Some(TypeId::UNKNOWN);
-        }
-        // Remove `never` from unions (only scan if we found any)
-        if has_never {
-            flat.retain(|id| *id != TypeId::NEVER);
-        }
-        if flat.is_empty() {
-            return Some(TypeId::NEVER);
-        }
-        if flat.len() == 1 {
-            return Some(flat[0]);
-        }
-
-        // Absorb literal types into their corresponding primitive types
-        // e.g., "a" | string | number => string | number
-        // e.g., 1 | 2 | number => number
-        // e.g., true | boolean => boolean
-        self.absorb_literals_into_primitives(flat);
-        if enriched {
-            // Merge Enum(D, X) | Enum(D, Y) → Enum(D, X | Y) so that split-then-
-            // rejoined enum members (e.g., E1.a | E1.b) display as E1, not E1 | E1.
-            self.merge_same_enum_parts(flat);
-            self.absorb_intersections_with_union_constituents(flat);
-        }
-
-        if flat.is_empty() {
-            return Some(TypeId::NEVER);
-        }
-        if flat.len() == 1 {
-            return Some(flat[0]);
-        }
-        None
-    }
-
-    /// Normalize a union with literal-only reduction (no subtype reduction).
-    ///
-    /// This matches tsc's `UnionReduction.Literal` behavior. It performs all the
-    /// same normalization as `normalize_union` (sort, dedup, special cases, literal
-    /// absorption) but skips the `reduce_union_subtypes` step. The enum-merge and
-    /// intersection-absorption steps of the shared ladder are gated behind the
-    /// `TSZ_UNION_LITERAL_DEFAULT` flag so this path (reached from the >1000-member
-    /// object-union guard in `normalize_union`) stays byte-identical when OFF.
-    fn normalize_union_literal_only(&self, mut flat: TypeListBuffer) -> TypeId {
-        // The `.Literal`-equivalent path drops non-strict nullish too: tsc's
-        // `addTypeToUnion` exclusion is independent of the reduction mode.
-        if let Some(collapsed) = self.reduce_and_collapse_nonstrict(&mut flat) {
-            return collapsed;
-        }
-        self.sort_union_members(&mut flat);
-        flat.dedup();
-
-        let enriched = crate::intern::union_literal_default_enabled();
-        if let Some(collapsed) = self.apply_union_literal_ladder(&mut flat, enriched) {
-            return collapsed;
-        }
-
-        // NOTE: No subtype reduction here — this is the key difference from normalize_union.
-        // tsc's UnionReduction.Literal only absorbs literals into primitives.
-
-        let list_id = self.intern_type_list_from_slice(&flat);
-        self.intern(TypeData::Union(list_id))
+        let mut work = None;
+        expect_unmetered_union(self.union_literal_reduce_from_iter_with_work(members, &mut work))
     }
 
     /// Test hook: run the shared literal ladder directly with an explicit
     /// `enriched` toggle, bypassing the process-global `TSZ_UNION_LITERAL_DEFAULT`
-    /// `OnceLock` so both the legacy (literal-absorb-only) and enriched
-    /// (enum-merge + intersection-absorb) paths are exercised deterministically.
+    /// `OnceLock` so both the legacy and enriched paths use the canonical reducer.
     #[cfg(test)]
     pub(crate) fn union_literal_ladder_for_test(
         &self,
@@ -726,18 +234,20 @@ impl TypeInterner {
         enriched: bool,
     ) -> TypeId {
         let mut flat: TypeListBuffer = members.into_iter().collect();
-        self.sort_union_members(&mut flat);
+        let mut work = None;
+        expect_unmetered_union(self.sort_union_members_with_work(&mut flat, &mut work));
         flat.dedup();
-        if let Some(collapsed) = self.apply_union_literal_ladder(&mut flat, enriched) {
+        if let Some(collapsed) = expect_unmetered_union(
+            self.apply_union_literal_ladder_with_work(&mut flat, enriched, &mut work),
+        ) {
             return collapsed;
         }
         let list_id = self.intern_type_list_from_slice(&flat);
         self.intern(TypeData::Union(list_id))
     }
 
-    /// Test hook: normalize a union with an explicit reduction mode, bypassing the
-    /// process-global `TSZ_UNION_LITERAL_DEFAULT` `OnceLock` so both the historical
-    /// (`literal_only = false`) and campaign (`true`) #15809 paths run deterministically.
+    /// Test hook: normalize with an explicit reduction mode while using the same
+    /// implementation as ordinary and checkpointed union construction.
     #[cfg(test)]
     pub(crate) fn normalize_union_for_test(
         &self,
@@ -745,10 +255,17 @@ impl TypeInterner {
         literal_only: bool,
     ) -> TypeId {
         let mut flat: TypeListBuffer = members.into_iter().collect();
-        if let Some(collapsed) = self.reduce_and_collapse_nonstrict(&mut flat) {
+        let mut work = None;
+        if let Some(collapsed) = expect_unmetered_union(
+            self.reduce_and_collapse_nonstrict_with_work(&mut flat, &mut work),
+        ) {
             return collapsed;
         }
-        self.normalize_union_uncached(flat, literal_only)
+        expect_unmetered_union(self.normalize_union_uncached_with_work(
+            flat,
+            literal_only,
+            &mut work,
+        ))
     }
 
     /// Intern an intersection type, normalizing and deduplicating members
@@ -1625,3 +1142,5 @@ impl Default for TypeInterner {
         Self::new()
     }
 }
+
+include!("constructors_execution.rs");

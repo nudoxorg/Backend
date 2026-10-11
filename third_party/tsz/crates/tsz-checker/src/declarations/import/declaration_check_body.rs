@@ -40,8 +40,25 @@ impl<'a> CheckerState<'a> {
         spec_length: u32,
         is_type_only: bool,
         request_resolution_mode: Option<crate::context::ResolutionModeOverride>,
+        request_kind: crate::context::ResolutionRequestKind,
     ) -> bool {
         use crate::diagnostics::{diagnostic_codes, diagnostic_messages, format_message};
+
+        // Configured projects may only inspect the file of this exact request.
+        // An unrelated kind/mode, ambient table, or legacy path is not evidence.
+        if self.ctx.project_module_resolution_outcomes.is_some()
+            && self
+                .ctx
+                .resolve_import_target_from_file_for_request(
+                    self.ctx.current_file_idx,
+                    module_name,
+                    request_resolution_mode,
+                    request_kind,
+                )
+                .is_none()
+        {
+            return false;
+        }
 
         let mut emitted_extension_diagnostic = false;
 
@@ -99,13 +116,20 @@ impl<'a> CheckerState<'a> {
         // tsc does not emit TS5097 inside declaration files (.d.ts).
         // When the resolver reports TS6142 (jsx not set), tsz does not also emit TS5097
         // (TS6142 is the more actionable diagnostic for the unresolvable .tsx target).
-        let has_jsx_not_set_error = self
-            .ctx
-            .get_resolution_error_with_mode(module_name, request_resolution_mode)
-            .is_some_and(|e| {
-                e.code
-                    == crate::diagnostics::diagnostic_codes::MODULE_WAS_RESOLVED_TO_BUT_JSX_IS_NOT_SET
-            });
+        let request_error = if self.ctx.project_module_resolution_outcomes.is_some() {
+            self.ctx.get_resolution_error_for_request(
+                module_name,
+                request_resolution_mode,
+                request_kind,
+            )
+        } else {
+            self.ctx
+                .get_resolution_error_with_mode(module_name, request_resolution_mode)
+        };
+        let has_jsx_not_set_error = request_error.is_some_and(|e| {
+            e.code
+                == crate::diagnostics::diagnostic_codes::MODULE_WAS_RESOLVED_TO_BUT_JSX_IS_NOT_SET
+        });
         // tsc only emits TS5097 when the module actually resolves (so the .ts
         // extension is the user's mistake on a real file). When the module
         // doesn't resolve at all, tsc emits TS2307 ('cannot find module')
@@ -115,7 +139,28 @@ impl<'a> CheckerState<'a> {
             && !is_type_only
             && !self.ctx.is_declaration_file()
             && !has_jsx_not_set_error
-            && self.module_target_is_typescript_input_file(module_name)
+            && (if self.ctx.project_module_resolution_outcomes.is_some() {
+                self.ctx
+                    .resolve_import_target_from_file_for_request(
+                        self.ctx.current_file_idx,
+                        module_name,
+                        request_resolution_mode,
+                        request_kind,
+                    )
+                    .is_some_and(|target| {
+                        self.ctx
+                            .get_arena_for_file(target as u32)
+                            .source_files
+                            .first()
+                            .is_some_and(|file| {
+                                [".ts", ".tsx", ".mts", ".cts"]
+                                    .iter()
+                                    .any(|extension| file.file_name.ends_with(extension))
+                            })
+                    })
+            } else {
+                self.module_target_is_typescript_input_file(module_name)
+            })
             && let Some(ext) = ts_extension_suffix(module_name)
         {
             let message = format_message(
@@ -146,10 +191,6 @@ impl<'a> CheckerState<'a> {
             return;
         };
         let request_kind = crate::context::ResolutionRequestKind::EsmImport;
-        let request_resolution_mode = self.ctx.resolution_mode_for_request(
-            request_kind,
-            self.get_resolution_mode_override(import.attributes),
-        );
 
         let is_type_only_import = self
             .ctx
@@ -292,6 +333,11 @@ impl<'a> CheckerState<'a> {
         };
 
         let module_name = &literal.text;
+        let request_resolution_mode = self.ctx.resolution_mode_for_project_request(
+            module_name,
+            request_kind,
+            self.get_resolution_mode_override(import.attributes),
+        );
         // tsc emits TS2307 independently per import declaration, even when multiple
         // imports reference the same module.  Clear the per-module dedup entry so
         // this declaration gets its own chance to report a module-not-found error.
@@ -326,22 +372,29 @@ impl<'a> CheckerState<'a> {
         if !self.ctx.report_unresolved_imports {
             let resolution_mode = request_resolution_mode;
             self.check_js_type_only_imports_after_import_validation(import, module_name);
-            let module_resolves = self
-                .ctx
-                .resolve_import_target_from_file_with_mode(
-                    self.ctx.current_file_idx,
+            let module_resolves = if self.ctx.project_module_resolution_outcomes.is_some() {
+                self.ctx.module_resolved_for_request(
                     module_name,
-                    resolution_mode,
+                    request_resolution_mode,
+                    request_kind,
                 )
-                .or_else(|| {
-                    self.ctx
-                        .resolve_import_target_from_file(self.ctx.current_file_idx, module_name)
-                })
-                .or_else(|| self.ctx.resolve_import_target(module_name))
-                .is_some()
-                || self
-                    .ctx
-                    .module_exports_contains_module(self.ctx.binder, module_name);
+            } else {
+                self.ctx
+                    .resolve_import_target_from_file_with_mode(
+                        self.ctx.current_file_idx,
+                        module_name,
+                        resolution_mode,
+                    )
+                    .or_else(|| {
+                        self.ctx
+                            .resolve_import_target_from_file(self.ctx.current_file_idx, module_name)
+                    })
+                    .or_else(|| self.ctx.resolve_import_target(module_name))
+                    .is_some()
+                    || self
+                        .ctx
+                        .module_exports_contains_module(self.ctx.binder, module_name)
+            };
             if !module_resolves {
                 return;
             }
@@ -363,6 +416,7 @@ impl<'a> CheckerState<'a> {
             spec_length,
             is_type_only_import,
             request_resolution_mode,
+            request_kind,
         );
 
         // TS2876: rewriteRelativeImportExtensions — specifier looks like a file name
@@ -580,7 +634,9 @@ impl<'a> CheckerState<'a> {
 
         // Ambient module declarations still suppress TS2307 when the driver
         // did not report a concrete resolution failure for this import.
-        if self.is_ambient_module_match(module_name) {
+        if self.ctx.project_module_resolution_outcomes.is_none()
+            && self.is_ambient_module_match(module_name)
+        {
             tracing::trace!(%module_name, "check_import_declaration: ambient module match, returning");
             // Keep JS-mode type-only import diagnostics (TS18042) for ambient modules.
             self.check_imported_members(import, module_name);
@@ -588,8 +644,9 @@ impl<'a> CheckerState<'a> {
             return;
         }
 
-        // Use global declared modules index for O(1) lookup
-        {
+        // Standalone ambient declarations may resolve without a host receipt.
+        // Configured projects must carry an exact External/File outcome.
+        if self.ctx.project_module_resolution_outcomes.is_none() {
             let found = if let Some(declared) = &self.ctx.global_declared_modules {
                 let normalized = module_name.trim_matches('"').trim_matches('\'');
                 declared.exact.contains(normalized)
@@ -619,7 +676,10 @@ impl<'a> CheckerState<'a> {
         }
 
         // Check if module was successfully resolved
-        if self.resolved_module_set_contains_specifier(module_name) {
+        if self
+            .ctx
+            .module_resolved_for_request(module_name, request_resolution_mode, request_kind)
+        {
             if let Some(target_idx) = self
                 .ctx
                 .resolve_import_target_from_file_for_request(
@@ -628,7 +688,13 @@ impl<'a> CheckerState<'a> {
                     request_resolution_mode,
                     request_kind,
                 )
-                .or_else(|| self.ctx.resolve_import_target(module_name))
+                .or_else(|| {
+                    if self.ctx.project_module_resolution_outcomes.is_some() {
+                        None
+                    } else {
+                        self.ctx.resolve_import_target(module_name)
+                    }
+                })
             {
                 // When a module was successfully resolved to a target file, do NOT
                 // emit TS2307 regardless of its export surface. TS2307 means the
@@ -870,9 +936,10 @@ impl<'a> CheckerState<'a> {
             return;
         }
 
-        if self
-            .ctx
-            .module_exports_contains_module(self.ctx.binder, module_name)
+        if self.ctx.project_module_resolution_outcomes.is_none()
+            && self
+                .ctx
+                .module_exports_contains_module(self.ctx.binder, module_name)
             && self.ctx.get_resolution_error(module_name).is_none()
         {
             tracing::trace!(%module_name, "check_import_declaration: found in module_exports, checking members");

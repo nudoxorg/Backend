@@ -36,7 +36,9 @@ pub use codec::{
     decode_command_body_for_owner, decode_reply_body, decode_reply_body_with_verifier,
     encode_command_body,
 };
-pub use command::{CommandDto, ReplyDto, ViewDto};
+pub use command::{
+    CommandDto, ReplyDto, ViewDto, encode_binary_certificate_command, expand_binary_certificate_command,
+};
 pub use event_dto::EventDto;
 pub use journal_grammar::JournalViewGrammarV3;
 pub use reply::{SemanticShapeExport, semantic_shape_batch_key};
@@ -67,6 +69,6 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version. Version 27 retains source completeness in
-/// batch declaration reads. Persisted view rows and compact events are unchanged.
-pub const DTO_VERSION: u16 = 27;
+/// Current transport DTO version. Version 28 distinguishes native checker
+/// worker-pool startup refusal. Persisted view rows and compact events are unchanged.
+pub const DTO_VERSION: u16 = 28;

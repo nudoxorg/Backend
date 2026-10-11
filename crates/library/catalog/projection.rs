@@ -807,6 +807,29 @@ impl Library {
         if !target_present {
             return Err(LibraryError::NotFound);
         }
+        self.reference_records(facts)
+    }
+
+    /// Projects reference sites for an actual selected native declaration.
+    /// The execution owner keeps the requested source address separately.
+    ///
+    /// # Errors
+    /// Refuses absent native targets, missing sites and invalid fact bounds.
+    pub fn references_for_symbol(
+        &self,
+        target: SymbolKey,
+        facts: &[ReferenceFact],
+    ) -> Result<Box<[ReferenceRecord]>, LibraryError> {
+        if self.view.row_ref(RowId::Symbol(target)).is_none() {
+            return Err(LibraryError::NotFound);
+        }
+        self.reference_records(facts)
+    }
+
+    fn reference_records(
+        &self,
+        facts: &[ReferenceFact],
+    ) -> Result<Box<[ReferenceRecord]>, LibraryError> {
         if facts.len() > crate::MAX_PRODUCT_ROWS {
             return Err(LibraryError::InvalidQuery(
                 "reference facts exceed the bounded result contract".to_owned(),
@@ -852,6 +875,52 @@ impl Library {
         self.graph_page_for_address(symbol, crate::SymbolAddress::canonical(symbol), page)
     }
 
+    fn check_graph_address(
+        &self,
+        symbol: SymbolKey,
+        address: crate::SymbolAddress,
+    ) -> Result<(), LibraryError> {
+        let row = self
+            .view
+            .row_ref(RowId::Symbol(symbol))
+            .ok_or(LibraryError::NotFound)?;
+        if address.matches(symbol) {
+            return Ok(());
+        }
+        if address.is_selected() {
+            return Err(LibraryError::NotFound);
+        }
+        let selected = if address.matches(crate::symbol_key(&row.label)) {
+            // Producer-scoped exact labels without package metadata retain
+            // their existing contract; source aliases always require ownership.
+            if row.package.is_none()
+                && self
+                    .view
+                    .unique_symbol_by_label(&row.label)
+                    .is_some_and(|selected| selected.id == row.id)
+            {
+                return Ok(());
+            }
+            crate::resolve_selected_view_address(&self.view, &row.label)
+        } else {
+            let proof = crate::CapturedSourceCoordinate::from_row(row)
+                .filter(|proof| proof.matches_address(address))
+                .ok_or(LibraryError::NotFound)?;
+            self.view
+                .source_coordinate_key(proof.address_key().ok_or(LibraryError::NotFound)?)
+        };
+        match selected {
+            crate::SelectedViewAddress::Declaration { row, .. }
+                if row.id == RowId::Symbol(symbol) =>
+            {
+                Ok(())
+            }
+            _ => Err(LibraryError::InvalidQuery(
+                "graph source address is absent or ambiguous in the selected view".to_owned(),
+            )),
+        }
+    }
+
     /// Pages a typed symbol recovered by an execution owner from an admitted address.
     ///
     /// The original address binds the continuation recipe, while the selected
@@ -879,6 +948,7 @@ impl Library {
         let start = self.check_query_cursor(cursor, recipe, limit, |offset| {
             self.graph_page_ids(&root, symbol, offset, limit)
         })?;
+        self.check_graph_address(symbol, address)?;
         let result = self.graph_page_ids(&root, symbol, start, limit);
         self.projection_page(&recipe_bytes, &result, start, limit)
     }
@@ -921,6 +991,7 @@ impl Library {
             limit,
             select,
         )?;
+        self.check_graph_address(symbol, address)?;
         self.projection_page(&recipe_bytes, &select(start), start, limit)
     }
 

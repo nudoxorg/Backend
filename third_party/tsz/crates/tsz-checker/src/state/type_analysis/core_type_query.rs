@@ -1458,9 +1458,35 @@ impl<'a> CheckerState<'a> {
             false
         }
 
-        if let Some(json_namespace_type) =
+        let configured = self.ctx.project_module_resolution_outcomes.is_some();
+        let mode = self.ctx.resolution_mode_for_project_request(
+            module_name,
+            crate::context::ResolutionRequestKind::EsmImport,
+            resolution_mode_override,
+        );
+        let (selected_target, selected_exports) = if configured {
+            let request = crate::context::BoundModuleRequest {
+                importer: self.ctx.current_file_idx,
+                specifier: module_name,
+                mode,
+                kind: crate::context::ResolutionRequestKind::EsmImport,
+            };
+            let selected = self.ctx.select_module_request(request)?;
+            (
+                selected.file_target(),
+                self.resolve_exports_for_selected_request(selected),
+            )
+        } else {
+            (None, None)
+        };
+        let json_namespace = if configured {
+            selected_target.and_then(|target| {
+                self.json_module_namespace_type_for_file(target, Some(self.ctx.current_file_idx))
+            })
+        } else {
             self.json_module_namespace_type_for_module(module_name, Some(self.ctx.current_file_idx))
-        {
+        };
+        if let Some(json_namespace_type) = json_namespace {
             return Some(json_namespace_type);
         }
 
@@ -1475,14 +1501,17 @@ impl<'a> CheckerState<'a> {
             .module_namespace_resolution_set
             .insert(module_name.to_string());
 
-        let target_idx = self
-            .ctx
-            .resolve_import_target_from_file_with_mode(
-                self.ctx.current_file_idx,
-                module_name,
-                resolution_mode_override,
-            )
-            .or_else(|| self.ctx.resolve_import_target(module_name));
+        let target_idx = if configured {
+            selected_target
+        } else {
+            self.ctx
+                .resolve_import_target_from_file_with_mode(
+                    self.ctx.current_file_idx,
+                    module_name,
+                    resolution_mode_override,
+                )
+                .or_else(|| self.ctx.resolve_import_target(module_name))
+        };
         let target_export_context = target_idx.and_then(|idx| {
             let file_name = self
                 .ctx
@@ -1493,10 +1522,15 @@ impl<'a> CheckerState<'a> {
             Some((idx, file_name))
         });
 
-        let result = if let Some(exports_table) = self.resolve_effective_module_exports_from_file(
-            module_name,
-            Some(self.ctx.current_file_idx),
-        ) {
+        let exports_table = if configured {
+            selected_exports
+        } else {
+            self.resolve_effective_module_exports_from_file(
+                module_name,
+                Some(self.ctx.current_file_idx),
+            )
+        };
+        let result = if let Some(exports_table) = exports_table {
             let ordered_exports = self.ordered_namespace_export_entries(&exports_table);
             let exports_table_target = ordered_exports
                 .iter()
@@ -1667,7 +1701,25 @@ impl<'a> CheckerState<'a> {
     ) -> Option<TypeId> {
         let (call_idx, segments) = self.decompose_typeof_import_query(expr_name)?;
         let (module_name, specifier_node) = self.get_import_type_module_specifier(call_idx)?;
-        let resolution_mode_override = self.get_import_type_resolution_mode_override(call_idx);
+        let resolution_mode_override = if self.ctx.project_module_resolution_outcomes.is_some() {
+            let Some(request) = self
+                .ctx
+                .bound_import_type_request_at(self.ctx.current_file_idx, anchor_idx)
+            else {
+                return Some(TypeId::ERROR);
+            };
+            if self.ctx.select_module_request(request).is_none() {
+                let (message, code) = self.module_not_found_diagnostic_for_site(
+                    &module_name,
+                    crate::import::core::ModuleNotFoundSite::ImportType,
+                );
+                self.error_at_node(specifier_node, &message, code);
+                return Some(TypeId::ERROR);
+            }
+            request.mode
+        } else {
+            self.get_import_type_resolution_mode_override(call_idx)
+        };
         self.maybe_emit_import_type_cjs_esm_resolution_mode_missing(
             &module_name,
             specifier_node,

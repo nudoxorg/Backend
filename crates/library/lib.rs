@@ -290,13 +290,15 @@ pub use surface::{
     index_operation_request_digest,
 };
 pub use view::{
-    Basis, CommittedViewDelta, CompleteViewProjection, Coverage, CoverageCapability, Document,
-    DocumentSelection, Fragment, Freshness, GraphRelation, Lane, MAX_COVERAGE_EVIDENCE,
-    MAX_ROW_IDENTITY_PREIMAGE_BYTES, MAX_SNAPSHOT_PAGE_ROWS, MAX_VIEW_PATCH_ROWS, NameRecord,
-    Outline, OutlineExtent, OutlineNode, PreparedViewDelta, Reason, Row, RowChange, RowId,
-    RowIdentityPreimage, RowIdentityPreimageError, RowState, SourceAvailability, ViewDelta,
-    ViewError, ViewPageCursor, ViewPageError, ViewProjection, ViewProjectionError, ViewRoot,
-    ViewRootDescriptor, ViewRootDescriptorClaim, ViewSnapshot, ViewSnapshotPage,
+    AddressMatchKind, Basis, CapturedSourceCoordinate, CommittedViewDelta, CompleteViewProjection,
+    Coverage, CoverageCapability, Document, DocumentSelection, Fragment, Freshness, GraphRelation,
+    Lane, MAX_COVERAGE_EVIDENCE, MAX_ROW_IDENTITY_PREIMAGE_BYTES, MAX_SNAPSHOT_PAGE_ROWS,
+    MAX_VIEW_PATCH_ROWS, NameRecord, Outline, OutlineExtent, OutlineNode,
+    PackageQualifiedDeclaration, PreparedViewDelta, Reason, Row, RowChange, RowId,
+    RowIdentityPreimage, RowIdentityPreimageError, RowState, SelectedViewAddress,
+    SourceAvailability, ViewDelta, ViewError, ViewPageCursor, ViewPageError, ViewProjection,
+    ViewProjectionError, ViewRoot, ViewRootDescriptor, ViewRootDescriptorClaim, ViewSnapshot,
+    ViewSnapshotPage, resolve_selected_view_address,
 };
 pub use wire::SemanticShapeExport;
 pub use wire::{
@@ -306,8 +308,8 @@ pub use wire::{
     WireSchema, admit_reply, admit_reply_with_capability, admit_request, admit_surface_reply,
     command_request_id, decode_command_body, decode_command_body_for_owner,
     decode_compact_view_event, decode_reply_body, decode_reply_body_with_verifier,
-    encode_command_body, encode_compact_subscription, encode_compact_view_event,
-    encode_view_root_descriptor, reply_memory_bound, semantic_shape_batch_key,
+    encode_binary_certificate_command, encode_command_body, encode_compact_subscription, encode_compact_view_event,
+    encode_view_root_descriptor, expand_binary_certificate_command, reply_memory_bound, semantic_shape_batch_key,
 };
 
 /// Returns the current command/reply/event wire schema version.

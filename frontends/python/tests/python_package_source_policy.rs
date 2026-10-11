@@ -1,3 +1,8 @@
+//! Integration tests for captured Python package membership and source policy.
+//!
+//! They cover initialized build packages, declared `src` layouts, namespace
+//! packages, and distributions while preserving exact leaf-source coordinates.
+
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 

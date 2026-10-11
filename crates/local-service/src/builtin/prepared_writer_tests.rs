@@ -148,7 +148,9 @@ fn prepared_writer_cancellation_before_grant_returns_the_same_live_writer() {
         Err(backend_engine::WorkspaceError::PublicationCancelled)
     ));
     drop(candidate);
-    writer
+    // Before a grant, the return API does not need this proof. Still exercise
+    // the unchanged-base check and retain the otherwise owned test token.
+    let _unselected = writer
         .prove_unselected()
         .expect("generic cleanup may prove the unchanged base even before a grant");
     daemon

@@ -1,7 +1,10 @@
 //! The stable JSON projection of the presentation model.
 //!
-//! `--format json` and MCP `structuredContent` emit these types and nothing
-//! else. They are deliberately *not* the wire DTOs: a wire reply is shaped for
+//! Standard/full `--format json` and MCP `structuredContent` use these DTOs.
+//! Summary retains the public identity and result-list grammar; a Summary page
+//! uses [`SummaryPageDto`] and omits the unrequested page sections. Projection
+//! envelope fields such as `answer`, `detail`, and `nextCursor` are additional.
+//! These are deliberately *not* the wire DTOs: a wire reply is shaped for
 //! proof and framing, and dumping it at a caller leaks identity digests,
 //! certificate claims, and cursor internals that no consumer should bind to.
 //! What a consumer binds to is here — identity parts, resolved names, typed
@@ -22,11 +25,13 @@ use crate::record::{Record, RecordList};
 use crate::shelf::{Readiness, Shelf, ShelfEntry};
 use crate::signature::{Signature, Token};
 use crate::status::Status;
+use crate::{Detail, PageProjection};
 
 /// Projects whichever answer a surface produced, tagged by its `answer` field.
 ///
-/// The CLI's `--format json` and the MCP's `structuredContent` both emit this
-/// value, so a consumer that learns one has learned the other.
+/// This is the complete Standard/Full projection. CLI JSON and MCP structured
+/// output apply the requested detail and budget through the shared projection
+/// boundary; Summary pages use [`SummaryPageDto`].
 ///
 /// The discriminator is `answer` rather than the obvious `kind` because a page
 /// already has a `kind` — its declaration kind — and a tag that overwrites a
@@ -142,7 +147,7 @@ impl IdentityDto {
             coordinate: identity.coordinate().as_str().to_owned(),
             trail: identity.trail_within(None),
             name: identity.name().to_owned(),
-            shape: shape_name(identity),
+            shape: shape_name(identity).to_owned(),
             project: identity.project().map(|project| project.root().to_owned()),
             path: identity.path().map(|path| path.as_str().to_owned()),
             line: identity.line().map(crate::identity::LineNumber::get),
@@ -153,19 +158,23 @@ impl IdentityDto {
                 .map(|segment| segment.as_str().to_owned())
                 .collect(),
             key: identity.key().tag().map(|tag| tag.to_string()),
-            semantic_data: match identity.key() {
-                crate::IdentityKey::Symbol(key) if key.as_bytes() != &[0; 32] => Some(
-                    IdentitySemanticData::SelectedSymbolId(SelectedSymbolIdDto(*key.as_bytes())),
-                ),
-                crate::IdentityKey::Package(_)
-                | crate::IdentityKey::Symbol(_)
-                | crate::IdentityKey::Absent => None,
-            },
+            semantic_data: identity_semantic_data(identity),
         }
     }
 }
 
-fn shape_name(identity: &Identity) -> String {
+pub(crate) fn identity_semantic_data(identity: &Identity) -> Option<IdentitySemanticData> {
+    match identity.key() {
+        crate::IdentityKey::Symbol(key) if key.as_bytes() != &[0; 32] => Some(
+            IdentitySemanticData::SelectedSymbolId(SelectedSymbolIdDto(*key.as_bytes())),
+        ),
+        crate::IdentityKey::Package(_)
+        | crate::IdentityKey::Symbol(_)
+        | crate::IdentityKey::Absent => None,
+    }
+}
+
+pub(crate) const fn shape_name(identity: &Identity) -> &'static str {
     match identity.shape() {
         crate::identity::IdentityShape::Package => "package",
         crate::identity::IdentityShape::Module => "module",
@@ -174,7 +183,6 @@ fn shape_name(identity: &Identity) -> String {
         crate::identity::IdentityShape::External => "external",
         crate::identity::IdentityShape::Opaque => "opaque",
     }
-    .to_owned()
 }
 
 /// One classified signature token.
@@ -401,6 +409,30 @@ pub struct PageDto {
     pub notes: Vec<FaultDto>,
 }
 
+/// The owned decoder for a Summary declaration page.
+///
+/// The identity, kind, language and signature are retained facts. Sections
+/// omitted by the Summary projection do not become empty page sections.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SummaryPageDto {
+    /// The retained public identity, including its readable trail and segments.
+    pub identity: IdentityDto,
+    /// The declaration kind, when observed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// The observed source language.
+    pub language: String,
+    /// The retained signature text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    /// Why captured source is unavailable, when the producer supplied a fault.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_fault: Option<FaultDto>,
+    /// Retained failures explaining unavailable page sections.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<FaultDto>,
+}
+
 /// Members that share one kind.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MemberGroupDto {
@@ -436,17 +468,28 @@ impl PageDto {
     /// Projects one page.
     #[must_use]
     pub fn new(page: &Page) -> Self {
+        Self::from_projection(&PageProjection::new(page, Detail::Standard))
+    }
+
+    /// Projects the fields chosen by the shared typed page policy.
+    #[must_use]
+    pub fn from_projection(page: &PageProjection<'_>) -> Self {
         Self {
             identity: IdentityDto::new(page.identity()),
             kind: page.kind().map(|kind| kind.name().to_owned()),
             language: page.language().name().to_owned(),
             signature: page.signature().map(Signature::text),
             tokens: page
-                .signature()
-                .map(SignatureTokenDto::all)
-                .unwrap_or_default(),
+                .signature_tokens()
+                .included()
+                .unwrap_or_default()
+                .iter()
+                .map(SignatureTokenDto::new)
+                .collect(),
             prose: page
                 .prose()
+                .included()
+                .unwrap_or_default()
                 .iter()
                 .map(|block| match block {
                     Prose::Text(text) | Prose::Code(text) | Prose::Link { label: text, .. } => {
@@ -456,6 +499,8 @@ impl PageDto {
                 .collect(),
             members: page
                 .members()
+                .included()
+                .unwrap_or_default()
                 .iter()
                 .map(|group| MemberGroupDto {
                     kind: group.kind().name().to_owned(),
@@ -480,6 +525,8 @@ impl PageDto {
                 .collect(),
             relations: page
                 .relations()
+                .included()
+                .unwrap_or_default()
                 .iter()
                 .map(|group| RelationGroupDto {
                     label: group.label().as_str().to_owned(),
@@ -490,8 +537,8 @@ impl PageDto {
                         .collect(),
                 })
                 .collect(),
-            source: source_dto(page.source()),
-            source_fault: page.source().fault().map(FaultDto::new),
+            source: page.source().included().and_then(source_dto),
+            source_fault: page.source_fault().map(FaultDto::new),
             notes: page.notes().iter().map(FaultDto::new).collect(),
         }
     }

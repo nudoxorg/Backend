@@ -216,7 +216,10 @@ pub(crate) struct Titlebar {
 impl Titlebar {
     pub(crate) fn new(links: Links, store: &DataStore) -> Self {
         Self {
-            core: RegionCore::new(store, &[Branch::Route, Branch::Overlay, Branch::Settings, Branch::GraphFocus]),
+            // Every JumpVisit binds the producer authority as well as its
+            // route and selection. World has no chrome keys whose resource
+            // events could otherwise renew these cached native controls.
+            core: RegionCore::new(store, &[Branch::Root, Branch::Route, Branch::Overlay, Branch::Settings, Branch::GraphFocus]),
             links,
             targets: Targets::named("titlebar"),
             press: None,
@@ -289,7 +292,7 @@ impl Render for Titlebar {
                 id.clone(),
                 facet::controls::icon_button(id, Icon::SideL, "Toggle the shelf", &measure)
                     .on(shelf_on)
-                    .key("⌘\\")
+                    .key(super::keys::cap(super::keys::Command::ToggleShelf))
                     .on_click(move |window, cx| act(window, cx)),
             ),
         );
@@ -510,7 +513,7 @@ impl Titlebar {
                         if !matches!(event, ClickEvent::Keyboard(_)) { click_act(window, cx); }
                     })
                     .on_key_down(move |event, window, cx| activate_key(event, &key_act, window, cx))
-                    .children(keycap(keys, "⌘[", measure)),
+                    .children(keycap(keys, super::keys::cap(super::keys::Command::Back), measure)),
             ));
         } else {
             bar = bar.child(div()
@@ -713,7 +716,7 @@ impl Titlebar {
                             float::leave(&"jump-address".into(), window, cx);
                         }
                     })
-                    .children(keycap(keys, "⌘K", measure)),
+                    .children(keycap(keys, super::keys::cap(super::keys::Command::Ask), measure)),
         );
         bar.into_any_element()
     }
@@ -857,7 +860,7 @@ impl Titlebar {
                         if !matches!(event, ClickEvent::Keyboard(_)) { click_act(window, cx); }
                     })
                     .on_key_down(move |event, window, cx| activate_key(event, &key_act, window, cx))
-                    .children(keycap(keys, "⌘K", measure)),
+                    .children(keycap(keys, super::keys::cap(super::keys::Command::Ask), measure)),
             )
             .into_any_element()
     }

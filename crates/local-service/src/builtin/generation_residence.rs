@@ -2263,6 +2263,8 @@ mod tests {
             .expect("stage generation B with the real compiler");
         let marker_workspace = fixture.root.join("selected-product-workspace");
         std::fs::create_dir_all(&marker_workspace).expect("create selected product workspace");
+        crate::test_support::make_private(&marker_workspace)
+            .expect("make selected product fixture current-user private");
 
         let profile = super::super::profile_descriptor(super::super::BuiltinProfile::Product)
             .expect("admit product profile");

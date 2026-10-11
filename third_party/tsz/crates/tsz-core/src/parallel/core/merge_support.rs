@@ -448,6 +448,9 @@ pub struct MergedProgram {
     /// before the merge consumes per-file data. This captures the pre-merge memory
     /// footprint so it can be compared to the post-merge `MergedProgram` residency.
     pub pre_merge_bind_total_bytes: usize,
+    /// Shared known formats admitted from the exact Compiler API program.
+    /// Unknown is represented by an absent key, never by a guessed flag.
+    pub file_is_esm_map: Arc<FxHashMap<String, bool>>,
     /// Optional authoritative compiler-owned module-resolution outcomes.
     /// When present, direct checker contexts and project-wide checks must use
     /// this map and must not guess by filename.
@@ -456,6 +459,49 @@ pub struct MergedProgram {
 }
 
 impl MergedProgram {
+    /// Admit format observations without canonicalization or suffix inference.
+    /// A failure leaves the previous immutable map unchanged.
+    pub fn set_project_file_formats(
+        &mut self,
+        formats: &[ProjectFileFormatInput],
+    ) -> Result<(), ProjectModuleResolutionError> {
+        let mut program_paths = FxHashSet::default();
+        for file in &self.files {
+            validate_project_virtual_path(&file.file_name)?;
+            if !program_paths.insert(file.file_name.as_str()) {
+                return Err(ProjectModuleResolutionError::DuplicateProgramPath {
+                    path: file.file_name.clone(),
+                });
+            }
+        }
+        let mut observed = FxHashSet::default();
+        let mut map = FxHashMap::default();
+        for input in formats {
+            validate_project_virtual_path(&input.path)?;
+            if !observed.insert(input.path.as_str()) {
+                return Err(ProjectModuleResolutionError::DuplicateProgramPath {
+                    path: input.path.clone(),
+                });
+            }
+            if !program_paths.contains(input.path.as_str()) {
+                return Err(ProjectModuleResolutionError::ImporterNotInProgram {
+                    path: input.path.clone(),
+                });
+            }
+            match input.format {
+                ProjectFileFormat::Unknown => {}
+                ProjectFileFormat::CommonJs => {
+                    map.insert(input.path.clone(), false);
+                }
+                ProjectFileFormat::EsModule => {
+                    map.insert(input.path.clone(), true);
+                }
+            }
+        }
+        self.file_is_esm_map = Arc::new(map);
+        Ok(())
+    }
+
     /// Attach exact compiler-owned module resolutions to this merged program.
     ///
     /// Replacing the map is allowed when rebuilding a project recipe. The

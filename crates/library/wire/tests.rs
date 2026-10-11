@@ -1871,7 +1871,7 @@ fn usability_batch_read_wire_extent_is_versioned_and_older_records_stay_honest()
         assert!(error.contains(&format!("this build supports {DTO_VERSION}")));
     }
     let grammar = crate::JournalViewGrammarV3::from_checked_container(3).expect("checked grammar");
-    for historical in 21..=26 {
+    for historical in 21..=27 {
         grammar
             .check_envelope_version(historical)
             .expect("maintained journal law");
@@ -2748,3 +2748,37 @@ fn graph_query_page_wire_admission_enforces_credit_and_exact_progress() {
 
 #[path = "index_ticket_reply_tests.rs"]
 mod index_ticket_reply;
+
+
+#[test]
+fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants() {
+    use crate::interface::TypeScriptAuthorityFailureKind as F;
+    assert_eq!(
+        DTO_VERSION, 28,
+        "native worker refusal first ships with DTO28"
+    );
+    let kind = F::NativeCheckerWorkerPoolUnavailable;
+    let encoded_kind = serde_json::to_vec(&kind).unwrap();
+    assert_eq!(encoded_kind, b"\"native_checker_worker_pool_unavailable\"");
+    assert_eq!(serde_json::from_slice::<F>(&encoded_kind).unwrap(), kind);
+    // Exact maintained preflight algorithm parameterized by the supported
+    // protocol. This is a codec law, not an old-binary process replay.
+    let current = serde_json::to_vec(&serde_json::json!({
+        "version": DTO_VERSION,
+        "reply": {"typescript_failure": kind, "unknown_future_shape": true}
+    }))
+    .unwrap();
+    let old_peer = super::codec::check_version_header_against(&current, "reply", 27)
+        .expect_err("DTO27 peer must refuse DTO28 before decoding its new failure variant");
+    assert!(old_peer.contains("reply DTO version 28"));
+    assert!(old_peer.contains("this build supports 27"));
+    assert!(!old_peer.contains("unknown variant"));
+    let mut previous: serde_json::Value = serde_json::from_slice(&current).unwrap();
+    previous["version"] = serde_json::json!(27);
+    previous["reply"]["typescript_failure"] = serde_json::json!("unknown_future_variant");
+    let bytes = serde_json::to_vec(&previous).unwrap();
+    let error =
+        crate::wire::decode_reply_body(&bytes).expect_err("strict old live envelope refused");
+    assert!(error.contains("reply DTO version 27"));
+    assert!(!error.contains("unknown variant"));
+}

@@ -110,9 +110,9 @@ pub(crate) use self::toolchain_probe::{
     typescript_module_files_digest,
 };
 pub use self::toolchain_probe::{
-    ToolchainProbeCleanupAction, ToolchainProbeError, ToolchainProbeLimitError,
-    ToolchainProbeLimits, ToolchainProbeLimitsView, ToolchainProbePrimary,
-    ToolchainProbeStreamError,
+    ToolchainProbeCleanupAction, ToolchainProbeError, ToolchainProbeFileRole,
+    ToolchainProbeLimitError, ToolchainProbeLimits, ToolchainProbeLimitsView,
+    ToolchainProbePrimary, ToolchainProbeStreamError,
 };
 pub(crate) use self::typescript_host::{TypeScriptProjectInvocationLease, is_module_tsc_script};
 pub use self::typescript_host::{TypeScriptProjectHost, TypeScriptProjectHostError};

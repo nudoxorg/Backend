@@ -12,6 +12,153 @@ use backend_engine::{PackageKey, ProductSourceRecord, SourceLanguage};
 use backend_version::{ContentId, SourceFactDomain};
 use std::path::Path;
 
+#[test]
+fn staged_semantic_and_capture_descriptors_leave_the_queue_but_replay_exactly() {
+    use backend_engine::QueueSized;
+    use backend_engine::builtin::{ProductSemanticCaptureOutcome, SemanticSourceCapture};
+    use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, TypeScriptSource};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    // This is a typed storage/queue counterexample, not compiler acceptance.
+    // Every key/count uses the production constructors and unchanged limits.
+    let count = 12_000;
+    assert!(count <= backend_engine::application::MAX_MANIFEST_ENTRIES);
+    let workspace = TempWorkspace::new();
+    let mut daemon = open_daemon(workspace.0.path());
+    let before = daemon.engine().daemon().owner().snapshot();
+    let label = "pkg:npm/staged-semantic-descriptors@1.0.0";
+    let package = PackageKey::from_value(label);
+    let reference = backend_engine::PackageReference::parse(label.to_owned()).unwrap();
+    let prefix = "directory/".repeat(20);
+    let keys = (0..count)
+        .map(|index| {
+            ProductSemanticPublicationKey::new(
+                reference.clone(),
+                PackageUrl::parse(format!("{label}#{prefix}file_{index:05}.ts")).unwrap(),
+                LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let capture = SemanticSourceCapture::new(None, [0x71; 32], [0x72; 32], 1, 1).unwrap();
+    let semantic = keys
+        .iter()
+        .map(|key| BuiltinSemanticChange {
+            key: key.clone(),
+            after: Some(ProductSemanticPublicationRecord::Unavailable(
+                backend_engine::builtin::SemanticUnavailableReason::ProjectAuthority,
+            )),
+        })
+        .collect::<Vec<_>>();
+    let captures = keys
+        .iter()
+        .map(|key| BuiltinCaptureChange {
+            key: key.clone(),
+            expected: None,
+            capture,
+            outcome: ProductSemanticCaptureOutcome::Pending { prior: None },
+            compiler_failure: None,
+        })
+        .collect::<Vec<_>>();
+    let inline = BuiltinIntent::index_with_capture(package, label, Vec::new(), semantic, captures)
+        .unwrap()
+        .with_capture_basis(capture_basis_for_snapshot(&before).unwrap())
+        .unwrap();
+    let canonical = inline.encode();
+    let request = BuiltinModel.request_id(&inline);
+    assert!(inline.queue_bytes() > 4 * 1024 * 1024);
+    assert!(matches!(
+        daemon.client().request(
+            0,
+            crate::Request::Commit {
+                request,
+                expected: daemon.engine().daemon().owner().head().expectation(),
+                intent: inline.clone(),
+            }
+        ),
+        Err(crate::LocaldError::Queue(backend_engine::QueueError::Bytes))
+    ));
+    // Prior staging retained precisely these two descriptor arrays.
+    let mut prior_carrier = inline.clone();
+    prior_carrier.changes = Box::new([]);
+    prior_carrier.source_facts_changes = Box::new([]);
+    let prior_descriptor_bytes = prior_carrier.staging_parts().0.len();
+    assert!(prior_descriptor_bytes > 4 * 1024 * 1024);
+
+    let cancellation = Arc::new(AtomicBool::new(false));
+    let prepared =
+        super::super::staged_transport::stage(inline, &before, None, Arc::clone(&cancellation))
+            .unwrap();
+    assert_eq!(prepared.semantic_changes().len(), count);
+    assert_eq!(prepared.capture_changes().len(), count);
+    assert!(prepared.queue_bytes() > 4 * 1024 * 1024);
+    // Keep the full prepared value for the actual production transfer below.
+    let staged = prepared.clone().into_queue_carrier();
+    eprintln!(
+        "descriptor counterexample count={count} canonical={} prior retained={} carrier queue={}",
+        canonical.len(),
+        prior_descriptor_bytes,
+        staged.queue_bytes()
+    );
+    assert!(staged.semantic_changes().is_empty());
+    assert!(staged.capture_changes().is_empty());
+    assert!(staged.semantic_selection.is_none());
+    assert!(staged.checked_queue_bytes().unwrap() < 4096);
+    assert_eq!(BuiltinModel.request_id(&staged), request);
+    let evidence = staged.staged().unwrap();
+    let exact = evidence.hydrate(Some(&before)).unwrap();
+    assert_eq!(exact.encode(), canonical);
+    let queue = backend_engine::BoundedQueue::new(backend_engine::DaemonConfig::default().commands);
+    let owners = Arc::strong_count(evidence);
+    queue.try_push(staged.clone()).unwrap();
+    assert_eq!(Arc::strong_count(evidence), owners + 1);
+    assert_eq!(queue.usage().bytes, staged.checked_queue_bytes().unwrap());
+    cancellation.store(true, Ordering::Release);
+    let draining = queue.try_pop().unwrap();
+    assert!(Arc::ptr_eq(draining.staged().unwrap(), evidence));
+    assert!(draining.staged().unwrap().hydrate(Some(&before)).is_err());
+    assert_eq!(queue.usage().bytes, 0);
+    drop(draining);
+    assert_eq!(Arc::strong_count(evidence), owners);
+    cancellation.store(false, Ordering::Release);
+    super::super::commands::commit_builtin_intent(&mut daemon, 1, &prepared).unwrap();
+    let selected = daemon.engine().daemon().owner().snapshot();
+    let root = selected.root();
+    assert_eq!(
+        daemon.engine().daemon().owner().head().request_identity(),
+        request
+    );
+    assert!(
+        evidence.hydrate(Some(&selected)).is_err(),
+        "exact base fence refuses stale replay"
+    );
+    let assert_rows = |snapshot: &backend_engine::WorkspaceSnapshot| {
+        let semantic = snapshot.relation::<BuiltinSemanticRelation>().unwrap();
+        let captures = semantic_capture_relation(snapshot).unwrap().unwrap();
+        for key in &keys {
+            assert!(matches!(
+                semantic.lookup(key).unwrap(),
+                Some(ProductSemanticPublicationRecord::Unavailable(_))
+            ));
+            assert!(captures.lookup(key).unwrap().is_some());
+        }
+    };
+    assert_rows(&selected);
+    drop(selected);
+    drop(exact);
+    drop(staged);
+    drop(prepared);
+    drop(before);
+    drop(daemon);
+    let cold = open_daemon(workspace.0.path());
+    let selected = cold.engine().daemon().owner().snapshot();
+    assert_eq!(selected.root(), root);
+    assert_rows(&selected);
+}
+
 fn parsed_file(
     package: PackageKey,
     path: &str,

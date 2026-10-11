@@ -5,18 +5,17 @@
 //! for the same detail level and receive the same fields, while the transport
 //! can still apply a final byte ceiling without manufacturing a result.
 
-use serde::Serialize;
+use serde::{Serialize, Serializer, ser::SerializeSeq};
 #[cfg(test)]
 use serde_json::Value;
 use std::io::{self, Write};
 
-use crate::Answer;
 use crate::dto::{
     CapabilitiesDto, CoverageDto, FaultDto, IdentityDto, OutlineDto, OutlineNodeDto, PageDto,
-    ProductDto, ProductIndexSearchPageDto, ProductRecordDto, RecordDto, RecordListDto, ShelfDto,
+    ProductDto, ProductIndexSearchPageDto, ProductRecordDto, RecordListDto, ShelfDto,
     ShelfEntryDto, StatusDto,
 };
-use crate::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand};
+use crate::{Affordance, Answer, Cause, CauseSlug, Fault, FaultSlug, Operand, PageProjection};
 
 /// Bytes-per-token ratio used for a stable, provider-independent estimate.
 ///
@@ -37,9 +36,13 @@ pub const MAX_RESPONSE_BUDGET_BYTES: usize = 256 * 1024;
 pub const MAX_PREVIEW_TEXT_BYTES: usize = 16 * 1024;
 
 /// How much detail a caller requests from a presentation answer.
+///
+/// Declaration page text and JSON share this field policy. Other answer
+/// variants retain their existing structured projection and text rendering.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Detail {
-    /// Keep identity, status, coverage, and short row summaries.
+    /// Keep identity, status, coverage, and short row summaries. A declaration
+    /// page retains its signature and actual source/section faults.
     #[default]
     Summary,
     /// Keep the normal typed DTO, subject to the byte budget.
@@ -165,44 +168,24 @@ pub fn encode_answer(
                 answer.kind(),
                 detail,
                 next_cursor,
-                SummaryPageDto {
-                    identity: IdentityDto::new(page.identity()),
-                    kind: page.kind().map(|kind| kind.name().to_owned()),
-                    language: page.language().name().to_owned(),
-                    signature: page.signature().map(crate::signature::Signature::text),
+                SummaryPageDto::new(&PageProjection::new(page, detail)),
+                budget,
+            ),
+            Answer::Records(list) => encode_typed(
+                answer.kind(),
+                detail,
+                next_cursor,
+                SummaryRecordsDto {
+                    query: list.query(),
+                    coverage: CoverageDto::all(list.coverage()),
+                    readiness: list.coverage().readiness(),
+                    records: SummaryRecords(list.records()),
+                    more: list.has_more(),
+                    empty_reason: list.empty_reason(),
+                    semantic_search: list.coverage().semantic_search_status(),
                 },
                 budget,
             ),
-            Answer::Records(list) => {
-                let records = list
-                    .records()
-                    .iter()
-                    .map(|record| {
-                        let record = RecordDto::new(record);
-                        SummaryRecordDto {
-                            identity: record.identity,
-                            kind: record.kind,
-                            language: record.language,
-                            state: record.state,
-                            summary: record.summary,
-                            score: record.score,
-                        }
-                    })
-                    .collect();
-                encode_typed(
-                    answer.kind(),
-                    detail,
-                    next_cursor,
-                    SummaryRecordsDto {
-                        query: list.query(),
-                        coverage: CoverageDto::all(list.coverage()),
-                        readiness: list.coverage().readiness(),
-                        records,
-                        more: list.has_more(),
-                    },
-                    budget,
-                )
-            }
             Answer::Shelf(shelf) => {
                 let projects = shelf
                     .entries()
@@ -294,7 +277,7 @@ pub fn encode_answer(
             answer.kind(),
             detail,
             next_cursor,
-            PageDto::new(page),
+            PageDto::from_projection(&PageProjection::new(page, detail)),
             budget,
         ),
         Answer::Records(list) => encode_typed(
@@ -348,7 +331,7 @@ fn encode_typed<'a, T: Serialize>(
     let mut envelope = BudgetEnvelope {
         body,
         answer,
-        detail: detail.name(),
+        projection: ProjectionDetail::new(answer, detail),
         next_cursor,
         budget: BudgetMetadata::default(),
     };
@@ -443,10 +426,39 @@ struct BudgetEnvelope<'a, T> {
     #[serde(flatten)]
     body: T,
     answer: &'static str,
-    detail: &'static str,
+    #[serde(flatten)]
+    projection: ProjectionDetail,
     #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
     next_cursor: Option<&'a str>,
     budget: BudgetMetadata,
+}
+
+// FaultDto owns `detail` as its original diagnostic. Projection metadata must
+// therefore use a separate key for fault envelopes, while answer envelopes
+// retain their established `detail` contract.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum ProjectionDetail {
+    Answer {
+        detail: &'static str,
+    },
+    Fault {
+        #[serde(rename = "responseDetail")]
+        response_detail: &'static str,
+    },
+}
+
+impl ProjectionDetail {
+    fn new(answer: &str, detail: Detail) -> Self {
+        match answer {
+            "fault" => Self::Fault {
+                response_detail: detail.name(),
+            },
+            _ => Self::Answer {
+                detail: detail.name(),
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
@@ -507,28 +519,109 @@ impl Write for HardCapWriter {
 }
 
 #[derive(Serialize)]
-struct SummaryPageDto {
-    identity: IdentityDto,
+struct SummaryPageDto<'a> {
+    identity: SummaryIdentityDto<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    kind: Option<String>,
-    language: String,
+    kind: Option<&'static str>,
+    language: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_fault: Option<FaultDto>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    notes: Vec<FaultDto>,
+}
+
+impl<'a> SummaryPageDto<'a> {
+    fn new(page: &PageProjection<'a>) -> Self {
+        Self {
+            identity: SummaryIdentityDto::new(page.identity()),
+            kind: page.kind().map(|kind| kind.name()),
+            language: page.language().name(),
+            signature: page.signature().map(crate::signature::Signature::text),
+            source_fault: page.source_fault().map(FaultDto::new),
+            notes: page.notes().iter().map(FaultDto::new).collect(),
+        }
+    }
 }
 
 #[derive(Serialize)]
-struct SummaryRecordDto {
-    identity: IdentityDto,
+struct SummaryRecordDto<'a> {
+    identity: SummaryIdentityDto<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    kind: Option<String>,
+    kind: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    language: Option<String>,
+    language: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    state: Option<String>,
+    state: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    summary: Option<String>,
+    summary: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     score: Option<u32>,
+}
+
+/// Summary retains both exact operand families and captured site facts. The
+/// required trail/segments stay decodable as the public IdentityDto. Parsed
+/// project and short key are optional display facets available in standard/full.
+#[derive(Serialize)]
+struct SummaryIdentityDto<'a> {
+    coordinate: &'a str,
+    trail: String,
+    name: &'a str,
+    shape: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line: Option<u32>,
+    segments: SummarySegments<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    semantic_data: Option<crate::dto::IdentitySemanticData>,
+}
+
+impl<'a> SummaryIdentityDto<'a> {
+    fn new(identity: &'a crate::Identity) -> Self {
+        Self {
+            coordinate: identity.coordinate().as_str(),
+            trail: identity.trail_within(None),
+            name: identity.name(),
+            shape: crate::dto::shape_name(identity),
+            path: identity.path().map(crate::identity::PackagePath::as_str),
+            line: identity.line().map(crate::identity::LineNumber::get),
+            segments: SummarySegments(identity.trail().segments()),
+            semantic_data: crate::dto::identity_semantic_data(identity),
+        }
+    }
+}
+
+struct SummarySegments<'a>(&'a [crate::identity::SymbolSegment]);
+
+impl Serialize for SummarySegments<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut segments = serializer.serialize_seq(Some(self.0.len()))?;
+        for segment in self.0 {
+            segments.serialize_element(segment.as_str())?;
+        }
+        segments.end()
+    }
+}
+
+struct SummaryRecords<'a>(&'a [crate::Record]);
+
+impl Serialize for SummaryRecords<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut rows = serializer.serialize_seq(Some(self.0.len()))?;
+        for record in self.0 {
+            rows.serialize_element(&SummaryRecordDto {
+                identity: SummaryIdentityDto::new(record.identity()),
+                kind: record.kind().map(|kind| kind.name()),
+                language: Some(record.language().name()),
+                state: Some(record.state().name()),
+                summary: record.summary(),
+                score: record.score().map(crate::Score::get),
+            })?;
+        }
+        rows.end()
+    }
 }
 
 #[derive(Serialize)]
@@ -536,8 +629,12 @@ struct SummaryRecordsDto<'a> {
     query: &'a str,
     coverage: Vec<CoverageDto>,
     readiness: &'a str,
-    records: Vec<SummaryRecordDto>,
+    records: SummaryRecords<'a>,
     more: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    empty_reason: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    semantic_search: Option<backend_library::SemanticSearchStatus>,
 }
 
 #[derive(Serialize)]
@@ -625,6 +722,225 @@ mod tests {
     use super::*;
 
     #[test]
+    fn summary_records_preserve_explanations_and_exact_semantic_lane_outcomes() {
+        use backend_library::{Coverage, SemanticSearchReason, SemanticSearchStatus};
+        let statuses = [
+            None,
+            Some(SemanticSearchStatus::Available),
+            Some(SemanticSearchStatus::Unavailable {
+                reason: SemanticSearchReason::Unconfigured,
+            }),
+            Some(SemanticSearchStatus::Stale {
+                reason: SemanticSearchReason::StaleProjection,
+            }),
+        ];
+        for status in statuses {
+            for explanation in [None, Some("this declaration has no outgoing references")] {
+                let mut list = crate::record::RecordList::new(
+                    "draw",
+                    crate::coverage::CoverageLine::new(&[Coverage::Complete], Some(0)),
+                    Vec::<crate::record::Record>::new(),
+                );
+                if let Some(status) = status {
+                    list = list.with_semantic_search_status(status);
+                }
+                if let Some(explanation) = explanation {
+                    list = list.with_empty_reason(explanation);
+                }
+                let answer = Answer::Records(Box::new(list));
+                let mut projections = Vec::new();
+                for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+                    let encoded = encode_answer(
+                        &answer,
+                        detail,
+                        None,
+                        DEFAULT_RESPONSE_BUDGET_BYTES,
+                    )
+                    .expect("complete result with diagnostic context");
+                    assert_eq!(encoded.budget.bytes, encoded.bytes.len());
+                    let value: Value = serde_json::from_slice(&encoded.bytes).expect("JSON");
+                    assert!(value.get("nextCursor").is_none());
+                    assert_eq!(value["records"], serde_json::json!([]));
+                    assert_eq!(value["more"], false);
+                    assert_eq!(value.get("empty_reason").is_some(), explanation.is_some());
+                    assert_eq!(value.get("semantic_search").is_some(), status.is_some());
+                    if let Some(explanation) = explanation {
+                        assert_eq!(value["empty_reason"], explanation);
+                    }
+                    if let Some(status) = status {
+                        let actual: SemanticSearchStatus =
+                            serde_json::from_value(value["semantic_search"].clone())
+                                .expect("exact typed semantic outcome");
+                        assert_eq!(actual, status);
+                    }
+                    projections.push(value);
+                }
+                for field in [
+                    "query",
+                    "coverage",
+                    "readiness",
+                    "empty_reason",
+                    "semantic_search",
+                ] {
+                    assert_eq!(projections[0][field], projections[1][field], "{field}");
+                    assert_eq!(projections[0][field], projections[2][field], "{field}");
+                }
+            }
+        }
+    }
+
+    // Deserialize directly from serialized bytes before Value can collapse
+    // duplicate object keys. This validator deliberately rejects the original
+    // envelope collision as well as accepting the repaired producer.
+    struct UniqueTopLevelKeys;
+
+    impl<'de> serde::Deserialize<'de> for UniqueTopLevelKeys {
+        fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+            struct Keys;
+            impl<'de> serde::de::Visitor<'de> for Keys {
+                type Value = UniqueTopLevelKeys;
+
+                fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    formatter.write_str("a JSON object with unique top-level keys")
+                }
+
+                fn visit_map<A: serde::de::MapAccess<'de>>(
+                    self,
+                    mut map: A,
+                ) -> Result<Self::Value, A::Error> {
+                    let mut keys = std::collections::BTreeSet::new();
+                    while let Some(key) = map.next_key::<String>()? {
+                        if !keys.insert(key.clone()) {
+                            return Err(serde::de::Error::custom(format!("duplicate key: {key}")));
+                        }
+                        map.next_value::<serde::de::IgnoredAny>()?;
+                    }
+                    Ok(UniqueTopLevelKeys)
+                }
+            }
+            deserializer.deserialize_map(Keys)
+        }
+    }
+
+    fn diagnostic_fault() -> Fault {
+        Fault::new(
+            FaultSlug::Endpoint,
+            Operand::Path("/socket".to_owned()),
+            Cause::new(
+                CauseSlug::Unreachable,
+                "private state parent /state µ was refused; repair its permissions",
+            ),
+            Affordance::None,
+        )
+    }
+
+    #[test]
+    fn serialized_fault_envelopes_keep_unique_diagnostic_and_projection_keys() {
+        assert!(
+            serde_json::from_slice::<UniqueTopLevelKeys>(
+                br#"{"detail":"original refusal","detail":"full"}"#
+            )
+            .is_err(),
+            "the byte-level control must reject the original duplicate-key bug"
+        );
+        let fault = diagnostic_fault();
+        let direct = crate::fault_value(&fault);
+        let serialized_dto = serde_json::to_vec(&FaultDto::new(&fault)).expect("direct fault DTO");
+        serde_json::from_slice::<UniqueTopLevelKeys>(&serialized_dto)
+            .expect("unique direct DTO keys");
+        for (detail, expected_bytes) in [
+            (Detail::Summary, 245),
+            (Detail::Standard, 246),
+            (Detail::Full, 242),
+        ] {
+            let payload = encode_serializable(
+                "fault",
+                detail,
+                None,
+                FaultDto::new(&fault),
+                MAX_RESPONSE_BUDGET_BYTES,
+            )
+            .expect("complete fault envelope");
+            serde_json::from_slice::<UniqueTopLevelKeys>(&payload.bytes)
+                .expect("unique encoded envelope keys");
+            let value: Value = serde_json::from_slice(&payload.bytes).expect("fault JSON");
+            assert_eq!(value["detail"], fault.cause().sentence());
+            assert_eq!(value["detail"], direct["detail"]);
+            assert_eq!(value["responseDetail"], detail.name());
+            assert_eq!(value["answer"], "fault");
+            assert_eq!(value["slug"], direct["slug"]);
+            assert_eq!(value["operand"], direct["operand"]);
+            assert_eq!(value["cause"], direct["cause"]);
+            assert_eq!(payload.bytes.len(), expected_bytes);
+            assert_eq!(payload.budget.bytes, expected_bytes);
+            assert_eq!(
+                payload.budget.estimated_tokens,
+                estimate_tokens(expected_bytes)
+            );
+            assert_eq!(value["budget"]["bytes"], expected_bytes);
+            assert_eq!(
+                value["budget"]["estimatedTokens"],
+                estimate_tokens(expected_bytes)
+            );
+            assert_eq!(value["budget"]["bytesPerToken"], ESTIMATED_BYTES_PER_TOKEN);
+            let exact =
+                encode_serializable("fault", detail, None, FaultDto::new(&fault), expected_bytes)
+                    .expect("the exact complete fault budget is admitted");
+            assert_eq!(exact, payload);
+            let below = encode_serializable(
+                "fault",
+                detail,
+                None,
+                FaultDto::new(&fault),
+                expected_bytes - 1,
+            )
+            .expect_err("one byte below the complete fault is refused atomically");
+            assert_eq!(below.bytes, expected_bytes);
+            assert_eq!(below.budget, expected_bytes - 1);
+        }
+    }
+
+    #[test]
+    fn fault_metadata_uses_the_same_hard_ceiling_without_truncating_the_diagnostic() {
+        let fault = Fault::new(
+            FaultSlug::Endpoint,
+            Operand::Whole,
+            Cause::new(
+                CauseSlug::Unreachable,
+                "µ".repeat(MAX_RESPONSE_BUDGET_BYTES),
+            ),
+            Affordance::None,
+        );
+        for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+            let refused =
+                encode_serializable("fault", detail, None, FaultDto::new(&fault), usize::MAX)
+                    .expect_err("a complete oversized fault cannot bypass the protocol cap");
+            assert_eq!(refused.budget, MAX_RESPONSE_BUDGET_BYTES);
+            assert!(refused.bytes > MAX_RESPONSE_BUDGET_BYTES);
+        }
+    }
+
+    #[test]
+    fn ordinary_answer_envelopes_retain_the_existing_detail_contract() {
+        let list = crate::record::RecordList::new(
+            "unchanged projection metadata",
+            crate::coverage::CoverageLine::new(&[backend_library::Coverage::Complete], Some(0)),
+            Vec::<crate::record::Record>::new(),
+        );
+        let answer = Answer::Records(Box::new(list));
+        for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+            let payload = encode_answer(&answer, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES)
+                .expect("normal answer envelope");
+            serde_json::from_slice::<UniqueTopLevelKeys>(&payload.bytes)
+                .expect("unique answer keys");
+            let value: Value = serde_json::from_slice(&payload.bytes).expect("normal answer JSON");
+            assert_eq!(value["detail"], detail.name());
+            assert!(value.get("responseDetail").is_none());
+            assert_eq!(payload.budget.bytes, payload.bytes.len());
+        }
+    }
+
+    #[test]
     fn usability_document_summary_retains_the_standard_signature() {
         let page = crate::page::Page::new(
             crate::Identity::parse("/abs/app::src/entry.ts:1::entrySummary"),
@@ -657,13 +973,214 @@ mod tests {
         .expect("standard fits");
         let summary: Value = serde_json::from_slice(&summary.bytes).expect("summary JSON");
         let standard: Value = serde_json::from_slice(&standard.bytes).expect("standard JSON");
-        assert_eq!(summary["identity"], standard["identity"]);
+        let typed: crate::SummaryPageDto = serde_json::from_value(summary.clone())
+            .expect("the actual Summary page decodes through its public projection type");
+        let identity: crate::IdentityDto = serde_json::from_value(summary["identity"].clone())
+            .expect("Summary retains the existing public IdentityDto grammar");
+        assert_eq!(typed.identity, identity);
+        assert_eq!(
+            typed.signature.as_deref(),
+            Some("function entrySummary(entry: Entry): string")
+        );
+        for field in [
+            "coordinate",
+            "trail",
+            "name",
+            "shape",
+            "path",
+            "line",
+            "segments",
+            "semantic_data",
+        ] {
+            assert_eq!(summary["identity"][field], standard["identity"][field]);
+        }
         assert_eq!(summary["signature"], standard["signature"]);
         assert_eq!(
             summary["signature"],
             "function entrySummary(entry: Entry): string"
         );
         assert!(summary.get("source").is_none());
+    }
+
+    #[test]
+    fn summary_records_keep_exact_operands_sites_facts_and_pagination_in_owner_order() {
+        use backend_library::{DeclarationKind, Row, RowId, SourceLocation, symbol_key};
+
+        let basis = backend_library::Basis::new(
+            backend_library::view_state_root(&[]),
+            backend_library::object_version(&[]),
+        );
+        let labels = [
+            "/abs/你好::src/café.go:7::Outer::Inner".to_owned(),
+            format!("/abs/你好::semantic::{}::Inner", "ab".repeat(32)),
+            format!(
+                "/abs/你好::external::symbol:{}::外部::Inner",
+                "cd".repeat(32)
+            ),
+            "opaque | coordinate with `literal` separators".to_owned(),
+        ];
+        let records = labels
+            .iter()
+            .enumerate()
+            .map(|(index, label)| {
+                let (path, line) = if index == 0 {
+                    ("src/café.go", 7)
+                } else {
+                    ("captured/独立.rs", 91)
+                };
+                let mut row = Row::new(
+                    RowId::Symbol(symbol_key(&format!("retained-{index}"))),
+                    basis,
+                    label.as_str(),
+                )
+                .with_kind(DeclarationKind::Class)
+                .with_source(SourceLocation::new(path, line).expect("actual captured site"));
+                row.score = Some(index as u32);
+                crate::Record::from_row(&row).with_summary(format!("retained summary {index}"))
+            })
+            .collect::<Vec<_>>();
+        let answer = Answer::Records(Box::new(
+            crate::RecordList::new(
+                "Inner",
+                crate::CoverageLine::new(&[backend_library::Coverage::Complete], Some(4)),
+                records,
+            )
+            .with_more(true),
+        ));
+        let cursor = "opaque signed token retained byte-for-byte";
+        let summary = encode_answer(
+            &answer,
+            Detail::Summary,
+            Some(cursor),
+            DEFAULT_RESPONSE_BUDGET_BYTES,
+        )
+        .expect("summary fits");
+        let full = encode_answer(
+            &answer,
+            Detail::Full,
+            Some(cursor),
+            DEFAULT_RESPONSE_BUDGET_BYTES,
+        )
+        .expect("full fits");
+        let summary_value: Value = serde_json::from_slice(&summary.bytes).expect("summary JSON");
+        let full_value: Value = serde_json::from_slice(&full.bytes).expect("full JSON");
+        let typed_summary: crate::RecordListDto = serde_json::from_value(summary_value.clone())
+            .expect("actual Summary rows decode through the existing public RecordListDto");
+        let typed_full: crate::RecordListDto =
+            serde_json::from_value(full_value.clone()).expect("actual full rows decode");
+        assert_eq!(typed_summary.query, typed_full.query);
+        for field in ["query", "coverage", "readiness", "more", "nextCursor"] {
+            assert_eq!(summary_value[field], full_value[field], "{field}");
+        }
+        let rows = summary_value["records"].as_array().expect("all records");
+        assert_eq!(rows.len(), labels.len());
+        for (index, (record, label)) in rows.iter().zip(labels).enumerate() {
+            assert_eq!(record["identity"]["coordinate"], label);
+            let (path, line) = if index == 0 {
+                ("src/café.go", 7)
+            } else {
+                ("captured/独立.rs", 91)
+            };
+            assert_eq!(record["identity"]["path"], path);
+            assert_eq!(record["identity"]["line"], line);
+            for field in [
+                "coordinate",
+                "trail",
+                "name",
+                "shape",
+                "path",
+                "line",
+                "segments",
+                "semantic_data",
+            ] {
+                assert_eq!(
+                    record["identity"][field],
+                    full_value["records"][index]["identity"][field]
+                );
+            }
+            let selected: crate::IdentitySemanticData =
+                serde_json::from_value(record["identity"]["semantic_data"].clone())
+                    .expect("exact selected operand accepted by the existing closed type");
+            let crate::IdentitySemanticData::SelectedSymbolId(id) = selected;
+            assert_eq!(
+                id.bytes(),
+                symbol_key(&format!("retained-{index}")).as_bytes()
+            );
+            for field in ["kind", "language", "state", "summary", "score"] {
+                assert_eq!(
+                    record[field], full_value["records"][index][field],
+                    "{field}"
+                );
+            }
+            for field in ["project", "key"] {
+                assert!(record["identity"].get(field).is_none());
+                assert!(
+                    full_value["records"][index]["identity"]
+                        .get(field)
+                        .is_some()
+                        || field == "project"
+                );
+            }
+        }
+        assert!(summary.bytes.len() < full.bytes.len());
+        assert_eq!(
+            encode_answer(&answer, Detail::Summary, Some(cursor), summary.bytes.len())
+                .expect("exact boundary fits")
+                .bytes,
+            summary.bytes
+        );
+        assert!(
+            encode_answer(
+                &answer,
+                Detail::Summary,
+                Some(cursor),
+                summary.bytes.len() - 1
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn all_record_details_preserve_eight_metadata_combinations_and_public_decode() {
+        use backend_library::{
+            Cursor, PageContinuation, SemanticSearchReason, SemanticSearchStatus,
+        };
+
+        for flags in 0..8 {
+            let mut list = crate::RecordList::new(
+                "外部::Inner",
+                crate::CoverageLine::new(&[backend_library::Coverage::Complete], Some(0)),
+                Vec::<crate::Record>::new(),
+            );
+            if flags & 1 != 0 {
+                list = list.with_empty_reason("No graph edges were recorded at this coordinate.");
+            }
+            if flags & 2 != 0 {
+                list = list.with_semantic_search_status(SemanticSearchStatus::Unavailable {
+                    reason: SemanticSearchReason::Unconfigured,
+                });
+            }
+            if flags & 4 != 0 {
+                list = list.with_continuation(Some(PageContinuation::from_cursor(Cursor::new())));
+            }
+            let expected = crate::RecordListDto::new(&list);
+            let cursor = list.has_more().then_some("exact opaque continuation");
+            let answer = Answer::Records(Box::new(list));
+            for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+                let encoded = encode_answer(&answer, detail, cursor, DEFAULT_RESPONSE_BUDGET_BYTES)
+                    .expect("bounded metadata matrix");
+                let value: Value = serde_json::from_slice(&encoded.bytes).expect("actual envelope");
+                let actual: crate::RecordListDto = serde_json::from_value(value.clone())
+                    .expect("every actual detail decodes through the public result-list DTO");
+                assert_eq!(actual, expected, "flags={flags} detail={detail:?}");
+                assert_eq!(value["nextCursor"].as_str(), cursor);
+                assert_eq!(value["budget"]["bytes"], encoded.bytes.len());
+                let exact = encode_answer(&answer, detail, cursor, encoded.bytes.len())
+                    .expect("exact measured boundary fits");
+                assert_eq!(exact.bytes, encoded.bytes);
+                assert!(encode_answer(&answer, detail, cursor, encoded.bytes.len() - 1).is_err());
+            }
+        }
     }
 
     fn membership_answer(count: usize, path_bytes: usize) -> Answer {

@@ -30,6 +30,7 @@ use crate::product::{CursorTarget, IndexJobProjection, ProductView, semantic_his
 use crate::record::{Record, RecordList};
 use crate::shelf::{Readiness, Shelf};
 use crate::status::Status;
+use crate::{Detail, PageProjection};
 
 /// Renders one `~lanes` coverage statement.
 #[must_use]
@@ -61,10 +62,58 @@ pub fn answer_with_cursor(
     cursor: Option<&str>,
     target: ContinuationTarget<'_>,
 ) -> String {
+    answer_with_detail(value, Detail::Standard, cursor, target)
+}
+
+/// Renders page fields selected by detail; other answer policies are unchanged.
+#[must_use]
+pub fn answer_with_detail(
+    value: &Answer,
+    detail: Detail,
+    cursor: Option<&str>,
+    target: ContinuationTarget<'_>,
+) -> String {
     match value {
+        Answer::Page(value) => page_projection(&PageProjection::new(value, detail)),
         Answer::Records(value) => records_with_cursor(value, None, cursor, target),
         _ => answer(value),
     }
+}
+
+/// Previews a structured Summary list without duplicating its complete rows.
+/// Other answers retain their existing readable representation.
+#[must_use]
+pub fn summary_with_cursor(
+    value: &Answer,
+    cursor: Option<&str>,
+    target: ContinuationTarget<'_>,
+) -> String {
+    if matches!(target, ContinuationTarget::CliOption) {
+        return answer_with_cursor(value, cursor, target);
+    }
+    let Answer::Records(list) = value else {
+        return answer_with_detail(value, Detail::Summary, cursor, target);
+    };
+    let mut lines = Lines::new();
+    lines.push(coverage(list.coverage()));
+    if list.is_empty() {
+        lines.push(list.empty_explanation());
+    } else {
+        lines.push(format!(
+            "{} row(s); complete records and native operands are in `structuredContent.records`.",
+            list.records().len(),
+        ));
+    }
+    if list.has_more() && list.continuation().is_some() {
+        if let Some(cursor) = cursor {
+            lines.push(continuation_note(target, cursor));
+        } else {
+            lines.push("… more rows; this rendering does not include the continuation token");
+        }
+    } else if list.has_more() {
+        lines.push("… more rows at this revision; raise `limit` to see them");
+    }
+    lines.finish()
 }
 
 /// Renders one fault, with its affordance as the exact next tool call.
@@ -110,6 +159,12 @@ fn tool_call_text(call: &serde_json::Value) -> String {
 /// Renders one declaration page, identity first.
 #[must_use]
 pub fn page(page: &Page) -> String {
+    page_projection(&PageProjection::new(page, Detail::Standard))
+}
+
+/// Renders a borrowed typed page projection without reinterpreting JSON.
+#[must_use]
+pub fn page_projection(page: &PageProjection<'_>) -> String {
     let mut lines = Lines::new();
     lines.push(format!("# {}", page.identity().trail_within(None)));
     lines.push(meta_line(page));
@@ -120,10 +175,21 @@ pub fn page(page: &Page) -> String {
         lines.push(signature.text());
         lines.push("```");
     }
-    push_prose(&mut lines, page.prose());
-    push_members(&mut lines, page.members(), page.identity().project());
-    push_relations(&mut lines, page.relations(), page.identity().project());
-    push_source(&mut lines, page.source(), page.language().fence());
+    if let Some(prose) = page.prose().included() {
+        push_prose(&mut lines, prose);
+    }
+    if let Some(members) = page.members().included() {
+        push_members(&mut lines, members, page.identity().project());
+    }
+    if let Some(relations) = page.relations().included() {
+        push_relations(&mut lines, relations, page.identity().project());
+    }
+    if let Some(source) = page.source().included() {
+        push_source(&mut lines, source, page.language().fence());
+    } else if let Some(reason) = page.source_fault() {
+        lines.blank();
+        lines.push(fault(reason));
+    }
     push_notes(&mut lines, page.notes());
     lines.finish()
 }
@@ -139,7 +205,7 @@ fn push_notes(lines: &mut Lines, notes: &[Fault]) {
     }
 }
 
-fn meta_line(page: &Page) -> String {
+fn meta_line(page: &PageProjection<'_>) -> String {
     let mut parts = Vec::with_capacity(4);
     if let Some(kind) = page.kind() {
         parts.push(kind.name().to_owned());
@@ -148,7 +214,7 @@ fn meta_line(page: &Page) -> String {
     if let Some(tag) = page.identity().key().tag() {
         parts.push(format!("key {tag}"));
     }
-    if let Some(site) = page.source().site() {
+    if let Some(site) = page.source_site() {
         parts.push(format!("{}:{}", site.path(), site.line()));
     }
     parts.join(" · ")
@@ -457,15 +523,25 @@ pub fn product(view: &ProductView) -> String {
 
 fn index_job_footer(view: &ProductView, lines: &mut Lines) {
     if let Some(observation) = view.index_operation() {
-        let key = match observation {
-            backend_library::IndexOperationObservation::Known(status) => status.operation_key,
-            backend_library::IndexOperationObservation::Unknown { operation_key }
-            | backend_library::IndexOperationObservation::OutsideReceiptWindow {
-                operation_key,
-                ..
-            } => *operation_key,
-        };
-        lines.push(format!("Observe the saved operation with `backend.index_progress` and `operation_key: {key}`; this key survives owner restarts."));
+        let terminal_failure = matches!(
+            observation,
+            backend_library::IndexOperationObservation::Known(status)
+                if matches!(
+                    &status.state,
+                    backend_library::IndexOperationState::Failed { .. }
+                )
+        );
+        if !terminal_failure {
+            let key = match observation {
+                backend_library::IndexOperationObservation::Known(status) => status.operation_key,
+                backend_library::IndexOperationObservation::Unknown { operation_key }
+                | backend_library::IndexOperationObservation::OutsideReceiptWindow {
+                    operation_key,
+                    ..
+                } => *operation_key,
+            };
+            lines.push(format!("Observe the saved operation with `backend.index_progress` and `operation_key: {key}`; this key survives owner restarts."));
+        }
     }
     let Some(job) = view.index_job() else {
         return;
@@ -544,14 +620,14 @@ fn index_search_page_footer(view: &ProductView, lines: &mut Lines) {
         page.result_count()
     ));
     if let Some(cursor) = page.next_cursor() {
-        let instruction = match page
+        let target = match page
             .cursor_projection()
             .map_or(CursorTarget::CliOption, |projection| projection.target())
         {
-            CursorTarget::CliOption => "pass `--cursor`",
-            CursorTarget::McpIndexSearchTool => "pass as `cursor` to `backend.index_search`",
-            CursorTarget::SurfaceCommand => "set `command.cursor` in `backend.surface`",
+            CursorTarget::CliOption => ContinuationTarget::CliOption,
+            CursorTarget::McpIndexSearchTool => ContinuationTarget::McpTool("backend.index_search"),
+            CursorTarget::SurfaceCommand => ContinuationTarget::McpSurfaceCommand,
         };
-        lines.push(format!("next cursor ({instruction}): `{cursor}`"));
+        lines.push(continuation_note(target, cursor));
     }
 }

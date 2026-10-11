@@ -30,7 +30,7 @@ pub use cross_file_type_params_cache::{
 pub(crate) mod constructors;
 mod core;
 mod core_module_resolution;
-pub use core::build_lib_file_local_names;
+pub use core::{build_lib_file_local_names, build_lib_file_local_names_with_poll};
 mod cross_file_query;
 mod diagnostic_indices;
 mod diagnostic_push;
@@ -71,6 +71,7 @@ mod program_context;
 pub use program_context::ProgramContext;
 mod request_cache;
 mod resolver;
+pub(crate) use resolver::{BoundModuleRequest, SelectedModuleRequest};
 mod source_file_symbol_type_cache_scope;
 pub(crate) mod speculation;
 mod strict_mode;

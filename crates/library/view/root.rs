@@ -45,6 +45,8 @@ pub struct ViewRoot {
     pub(super) package_labels: Arc<OnceLock<PackageLabelIndex>>,
     /// First row identity for each exact label, built without cloning row bodies.
     pub(super) label_ids: Arc<OnceLock<BTreeMap<String, LabelRows>>>,
+    /// Captured alias lookup keys and unique/ambiguous native row identities.
+    pub(super) source_alias_ids: Arc<OnceLock<BTreeMap<crate::SymbolKey, Option<RowId>>>>,
     /// Coverage for each requested lane.
     pub(crate) coverage: Box<[Coverage]>,
     /// Producer-admitted witness for complete source coverage.
@@ -74,6 +76,7 @@ pub(super) struct PackageLabelIndex {
 pub(super) struct LabelRows {
     first: RowId,
     symbol: LabelSymbol,
+    ambiguous: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -315,6 +318,97 @@ impl ViewRoot {
         self.row_ref(id)
     }
 
+    /// Reports whether more than one selected row uses this exact label.
+    ///
+    /// The label index retains this fact while it is built from borrowed rows,
+    /// so callers can distinguish an absent coordinate from a collision
+    /// without scanning or cloning the complete view.
+    #[must_use]
+    pub fn label_is_ambiguous(&self, label: &str) -> bool {
+        self.label_ids()
+            .get(label)
+            .is_some_and(|rows| rows.ambiguous)
+    }
+
+    pub(super) fn source_coordinate_address(
+        &self,
+        coordinate: &str,
+    ) -> super::SelectedViewAddress<'_> {
+        let selected = self.source_coordinate_key(symbol_key(coordinate));
+        let super::SelectedViewAddress::Declaration { row, .. } = selected else {
+            return selected;
+        };
+        let Some(package) = row
+            .package
+            .and_then(|package| self.row_ref(RowId::Package(package)))
+        else {
+            return super::SelectedViewAddress::Absent;
+        };
+        if super::CapturedSourceCoordinate::from_row_and_package(row, package)
+            .is_some_and(|proof| proof.matches(coordinate))
+        {
+            selected
+        } else {
+            super::SelectedViewAddress::Absent
+        }
+    }
+
+    /// The index stores native IDs; an address hash never becomes a row key.
+    pub(crate) fn source_coordinate_key(
+        &self,
+        key: crate::SymbolKey,
+    ) -> super::SelectedViewAddress<'_> {
+        let index = self.source_alias_ids.get_or_init(|| {
+            let mut index = BTreeMap::new();
+            for row in self.row_refs() {
+                let Some(package) = row
+                    .package
+                    .and_then(|package| self.row_ref(RowId::Package(package)))
+                else {
+                    continue;
+                };
+                let Some(proof) =
+                    super::CapturedSourceCoordinate::from_row_and_package(row, package)
+                else {
+                    continue;
+                };
+                let Some(key) = proof.address_key() else {
+                    continue;
+                };
+                index
+                    .entry(key)
+                    .and_modify(|entry| *entry = None)
+                    .or_insert(Some(row.id));
+            }
+            index
+        });
+        let Some(id) = index.get(&key) else {
+            return super::SelectedViewAddress::Absent;
+        };
+        let Some(id) = id else {
+            return super::SelectedViewAddress::Ambiguous;
+        };
+        let Some(row) = self.row_ref(*id) else {
+            return super::SelectedViewAddress::Absent;
+        };
+        let Some(package) = row
+            .package
+            .and_then(|package| self.row_ref(RowId::Package(package)))
+        else {
+            return super::SelectedViewAddress::Absent;
+        };
+        if super::CapturedSourceCoordinate::from_row_and_package(row, package)
+            .is_some_and(|proof| proof.address_key() == Some(key))
+        {
+            super::SelectedViewAddress::Declaration {
+                row,
+                matched_as: super::AddressMatchKind::LegacySourceSite,
+            }
+        } else {
+            super::SelectedViewAddress::Absent
+        }
+    }
+
     fn label_ids(&self) -> &BTreeMap<String, LabelRows> {
         self.label_ids.get_or_init(|| {
             let mut index = BTreeMap::new();
@@ -322,7 +416,11 @@ impl ViewRoot {
                 let entry = index.entry(row.label.clone()).or_insert_with(|| LabelRows {
                     first: row.id,
                     symbol: LabelSymbol::None,
+                    ambiguous: false,
                 });
+                if entry.first != row.id {
+                    entry.ambiguous = true;
+                }
                 if matches!(row.id, RowId::Symbol(_)) {
                     entry.symbol = match entry.symbol {
                         LabelSymbol::None => LabelSymbol::Unique(row.id),
@@ -507,6 +605,7 @@ impl ViewRoot {
             rows_cache: Arc::new(OnceLock::new()),
             package_labels: Arc::new(OnceLock::new()),
             label_ids: Arc::new(OnceLock::new()),
+            source_alias_ids: Arc::new(OnceLock::new()),
             coverage,
             capability: None,
             relation,
@@ -615,6 +714,7 @@ impl ViewRoot {
             rows_cache: Arc::new(OnceLock::new()),
             package_labels: Arc::new(OnceLock::new()),
             label_ids: Arc::new(OnceLock::new()),
+            source_alias_ids: Arc::new(OnceLock::new()),
             coverage,
             capability,
             relation,

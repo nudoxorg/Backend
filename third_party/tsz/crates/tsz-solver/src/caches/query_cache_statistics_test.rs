@@ -2,6 +2,7 @@
 
 use crate::caches::db::{
     IntersectionMergeCacheEntry, QueryDatabase, TypeApplicationEvalCache, TypeDatabase,
+    TypeExecutionCheckpoint, TypePredicateCache,
 };
 use crate::caches::instantiation_cache::{CanonicalSubst, InstantiationCacheKey};
 use crate::caches::query_cache::{QueryCache, SharedQueryCache};
@@ -9,6 +10,99 @@ use crate::caches::query_cache_statistics::QueryCacheStatistics;
 use crate::def::{DefId, DefinitionStore};
 use crate::intern::TypeInterner;
 use crate::types::{RelationCacheConfig, RelationCacheKey, TypeId};
+
+struct OneShotExecutionStop(std::sync::atomic::AtomicBool);
+
+impl tsz_common::ExecutionCheckpoint for OneShotExecutionStop {
+    fn checkpoint(&self, _work_units: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+        if self.0.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            Err(tsz_common::ProjectExecutionStop::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+struct StopOnPoll(std::sync::atomic::AtomicUsize);
+
+impl tsz_common::ExecutionCheckpoint for StopOnPoll {
+    fn checkpoint(&self, _work_units: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+        if self
+            .0
+            .fetch_update(
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+                |remaining| remaining.checked_sub(1),
+            )
+            .is_err()
+        {
+            Err(tsz_common::ProjectExecutionStop::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn query_cache_latches_union_stop_before_unknown_or_memo_publication() {
+    let interner = TypeInterner::new();
+    let shared = SharedQueryCache::new();
+    let source = OneShotExecutionStop(std::sync::atomic::AtomicBool::new(true));
+    let db = QueryCache::new_with_shared(&interner, &shared).with_execution_checkpoint(&source);
+
+    assert_eq!(
+        db.union(vec![TypeId::STRING, TypeId::NUMBER]),
+        TypeId::UNKNOWN
+    );
+    assert_eq!(
+        db.execution_checkpoint(0),
+        Err(tsz_common::ProjectExecutionStop::Cancelled),
+        "the typed boundary must observe the same first stop after UNKNOWN"
+    );
+    db.insert_eval_memo(TypeId::BOOLEAN, false, TypeId::STRING);
+    assert_eq!(db.statistics().eval_cache_entries, 0);
+
+    let observer = QueryCache::new_with_shared(&interner, &shared);
+    assert_eq!(observer.lookup_eval_memo(TypeId::BOOLEAN, false), None);
+}
+
+#[test]
+fn shared_eval_memo_sink_rechecks_after_local_insert_latches_stop() {
+    let interner = TypeInterner::new();
+    let shared = SharedQueryCache::new();
+    // `insert_eval_memo` and its local writer both pass their guards. The
+    // shared-tier sink observes the next poll, after the local insertion, and
+    // must refuse to publish the value across files.
+    let source = StopOnPoll(std::sync::atomic::AtomicUsize::new(2));
+    let db = QueryCache::new_with_shared(&interner, &shared).with_execution_checkpoint(&source);
+    db.insert_eval_memo(TypeId::BOOLEAN, false, TypeId::STRING);
+    assert_eq!(db.statistics().eval_cache_entries, 1);
+    assert_eq!(
+        db.lookup_eval_memo(TypeId::BOOLEAN, false),
+        Some(TypeId::STRING)
+    );
+
+    let observer = QueryCache::new_with_shared(&interner, &shared);
+    assert_eq!(observer.lookup_eval_memo(TypeId::BOOLEAN, false), None);
+}
+
+#[test]
+fn shared_application_eval_sink_rechecks_stop_before_local_publish() {
+    let interner = TypeInterner::new();
+    let shared = SharedQueryCache::new_for_instantiation_family_test(true);
+    // The entry poll admits the call; the shared-tier guard sees the stop,
+    // and the following local-write guard must keep it out of both tiers.
+    let source = StopOnPoll(std::sync::atomic::AtomicUsize::new(1));
+    let db = QueryCache::new_with_shared(&interner, &shared).with_execution_checkpoint(&source);
+    db.insert_application_eval_cache(DefId(913), &[TypeId::STRING], false, TypeId::NUMBER);
+    assert_eq!(db.statistics().application_eval_cache_entries, 0);
+
+    let observer = QueryCache::new_with_shared(&interner, &shared);
+    assert_eq!(
+        observer.lookup_application_eval_cache(DefId(913), &[TypeId::STRING], false),
+        None,
+    );
+}
 
 #[test]
 fn query_cache_type_database_identity_is_backing_interner() {
@@ -31,6 +125,43 @@ fn query_cache_type_database_identity_is_backing_interner() {
         db_a.type_database_identity(),
         other_db.type_database_identity(),
         "different interners should remain distinct TypeId universes"
+    );
+}
+
+#[test]
+fn stopped_query_cache_does_not_publish_shared_or_interner_memos() {
+    let interner = TypeInterner::new();
+    let shared = SharedQueryCache::new();
+    let cancelled = std::sync::atomic::AtomicBool::new(true);
+    let source = tsz_common::ProjectExecutionBudget::new(
+        std::time::Instant::now() + std::time::Duration::from_secs(30),
+        &cancelled,
+        100,
+    );
+    let checkpoint = tsz_common::LatchedExecutionCheckpoint::new(&source);
+    let db = QueryCache::new_with_shared(&interner, &shared).with_execution_checkpoint(&checkpoint);
+
+    db.insert_application_eval_cache(DefId(901), &[TypeId::STRING], false, TypeId::NUMBER);
+    assert_eq!(
+        db.lookup_application_eval_cache(DefId(901), &[TypeId::STRING], false),
+        None,
+        "a stopped callback must not seed local or shared application results"
+    );
+
+    db.set_contains_infer_types_cache(TypeId::NUMBER, true);
+    assert_eq!(
+        interner.contains_infer_types_cached(TypeId::NUMBER),
+        None,
+        "a stopped callback must not publish interner-wide predicate results"
+    );
+
+    // A stopped request's local guard must not disable writes from another
+    // QueryCache over the same TypeInterner.
+    let running_db = QueryCache::new(&interner);
+    running_db.set_contains_infer_types_cache(TypeId::NUMBER, true);
+    assert_eq!(
+        interner.contains_infer_types_cached(TypeId::NUMBER),
+        Some(true),
     );
 }
 
