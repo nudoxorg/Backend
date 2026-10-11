@@ -483,6 +483,14 @@ impl<'a> QueryCache<'a> {
         self.reset_relation_cache_stats();
     }
 
+    /// Start a new file scope while retaining allocation capacity and shared
+    /// immutable program inputs. No local memo entry crosses this boundary;
+    /// the shared L2 cache, semantic options, and execution checkpoint remain.
+    pub fn reset_for_next_file(&self) {
+        self.clear();
+        crate::evaluation::memo_audit::begin_file_scope();
+    }
+
     pub fn relation_cache_stats(&self) -> RelationCacheStats {
         let subtype_entries = self.subtype_cache.borrow().len();
         let assignability_entries = self.assignability_cache.borrow().len();

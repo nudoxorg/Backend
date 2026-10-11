@@ -1214,12 +1214,30 @@ impl<'a> ParallelCheckPlan<'a> {
             &dyn tsz_solver::construction::TypeDatabase,
         ) -> Output,
     ) -> Output {
-        let binder = Arc::clone(&self.all_binders[file_idx]);
         let query_cache = self.make_query_cache();
+        let mut checker = self.configured_file_checker(file_idx, file, &query_cache);
+
+        consume(
+            &mut checker,
+            self.all_binders[file_idx].as_ref(),
+            file,
+            &query_cache,
+        )
+    }
+
+    /// Construct one checker from the immutable plan. Both fresh-file and
+    /// partition-owned execution install exactly the same project context.
+    fn configured_file_checker<'checker>(
+        &'checker self,
+        file_idx: usize,
+        file: &'checker BoundFile,
+        query_cache: &'checker tsz_solver::construction::QueryCache<'_>,
+    ) -> CheckerState<'checker> {
+        let binder = self.all_binders[file_idx].as_ref();
         let mut checker = CheckerState::with_options_and_shared_def_store(
             &file.arena,
-            binder.as_ref(),
-            &query_cache,
+            binder,
+            query_cache,
             file.file_name.clone(),
             self.checker_options,
             std::sync::Arc::clone(&self.program.definition_store),
@@ -1262,12 +1280,12 @@ impl<'a> ParallelCheckPlan<'a> {
                 .set_actual_lib_file_count(self.lib_contexts.len());
         }
 
-        consume(&mut checker, binder.as_ref(), file, &query_cache)
+        checker
     }
 
     /// Check a single user file, returning its sorted, deduplicated diagnostics.
     fn check_one_file(&self, file_idx: usize, file: &BoundFile) -> FileCheckResult {
-        let mut diagnostics = self.with_bound_file_checker_and_types(
+        let diagnostics = self.with_bound_file_checker_and_types(
             file_idx,
             file,
             |checker, _binder, file, _types| {
@@ -1276,6 +1294,14 @@ impl<'a> ParallelCheckPlan<'a> {
             },
         );
 
+        Self::user_file_result(file_idx, file, diagnostics)
+    }
+
+    fn user_file_result(
+        file_idx: usize,
+        file: &BoundFile,
+        mut diagnostics: Vec<Diagnostic>,
+    ) -> FileCheckResult {
         // Sort diagnostics by position for deterministic output within each file.
         diagnostics.sort_by(|a, b| a.compare(b));
 
