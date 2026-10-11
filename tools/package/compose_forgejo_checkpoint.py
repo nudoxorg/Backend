@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+from collections.abc import Callable
 from dataclasses import dataclass
 import hashlib
 import json
@@ -490,23 +491,30 @@ def compose_candidate(source: SourceSnapshot, package: LinuxPackage) -> Candidat
     return CandidateBundle(bootstrap_tag, bootstrap_bytes, launcher, channel, libraries, package, source)
 
 
-def write_exclusive(path: Path, body: bytes) -> None:
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+def write_exclusive(path: Path | str, body: bytes, *, dir_fd: int | None = None) -> None:
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                         0o600, dir_fd=dir_fd)
     with os.fdopen(descriptor, "wb") as stream:
         stream.write(body)
 
 
-def copy_verified(source: Path, destination: Path, expected_sha256: str, expected_bytes: int) -> None:
+def copy_verified(source: Path, destination: Path, expected_sha256: str, expected_bytes: int, *,
+                  destination_dir_fd: int | None = None,
+                  verify_destination: Callable[[], None] | None = None) -> None:
     if source.is_symlink() or not source.is_file():
         raise CandidateError(f"candidate package asset is not a regular file: {source.name}")
     source_hash = hashlib.sha256()
-    destination_parent_fd = None
+    owns_destination_parent_fd = destination_dir_fd is None
+    destination_parent_fd = destination_dir_fd
     destination_fd = None
     destination_identity = None
     copied = 0
     try:
-        destination_parent_fd = os.open(
-            destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        if destination_parent_fd is None:
+            destination_parent_fd = os.open(
+                destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        if verify_destination is not None:
+            verify_destination()
         source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(source_fd, "rb") as incoming:
             before = os.fstat(incoming.fileno())
@@ -561,56 +569,185 @@ def copy_verified(source: Path, destination: Path, expected_sha256: str, expecte
                 or named_target.st_size != expected_bytes or named_target.st_nlink != 1
                 or not stat.S_ISREG(named_target.st_mode)):
             raise CandidateError(f"staged candidate package asset differs from its admitted identity: {source.name}")
+        if verify_destination is not None:
+            verify_destination()
     finally:
         if destination_fd is not None:
             os.close(destination_fd)
-        if destination_parent_fd is not None:
+        if owns_destination_parent_fd and destination_parent_fd is not None:
             os.close(destination_parent_fd)
 
 
+def _same_directory(left, right) -> bool:
+    return (stat.S_ISDIR(left.st_mode) and stat.S_ISDIR(right.st_mode)
+            and (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino))
+
+
+def _parent_protects_output(parent_info) -> bool:
+    """Accept caller-owned parents or root-owned parents; shared writes require sticky protection."""
+    if parent_info.st_uid not in {0, os.geteuid()}:
+        return False
+    shared_write = parent_info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    return not shared_write or bool(parent_info.st_mode & stat.S_ISVTX)
+
+
+def _output_binding(parent: Path, parent_fd: int, output_name: str, output_fd: int,
+                    output_identity: tuple[int, int]) -> None:
+    """Require both directory descriptors still name their originally created paths."""
+    parent_open = os.fstat(parent_fd)
+    try:
+        parent_named = os.stat(parent, follow_symlinks=False)
+    except OSError as error:
+        raise CandidateError("candidate output parent path changed during assembly") from error
+    if not _same_directory(parent_open, parent_named):
+        raise CandidateError("candidate output parent path changed during assembly")
+    if not _parent_protects_output(parent_open):
+        raise CandidateError("candidate output parent is writable by an untrusted user")
+
+    output_open = os.fstat(output_fd)
+    try:
+        output_named = os.stat(output_name, dir_fd=parent_fd, follow_symlinks=False)
+        output_path_named = os.stat(parent / output_name, follow_symlinks=False)
+    except OSError as error:
+        raise CandidateError("candidate output directory identity changed during assembly") from error
+    if (not _same_directory(output_open, output_named)
+            or (output_open.st_dev, output_open.st_ino) != output_identity
+            or (output_path_named.st_dev, output_path_named.st_ino) != output_identity
+            or output_open.st_uid != os.geteuid() or output_open.st_mode & 0o077):
+        raise CandidateError("candidate output directory identity changed during assembly")
+
+
+def _output_asset_hash(name: str, output_fd: int,
+                       verify_binding: Callable[[], None]) -> dict[str, object]:
+    verify_binding()
+    descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                         dir_fd=output_fd)
+    with os.fdopen(descriptor, "rb") as stream:
+        before = os.fstat(stream.fileno())
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise CandidateError(f"candidate output asset is not a single-link regular file: {name}")
+        hasher = hashlib.sha256()
+        count = 0
+        while chunk := stream.read(1024 * 1024):
+            count += len(chunk)
+            if count > release.LINUX_MAX_ARCHIVE_BYTES:
+                raise CandidateError(f"candidate output asset exceeds its verification bound: {name}")
+            hasher.update(chunk)
+        after = os.fstat(stream.fileno())
+    named = os.stat(name, dir_fd=output_fd, follow_symlinks=False)
+    identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+    if (identity(before) != identity(after) or identity(after) != identity(named)
+            or count != after.st_size or named.st_nlink != 1 or not stat.S_ISREG(named.st_mode)):
+        raise CandidateError(f"candidate output asset changed while hashing: {name}")
+    verify_binding()
+    return {"sha256": hasher.hexdigest(), "bytes": count}
+
+
 def prepare_output(bundle: CandidateBundle, output_dir: Path) -> dict:
-    output = output_dir.resolve(strict=False)
+    """Assemble under a POSIX-trusted parent and retain failures for inspection.
+
+    Parent safety uses owner/mode/sticky metadata; callers must avoid ACL grants that let
+    other users replace entries in the selected parent.
+    """
+    requested = Path(os.path.abspath(Path(output_dir).expanduser()))
+    if requested.is_symlink() or requested.exists():
+        raise CandidateError("candidate output directory must be new")
+    parent = requested.parent.resolve(strict=False)
+    output = parent / requested.name
     if output.exists() or output.is_symlink():
         raise CandidateError("candidate output directory must be new")
     if output == bundle.source.root or bundle.source.root in output.parents:
         raise CandidateError("candidate output directory must be outside the source checkout")
     if output == bundle.linux_package.directory or bundle.linux_package.directory in output.parents:
         raise CandidateError("candidate output directory must be outside the selected package input")
-    output.mkdir(mode=0o700, parents=True)
-    created_output = output.lstat()
-    if (not stat.S_ISDIR(created_output.st_mode) or stat.S_ISLNK(created_output.st_mode)
-            or created_output.st_uid != os.geteuid()):
-        raise CandidateError("candidate output directory identity is not owned by this process")
+    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
+        parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as error:
+        raise CandidateError(f"cannot bind candidate output parent directory: {error}") from error
+    output_fd = None
+    output_identity = None
+    output_name = output.name
+    output_created = False
+    try:
+        parent_open = os.fstat(parent_fd)
+        parent_named = os.stat(parent, follow_symlinks=False)
+        if not _same_directory(parent_open, parent_named):
+            raise CandidateError("candidate output parent path changed before assembly")
+        if not _parent_protects_output(parent_open):
+            raise CandidateError("candidate output parent is writable by an untrusted user")
+        os.mkdir(output_name, mode=0o700, dir_fd=parent_fd)
+        output_created = True
+        output_fd = os.open(output_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                            dir_fd=parent_fd)
+        created_output = os.fstat(output_fd)
+        output_identity = (created_output.st_dev, created_output.st_ino)
+        if not stat.S_ISDIR(created_output.st_mode) or created_output.st_uid != os.geteuid():
+            raise CandidateError("candidate output directory identity is not owned by this process")
+
+        def verify_binding() -> None:
+            _output_binding(parent, parent_fd, output_name, output_fd, output_identity)
+
         linux_file = f"{bundle.libraries['linux-x64'].asset_stem}-{bundle.libraries['linux-x64'].sha256[:16]}.py"
         mac_file = f"{bundle.libraries['macos-arm64'].asset_stem}-{bundle.libraries['macos-arm64'].sha256[:16]}.py"
         bootstrap_file = f"install-forgejo-bootstrap-{digest(bundle.bootstrap)[:16]}.py"
         launcher_file = f"install-forgejo-launcher-{digest(bundle.launcher)[:16]}.sh"
         channel_bytes = (json.dumps(bundle.channel, indent=2) + "\n").encode()
-        write_exclusive(output / bootstrap_file, bundle.bootstrap)
-        write_exclusive(output / launcher_file, bundle.launcher)
-        write_exclusive(output / "install.sh", bundle.launcher)
-        write_exclusive(output / linux_file, bundle.libraries["linux-x64"].body)
-        write_exclusive(output / mac_file, bundle.libraries["macos-arm64"].body)
-        write_exclusive(output / "preview-channel.json", channel_bytes)
+        def write_asset(name: str, body: bytes) -> None:
+            verify_binding()
+            write_exclusive(name, body, dir_fd=output_fd)
+            verify_binding()
+
+        write_asset(bootstrap_file, bundle.bootstrap)
+        write_asset(launcher_file, bundle.launcher)
+        write_asset("install.sh", bundle.launcher)
+        write_asset(linux_file, bundle.libraries["linux-x64"].body)
+        write_asset(mac_file, bundle.libraries["macos-arm64"].body)
+        write_asset("preview-channel.json", channel_bytes)
         manifest_name = "release-manifest-linux-x64.json"
-        write_exclusive(output / manifest_name, bundle.linux_package.manifest_bytes)
+        write_asset(manifest_name, bundle.linux_package.manifest_bytes)
         archive_name = bundle.linux_package.archive.name
+        verify_binding()
         copy_verified(bundle.linux_package.archive, output / archive_name,
-                      bundle.linux_package.archive_sha256, bundle.linux_package.archive_bytes)
+                      bundle.linux_package.archive_sha256, bundle.linux_package.archive_bytes,
+                      destination_dir_fd=output_fd, verify_destination=verify_binding)
         checksum_name = archive_name + ".sha256"
         checksum_source = bundle.linux_package.directory / checksum_name
         checksum = read_regular(checksum_source, 4096, "Linux archive checksum sidecar")
         expected_checksum = f"{bundle.linux_package.archive_sha256}  {archive_name}\n".encode()
         if checksum != expected_checksum:
             raise CandidateError("Linux archive checksum sidecar differs from the selected manifest")
-        write_exclusive(output / checksum_name, checksum)
+        write_asset(checksum_name, checksum)
 
+        expected_assets = {
+            bootstrap_file: {"sha256": digest(bundle.bootstrap), "bytes": len(bundle.bootstrap)},
+            launcher_file: {"sha256": digest(bundle.launcher), "bytes": len(bundle.launcher)},
+            "install.sh": {"sha256": digest(bundle.launcher), "bytes": len(bundle.launcher)},
+            linux_file: {"sha256": bundle.libraries["linux-x64"].sha256,
+                         "bytes": bundle.libraries["linux-x64"].byte_count},
+            mac_file: {"sha256": bundle.libraries["macos-arm64"].sha256,
+                       "bytes": bundle.libraries["macos-arm64"].byte_count},
+            "preview-channel.json": {"sha256": digest(channel_bytes), "bytes": len(channel_bytes)},
+            manifest_name: {"sha256": digest(bundle.linux_package.manifest_bytes),
+                            "bytes": len(bundle.linux_package.manifest_bytes)},
+            archive_name: {"sha256": bundle.linux_package.archive_sha256,
+                           "bytes": bundle.linux_package.archive_bytes},
+            checksum_name: {"sha256": digest(checksum), "bytes": len(checksum)},
+        }
+        asset_names = {
+            bootstrap_file, launcher_file, "install.sh", linux_file, mac_file,
+            "preview-channel.json", manifest_name, archive_name, checksum_name,
+        }
+        verify_binding()
+        actual_names = set(os.listdir(output_fd))
+        if actual_names != asset_names:
+            raise CandidateError("candidate output contains unexpected or missing assets")
         assets = {}
-        for path in sorted(output.iterdir()):
-            if path.name == "candidate-assembly.json":
-                continue
-            assets[path.name] = {"sha256": release.sha256(path), "bytes": path.stat().st_size}
+        for name in sorted(asset_names):
+            measured = _output_asset_hash(name, output_fd, verify_binding)
+            if measured != expected_assets[name]:
+                raise CandidateError(f"candidate output asset differs from its admitted bytes: {name}")
+            assets[name] = measured
         receipt = {
             "schema": "nudox.diagnostic-forgejo-candidate-assembly.v1",
             "production_ready": False,
@@ -644,11 +781,28 @@ def prepare_output(bundle: CandidateBundle, output_dir: Path) -> dict:
             "assets": assets,
         }
         receipt_bytes = (json.dumps(receipt, indent=2, sort_keys=True) + "\n").encode()
-        write_exclusive(output / "candidate-assembly.json", receipt_bytes)
+        write_asset("candidate-assembly.json", receipt_bytes)
+        if _output_asset_hash("candidate-assembly.json", output_fd, verify_binding) != {
+                "sha256": digest(receipt_bytes), "bytes": len(receipt_bytes)}:
+            raise CandidateError("candidate assembly receipt differs from its admitted bytes")
+        verify_binding()
+        final_names = set(os.listdir(output_fd))
+        verify_binding()
+        if final_names != asset_names | {"candidate-assembly.json"}:
+            raise CandidateError("candidate output changed after its receipt was written")
         return receipt
     except Exception as error:
+        if not output_created:
+            if isinstance(error, FileExistsError):
+                raise CandidateError("candidate output directory must be new") from error
+            raise CandidateError(f"cannot create candidate output directory: {error}") from error
         raise CandidateError(
-            f"candidate assembly failed; private output was retained for inspection at {output}: {error}") from error
+            f"candidate assembly failed; the created private output was retained for inspection "
+            f"(the requested path may have changed): {output}: {error}") from error
+    finally:
+        if output_fd is not None:
+            os.close(output_fd)
+        os.close(parent_fd)
 
 
 def assemble(source_root: Path, linux_package_dir: Path, output_dir: Path) -> dict:

@@ -412,6 +412,163 @@ sys.exit(int(os.environ.get('CURL_STATUS','0')))
             self.assertTrue(output.is_dir())
             self.assertEqual(list(output.iterdir()), [])
 
+    def test_output_directory_replacement_cannot_redirect_or_delete_candidate_assets(self):
+        source, package = synthetic_inputs()
+        bundle = compose.compose_candidate(source, package)
+        real_write = compose.write_exclusive
+        for replace_parent in (False, True):
+            with self.subTest(replace_parent=replace_parent), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                parent = root / "assembly-parent"
+                parent.mkdir()
+                output = parent / "candidate"
+                moved_parent = root / "original-parent"
+                moved_output = root / "original-candidate"
+                replacement_marker = b"preserve this replacement directory"
+                switched = False
+                replacement_directory = None
+                sentinel = None
+
+                def replace_path_then_write(name, body, *, dir_fd=None):
+                    nonlocal switched, replacement_directory, sentinel
+                    if not switched:
+                        switched = True
+                        if replace_parent:
+                            parent.rename(moved_parent)
+                            parent.mkdir()
+                            output.mkdir(mode=0o700)
+                        else:
+                            output.rename(moved_output)
+                            output.mkdir(mode=0o700)
+                        (output / "sentinel").write_bytes(replacement_marker)
+                        replacement_directory = output.stat()
+                        sentinel = (output / "sentinel").stat()
+                    return real_write(name, body, dir_fd=dir_fd)
+
+                with mock.patch.object(compose, "write_exclusive", side_effect=replace_path_then_write):
+                    with self.assertRaisesRegex(
+                            compose.CandidateError,
+                            "private output was retained.*(?:directory identity changed|parent path changed)"):
+                        compose.prepare_output(bundle, output)
+
+                self.assertTrue(switched)
+                self.assertEqual((output / "sentinel").read_bytes(), replacement_marker)
+                after_directory = output.stat()
+                after_sentinel = (output / "sentinel").stat()
+                self.assertEqual((after_directory.st_dev, after_directory.st_ino),
+                                 (replacement_directory.st_dev, replacement_directory.st_ino))
+                self.assertEqual((after_sentinel.st_dev, after_sentinel.st_ino),
+                                 (sentinel.st_dev, sentinel.st_ino))
+                self.assertEqual({path.name for path in output.iterdir()}, {"sentinel"})
+                original_output = moved_parent / "candidate" if replace_parent else moved_output
+                self.assertTrue(original_output.is_dir())
+                self.assertEqual(len(list(original_output.iterdir())), 1)
+                self.assertTrue(next(original_output.iterdir()).name.startswith(
+                    "install-forgejo-bootstrap-"))
+
+    def test_preexisting_output_directory_is_refused_without_touching_contents(self):
+        source, package = synthetic_inputs()
+        bundle = compose.compose_candidate(source, package)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "candidate"
+            output.mkdir()
+            marker = output / "keep"
+            marker.write_bytes(b"existing candidate output")
+            output_before = output.stat()
+            marker_before = marker.stat()
+            with self.assertRaisesRegex(compose.CandidateError, "must be new"):
+                compose.prepare_output(bundle, output)
+            self.assertEqual(marker.read_bytes(), b"existing candidate output")
+            self.assertEqual((output.stat().st_dev, output.stat().st_ino),
+                             (output_before.st_dev, output_before.st_ino))
+            self.assertEqual((marker.stat().st_dev, marker.stat().st_ino),
+                             (marker_before.st_dev, marker_before.st_ino))
+
+    def test_output_symlink_is_refused_without_following_or_modifying_target(self):
+        source, package = synthetic_inputs()
+        bundle = compose.compose_candidate(source, package)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target"
+            target.mkdir()
+            marker = target / "keep"
+            marker.write_bytes(b"symlink target stays untouched")
+            target_before = target.stat()
+            marker_before = marker.stat()
+            output = root / "candidate"
+            output.symlink_to(target, target_is_directory=True)
+            with self.assertRaisesRegex(compose.CandidateError, "must be new"):
+                compose.prepare_output(bundle, output)
+            self.assertTrue(output.is_symlink())
+            self.assertEqual(marker.read_bytes(), b"symlink target stays untouched")
+            self.assertEqual((target.stat().st_dev, target.stat().st_ino),
+                             (target_before.st_dev, target_before.st_ino))
+            self.assertEqual((marker.stat().st_dev, marker.stat().st_ino),
+                             (marker_before.st_dev, marker_before.st_ino))
+
+    def test_output_parent_must_be_controlled_or_sticky_protected(self):
+        source, package = synthetic_inputs()
+        bundle = compose.compose_candidate(source, package)
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory) / "shared"
+            parent.mkdir()
+            parent.chmod(0o777)
+            output = parent / "candidate"
+            with self.assertRaisesRegex(compose.CandidateError, "writable by an untrusted user"):
+                compose.prepare_output(bundle, output)
+            self.assertFalse(output.exists())
+
+    def test_replacement_after_receipt_is_detected_before_success_return(self):
+        real_listdir = compose.os.listdir
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            package_dir = parent / "package"
+            package_dir.mkdir()
+            source, package = synthetic_inputs()
+            archive = package_dir / package.archive.name
+            archive_bytes = b"synthetic package archive\n"
+            archive.write_bytes(archive_bytes)
+            archive_sha = hashlib.sha256(archive_bytes).hexdigest()
+            manifest = dict(package.manifest, sha256=archive_sha, size_bytes=len(archive_bytes))
+            manifest_bytes = json.dumps(manifest, separators=(",", ":")).encode()
+            manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
+            tag = "checkpoint-20261011-" + manifest["source_sha"][:10] + "-linux-x64"
+            installer = compose.pin_linux_installer(package.installer_source_template, tag, manifest_sha)
+            checksum = package_dir / (archive.name + ".sha256")
+            checksum.write_text(f"{archive_sha}  {archive.name}\n")
+            package = replace(package, directory=package_dir, archive=archive,
+                              archive_sha256=archive_sha, archive_bytes=len(archive_bytes),
+                              manifest=manifest, manifest_bytes=manifest_bytes,
+                              manifest_sha256=manifest_sha, tag=tag, installer=installer)
+            bundle = compose.compose_candidate(source, package)
+            output_parent = parent / "assembly-parent"
+            output_parent.mkdir()
+            output = output_parent / "candidate"
+            moved_output = output_parent / "original-candidate"
+            marker_bytes = b"preserve late replacement"
+            calls = 0
+
+            def replace_on_final_listing(path):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    output.rename(moved_output)
+                    output.mkdir(mode=0o700)
+                    (output / "sentinel").write_bytes(marker_bytes)
+                return real_listdir(path)
+
+            with mock.patch.object(compose.os, "listdir", side_effect=replace_on_final_listing):
+                with self.assertRaisesRegex(
+                        compose.CandidateError,
+                        "private output was retained.*directory identity changed"):
+                    compose.prepare_output(bundle, output)
+
+            self.assertEqual(calls, 2)
+            self.assertEqual((output / "sentinel").read_bytes(), marker_bytes)
+            self.assertEqual({path.name for path in output.iterdir()}, {"sentinel"})
+            self.assertTrue((moved_output / "candidate-assembly.json").is_file())
+            self.assertGreater(len(list(moved_output.iterdir())), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
