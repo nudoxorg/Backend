@@ -142,6 +142,101 @@ fn world_header_renews_after_coalesced_same_root_owner_replacement(cx: &mut Test
     press_passively_renewed_back(&mut rig, renders, frame);
 }
 
+/// Read the existing committed native Retry button without drawing a frame.
+fn passive_retry_bounds(rig: &mut Rig, enabled: bool) -> gpui::Bounds<gpui::Pixels> {
+    let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("committed Retry tree");
+    let tree: serde_json::Value = serde_json::from_str(&json).expect("native Retry JSON");
+    let id = format!("{:?}", gpui::ElementId::Name("status-retry".into()));
+    let node = tree["nodes"].as_object().expect("native nodes").values().find(|node|
+        node["element_id"].as_str() == Some(id.as_str())
+            && node["aria"]["role"].as_str() == Some("Button")
+            && node["aria"]["label"].as_str() == Some("Try again")
+    ).expect("mounted status Retry control");
+    let clickable = node["aria"]["on_action"].as_array().is_some_and(|actions|
+        actions.iter().any(|action| action.as_str() == Some("Click")));
+    assert_eq!(clickable, enabled, "Retry activation follows the exact owner capability");
+    let bounds = &node["bounds"];
+    let component = |key: &str| bounds[key].as_f64().expect("native Retry bound") as f32;
+    let bounds = gpui::Bounds::new(point(px(component("x")), px(component("y"))),
+        gpui::size(px(component("width")), px(component("height"))));
+    assert!(bounds.size.width > px(0.0) && bounds.size.height > px(0.0));
+    bounds
+}
+
+#[gpui::test]
+fn world_header_recovers_after_native_retry_with_exact_same_root_proof(cx: &mut TestAppContext) {
+    use crate::core::VersionedRoot;
+    use crate::model::ServiceMode;
+    use crate::model::pages::PageKey;
+    use crate::runtime::owner::{OwnerGate, OwnerState, PublicationAdmission};
+    use crate::runtime::reads::ReadPool;
+    use crate::runtime::store::{Branch, StoreEvent};
+    use gpui::AppContext as _;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::sync::Arc;
+
+    // Recovery needs a coherent certified publication, even at an identical
+    // authority. A diagnostic Ready alone must not reopen failed resources.
+    let view = crate::runtime::owner::publication_tests::view();
+    let cursor = backend_library::Cursor::for_view_root_at(&view, 0);
+    let root = VersionedRoot::from_revision(4, cursor, 0);
+    let gate = OwnerGate::ready(root, ServiceMode::Attached);
+    let mut rig = super::tests::rig_with_engine_gate_at_root(cx, Some(Route::World), 1440.0, 900.0,
+        ReadPool::start(2, |_| super::tests::Fixture).expect("controlled page pool"), StableRoot, Some(gate.clone()), root);
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+    let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let retired_back = captured_back(&mut rig);
+    gate.publish(OwnerState::Failed("same owner failure".into()));
+    rig.cx.run_until_parked();
+    let old_retry = rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_retry())
+        .expect("first failure capability");
+    let old_bounds = passive_retry_bounds(&mut rig, true);
+    let renders = rig.counts().titlebar;
+    let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&events);
+    let _subscription = rig.cx.update(|_, cx| cx.subscribe(&rig.graph.store,
+        move |_, event: &StoreEvent, _| observed.borrow_mut().push(event.clone())));
+    // Retire an actual held pointer press with another identical failure.
+    // Neither resource stamps nor notice words may supply this wake.
+    rig.cx.simulate_mouse_down(old_bounds.center(), MouseButton::Left, Modifiers::default());
+    gate.publish(OwnerState::Failed("same owner failure".into()));
+    rig.cx.run_until_parked();
+    assert_eq!(*events.borrow(), [StoreEvent::Snapshot(Branch::Owner)],
+        "only exact Retry-capability movement wakes the mounted controls");
+    assert!(rig.counts().titlebar > renders);
+    assert!(rig.cx.update(|window, _| window.a11y_frame_number()) > frame);
+    assert_ne!(rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_retry()), Some(old_retry.clone()));
+    assert!(!rig.graph.store.update(rig.cx, |store, cx| store.retry_owner_at(&old_retry, PageKey::Orbit, cx)),
+        "a retired failure callback cannot consume the replacement failure");
+    let retry = passive_retry_bounds(&mut rig, true);
+    rig.cx.simulate_mouse_up(retry.center(), MouseButton::Left, Modifiers::default());
+    rig.cx.run_until_parked();
+    assert!(matches!(gate.state(), OwnerState::Failed(_)), "new listeners cannot inherit the old pointer press");
+    rig.cx.simulate_click(retry.center(), Modifiers::default());
+    rig.cx.run_until_parked();
+    assert!(matches!(gate.state(), OwnerState::Starting), "fresh native Retry consumes the current failure");
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_retry()).is_none());
+    passive_retry_bounds(&mut rig, false);
+    let recovering_renders = rig.counts().titlebar;
+    let recovering_frame = rig.cx.update(|window, _| window.a11y_frame_number());
+    gate.publish(OwnerState::Ready { key: root, mode: ServiceMode::Attached });
+    let replacement = gate.ready_epoch().expect("new responding owner");
+    assert_eq!(gate.publish_view(replacement, Arc::clone(&view), cursor), PublicationAdmission::Admitted);
+    rig.cx.run_until_parked();
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.owner_serving()), "exact publication admits recovery");
+    rig.graph.store.read_with(rig.cx, |store, _| {
+        assert_eq!(store.snapshot().key(), root);
+        assert_eq!(store.snapshot().route(), before.route());
+        assert_eq!(store.snapshot().session().back, before.session().back);
+    });
+    rig.cx.update(|window, cx| retired_back(window, cx));
+    assert_eq!(rig.route(), Route::World, "the predecessor's Back callback stays retired after recovery");
+    press_passively_renewed_back(&mut rig, recovering_renders, recovering_frame);
+}
+
 /// A shell on `name`'s page, recording what it paints.
 fn open(cx: &mut TestAppContext, name: &str) -> Rig {
     let rig = rig(cx, Some(page_route(name)), 1440.0, 900.0);
