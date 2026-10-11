@@ -1,0 +1,291 @@
+{
+  "schema": "nudox.root-native-evidence.v1",
+  "gates": [
+    {
+      "gate": 74,
+      "source": {
+        "commit": "452645a8141faa80abc4d07c8db0302f727d438d",
+        "tree": "aa165ea2f984b163fc491f9ce59d454a507918cb",
+        "clean": true,
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350",
+        "clean_before": true,
+        "clean_after": true
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-local-service",
+        "--lib",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--nocapture",
+        "--test-threads=2"
+      ],
+      "frozen_manifest_sha256": "d6a4bf0bd4aa2468168571196a902b2aa3eda0a764cdf24b76fe3d734a4aae8f",
+      "receipt_sha256": "2942051d1c754d851d10711f75043828bb84f91977be7cc3838fed5d55fd0c17",
+      "stdout_sha256": "c0f71a048ee910f651a9a48eb08a1b9f5c088dda5a180fbc10dedc12864e10c3",
+      "stderr_sha256": "c69fbb6a8cc58ab3b127130a5c41872f51e1d4c27d3a2350019fddb299d70b3a",
+      "cargo_pid": 3340542,
+      "started_utc": "2026-10-11T21:22:55.083557+00:00",
+      "finished_utc": "2026-10-11T21:26:11.397764+00:00",
+      "build_and_test_seconds": 195.41059842403047,
+      "exit": 101,
+      "actual_result": {
+        "tests_run": 0,
+        "compile_errors": 7
+      },
+      "verified_compiler_errors": [
+        {
+          "code": "E0277",
+          "message": "`adapter::FinishAddError` doesn't implement `std::fmt::Debug`"
+        },
+        {
+          "code": "E0308",
+          "message": "mismatched types"
+        },
+        {
+          "code": "E0308",
+          "message": "arguments to this function are incorrect"
+        },
+        {
+          "code": "E0308",
+          "message": "arguments to this function are incorrect"
+        },
+        {
+          "code": "E0308",
+          "message": "arguments to this function are incorrect"
+        },
+        {
+          "code": "E0308",
+          "message": "mismatched types"
+        },
+        {
+          "code": "E0308",
+          "message": "mismatched types"
+        }
+      ],
+      "verified_test_results": [],
+      "emitted_artifacts_producer_observation": []
+    },
+    {
+      "gate": 75,
+      "source": {
+        "commit": "452645a8141faa80abc4d07c8db0302f727d438d",
+        "tree": "aa165ea2f984b163fc491f9ce59d454a507918cb",
+        "clean": true,
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350",
+        "clean_before": true,
+        "clean_after": true
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "--manifest-path",
+        "third_party/tsz/Cargo.toml",
+        "--no-default-features",
+        "-j2",
+        "-p",
+        "tsz-core",
+        "--lib",
+        "parallel::core::project_checker_partitions_tests",
+        "--message-format=json-render-diagnostics",
+        "--",
+        "--nocapture",
+        "--test-threads=2"
+      ],
+      "frozen_manifest_sha256": "3866148bc14d400a376783b05a96d5c84d842914feea448f432b4ff4960b30c2",
+      "receipt_sha256": "2da3dc3cbe3a55664364e11794e1b7c95b18fccea3275ad648ead18dab2cca05",
+      "stdout_sha256": "ae57a92022dd9f2c9f92fb672fc88a71098bd0375b551fabd7e2fd6571a48d42",
+      "stderr_sha256": "2f358e9a6ac28b8a041a71a6b75aba021244bf846a91317c9f926b12462d4e02",
+      "cargo_pid": 3351041,
+      "started_utc": "2026-10-11T21:28:26.151304+00:00",
+      "finished_utc": "2026-10-11T21:29:37.973821+00:00",
+      "build_and_test_seconds": 70.89450759300962,
+      "exit": 101,
+      "actual_result": {
+        "passed": 18,
+        "failed": 15,
+        "ignored": 0,
+        "filtered": 3289,
+        "scope": "all 33 original project checker partition cases; not the whole tsz-core library"
+      },
+      "verified_compiler_errors": [],
+      "verified_test_results": [
+        {
+          "name": "parallel::core::project_checker_partitions_tests::cancelled_and_expired_projects_return_typed_stops_without_results",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::captured_file_and_ambient_owner_key_collision_refuses_reexport_rows",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::cold_consumer_before_interface_owner_keeps_inherited_member_semantics",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::cold_barrel_consumer_preserves_number_and_string_discrimination",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::exact_external_aliases_keep_ambient_string_against_competing_file_number",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::export_star_cannot_inspect_other_kind_export_equals_target",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::exhausted_library_materialization_rolls_back_completed_library_pushes",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::external_wildcard_owner_cannot_lend_same_spelling_program_file_members",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::external_export_equals_hydrates_only_the_exact_nested_import_type",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::implicit_node_next_edge_cannot_borrow_explicit_sibling_mode",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::isolated_library_baseline_observes_budget_and_mid_library_stop_discards_output",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::library_name_index_stop_drops_partial_names_and_legacy_index_is_unchanged",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::malformed_named_edge_cannot_borrow_a_valid_same_specifier_sibling",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::merged_external_ambient_owners_keep_all_exact_wildcard_edges",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::merged_wildcard_rows_preserve_exact_lexical_edges_before_resolution",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::metered_path_validation_preserves_legacy_path_grammar",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::named_and_wildcard_edges_keep_disjoint_same_specifier_modes",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::nested_ambient_reexport_owner_cannot_borrow_foreign_owner_edge",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::nested_identifier_namespace_cannot_shift_ambient_wildcard_edge_mode",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::nested_statement_wildcards_cannot_retarget_following_sibling_request",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::nested_statement_wildcards_retain_actual_declaration_and_owner",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::node_next_foreign_plain_ts_request_requires_admitted_file_format",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::ordinary_import_none_mode_keeps_its_exact_file_and_members",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::outer_api_discards_completed_partition_results_when_another_partition_stops",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::partitions_keep_exact_unresolved_requests_and_typed_bad_targets",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::import_type_and_typeof_member_chains_keep_exact_request_authority",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::project_session_latches_one_shot_database_stop_and_discards_callback_output",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::selected_file_and_refused_request_dominate_shorthand_ambient_module",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::stop_after_completed_file_prevents_starting_later_partition_files",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::stopped_admission_precedes_invalid_resolution_and_resolution_bytes_are_metered",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::partitions_preserve_cross_file_identity_options_libraries_and_diagnostics",
+          "result": "ok"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::syntax_requests_cannot_borrow_other_kind_mode_or_ambient_success",
+          "result": "FAILED"
+        },
+        {
+          "name": "parallel::core::project_checker_partitions_tests::two_worker_cold_consumer_finishes_before_interface_owner_starts",
+          "result": "FAILED"
+        }
+      ],
+      "emitted_artifacts_producer_observation": [
+        {
+          "path": "/root/.cache/nudox/cargo-1.97/build/slot-0/debug/deps/tsz_core-933d6e7f0121d97e",
+          "sha256": "ee1f679a06c556164936df37de4dbf4b6c334ce2d070271832c60fdd388d3c90",
+          "bytes": 179857552,
+          "target": {
+            "kind": [
+              "rlib"
+            ],
+            "crate_types": [
+              "rlib"
+            ],
+            "name": "tsz_core",
+            "src_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/third_party/tsz/crates/tsz-core/src/lib.rs",
+            "edition": "2024",
+            "doc": true,
+            "doctest": true,
+            "test": true
+          },
+          "package_id": "path+file:///root/codex-worktrees/sol61-resident-fixture-20261011/third_party/tsz/crates/tsz-core#0.1.75",
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          },
+          "features": [],
+          "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/third_party/tsz/crates/tsz-core/Cargo.toml"
+        }
+      ]
+    }
+  ],
+  "verification": "Root independently rehashed each frozen manifest, receipt and raw logs, checked source/locks/toolchain, exact commands and all emitted diagnostic/test outcomes, fresh reachable-host admission, process-group drain and resource envelopes. Executable bytes and custody remain producer observations.",
+  "production_binary_or_runtime_acceptance": false,
+  "production_ready": false
+}
