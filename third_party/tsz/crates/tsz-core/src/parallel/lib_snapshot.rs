@@ -410,6 +410,7 @@ fn decode_payload<T: DeserializeOwned>(payload: &[u8]) -> Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tsz_parser::parser::node::NodeAccess;
 
     fn parse_and_bind(file_name: &str, source: &str) -> Arc<LibFile> {
         use tsz_parser::parser::ParserState;

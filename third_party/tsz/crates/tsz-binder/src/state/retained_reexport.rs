@@ -117,6 +117,7 @@ impl IntoIterator for WildcardReexportRows {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tsz_parser::parser::node::NodeAccess;
     use crate::{BinderState, ExportSurface};
     use tsz_parser::parser::ParserState;
 
