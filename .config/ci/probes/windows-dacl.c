@@ -5,6 +5,7 @@
 #include <windows.h>
 #include <aclapi.h>
 #include <stdio.h>
+#include <wchar.h>
 int main(void) {
  HANDLE token=NULL; DWORD size=0;
  if(!OpenProcessToken(GetCurrentProcess(),TOKEN_QUERY,&token)) return 2;

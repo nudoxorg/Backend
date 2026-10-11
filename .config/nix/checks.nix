@@ -55,6 +55,19 @@ in
   agent-skills = commands.agentSkills;
   formatting = formatting.check;
 
+  ci-cargo-git-hashes = helpers.nuCheck {
+    inherit pkgs;
+    name = "backend-ci-cargo-git-hashes";
+    packages = [ pkgs.python3 ];
+    build = ''
+      let hashes = '${builtins.toJSON tools.gpuiOutputHashes}'
+      $hashes | save hashes.json
+      python3 ${../ci/check-cargo-git-hashes.py} ${workspaceRoot + "/Cargo.lock"} hashes.json
+      mkdir $env.out
+      "validated" | save ($env.out | path join "ci-cargo-git-hashes")
+    '';
+  };
+
   ci-compile-telemetry = helpers.nuCheck {
     inherit pkgs;
     name = "backend-ci-compile-telemetry";

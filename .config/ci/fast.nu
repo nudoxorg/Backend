@@ -20,6 +20,7 @@ def fast-flake-checks []: nothing -> list<string> {
         "tooling-contracts"
         "telemetry-config"
         "ci-compile-telemetry"
+        "ci-cargo-git-hashes"
     ]
 }
 

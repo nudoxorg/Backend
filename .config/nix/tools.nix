@@ -221,6 +221,25 @@ let
   # must not appear in this fixed-output Git map. Keeping the remaining Git
   # sources here prevents one package from silently accepting another source.
   gpuiOutputHashes = {
+    "lsp-types-0.95.2" = "sha256-+f3XtEm0fSvgl12LVSeGJGnPElGScAufh9dmMOqKnI8=";
+    "pyrefly_build-1.2.0-dev.1" = "sha256-qi2ImB2fuaDJWlJpPSlopZZmdGplEGm6+31yNOP+b8g=";
+    "pyrefly_bundled-1.2.0-dev.1" = "sha256-qi2ImB2fuaDJWlJpPSlopZZmdGplEGm6+31yNOP+b8g=";
+    "pyrefly_config-1.2.0-dev.1" = "sha256-qi2ImB2fuaDJWlJpPSlopZZmdGplEGm6+31yNOP+b8g=";
+    "pyrefly_derive-1.2.0-dev.1" = "sha256-qi2ImB2fuaDJWlJpPSlopZZmdGplEGm6+31yNOP+b8g=";
+    "pyrefly_graph-1.2.0-dev.1" = "sha256-qi2ImB2fuaDJWlJpPSlopZZmdGplEGm6+31yNOP+b8g=";
+    "pyrefly_python-1.2.0-dev.1" = "sha256-qi2ImB2fuaDJWlJpPSlopZZmdGplEGm6+31yNOP+b8g=";
+    "pyrefly_types-1.2.0-dev.1" = "sha256-qi2ImB2fuaDJWlJpPSlopZZmdGplEGm6+31yNOP+b8g=";
+    "pyrefly_util-1.2.0-dev.1" = "sha256-qi2ImB2fuaDJWlJpPSlopZZmdGplEGm6+31yNOP+b8g=";
+    "ruff_annotate_snippets-0.1.0" = "sha256-WpjOOCYLZ1d8XPUx3qNHD+fuK6t65u/1/ZezABWpBD0=";
+    "ruff_cache-0.0.0" = "sha256-WpjOOCYLZ1d8XPUx3qNHD+fuK6t65u/1/ZezABWpBD0=";
+    "ruff_diagnostics-0.0.0" = "sha256-WpjOOCYLZ1d8XPUx3qNHD+fuK6t65u/1/ZezABWpBD0=";
+    "ruff_notebook-0.0.0" = "sha256-WpjOOCYLZ1d8XPUx3qNHD+fuK6t65u/1/ZezABWpBD0=";
+    "ruff_python_ast-0.0.0" = "sha256-WpjOOCYLZ1d8XPUx3qNHD+fuK6t65u/1/ZezABWpBD0=";
+    "ruff_python_parser-0.0.0" = "sha256-WpjOOCYLZ1d8XPUx3qNHD+fuK6t65u/1/ZezABWpBD0=";
+    "ruff_python_trivia-0.0.0" = "sha256-WpjOOCYLZ1d8XPUx3qNHD+fuK6t65u/1/ZezABWpBD0=";
+    "ruff_source_file-0.0.0" = "sha256-WpjOOCYLZ1d8XPUx3qNHD+fuK6t65u/1/ZezABWpBD0=";
+    "ruff_text_size-0.0.0" = "sha256-WpjOOCYLZ1d8XPUx3qNHD+fuK6t65u/1/ZezABWpBD0=";
+    "tsp_types-1.2.0-dev.1" = "sha256-qi2ImB2fuaDJWlJpPSlopZZmdGplEGm6+31yNOP+b8g=";
     "trustfall-0.8.1" = "sha256-YZwoezIrScE01mo+PqEWVi8hDZQwpm793bMQ4vizSXc=";
     "trustfall_core-0.8.1" = "sha256-YZwoezIrScE01mo+PqEWVi8hDZQwpm793bMQ4vizSXc=";
     "trustfall_derive-0.3.1" = "sha256-YZwoezIrScE01mo+PqEWVi8hDZQwpm793bMQ4vizSXc=";
@@ -268,9 +287,8 @@ let
           lockFile = workspaceRoot + "/Cargo.lock";
           # `importCargoLock` vendors every entry in the workspace lock even
           # though `postPatch` restricts the build to the control-plane member
-          # set. The two git checkouts are the desktop runtime (`gpui-ce`) and
-          # the query engine (`trustfall`); these are the exact NAR hashes of
-          # those pinned revisions, one entry per package cargo names.
+          # set. Pin the exact NAR hash of every locked Git source, one entry
+          # per package Cargo names, including shared repository packages.
           outputHashes = gpuiOutputHashes;
         };
         cargoInstallFlags = [
