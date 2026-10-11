@@ -753,103 +753,114 @@ fn library_name_index_stop_drops_partial_names_and_legacy_index_is_unchanged() {
 #[test]
 fn two_worker_cold_consumer_finishes_before_interface_owner_starts() {
     use std::sync::{Mutex, mpsc};
-    let semantic = ProjectSemanticOptions::declaration_scoped();
-    let binds = parse_and_bind_parallel_with_libs(vec![
-        ("src/consumer.ts".to_owned(), "import type { Derived } from './owner'; export function inherited(value: Derived<number>): number { return value.base; }".to_owned()),
+    // Each case owns a pristine program/store. The incorrect string return
+    // must observe the inherited number; UNKNOWN/any cannot pass this oracle.
+    for (return_type, expected_diagnostics) in [("number", 0), ("string", 1)] {
+        let semantic = ProjectSemanticOptions::declaration_scoped();
+        let binds = parse_and_bind_parallel_with_libs(vec![
+        ("src/consumer.ts".to_owned(), format!("import type {{ Derived }} from './owner'; export function inherited(value: Derived<number>): {return_type} {{ return value.base; }}")),
         ("src/owner.ts".to_owned(), "export interface Base<T> { base: T } export interface Derived<T> extends Base<T> { own: T }".to_owned()),
     ], &[]);
-    let refs = binds.iter().collect::<Vec<_>>();
-    let program = merge_bind_results_ref_with_project_semantic_options(&refs, semantic);
-    assert_eq!(program.files[0].file_name, "src/consumer.ts");
-    assert_eq!(program.files[1].file_name, "src/owner.ts");
-    let options = CheckerOptions::default();
-    let resolutions = [ProjectModuleResolution {
-        importer_path: "src/consumer.ts".to_owned(),
-        specifier: "./owner".to_owned(),
-        request_kind: ProjectModuleRequestKind::EsmImport,
-        resolution_mode: None,
-        target: ProjectModuleResolutionTarget::File {
-            path: "src/owner.ts".to_owned(),
-        },
-    }];
-    let cancelled = AtomicBool::new(false);
-    let budget = execution_budget(&cancelled);
-    let (sender, receiver) = mpsc::channel();
-    let receiver = Mutex::new(receiver);
-    let (owner_entered_sender, owner_entered_receiver) = mpsc::channel();
-    let owner_entered_receiver = Mutex::new(owner_entered_receiver);
-    let consumer_complete = AtomicBool::new(false);
-    let owner_started_after_consumer = AtomicBool::new(false);
-    let threads = Mutex::new(Vec::new());
-    let starting = |index| {
-        threads
-            .lock()
-            .unwrap()
-            .push(std::thread::current().name().unwrap().to_owned());
-        if index == 0 {
-            owner_entered_receiver
+        let refs = binds.iter().collect::<Vec<_>>();
+        let program = merge_bind_results_ref_with_project_semantic_options(&refs, semantic);
+        assert_eq!(program.files[0].file_name, "src/consumer.ts");
+        assert_eq!(program.files[1].file_name, "src/owner.ts");
+        let options = CheckerOptions::default();
+        let resolutions = [ProjectModuleResolution {
+            importer_path: "src/consumer.ts".to_owned(),
+            specifier: "./owner".to_owned(),
+            request_kind: ProjectModuleRequestKind::EsmImport,
+            resolution_mode: None,
+            target: ProjectModuleResolutionTarget::File {
+                path: "src/owner.ts".to_owned(),
+            },
+        }];
+        let cancelled = AtomicBool::new(false);
+        let budget = execution_budget(&cancelled);
+        let (sender, receiver) = mpsc::channel();
+        let receiver = Mutex::new(receiver);
+        let (owner_entered_sender, owner_entered_receiver) = mpsc::channel();
+        let owner_entered_receiver = Mutex::new(owner_entered_receiver);
+        let consumer_complete = AtomicBool::new(false);
+        let owner_started_after_consumer = AtomicBool::new(false);
+        let threads = Mutex::new(Vec::new());
+        let starting = |index| {
+            threads
                 .lock()
                 .unwrap()
-                .recv_timeout(Duration::from_secs(10))
-                .expect("provider gate must occupy the other real private worker");
-        } else if index == 1 {
-            owner_entered_sender.send(()).unwrap();
-            receiver
-                .lock()
-                .unwrap()
-                .recv_timeout(Duration::from_secs(10))
-                .expect("consumer must finish on the other admitted worker");
-            assert!(consumer_complete.load(Ordering::Acquire));
-            owner_started_after_consumer.store(true, Ordering::Release);
+                .push(std::thread::current().name().unwrap().to_owned());
+            if index == 0 {
+                owner_entered_receiver
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("provider gate must occupy the other real private worker");
+            } else if index == 1 {
+                owner_entered_sender.send(()).unwrap();
+                receiver
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("consumer must finish on the other admitted worker");
+                assert!(consumer_complete.load(Ordering::Acquire));
+                owner_started_after_consumer.store(true, Ordering::Release);
+            }
+        };
+        let completed = |index| {
+            if index == 0 {
+                consumer_complete.store(true, Ordering::Release);
+                sender.send(()).unwrap();
+            }
+        };
+        let result = check_project_partitions_observing_file_boundaries(
+            ProjectCheckerInputs {
+                program: &program,
+                options: &options,
+                libraries: &[],
+                semantics: semantic,
+                resolutions: &resolutions,
+            },
+            ProjectCheckerExecution {
+                checkpoint: &budget,
+                workers: NonZeroUsize::new(2).unwrap(),
+            },
+            &starting,
+            &completed,
+        )
+        .expect("complete real two-worker check");
+        assert!(consumer_complete.load(Ordering::Acquire));
+        assert!(owner_started_after_consumer.load(Ordering::Acquire));
+        let threads = threads.lock().unwrap();
+        assert_eq!(threads.len(), 2);
+        assert!(
+            threads
+                .iter()
+                .all(|name| name == "tsz-checker-0" || name == "tsz-checker-1")
+        );
+        assert_ne!(
+            threads[0], threads[1],
+            "the bounded gate requires two real private workers"
+        );
+        assert_eq!(result.file_results.len(), 2);
+        assert_eq!(
+            result.diagnostic_count, expected_diagnostics,
+            "cold inherited number must accept number and reject string before provider checking: {:?}",
+            result.file_results
+        );
+        assert!(
+            result.file_results[1].diagnostics.is_empty(),
+            "provider declaration remains valid"
+        );
+        if expected_diagnostics == 0 {
+            assert!(result.file_results[0].diagnostics.is_empty());
+        } else {
+            assert_eq!(result.file_results[0].diagnostics.len(), 1);
+            assert_eq!(
+                result.file_results[0].diagnostics[0].code, 2322,
+                "inherited number must produce a real incompatible string-return diagnostic"
+            );
         }
-    };
-    let completed = |index| {
-        if index == 0 {
-            consumer_complete.store(true, Ordering::Release);
-            sender.send(()).unwrap();
-        }
-    };
-    let result = check_project_partitions_observing_file_boundaries(
-        ProjectCheckerInputs {
-            program: &program,
-            options: &options,
-            libraries: &[],
-            semantics: semantic,
-            resolutions: &resolutions,
-        },
-        ProjectCheckerExecution {
-            checkpoint: &budget,
-            workers: NonZeroUsize::new(2).unwrap(),
-        },
-        &starting,
-        &completed,
-    )
-    .expect("complete real two-worker check");
-    assert!(consumer_complete.load(Ordering::Acquire));
-    assert!(owner_started_after_consumer.load(Ordering::Acquire));
-    let threads = threads.lock().unwrap();
-    assert_eq!(threads.len(), 2);
-    assert!(
-        threads
-            .iter()
-            .all(|name| name == "tsz-checker-0" || name == "tsz-checker-1")
-    );
-    assert_ne!(
-        threads[0], threads[1],
-        "the bounded gate requires two real private workers"
-    );
-    assert_eq!(result.file_results.len(), 2);
-    assert_eq!(
-        result.diagnostic_count, 0,
-        "cold function-annotation inherited member must resolve before provider checking: {:?}",
-        result.file_results
-    );
-    assert!(
-        result
-            .file_results
-            .iter()
-            .all(|file| file.diagnostics.is_empty())
-    );
+    }
 }
 
 #[test]
