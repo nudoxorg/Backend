@@ -23,9 +23,9 @@ use backend_client::{ClientError, Session};
 use backend_library::protocol::mcp::{MCP_PROTOCOL_VERSION, negotiate_version};
 use backend_library::{
     AdmittedGraphQueryInput, CompileExecutionIntent, GraphQueryPage, GraphQueryRow, GraphValue,
-    HealthReport, IndexJobTicket, IndexSearchCursor, PackageReference,
-    PageContinuation, PageTerminal, ProductText, ReplyDto, SurfaceCommand, SurfaceReply,
-    TreeOpener, ViewStateRoot, encode_id,
+    HealthReport, IndexJobTicket, IndexSearchCursor, PackageReference, PageContinuation,
+    PageTerminal, ProductText, ReplyDto, SurfaceCommand, SurfaceReply, TreeOpener, ViewStateRoot,
+    encode_id,
 };
 use backend_present::{
     Answer, BudgetExceeded, ContinuationCursor, ContinuationTarget, CursorTarget,
