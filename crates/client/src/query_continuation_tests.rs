@@ -1672,7 +1672,10 @@ fn preparation_wait_deadline_and_cancellation_preserve_real_refusal_without_anot
 #[test]
 fn preparation_wait_never_retries_worker_fault_wrong_basis_or_mutation() {
     let library = Arc::new(Mutex::new(owner(1, 5, 0)));
-    let foreign = owner(2, 5, 0).revision_root();
+    // Producer proof context is not canonical row content. Change retained
+    // row content to obtain an actual foreign immutable revision.
+    let foreign = owner_with_labels(2, 5, 0, &["ForeignCapturedDeclaration"]).revision_root();
+    assert_ne!(foreign, library.lock().expect("owner").revision_root());
     for failure in [
         CommandFailure::IncoherentView("authentic worker capture refusal".to_owned()),
         CommandFailure::QueryPreparation {
@@ -1697,6 +1700,41 @@ fn preparation_wait_never_retries_worker_fault_wrong_basis_or_mutation() {
     };
     assert!(session.send_success(command, None).is_err());
     assert_eq!(sent.lock().expect("sent").len(), 1, "no mutation replay");
+}
+
+#[test]
+fn preparation_with_same_canonical_rows_and_different_proof_context_remains_same_basis() {
+    let first = owner(1, 5, 0);
+    let second = owner(2, 5, 0);
+    assert_eq!(first.revision_root(), second.revision_root());
+    let first_proof = first.execute_dto(CommandDto::new(1, Command::Revision));
+    let second_proof = second.execute_dto(CommandDto::new(1, Command::Revision));
+    assert_ne!(first_proof.certificate(), second_proof.certificate());
+    let library = Arc::new(Mutex::new(first));
+    let (mut session, sent, _) = preparing_session(
+        &library,
+        &[],
+        false,
+        Some(CommandFailure::QueryPreparation {
+            basis: second.revision_root().into(),
+            state: backend_library::QueryPreparationState::Preparing,
+        }),
+    );
+    let reply = session
+        .search("Thing", 2)
+        .expect("same canonical basis prepares normally");
+    let CommandReply::Search(page) = reply.reply else {
+        panic!("real selected search")
+    };
+    assert_eq!(page.root.row_count(), 2);
+    assert_eq!(
+        sent.lock()
+            .expect("requests")
+            .iter()
+            .filter(|r| matches!(r.command, Command::Search(_)))
+            .count(),
+        2
+    );
 }
 #[test]
 fn preparation_wait_reopens_exact_portable_search_page_after_cold_session() {
