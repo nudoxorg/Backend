@@ -39,12 +39,20 @@ pub(super) fn parse_reply_body<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, S
 // Duplicate versions remain a parse error; current payloads are subsequently
 // decoded through their closed, certificate-aware grammar.
 pub(super) fn check_live_version(bytes: &[u8], kind: &str) -> Result<(), String> {
+    check_version_header_against(bytes, kind, super::DTO_VERSION)
+}
+
+pub(super) fn check_version_header_against(
+    bytes: &[u8],
+    kind: &str,
+    supported: u16,
+) -> Result<(), String> {
     #[derive(serde::Deserialize)]
     struct VersionHeader {
         version: u16,
     }
     let header: VersionHeader = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-    super::ensure_version(header.version, kind)
+    super::command::ensure_version_against(header.version, kind, supported)
 }
 
 pub(super) fn parse_command_body<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {

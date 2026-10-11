@@ -543,11 +543,15 @@ pub(crate) fn decode_journal_view(
 }
 
 pub(crate) fn ensure_version(version: u16, kind: &str) -> Result<(), String> {
-    if version == DTO_VERSION {
+    ensure_version_against(version, kind, DTO_VERSION)
+}
+
+pub(super) fn ensure_version_against(version: u16, kind: &str, supported: u16) -> Result<(), String> {
+    if version == supported {
         Ok(())
     } else {
         Err(format!(
-            "unsupported {kind} DTO version {version}; this build supports {DTO_VERSION}. Use Nudox clients and local service from the same build; rebuild your CLI/MCP client or restart the outdated service"
+            "unsupported {kind} DTO version {version}; this build supports {supported}. Use Nudox clients and local service from the same build; rebuild your CLI/MCP client or restart the outdated service"
         ))
     }
 }

@@ -6433,6 +6433,7 @@ mod tests {
             F::CheckerExit,
             F::NativeProjectCheckDeadline,
             F::NativeProjectCheckWorkBudgetExhausted,
+            F::NativeCheckerWorkerPoolUnavailable,
         ] {
             let private = b"private absolute path /home/user/app/node_modules; native stderr";
             let terminal = CompilerTerminal::Compile {

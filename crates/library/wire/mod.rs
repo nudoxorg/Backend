@@ -69,6 +69,6 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version. Version 27 retains source completeness in
-/// batch declaration reads. Persisted view rows and compact events are unchanged.
-pub const DTO_VERSION: u16 = 27;
+/// Current transport DTO version. Version 28 distinguishes native checker
+/// worker-pool startup refusal. Persisted view rows and compact events are unchanged.
+pub const DTO_VERSION: u16 = 28;

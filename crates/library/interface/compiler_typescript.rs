@@ -211,6 +211,8 @@ pub enum TypeScriptAuthorityFailureKind {
     NativeProjectCheckDeadline,
     /// Native TypeScript project checking exhausted its admitted work budget.
     NativeProjectCheckWorkBudgetExhausted,
+    /// Native TypeScript private checker workers could not be started.
+    NativeCheckerWorkerPoolUnavailable,
     /// Native TypeScript project update was cancelled.
     NativeUpdateCancelled,
     /// Native TypeScript project update exceeded its admitted deadline.
@@ -362,6 +364,9 @@ impl TypeScriptAuthorityFailureKind {
             Self::NativeProjectCheckDeadline => "typescript_native_project_check_deadline",
             Self::NativeProjectCheckWorkBudgetExhausted => {
                 "typescript_native_project_check_work_budget_exhausted"
+            }
+            Self::NativeCheckerWorkerPoolUnavailable => {
+                "typescript_native_checker_worker_pool_unavailable"
             }
             Self::NativeUpdateCancelled => "typescript_native_update_cancelled",
             Self::NativeUpdateDeadline => "typescript_native_update_deadline",
@@ -619,6 +624,9 @@ impl TypeScriptAuthorityFailureKind {
             }
             Self::NativeProjectCheckWorkBudgetExhausted => {
                 "Native TypeScript project checking exhausted its admitted work budget"
+            }
+            Self::NativeCheckerWorkerPoolUnavailable => {
+                "Native TypeScript private checker workers could not be started"
             }
             Self::NativeUpdateCancelled => "Native TypeScript project update was cancelled",
             Self::NativeUpdateDeadline => {

@@ -35,8 +35,14 @@ use backend_frontend_rust::legacy::{
 use backend_frontend_typescript::legacy::TypeScriptInvocationModeV1;
 use backend_frontend_typescript::{
     TszCheckerOptions, TszEnvironmentFingerprint, TszFileInput, TszProject, TszProjectAuthority,
-    TszProjectExecutionBudget, TszProjectOptions, TszSourceError,
+    TszProjectCheckerExecution, TszProjectExecutionBudget, TszProjectOptions, TszSourceError,
 };
+// Each admitted compiler lane owns its private checker pool. Two compiler
+// lanes currently admit at most four file-check workers per owner; parse,
+// bind and merge are separate stages with their existing execution controls.
+const TSZ_CHECKER_WORKERS_PER_COMPILER_LANE: std::num::NonZeroUsize =
+    std::num::NonZeroUsize::new(2).expect("checker worker policy is nonzero");
+
 use backend_library::interface::{
     CompilerAttempt, CompilerCapability, CompilerCause, CompilerFragmentFailure, CompilerReadiness,
     CompilerRequest as ApplicationCompilerRequest, CompilerTerminal, FragmentCause,
@@ -2275,11 +2281,14 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 TszProjectExecutionBudget::new(control.deadline, cancelled, native.work_units);
             let mut authority = TszProjectAuthority::new();
             authority
-                .update_with_execution_checkpoint(
+                .update_with_checker_execution(
                     native.sources,
                     native.options,
                     &native.libraries,
-                    &budget,
+                    TszProjectCheckerExecution {
+                        checkpoint: &budget,
+                        workers: TSZ_CHECKER_WORKERS_PER_COMPILER_LANE,
+                    },
                 )
                 .map_err(|cause| {
                     let toolchain = self

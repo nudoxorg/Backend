@@ -43,7 +43,7 @@ pub use tsz_authority::{
     TszAuthorityError, TszBinderState, TszCheckerOptions, TszCheckerState, TszCompilerOptionsError,
     TszDiagnostic, TszEnvironmentFingerprint, TszFileInput, TszLibraryInput,
     TszModuleDetectionKind, TszModuleKind, TszNodeIndex, TszParseDiagnostic, TszProject,
-    TszProjectAuthority, TszProjectModuleRequestKind, TszProjectModuleResolution,
+    TszProjectAuthority, TszProjectCheckerExecution, TszProjectModuleRequestKind, TszProjectModuleResolution,
     TszProjectModuleResolutionError, TszProjectModuleResolutionTarget, TszProjectOptions,
     TszProjectSemanticOptions, TszScriptTarget, TszSourceError, TszSymbolId, TszTypeId,
     TszUpdateReport, checker_options_from_compiler_api_json,

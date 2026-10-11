@@ -173,6 +173,7 @@ fn native_failure(error: &TszAuthorityError) -> F {
             TszSourceError::EmptyProject => F::NativeSourceEmptyProject,
             TszSourceError::InvalidUtf8 => F::NativeSourceInvalidUtf8,
         },
+        TszAuthorityError::CheckerWorkerPoolUnavailable(_) => F::NativeCheckerWorkerPoolUnavailable,
         TszAuthorityError::MissingFile(_) => F::NativeMissingFile,
         TszAuthorityError::MissingSource(_) => F::NativeMissingSource,
         TszAuthorityError::SourceMismatch { .. } => F::NativeSourceMismatch,
@@ -340,6 +341,23 @@ mod tests {
             failure_kind(&error),
             Some(F::NativeProjectCheckModuleTargetNotInProgram)
         );
+    }
+
+    #[test]
+    fn native_checker_worker_start_refusal_keeps_native_provenance() {
+        let error =
+            PackageAuthorityError::TypeScriptTsz(TszAuthorityError::CheckerWorkerPoolUnavailable(
+                "private OS thread failure /secret/path".into(),
+            ));
+        let kind = failure_kind(&error).expect("closed native failure");
+        assert_eq!(kind, F::NativeCheckerWorkerPoolUnavailable);
+        assert_ne!(kind, F::CheckerSpawn);
+        assert_eq!(
+            kind.kind_tag(),
+            "typescript_native_checker_worker_pool_unavailable"
+        );
+        assert!(!kind.detail().contains("/secret"));
+        assert!(!kind.is_cancelled());
     }
 
     #[test]
