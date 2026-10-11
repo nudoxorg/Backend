@@ -346,13 +346,27 @@ fn retained_go_binary_owner() -> String {
     let original = include_bytes!(
         "../../../../crates/library/wire/command/fixtures/current-go-graph-continuation.json"
     );
-    let request = backend_library::decode_command_body(original).expect("original strict proof");
+    // Keep the actual DTO27 capture unchanged. This is a derived current
+    // command with the exact original claims, not a historical-peer replay.
+    let mut current: Value = serde_json::from_slice(original).expect("retained producer envelope");
+    assert_eq!(current["version"], 27);
+    assert!(backend_library::decode_command_body(original).is_err());
+    let claims = current["certificate"].clone();
+    current["version"] = json!(backend_library::DTO_VERSION);
+    assert_eq!(current["certificate"], claims);
+    let request = backend_library::decode_command_body(
+        &serde_json::to_vec(&current).expect("current version envelope"),
+    )
+    .expect("unchanged producer claims pass current strict admission");
     backend_library::encode_command_body(&request).expect("unchanged encoder admission");
     let binary =
         backend_library::encode_binary_certificate_command(&request).expect("binary proof");
     let expanded =
         backend_library::expand_binary_certificate_command(&binary).expect("exact expansion");
-    assert_eq!(expanded.as_slice(), original);
+    assert_eq!(
+        expanded,
+        serde_json::to_vec(&request).expect("canonical current envelope")
+    );
     let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
     std::io::Write::write_all(&mut encoder, &binary).expect("bounded actual proof");
     format!(

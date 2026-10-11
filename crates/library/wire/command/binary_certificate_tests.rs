@@ -263,7 +263,7 @@ fn noncanonical_digest_spellings_are_not_normalized_into_accepted_ids() {
 }
 
 #[test]
-fn retained_go_graph_command_expands_to_exact_original_proof_before_existing_admission() {
+fn retained_go_graph_proof_survives_an_explicit_current_version_envelope() {
     let original = include_bytes!("fixtures/current-go-graph-continuation.json");
     // Parse only the closed untrusted wire envelope; this constructs no IDs.
     let envelope: super::super::CommandEnvelope =
@@ -271,7 +271,7 @@ fn retained_go_graph_command_expands_to_exact_original_proof_before_existing_adm
     let header = encode_json(&Header {
         version: envelope.version,
         request_id: envelope.request_id,
-        command: envelope.command,
+        command: envelope.command.clone(),
     })
     .expect("closed header");
     let mut packed = vec![];
@@ -281,19 +281,45 @@ fn retained_go_graph_command_expands_to_exact_original_proof_before_existing_adm
         packed.as_slice(),
         include_bytes!("fixtures/current-go-graph-continuation.bqpc1")
     );
+    // This capture remains DTO27, including its original binary frame. A
+    // live DTO28 peer must refuse it before proof admission, not rewrite it.
+    assert_eq!(envelope.version, 27);
+    assert!(
+        expand_binary_certificate_command(&packed)
+            .expect_err("historical transport is not a current request")
+            .contains("unsupported command DTO version 27")
+    );
+    assert!(decode_command_body(original).is_err());
+
+    // Derive only a current envelope. Every command field, claim, canonical
+    // preimage and authority byte remains the producer's captured material.
+    let mut current_envelope = envelope;
+    current_envelope.version = DTO_VERSION;
+    assert_eq!(
+        current_envelope
+            .certificate
+            .as_ref()
+            .expect("captured proof")
+            .claims
+            .len(),
+        8
+    );
+    let current = encode_json(&current_envelope).expect("current envelope");
+    let admitted_current = decode_command_body(&current)
+        .expect("retained producer claims pass current strict proof admission");
+    let packed = encode_binary_certificate_command(&admitted_current)
+        .expect("current version binary transport");
     let expanded =
-        expand_binary_certificate_command(&packed).expect("lossless real proof expansion");
+        expand_binary_certificate_command(&packed).expect("lossless current proof expansion");
     assert_eq!(
         expanded.as_slice(),
-        original,
+        current.as_slice(),
         "including every canonical preimage and authority byte"
     );
-    let admitted_original = decode_command_body(original)
-        .expect("retained real producer command passes the existing strict decoder");
     let admitted_expanded = decode_command_body(&expanded)
         .expect("exact restored producer command passes the same strict decoder");
     assert_eq!(
-        admitted_expanded, admitted_original,
+        admitted_expanded, admitted_current,
         "transport supplies no new authority"
     );
     // Corrupt the real root preimage without changing its claimed digest. The
