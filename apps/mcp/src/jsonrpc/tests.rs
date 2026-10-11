@@ -2582,6 +2582,8 @@ fn document_and_source_tools_advertise_their_useful_default_detail() {
             tool["inputSchema"]["properties"]["detail"]["default"], "standard",
             "{name} must advertise the same useful default that execution applies"
         );
+        assert_eq!(tool["inputSchema"]["properties"]["detail"]["description"],
+            "Page text and structured fields: summary, standard, or full.");
     }
     let search = tool_named(&listed["result"]["tools"], "backend.search");
     assert_eq!(
@@ -2737,6 +2739,249 @@ fn a_document_call_returns_the_markdown_page_and_the_typed_answer() {
                 .any(|line| line == "pub fn ferris() -> Beacon {")),
         "the default document projection lost its bounded source excerpt: {result}"
     );
+}
+
+#[test]
+fn page_projection_mcp_summary_omits_captured_body_and_preserves_exact_identity() {
+    // The adapter fixture controls an admitted display reply. This is a
+    // response-projection measurement, not native compiler/index evidence.
+    let body = format!(
+        "MCP_SOURCE_SENTINEL_λ\n{}",
+        "retained_source_only\n".repeat(240)
+    );
+    assert!(body.len() > SourceExcerpt::MAX_BYTES);
+    // Exercise the real producer-side prefix bound, rather than assigning a
+    // truncation marker to a shorter body. This still is not a native journey.
+    let excerpt = SourceExcerpt::capture_bounded(&body);
+    assert_eq!(excerpt.text(), Some(&body[..SourceExcerpt::MAX_BYTES]));
+    assert_eq!(excerpt.extent(), Some(SourceExcerptExtent::Truncated));
+    let mut document = document();
+    document.symbol = symbol_key("compiler-native-page-selection");
+    document.signature = Some("fn MCP_SIGNATURE_SENTINEL() -> Beacon".to_owned());
+    document = document.with_excerpt(excerpt);
+    let native = document.symbol;
+    let mut server = ready(Fake {
+        document_override: Some(document),
+        ..Fake::default()
+    });
+    for tool in ["backend.document", "backend.source"] {
+        let response = request(
+            &mut server,
+            "tools/call",
+            &json!({
+                "name": tool, "arguments": {"coordinate": DECLARATION, "detail": "summary"}
+            }),
+        );
+        assert_context_bounded(&response);
+        let summary_bytes = serde_json::to_vec(&response)
+            .expect("complete summary response")
+            .len();
+        let summary = &response["result"];
+        assert_eq!(summary["isError"], false);
+        assert_eq!(
+            summary["structuredContent"]["identity"]["coordinate"],
+            DECLARATION
+        );
+        assert_eq!(
+            summary["structuredContent"]["identity"]["semantic_data"]["value"],
+            json!(native.as_bytes())
+        );
+        assert_eq!(
+            summary["structuredContent"]["signature"],
+            "fn MCP_SIGNATURE_SENTINEL() -> Beacon"
+        );
+        assert!(summary["structuredContent"].get("source").is_none());
+        assert!(summary["structuredContent"].get("source_fault").is_none());
+        assert!(text_of(summary).contains("MCP_SIGNATURE_SENTINEL"));
+        assert!(text_of(summary).contains(DECLARATION));
+        for omitted in [
+            "MCP_SOURCE_SENTINEL",
+            "Lights the beacon.",
+            "## source",
+            "## members",
+            "## relations",
+        ] {
+            assert!(
+                !text_of(summary).contains(omitted),
+                "summary leaked {omitted}"
+            );
+        }
+        for level in [None, Some("standard"), Some("full")] {
+            let mut arguments = json!({"coordinate": DECLARATION});
+            if let Some(level) = level {
+                arguments["detail"] = json!(level);
+            }
+            let response = request(
+                &mut server,
+                "tools/call",
+                &json!({"name": tool, "arguments": arguments}),
+            );
+            assert_context_bounded(&response);
+            let full_bytes = serde_json::to_vec(&response)
+                .expect("complete source response")
+                .len();
+            assert!(
+                full_bytes > summary_bytes + SourceExcerpt::MAX_BYTES,
+                "combined response must remove both source copies at summary"
+            );
+            let full = &response["result"];
+            assert_eq!(full["isError"], false);
+            assert_eq!(
+                full["structuredContent"]["identity"]["semantic_data"]["value"],
+                json!(native.as_bytes())
+            );
+            assert_eq!(
+                full["structuredContent"]["signature"],
+                "fn MCP_SIGNATURE_SENTINEL() -> Beacon"
+            );
+            assert_eq!(full["structuredContent"]["source"]["extent"], "truncated");
+            assert_eq!(
+                full["structuredContent"]["source"]["lines"][0],
+                "MCP_SOURCE_SENTINEL_λ"
+            );
+            assert_eq!(full["structuredContent"]["source"]["path"], "src/lib.rs");
+            assert_eq!(full["structuredContent"]["source"]["line"], 2);
+            let retained_lines = full["structuredContent"]["source"]["lines"]
+                .as_array()
+                .expect("retained source lines")
+                .iter()
+                .map(|line| line.as_str().expect("source text"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert_eq!(
+                retained_lines,
+                body[..SourceExcerpt::MAX_BYTES].trim_end_matches('\n')
+            );
+            assert!(text_of(full).contains("MCP_SOURCE_SENTINEL_λ"));
+            assert!(text_of(full).contains("source continues past the retained bound"));
+            assert!(text_of(full).contains("Lights the beacon."));
+        }
+    }
+}
+
+#[test]
+fn page_projection_mcp_summary_keeps_source_failure_and_source_tool_refusal() {
+    for (location, excerpt, cause) in [
+        (
+            SourceAvailability::NotCaptured,
+            SourceExcerpt::NotCaptured,
+            "not-captured",
+        ),
+        (
+            SourceAvailability::Captured(SourceLocation::new("src/lib.rs", 2).expect("site")),
+            SourceExcerpt::NotHydrated,
+            "not-resident",
+        ),
+        (
+            SourceAvailability::Unconfigured,
+            SourceExcerpt::Unconfigured,
+            "unconfigured",
+        ),
+    ] {
+        let native = symbol_key("compiler-native-unavailable-page");
+        let mut document = Document::new(
+            native,
+            view_state_root(&[]),
+            [Fragment::Text("OMITTED_DOCUMENTATION_SENTINEL".to_owned())],
+        )
+        .with_location(location)
+        .with_excerpt(excerpt);
+        document.signature = Some("fn unavailable_page()".to_owned());
+        let mut server = ready(Fake {
+            document_override: Some(document),
+            ..Fake::default()
+        });
+        let arguments = json!({"coordinate": DECLARATION, "detail": "summary"});
+        let page = call(&mut server, "backend.document", &arguments);
+        assert_eq!(page["isError"], false);
+        assert_eq!(
+            page["structuredContent"]["signature"],
+            "fn unavailable_page()"
+        );
+        assert_eq!(
+            page["structuredContent"]["identity"]["semantic_data"]["value"],
+            json!(native.as_bytes())
+        );
+        assert_eq!(page["structuredContent"]["source_fault"]["cause"], cause);
+        assert!(page["structuredContent"].get("source").is_none());
+        assert!(text_of(&page).contains("source-unavailable"));
+        assert!(!text_of(&page).contains("OMITTED_DOCUMENTATION_SENTINEL"));
+        let source = call(&mut server, "backend.source", &arguments);
+        assert_eq!(source["isError"], true);
+        assert_eq!(source["structuredContent"]["answer"], "fault");
+        assert_eq!(source["structuredContent"]["slug"], "source-unavailable");
+        assert_eq!(source["structuredContent"]["cause"], cause);
+        assert_eq!(source["structuredContent"]["operand"], DECLARATION);
+    }
+}
+
+#[test]
+fn page_projection_mcp_combined_summary_retains_real_faults_and_section_notes() {
+    let native = symbol_key("selected-page-with-section-fault");
+    let identity = backend_present::Identity::parse_with_key(DECLARATION, native.into());
+    let source_fault = Fault::source(
+        &SourceAvailability::Unconfigured,
+        backend_present::Operand::Coordinate(identity.coordinate().clone()),
+    )
+    .expect("actual source fault");
+    let page = backend_present::Page::new(
+        identity,
+        Some(DeclarationKind::Function),
+        backend_present::Source::Absent {
+            fault: source_fault,
+        },
+    )
+    .with_signature(backend_present::Signature::tokenize(
+        "fn PAGE_FAULT_SIGNATURE()",
+        backend_present::Language::Rust,
+    ))
+    .with_notes(vec![Fault::usage(
+        "relations",
+        "MCP_SECTION_FAULT_SENTINEL",
+    )]);
+    let answer = Answer::Page(Box::new(page));
+    let mut server = ready(Fake::default());
+    let result = server
+        .rendered(
+            &answer,
+            Detail::Summary,
+            b"page-projection-context",
+            CursorTarget::CliOption,
+            "backend.document",
+        )
+        .expect("actual combined result projection");
+    assert_eq!(result["isError"], false);
+    assert_eq!(
+        result["structuredContent"]["identity"]["coordinate"],
+        DECLARATION
+    );
+    assert_eq!(
+        result["structuredContent"]["identity"]["semantic_data"]["value"],
+        json!(native.as_bytes())
+    );
+    assert_eq!(
+        result["structuredContent"]["signature"],
+        "fn PAGE_FAULT_SIGNATURE()"
+    );
+    assert_eq!(
+        result["structuredContent"]["source_fault"]["cause"],
+        "unconfigured"
+    );
+    assert_eq!(
+        result["structuredContent"]["source_fault"]["operand"],
+        DECLARATION
+    );
+    assert_eq!(
+        result["structuredContent"]["notes"][0]["detail"],
+        "MCP_SECTION_FAULT_SENTINEL"
+    );
+    assert!(result["structuredContent"].get("source").is_none());
+    let text = text_of(&result);
+    assert!(text.contains(DECLARATION));
+    assert!(text.contains("PAGE_FAULT_SIGNATURE"));
+    assert!(text.contains("source-unavailable"));
+    assert!(text.contains("this deployment has no source provider"));
+    assert!(text.contains("MCP_SECTION_FAULT_SENTINEL"));
 }
 
 #[test]

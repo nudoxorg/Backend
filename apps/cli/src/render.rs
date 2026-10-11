@@ -51,14 +51,16 @@ pub(crate) fn try_answer_with_cursor(
     cursor: Option<&str>,
 ) -> Result<String, Fault> {
     match options.format() {
-        Format::Human => Ok(bounded_text(&text::answer_with_cursor(
+        Format::Human => Ok(bounded_text(&text::answer_with_detail(
             answer,
             options.theme(),
+            options.detail(),
             cursor,
             ContinuationTarget::CliOption,
         ))),
-        Format::Markdown => Ok(bounded_text(&markdown::answer_with_cursor(
+        Format::Markdown => Ok(bounded_text(&markdown::answer_with_detail(
             answer,
+            options.detail(),
             cursor,
             ContinuationTarget::CliOption,
         ))),

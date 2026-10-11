@@ -1232,6 +1232,93 @@ fn markdown_output_is_the_shared_renderer_and_json_is_the_typed_dto() {
 }
 
 #[test]
+fn page_projection_cli_detail_controls_each_format_without_changing_show_source_defaults() {
+    use backend_present::{
+        Detail, Identity, Language, LineNumber, PackagePath, Page, Signature, Source, SourceSite,
+        Truncation,
+    };
+
+    let coordinate = "/abs/app::src/entry.ts:42::entrySummary";
+    let source = "CLI_SOURCE_SENTINEL";
+    let signature = "function entrySummary(entry: Entry): string";
+    let line = LineNumber::new(42).expect("one-based");
+    let native = backend_library::symbol_key("cli-native-entry");
+    let page = Page::new(
+        Identity::parse_with_key(coordinate, native.into()),
+        Some(backend_library::DeclarationKind::Function),
+        Source::Captured {
+            site: SourceSite::new(PackagePath::new("src/entry.ts"), line),
+            lines: Source::number_lines(source, line),
+            truncation: Truncation::Complete,
+        },
+    )
+    .with_signature(Signature::tokenize(signature, Language::TypeScript))
+    .with_notes(vec![backend_present::Fault::usage(
+        "relations",
+        "CLI_NOTE_SENTINEL",
+    )]);
+    let answer = Answer::Page(Box::new(page));
+    for format in ["human", "markdown", "json"] {
+        for command in ["show", "source"] {
+            let (summary, _) = options::split(&words(&format!(
+                "--no-color --format {format} --detail summary {command} {coordinate}"
+            )))
+            .expect("explicit summary options");
+            let rendered = render::try_answer_with_cursor(&answer, &summary, None)
+                .expect("summary projection fits");
+            assert!(rendered.contains(coordinate));
+            assert!(rendered.contains(signature));
+            assert!(rendered.contains("CLI_NOTE_SENTINEL"));
+            assert!(!rendered.contains(source), "{format} summary leaked source");
+            if format == "json" {
+                let value: serde_json::Value = serde_json::from_str(&rendered).expect("JSON");
+                assert!(value.get("source").is_none());
+                assert!(value.get("source_fault").is_none());
+                assert_eq!(
+                    value["identity"]["semantic_data"]["value"],
+                    serde_json::json!(native.as_bytes())
+                );
+            }
+            for level in [None, Some("standard"), Some("full")] {
+                let flag = level.map_or(String::new(), |level| format!("--detail {level}"));
+                let (options, _) = options::split(&words(&format!(
+                    "--no-color --format {format} {flag} {command} {coordinate}"
+                )))
+                .expect("source-bearing options");
+                assert_eq!(
+                    options.detail(),
+                    if level == Some("full") {
+                        Detail::Full
+                    } else {
+                        Detail::Standard
+                    }
+                );
+                let rendered = render::try_answer_with_cursor(&answer, &options, None)
+                    .expect("source projection fits");
+                assert!(
+                    rendered.contains(source),
+                    "{format} {command} {level:?} lost source"
+                );
+                assert!(rendered.contains(signature));
+                assert!(rendered.contains("CLI_NOTE_SENTINEL"));
+                if format == "json" {
+                    let value: serde_json::Value = serde_json::from_str(&rendered).expect("JSON");
+                    assert_eq!(value["source"]["path"], "src/entry.ts");
+                    assert_eq!(value["source"]["line"], 42);
+                    assert_eq!(value["source"]["extent"], "complete");
+                    assert_eq!(
+                        value["identity"]["semantic_data"]["value"],
+                        serde_json::json!(native.as_bytes())
+                    );
+                }
+            }
+        }
+    }
+    assert!(render::markdown_text(&answer).contains(source));
+    assert!(invoke::help().contains("page text follows the same detail"));
+}
+
+#[test]
 fn an_oversized_json_page_is_a_nonzero_typed_transport_refusal() {
     let snapshot = ViewSnapshot {
         root: root(),

@@ -30,6 +30,7 @@ use crate::product::{CursorTarget, IndexJobProjection, ProductView, semantic_his
 use crate::record::{Record, RecordList};
 use crate::shelf::{Readiness, Shelf};
 use crate::status::Status;
+use crate::{Detail, PageProjection};
 
 /// Renders one `~lanes` coverage statement.
 #[must_use]
@@ -61,7 +62,19 @@ pub fn answer_with_cursor(
     cursor: Option<&str>,
     target: ContinuationTarget<'_>,
 ) -> String {
+    answer_with_detail(value, Detail::Standard, cursor, target)
+}
+
+/// Renders page fields selected by detail; other answer policies are unchanged.
+#[must_use]
+pub fn answer_with_detail(
+    value: &Answer,
+    detail: Detail,
+    cursor: Option<&str>,
+    target: ContinuationTarget<'_>,
+) -> String {
     match value {
+        Answer::Page(value) => page_projection(&PageProjection::new(value, detail)),
         Answer::Records(value) => records_with_cursor(value, None, cursor, target),
         _ => answer(value),
     }
@@ -110,6 +123,12 @@ fn tool_call_text(call: &serde_json::Value) -> String {
 /// Renders one declaration page, identity first.
 #[must_use]
 pub fn page(page: &Page) -> String {
+    page_projection(&PageProjection::new(page, Detail::Standard))
+}
+
+/// Renders a borrowed typed page projection without reinterpreting JSON.
+#[must_use]
+pub fn page_projection(page: &PageProjection<'_>) -> String {
     let mut lines = Lines::new();
     lines.push(format!("# {}", page.identity().trail_within(None)));
     lines.push(meta_line(page));
@@ -120,10 +139,21 @@ pub fn page(page: &Page) -> String {
         lines.push(signature.text());
         lines.push("```");
     }
-    push_prose(&mut lines, page.prose());
-    push_members(&mut lines, page.members(), page.identity().project());
-    push_relations(&mut lines, page.relations(), page.identity().project());
-    push_source(&mut lines, page.source(), page.language().fence());
+    if let Some(prose) = page.prose().included() {
+        push_prose(&mut lines, prose);
+    }
+    if let Some(members) = page.members().included() {
+        push_members(&mut lines, members, page.identity().project());
+    }
+    if let Some(relations) = page.relations().included() {
+        push_relations(&mut lines, relations, page.identity().project());
+    }
+    if let Some(source) = page.source().included() {
+        push_source(&mut lines, source, page.language().fence());
+    } else if let Some(reason) = page.source_fault() {
+        lines.blank();
+        lines.push(fault(reason));
+    }
     push_notes(&mut lines, page.notes());
     lines.finish()
 }
@@ -139,7 +169,7 @@ fn push_notes(lines: &mut Lines, notes: &[Fault]) {
     }
 }
 
-fn meta_line(page: &Page) -> String {
+fn meta_line(page: &PageProjection<'_>) -> String {
     let mut parts = Vec::with_capacity(4);
     if let Some(kind) = page.kind() {
         parts.push(kind.name().to_owned());
@@ -148,7 +178,7 @@ fn meta_line(page: &Page) -> String {
     if let Some(tag) = page.identity().key().tag() {
         parts.push(format!("key {tag}"));
     }
-    if let Some(site) = page.source().site() {
+    if let Some(site) = page.source_site() {
         parts.push(format!("{}:{}", site.path(), site.line()));
     }
     parts.join(" · ")

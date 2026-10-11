@@ -1196,8 +1196,9 @@ impl<P: Product> Server<P> {
         };
         let structured: Value = serde_json::from_slice(&payload.bytes)
             .map_err(|error| RpcError::tool(format!("typed projection decode failed: {error}")))?;
-        let text = bounded_text(&markdown::answer_with_cursor(
+        let text = bounded_text(&markdown::answer_with_detail(
             answer,
+            detail,
             next.as_deref(),
             ContinuationTarget::McpTool(tool_name),
         ));
