@@ -2981,6 +2981,7 @@ pub(crate) fn held_route(held: &crate::model::hand::Held) -> Option<Route> {
 #[cfg(test)]
 mod keyboard_claim_tests {
     use super::*;
+    use std::rc::Rc;
 
     fn mounted_root(cx: &mut gpui::TestAppContext) -> super::super::tests::Rig {
         let mut rig = super::super::tests::rig(cx, Some(super::super::tests::page_route("RelationLabel")), 1440.0, 900.0);
@@ -2991,6 +2992,66 @@ mod keyboard_claim_tests {
         });
         rig.settle();
         rig
+    }
+
+    #[gpui::test]
+    fn mounted_native_focus_admits_after_nested_shell_and_reader_borrows_return(cx: &mut gpui::TestAppContext) {
+        let mut rig = super::super::tests::rig(cx, None, 1440.0, 900.0);
+        rig.settle();
+        rig.repaint();
+        let shell = rig.shell.clone();
+        let (reader, targets) = shell.read_with(rig.cx, |shell, cx| (shell.reader.clone(), shell.reader_targets(cx)));
+        let id = targets.native_keys().into_iter().find(|id| id.starts_with("orbit-package-"))
+            .expect("actual mounted Library native package control");
+        let called = Rc::new(std::cell::Cell::new(0));
+        let list = targets.list_probe().upgrade().expect("actual mounted target list");
+        let original = list.borrow().iter().find(|target| target.id == id).expect("current native target").action.clone();
+        let guarded_shell = shell.downgrade();
+        let guarded_reader = reader.downgrade();
+        let counted = Rc::clone(&called);
+        let admit = Rc::new(move |app: &mut gpui::App| {
+            let shell = guarded_shell.upgrade().expect("current Shell");
+            let _zone = shell.read(app).zone;
+            guarded_reader.upgrade().expect("current Reader").update(app, |reader, _| reader.cancel_native_return());
+            counted.set(counted.get() + 1);
+            original.admits(app)
+        });
+        let action = list.borrow_mut().iter_mut().find(|target| target.id == id).expect("same native target").action.clone();
+        list.borrow_mut().iter_mut().find(|target| target.id == id).expect("same native target").action =
+            super::super::focus::TargetAction::new(admit, action.callback());
+        rig.cx.update(|window, app| shell.update(app, |shell, cx| {
+            shell.focus.focus(window, cx);
+            shell.reader.update(cx, |reader, cx| {
+                assert!(reader.targets.focus_native(&id, window, cx));
+                assert_eq!(called.get(), 0, "the guard cannot run inside the held Reader update");
+            });
+            assert_eq!(called.get(), 0, "the guard cannot run inside the held Shell update");
+        }));
+        assert_eq!(called.get(), 1, "the exact guard runs once after both actual entity borrows return");
+        assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)), Some(id));
+        assert!(rig.cx.update(|window, _| targets.focused_native_is_live(window)), "the admitted handle belongs to the mounted native control");
+    }
+
+    #[gpui::test]
+    fn a_deferred_native_walk_cannot_take_focus_after_new_native_input(cx: &mut gpui::TestAppContext) {
+        let mut rig = super::super::tests::rig(cx, None, 1440.0, 900.0);
+        rig.settle();
+        rig.repaint();
+        let shell = rig.shell.clone();
+        let targets = shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        let package = targets.native_keys().into_iter().find(|id| id.starts_with("orbit-package-"))
+            .expect("actual indexed package control");
+        let ids = [gpui::SharedString::from("find-packages"), package];
+        assert!(targets.native_keys().contains(&ids[0]), "actual mounted Add package door");
+        rig.cx.update(|window, app| { assert!(targets.focus_native(&ids[0], window, app)); });
+        let origin = rig.cx.update(|window, app| window.focused(app).expect("first native control"));
+        rig.cx.update(|window, app| shell.update(app, |shell, cx| {
+            shell.reader.update(cx, |reader, cx| { assert!(reader.targets.focus_native(&ids[1], window, cx)); });
+            shell.focus.focus(window, cx); // A newer, mounted owner wins before the deferred admission.
+        }));
+        assert!(rig.cx.update(|window, app| shell.read(app).focus.is_focused(window)));
+        assert_ne!(rig.cx.update(|window, app| window.focused(app)), Some(origin));
+        assert_ne!(rig.cx.update(|window, _| targets.native_focused(window)), Some(ids[1].clone()));
     }
 
     #[gpui::test]
