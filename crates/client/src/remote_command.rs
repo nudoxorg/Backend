@@ -357,6 +357,14 @@ impl CommandTransport for RemoteIndexCommandTransport {
     fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
         self.request_with_timeout(request, crate::CLIENT_REQUEST_TIMEOUT)
     }
+
+    fn request_with_budget(
+        &mut self,
+        request: CommandDto,
+        remaining: Duration,
+    ) -> Result<ReplyDto, ClientError> {
+        self.request_with_timeout(request, remaining.min(crate::CLIENT_REQUEST_TIMEOUT))
+    }
 }
 
 impl RemoteIndexCommandTransport {

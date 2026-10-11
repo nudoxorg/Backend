@@ -815,6 +815,7 @@ pub fn failure(error: &ClientError) -> ReadFailure {
             FaultCode::Protocol
         }
         ClientError::Disconnected(_)
+        | ClientError::QueryPreparationDisconnected { .. }
         | ClientError::MutationOutcomeUnknown(_)
         | ClientError::Io(_)
         | ClientError::Startup(_)

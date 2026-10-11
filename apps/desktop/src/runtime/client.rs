@@ -681,7 +681,7 @@ fn fault(error: ClientError) -> EngineFault {
     EngineFault::Failed(crate::core::ErrorValue::new(
         match error {
             ClientError::Protocol(_) | ClientError::IncoherentView => FaultCode::Protocol,
-            ClientError::Startup(_) | ClientError::Disconnected(_) | ClientError::MutationOutcomeUnknown(_) | ClientError::Io(_) | ClientError::Transport(_) | ClientError::RemoteDeadlineExceeded => {
+            ClientError::Startup(_) | ClientError::Disconnected(_) | ClientError::QueryPreparationDisconnected { .. } | ClientError::MutationOutcomeUnknown(_) | ClientError::Io(_) | ClientError::Transport(_) | ClientError::RemoteDeadlineExceeded => {
                 FaultCode::Transport
             }
             ClientError::CommandFailed(_) => FaultCode::Missing,

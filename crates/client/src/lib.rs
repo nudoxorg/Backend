@@ -12,6 +12,10 @@ pub mod monotonic;
 #[cfg(any(unix, windows))]
 mod query_continuation;
 #[cfg(any(unix, windows))]
+mod query_preparation;
+#[cfg(any(unix, windows))]
+pub use query_preparation::QueryPreparationProgress;
+#[cfg(any(unix, windows))]
 mod remote_command;
 #[cfg(any(unix, windows))]
 mod reset_budget;
@@ -196,6 +200,15 @@ pub enum ClientError {
     /// This is separate from [`ClientError::Io`] because the request itself
     /// may be valid and the client can recover by opening a new connection.
     Disconnected(std::io::ErrorKind),
+    /// A connection failed while exchanging an exact pinned search or graph
+    /// query, including its first exchange. A reconnect must not silently
+    /// submit that read at a new revision.
+    QueryPreparationDisconnected {
+        /// Original immutable view selected by the read.
+        basis: backend_library::ViewRevision,
+        /// Actual connection failure, including an expired exchange budget.
+        kind: std::io::ErrorKind,
+    },
     /// A non-repeatable command was in flight when its connection closed, so
     /// the owner may or may not have admitted it. A replacement connection
     /// does not resolve that ambiguity.
@@ -257,6 +270,11 @@ impl fmt::Display for ClientError {
             Self::Disconnected(kind) => {
                 write!(formatter, "endpoint disconnected: {kind}")
             }
+            Self::QueryPreparationDisconnected { basis, kind } => write!(
+                formatter,
+                "pinned query for revision {} lost its connection ({kind}); the read was not rebound",
+                encode_id(basis.as_bytes())
+            ),
             Self::MutationOutcomeUnknown(kind) => {
                 write!(
                     formatter,
@@ -312,6 +330,17 @@ pub trait CommandTransport {
     /// # Errors
     /// Returns a transport, protocol, correlation, or freshness error.
     fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError>;
+
+    /// Sends a read with the remaining preparation-wait budget. Socket and
+    /// remote transports bound their exchange by this duration; synchronous
+    /// transports retain their ordinary request execution contract.
+    fn request_with_budget(
+        &mut self,
+        request: CommandDto,
+        _remaining: Duration,
+    ) -> Result<ReplyDto, ClientError> {
+        self.request(request)
+    }
 
     /// Returns a handle that can interrupt this transport's exact socket.
     /// Connectionless transports return `None`.
@@ -502,6 +531,31 @@ impl CommandTransport for UnixCommandTransport {
         admit_reply(&request, reply)
     }
 
+    fn request_with_budget(
+        &mut self,
+        request: CommandDto,
+        remaining: Duration,
+    ) -> Result<ReplyDto, ClientError> {
+        let started = std::time::Instant::now();
+        if remaining.is_zero() {
+            return Err(ClientError::RemoteDeadlineExceeded);
+        }
+        configure_request_with_timeouts(
+            &self.stream,
+            &request,
+            self.io_timeout.min(remaining),
+            CLIENT_MUTATION_TIMEOUT,
+        )?;
+        let body = encode_request(&request)?;
+        let remaining = remaining.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Err(ClientError::RemoteDeadlineExceeded);
+        }
+        let body = self.exchange_command_with_budget(&request, &body, remaining)?;
+        let reply = self.decode(&body)?;
+        admit_reply(&request, reply)
+    }
+
     fn reconnect(&mut self) -> Result<(), ClientError> {
         let endpoint = self.endpoint.clone().ok_or_else(|| {
             ClientError::Protocol(
@@ -559,6 +613,7 @@ pub struct Session {
     admitted_owner: Option<backend_library::Cursor>,
     prepared_query: Option<CommandDto>,
     continuations: BTreeMap<backend_library::Cursor, RetainedContinuation>,
+    preparation_progress: Option<Box<dyn FnMut(QueryPreparationProgress) -> bool + Send>>,
 }
 
 /// A producer-admitted page and the distinct full owner revision that issued it.
@@ -642,6 +697,7 @@ impl Session {
             admitted_owner: None,
             prepared_query: None,
             continuations: BTreeMap::new(),
+            preparation_progress: None,
         })
     }
 
@@ -657,6 +713,7 @@ impl Session {
             admitted_owner: None,
             prepared_query: None,
             continuations: BTreeMap::new(),
+            preparation_progress: None,
         }
     }
 
@@ -773,6 +830,15 @@ impl Session {
     /// Returns an error when the bounded revision reply fails transport or proof admission.
     pub fn revision(&mut self) -> Result<Revision, ClientError> {
         let reply = self.send_success(Command::Revision, None)?;
+        self.admit_revision(reply)
+    }
+
+    fn revision_with_budget(&mut self, remaining: Duration) -> Result<Revision, ClientError> {
+        let reply = self.send_success_with_budget(Command::Revision, None, Some(remaining))?;
+        self.admit_revision(reply)
+    }
+
+    fn admit_revision(&mut self, reply: ReplyDto) -> Result<Revision, ClientError> {
         let certificate = reply.certificate().cloned().ok_or_else(|| {
             ClientError::Protocol("revision reply omitted its certificate".to_owned())
         })?;
@@ -888,12 +954,14 @@ impl Session {
     /// # Errors
     /// Returns an error when the limit, revision, request, or reply fails admission.
     pub fn search(&mut self, text: &str, limit: u16) -> Result<ReplyDto, ClientError> {
-        let revision = self.revision()?;
+        let deadline = query_preparation::QueryReadDeadline::new(CLIENT_REQUEST_TIMEOUT);
+        let revision = self.revision_with_budget(deadline.remaining()?)?;
         let limit = QueryLimit::new(limit)
             .ok_or_else(|| ClientError::Protocol("query limit is outside its bound".to_owned()))?;
-        self.send_success(
+        self.send_success_with_budget(
             Command::Search(Query::new(text, revision.root, limit)),
             Some(revision.certificate),
+            Some(deadline.remaining()?),
         )
     }
 
@@ -909,10 +977,27 @@ impl Session {
         limit: u16,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
+        self.search_page_with_budget(text, limit, continuation, CLIENT_REQUEST_TIMEOUT)
+    }
+
+    fn search_page_with_budget(
+        &mut self,
+        text: &str,
+        limit: u16,
+        continuation: Option<PageContinuation>,
+        budget: Duration,
+    ) -> Result<ReplyDto, ClientError> {
+        let deadline = query_preparation::QueryReadDeadline::new(budget);
         if self.prepared_query.is_some() {
-            return self.resume_prepared_query("Search", text, limit, continuation);
+            return self.resume_prepared_query_with_budget(
+                "Search",
+                text,
+                limit,
+                continuation,
+                Some(deadline.remaining()?),
+            );
         }
-        let revision = self.revision()?;
+        let revision = self.revision_with_budget(deadline.remaining()?)?;
         let limit = QueryLimit::new(limit)
             .ok_or_else(|| ClientError::Protocol("query limit is outside its bound".to_owned()))?;
         let query = Query::new(text, revision.root, limit);
@@ -920,9 +1005,10 @@ impl Session {
             Some(cursor) => query.with_cursor(cursor.cursor()),
             None => query,
         };
-        self.send_success(
+        self.send_success_with_budget(
             Command::Search(query),
             Some(self.page_certificate(revision.certificate, continuation)),
+            Some(deadline.remaining()?),
         )
     }
 
@@ -1222,6 +1308,7 @@ impl Session {
         continuation: Option<PageContinuation>,
         cancel: bool,
     ) -> Result<GraphQueryPage, ClientError> {
+        let deadline = query_preparation::QueryReadDeadline::new(CLIENT_REQUEST_TIMEOUT);
         if let Some(prepared) = self.prepared_query.take() {
             let Command::GraphQuery(query) = &prepared.command else {
                 return Err(ClientError::Protocol(
@@ -1237,7 +1324,7 @@ impl Session {
                 ));
             }
         }
-        let revision = self.revision()?;
+        let revision = self.revision_with_budget(deadline.remaining()?)?;
         let limit = QueryLimit::new(limit)
             .ok_or_else(|| ClientError::Protocol("query limit is outside its bound".to_owned()))?;
         let mut request = GraphQueryRequest::bind(input, revision.root, limit);
@@ -1260,7 +1347,11 @@ impl Session {
             id: encode_id(request.recipe().as_bytes()),
             value: request.recipe_preimage(),
         });
-        let reply = self.send_success(Command::GraphQuery(request), Some(certificate))?;
+        let reply = self.send_success_with_budget(
+            Command::GraphQuery(request),
+            Some(certificate),
+            Some(deadline.remaining()?),
+        )?;
         let CommandReply::GraphQueryPage(page) = reply.reply else {
             return Err(ClientError::Protocol(
                 "graph query reply changed shape".to_owned(),
@@ -1609,6 +1700,33 @@ impl Session {
         command: Command,
         certificate: Option<WireCertificate>,
     ) -> Result<ReplyDto, ClientError> {
+        self.send_success_with_budget(command, certificate, None)
+    }
+
+    fn send_with_budget(
+        &mut self,
+        command: Command,
+        certificate: Option<WireCertificate>,
+        remaining: Duration,
+    ) -> Result<ReplyDto, ClientError> {
+        let request_id = self.next_request_id;
+        self.next_request_id = request_id
+            .checked_add(1)
+            .ok_or_else(|| ClientError::Protocol("request identity exhausted".to_owned()))?;
+        let mut request = CommandDto::new(request_id, command);
+        if let Some(certificate) = certificate {
+            request = request.with_certificate(certificate);
+        }
+        self.transport.request_with_budget(request, remaining)
+    }
+
+    fn send_success_with_budget(
+        &mut self,
+        command: Command,
+        certificate: Option<WireCertificate>,
+        remaining: Option<Duration>,
+    ) -> Result<ReplyDto, ClientError> {
+        let started = std::time::Instant::now();
         let portable = matches!(
             &command,
             Command::Search(_)
@@ -1617,7 +1735,13 @@ impl Session {
                 | Command::GraphPage { .. }
         )
         .then(|| (command.clone(), certificate.clone()));
-        let reply = require_command_success(self.send(command, certificate)?)?;
+        let remaining = remaining.map(|budget| budget.saturating_sub(started.elapsed()));
+        let reply = require_command_success(match remaining {
+            Some(remaining) => {
+                self.send_query_ready_with_budget(command, certificate, remaining)?
+            }
+            None => self.send_query_ready(command, certificate)?,
+        })?;
         self.remember_continuation(&reply);
         if let Some((command, Some(certificate))) = portable {
             self.retain_portable_query(command, &certificate, &reply)?;

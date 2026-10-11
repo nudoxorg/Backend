@@ -250,6 +250,13 @@ impl reconnect::Endpoint for SessionEndpoint {
                 return Err(error);
             }
         };
+        session.observe_query_preparation(|progress| {
+            use std::io::Write as _;
+            let mut stderr = std::io::stderr().lock();
+            let _ = writeln!(stderr, "search preparation: {}", progress.state.as_str())
+                .and_then(|()| stderr.flush());
+            true
+        });
         if let Some(state) = state {
             session.restore_continuation_state(state);
         }

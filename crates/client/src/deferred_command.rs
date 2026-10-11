@@ -3,7 +3,7 @@ use super::{ClientError, Command, CommandDto, UnixCommandTransport, read_body, w
 use backend_replication::{
     DEFERRED_COMMAND_ACK_MAGIC, MAX_DEFERRED_COMMAND_WAIT, wrap_deferred_command,
 };
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::time::Instant;
 
 impl UnixCommandTransport {
@@ -12,12 +12,31 @@ impl UnixCommandTransport {
         request: &CommandDto,
         original: &[u8],
     ) -> Result<Vec<u8>, ClientError> {
+        self.exchange_command_bounded(request, original, None)
+    }
+
+    pub(super) fn exchange_command_with_budget(
+        &mut self,
+        request: &CommandDto,
+        original: &[u8],
+        remaining: std::time::Duration,
+    ) -> Result<Vec<u8>, ClientError> {
+        self.exchange_command_bounded(request, original, Some(remaining))
+    }
+
+    fn exchange_command_bounded(
+        &mut self,
+        request: &CommandDto,
+        original: &[u8],
+        ceiling: Option<std::time::Duration>,
+    ) -> Result<Vec<u8>, ClientError> {
         let started = Instant::now();
         let initial = self
             .stream
             .read_timeout()
             .map_err(|error| ClientError::Io(error.to_string()))?
             .unwrap_or(self.io_timeout);
+        let initial = ceiling.map_or(initial, |remaining| initial.min(remaining));
         let opted_in = self.peer.is_some() && matches!(&request.command, Command::Search(_));
         let wrapped = if opted_in {
             Some(
@@ -27,7 +46,18 @@ impl UnixCommandTransport {
         } else {
             None
         };
-        write_body(&mut self.stream, wrapped.as_deref().unwrap_or(original))?;
+        let original = wrapped.as_deref().unwrap_or(original);
+        if let Some(remaining) = ceiling {
+            write_body(
+                &mut DeadlineWrite {
+                    stream: &mut self.stream,
+                    deadline: started + remaining,
+                },
+                original,
+            )?;
+        } else {
+            write_body(&mut self.stream, original)?;
+        }
         let mut body = read_before(&mut self.stream, started + initial)?;
         if body.starts_with(&DEFERRED_COMMAND_ACK_MAGIC) {
             if !opted_in {
@@ -47,7 +77,8 @@ impl UnixCommandTransport {
                 .map_err(|error| ClientError::Protocol(error.to_string()))?;
             // An ACK never renews its budget: both phases share the original
             // request start, and even byte-by-byte reads consume that deadline.
-            let deadline = started + budget.min(MAX_DEFERRED_COMMAND_WAIT);
+            let admitted = budget.min(MAX_DEFERRED_COMMAND_WAIT);
+            let deadline = started + ceiling.map_or(admitted, |remaining| admitted.min(remaining));
             body = read_before(&mut self.stream, deadline)?;
             if body.starts_with(&DEFERRED_COMMAND_ACK_MAGIC) {
                 return Err(ClientError::Protocol(
@@ -69,6 +100,24 @@ fn read_before(
 struct DeadlineRead<'a> {
     stream: &'a mut backend_replication::LocalStream,
     deadline: Instant,
+}
+
+struct DeadlineWrite<'a> {
+    stream: &'a mut backend_replication::LocalStream,
+    deadline: Instant,
+}
+impl Write for DeadlineWrite<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        self.stream.set_write_timeout(Some(remaining))?;
+        self.stream.write(bytes)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.stream.flush()
+    }
 }
 impl Read for DeadlineRead<'_> {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
@@ -92,6 +141,49 @@ mod tests {
     };
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
+
+    #[test]
+    fn budgeted_partial_frame_writes_share_one_absolute_deadline() {
+        let (mut client, mut peer) =
+            backend_replication::LocalStream::pair().expect("real socket pair");
+        let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observer = std::sync::Arc::clone(&stopped);
+        peer.set_read_timeout(Some(Duration::from_millis(100)))
+            .expect("bounded peer");
+        let drain = std::thread::spawn(move || {
+            let mut buffer = [0_u8; 256];
+            while !observer.load(std::sync::atomic::Ordering::Acquire) {
+                if peer.read(&mut buffer).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let started = Instant::now();
+        let result = write_body(
+            &mut DeadlineWrite {
+                stream: &mut client,
+                deadline: started + Duration::from_millis(40),
+            },
+            &vec![1; backend_replication::LOCAL_CONTROL_MAX_FRAME],
+        );
+        let elapsed = started.elapsed();
+        stopped.store(true, std::sync::atomic::Ordering::Release);
+        client
+            .shutdown(std::net::Shutdown::Both)
+            .expect("close observer");
+        drain.join().expect("peer joined");
+        assert!(matches!(
+            result,
+            Err(ClientError::Disconnected(
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            ))
+        ));
+        assert!(
+            elapsed < Duration::from_millis(500),
+            "partial writes renewed the deadline: {elapsed:?}"
+        );
+    }
 
     fn request() -> CommandDto {
         let root = backend_library::view_state_root(&[]);
@@ -134,6 +226,7 @@ mod tests {
         let case = case.to_owned();
         let server_path = path.clone();
         let (release_peer, retain_peer) = std::sync::mpsc::channel();
+        let budgeted = case == "budgeted";
         let server = std::thread::spawn(move || {
             let (mut peer, _) = listener.accept().expect("accept");
             let frame = read_body(&mut peer).expect("request frame");
@@ -202,7 +295,11 @@ mod tests {
             drop(listener);
         });
         let started = Instant::now();
-        let result = client.request(request());
+        let result = if budgeted {
+            client.request_with_budget(request(), wait)
+        } else {
+            client.request(request())
+        };
         let elapsed = started.elapsed();
         let _ = release_peer.send(());
         drop(client);
@@ -227,6 +324,16 @@ mod tests {
         ), "wrong-final-id returned: {result:?}");
         let (result, _) = exchange("bad-final", Duration::from_millis(60));
         assert!(matches!(result, Err(ClientError::Protocol(_))));
+    }
+
+    #[test]
+    fn preparation_read_remaining_budget_is_not_renewed_by_an_authenticated_ack() {
+        let (result, elapsed) = exchange("budgeted", Duration::from_millis(60));
+        assert!(matches!(result, Err(ClientError::Disconnected(_))));
+        assert!(
+            elapsed < Duration::from_millis(150),
+            "ACK renewed the preparation read budget: {elapsed:?}"
+        );
     }
 
     #[test]

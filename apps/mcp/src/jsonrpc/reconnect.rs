@@ -119,6 +119,15 @@ impl<E: Endpoint> Reconnecting<E> {
             None => Err(ClientError::Disconnected(std::io::ErrorKind::NotConnected)),
         };
         match first {
+            Err(error @ ClientError::QueryPreparationDisconnected { .. }) => {
+                // Keep the original pinned read's failure. A later explicit
+                // request can connect, but this call cannot acquire a new
+                // revision and quietly resume on another selection.
+                if let Some(previous) = self.product.take() {
+                    self.endpoint.retire(previous);
+                }
+                Err(error)
+            }
             Err(ClientError::Disconnected(kind)) => {
                 // Drop the dead transport lease before opening a replacement
                 // either way: the agent's next call must not meet the same
@@ -143,7 +152,11 @@ impl<E: Endpoint> Reconnecting<E> {
                         // second dead lease: the following request should
                         // begin at the endpoint and make one bounded fresh
                         // connection attempt.
-                        if matches!(&result, Err(ClientError::Disconnected(_))) {
+                        if matches!(
+                            &result,
+                            Err(ClientError::Disconnected(_)
+                                | ClientError::QueryPreparationDisconnected { .. })
+                        ) {
                             self.endpoint.retire(replacement);
                             self.product = None;
                         } else {
@@ -661,6 +674,58 @@ mod tests {
             connects: 0,
         };
         (Reconnecting::new(endpoint, dead), log)
+    }
+
+    #[test]
+    fn pinned_preparation_disconnect_does_not_reconnect_or_rebind_the_same_call() {
+        let (mut product, _) = idle_out();
+        let expected = ClientError::QueryPreparationDisconnected {
+            basis: view_state_root(&[]).into(),
+            kind: std::io::ErrorKind::ConnectionReset,
+        };
+        let mut calls = 0;
+        let result: Result<(), ClientError> = product.attempt(Repeatable::Yes, |_| {
+            calls += 1;
+            Err(expected.clone())
+        });
+        assert_eq!(result, Err(expected));
+        assert_eq!(calls, 1);
+        assert_eq!(product.endpoint.connects, 0);
+        assert!(
+            product.product.is_none(),
+            "dead preparation lease is retired"
+        );
+        product.health().expect("a later explicit call may connect");
+        assert_eq!(product.endpoint.connects, 1);
+    }
+
+    #[test]
+    fn replacement_pinned_first_reply_failure_is_retired_without_a_third_attempt() {
+        let (mut product, _) = idle_out();
+        let expected = ClientError::QueryPreparationDisconnected {
+            basis: view_state_root(&[]).into(),
+            kind: std::io::ErrorKind::ConnectionReset,
+        };
+        let mut calls = 0;
+        let result: Result<(), ClientError> = product.attempt(Repeatable::Yes, |_| {
+            calls += 1;
+            if calls == 1 {
+                // No basis was chosen on this initial lease.
+                Err(ClientError::Disconnected(std::io::ErrorKind::BrokenPipe))
+            } else {
+                // The replacement chose an exact basis, then lost its first reply.
+                Err(expected.clone())
+            }
+        });
+        assert_eq!(result, Err(expected));
+        assert_eq!(calls, 2);
+        assert_eq!(product.endpoint.connects, 1);
+        assert!(
+            product.product.is_none(),
+            "replacement pinned failure is a dead lease"
+        );
+        product.health().expect("later explicit call may reconnect");
+        assert_eq!(product.endpoint.connects, 2);
     }
 
     /// A reconnect must hand the retired lease to its endpoint. The real

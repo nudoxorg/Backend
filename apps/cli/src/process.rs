@@ -177,6 +177,12 @@ fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), 
             Operand::Path(endpoint.to_string_lossy().into_owned()),
         )
     })?;
+    session.observe_query_preparation(|progress| {
+        let mut stderr = std::io::stderr().lock();
+        let _ = writeln!(stderr, "search preparation: {}", progress.state.as_str())
+            .and_then(|()| stderr.flush());
+        true
+    });
     // Startup is a single bounded wait; the planned command is submitted once,
     // only after an endpoint connection succeeded.
     let answer = run::execute_in_workspace(&mut session, &request, &workspace)?;

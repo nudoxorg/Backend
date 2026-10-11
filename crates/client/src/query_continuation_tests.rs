@@ -1481,3 +1481,620 @@ fn plain_graph_selected_address_is_portable_without_becoming_a_canonical_key() {
     );
     assert_eq!(requests.lock().expect("requests").len(), before);
 }
+
+// Real owner replies cross the existing typed client admission. The scripted
+// readiness replaces only the producer's preparation observation, not rows,
+// canonical page proofs or continuation identities.
+struct PreparingTransport {
+    inner: Transport,
+    states: std::collections::VecDeque<backend_library::QueryPreparationState>,
+    repeat: bool,
+    fault: Option<CommandFailure>,
+    sent: Arc<Mutex<Vec<CommandDto>>>,
+    budgets: Arc<Mutex<Vec<Duration>>>,
+}
+impl CommandTransport for PreparingTransport {
+    fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+        self.sent.lock().expect("requests").push(request.clone());
+        let basis = match &request.command {
+            Command::Search(query) => Some(query.basis()),
+            Command::GraphQuery(query) => Some(query.page().basis()),
+            _ => None,
+        };
+        if let Some(basis) = basis {
+            let failure = self.fault.take().or_else(|| {
+                let state = if self.repeat {
+                    self.states.front().copied()
+                } else {
+                    self.states.pop_front()
+                }?;
+                Some(CommandFailure::QueryPreparation { basis, state })
+            });
+            if let Some(failure) = failure {
+                let owner = self.inner.owner.lock().expect("owner");
+                let proof = owner
+                    .execute_dto(CommandDto::new(1, Command::Revision))
+                    .certificate()
+                    .expect("producer proof")
+                    .clone();
+                let reply = ReplyDto::new(request.request_id, CommandReply::Failed(failure))
+                    .with_certificate(proof);
+                let wire = serde_json::to_vec(&reply).expect("producer envelope");
+                let reply = ReplyDto::decode_with_certificate(&wire, owner.view().capability())
+                    .map_err(ClientError::Protocol)?;
+                return admit_reply(&request, reply);
+            }
+        }
+        self.inner.request(request)
+    }
+    fn request_with_budget(
+        &mut self,
+        request: CommandDto,
+        remaining: Duration,
+    ) -> Result<ReplyDto, ClientError> {
+        self.budgets.lock().expect("budgets").push(remaining);
+        self.request(request)
+    }
+}
+fn preparing_session(
+    library: &Arc<Mutex<Library>>,
+    states: &[backend_library::QueryPreparationState],
+    repeat: bool,
+    fault: Option<CommandFailure>,
+) -> (
+    Session,
+    Arc<Mutex<Vec<CommandDto>>>,
+    Arc<Mutex<Vec<Duration>>>,
+) {
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let budgets = Arc::new(Mutex::new(Vec::new()));
+    (
+        Session::from_transport(
+            "/private/preparing-owner.sock",
+            PreparingTransport {
+                inner: Transport {
+                    owner: Arc::clone(library),
+                    requests: Arc::new(Mutex::new(Vec::new())),
+                    graph_ids: None,
+                },
+                states: states.iter().copied().collect(),
+                repeat,
+                fault,
+                sent: Arc::clone(&sent),
+                budgets: Arc::clone(&budgets),
+            },
+        ),
+        sent,
+        budgets,
+    )
+}
+#[test]
+fn first_search_waits_for_exact_owner_preparation_and_reports_state_transitions() {
+    use backend_library::QueryPreparationState::{Preparing, Retiring};
+    let library = Arc::new(Mutex::new(owner(1, 7, 0)));
+    let (mut session, sent, budgets) =
+        preparing_session(&library, &[Retiring, Preparing], false, None);
+    let progress = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&progress);
+    session.observe_query_preparation(move |event| {
+        observed.lock().expect("progress").push(event);
+        true
+    });
+    let reply = session
+        .search("Thing", 3)
+        .expect("first call returns real rows");
+    let CommandReply::Search(page) = reply.reply else {
+        panic!("search")
+    };
+    assert_eq!(page.root.row_count(), 3);
+    assert!(page.next.is_some());
+    let sent = sent.lock().expect("sent");
+    let reads = sent
+        .iter()
+        .filter(|r| matches!(r.command, Command::Search(_)))
+        .collect::<Vec<_>>();
+    assert_eq!(reads.len(), 3);
+    for pair in reads.windows(2) {
+        assert_eq!(pair[0].command, pair[1].command);
+        assert_eq!(pair[0].certificate(), pair[1].certificate());
+        assert!(pair[0].request_id < pair[1].request_id);
+    }
+    assert_eq!(
+        sent.iter()
+            .filter(|r| matches!(r.command, Command::Revision))
+            .count(),
+        1,
+        "preparation never rebinds to a newer revision"
+    );
+    let budgets = budgets.lock().expect("budgets");
+    assert_eq!(
+        budgets.len(),
+        4,
+        "revision selection consumes the same budget"
+    );
+    assert!(budgets.windows(2).all(|pair| pair[1] < pair[0]));
+    let progress = progress.lock().expect("progress");
+    assert_eq!(
+        progress.iter().map(|p| p.state).collect::<Vec<_>>(),
+        [Retiring, Preparing]
+    );
+    assert!(
+        progress
+            .iter()
+            .all(|p| p.basis == page.root.basis().root.into())
+    );
+}
+#[test]
+fn preparation_wait_deadline_and_cancellation_preserve_real_refusal_without_another_send() {
+    use backend_library::QueryPreparationState::Preparing;
+    let library = Arc::new(Mutex::new(owner(1, 5, 0)));
+    for cancel in [false, true] {
+        let (mut session, sent, _) = preparing_session(&library, &[Preparing], true, None);
+        session.observe_query_preparation(move |_| !cancel);
+        let revision = session.revision().expect("revision");
+        let result = session.send_query_ready_with_budget(
+            Command::Search(Query::new(
+                "Thing",
+                revision.root,
+                QueryLimit::new(2).expect("limit"),
+            )),
+            Some(revision.certificate),
+            Duration::from_millis(5),
+        );
+        if cancel {
+            assert!(matches!(
+                result.expect_err("cancelled"),
+                ClientError::CommandFailed(CommandFailure::InvalidQuery(_))
+            ));
+        } else {
+            assert!(matches!(
+                result.expect("actual readiness").reply,
+                CommandReply::Failed(CommandFailure::QueryPreparation {
+                    state: Preparing,
+                    ..
+                })
+            ));
+        }
+        assert_eq!(
+            sent.lock()
+                .expect("sent")
+                .iter()
+                .filter(|r| matches!(r.command, Command::Search(_)))
+                .count(),
+            1
+        );
+        assert!(
+            session.continuations.is_empty(),
+            "no empty success or invented continuation"
+        );
+    }
+}
+#[test]
+fn preparation_wait_never_retries_worker_fault_wrong_basis_or_mutation() {
+    let library = Arc::new(Mutex::new(owner(1, 5, 0)));
+    let foreign = owner(2, 5, 0).revision_root();
+    for failure in [
+        CommandFailure::IncoherentView("authentic worker capture refusal".to_owned()),
+        CommandFailure::QueryPreparation {
+            basis: foreign.into(),
+            state: backend_library::QueryPreparationState::Preparing,
+        },
+    ] {
+        let (mut session, sent, _) = preparing_session(&library, &[], false, Some(failure));
+        assert!(session.search("Thing", 2).is_err());
+        assert_eq!(
+            sent.lock()
+                .expect("sent")
+                .iter()
+                .filter(|r| matches!(r.command, Command::Search(_)))
+                .count(),
+            1
+        );
+    }
+    let (mut session, sent, _) = preparing_session(&library, &[], false, None);
+    let command = Command::Remove {
+        package: package_key("absent"),
+    };
+    assert!(session.send_success(command, None).is_err());
+    assert_eq!(sent.lock().expect("sent").len(), 1, "no mutation replay");
+}
+#[test]
+fn preparation_wait_reopens_exact_portable_search_page_after_cold_session() {
+    use backend_library::QueryPreparationState::Preparing;
+    let library = Arc::new(Mutex::new(owner(1, 7, 0)));
+    let (mut first, _, _) = preparing_session(&library, &[Preparing], false, None);
+    let reply = first
+        .search_page("Thing", 2, None)
+        .expect("first ready page");
+    let CommandReply::Search(page) = reply.reply else {
+        panic!("search")
+    };
+    let next = PageContinuation::from_cursor(page.next.expect("more"));
+    let token = first
+        .encode_query_continuation(next)
+        .expect("real canonical portable proof");
+    let expected = {
+        let owner = library.lock().expect("owner");
+        owner.search(
+            &Query::new(
+                "Thing",
+                owner.revision_root(),
+                QueryLimit::new(2).expect("limit"),
+            )
+            .with_cursor(next.cursor()),
+        )
+    };
+    // Keep the immutable owner; the receiver has no issuer session state.
+    let (mut cold, sent, _) = preparing_session(&library, &[Preparing], false, None);
+    let reopened = cold
+        .decode_page_continuation(&token)
+        .expect("cold canonical admission");
+    let reply = cold
+        .search_page("Thing", 2, Some(reopened))
+        .expect("same exact next page");
+    let CommandReply::Search(actual) = reply.reply else {
+        panic!("search")
+    };
+    assert_eq!(actual, expected.expect("owner predecessor reconstruction"));
+    let sent = sent.lock().expect("sent");
+    let reads = sent
+        .iter()
+        .filter(|r| matches!(r.command, Command::Search(_)))
+        .collect::<Vec<_>>();
+    assert_eq!(reads.len(), 2);
+    assert_eq!(reads[0].command, reads[1].command);
+    assert_eq!(reads[0].certificate(), reads[1].certificate());
+}
+
+#[test]
+fn preparation_wait_does_not_rebind_when_the_owner_changes_after_first_observation() {
+    let library = Arc::new(Mutex::new(owner(1, 7, 0)));
+    let (mut session, sent, _) = preparing_session(
+        &library,
+        &[backend_library::QueryPreparationState::Preparing],
+        false,
+        None,
+    );
+    let replaced = Arc::clone(&library);
+    session.observe_query_preparation(move |_| {
+        *replaced.lock().expect("owner") = owner(2, 8, 1);
+        true
+    });
+    assert!(matches!(
+        session.search("Thing", 2),
+        Err(ClientError::CommandFailed(
+            CommandFailure::WrongBasis { .. }
+        ))
+    ));
+    let sent = sent.lock().expect("sent");
+    assert_eq!(
+        sent.iter()
+            .filter(|r| matches!(r.command, Command::Revision))
+            .count(),
+        1
+    );
+    let searches = sent
+        .iter()
+        .filter(|r| matches!(r.command, Command::Search(_)))
+        .collect::<Vec<_>>();
+    assert_eq!(searches.len(), 2);
+    assert_eq!(searches[0].command, searches[1].command);
+    assert_eq!(searches[0].certificate(), searches[1].certificate());
+}
+#[test]
+fn preparation_wait_resubmits_only_structured_queries_proven_not_started_and_never_cancel() {
+    let library = Arc::new(Mutex::new(owner(1, 7, 0)));
+    let (mut session, sent, _) = preparing_session(
+        &library,
+        &[backend_library::QueryPreparationState::Preparing],
+        false,
+        None,
+    );
+    let input = AdmittedGraphQueryInput::new(
+        "{ Declaration { coordinate @output } }".to_owned(),
+        BTreeMap::new(),
+    )
+    .expect("graph input");
+    let page = session
+        .graph_query_admitted(input.clone(), 2, None, false)
+        .expect("first preparation completes before graph runs");
+    assert_eq!(page.rows.len(), 2);
+    let sent = sent.lock().expect("sent");
+    let queries = sent
+        .iter()
+        .filter(|r| matches!(r.command, Command::GraphQuery(_)))
+        .collect::<Vec<_>>();
+    assert_eq!(queries.len(), 2);
+    assert_eq!(queries[0].command, queries[1].command);
+    assert_eq!(queries[0].certificate(), queries[1].certificate());
+    drop(sent);
+    let (mut cancellation, sent, _) = preparing_session(&library, &[], false, None);
+    let page = cancellation
+        .graph_query_admitted(input, 2, None, true)
+        .expect("single control");
+    assert_eq!(page.terminal, PageTerminal::Cancelled);
+    assert_eq!(
+        sent.lock()
+            .expect("sent")
+            .iter()
+            .filter(|r| matches!(r.command, Command::GraphQuery(_)))
+            .count(),
+        1
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn preparation_wait_observes_the_actual_transport_interrupt_before_resending() {
+    struct Interruptible {
+        inner: PreparingTransport,
+        interrupt: TransportInterrupt,
+    }
+    impl CommandTransport for Interruptible {
+        fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+            self.inner.request(request)
+        }
+        fn interrupt_handle(&self) -> Option<TransportInterrupt> {
+            Some(self.interrupt.clone())
+        }
+    }
+    let library = Arc::new(Mutex::new(owner(1, 5, 0)));
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let (stream, _peer) = backend_replication::LocalStream::pair().expect("owned socket pair");
+    let interrupt = TransportInterrupt::new(&stream).expect("actual socket interrupt");
+    let caller = interrupt.clone();
+    let mut session = Session::from_transport(
+        "/private/interrupted-preparation.sock",
+        Interruptible {
+            inner: PreparingTransport {
+                inner: Transport {
+                    owner: library,
+                    requests: Arc::new(Mutex::new(Vec::new())),
+                    graph_ids: None,
+                },
+                states: [backend_library::QueryPreparationState::Preparing].into(),
+                repeat: true,
+                fault: None,
+                sent: Arc::clone(&sent),
+                budgets: Arc::new(Mutex::new(Vec::new())),
+            },
+            interrupt,
+        },
+    );
+    session.observe_query_preparation(move |_| {
+        caller.interrupt();
+        true
+    });
+    let started = std::time::Instant::now();
+    assert!(matches!(
+        session.search("Thing", 2),
+        Err(ClientError::CommandFailed(CommandFailure::InvalidQuery(_)))
+    ));
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert_eq!(
+        sent.lock()
+            .expect("sent")
+            .iter()
+            .filter(|r| matches!(r.command, Command::Search(_)))
+            .count(),
+        1,
+        "socket cancellation cannot resend the selected read or cancel another owner's worker"
+    );
+}
+
+#[test]
+fn preparation_progress_callback_cannot_renew_the_original_wait_deadline() {
+    let library = Arc::new(Mutex::new(owner(1, 5, 0)));
+    let (mut session, sent, _) = preparing_session(
+        &library,
+        &[backend_library::QueryPreparationState::Preparing],
+        true,
+        None,
+    );
+    session.observe_query_preparation(|_| {
+        std::thread::sleep(Duration::from_millis(20));
+        true
+    });
+    let revision = session.revision().expect("revision");
+    let reply = session
+        .send_query_ready_with_budget(
+            Command::Search(Query::new(
+                "Thing",
+                revision.root,
+                QueryLimit::new(2).expect("limit"),
+            )),
+            Some(revision.certificate),
+            Duration::from_millis(5),
+        )
+        .expect("preserved readiness");
+    assert!(matches!(
+        reply.reply,
+        CommandReply::Failed(CommandFailure::QueryPreparation { .. })
+    ));
+    assert_eq!(
+        sent.lock()
+            .expect("sent")
+            .iter()
+            .filter(|r| matches!(r.command, Command::Search(_)))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn lost_connection_after_preparation_keeps_the_pinned_basis_and_actual_failure_class() {
+    struct Disconnecting {
+        inner: PreparingTransport,
+        reads: usize,
+    }
+    impl CommandTransport for Disconnecting {
+        fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+            if matches!(request.command, Command::Search(_)) {
+                self.reads += 1;
+                if self.reads == 2 {
+                    return Err(ClientError::Disconnected(
+                        std::io::ErrorKind::ConnectionReset,
+                    ));
+                }
+            }
+            self.inner.request(request)
+        }
+    }
+    let library = Arc::new(Mutex::new(owner(1, 5, 0)));
+    let basis = library.lock().expect("owner").revision_root();
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let mut session = Session::from_transport(
+        "/private/preparing-lost.sock",
+        Disconnecting {
+            inner: PreparingTransport {
+                inner: Transport {
+                    owner: library,
+                    requests: Arc::new(Mutex::new(Vec::new())),
+                    graph_ids: None,
+                },
+                states: [backend_library::QueryPreparationState::Preparing].into(),
+                repeat: false,
+                fault: None,
+                sent,
+                budgets: Arc::new(Mutex::new(Vec::new())),
+            },
+            reads: 0,
+        },
+    );
+    assert_eq!(
+        session
+            .search("Thing", 2)
+            .expect_err("pinned connection failure"),
+        ClientError::QueryPreparationDisconnected {
+            basis: basis.into(),
+            kind: std::io::ErrorKind::ConnectionReset
+        }
+    );
+}
+
+#[test]
+fn lost_first_search_reply_keeps_selected_basis_even_when_the_owner_has_changed() {
+    struct LostFirst {
+        inner: Transport,
+        selected: Arc<Mutex<Option<backend_library::ViewRevision>>>,
+        searches: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl CommandTransport for LostFirst {
+        fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+            if let Command::Search(query) = &request.command {
+                *self.selected.lock().expect("selection") = Some(query.basis());
+                self.searches.fetch_add(1, Ordering::AcqRel);
+                // The first reply is lost after another real owner is installed;
+                // no preparation notification ever reached this client.
+                *self.inner.owner.lock().expect("owner") = owner(2, 8, 0);
+                return Err(ClientError::Disconnected(
+                    std::io::ErrorKind::ConnectionReset,
+                ));
+            }
+            self.inner.request(request)
+        }
+    }
+    let library = Arc::new(Mutex::new(owner(1, 5, 0)));
+    let basis: backend_library::ViewRevision =
+        library.lock().expect("owner").revision_root().into();
+    let selected = Arc::new(Mutex::new(None));
+    let searches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut session = Session::from_transport(
+        "/private/lost-first.sock",
+        LostFirst {
+            inner: Transport {
+                owner: Arc::clone(&library),
+                requests: Arc::new(Mutex::new(Vec::new())),
+                graph_ids: None,
+            },
+            selected: Arc::clone(&selected),
+            searches: Arc::clone(&searches),
+        },
+    );
+    assert_eq!(
+        session
+            .search_page("Thing", 2, None)
+            .expect_err("lost first reply"),
+        ClientError::QueryPreparationDisconnected {
+            basis,
+            kind: std::io::ErrorKind::ConnectionReset
+        }
+    );
+    assert_eq!(*selected.lock().expect("selection"), Some(basis));
+    assert_eq!(searches.load(Ordering::Acquire), 1);
+    assert!(!basis.matches(library.lock().expect("replacement").revision_root()));
+}
+
+#[test]
+fn search_selection_and_preparation_share_one_deadline() {
+    struct SlowRevision {
+        inner: PreparingTransport,
+        revision_delay: Duration,
+    }
+    impl CommandTransport for SlowRevision {
+        fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+            self.inner.request(request)
+        }
+        fn request_with_budget(
+            &mut self,
+            request: CommandDto,
+            remaining: Duration,
+        ) -> Result<ReplyDto, ClientError> {
+            self.inner.budgets.lock().expect("budgets").push(remaining);
+            if matches!(request.command, Command::Revision) {
+                std::thread::sleep(self.revision_delay);
+            }
+            self.inner.request(request)
+        }
+    }
+    // A synchronous transport may finish revision after its assigned budget;
+    // the client must then refuse to start Search, not renew thirty seconds.
+    for revision_delay in [Duration::from_millis(5), Duration::from_millis(35)] {
+        let library = Arc::new(Mutex::new(owner(1, 5, 0)));
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let budgets = Arc::new(Mutex::new(Vec::new()));
+        let mut session = Session::from_transport(
+            "/private/deadline.sock",
+            SlowRevision {
+                inner: PreparingTransport {
+                    inner: Transport {
+                        owner: library,
+                        requests: Arc::new(Mutex::new(Vec::new())),
+                        graph_ids: None,
+                    },
+                    states: [backend_library::QueryPreparationState::Preparing].into(),
+                    repeat: true,
+                    fault: None,
+                    sent: Arc::clone(&sent),
+                    budgets: Arc::clone(&budgets),
+                },
+                revision_delay,
+            },
+        );
+        let result = session.search_page_with_budget("Thing", 2, None, Duration::from_millis(25));
+        let budgets = budgets.lock().expect("budgets");
+        if budgets.len() == 1 {
+            assert_eq!(
+                result.expect_err("selection consumed deadline"),
+                ClientError::RemoteDeadlineExceeded
+            );
+            assert_eq!(budgets.len(), 1);
+        } else {
+            assert!(matches!(
+                result,
+                Err(ClientError::CommandFailed(
+                    CommandFailure::QueryPreparation { .. }
+                ))
+            ));
+            assert_eq!(budgets.len(), 2);
+            assert!(budgets[1] <= budgets[0].saturating_sub(revision_delay));
+        }
+        let searches = sent
+            .lock()
+            .expect("requests")
+            .iter()
+            .filter(|r| matches!(r.command, Command::Search(_)))
+            .count();
+        assert_eq!(searches, budgets.len() - 1);
+    }
+}

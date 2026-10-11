@@ -978,6 +978,15 @@ impl Fault {
                 ),
                 Affordance::Retry,
             ),
+            ClientError::QueryPreparationDisconnected { basis, kind } => (
+                FaultSlug::Endpoint,
+                CauseSlug::Unreachable,
+                format!(
+                    "the connection closed while exchanging the pinned query at revision {} ({kind}); the read was not restarted against a different revision",
+                    backend_library::encode_id(basis.as_bytes()),
+                ),
+                Affordance::Retry,
+            ),
             ClientError::Protocol(detail) => (
                 FaultSlug::Protocol,
                 CauseSlug::Unproven,
