@@ -70,27 +70,8 @@ pub fn main_entry() -> ExitCode {
 }
 
 fn early_exit(args: &[String]) -> Option<ExitCode> {
-    if args.first().is_some_and(|word| word == "semantic-hydrate")
-        && args
-            .iter()
-            .any(|word| matches!(word.as_str(), "--help" | "-h"))
-    {
-        println!("{}", crate::semantic_hydrate::help_text());
-        return Some(ExitCode::SUCCESS);
-    }
-    if args.is_empty() || args.iter().any(|word| word == "--help" || word == "-h") {
-        let topic = args
-            .iter()
-            .find(|word| !word.starts_with('-'))
-            .and_then(|word| grammar_for(word));
-        let is_cluster_command = options::split(args)
-            .ok()
-            .is_some_and(|(_, words)| words.first().is_some_and(|word| word == "cluster"));
-        if is_cluster_command {
-            println!("{}", crate::cluster::help_text());
-        } else {
-            println!("{}", topic.map_or_else(invoke::help, invoke::help_for));
-        }
+    if let Some(help) = help_output(args) {
+        println!("{help}");
         return Some(ExitCode::SUCCESS);
     }
     if args.iter().any(|word| word == "--version" || word == "-V") {
@@ -98,6 +79,31 @@ fn early_exit(args: &[String]) -> Option<ExitCode> {
         return Some(ExitCode::SUCCESS);
     }
     None
+}
+
+fn help_output(args: &[String]) -> Option<String> {
+    if !args.is_empty()
+        && !args
+            .iter()
+            .any(|word| matches!(word.as_str(), "--help" | "-h"))
+    {
+        return None;
+    }
+    // Global option values are paths or projection names, not help topics.
+    // Reuse the normal option split before selecting the command, while help
+    // still exits before workspace discovery or daemon startup.
+    let command = options::split(args).ok().and_then(|(_, words)| {
+        words
+            .into_iter()
+            .find(|word| !matches!(word.as_str(), "--help" | "-h"))
+    });
+    Some(match command.as_deref() {
+        Some("cluster") => crate::cluster::help_text().to_owned(),
+        Some("semantic-hydrate") => crate::semantic_hydrate::help_text().to_owned(),
+        command => command
+            .and_then(grammar_for)
+            .map_or_else(invoke::help, invoke::help_for),
+    })
 }
 
 fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), Fault> {
@@ -335,6 +341,50 @@ pub fn answer_with_session(
         .into_owned();
     let request = plan(words, options, &project)?;
     run::execute(session, &request)
+}
+
+#[cfg(test)]
+mod help_tests {
+    use super::help_output;
+
+    #[test]
+    fn command_help_skips_global_option_values() {
+        for (arguments, command) in [
+            (vec!["--project", "/repo", "add", "--help"], "add"),
+            (vec!["--detail", "full", "graph", "--help"], "graph"),
+            (vec!["--format", "json", "search", "--help"], "search"),
+            (
+                vec![
+                    "--workspace",
+                    "/state",
+                    "--endpoint",
+                    "/socket",
+                    "resolve",
+                    "-h",
+                ],
+                "resolve",
+            ),
+            (vec!["--help", "--project", "/repo", "add"], "add"),
+        ] {
+            let arguments = arguments.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            let help = help_output(&arguments).expect("help requested");
+            assert!(help.starts_with(&format!("backend {command} ")), "{help}");
+            assert!(!help.contains("quick start"), "expected command help");
+        }
+    }
+
+    #[test]
+    fn special_command_help_works_after_global_options() {
+        for (command, expected) in [
+            ("cluster", crate::cluster::help_text()),
+            ("semantic-hydrate", crate::semantic_hydrate::help_text()),
+        ] {
+            let arguments = ["--project", "/repo", command, "--help"].map(str::to_owned);
+            assert_eq!(help_output(&arguments).as_deref(), Some(expected));
+        }
+        assert!(help_output(&[]).expect("bare help").contains("quick start"));
+        assert!(help_output(&["add".to_owned(), ".".to_owned()]).is_none());
+    }
 }
 
 #[cfg(all(test, unix))]
