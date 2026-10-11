@@ -722,11 +722,7 @@ impl<'a> CheckerState<'a> {
                 )
             };
         let nested_target_idx = if self.ctx.project_module_resolution_outcomes.is_some() {
-            exact_target.or_else(|| {
-                nested_exports
-                    .iter()
-                    .find_map(|(_, &symbol)| self.ctx.resolve_symbol_file_index_stable(symbol))
-            })
+            exact_target
         } else {
             nested_exports
                 .iter()
@@ -739,7 +735,18 @@ impl<'a> CheckerState<'a> {
         };
 
         for (name, sym_id) in nested_exports.iter() {
-            if let Some(target_idx) = nested_target_idx {
+            let owner_file_idx = if self.ctx.project_module_resolution_outcomes.is_some() {
+                // A selected namespace can retain exports from several files.
+                // Preserve each declaration's owner instead of retargeting the
+                // complete table to its first symbol or selected file.
+                self.ctx
+                    .resolve_symbol_declaring_file_index(*sym_id)
+                    .or_else(|| self.ctx.resolve_dynamic_symbol_file_index(*sym_id))
+                    .or(exact_target)
+            } else {
+                nested_target_idx
+            };
+            if let Some(target_idx) = owner_file_idx {
                 self.ctx.register_symbol_file_target(*sym_id, target_idx);
             }
             if name != "export=" && !combined.has(name) {
