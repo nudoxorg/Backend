@@ -9,9 +9,9 @@ use backend_engine::application::{
     CompilerPackageTargetV2, DocumentationFragment, DocumentationSession, LocalCompiler,
     LocalCompilerClient, LocalCompilerConfig, LocalCompilerControl,
     LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths, LocalCompilerScratch,
-    LocalCompilerTimeout, LocalRuntimePackageAuthority, LocalRuntimeRustAuthority,
-    LocalRuntimeRustToolchainSelection, LocalRuntimeToolchain, LocalToolchainSet,
-    OwnedPackageSource, OwnedPackageSourceSet,
+    LocalCompilerTimeout, LocalPackageRootSet, LocalRuntimePackageAuthority,
+    LocalRuntimeRustAuthority, LocalRuntimeRustToolchainSelection, LocalRuntimeToolchain,
+    LocalToolchainSet, OwnedPackageSource, OwnedPackageSourceSet, PackageAuthorityConfiguration,
     PackageSemanticError, PackageSource, PackageSourceSet, StagedEmbeddingStatus,
 };
 use backend_engine::driver::{ResolvedToolchain, ToolchainSelection};
@@ -111,7 +111,8 @@ fn two_sources_publish_as_one_reopened_package_generation() -> Result<(), Box<dy
     let mut scratch = LocalCompilerScratch::with_fragment_capacity(
         NonZeroUsize::new(16 * 1024 * 1024).ok_or("fragment capacity is zero")?,
     )?;
-    let mut compiler = LocalCompiler::create(
+    let clang_authority = selected_clang_authority(&clang)?;
+    let mut compiler = LocalCompiler::create_with_package_authority(
         LocalCompilerConfig {
             toolchains: selected,
             artifact_directory: &artifacts,
@@ -121,6 +122,11 @@ fn two_sources_publish_as_one_reopened_package_generation() -> Result<(), Box<dy
                 timeout: LocalCompilerTimeout::new(Duration::from_secs(30))?,
                 cancelled: &cancelled,
             },
+        },
+        LocalPackageRootSet::EMPTY,
+        PackageAuthorityConfiguration {
+            clang: Some(&clang_authority),
+            ..PackageAuthorityConfiguration::UNAVAILABLE
         },
         PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN)?,
         &mut scratch,
@@ -578,6 +584,7 @@ fn owned_runtime_frontier_reaches_the_package_publication_owner()
         package_url,
     )
     .map_err(|error| fixture_error(format!("package profile rejected: {error:?}")))?;
+    let clang_authority = selected_clang_authority(&clang)?;
     let configuration = LocalCompilerRuntimeConfiguration::new(
         LocalCompilerRuntimePaths::new(root.join("artifacts"), root.join("journal"), native_work)?,
         vec![LocalRuntimeToolchain::resolved(
@@ -587,7 +594,10 @@ fn owned_runtime_frontier_reaches_the_package_publication_owner()
         )?]
         .into_boxed_slice(),
         Box::new([]),
-        LocalRuntimePackageAuthority::default(),
+        LocalRuntimePackageAuthority {
+            clang: Some(clang_authority),
+            ..LocalRuntimePackageAuthority::default()
+        },
         LocalCompilerTimeout::new(Duration::from_secs(30))?,
         PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN)?,
         LocalCompilerScratch::with_fragment_capacity(
@@ -615,13 +625,16 @@ fn owned_runtime_frontier_reaches_the_package_publication_owner()
         sources.clone(),
     )?)?;
     let package_target = CompilerPackageTargetV2::for_package(request.as_ref().clone());
-    let runtime_identity = client
+    // libclang currently provides local plane authority without portable
+    // invocation attestation. Keep that distinction explicit in this fixture.
+    assert!(client
         .execution_identity_for_unit(
             &package_target,
             request.target.profile,
             request.target.stage,
-        )
-        .ok_or("opened Clang capability must expose its exact runtime identity")?;
+        ).is_none());
+    let local_capability = client.capabilities().for_profile(request.target.profile);
+    assert!(local_capability.manifest().is_some(), "opened local capability");
     let first_image = staged
         .semantic_output_object(0)
         .ok_or("first staged semantic image is present")?;
@@ -712,11 +725,11 @@ fn owned_runtime_frontier_reaches_the_package_publication_owner()
         );
         assert_eq!(
             manifest.build().target(),
-            runtime_identity.target().as_ref()
+            package_target.target().as_ref()
         );
         assert_eq!(
             manifest.build().environment(),
-            &runtime_identity.environment_identity()
+            &local_capability.environment_identity().ok_or("local environment identity")?
         );
         assert_eq!(
             manifest.input().coverage().state(),
@@ -827,8 +840,9 @@ fn staged_package_emits_a_typed_embedding_plane_with_borrowed_payloads()
         })
     };
     let embedding_program = embedding_workspace.join("embedder.py");
+    let python = super::support::python_path()?;
     let script = format!(
-        r#"#!/usr/bin/env python3
+        r#"#!{}
 import json, math, os, struct, sys
 EXPECTED_MODEL = bytes.fromhex("{}")
 EXPECTED_TOKENIZER = bytes.fromhex("{}")
@@ -867,6 +881,7 @@ if frame[5] == 1:
     values = [value / norm for value in values]
 sys.stdout.buffer.write(b"BEC1" + struct.pack(">H", dimension) + struct.pack("<" + "f" * dimension, *values))
 "#,
+        python.display(),
         hex(model_bytes),
         hex(tokenizer_bytes),
         blake3::hash(model_bytes).to_hex(),
@@ -874,7 +889,10 @@ sys.stdout.buffer.write(b"BEC1" + struct.pack(">H", dimension) + struct.pack("<"
     );
     fs::write(&embedding_program, script)?;
     fs::set_permissions(&embedding_program, fs::Permissions::from_mode(0o700))?;
-    let embedding_tool = ToolchainArtifact::from_path(&embedding_program, Vec::new())?;
+    let embedding_tool = ToolchainArtifact::from_path(
+        &embedding_program,
+        vec![backend_compile::ExecutableIdentity::from_path(&python)?.digest()],
+    )?;
     let model = EmbeddingArtifact::new(Arc::from(&model_bytes[..]));
     let tokenizer = EmbeddingArtifact::new(Arc::from(&tokenizer_bytes[..]));
     let embedding_spec = EmbeddingRuntimeSpecV1::new(
@@ -899,6 +917,15 @@ sys.stdout.buffer.write(b"BEC1" + struct.pack(">H", dimension) + struct.pack("<"
         tokenizer,
     )?;
 
+    // Semantic embedding provenance also binds the admitted launch context,
+    // including the explicit interpreter, environment and resource limits.
+    let execution = embedding.execution_identity();
+    assert_eq!(execution.recipe(), embedding_spec.recipe_identity());
+    let mut plane_recipe = blake3::Hasher::new_derive_key("backend.engine.embedding-plane-launch.v1");
+    plane_recipe.update(&execution.recipe());
+    plane_recipe.update(&execution.launch_configuration());
+    let expected_plane_recipe = *plane_recipe.finalize().as_bytes();
+
     let package_url = PackageUrl::try_from("pkg:generic/embedding@1.0.0".to_owned())
         .map_err(|error| fixture_error(format!("package URL rejected: {error:?}")))?;
     let request = PackageCompileRequest::new(
@@ -910,6 +937,7 @@ sys.stdout.buffer.write(b"BEC1" + struct.pack(">H", dimension) + struct.pack("<"
         package_url,
     )
     .map_err(|error| fixture_error(format!("package profile rejected: {error:?}")))?;
+    let clang_authority = selected_clang_authority(&clang)?;
     let configuration = LocalCompilerRuntimeConfiguration::new(
         LocalCompilerRuntimePaths::new(root.join("artifacts"), root.join("journal"), native_work)?,
         vec![LocalRuntimeToolchain::resolved(
@@ -919,7 +947,10 @@ sys.stdout.buffer.write(b"BEC1" + struct.pack(">H", dimension) + struct.pack("<"
         )?]
         .into_boxed_slice(),
         Box::new([]),
-        LocalRuntimePackageAuthority::default(),
+        LocalRuntimePackageAuthority {
+            clang: Some(clang_authority.clone()),
+            ..LocalRuntimePackageAuthority::default()
+        },
         LocalCompilerTimeout::new(Duration::from_secs(30))?,
         PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN)?,
         LocalCompilerScratch::with_fragment_capacity(
@@ -959,18 +990,18 @@ sys.stdout.buffer.write(b"BEC1" + struct.pack(">H", dimension) + struct.pack("<"
     );
     assert_eq!(
         *identity.model(),
-        EmbeddingArtifact::new(Arc::from(&b"model-v1"[..]))
+        EmbeddingArtifact::new(Arc::from(&model_bytes[..]))
             .identity()
             .as_bytes()
     );
     assert_eq!(
         *identity.tokenizer(),
-        EmbeddingArtifact::new(Arc::from(&b"tokenizer-v1"[..]))
+        EmbeddingArtifact::new(Arc::from(&tokenizer_bytes[..]))
             .identity()
             .as_bytes()
     );
     assert_eq!(identity.dimension(), 2);
-    assert_eq!(identity.recipe(), &embedding_spec.recipe_identity());
+    assert_eq!(identity.recipe(), &expected_plane_recipe);
 
     drop(client);
 
@@ -989,7 +1020,10 @@ sys.stdout.buffer.write(b"BEC1" + struct.pack(">H", dimension) + struct.pack("<"
         )?]
         .into_boxed_slice(),
         Box::new([]),
-        LocalRuntimePackageAuthority::default(),
+        LocalRuntimePackageAuthority {
+            clang: Some(clang_authority),
+            ..LocalRuntimePackageAuthority::default()
+        },
         LocalCompilerTimeout::new(Duration::from_secs(30))?,
         PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN)?,
         LocalCompilerScratch::with_fragment_capacity(
@@ -1021,6 +1055,16 @@ sys.stdout.buffer.write(b"BEC1" + struct.pack(">H", dimension) + struct.pack("<"
 
 fn fixture_error(message: String) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, message)
+}
+
+fn selected_clang_authority(
+    driver: &std::path::Path,
+) -> Result<backend_frontend_clang::ClangAuthorityEnvironment, Box<dyn std::error::Error>> {
+    let libclang = std::env::var_os("LIBCLANG_PATH")
+        .ok_or("explicit LIBCLANG_PATH is required for package authority")?;
+    Ok(backend_frontend_clang::ClangAuthorityEnvironment::probe(
+        driver, libclang,
+    )?)
 }
 
 fn find_clang() -> Option<PathBuf> {

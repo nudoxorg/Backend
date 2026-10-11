@@ -24,6 +24,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub(super) enum TestFailure {
+    #[error(transparent)]
+    ClangAuthority(#[from] backend_frontend_clang::ClangAuthorityError),
     #[error("host does not expose the required {tool:?} executable")]
     MissingHostTool { tool: NativeTool },
     #[error("could not canonicalize the required {tool:?} executable")]
@@ -372,6 +374,10 @@ pub(super) fn assert_facts(
             .position(|((name, kind), (expected_name, expected_kind))| {
                 atoms[*name] != *expected_name || kind != expected_kind
             });
+    if entities.len() != expected.len() || ordinal.is_some() {
+        eprintln!("expected entity rows: {expected:?}");
+        eprintln!("observed entity rows: {:?}", entities.iter().map(|(name, kind)| (atoms[*name], *kind)).collect::<Vec<_>>());
+    }
     if entities.len() != expected.len() {
         return Err(TestFailure::EntitySequence {
             ordinal: ordinal.unwrap_or(expected.len()),

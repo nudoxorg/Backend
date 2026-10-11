@@ -56,7 +56,7 @@ enum TypeScriptPublicationError {
 /// (there is no syntax-only fallback), so the direct-OXC proofs supply the
 /// checker authority explicitly: the OXC bindings then fill the fragment and
 /// no checker process is spawned.
-fn supplied_typescript_report(source: &[u8]) -> backend_frontend_typescript::legacy::Report {
+pub(super) fn supplied_typescript_report(source: &[u8]) -> backend_frontend_typescript::legacy::Report {
     let digest = backend_frontend_typescript::legacy::source_digest(source);
     backend_frontend_typescript::legacy::Report {
         schema_version: 1,
@@ -184,7 +184,7 @@ fn direct_oxc_bindings_fill_the_compact_fragment_without_a_tsc_spawn() -> Result
         &compiled.fragment,
         &[
             (b"Shape", EntityKind::Trait),
-            (b"number", EntityKind::Alias),
+            (b"area", EntityKind::Parameter),
             (b"area", EntityKind::Function),
             (b"value", EntityKind::Constant),
         ],

@@ -1174,10 +1174,14 @@ mod tests {
     ) -> Result<(PathBuf, EmbeddingRuntimeSpecV1), EmbeddingRuntimeError> {
         // This executable verifies persisted-artifact paths and the real BEM2/BEC2 batch
         // boundary. Its fixed vector is a protocol fixture, not a pretrained model.
+        let python = std::env::var_os("PATH")
+            .into_iter()
+            .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+            .map(|directory| directory.join("python3"))
+            .find_map(|candidate| candidate.is_file().then(|| candidate.canonicalize().ok()).flatten())
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "protocol fixture requires Python"))?;
         let program = directory.join("embedding-protocol-fixture.py");
-        fs::write(
-            &program,
-            br"#!/usr/bin/env python3
+        let body = br"
 import os, struct, sys
 if not os.path.isfile(os.environ['BACKEND_EMBEDDING_MODEL_FILE']):
     sys.exit(4)
@@ -1210,8 +1214,10 @@ for identity in identities:
     response.extend(identity)
     response.extend(struct.pack('<ff', 1.0, 0.0))
 sys.stdout.buffer.write(response)
-",
-        )?;
+";
+        let mut script = format!("#!{}", python.display()).into_bytes();
+        script.extend_from_slice(body);
+        fs::write(&program, script)?;
         #[cfg(unix)]
         fs::set_permissions(&program, fs::Permissions::from_mode(0o700))?;
         let limits = EmbeddingRuntimeLimits {
@@ -1233,8 +1239,8 @@ sys.stdout.buffer.write(response)
                 requirement,
                 program,
                 arguments: Vec::new(),
-                dependencies: Vec::new(),
-                environment: vec![("PATH".to_owned(), "/usr/bin:/bin".to_owned())],
+                dependencies: vec![python],
+                environment: Vec::new(),
                 limits,
                 model_bytes: b"exact-model-artifact".to_vec(),
                 tokenizer_bytes: b"exact-tokenizer-artifact".to_vec(),

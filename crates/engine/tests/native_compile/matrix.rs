@@ -8,7 +8,8 @@ use std::{
 };
 
 use backend_engine::driver::{
-    CompileOutput, CompileScratch, NativeTool, ToolchainSelection, compile, compile_ir,
+    CompileOutput, CompileScratch, NativeTool, SemanticAuthorityInput, ToolchainSelection, compile,
+    compile_ir,
 };
 use backend_semantic::ir::{EntityKind, SemanticImageAuthority};
 use backend_semantic::vocabulary::{Language, LanguageProfile, PythonVersion};
@@ -58,14 +59,38 @@ fn direct_in_process_frontends_bind_real_source_without_native_work() -> Result<
         let mut diagnostic = [0xa5; 4_096];
         let mut output = [0xa5; 4_096];
         let output_pointer = output.as_ptr();
+        let clang_environment = if language == Language::Clang {
+            let libclang =
+                std::env::var_os("LIBCLANG_PATH").ok_or(TestFailure::MissingHostTool {
+                    tool: NativeTool::Clang,
+                })?;
+            Some(backend_frontend_clang::ClangAuthorityEnvironment::probe(
+                executable.as_deref().expect("selected Clang driver"),
+                libclang,
+            )?)
+        } else {
+            None
+        };
+        let typescript_report = if language == Language::TypeScript {
+            Some(super::lowering::supplied_typescript_report(source))
+        } else {
+            None
+        };
+        let mut compile_request = request(
+            language,
+            source,
+            ToolchainSelection::ResolvedNative(resolved),
+            &cancelled,
+            Instant::now() + Duration::from_secs(5),
+        );
+        if let Some(environment) = &clang_environment {
+            compile_request.authority = SemanticAuthorityInput::ClangBuffer { environment };
+        }
+        if let Some(report) = &typescript_report {
+            compile_request.authority = SemanticAuthorityInput::TypeScript { report };
+        }
         let compiled = compile(
-            request(
-                language,
-                source,
-                ToolchainSelection::ResolvedNative(resolved),
-                &cancelled,
-                Instant::now() + Duration::from_secs(5),
-            ),
+            compile_request,
             CompileScratch {
                 diagnostic_output: &mut diagnostic,
                 native_work: native_work.path(),

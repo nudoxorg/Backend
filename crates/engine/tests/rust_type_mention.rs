@@ -11,12 +11,15 @@ use backend_engine::driver::{
     CompileControl, CompileOutput, CompileRequest, CompileScratch, ResolvedToolchain,
     SemanticAuthorityInput, ToolchainSelection, compile, compile_ir,
 };
-use backend_frontend_rust::legacy::{RustFeatureControl, RustProject, RustToolchain, SourceByteLimit};
+use backend_frontend_rust::legacy::{RustToolchain, SourceByteLimit};
 use backend_semantic::ir::{
     DecodedOccurrence, EntityId, EntityKind, FragmentView, OccurrenceConfidence, OccurrenceTarget,
     ParentageAuthority, ReferenceKind,
 };
 use backend_semantic::vocabulary::{LanguageProfile, RustEdition, Stage};
+
+#[path = "rust_cross_file_support/mod.rs"]
+mod rust_cross_file_support;
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -84,96 +87,96 @@ fn rustc() -> Result<PathBuf, String> {
 }
 
 fn compile_source(root: &PathBuf, relative: &str, source: &str) -> Result<Vec<u8>, String> {
-    let source_path = root.join(relative);
+    let source_path = root.join(relative).canonicalize().map_err(|error| error.to_string())?;
     let tool = rustc()?;
     let toolchain =
         RustToolchain::discover(&tool).map_err(|error| format!("toolchain: {error:?}"))?;
-    let project = RustProject::open_with_source(root, &source_path, &toolchain, RustEdition::Rust2024)
-        .map_err(|error| format!("project: {error:?}"))?;
-    let resolved = ResolvedToolchain::from_version(
-        backend_engine::driver::NativeTool::Rustc,
-        &tool,
-        b"rust-type-mention-fixture",
-    )
-    .map_err(|error| format!("tool: {error:?}"))?;
-    let cancelled = AtomicBool::new(false);
-    let mut diagnostic = [0; 0];
-    let mut output = vec![0_u8; 262_144];
-    compile(
-        CompileRequest {
-            profile: LanguageProfile::Rust(RustEdition::Rust2024),
-            stage: Stage::LowerIr,
-            source: source.as_bytes(),
-            declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
-            toolchain: ToolchainSelection::ResolvedNative(resolved),
-            authority: SemanticAuthorityInput::Rust {
-                project: &project,
-                maximum_source_bytes: SourceByteLimit::from(65_536),
-                features: RustFeatureControl::default(),
+    rust_cross_file_support::with_captured_workspace(root, &toolchain, |workspace| {
+        let resolved = ResolvedToolchain::from_version(
+            backend_engine::driver::NativeTool::Rustc,
+            &tool,
+            b"rust-type-mention-fixture",
+        )
+        .map_err(|error| format!("tool: {error:?}"))?;
+        let cancelled = AtomicBool::new(false);
+        let mut diagnostic = [0; 0];
+        let mut output = vec![0_u8; 262_144];
+        compile(
+            CompileRequest {
+                profile: LanguageProfile::Rust(RustEdition::Rust2024),
+                stage: Stage::LowerIr,
+                source: source.as_bytes(),
+                declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
+                toolchain: ToolchainSelection::ResolvedNative(resolved),
+                authority: SemanticAuthorityInput::RustWorkspace {
+                    workspace,
+                    source_path: &source_path,
+                    maximum_source_bytes: SourceByteLimit::from(65_536),
+                },
+                control: CompileControl {
+                    deadline: Instant::now() + Duration::from_secs(120),
+                    cancelled: &cancelled,
+                },
             },
-            control: CompileControl {
-                deadline: Instant::now() + Duration::from_secs(120),
-                cancelled: &cancelled,
+            CompileScratch {
+                diagnostic_output: &mut diagnostic,
+                native_work: root,
             },
-        },
-        CompileScratch {
-            diagnostic_output: &mut diagnostic,
-            native_work: root,
-        },
-        CompileOutput {
-            fragment_output: &mut output,
-        },
-    )
-    .map_err(|error| format!("compile: {error:?}"))?;
-    let length = output
-        .get(8..12)
-        .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
-        .map(u32::from_le_bytes)
-        .ok_or_else(|| "header truncated".to_owned())? as usize;
-    output
-        .get(..length)
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| "declared length exceeds output".to_owned())
+            CompileOutput {
+                fragment_output: &mut output,
+            },
+        )
+        .map_err(|error| format!("compile: {error:?}"))?;
+        let length = output
+            .get(8..12)
+            .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+            .map(u32::from_le_bytes)
+            .ok_or_else(|| "header truncated".to_owned())? as usize;
+        output
+            .get(..length)
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| "declared length exceeds output".to_owned())
+    })
 }
 
 fn compile_ir_source(root: &PathBuf, relative: &str, source: &str) -> Result<backend_engine::driver::CompiledIr, String> {
-    let source_path = root.join(relative);
+    let source_path = root.join(relative).canonicalize().map_err(|error| error.to_string())?;
     let tool = rustc()?;
     let toolchain =
         RustToolchain::discover(&tool).map_err(|error| format!("toolchain: {error:?}"))?;
-    let project = RustProject::open_with_source(root, &source_path, &toolchain, RustEdition::Rust2024)
-        .map_err(|error| format!("project: {error:?}"))?;
-    let resolved = ResolvedToolchain::from_version(
-        backend_engine::driver::NativeTool::Rustc,
-        &tool,
-        b"rust-type-mention-fixture",
-    )
-    .map_err(|error| format!("tool: {error:?}"))?;
-    let cancelled = AtomicBool::new(false);
-    let mut diagnostic = [0; 0];
-    compile_ir(
-        CompileRequest {
-            profile: LanguageProfile::Rust(RustEdition::Rust2024),
-            stage: Stage::LowerIr,
-            source: source.as_bytes(),
-            declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
-            toolchain: ToolchainSelection::ResolvedNative(resolved),
-            authority: SemanticAuthorityInput::Rust {
-                project: &project,
-                maximum_source_bytes: SourceByteLimit::from(65_536),
-                features: RustFeatureControl::default(),
+    rust_cross_file_support::with_captured_workspace(root, &toolchain, |workspace| {
+        let resolved = ResolvedToolchain::from_version(
+            backend_engine::driver::NativeTool::Rustc,
+            &tool,
+            b"rust-type-mention-fixture",
+        )
+        .map_err(|error| format!("tool: {error:?}"))?;
+        let cancelled = AtomicBool::new(false);
+        let mut diagnostic = [0; 0];
+        compile_ir(
+            CompileRequest {
+                profile: LanguageProfile::Rust(RustEdition::Rust2024),
+                stage: Stage::LowerIr,
+                source: source.as_bytes(),
+                declaration_scope: backend_engine::driver::DeclarationScope::fixture(),
+                toolchain: ToolchainSelection::ResolvedNative(resolved),
+                authority: SemanticAuthorityInput::RustWorkspace {
+                    workspace,
+                    source_path: &source_path,
+                    maximum_source_bytes: SourceByteLimit::from(65_536),
+                },
+                control: CompileControl {
+                    deadline: Instant::now() + Duration::from_secs(120),
+                    cancelled: &cancelled,
+                },
             },
-            control: CompileControl {
-                deadline: Instant::now() + Duration::from_secs(120),
-                cancelled: &cancelled,
+            CompileScratch {
+                diagnostic_output: &mut diagnostic,
+                native_work: root,
             },
-        },
-        CompileScratch {
-            diagnostic_output: &mut diagnostic,
-            native_work: root,
-        },
-    )
-    .map_err(|error| format!("compile_ir: {error:?}"))
+        )
+        .map_err(|error| format!("compile_ir: {error:?}"))
+    })
 }
 
 fn lane(bytes: &[u8]) -> Result<Lane<'_>, String> {
