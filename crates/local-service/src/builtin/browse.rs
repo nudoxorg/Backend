@@ -2471,6 +2471,7 @@ pub(super) struct CargoToolCommandPreflight {
 
 struct CargoPathCommandWitness {
     invocation_path: PathBuf,
+    search_path_digest: [u8; 32],
     executable: CargoToolFileWitness,
 }
 
@@ -3013,8 +3014,15 @@ fn toolchain_command_witness(
             let mkdir_reuse = mkdir_witness.reuse.clone().ok_or_else(|| {
                 "Nix Cargo launcher mkdir is not an immutable store tool".to_owned()
             })?;
-            let getconf_witness =
-                nix_parallel_cargo_getconf_witness(&parallel.runtime_path, workspace, cached)?;
+            let build_jobs = std::env::var_os("CARGO_BUILD_JOBS");
+            let inherited_path = std::env::var_os("PATH");
+            let getconf_witness = nix_parallel_cargo_getconf_witness(
+                &parallel.runtime_path,
+                workspace,
+                build_jobs.as_deref(),
+                inherited_path.as_deref(),
+                cached,
+            )?;
 
             let mut nested_hasher = blake3::Hasher::new();
             nested_hasher.update(b"backend.nix-parallel-cargo-wrapper.v1\0");
@@ -3061,6 +3069,8 @@ fn toolchain_command_witness(
             if let Some(getconf) = getconf_witness.as_ref() {
                 nested_hasher.update(b"parallel-cargo-getconf-invocation-path\0");
                 nested_hasher.update(getconf.invocation_path.as_os_str().as_encoded_bytes());
+                nested_hasher.update(b"parallel-cargo-getconf-search-path\0");
+                nested_hasher.update(&getconf.search_path_digest);
                 hash_tool_role(
                     &mut nested_hasher,
                     b"parallel-cargo-getconf",
@@ -3831,7 +3841,7 @@ fn recognized_nix_toolchain_launcher(
 
     let exec_line = exec_line.trim_end_matches([' ', '\t']);
     let target = exec_line
-        .strip_prefix("exec -a \"$0\" \"")?
+        .strip_prefix("exec -a \"$0\" \"")
         .and_then(|remaining| {
             let end = remaining.find('\"')?;
             let (target, suffix) = remaining.split_at(end);
@@ -4114,6 +4124,141 @@ fn nix_store_directory_state(path: &Path) -> Result<[u8; 32], String> {
     Ok(*hasher.finalize().as_bytes())
 }
 
+#[cfg(unix)]
+fn nix_effective_path_directory_witness(path: &Path) -> Result<[u8; 32], String> {
+    if !path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+    {
+        return Err(
+            "Nix Cargo runtime PATH directory is not an absolute normalized path".to_owned(),
+        );
+    }
+    let canonical = path
+        .canonicalize()
+        .map_err(|_| "Nix Cargo runtime PATH directory cannot be resolved".to_owned())?;
+    let store_state = if is_nix_store_bin_directory(&canonical, "") {
+        Some(nix_store_directory_state(&canonical)?)
+    } else {
+        None
+    };
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.controlled-effective-path-directory.v1\0");
+    for value in [path, canonical.as_path()] {
+        let value = value.as_os_str().as_encoded_bytes();
+        hasher.update(&(value.len() as u64).to_le_bytes());
+        hasher.update(value);
+    }
+    if let Some(store_state) = store_state {
+        hasher.update(b"nix-store-directory\0");
+        hasher.update(&store_state);
+    } else {
+        hasher.update(b"root-controlled-system-directory\0");
+    }
+    hash_root_controlled_path_components(&mut hasher, path, true)?;
+    if canonical != path {
+        hash_root_controlled_path_components(&mut hasher, &canonical, false)?;
+    }
+    Ok(*hasher.finalize().as_bytes())
+}
+
+#[cfg(unix)]
+fn hash_root_controlled_path_components(
+    hasher: &mut blake3::Hasher,
+    path: &Path,
+    allow_symlinks: bool,
+) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let mut current = PathBuf::new();
+    let components = path.components().collect::<Vec<_>>();
+    for (index, component) in components.iter().enumerate() {
+        current.push(component.as_os_str());
+        let metadata = std::fs::symlink_metadata(&current)
+            .map_err(|_| "Nix Cargo runtime PATH component cannot be rechecked".to_owned())?;
+        let component_bytes = current.as_os_str().as_encoded_bytes();
+        hasher.update(&(component_bytes.len() as u64).to_le_bytes());
+        hasher.update(component_bytes);
+        if metadata.file_type().is_symlink() {
+            if !allow_symlinks || metadata.uid() != 0 {
+                return Err("Nix Cargo runtime PATH symlink is not root controlled".to_owned());
+            }
+            let target = std::fs::read_link(&current)
+                .map_err(|_| "Nix Cargo runtime PATH symlink cannot be read".to_owned())?;
+            hash_unix_metadata(hasher, &current, &metadata);
+            let target = target.as_os_str().as_encoded_bytes();
+            hasher.update(&(target.len() as u64).to_le_bytes());
+            hasher.update(target);
+            continue;
+        }
+        let mode = metadata.mode();
+        let is_final = index + 1 == components.len();
+        let sticky_root_parent = !is_final && metadata.uid() == 0 && mode & 0o1000 != 0;
+        let writable = if is_final {
+            mode & 0o222 != 0
+        } else {
+            mode & 0o022 != 0 && !sticky_root_parent
+        };
+        if !metadata.is_dir() || metadata.uid() != 0 || writable {
+            return Err(
+                "Nix Cargo runtime PATH component is writable and cannot be bound".to_owned(),
+            );
+        }
+        hash_unix_metadata(hasher, &current, &metadata);
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn nix_getconf_candidate_state(
+    candidate: &Path,
+) -> Result<(bool, [u8; 32], Option<PathBuf>), String> {
+    let metadata = match std::fs::symlink_metadata(candidate) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(b"backend.nix-getconf-candidate.v1\0missing\0");
+            let path_bytes = candidate.as_os_str().as_encoded_bytes();
+            hasher.update(&(path_bytes.len() as u64).to_le_bytes());
+            hasher.update(path_bytes);
+            return Ok((false, *hasher.finalize().as_bytes(), None));
+        }
+        Err(_) => return Err("Nix Cargo launcher getconf cannot be inspected".to_owned()),
+    };
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"backend.nix-getconf-candidate.v1\0present\0");
+    let candidate_bytes = candidate.as_os_str().as_encoded_bytes();
+    hasher.update(&(candidate_bytes.len() as u64).to_le_bytes());
+    hash_unix_metadata(&mut hasher, candidate, &metadata);
+    let link_target = if metadata.file_type().is_symlink() {
+        let target = std::fs::read_link(candidate)
+            .map_err(|_| "Nix Cargo launcher getconf symlink cannot be read".to_owned())?;
+        let target_bytes = target.as_os_str().as_encoded_bytes();
+        hasher.update(&(target_bytes.len() as u64).to_le_bytes());
+        hasher.update(target_bytes);
+        Some(target)
+    } else {
+        None
+    };
+    Ok((true, *hasher.finalize().as_bytes(), link_target))
+}
+
+#[cfg(not(unix))]
+fn nix_getconf_candidate_state(
+    _candidate: &Path,
+) -> Result<(bool, [u8; 32], Option<PathBuf>), String> {
+    Err("Nix Cargo getconf lookup requires Unix file identity".to_owned())
+}
+
+#[cfg(not(unix))]
+fn nix_effective_path_directory_witness(_path: &Path) -> Result<[u8; 32], String> {
+    Err("Nix Cargo runtime PATH requires Unix directory identity".to_owned())
+}
+
 #[cfg(not(unix))]
 fn nix_store_directory_state(_path: &Path) -> Result<[u8; 32], String> {
     Err("Nix Cargo runtime PATH requires Unix store identity".to_owned())
@@ -4122,21 +4267,22 @@ fn nix_store_directory_state(_path: &Path) -> Result<[u8; 32], String> {
 fn nix_parallel_cargo_getconf_witness(
     runtime_path: &[PathBuf],
     working_directory: &Path,
+    build_jobs: Option<&std::ffi::OsStr>,
+    inherited_path: Option<&std::ffi::OsStr>,
     cached: Option<&CargoToolWitnessReuse>,
 ) -> Result<Option<CargoPathCommandWitness>, String> {
-    let build_jobs = std::env::var_os("CARGO_BUILD_JOBS");
-    if !cargo_wrapper_needs_getconf(build_jobs.as_deref()) {
+    if !cargo_wrapper_needs_getconf(build_jobs) {
         return Ok(None);
     }
     let inherited_path =
-        std::env::var_os("PATH").ok_or_else(|| "Nix Cargo launcher PATH is unset".to_owned())?;
+        inherited_path.ok_or_else(|| "Nix Cargo launcher PATH is unset".to_owned())?;
     let working_directory = working_directory
         .canonicalize()
         .map_err(|_| "Nix Cargo launcher working directory cannot be resolved".to_owned())?;
     let search = runtime_path
         .iter()
         .cloned()
-        .chain(std::env::split_paths(&inherited_path).map(|directory| {
+        .chain(std::env::split_paths(inherited_path).map(|directory| {
             if directory.is_absolute() {
                 directory
             } else if directory.as_os_str().is_empty() {
@@ -4145,22 +4291,49 @@ fn nix_parallel_cargo_getconf_witness(
                 working_directory.join(directory)
             }
         }));
+    let mut search_hasher = blake3::Hasher::new();
+    search_hasher.update(b"backend.nix-parallel-cargo-getconf-search.v1\0");
     for directory in search {
+        let directory_digest = nix_effective_path_directory_witness(&directory)?;
+        let path_bytes = directory.as_os_str().as_encoded_bytes();
+        search_hasher.update(&(path_bytes.len() as u64).to_le_bytes());
+        search_hasher.update(path_bytes);
+        search_hasher.update(&directory_digest);
         let candidate = directory.join("getconf");
-        let metadata = match std::fs::metadata(&candidate) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(_) => return Err("Nix Cargo launcher getconf cannot be inspected".to_owned()),
-        };
-        if !metadata.is_file() || !is_executable_file(&metadata) {
+        let (exists, candidate_digest, link_target) = nix_getconf_candidate_state(&candidate)?;
+        search_hasher.update(&candidate_digest);
+        if !exists {
             continue;
+        }
+        let metadata = std::fs::metadata(&candidate)
+            .map_err(|_| "Nix Cargo launcher getconf cannot be resolved".to_owned())?;
+        if !metadata.is_file() || !is_executable_file(&metadata) {
+            return Err(
+                "Nix Cargo launcher PATH contains an unsupported getconf candidate".to_owned(),
+            );
         }
         let resolved = candidate
             .canonicalize()
             .map_err(|_| "Nix Cargo launcher getconf cannot be resolved".to_owned())?;
+        if link_target
+            .as_ref()
+            .is_some_and(|target| target != &resolved)
+        {
+            return Err(
+                "Nix Cargo launcher getconf link does not point directly to its immutable target"
+                    .to_owned(),
+            );
+        }
         let executable = tool_executable_witness(&resolved, cached)?;
+        if !is_immutable_nix_getconf_witness(&resolved, &executable) {
+            return Err(
+                "Nix Cargo launcher selected a getconf outside the immutable Nix glibc toolchain"
+                    .to_owned(),
+            );
+        }
         return Ok(Some(CargoPathCommandWitness {
             invocation_path: candidate,
+            search_path_digest: *search_hasher.finalize().as_bytes(),
             executable,
         }));
     }
@@ -4169,6 +4342,14 @@ fn nix_parallel_cargo_getconf_witness(
 
 fn cargo_wrapper_needs_getconf(build_jobs: Option<&std::ffi::OsStr>) -> bool {
     build_jobs.is_none_or(std::ffi::OsStr::is_empty)
+}
+
+fn is_immutable_nix_getconf_witness(path: &Path, witness: &CargoToolFileWitness) -> bool {
+    is_nix_store_command(path, "getconf", "glibc-")
+        && witness.canonical_path.as_path() == path
+        && witness.reuse.as_ref().is_some_and(|reuse| {
+            reuse.canonical_path.as_path() == path && reuse.content_digest == witness.content_digest
+        })
 }
 
 #[cfg(unix)]
@@ -4183,12 +4364,51 @@ fn is_executable_file(_metadata: &std::fs::Metadata) -> bool {
 }
 
 fn nix_wrapper_environment_witness() -> Result<[u8; 32], String> {
-    let mut entries = std::env::vars_os().collect::<Vec<_>>();
-    if entries.iter().any(|(name, value)| {
-        let name = name.to_string_lossy();
-        (name == "BASH_ENV" && !value.is_empty()) || name.starts_with("BASH_FUNC_")
-    }) {
-        return Err("Nix Cargo launcher environment injects shell code".to_owned());
+    nix_wrapper_environment_witness_from(std::env::vars_os().collect())
+}
+
+fn nix_wrapper_environment_witness_from(
+    mut entries: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+) -> Result<[u8; 32], String> {
+    const ALLOWED_SHELLOPTS: &[&str] = &[
+        "braceexpand",
+        "errexit",
+        "hashall",
+        "interactive-comments",
+        "nounset",
+        "pipefail",
+    ];
+    for (name, value) in &entries {
+        let name = name.to_str().ok_or_else(|| {
+            "Nix Cargo launcher environment contains a non-UTF-8 variable name".to_owned()
+        })?;
+        if (name == "BASH_ENV" && !value.is_empty()) || name.starts_with("BASH_FUNC_") {
+            return Err("Nix Cargo launcher environment injects shell code".to_owned());
+        }
+        if name == "SHELLOPTS" && !value.is_empty() {
+            let value = value
+                .to_str()
+                .ok_or_else(|| "Nix Cargo launcher shell options are not UTF-8".to_owned())?;
+            if value
+                .split(':')
+                .any(|option| !ALLOWED_SHELLOPTS.contains(&option))
+            {
+                return Err(
+                    "Nix Cargo launcher environment enables unsupported shell options".to_owned(),
+                );
+            }
+        }
+        if name == "BASHOPTS" && !value.is_empty() {
+            return Err("Nix Cargo launcher environment enables imported Bash options".to_owned());
+        }
+        if (name == "POSIXLY_CORRECT" || name == "BASH_COMPAT") && !value.is_empty() {
+            return Err("Nix Cargo launcher environment changes Bash compatibility".to_owned());
+        }
+        if name.starts_with("LD_") || name.starts_with("DYLD_") {
+            return Err(
+                "Nix Cargo launcher environment overrides dynamic loader behavior".to_owned(),
+            );
+        }
     }
     entries.sort_by(|left, right| left.0.cmp(&right.0));
     if entries.len() > 512 {
@@ -8355,7 +8575,10 @@ mod tests {
                     "altered shell effect must be refused: {altered:?}"
                 );
             }
-            assert!(recognized_nix_toolchain_launcher(&script, Path::new("/tmp/cargo")).is_none());
+            assert!(
+                recognized_nix_toolchain_launcher(script.as_bytes(), Path::new("/tmp/cargo"))
+                    .is_none()
+            );
         }
     }
 
@@ -8488,6 +8711,144 @@ mod tests {
         assert!(!cargo_wrapper_needs_getconf(Some(std::ffi::OsStr::new(
             "1"
         ))));
+    }
+
+    #[test]
+    fn nix_wrapper_environment_rejects_prelaunch_shell_and_loader_overrides() {
+        let safe = vec![
+            (
+                "SHELLOPTS".into(),
+                "braceexpand:hashall:interactive-comments:errexit:pipefail:nounset".into(),
+            ),
+            ("PATH".into(), "/nix/store/pinned-tools/bin".into()),
+        ];
+        assert!(nix_wrapper_environment_witness_from(safe).is_ok());
+
+        let traced = vec![
+            (
+                "SHELLOPTS".into(),
+                "braceexpand:hashall:interactive-comments:xtrace".into(),
+            ),
+            ("PS4".into(), "$(touch /tmp/nudox-ps4-injection)".into()),
+        ];
+        assert!(nix_wrapper_environment_witness_from(traced).is_err());
+
+        for (name, value) in [
+            ("BASHOPTS", "extglob"),
+            ("POSIXLY_CORRECT", "1"),
+            ("BASH_COMPAT", "5.2"),
+            ("LD_PRELOAD", "/tmp/hook.so"),
+            ("LD_AUDIT", "/tmp/audit.so"),
+            ("LD_LIBRARY_PATH", "/tmp/lib"),
+            ("DYLD_INSERT_LIBRARIES", "/tmp/hook.dylib"),
+            ("DYLD_LIBRARY_PATH", "/tmp/lib"),
+            ("DYLD_FRAMEWORK_PATH", "/tmp/frameworks"),
+        ] {
+            assert!(
+                nix_wrapper_environment_witness_from(vec![(name.into(), value.into())]).is_err(),
+                "unsupported prelaunch environment must be refused: {name}"
+            );
+        }
+
+        let scratch = std::env::temp_dir().join(format!(
+            "backend-loader-override-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&scratch).expect("loader scratch directory");
+        let loader = scratch.join("hook.so");
+        for bytes in [b"first bytes".as_slice(), b"different bytes".as_slice()] {
+            std::fs::write(&loader, bytes).expect("replace loader bytes");
+            assert!(
+                nix_wrapper_environment_witness_from(vec![(
+                    "LD_PRELOAD".into(),
+                    loader.as_os_str().to_os_string(),
+                )])
+                .is_err()
+            );
+        }
+        std::fs::remove_dir_all(&scratch).expect("remove loader scratch directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nix_getconf_witness_requires_immutable_glibc_identity() {
+        let path =
+            Path::new("/nix/store/00000000000000000000000000000000-glibc-2.42-84-bin/bin/getconf");
+        let digest = [0x11; 32];
+        let witness = CargoToolFileWitness {
+            canonical_path: path.to_path_buf(),
+            content_digest: digest,
+            reuse: Some(CargoToolFileReuse {
+                canonical_path: path.to_path_buf(),
+                immutable_identity: [0x22; 32],
+                content_digest: digest,
+            }),
+        };
+        assert!(is_immutable_nix_getconf_witness(path, &witness));
+        assert!(!is_immutable_nix_getconf_witness(
+            Path::new("/usr/bin/getconf"),
+            &witness
+        ));
+
+        let mutable = CargoToolFileWitness {
+            reuse: None,
+            ..witness
+        };
+        assert!(!is_immutable_nix_getconf_witness(path, &mutable));
+        assert!(nix_effective_path_directory_witness(Path::new("/tmp")).is_err());
+        assert!(
+            nix_parallel_cargo_getconf_witness(
+                &[],
+                Path::new("/"),
+                Some(std::ffi::OsStr::new("4")),
+                None,
+                None,
+            )
+            .expect("explicit jobs skip getconf search")
+            .is_none()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nix_getconf_search_refuses_a_mutable_path_candidate() {
+        use std::os::unix::fs::PermissionsExt;
+
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let scratch = Scratch(std::env::temp_dir().join(format!(
+            "backend-nix-getconf-path-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        )));
+        std::fs::create_dir_all(&scratch.0).expect("mutable PATH directory");
+        let getconf = scratch.0.join("getconf");
+        std::fs::write(&getconf, b"#!/bin/sh\nexit 0\n").expect("mutable getconf");
+        std::fs::set_permissions(&getconf, std::fs::Permissions::from_mode(0o755))
+            .expect("executable getconf");
+
+        let error = match nix_parallel_cargo_getconf_witness(
+            &[],
+            &scratch.0,
+            None,
+            Some(scratch.0.as_os_str()),
+            None,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("mutable native PATH candidate must fail closed"),
+        };
+        assert!(error.contains("writable and cannot be bound"));
     }
 
     #[cfg(unix)]
