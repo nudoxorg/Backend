@@ -148,6 +148,9 @@ pub enum PythonProjectSourceStatus {
     UnavailableCompiledImport {
         /// Exact distinct importing bindings and their observed candidates.
         imports: Box<[PythonCompiledImportUnavailable]>,
+        /// Sorted exact captured paths reached through the native dependency graph.
+        /// Direct compiled imports do not create a synthetic self-edge.
+        dependencies: Box<[Box<str>]>,
     },
 }
 
@@ -1236,16 +1239,23 @@ impl NativePythonProjectAuthority {
             file.validate_current()?;
         }
         checkpoint(control)?;
-        for (path, dependencies) in native.unavailable_dependencies {
+        let mut unavailable_dependencies = native.unavailable_dependencies;
+        for (path, imports) in native.compiled_imports {
+            checkpoint(control)?;
+            let dependencies = unavailable_dependencies.remove(&path).unwrap_or_default();
+            source_statuses.insert(
+                path,
+                PythonProjectSourceStatus::UnavailableCompiledImport {
+                    imports,
+                    dependencies,
+                },
+            );
+        }
+        for (path, dependencies) in unavailable_dependencies {
+            checkpoint(control)?;
             source_statuses.insert(
                 path,
                 PythonProjectSourceStatus::UnavailableDependency { dependencies },
-            );
-        }
-        for (path, imports) in native.compiled_imports {
-            source_statuses.insert(
-                path,
-                PythonProjectSourceStatus::UnavailableCompiledImport { imports },
             );
         }
         let mut modules = native.modules;

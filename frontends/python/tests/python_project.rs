@@ -467,7 +467,7 @@ fn native_compiled_dependency_is_typed_unavailable_with_a_membership_witness() {
         "native_ext"
     );
     assert!(report.diagnostics().iter().all(|diagnostic| diagnostic.relative_path.as_ref() != "core.py"), "a mirror missing-import error is not authority for an actually present opaque compiled candidate");
-    assert!(matches!(report.source_status("core.py"), Some(PythonProjectSourceStatus::UnavailableCompiledImport { imports }) if imports.len() == 1 && imports[0].candidates.as_ref() == [compiled.clone()]));
+    assert!(matches!(report.source_status("core.py"), Some(PythonProjectSourceStatus::UnavailableCompiledImport { imports, .. }) if imports.len() == 1 && imports[0].candidates.as_ref() == [compiled.clone()]));
     assert!(report.module("core.py").unwrap().inferences.is_empty());
     assert!(report.module("core.py").unwrap().symbols.is_empty());
     report

@@ -20,8 +20,9 @@ fn source_status_json(status: &PythonProjectSourceStatus) -> serde_json::Value {
         PythonProjectSourceStatus::UnavailableDependency { dependencies } => {
             json!({"kind":"unavailable-dependency","dependencies":dependencies})
         }
-        PythonProjectSourceStatus::UnavailableCompiledImport { imports } => json!({
+        PythonProjectSourceStatus::UnavailableCompiledImport { imports, dependencies } => json!({
             "kind": "unavailable-compiled-import",
+            "dependencies": dependencies,
             "imports": imports.iter().map(|import| json!({
                 "binding": import.binding,
                 "module": import.module,

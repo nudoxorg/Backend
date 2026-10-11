@@ -17,6 +17,137 @@ fn control(cancelled: &AtomicBool) -> PythonProjectControl<'_> {
 }
 
 #[test]
+fn direct_compiled_import_preserves_other_unavailable_graph_causes() {
+    let root = std::env::temp_dir().join(format!(
+        "nudox-compiled-secondary-cause-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let alpha = "import opaque_alpha\n\ndef alpha():\n    return opaque_alpha.value\n";
+    let zeta = "import opaque_zeta\n\ndef zeta():\n    return opaque_zeta.value\n";
+    let mixed = "import venv\nfrom zeta import zeta\nfrom alpha import alpha\n\ndef mixed():\n    return venv.EnvBuilder(), alpha(), zeta()\n";
+    let consumer = "from mixed import mixed\n\ndef consumer():\n    return mixed()\n";
+    let independent = "def answer():\n    return 42\n";
+    let sources = [
+        PythonProjectSource {
+            relative_path: "alpha.py",
+            source: alpha,
+        },
+        PythonProjectSource {
+            relative_path: "zeta.py",
+            source: zeta,
+        },
+        PythonProjectSource {
+            relative_path: "mixed.py",
+            source: mixed,
+        },
+        PythonProjectSource {
+            relative_path: "consumer.py",
+            source: consumer,
+        },
+        PythonProjectSource {
+            relative_path: "independent.py",
+            source: independent,
+        },
+    ];
+    for source in &sources {
+        std::fs::write(root.join(source.relative_path), source.source).unwrap();
+    }
+    for name in ["opaque_alpha.pyx", "opaque_zeta.pyd", "venv.pyx"] {
+        std::fs::write(root.join(name), b"opaque compiled candidate").unwrap();
+    }
+    let cancelled = AtomicBool::new(false);
+    let report = NativePythonProjectAuthority::admit()
+        .unwrap()
+        .analyze_project(
+            &root,
+            "secondary",
+            &sources,
+            PythonVersion::Python314,
+            control(&cancelled),
+        )
+        .unwrap();
+    let Some(PythonProjectSourceStatus::UnavailableCompiledImport {
+        imports,
+        dependencies,
+    }) = report.source_status("mixed.py")
+    else {
+        panic!("direct compiled import must retain its own cause and actual dependency causes")
+    };
+    assert_eq!(imports.len(), 1);
+    assert_eq!(imports[0].binding.as_ref(), "venv");
+    assert_eq!(imports[0].candidates.as_ref(), [root.join("venv.pyx")]);
+    assert_eq!(
+        dependencies
+            .iter()
+            .map(|path| path.as_ref())
+            .collect::<Vec<_>>(),
+        ["alpha.py", "zeta.py"]
+    );
+    assert!(
+        !dependencies.iter().any(|path| path.as_ref() == "mixed.py"),
+        "direct cause must not invent a graph self-edge"
+    );
+    for (path, binding) in [("alpha.py", "opaque_alpha"), ("zeta.py", "opaque_zeta")] {
+        let Some(PythonProjectSourceStatus::UnavailableCompiledImport {
+            imports,
+            dependencies,
+        }) = report.source_status(path)
+        else {
+            panic!("actual compiled root {path}")
+        };
+        assert_eq!(imports.len(), 1);
+        assert_eq!(imports[0].binding.as_ref(), binding);
+        assert!(
+            dependencies.is_empty(),
+            "root {path} has no unavailable graph dependency"
+        );
+    }
+    let Some(PythonProjectSourceStatus::UnavailableDependency { dependencies }) =
+        report.source_status("consumer.py")
+    else {
+        panic!("consumer must keep the actual transitive native dependency closure")
+    };
+    assert_eq!(
+        dependencies
+            .iter()
+            .map(|path| path.as_ref())
+            .collect::<Vec<_>>(),
+        ["alpha.py", "mixed.py", "zeta.py"]
+    );
+    for path in ["alpha.py", "zeta.py", "mixed.py", "consumer.py"] {
+        assert!(report.module(path).unwrap().inferences.is_empty(), "{path}");
+        assert!(report.module(path).unwrap().symbols.is_empty(), "{path}");
+        assert!(
+            !report
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.relative_path.as_ref() == path),
+            "{path}: opaque candidates cannot certify semantic errors"
+        );
+    }
+    assert_eq!(
+        report.source_status("independent.py"),
+        Some(&PythonProjectSourceStatus::Analyzed)
+    );
+    assert!(
+        report
+            .module("independent.py")
+            .unwrap()
+            .inferences
+            .iter()
+            .any(
+                |fact| fact.kind == InferenceSite::Return && fact.observed == InferredType::Integer
+            )
+    );
+    report
+        .witness()
+        .validate_current(control(&cancelled))
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn comma_separated_child_imports_keep_distinct_compiled_probe_identity() {
     let root = std::env::temp_dir().join(format!(
         "nudox-compiled-alias-probes-{}",
@@ -50,7 +181,7 @@ fn comma_separated_child_imports_keep_distinct_compiled_probe_identity() {
             control(&cancelled),
         )
         .unwrap();
-    let Some(PythonProjectSourceStatus::UnavailableCompiledImport { imports }) =
+    let Some(PythonProjectSourceStatus::UnavailableCompiledImport { imports, .. }) =
         report.source_status("core.py")
     else {
         panic!("actual compiled candidate must quarantine the direct source")
@@ -114,7 +245,7 @@ fn comma_separated_child_imports_keep_distinct_compiled_probe_identity() {
             control(&cancelled),
         )
         .unwrap();
-    let Some(PythonProjectSourceStatus::UnavailableCompiledImport { imports }) =
+    let Some(PythonProjectSourceStatus::UnavailableCompiledImport { imports, .. }) =
         both.source_status("core.py")
     else {
         panic!("both candidate probes must remain unavailable")
@@ -276,7 +407,7 @@ fn local_compiled_stdlib_collision_never_claims_mirror_fallback_authority() {
             "a mirrored standard-library fallback is not authority for the shadowed original import"
         );
         assert!(
-            matches!(shadow.source_status("core.py"), Some(PythonProjectSourceStatus::UnavailableCompiledImport { imports }) if imports.len() == 1 && imports[0].binding.as_ref() == "venv" && imports[0].candidates.as_ref() == [candidate.clone()]),
+            matches!(shadow.source_status("core.py"), Some(PythonProjectSourceStatus::UnavailableCompiledImport { imports, .. }) if imports.len() == 1 && imports[0].binding.as_ref() == "venv" && imports[0].candidates.as_ref() == [candidate.clone()]),
             "the direct compiled refusal has actual candidates, not a fictitious graph self-edge"
         );
         assert!(
