@@ -13,7 +13,7 @@ import test_install_forgejo_preview as mirror_tests
 
 ROOT = Path(__file__).parent
 LAUNCHER = ROOT / "install_diagnostic_preview.sh"
-BOOTSTRAP = ROOT / "install_forgejo_preview.py"
+BOOTSTRAP = mirror_tests.PUBLISHED_BOOTSTRAP_FIXTURE
 
 
 class LauncherTests(unittest.TestCase):
@@ -60,7 +60,7 @@ sys.exit(int(os.environ.get('CURL_STATUS','0')))
         metadata = self.root / "channel.json"
         metadata.write_text(json.dumps(value))
         mapping = {mirror_tests.boot.CHANNEL: str(metadata), value["bootstrap"]["url"]: str(BOOTSTRAP),
-                   entry["installer"]["url"]: str(ROOT / "install_macos_preview.py"),
+                   entry["installer"]["url"]: str(mirror_tests.published_mac_library(self.root)),
                    entry["archive"]["url"]: str(archive)}
         (self.root / "mapping.json").write_text(json.dumps(mapping))
         (self.root / "sitecustomize.py").write_text('''import io,json,os,pathlib,platform,urllib.request
@@ -127,11 +127,34 @@ urllib.request.build_opener=lambda *handlers: Opener()
         self.assertEqual(args[args.index("--proto-redir")+1], "=https")
         self.assertEqual(args[args.index("--max-filesize")+1], str(BOOTSTRAP.stat().st_size))
 
+    def test_one_line_launcher_reaches_candidate_bootstrap_and_skips_repeat_archive(self):
+        entry, archive = mirror_tests.mac_fixture(self.root)
+        entry, value, candidate_environment = mirror_tests.candidate_mac_transport(self.root, entry, archive)
+        self.environment.update(candidate_environment)
+        prefix = self.root / "candidate preview"
+
+        first = self.run_launcher("--prefix", str(prefix))
+        self.assertEqual(first.returncode, 0, first.stderr)
+        requests = Path(self.environment["FIXTURE_REQUESTS"])
+        first_requests = requests.read_text().splitlines()
+        self.assertIn(value["bootstrap"]["url"], first_requests)
+        self.assertIn(entry["installer"]["url"], first_requests)
+        self.assertIn(entry["archive"]["url"], first_requests)
+        requests.unlink()
+
+        repeated = self.run_launcher("--prefix", str(prefix))
+        self.assertEqual(repeated.returncode, 0, repeated.stderr)
+        self.assertIn("skipped its archive download", repeated.stderr)
+        repeat_requests = requests.read_text().splitlines()
+        self.assertIn(value["bootstrap"]["url"], repeat_requests)
+        self.assertIn(entry["installer"]["url"], repeat_requests)
+        self.assertNotIn(entry["archive"]["url"], repeat_requests)
+
     def test_update_refusal_preserves_pointer_and_explicit_flag_is_forwarded(self):
         entry, archive = self.fixture_transport()
         prefix = self.root / "existing"
         newer = {**entry, "tag": entry["tag"].replace("20261006", "20261010")}
-        mirror_tests.boot.install_verified(newer, "macos-arm64", ROOT / "install_macos_preview.py", archive, None, prefix, False)
+        mirror_tests.boot.install_verified(newer, "macos-arm64", mirror_tests.published_mac_library(self.root), archive, None, prefix, False)
         current = prefix / "lib/nudox/current"
         prior = current.resolve()
         refused = self.run_launcher("--prefix", str(prefix))

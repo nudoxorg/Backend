@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -25,12 +26,14 @@ CHANNEL = ORIGIN + RELEASES + BOOTSTRAP_TAG + "/preview-channel.json"
 MAX_SCRIPT = 1024 * 1024
 MAX_METADATA = 65536
 MAX_ARCHIVE = 2 * 1024**3
-# The Mac library remains on its original pin. R2 carries a repaired Linux
-# library beside the bootstrap, leaving the older checkpoint release untouched.
+# Candidate bootstrap pins: R2 public bytes remain in fixtures and channel assets.
 LIBRARIES = {
-    "macos-arm64": ("82f71f98a05a2b13e05afd7185e35c5f8d252b9973ab4ce6d32ab22688794f25", 22094, "install-macos-arm64"),
+    "macos-arm64": ("0cf82056eca7f8084ddbe58ec4fb48230457380bf34c3599d5cb849e25ac755d", 30604, "install-macos-arm64"),
     "linux-x64": ("e11fcc271fc3a8feb676b9f8c383bbf5bdc215578ffc399774819184908ed071", 49954, "install-linux-x64"),
 }
+DOWNLOAD_TIMEOUT_SECONDS = 20
+DOWNLOAD_PROGRESS_INTERVAL_SECONDS = 5
+DOWNLOAD_PROGRESS_BYTES = 8 * 1024**2
 
 
 class InstallError(Exception):
@@ -74,11 +77,19 @@ def download(url, destination, limit, *, expected_size=None, expected_sha256=Non
         raise InstallError("initial mirror URL must name a trusted repository release asset")
     digest = hashlib.sha256()
     count = 0
+    last_progress_at = time.monotonic()
+    last_progress_count = 0
+    label = Path(urllib.parse.urlsplit(url).path).name or "mirror artifact"
+    budget = expected_size if expected_size is not None else limit
+    if expected_size is None:
+        print(f"Downloading {label}: 0 bytes (limit {budget:,}).", file=sys.stderr, flush=True)
+    else:
+        print(f"Downloading {label}: 0/{budget:,} bytes (0%).", file=sys.stderr, flush=True)
     request = urllib.request.Request(url, headers={"User-Agent": "nudox-diagnostic-mirror/1"})
     opener = urllib.request.build_opener(HTTPSRedirect(url))
     descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
-        with os.fdopen(descriptor, "wb") as output, opener.open(request, timeout=120) as response:
+        with os.fdopen(descriptor, "wb") as output, opener.open(request, timeout=DOWNLOAD_TIMEOUT_SECONDS) as response:
             check_url(response.geturl(), url, redirect=True)
             while chunk := response.read(65536):
                 count += len(chunk)
@@ -86,6 +97,19 @@ def download(url, destination, limit, *, expected_size=None, expected_sha256=Non
                     raise InstallError("mirror download exceeds its byte budget")
                 output.write(chunk)
                 digest.update(chunk)
+                now = time.monotonic()
+                if (count == expected_size
+                        or count - last_progress_count >= DOWNLOAD_PROGRESS_BYTES
+                        or now - last_progress_at >= DOWNLOAD_PROGRESS_INTERVAL_SECONDS):
+                    if expected_size is None:
+                        message = f"Downloading {label}: {count:,} bytes (limit {budget:,})."
+                    else:
+                        percent = min(100, count * 100 // max(budget, 1))
+                        message = f"Downloading {label}: {count:,}/{budget:,} bytes ({percent}%)."
+                    print(message, file=sys.stderr, flush=True)
+                    last_progress_at = now
+                    last_progress_count = count
+        print(f"Downloaded {count:,} bytes; checking declared size and digest.", file=sys.stderr, flush=True)
         if expected_size is not None and count != expected_size:
             raise InstallError("mirror artifact size mismatch")
         if expected_sha256 is not None and digest.hexdigest() != expected_sha256:
@@ -187,9 +211,8 @@ def load_library(path, key):
     return module
 
 
-def install_verified(entry, key, library_path, archive, manifest_path, prefix, allow_downgrade):
-    """Keep mirror URLs outside the archived platform provenance and install API."""
-    module = load_library(library_path, key)
+def prepare_install_identity(entry, key, module, manifest_path):
+    """Build the package identity only from channel fields and pinned source data."""
     source, tag = entry["source"], entry["tag"]
     if key == "linux-x64":
         if (module.PINNED_RELEASE_TAG != tag
@@ -207,12 +230,24 @@ def install_verified(entry, key, library_path, archive, manifest_path, prefix, a
         product = {"version": "0.0.0", "tag": tag, "source_sha": source,
                    "asset": "nudox-macos-arm64-" + source[:10] + ".tar.gz"}
         manifest = {"sha256": entry["archive"]["sha256"]}
+    return product, manifest
+
+
+def install_verified_module(entry, key, module, product, manifest, archive, prefix, allow_downgrade):
+    """Install through the already digest-verified module instance."""
     # Normal unchanged install(): full lease, ownership, archive/package checks,
     # existing-install validation, startup probes and atomic pointer publication.
     try:
         module.install(prefix, product, manifest, archive, allow_downgrade=allow_downgrade)
     except module.InstallError as error:
         raise InstallError(str(error)) from error
+
+
+def install_verified(entry, key, library_path, archive, manifest_path, prefix, allow_downgrade):
+    """Keep mirror URLs outside the archived platform provenance and install API."""
+    module = load_library(library_path, key)
+    product, manifest = prepare_install_identity(entry, key, module, manifest_path)
+    install_verified_module(entry, key, module, product, manifest, archive, prefix, allow_downgrade)
 
 
 def main(argv=None):
@@ -246,9 +281,24 @@ def main(argv=None):
         for failure in entry["known_failures"]:
             print("Known failure: " + failure, flush=True)
         library = verified(entry["installer"], private / "platform.py", MAX_SCRIPT)
+        module = load_library(library, key)
         manifest = verified(entry["manifest"], private / "manifest.json", MAX_METADATA) if key == "linux-x64" else None
+        product, package_manifest = prepare_install_identity(entry, key, module, manifest)
+        if key == "macos-arm64":
+            try:
+                reused = module.reuse_existing_install(prefix, product, package_manifest,
+                                                       allow_downgrade=args.allow_downgrade)
+            except module.InstallError as error:
+                raise InstallError(str(error)) from error
+            if reused:
+                print("Verified existing selected release; skipped its archive download.", file=sys.stderr, flush=True)
+                print("Installed diagnostic CLI, MCP and local daemon in " + str(prefix) + ".")
+                print("MCP executable: " + str(prefix / "bin/backend-mcp"))
+                if str(prefix / "bin") not in os.environ.get("PATH", "").split(os.pathsep):
+                    print("Add to your shell profile: export PATH=" + shlex.quote(str(prefix / "bin")) + ':"$PATH"')
+                return 0
         archive = verified(entry["archive"], private / "archive.tar.gz", MAX_ARCHIVE)
-        install_verified(entry, key, library, archive, manifest, prefix, args.allow_downgrade)
+        install_verified_module(entry, key, module, product, package_manifest, archive, prefix, args.allow_downgrade)
     print("Installed diagnostic CLI, MCP and local daemon in " + str(prefix) + ".")
     print("MCP executable: " + str(prefix / "bin/backend-mcp"))
     if str(prefix / "bin") not in os.environ.get("PATH", "").split(os.pathsep):
