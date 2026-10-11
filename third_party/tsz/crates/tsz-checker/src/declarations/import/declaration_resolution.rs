@@ -42,6 +42,11 @@ impl<'a> CheckerState<'a> {
         module_name: &str,
         visited: &mut FxHashSet<String>,
     ) {
+        // Configured traversal uses the exact file/edge cycle guards in the
+        // export resolver. This standalone specifier graph cannot certify it.
+        if self.ctx.project_module_resolution_outcomes.is_some() {
+            return;
+        }
         if visited.contains(module_name) {
             return;
         }
@@ -195,10 +200,13 @@ impl<'a> CheckerState<'a> {
             && let Some((source_module, original_name)) = reexports.get(import_name)
         {
             let name = original_name.as_deref().unwrap_or(import_name);
-            if let Some(source_idx) = self
-                .ctx
-                .resolve_import_target_from_file(file_idx, source_module)
-                && self.resolve_import_in_file(source_idx, name, visited)
+            if let Some(source_idx) = self.ctx.resolve_named_reexport_target_from_file(
+                file_idx,
+                &target_file_name,
+                source_module,
+                import_name,
+                name,
+            ) && self.resolve_import_in_file(source_idx, name, visited)
             {
                 return true;
             }
@@ -210,11 +218,14 @@ impl<'a> CheckerState<'a> {
             .wildcard_reexports_for_file(target_binder, &target_file_name)
         {
             let source_modules = source_modules.clone();
-            for (source_module, _is_type_only) in &source_modules {
-                if let Some(source_idx) = self
-                    .ctx
-                    .resolve_import_target_from_file(file_idx, source_module)
-                    && self.resolve_import_in_file(source_idx, import_name, visited)
+            for (edge_index, (source_module, is_type_only)) in source_modules.iter().enumerate() {
+                if let Some(source_idx) = self.ctx.resolve_wildcard_reexport_target_from_file(
+                    file_idx,
+                    &target_file_name,
+                    source_module,
+                    edge_index,
+                    *is_type_only,
+                ) && self.resolve_import_in_file(source_idx, import_name, visited)
                 {
                     return true;
                 }

@@ -322,17 +322,52 @@ impl<'a> CheckerState<'a> {
         self.resolve_effective_module_exports_with_mode(module_specifier, resolution_mode)
     }
 
+    /// Type and value member lookup preserves the selected request and owner.
+    /// Runtime namespace collection separately filters type-only wildcard edges.
+    pub(crate) fn resolve_member_for_selected_request(
+        &self,
+        selected: crate::context::SelectedModuleRequest<'_>,
+        name: &str,
+    ) -> Option<tsz_binder::SymbolId> {
+        let mut visited = rustc_hash::FxHashSet::default();
+        if let Some(target) = selected.file_target() {
+            return self
+                .ctx
+                .resolve_export_in_target_file(target, name, &mut visited);
+        }
+        selected.external_identity()?;
+        let spelling = selected.request().specifier;
+        for binder in self.ctx.all_binders.as_ref()?.iter() {
+            if let Some(symbol) = self
+                .ctx
+                .module_exports_for_external_request(binder, selected)
+                .and_then(|exports| exports.get(name))
+            {
+                return Some(symbol);
+            }
+        }
+        for &owner in self.ctx.files_for_module_specifier(spelling)? {
+            visited.clear();
+            if let Some((symbol, _)) = self.resolve_export_in_file_with_module_key(
+                owner,
+                Some(spelling),
+                name,
+                &mut visited,
+            ) {
+                return Some(symbol);
+            }
+        }
+        None
+    }
+
     pub(crate) fn resolve_exports_for_selected_request(
         &self,
         selected: crate::context::SelectedModuleRequest<'_>,
     ) -> Option<tsz_binder::SymbolTable> {
         if let Some(target) = selected.file_target() {
             return Some(
-                self.resolve_cross_file_namespace_exports_for_file(
-                    target,
-                    Some(selected.request().specifier),
-                )
-                .unwrap_or_default(),
+                self.resolve_cross_file_namespace_exports_for_file(target, None)
+                    .unwrap_or_default(),
             );
         }
         selected.external_identity()?;
@@ -343,6 +378,40 @@ impl<'a> CheckerState<'a> {
             {
                 let mut combined = exports.clone();
                 self.merge_export_equals_members(binder, exports, &mut combined);
+                if let Some(symbol) = exports.get("export=").and_then(|id| binder.get_symbol(id)) {
+                    let _ = self.merge_export_equals_import_type_members(
+                        symbol,
+                        exports
+                            .get("export=")
+                            .and_then(|id| self.ctx.resolve_symbol_declaring_file_index(id)),
+                        &mut combined,
+                    );
+                }
+                if let Some(owner) = exports
+                    .iter()
+                    .find_map(|(_, &symbol)| self.ctx.resolve_symbol_declaring_file_index(symbol))
+                {
+                    let mut visited = rustc_hash::FxHashSet::default();
+                    self.collect_reexported_symbols(
+                        owner,
+                        Some(selected.request().specifier),
+                        &mut combined,
+                        &mut visited,
+                    );
+                } else if let Some(files) = self
+                    .ctx
+                    .files_for_module_specifier(selected.request().specifier)
+                {
+                    for &owner in files {
+                        let mut visited = rustc_hash::FxHashSet::default();
+                        self.collect_reexported_symbols(
+                            owner,
+                            Some(selected.request().specifier),
+                            &mut combined,
+                            &mut visited,
+                        );
+                    }
+                }
                 return Some(combined);
             }
         }
@@ -548,7 +617,7 @@ impl<'a> CheckerState<'a> {
         let binder = self.ctx.get_binder_for_file(decl_file_idx)?;
         let arena = self.ctx.get_arena_for_file(decl_file_idx as u32);
 
-        let module_specifier_from_decl = |decl_idx: NodeIndex| -> Option<String> {
+        let module_specifier_from_decl = |decl_idx: NodeIndex| -> Option<(String, NodeIndex)> {
             let node = arena.get(decl_idx)?;
             if node.kind != syntax_kind_ext::VARIABLE_DECLARATION {
                 return None;
@@ -558,6 +627,7 @@ impl<'a> CheckerState<'a> {
                 return None;
             }
             self.import_type_module_specifier_from_type_node(arena, var_decl.type_annotation)
+                .map(|specifier| (specifier, var_decl.type_annotation))
         };
 
         let mut module_specifier = export_equals_symbol
@@ -625,21 +695,42 @@ impl<'a> CheckerState<'a> {
             }
         }
 
-        let module_specifier = module_specifier?;
-
-        let Some(nested_exports) =
-            self.resolve_effective_module_exports_from_file(&module_specifier, Some(decl_file_idx))
-        else {
-            return Some(module_specifier);
-        };
-        let nested_target_idx = nested_exports
-            .iter()
-            .find_map(|(_, &sym_id)| self.ctx.resolve_symbol_file_index_stable(sym_id))
-            .or_else(|| {
-                self.ctx
-                    .resolve_import_target_from_file(decl_file_idx, &module_specifier)
+        let (module_specifier, annotation) = module_specifier?;
+        let (nested_exports, exact_target) =
+            if self.ctx.project_module_resolution_outcomes.is_some() {
+                let request = self
+                    .ctx
+                    .bound_import_type_request_at(decl_file_idx, annotation)?;
+                let selected = self.ctx.select_module_request(request)?;
+                (
+                    self.resolve_exports_for_selected_request(selected)?,
+                    selected.file_target(),
+                )
+            } else {
+                (
+                    self.resolve_effective_module_exports_from_file(
+                        &module_specifier,
+                        Some(decl_file_idx),
+                    )?,
+                    None,
+                )
+            };
+        let nested_target_idx = if self.ctx.project_module_resolution_outcomes.is_some() {
+            exact_target.or_else(|| {
+                nested_exports
+                    .iter()
+                    .find_map(|(_, &symbol)| self.ctx.resolve_symbol_file_index_stable(symbol))
             })
-            .or_else(|| self.ctx.resolve_import_target(&module_specifier));
+        } else {
+            nested_exports
+                .iter()
+                .find_map(|(_, &symbol)| self.ctx.resolve_symbol_file_index_stable(symbol))
+                .or_else(|| {
+                    self.ctx
+                        .resolve_import_target_from_file(decl_file_idx, &module_specifier)
+                })
+                .or_else(|| self.ctx.resolve_import_target(&module_specifier))
+        };
 
         for (name, sym_id) in nested_exports.iter() {
             if let Some(target_idx) = nested_target_idx {

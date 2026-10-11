@@ -1588,3 +1588,367 @@ fn node_next_foreign_plain_ts_request_uses_unique_compiler_mode() {
         }
     }
 }
+
+fn assert_cold_request_semantics(
+    files: Vec<(String, String)>,
+    resolutions: &[ProjectModuleResolution],
+    codes: &[u32],
+    expected: Option<TypeId>,
+) {
+    assert_cold_request_semantics_and_owner(files, resolutions, codes, expected, None);
+}
+
+fn assert_cold_request_semantics_and_owner(
+    files: Vec<(String, String)>,
+    resolutions: &[ProjectModuleResolution],
+    codes: &[u32],
+    expected: Option<TypeId>,
+    owner_codes: Option<(usize, &[u32])>,
+) {
+    use tsz_common::common::ModuleKind;
+    let program = compile_files_with_libs(files, &[]);
+    let options = CheckerOptions {
+        module: ModuleKind::ESNext,
+        ..CheckerOptions::default()
+    };
+    let plan = ParallelCheckPlan::build(
+        &program,
+        &options,
+        &[],
+        ProjectSemanticOptions::declaration_scoped(),
+        Some(Arc::new(
+            build_project_module_resolution_outcomes(&program, resolutions).unwrap(),
+        )),
+        None,
+    )
+    .unwrap();
+    let result = plan.check_file_partition(0, &program.files[..1]).unwrap();
+    assert_eq!(
+        result[0]
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>(),
+        codes,
+        "{:?}",
+        result[0].diagnostics
+    );
+    let file = &program.files[0];
+    let usage = file
+        .arena
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(raw, node)| {
+            file.arena
+                .get_identifier(node)
+                .filter(|identifier| identifier.escaped_text == "value")
+                .map(|_| NodeIndex(raw as u32))
+        })
+        .max_by_key(|&index| file.arena.get(index).unwrap().pos)
+        .unwrap();
+    let usage = file
+        .arena
+        .parent_of(usage)
+        .filter(|&parent| {
+            file.arena
+                .get(parent)
+                .and_then(|node| file.arena.get_access_expr(node))
+                .is_some_and(|access| access.name_or_argument == usage)
+        })
+        .unwrap_or(usage);
+    let observed = plan.with_bound_file_checker_and_types(0, file, |checker, _, _, _| {
+        checker.get_type_of_node(usage)
+    });
+    if let Some(expected) = expected {
+        assert_eq!(observed, expected);
+    } else {
+        assert_ne!(
+            observed,
+            TypeId::NUMBER,
+            "refused request cannot borrow competitor NUMBER"
+        );
+    }
+    if let Some((owner, expected)) = owner_codes {
+        let checked = plan
+            .check_file_partition(owner, &program.files[owner..owner + 1])
+            .unwrap();
+        assert_eq!(
+            checked[0]
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.code)
+                .collect::<Vec<_>>(),
+            expected,
+            "{:?}",
+            checked[0].diagnostics
+        );
+    }
+}
+
+#[test]
+fn named_and_wildcard_edges_keep_disjoint_same_specifier_modes() {
+    use crate::checker::context::ResolutionModeOverride;
+    for wildcard in [false, true] {
+        for shape in ["ImportShape", "RequireShape"] {
+            for (result_type, codes) in [("number", vec![]), ("string", vec![2322])] {
+                let barrel = if wildcard {
+                    "export type * from 'dep' with { 'resolution-mode': 'import' }; export type * from 'dep' with { 'resolution-mode': 'require' };".to_owned()
+                } else {
+                    "export type { ImportShape } from 'dep' with { 'resolution-mode': 'import' }; export type { RequireShape } from 'dep' with { 'resolution-mode': 'require' };".to_owned()
+                };
+                let files = vec![
+                    ("src/main.ts".to_owned(), format!("import type {{ {shape} }} from './barrel'; declare const observed: {shape}; export function read(): {result_type} {{ return observed.value; }}")),
+                    ("src/barrel.ts".to_owned(), barrel),
+                    ("src/import.ts".to_owned(), "export interface ImportShape { value: number }".to_owned()),
+                    ("src/require.ts".to_owned(), "export interface RequireShape { value: number }".to_owned()),
+                    ("src/wrong.ts".to_owned(), "export interface ImportShape { value: string } export interface RequireShape { value: string }".to_owned()),
+                ];
+                let request = |importer: &str, specifier: &str, kind, mode, target: &str| {
+                    ProjectModuleResolution {
+                        importer_path: importer.to_owned(),
+                        specifier: specifier.to_owned(),
+                        request_kind: kind,
+                        resolution_mode: mode,
+                        target: ProjectModuleResolutionTarget::File {
+                            path: target.to_owned(),
+                        },
+                    }
+                };
+                let resolutions = [
+                    request(
+                        "src/main.ts",
+                        "./barrel",
+                        ProjectModuleRequestKind::EsmImport,
+                        None,
+                        "src/barrel.ts",
+                    ),
+                    request(
+                        "src/barrel.ts",
+                        "dep",
+                        ProjectModuleRequestKind::EsmReExport,
+                        Some(ResolutionModeOverride::Import),
+                        "src/import.ts",
+                    ),
+                    request(
+                        "src/barrel.ts",
+                        "dep",
+                        ProjectModuleRequestKind::EsmReExport,
+                        Some(ResolutionModeOverride::Require),
+                        "src/require.ts",
+                    ),
+                    request(
+                        "src/barrel.ts",
+                        "dep",
+                        ProjectModuleRequestKind::EsmImport,
+                        None,
+                        "src/wrong.ts",
+                    ),
+                ];
+                assert_cold_request_semantics(files, &resolutions, &codes, Some(TypeId::NUMBER));
+            }
+        }
+    }
+}
+
+#[test]
+fn nested_ambient_reexport_owner_cannot_borrow_foreign_owner_edge() {
+    use crate::checker::context::ResolutionModeOverride;
+    for wildcard in [false, true] {
+        for admitted in [false, true] {
+            let clause = if wildcard {
+                "export type *"
+            } else {
+                "export type { Shape }"
+            };
+            let files = vec![
+                ("src/main.ts".to_owned(), "import type { Shape } from 'pkg'; declare const observed: Shape; export function read(): number { return observed.value; }".to_owned()),
+                ("ambient.d.ts".to_owned(), format!("declare module 'foreign' {{ {clause} from 'dep' with {{ 'resolution-mode': 'require' }}; }} declare module 'pkg' {{ {clause} from 'dep' with {{ 'resolution-mode': 'import' }}; }}")),
+                ("src/owner.ts".to_owned(), "export interface Shape { value: number }".to_owned()),
+                ("src/wrong.ts".to_owned(), "export interface Shape { value: string }".to_owned()),
+            ];
+            let resolutions = [
+                ProjectModuleResolution {
+                    importer_path: "src/main.ts".to_owned(),
+                    specifier: "pkg".to_owned(),
+                    request_kind: ProjectModuleRequestKind::EsmImport,
+                    resolution_mode: None,
+                    target: ProjectModuleResolutionTarget::External {
+                        identity: "admitted-ambient:pkg".to_owned(),
+                    },
+                },
+                ProjectModuleResolution {
+                    importer_path: "ambient.d.ts".to_owned(),
+                    specifier: "dep".to_owned(),
+                    request_kind: ProjectModuleRequestKind::EsmReExport,
+                    resolution_mode: Some(ResolutionModeOverride::Import),
+                    target: if admitted {
+                        ProjectModuleResolutionTarget::File {
+                            path: "src/owner.ts".to_owned(),
+                        }
+                    } else {
+                        ProjectModuleResolutionTarget::Unresolved
+                    },
+                },
+                ProjectModuleResolution {
+                    importer_path: "ambient.d.ts".to_owned(),
+                    specifier: "dep".to_owned(),
+                    request_kind: ProjectModuleRequestKind::EsmReExport,
+                    resolution_mode: Some(ResolutionModeOverride::Require),
+                    target: ProjectModuleResolutionTarget::File {
+                        path: "src/wrong.ts".to_owned(),
+                    },
+                },
+            ];
+            assert_cold_request_semantics_and_owner(
+                files,
+                &resolutions,
+                if !admitted && wildcard { &[2305] } else { &[] },
+                admitted.then_some(TypeId::NUMBER),
+                (!admitted).then_some((1, &[2307][..])),
+            );
+        }
+    }
+}
+
+#[test]
+fn selected_file_and_refused_request_dominate_shorthand_ambient_module() {
+    for admitted in [false, true] {
+        for (return_type, codes) in [("number", vec![]), ("string", vec![2322])] {
+            let files = vec![
+                (
+                    "src/main.ts".to_owned(),
+                    format!(
+                        "import * as observed from 'dep'; export function read(): {return_type} {{ return observed.value; }}"
+                    ),
+                ),
+                (
+                    "src/owner.ts".to_owned(),
+                    "export const value: number = 42;".to_owned(),
+                ),
+                (
+                    "ambient.d.ts".to_owned(),
+                    "declare module 'dep';".to_owned(),
+                ),
+            ];
+            let resolutions = [ProjectModuleResolution {
+                importer_path: "src/main.ts".to_owned(),
+                specifier: "dep".to_owned(),
+                request_kind: ProjectModuleRequestKind::EsmImport,
+                resolution_mode: None,
+                target: if admitted {
+                    ProjectModuleResolutionTarget::File {
+                        path: "src/owner.ts".to_owned(),
+                    }
+                } else {
+                    ProjectModuleResolutionTarget::Unresolved
+                },
+            }];
+            assert_cold_request_semantics(
+                files,
+                &resolutions,
+                if admitted { &codes } else { &[2307] },
+                admitted.then_some(TypeId::NUMBER),
+            );
+        }
+    }
+}
+
+#[test]
+fn external_export_equals_hydrates_only_the_exact_nested_import_type() {
+    for (return_type, codes) in [("number", vec![]), ("string", vec![2322])] {
+        let files = vec![
+            (
+                "src/main.ts".to_owned(),
+                format!(
+                    "import * as observed from 'pkg'; export function read(): {return_type} {{ return observed.value; }}"
+                ),
+            ),
+            (
+                "ambient.d.ts".to_owned(),
+                "declare module 'pkg' { const api: typeof import('./owner'); export = api; }"
+                    .to_owned(),
+            ),
+            (
+                "src/owner.ts".to_owned(),
+                "export const value: number = 42;".to_owned(),
+            ),
+            (
+                "src/wrong.ts".to_owned(),
+                "export const value: string = 'wrong';".to_owned(),
+            ),
+        ];
+        let resolutions = [
+            ProjectModuleResolution {
+                importer_path: "src/main.ts".to_owned(),
+                specifier: "pkg".to_owned(),
+                request_kind: ProjectModuleRequestKind::EsmImport,
+                resolution_mode: None,
+                target: ProjectModuleResolutionTarget::External {
+                    identity: "admitted-ambient:pkg".to_owned(),
+                },
+            },
+            ProjectModuleResolution {
+                importer_path: "src/main.ts".to_owned(),
+                specifier: "pkg".to_owned(),
+                request_kind: ProjectModuleRequestKind::EsmReExport,
+                resolution_mode: None,
+                target: ProjectModuleResolutionTarget::File {
+                    path: "src/wrong.ts".to_owned(),
+                },
+            },
+            ProjectModuleResolution {
+                importer_path: "ambient.d.ts".to_owned(),
+                specifier: "./owner".to_owned(),
+                request_kind: ProjectModuleRequestKind::EsmImport,
+                resolution_mode: None,
+                target: ProjectModuleResolutionTarget::File {
+                    path: "src/owner.ts".to_owned(),
+                },
+            },
+            ProjectModuleResolution {
+                importer_path: "ambient.d.ts".to_owned(),
+                specifier: "./owner".to_owned(),
+                request_kind: ProjectModuleRequestKind::EsmReExport,
+                resolution_mode: None,
+                target: ProjectModuleResolutionTarget::File {
+                    path: "src/wrong.ts".to_owned(),
+                },
+            },
+        ];
+        assert_cold_request_semantics(files, &resolutions, &codes, Some(TypeId::NUMBER));
+    }
+}
+
+#[test]
+fn malformed_named_edge_cannot_borrow_a_valid_same_specifier_sibling() {
+    use crate::checker::context::ResolutionModeOverride;
+    let files = vec![
+        ("src/main.ts".to_owned(), "import type { Shape } from './barrel'; declare const observed: Shape; export function read(): number { return observed.value; }".to_owned()),
+        ("src/barrel.ts".to_owned(), "export type { Shape } from 'dep' with { 'resolution-mode': 'invalid' }; export type { Other } from 'dep' with { 'resolution-mode': 'require' };".to_owned()),
+        ("src/wrong.ts".to_owned(), "export interface Shape { value: number } export interface Other { value: number }".to_owned()),
+    ];
+    let resolutions = [
+        ProjectModuleResolution {
+            importer_path: "src/main.ts".to_owned(),
+            specifier: "./barrel".to_owned(),
+            request_kind: ProjectModuleRequestKind::EsmImport,
+            resolution_mode: None,
+            target: ProjectModuleResolutionTarget::File {
+                path: "src/barrel.ts".to_owned(),
+            },
+        },
+        ProjectModuleResolution {
+            importer_path: "src/barrel.ts".to_owned(),
+            specifier: "dep".to_owned(),
+            request_kind: ProjectModuleRequestKind::EsmReExport,
+            resolution_mode: Some(ResolutionModeOverride::Require),
+            target: ProjectModuleResolutionTarget::File {
+                path: "src/wrong.ts".to_owned(),
+            },
+        },
+    ];
+    // The public alias remains captured, but its malformed declaration cannot
+    // lend the valid sibling's native member semantics to the consumer.
+    assert_cold_request_semantics(files, &resolutions, &[], None);
+}

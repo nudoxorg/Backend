@@ -307,11 +307,36 @@ impl BinderState {
         }
     }
 
+    /// Preserve the lexical ambient-module owner of retained export edges.
+    /// A file and a nested declared module may request the same spelling.
+    fn reexport_owner_key<'source>(
+        &'source self,
+        arena: &'source NodeArena,
+        declaration: NodeIndex,
+    ) -> &'source str {
+        let mut ancestor = arena.parent_of(declaration);
+        for _ in 0..arena.len() {
+            let Some(index) = ancestor else {
+                break;
+            };
+            let Some(node) = arena.get(index) else {
+                break;
+            };
+            if let Some(module) = arena.get_module(node) {
+                return arena
+                    .get_literal_text(module.name)
+                    .unwrap_or(&self.debugger.current_file);
+            }
+            ancestor = arena.parent_of(index);
+        }
+        &self.debugger.current_file
+    }
+
     pub(crate) fn bind_export_declaration(
         &mut self,
         arena: &NodeArena,
         node: &Node,
-        _idx: NodeIndex,
+        idx: NodeIndex,
     ) {
         if let Some(export) = arena.get_export_decl(node) {
             // Export clause can be:
@@ -709,7 +734,7 @@ impl BinderState {
                         };
 
                         if let Some(source_module) = module_name {
-                            let current_file = self.debugger.current_file.clone();
+                            let current_file = self.reexport_owner_key(arena, idx).to_owned();
 
                             // Collect per-spec re-export facts up front, then materialize
                             // symbols and the file's `reexports` map. Carries the per-spec
@@ -907,7 +932,7 @@ impl BinderState {
                 };
 
                 if let Some(source_module) = module_name {
-                    let current_file = self.debugger.current_file.clone();
+                    let current_file = self.reexport_owner_key(arena, idx).to_owned();
                     // A file can have multiple `export * from` — each entry is (source_module, is_type_only).
                     Arc::make_mut(&mut self.wildcard_reexports)
                         .entry(current_file)

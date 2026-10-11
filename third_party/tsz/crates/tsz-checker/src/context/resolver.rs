@@ -248,10 +248,10 @@ impl<'a> CheckerContext<'a> {
             .text
             .as_str();
         let mut explicit_mode = None;
-        if let Some(attributes) = arena
-            .get(attributes)
-            .and_then(|node| arena.get_import_attributes_data(node))
-        {
+        if attributes.is_some() {
+            let attributes = arena
+                .get(attributes)
+                .and_then(|node| arena.get_import_attributes_data(node))?;
             for &element in &attributes.elements.nodes {
                 let attribute = arena
                     .get(element)
@@ -262,6 +262,9 @@ impl<'a> CheckerContext<'a> {
                     .map(|name| name.escaped_text.as_str())
                     .or_else(|| arena.get_literal_text(attribute.name))?;
                 if name.trim_matches('"').trim_matches('\'') == "resolution-mode" {
+                    if explicit_mode.is_some() {
+                        return None;
+                    }
                     explicit_mode = match arena
                         .get_literal_text(attribute.value)?
                         .trim_matches('"')
@@ -281,6 +284,84 @@ impl<'a> CheckerContext<'a> {
             mode,
             kind,
         })
+    }
+
+    /// Recover a nested `typeof import(...)` request from its real annotation.
+    pub(crate) fn bound_import_type_request_at(
+        &self,
+        importer: usize,
+        annotation: NodeIndex,
+    ) -> Option<BoundModuleRequest<'_>> {
+        use tsz_parser::parser::syntax_kind_ext;
+        let arena = self.all_arenas.as_ref()?.get(importer)?;
+        let query = arena
+            .get(annotation)
+            .and_then(|node| arena.get_type_query(node))?;
+        let mut call_index = query.expr_name;
+        for _ in 0..64 {
+            self.types.execution_checkpoint(1).ok()?;
+            let node = arena.get(call_index)?;
+            if let Some(qualified) = arena.get_qualified_name(node) {
+                call_index = qualified.left;
+                continue;
+            }
+            let call = arena.get_call_expr(node)?;
+            if arena.get(call.expression)?.kind != tsz_scanner::SyntaxKind::ImportKeyword as u16 {
+                return None;
+            }
+            let args = &call.arguments.as_ref()?.nodes;
+            if args.is_empty() || args.len() > 2 {
+                return None;
+            }
+            let specifier = arena.get_literal_text(args[0])?;
+            let property = |object, expected: &str| -> Option<Option<NodeIndex>> {
+                if arena.get(object)?.kind != syntax_kind_ext::OBJECT_LITERAL_EXPRESSION {
+                    return None;
+                }
+                let mut selected = None;
+                let literal = arena
+                    .get(object)
+                    .and_then(|node| arena.get_literal_expr(node))?;
+                for &child in &literal.elements.nodes {
+                    let assignment = arena
+                        .get(child)
+                        .and_then(|node| arena.get_property_assignment(node))?;
+                    let name = arena
+                        .get(assignment.name)
+                        .and_then(|node| arena.get_identifier(node))
+                        .map(|identifier| identifier.escaped_text.as_str())
+                        .or_else(|| arena.get_literal_text(assignment.name))?;
+                    if name == expected {
+                        if selected.is_some() {
+                            return None;
+                        }
+                        selected = Some(assignment.initializer);
+                    }
+                }
+                Some(selected)
+            };
+            let mut explicit = None;
+            if let Some(&options) = args.get(1) {
+                if let Some(with) = property(options, "with")? {
+                    if let Some(value) = property(with, "resolution-mode")? {
+                        explicit = match arena.get_literal_text(value)? {
+                            "import" => Some(ResolutionModeOverride::Import),
+                            "require" => Some(ResolutionModeOverride::Require),
+                            _ => return None,
+                        };
+                    }
+                }
+            }
+            let kind = ResolutionRequestKind::EsmImport;
+            let mode = self.bound_request_mode(importer, specifier, kind, explicit)?;
+            return Some(BoundModuleRequest {
+                importer,
+                specifier,
+                mode,
+                kind,
+            });
+        }
+        None
     }
 
     /// Recover an alias request from its real file/range and bound declaration.
@@ -329,48 +410,172 @@ impl<'a> CheckerContext<'a> {
         selected
     }
 
-    /// Recover a re-export edge's syntax. Conflicting requests stay ambiguous.
-    pub(crate) fn bound_reexport_request(
+    /// The exact lexical owner of an export edge. A file export cannot borrow
+    /// a same-spelled export inside an ambient module, or vice versa.
+    fn reexport_owner_matches(
         &self,
         importer: usize,
-        specifier: &str,
-    ) -> Option<BoundModuleRequest<'_>> {
+        declaration: NodeIndex,
+        owner: &str,
+    ) -> Option<bool> {
         let arena = self.all_arenas.as_ref()?.get(importer)?;
-        let mut selected = None;
-        let source_file = arena.source_files.first()?;
-        for &declaration in &source_file.statements.nodes {
+        let mut ancestor = arena.parent_of(declaration)?;
+        for _ in 0..arena.len() {
             self.types.execution_checkpoint(1).ok()?;
-            let node = arena.get(declaration)?;
-            if arena.get_export_decl(node).is_none() {
-                continue;
+            let node = arena.get(ancestor)?;
+            if let Some(module) = arena.get_module(node) {
+                return Some(arena.get_literal_text(module.name) == Some(owner));
             }
-            let Some(request) = self.bound_module_request_at(importer, declaration) else {
-                continue;
-            };
-            if request.specifier != specifier {
-                continue;
+            if node.kind == tsz_parser::parser::syntax_kind_ext::SOURCE_FILE {
+                return Some(arena.source_files.first()?.file_name == owner);
             }
-            if selected.is_some_and(|previous| previous != request) {
-                return None;
-            }
-            selected = Some(request);
+            ancestor = arena.parent_of(ancestor)?;
         }
-        selected
+        None
     }
 
-    pub(crate) fn resolve_reexport_target_from_file(
+    /// Match the owning named alias, including the original imported name.
+    /// Its stable declaration supplies the exact ExportDecl request attributes.
+    pub(crate) fn bound_named_reexport_request(
         &self,
         importer: usize,
+        owner: &str,
         specifier: &str,
+        exported_name: &str,
+        original_name: &str,
+    ) -> Option<BoundModuleRequest<'_>> {
+        let arena = self.all_arenas.as_ref()?.get(importer)?;
+        let binder = self.get_binder_for_file(importer)?;
+        let table = self
+            .program_module_exports
+            .as_ref()
+            .and_then(|exports| exports.get(owner))
+            .or_else(|| binder.module_exports.get(owner))?;
+        let alias = table.get(exported_name)?;
+        let symbol = binder.get_symbol(alias)?;
+        if symbol.import_module() != Some(specifier) || symbol.import_name() != Some(original_name)
+        {
+            return None;
+        }
+        let request = self.bound_module_request_for_alias(alias)?;
+        if request.importer != importer
+            || request.kind != ResolutionRequestKind::EsmReExport
+            || request.specifier != specifier
+        {
+            return None;
+        }
+        for &declaration in &symbol.declarations {
+            let mut export = declaration;
+            let mut matched_owner = false;
+            for _ in 0..arena.len() {
+                self.types.execution_checkpoint(1).ok()?;
+                if arena
+                    .get(export)
+                    .and_then(|node| arena.get_export_decl(node))
+                    .is_some()
+                {
+                    matched_owner = self.reexport_owner_matches(importer, export, owner)?;
+                    break;
+                }
+                export = arena.parent_of(export)?;
+            }
+            if !matched_owner {
+                return None;
+            }
+        }
+        Some(request)
+    }
+
+    /// Correlate one retained wildcard row with its actual declaration in lexical
+    /// statement order. Distinct same-specifier edges retain distinct modes.
+    pub(crate) fn bound_wildcard_reexport_request(
+        &self,
+        importer: usize,
+        owner: &str,
+        specifier: &str,
+        row_index: usize,
+        is_type_only: bool,
+    ) -> Option<BoundModuleRequest<'_>> {
+        let arena = self.all_arenas.as_ref()?.get(importer)?;
+        let source = arena.source_files.first()?;
+        let file_statements =
+            std::iter::once(&source.statements).filter(|_| source.file_name == owner);
+        let module_statements = arena.nodes.iter().filter_map(|node| {
+            let module = arena.get_module(node)?;
+            if arena.get_literal_text(module.name) != Some(owner) {
+                return None;
+            }
+            arena
+                .get(module.body)
+                .and_then(|node| arena.get_module_block(node))?
+                .statements
+                .as_ref()
+        });
+        let mut edge_index = 0;
+        for statements in file_statements.chain(module_statements) {
+            for &declaration in &statements.nodes {
+                self.types.execution_checkpoint(1).ok()?;
+                let export = arena
+                    .get(declaration)
+                    .and_then(|node| arena.get_export_decl(node));
+                let Some(export) = export else {
+                    continue;
+                };
+                if export.export_clause.is_some() || export.module_specifier.is_none() {
+                    continue;
+                }
+                if edge_index == row_index {
+                    if export.is_type_only != is_type_only {
+                        return None;
+                    }
+                    let request = self.bound_module_request_at(importer, declaration)?;
+                    return (request.specifier == specifier).then_some(request);
+                }
+                edge_index += 1;
+            }
+        }
+        None
+    }
+
+    pub(crate) fn resolve_named_reexport_target_from_file(
+        &self,
+        importer: usize,
+        owner: &str,
+        specifier: &str,
+        exported_name: &str,
+        original_name: &str,
     ) -> Option<usize> {
         if self.project_module_resolution_outcomes.is_some() {
-            let request = self.bound_reexport_request(importer, specifier)?;
-            self.resolve_import_target_from_file_for_request(
+            let request = self.bound_named_reexport_request(
                 importer,
-                request.specifier,
-                request.mode,
-                request.kind,
-            )
+                owner,
+                specifier,
+                exported_name,
+                original_name,
+            )?;
+            self.select_module_request(request)?.file_target()
+        } else {
+            self.resolve_import_target_from_file(importer, specifier)
+        }
+    }
+
+    pub(crate) fn resolve_wildcard_reexport_target_from_file(
+        &self,
+        importer: usize,
+        owner: &str,
+        specifier: &str,
+        row_index: usize,
+        is_type_only: bool,
+    ) -> Option<usize> {
+        if self.project_module_resolution_outcomes.is_some() {
+            let request = self.bound_wildcard_reexport_request(
+                importer,
+                owner,
+                specifier,
+                row_index,
+                is_type_only,
+            )?;
+            self.select_module_request(request)?.file_target()
         } else {
             self.resolve_import_target_from_file(importer, specifier)
         }

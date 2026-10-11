@@ -157,6 +157,13 @@ impl<'a> CheckerState<'a> {
             })
             .or_else(|| self.ctx.resolve_import_target(module_name))?;
 
+        self.json_module_type_for_file(target_file_idx)
+    }
+
+    fn json_module_type_for_file(&mut self, target_file_idx: usize) -> Option<TypeId> {
+        if !self.ctx.compiler_options.resolve_json_module {
+            return None;
+        }
         let target_arena = self.ctx.get_arena_for_file(target_file_idx as u32);
         let source_file = target_arena.source_files.first()?;
         if !source_file.file_name.ends_with(".json") {
@@ -194,6 +201,21 @@ impl<'a> CheckerState<'a> {
             self.ctx.types,
             json_type,
         ))
+    }
+
+    pub(crate) fn json_module_namespace_type_for_file(
+        &mut self,
+        target: usize,
+        importer: Option<usize>,
+    ) -> Option<TypeId> {
+        let json_type = self.json_module_type_for_file(target)?;
+        Some(
+            if self.json_namespace_import_uses_default_export(importer) {
+                js_exports_query::json_esm_namespace_type(self.ctx.types, json_type)
+            } else {
+                js_exports_query::commonjs_json_namespace_type(self.ctx.types, json_type)
+            },
+        )
     }
 
     fn json_namespace_import_uses_default_export(&self, source_file_idx: Option<usize>) -> bool {

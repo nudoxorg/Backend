@@ -628,6 +628,21 @@ impl<'a> CheckerState<'a> {
         import_name: &str,
         resolution_mode: Option<crate::context::ResolutionModeOverride>,
     ) -> bool {
+        if self.ctx.project_module_resolution_outcomes.is_some() {
+            let request = crate::context::BoundModuleRequest {
+                importer: self.ctx.current_file_idx,
+                specifier: module_name,
+                mode: resolution_mode,
+                kind: crate::context::ResolutionRequestKind::EsmImport,
+            };
+            return self
+                .ctx
+                .select_module_request(request)
+                .and_then(|selected| {
+                    self.resolve_member_for_selected_request(selected, import_name)
+                })
+                .is_some();
+        }
         if resolution_mode.is_some() {
             return self.resolve_import_via_target_binder(
                 module_name,

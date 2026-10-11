@@ -201,22 +201,34 @@ impl CheckerContext<'_> {
             .as_ref()
             .map(|map| map.as_ref())
             .unwrap_or(binder.module_exports.as_ref());
-        let arenas = self.all_arenas.as_ref()?;
-        let ambient_names = || {
-            arenas.iter().flat_map(|arena| {
-                arena.nodes.iter().filter_map(|node| {
-                    let declaration = arena.get_module(node)?;
-                    arena.get_literal_text(declaration.name)
+        let is_program_key = |key: &str| {
+            self.all_arenas.as_ref().is_some_and(|arenas| {
+                arenas.iter().any(|arena| {
+                    arena
+                        .source_files
+                        .first()
+                        .is_some_and(|source| source.file_name == key)
                 })
             })
         };
-        if ambient_names().any(|name| name == spelling) {
+        if self.declared_modules_contains(binder, spelling) && !is_program_key(spelling) {
             return map.get(spelling);
         }
-        let key = crate::context::global_declared_modules::best_wildcard_match(
-            ambient_names().filter(|name| name.contains('*')),
-            spelling,
-        )?;
+        let key = if let Some(declared) = self.global_declared_modules.as_ref() {
+            declared.best_matching_pattern(spelling)?
+        } else {
+            crate::context::global_declared_modules::best_wildcard_match(
+                binder
+                    .declared_modules
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|name| name.contains('*')),
+                spelling,
+            )?
+        };
+        if is_program_key(key) {
+            return None;
+        }
         map.get(key)
     }
 
@@ -421,10 +433,14 @@ impl CheckerContext<'_> {
             && let Some((source_module, original_name)) = reexports.get(export_name)
         {
             let name = original_name.as_deref().unwrap_or(export_name);
-            if let Some(source_idx) =
-                self.resolve_reexport_target_from_file(target_idx, source_module)
-                && let Some(resolved) =
-                    self.resolve_export_in_target_file(source_idx, name, visited)
+            if let Some(source_idx) = self.resolve_named_reexport_target_from_file(
+                target_idx,
+                &file_name,
+                source_module,
+                export_name,
+                name,
+            ) && let Some(resolved) =
+                self.resolve_export_in_target_file(source_idx, name, visited)
             {
                 return Some(resolved);
             }
@@ -433,11 +449,15 @@ impl CheckerContext<'_> {
         // Wildcard re-exports: `export * from './other'`.
         if let Some(source_modules) = self.wildcard_reexports_for_file(target_binder, &file_name) {
             let source_modules = source_modules.clone();
-            for (source_module, _is_type_only) in &source_modules {
-                if let Some(source_idx) =
-                    self.resolve_reexport_target_from_file(target_idx, source_module)
-                    && let Some(resolved) =
-                        self.resolve_export_in_target_file(source_idx, export_name, visited)
+            for (edge_index, (source_module, is_type_only)) in source_modules.iter().enumerate() {
+                if let Some(source_idx) = self.resolve_wildcard_reexport_target_from_file(
+                    target_idx,
+                    &file_name,
+                    source_module,
+                    edge_index,
+                    *is_type_only,
+                ) && let Some(resolved) =
+                    self.resolve_export_in_target_file(source_idx, export_name, visited)
                 {
                     return Some(resolved);
                 }
@@ -492,15 +512,18 @@ impl CheckerContext<'_> {
             && let Some((source_module, original_name)) = reexports.get(export_name)
         {
             let name = original_name.as_deref().unwrap_or(export_name);
-            if let Some(source_idx) =
-                self.resolve_reexport_target_from_file(target_idx, source_module)
-                && let Some(resolved) = self.resolve_export_in_target_file_with_owner(
-                    source_idx,
-                    name,
-                    visited,
-                    remaining_steps,
-                )
-            {
+            if let Some(source_idx) = self.resolve_named_reexport_target_from_file(
+                target_idx,
+                &file_name,
+                source_module,
+                export_name,
+                name,
+            ) && let Some(resolved) = self.resolve_export_in_target_file_with_owner(
+                source_idx,
+                name,
+                visited,
+                remaining_steps,
+            ) {
                 return Some(resolved);
             }
         }
@@ -508,16 +531,19 @@ impl CheckerContext<'_> {
         // Wildcard re-exports: `export * from './other'`.
         if let Some(source_modules) = self.wildcard_reexports_for_file(target_binder, &file_name) {
             let source_modules = source_modules.clone();
-            for (source_module, _is_type_only) in &source_modules {
-                if let Some(source_idx) =
-                    self.resolve_reexport_target_from_file(target_idx, source_module)
-                    && let Some(resolved) = self.resolve_export_in_target_file_with_owner(
-                        source_idx,
-                        export_name,
-                        visited,
-                        remaining_steps,
-                    )
-                {
+            for (edge_index, (source_module, is_type_only)) in source_modules.iter().enumerate() {
+                if let Some(source_idx) = self.resolve_wildcard_reexport_target_from_file(
+                    target_idx,
+                    &file_name,
+                    source_module,
+                    edge_index,
+                    *is_type_only,
+                ) && let Some(resolved) = self.resolve_export_in_target_file_with_owner(
+                    source_idx,
+                    export_name,
+                    visited,
+                    remaining_steps,
+                ) {
                     return Some(resolved);
                 }
             }
@@ -526,6 +552,9 @@ impl CheckerContext<'_> {
         // Fallback: the target binder's own re-export resolution for
         // single-file / ambient-module binders whose local tables are
         // populated (e.g. `declare module "x" { ... }`).
+        if self.project_module_resolution_outcomes.is_some() {
+            return None;
+        }
         target_binder
             .resolve_import_with_reexports_type_only(&file_name, export_name)
             .map(|(sym_id, _)| {
@@ -562,6 +591,11 @@ impl CheckerContext<'_> {
         let import_name = alias.import_name()?;
         if import_name == "*" {
             return None;
+        }
+        if self.project_module_resolution_outcomes.is_some() {
+            let request = self.bound_module_request_for_alias(alias_id)?;
+            let target = self.select_module_request(request)?.file_target()?;
+            return self.namespace_reexport_anchor_backing_file_in_target(target, import_name);
         }
         let import_module = alias.import_module()?.to_string();
         let import_name = import_name.to_string();
@@ -608,7 +642,18 @@ impl CheckerContext<'_> {
         import_module: &str,
         import_name: &str,
     ) -> Option<usize> {
+        if self.project_module_resolution_outcomes.is_some() {
+            return None;
+        }
         let target_idx = self.resolve_import_target_from_file(source_file_idx, import_module)?;
+        self.namespace_reexport_anchor_backing_file_in_target(target_idx, import_name)
+    }
+
+    fn namespace_reexport_anchor_backing_file_in_target(
+        &self,
+        target_idx: usize,
+        import_name: &str,
+    ) -> Option<usize> {
         let target_binder = self.get_binder_for_file(target_idx)?;
         let target_arena = self.get_arena_for_file(target_idx as u32);
         let target_file_name = target_arena.source_files.first()?.file_name.clone();
@@ -624,6 +669,10 @@ impl CheckerContext<'_> {
             return None;
         }
         let ns_module = ns_sym.import_module()?;
-        self.resolve_reexport_target_from_file(target_idx, ns_module)
+        if self.project_module_resolution_outcomes.is_some() {
+            let request = self.bound_module_request_for_alias(ns_sym_id)?;
+            return self.select_module_request(request)?.file_target();
+        }
+        self.resolve_import_target_from_file(target_idx, ns_module)
     }
 }

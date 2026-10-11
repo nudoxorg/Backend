@@ -121,14 +121,27 @@ impl<'a> CheckerState<'a> {
     ) -> bool {
         use tsz_binder::symbol_flags;
 
-        let target_idx = self
-            .ctx
-            .resolve_import_target_from_file_with_mode(
+        let target_idx = if self.ctx.project_module_resolution_outcomes.is_some() {
+            let mode = self.ctx.resolution_mode_for_project_request(
+                module_name,
+                crate::context::ResolutionRequestKind::EsmImport,
+                resolution_mode_override,
+            );
+            self.ctx.resolve_import_target_from_file_for_request(
                 self.ctx.current_file_idx,
                 module_name,
-                resolution_mode_override,
+                mode,
+                crate::context::ResolutionRequestKind::EsmImport,
             )
-            .or_else(|| self.ctx.resolve_import_target(module_name));
+        } else {
+            self.ctx
+                .resolve_import_target_from_file_with_mode(
+                    self.ctx.current_file_idx,
+                    module_name,
+                    resolution_mode_override,
+                )
+                .or_else(|| self.ctx.resolve_import_target(module_name))
+        };
 
         if let Some(target_idx) = target_idx {
             // File-backed `export =`: reuse the same companion-aware
