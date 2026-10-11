@@ -453,13 +453,26 @@ impl Channel {
 pub fn start_locald(
     paths: &WorkspacePaths,
     response_budget: Duration,
+    progress: impl FnMut(StartupPhase),
+) -> Result<LocaldStartup, RuntimeError> {
+    start_locald_cancellable(paths, response_budget, progress, || true)
+}
+
+/// Stops this launcher's readiness wait when its request is cancelled.
+/// The detached owner candidate retains its existing idle retirement policy.
+/// # Errors
+/// Returns the same startup admission failures as `start_locald`.
+pub fn start_locald_cancellable(
+    paths: &WorkspacePaths,
+    response_budget: Duration,
     mut progress: impl FnMut(StartupPhase),
+    mut keep_waiting: impl FnMut() -> bool,
 ) -> Result<LocaldStartup, RuntimeError> {
     let started = Instant::now();
     let deadline = started
         .checked_add(response_budget.min(LIVE_START_TIMEOUT))
         .unwrap_or(started);
-    if response_budget.is_zero() {
+    if response_budget.is_zero() || !keep_waiting() {
         return Ok(not_started());
     }
     if backend_platform::local::connect_timeout(
@@ -498,13 +511,13 @@ pub fn start_locald(
     // The pipe supersedes only this launcher's transient file receipt.
     command.env_remove(super::STARTUP_DIAGNOSTIC_ENV);
     detach(&mut command);
-    if Instant::now() >= deadline {
+    if Instant::now() >= deadline || !keep_waiting() {
         return Ok(not_started());
     }
     let child = command
         .spawn()
         .map_err(|source| RuntimeError::Spawn { executable, source })?;
-    observe_owned_candidate(&paths, child, deadline, &mut progress)
+    observe_owned_candidate_cancellable(&paths, child, deadline, &mut progress, &mut keep_waiting)
 }
 
 /// Only Ready/Pending relinquishes the exact child to the existing owner
@@ -525,11 +538,22 @@ impl Drop for StartupChild {
     }
 }
 
+#[cfg(test)]
 fn observe_owned_candidate(
     paths: &WorkspacePaths,
     child: Child,
     deadline: Instant,
     progress: &mut impl FnMut(StartupPhase),
+) -> Result<LocaldStartup, RuntimeError> {
+    observe_owned_candidate_cancellable(paths, child, deadline, progress, &mut || true)
+}
+
+fn observe_owned_candidate_cancellable(
+    paths: &WorkspacePaths,
+    child: Child,
+    deadline: Instant,
+    progress: &mut impl FnMut(StartupPhase),
+    keep_waiting: &mut impl FnMut() -> bool,
 ) -> Result<LocaldStartup, RuntimeError> {
     let mut candidate = StartupChild {
         child,
@@ -541,7 +565,14 @@ fn observe_owned_candidate(
         .take()
         .ok_or(RuntimeError::StartupChannel("startup pipe missing"))?;
     backend_platform::child_output::configure(&pipe).map_err(RuntimeError::Io)?;
-    let result = wait_for_owner(paths, &mut candidate.child, &mut pipe, deadline, progress)?;
+    let result = wait_for_owner_cancellable(
+        paths,
+        &mut candidate.child,
+        &mut pipe,
+        deadline,
+        progress,
+        keep_waiting,
+    )?;
     candidate.handed_off = true;
     Ok(result)
 }
@@ -554,16 +585,35 @@ fn not_started() -> LocaldStartup {
     })
 }
 
+#[cfg(test)]
 fn wait_for_owner(
+    paths: &WorkspacePaths,
+    child: &mut Child,
+    pipe: &mut ChildStdout,
+    deadline: Instant,
+    progress: &mut impl FnMut(StartupPhase),
+) -> Result<LocaldStartup, RuntimeError> {
+    wait_for_owner_cancellable(paths, child, pipe, deadline, progress, &mut || true)
+}
+
+fn wait_for_owner_cancellable(
     paths: &WorkspacePaths,
     child: &mut Child,
     pipe: &mut ChildStdout,
     mut deadline: Instant,
     progress: &mut impl FnMut(StartupPhase),
+    keep_waiting: &mut impl FnMut() -> bool,
 ) -> Result<LocaldStartup, RuntimeError> {
     let mut channel = Channel::new();
     let mut child_exit = None;
     loop {
+        if !keep_waiting() {
+            return Ok(LocaldStartup::Pending(StartupPending {
+                candidate_pid: Some(child.id()),
+                phase: channel.phase,
+                contender_exited: child_exit.is_some(),
+            }));
+        }
         channel.read(pipe, progress)?;
         let remaining = deadline.saturating_duration_since(Instant::now());
         if !remaining.is_zero()
@@ -933,6 +983,27 @@ mod tests {
         std::fs::remove_dir_all(root).expect("remove fixture");
     }
 
+    #[test]
+    fn cancelled_before_startup_dispatch_creates_no_state_or_candidate() {
+        let root = super::super::tests::socket_test_directory("startup-cancel-before-dispatch");
+        std::fs::create_dir_all(&root).expect("fixture root");
+        let paths = paths(&root);
+        let result = start_locald_cancellable(
+            &paths,
+            Duration::from_secs(30),
+            |_| panic!("cancelled caller cannot dispatch startup"),
+            || false,
+        );
+        let LocaldStartup::Pending(pending) = result.expect("cancelled before startup") else {
+            panic!("no owner attached");
+        };
+        assert_eq!(pending.candidate_pid(), None);
+        assert!(!paths.data().exists());
+        assert!(!paths.authority_secret().exists());
+        assert!(!paths.endpoint().exists());
+        std::fs::remove_dir_all(root).expect("remove fixture");
+    }
+
     // This controlled pipe peer is not an installed product fixture. It proves
     // the waiting client hands back Pending while its exact admitted child is
     // blocked before filesystem setup, without a helper thread or leaked child.
@@ -1248,6 +1319,46 @@ mod tests {
         );
         assert_eq!(pending.phase(), StartupPhase::PrivateState);
         assert!(!pending.contender_exited());
+        assert!(!paths.data().exists());
+        std::fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn cancelled_readiness_wait_hands_off_shared_owner_without_killing_it() {
+        use rustix::process::{Pid, WaitOptions, waitpid};
+        let root = super::super::tests::socket_test_directory("startup-cancel-shared-owner");
+        std::fs::create_dir_all(&root).expect("fixture root");
+        let paths = paths(&root);
+        let child = Command::new("/bin/sh")
+            .args(["-c", "printf 'nudox.local-startup-pipe.v1\\nphase:admitted\\nphase:private-state\\n'; kill -STOP $$"])
+            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().expect("owned valid peer");
+        let pid = Pid::from_raw(child.id().cast_signed()).expect("child PID");
+        let peer = UnreapedPeer(pid);
+        let active = std::cell::Cell::new(true);
+        let started = Instant::now();
+        let result = observe_owned_candidate_cancellable(
+            &paths,
+            child,
+            started + Duration::from_secs(30),
+            &mut |phase| {
+                if phase == StartupPhase::PrivateState {
+                    active.set(false);
+                }
+            },
+            &mut || active.get(),
+        );
+        let live = matches!(waitpid(Some(pid), WaitOptions::NOHANG), Ok(None));
+        drop(peer); // retire only this test's unreaped exact child before assertions
+        let LocaldStartup::Pending(pending) = result.expect("cancelled readiness handoff") else {
+            panic!("no endpoint");
+        };
+        assert!(live, "caller cancellation must not kill the shared owner");
+        assert_eq!(
+            pending.candidate_pid(),
+            Some(pid.as_raw_pid().cast_unsigned())
+        );
+        assert_eq!(pending.phase(), StartupPhase::PrivateState);
+        assert!(started.elapsed() < Duration::from_secs(3));
         assert!(!paths.data().exists());
         std::fs::remove_dir_all(root).expect("remove fixture");
     }

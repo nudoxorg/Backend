@@ -211,6 +211,7 @@ pub struct RemoteIndexCommandTransport {
     owner_address: EndpointAddr,
     capability: RemoteIndexCapability,
     active: Option<ActiveProductSession>,
+    request_context: Option<crate::RequestContext>,
 }
 
 /// All authority attached to one accepted Iroh session is stored atomically.
@@ -269,6 +270,7 @@ impl RemoteIndexCommandTransport {
             owner_address: EndpointAddr::new(owner).with_ip_addr(owner_address),
             capability,
             active: None,
+            request_context: None,
         })
     }
 
@@ -290,13 +292,16 @@ impl RemoteIndexCommandTransport {
         let hello =
             RemoteIndexSessionHello::new(self.capability.clone(), RemoteIndexChannel::ProductQuery)
                 .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        if let Some(context) = &self.request_context {
+            context.check()?;
+        }
         let connected = self.runtime.block_on(async {
-            tokio::time::timeout_at(
-                deadline,
-                connect_remote_index(&self.endpoint, self.owner_address.clone(), hello),
-            )
-            .await
-        });
+            tokio::select! {
+                biased;
+                reason = cancelled_context(self.request_context.as_ref()) => Err(ClientError::RequestCancelled(reason)),
+                result = tokio::time::timeout_at(deadline, connect_remote_index(&self.endpoint, self.owner_address.clone(), hello)) => Ok(result),
+            }
+        })?;
         let session = match connected {
             Ok(Ok(session)) => session,
             Ok(Err(error)) => return Err(map_session_transport(error)),
@@ -333,12 +338,22 @@ impl RemoteIndexCommandTransport {
         };
         let request = RemoteIndexRequest { request_id, body };
         let result = self.runtime.block_on(async {
-            tokio::time::timeout_at(deadline, async {
-                active.session.send_request(&request).await?;
-                active.session.receive_response(request_id).await
-            })
-            .await
+            tokio::select! {
+                biased;
+                reason = cancelled_context(self.request_context.as_ref()) => Err(ClientError::RequestCancelled(reason)),
+                result = tokio::time::timeout_at(deadline, async {
+                    active.session.send_request(&request).await?;
+                    active.session.receive_response(request_id).await
+                }) => Ok(result),
+            }
         });
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => {
+                self.active = None;
+                return Err(error);
+            }
+        };
         match result {
             Ok(Ok(response)) => Ok(response.outcome),
             Ok(Err(error)) => {
@@ -354,6 +369,10 @@ impl RemoteIndexCommandTransport {
 }
 
 impl CommandTransport for RemoteIndexCommandTransport {
+    fn set_request_context(&mut self, context: Option<crate::RequestContext>) {
+        self.request_context = context;
+    }
+
     fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
         self.request_with_timeout(request, crate::CLIENT_REQUEST_TIMEOUT)
     }
@@ -373,6 +392,16 @@ impl RemoteIndexCommandTransport {
         request: CommandDto,
         timeout: Duration,
     ) -> Result<ReplyDto, ClientError> {
+        if let Some(context) = &self.request_context {
+            context.check()?;
+        }
+        let timeout = self
+            .request_context
+            .as_ref()
+            .map(crate::RequestContext::remaining_read_budget)
+            .transpose()?
+            .flatten()
+            .map_or(timeout, |remaining| timeout.min(remaining));
         let deadline = Instant::now() + timeout;
         let is_revision = matches!(&request.command, Command::Revision);
         require_remote_product_revision(
@@ -512,6 +541,15 @@ impl RemoteIndexCommandTransport {
     fn reconnect(&mut self) -> Result<(), ClientError> {
         self.active = None;
         self.open_session_until(Instant::now() + crate::CLIENT_REQUEST_TIMEOUT)
+    }
+}
+
+async fn cancelled_context(
+    context: Option<&crate::RequestContext>,
+) -> crate::RequestCancellationReason {
+    match context {
+        Some(context) => context.cancelled().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -1726,6 +1764,124 @@ mod tests {
         );
 
         test_server.finish();
+    }
+    #[test]
+    fn request_context_cancels_real_remote_handshake_and_withheld_response() {
+        for during_handshake in [true, false] {
+            let owner_secret = SecretKey::generate();
+            let signing_secret = owner_secret.clone();
+            let client_secret = SecretKey::generate();
+            let (owner_address, _) = unused_loopback_addresses();
+            let (ready_sender, ready_receiver) = mpsc::channel();
+            let (admitted_sender, admitted_receiver) = mpsc::channel();
+            let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+            let owner_thread = thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("owner runtime");
+                runtime.block_on(async move {
+                    let owner = tokio::time::timeout(
+                        TEST_IO_TIMEOUT,
+                        bind_direct(owner_secret, owner_address),
+                    )
+                    .await
+                    .expect("owner bind bound")
+                    .expect("owner endpoint");
+                    ready_sender.send(owner.id()).expect("owner identity");
+                    let incoming = tokio::time::timeout(TEST_IO_TIMEOUT, owner.accept())
+                        .await
+                        .expect("accept bound")
+                        .expect("client dial");
+                    let connection = tokio::time::timeout(
+                        TEST_IO_TIMEOUT,
+                        incoming.accept().expect("accept real remote connection"),
+                    )
+                    .await
+                    .expect("connection bound")
+                    .expect("real connection");
+                    if during_handshake {
+                        let (_send, mut receive) =
+                            tokio::time::timeout(TEST_IO_TIMEOUT, connection.accept_bi())
+                                .await
+                                .expect("hello stream bound")
+                                .expect("actual hello stream");
+                        let mut byte = [0];
+                        tokio::time::timeout(TEST_IO_TIMEOUT, receive.read_exact(&mut byte))
+                            .await
+                            .expect("hello byte bound")
+                            .expect("actual client hello byte");
+                        admitted_sender.send(()).expect("handshake is pending");
+                        let _ = shutdown_receiver.await;
+                    } else {
+                        let mut session = tokio::time::timeout(
+                            TEST_IO_TIMEOUT,
+                            accept_remote_index(connection, owner.id()),
+                        )
+                        .await
+                        .expect("grant admission bound")
+                        .expect("admitted signed grant");
+                        let request =
+                            tokio::time::timeout(TEST_IO_TIMEOUT, session.receive_request())
+                                .await
+                                .expect("request bound")
+                                .expect("actual product request");
+                        let command = backend_library::decode_command_body(&request.body)
+                            .expect("request grammar");
+                        assert!(matches!(command.command, Command::Revision));
+                        admitted_sender.send(()).expect("response is withheld");
+                        let _ = shutdown_receiver.await;
+                    }
+                });
+            });
+            let test_server = ProductTestServer {
+                shutdown: Some(shutdown_sender),
+                worker: Some(owner_thread),
+            };
+            let owner_id = ready_receiver
+                .recv_timeout(TEST_READY_TIMEOUT)
+                .expect("real owner ready");
+            let capability = product_capability(
+                &signing_secret,
+                client_secret.public(),
+                owner_view().root().to_bytes(),
+            );
+            let mut transport = RemoteIndexCommandTransport::connect(
+                client_secret,
+                owner_id,
+                owner_address,
+                capability,
+            )
+            .expect("owner-bound transport");
+            let context = crate::RequestContext::new();
+            transport.set_request_context(Some(context.clone()));
+            let reason = if during_handshake {
+                crate::RequestCancellationReason::Explicit
+            } else {
+                crate::RequestCancellationReason::ClientDisconnected
+            };
+            let cancel = thread::spawn(move || {
+                admitted_receiver
+                    .recv_timeout(TEST_READY_TIMEOUT)
+                    .expect("request actually reached remote boundary");
+                context.cancel(reason);
+            });
+            let started = std::time::Instant::now();
+            assert_eq!(
+                transport.request(CommandDto::new(1, Command::Revision)),
+                Err(ClientError::RequestCancelled(reason))
+            );
+            assert!(
+                started.elapsed() < TEST_IO_TIMEOUT,
+                "cancelled remote wait cannot consume its ordinary 30-second lease"
+            );
+            assert!(
+                transport.active.is_none(),
+                "cancelled in-flight remote authority is retired"
+            );
+            cancel.join().expect("request cancellation joined");
+            test_server.finish();
+        }
     }
 }
 fn map_transport(error: impl std::fmt::Display) -> ClientError {

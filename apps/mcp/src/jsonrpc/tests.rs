@@ -6098,3 +6098,384 @@ fn query_preparation_is_a_typed_transient_tool_result_with_exact_retry_not_index
         assert!(fault.cause().sentence().contains("indexing has not failed"));
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn stdio_reader_cancels_an_active_call_then_allows_completed_id_reuse() {
+    struct Blocking {
+        inner: Fake,
+        context: Option<RequestContext>,
+        admitted: std::sync::mpsc::SyncSender<()>,
+    }
+    impl Engine for Blocking {
+        fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
+            self.inner.revision()
+        }
+        fn health(&mut self) -> Result<HealthReport, ClientError> {
+            self.inner.health()
+        }
+        fn probe(&mut self, probe: Probe<'_>) -> Result<ReplyDto, ClientError> {
+            if matches!(probe, Probe::Search { .. }) {
+                self.admitted.send(()).expect("query has actually started");
+                let context = self
+                    .context
+                    .as_ref()
+                    .expect("request context reaches product");
+                let reason = futures_executor::block_on(context.cancelled());
+                return Err(ClientError::RequestCancelled(reason));
+            }
+            self.inner.probe(probe)
+        }
+        fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
+            self.inner.surface(command)
+        }
+    }
+    impl Product for Blocking {
+        fn set_request_context(
+            &mut self,
+            context: Option<RequestContext>,
+        ) -> Result<(), ClientError> {
+            self.context = context;
+            self.context.as_ref().map_or(Ok(()), RequestContext::check)
+        }
+        fn encode_continuation(
+            &mut self,
+            continuation: PageContinuation,
+        ) -> Result<String, ClientError> {
+            self.inner.encode_continuation(continuation)
+        }
+        fn decode_continuation(&mut self, token: &str) -> Result<PageContinuation, ClientError> {
+            self.inner.decode_continuation(token)
+        }
+        fn graph_query(
+            &mut self,
+            input: AdmittedGraphQueryInput,
+            limit: u16,
+            continuation: Option<PageContinuation>,
+        ) -> Result<GraphQueryPage, ClientError> {
+            self.inner.graph_query(input, limit, continuation)
+        }
+    }
+    use std::io::{BufRead as _, Write as _};
+    use std::time::Duration;
+    let (mut input, server_input) = std::os::unix::net::UnixStream::pair().expect("client input");
+    let (output, mut server_output) =
+        std::os::unix::net::UnixStream::pair().expect("client output");
+    server_input
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("fixture reader bound");
+    output
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .expect("fixture response bound");
+    let mut output = std::io::BufReader::new(output);
+    let (admitted, admission) = std::sync::mpsc::sync_channel(1);
+    let server = Server::with_authority(
+        Blocking {
+            inner: Fake::default(),
+            context: None,
+            admitted,
+        },
+        PROJECT.to_owned(),
+        [7; 32],
+    );
+    let serving = std::thread::spawn(move || {
+        serve_stdio_server(
+            server,
+            std::io::BufReader::new(server_input),
+            &mut server_output,
+        )
+    });
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"cancellation-law","version":"1"}}})).expect("initialize");
+    let mut line = String::new();
+    output.read_line(&mut line).expect("initialize reply");
+    assert!(serde_json::from_str::<Value>(&line).expect("initialize JSON")["result"].is_object());
+    writeln!(
+        input,
+        "{}",
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+    )
+    .expect("acknowledgement");
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"backend.search","arguments":{"query":"blocked query"}}})).expect("query");
+    admission
+        .recv_timeout(Duration::from_secs(1))
+        .expect("query starts before cancellation arrives");
+    writeln!(
+        input,
+        "{}",
+        json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}})
+    )
+    .expect("cancel while actor is blocked");
+    line.clear();
+    output.read_line(&mut line).expect("cancelled response");
+    let reply = serde_json::from_str::<Value>(&line).expect("cancelled JSON");
+    assert_eq!(reply["id"], 7);
+    assert_eq!(reply["error"]["code"], -32800);
+    assert!(
+        reply["error"]["data"]["reason"]
+            .as_str()
+            .expect("reason")
+            .contains("explicitly")
+    );
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":7,"method":"ping"}))
+        .expect("reuse completed id");
+    line.clear();
+    output.read_line(&mut line).expect("fresh reply");
+    assert_eq!(
+        serde_json::from_str::<Value>(&line).expect("fresh JSON")["result"],
+        json!({})
+    );
+    input
+        .shutdown(std::net::Shutdown::Write)
+        .expect("client shutdown");
+    serving
+        .join()
+        .expect("actor join")
+        .expect("clean stdio shutdown");
+}
+
+#[cfg(unix)]
+#[test]
+fn stdio_finite_pipe_half_close_drains_owner_reads_and_flushes_replies() {
+    use std::io::{Read as _, Write as _};
+    struct ReplyGate {
+        output: std::os::unix::net::UnixStream,
+        release: Option<std::sync::mpsc::Receiver<()>>,
+    }
+    impl std::io::Write for ReplyGate {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if let Some(release) = self.release.take() {
+                release
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .map_err(|error| std::io::Error::other(error.to_string()))?;
+            }
+            self.output.write(bytes)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.output.flush()
+        }
+    }
+    let (mut input, server_input) =
+        std::os::unix::net::UnixStream::pair().expect("native input pipe");
+    let (mut output, server_output) =
+        std::os::unix::net::UnixStream::pair().expect("native response pipe");
+    output
+        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .expect("fixture response bound");
+    let (release, wait) = std::sync::mpsc::channel();
+    let server = Server::with_authority(Fake::default(), PROJECT.to_owned(), [7; 32]);
+    let serving = std::thread::spawn(move || {
+        let mut writer = ReplyGate {
+            output: server_output,
+            release: Some(wait),
+        };
+        serve_stdio_server(server, std::io::BufReader::new(server_input), &mut writer)
+    });
+    for request in [
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"finite-pipe","version":"1"}}}),
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"backend.search","arguments":{"query":"ferris"}}}),
+    ] {
+        writeln!(input, "{request}").expect("finite request input");
+    }
+    input
+        .shutdown(std::net::Shutdown::Write)
+        .expect("EOF before any response can be written");
+    release.send(()).expect("response may now flush");
+    let mut bytes = String::new();
+    output
+        .read_to_string(&mut bytes)
+        .expect("drain all complete replies after stdin half-close");
+    serving
+        .join()
+        .expect("actor join")
+        .expect("finite pipe success");
+    let replies = bytes
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("reply JSON"))
+        .collect::<Vec<_>>();
+    assert_eq!(replies.len(), 2);
+    assert_eq!(replies[1]["id"], 7);
+    assert_eq!(replies[1]["result"]["isError"], false);
+    assert!(
+        replies[1].get("error").is_none(),
+        "EOF never becomes cancellation authority"
+    );
+}
+
+#[test]
+fn cancelled_endpoint_admission_preserves_previous_and_parked_continuation_proofs() {
+    use backend_library::{
+        AuthorityScopeClaim, CoverageCapability, ProducerObservationClaims,
+        ProducerObservationVerifier, ScopeRoot, UntrustedProducerObservation, admit_complete_scope,
+        admit_producer_observation,
+    };
+    use reconnect::Endpoint as _;
+
+    struct Verifier;
+    impl ProducerObservationVerifier for Verifier {
+        type Error = &'static str;
+        fn verify(
+            &self,
+            observation: &UntrustedProducerObservation,
+        ) -> Result<ProducerObservationClaims, Self::Error> {
+            if observation.producer_identity() != [11; 32]
+                || observation.context() != [7; 32]
+                || observation.evidence() != [7; 32]
+            {
+                return Err("foreign controlled owner");
+            }
+            Ok(ProducerObservationClaims::new(
+                observation.producer_identity(),
+                observation.scope_root(),
+                observation.context(),
+                *blake3::hash(observation.evidence()).as_bytes(),
+            ))
+        }
+    }
+    // This is an owned producer fixture, not insertion into Session's private
+    // continuation map. The page exercises the normal certificate retention.
+    let object = object_version(b"library-source-v1");
+    let observation = admit_producer_observation(
+        UntrustedProducerObservation::new(
+            [11; 32],
+            ScopeRoot::from_bytes(object.to_bytes()),
+            [7; 32],
+            vec![7; 32],
+        ),
+        &Verifier,
+    )
+    .expect("controlled producer observation");
+    let capability = CoverageCapability::from_authorized_with_evidence(
+        admit_complete_scope(
+            AuthorityScopeClaim::from_object_version(object),
+            observation,
+        )
+        .expect("controlled complete scope"),
+        vec![7; 32],
+    )
+    .expect("controlled owner capability");
+    let basis = Basis::new(view_state_root(&[]), object);
+    let root = ViewRoot::new_checked(
+        view_key(b"library-view-v1"),
+        basis,
+        Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+        vec![
+            Row::new(
+                RowId::Symbol(symbol_key("owner::Thing")),
+                basis,
+                "owner::Thing",
+            ),
+            Row::new(
+                RowId::Symbol(symbol_key("owner::Other")),
+                basis,
+                "owner::Other",
+            ),
+        ],
+        vec![Coverage::Complete],
+        capability,
+    )
+    .expect("controlled owner view");
+    let owner = backend_library::Library::from_view(
+        root.clone(),
+        backend_library::Cursor::for_view_root(&root),
+    )
+    .expect("controlled owner revision");
+    struct Owner(backend_library::Library);
+    impl backend_client::CommandTransport for Owner {
+        fn request(
+            &mut self,
+            request: backend_library::CommandDto,
+        ) -> Result<ReplyDto, ClientError> {
+            if let backend_library::Command::GraphQuery(query) = &request.command {
+                let next = query
+                    .next_continuation(self.0.cursor(), 1)
+                    .map_err(|error| ClientError::Protocol(error.to_string()))?;
+                let row =
+                    backend_library::GraphQueryRow::new(std::collections::BTreeMap::from([(
+                        "coordinate".to_owned(),
+                        backend_library::GraphValue::String("owner::Thing".to_owned()),
+                    )]))
+                    .expect("owned projected row");
+                return Ok(ReplyDto::new(
+                    request.request_id,
+                    CommandReply::GraphQueryPage(GraphQueryPage {
+                        revision: query.page().basis(),
+                        source: self.0.view().basis().object,
+                        rows: Box::new([row]),
+                        terminal: PageTerminal::More(next),
+                    }),
+                )
+                .with_certificate(request.certificate().expect("owner request proof").clone()));
+            }
+            Ok(self.0.execute_dto(request))
+        }
+    }
+    let input = AdmittedGraphQueryInput::new(
+        "{ Declaration { coordinate @output } }",
+        std::collections::BTreeMap::new(),
+    )
+    .expect("admitted query");
+    let fixture = LazyAuthorityFixture::new();
+    for already_parked in [false, true] {
+        for expired in [false, true] {
+            let mut previous =
+                Session::from_transport("/owned/previous.sock", Owner(owner.clone()));
+            let page = previous
+                .graph_query_admitted(input.clone(), 1, None, false)
+                .expect("producer-admitted continued page");
+            let PageTerminal::More(next) = page.terminal else {
+                panic!("continued page");
+            };
+            let portable = previous
+                .encode_query_continuation(next)
+                .expect("original proof");
+            let legacy = previous.encode_page_continuation(next);
+            let context = RequestContext::new();
+            let expected = if expired {
+                context
+                    .read_deadline(std::time::Duration::ZERO)
+                    .expect_err("deterministic deadline exhaustion");
+                ClientError::RemoteDeadlineExceeded
+            } else {
+                context.cancel(backend_client::RequestCancellationReason::Explicit);
+                ClientError::RequestCancelled(backend_client::RequestCancellationReason::Explicit)
+            };
+            let mut endpoint = SessionEndpoint {
+                paths: fixture.paths.clone(),
+                pending_continuation_state: None,
+                request_context: Some(context),
+            };
+            let previous = SessionProduct::new(previous, fixture.paths.clone());
+            let previous = if already_parked {
+                endpoint.retire(previous);
+                None
+            } else {
+                Some(previous)
+            };
+            assert!(matches!(endpoint.connect(previous), Err(error) if error == expected));
+            assert!(
+                !fixture.paths.data().exists(),
+                "cancelled admission cannot launch or create owner state"
+            );
+            let parked = endpoint
+                .pending_continuation_state
+                .take()
+                .expect("original authority remains parked");
+            let mut resumed =
+                Session::from_transport("/owned/replacement.sock", Owner(owner.clone()));
+            resumed.restore_continuation_state(parked);
+            assert_eq!(
+                resumed
+                    .encode_query_continuation(next)
+                    .expect("restored proof"),
+                portable
+            );
+            assert_eq!(
+                resumed
+                    .decode_page_continuation(&legacy)
+                    .expect("same issuing owner"),
+                next
+            );
+        }
+    }
+}

@@ -3,6 +3,7 @@
 //! The transport owns connection/session concerns only. Every request still
 //! enters the same JSON-RPC server and typed product session as stdio MCP.
 
+use crate::jsonrpc::requests::{self, DisconnectGuard, RequestLease, RequestRegistry};
 use crate::jsonrpc::{
     ReconnectingProduct, ResponseTransport, Server, disconnected_reconnecting_product,
     encode_response, finalize_response,
@@ -13,6 +14,7 @@ use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
+use backend_client::RequestCancellationReason;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::future::IntoFuture;
@@ -215,7 +217,46 @@ impl SessionId {
 }
 
 /// The live MCP sessions, each owning one connected daemon session.
-type LiveSessions = HashMap<SessionId, Arc<Mutex<Server<ReconnectingProduct>>>>;
+type LiveSessions = HashMap<SessionId, Arc<LiveSession>>;
+
+struct LiveSession {
+    server: Mutex<Server<ReconnectingProduct>>,
+    requests: RequestRegistry,
+}
+
+impl Drop for LiveSession {
+    fn drop(&mut self) {
+        self.requests.close(RequestCancellationReason::Shutdown);
+    }
+}
+
+struct AdmittedRequest {
+    session_id: SessionId,
+    session: Arc<LiveSession>,
+    value: Value,
+    lease: Option<RequestLease>,
+}
+
+impl AdmittedRequest {
+    fn context(&self) -> Option<backend_client::RequestContext> {
+        self.lease.as_ref().map(|lease| lease.context.clone())
+    }
+
+    fn run(self) -> Response {
+        let context = self.context();
+        let Ok(mut server) = self.session.server.lock() else {
+            return rpc_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                -32603,
+                "MCP session unavailable",
+            );
+        };
+        let reply = server.handle_value(self.value, context);
+        drop(server);
+        drop(self.lease);
+        rpc_response(reply, Some(&self.session_id))
+    }
+}
 
 struct Sessions {
     paths: backend_runtime::WorkspacePaths,
@@ -312,51 +353,77 @@ impl HttpBootstrap {
     }
 }
 
-impl Sessions {
-    fn dispatch(&self, headers: &HeaderMap, body: &[u8]) -> Response {
-        if !self.token.authorizes(headers) {
-            return unauthorized();
+impl Drop for Sessions {
+    fn drop(&mut self) {
+        let sessions = self
+            .live
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for session in sessions.values() {
+            session.requests.close(RequestCancellationReason::Shutdown);
         }
+    }
+}
 
-        let parsed = serde_json::from_slice::<Value>(body);
-        let is_initialize = parsed
-            .as_ref()
-            .ok()
-            .and_then(|value| value.get("method"))
-            .and_then(Value::as_str)
-            == Some("initialize");
+impl Sessions {
+    #[cfg(test)]
+    fn dispatch(&self, headers: &HeaderMap, body: &[u8]) -> Response {
+        match self.admit(headers, body) {
+            Ok(request) => request.run(),
+            Err(response) => response,
+        }
+    }
 
+    // This phase runs before the Server mutex and before blocking task admission.
+    // Cancellation needs neither a query slot nor a replacement owner connection.
+    fn admit(&self, headers: &HeaderMap, body: &[u8]) -> Result<AdmittedRequest, Response> {
+        if !self.token.authorizes(headers) {
+            return Err(unauthorized());
+        }
+        let value = match requests::decode(body) {
+            Ok(value) => value,
+            Err(reply) => return Err(rpc_response(Some(reply), None)),
+        };
+        let is_initialize = value.get("method").and_then(Value::as_str) == Some("initialize");
         let supplied = SessionId::from_headers(headers);
         if is_initialize && supplied.is_none() {
-            return self.initialize(body);
+            return Err(self.initialize(body));
         }
-
         let Some(session_id) = supplied else {
-            return rpc_error(
+            return Err(rpc_error(
                 StatusCode::BAD_REQUEST,
                 -32001,
                 "Mcp-Session-Id is required",
-            );
+            ));
         };
         let Ok(sessions) = self.live.lock() else {
-            return rpc_error(
+            return Err(rpc_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 -32603,
                 "session store unavailable",
-            );
+            ));
         };
-        let Some(server) = sessions.get(&session_id).cloned() else {
-            return rpc_error(StatusCode::NOT_FOUND, -32001, "MCP session not found");
+        let Some(session) = sessions.get(&session_id).cloned() else {
+            return Err(rpc_error(
+                StatusCode::NOT_FOUND,
+                -32001,
+                "MCP session not found",
+            ));
         };
         drop(sessions);
-        let Ok(mut server) = server.lock() else {
-            return rpc_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                -32603,
-                "MCP session unavailable",
-            );
-        };
-        rpc_response(server.handle(body), Some(&session_id))
+        if session.requests.cancel_notification(&value) {
+            return Err(rpc_response(None, Some(&session_id)));
+        }
+        let lease = session
+            .requests
+            .admit(&value)
+            .map_err(|reply| rpc_response(Some(reply), Some(&session_id)))?;
+        Ok(AdmittedRequest {
+            session_id,
+            session,
+            value,
+            lease,
+        })
     }
 
     fn initialize(&self, body: &[u8]) -> Response {
@@ -389,7 +456,13 @@ impl Sessions {
             );
         }
         let session_id = self.next_session_id();
-        sessions.insert(session_id.clone(), Arc::new(Mutex::new(server)));
+        sessions.insert(
+            session_id.clone(),
+            Arc::new(LiveSession {
+                server: Mutex::new(server),
+                requests: RequestRegistry::default(),
+            }),
+        );
         with_session_header(
             encoded_json_response(StatusCode::OK, reply.into_bytes()),
             Some(&session_id),
@@ -409,7 +482,10 @@ impl Sessions {
         };
         match self.live.lock() {
             Ok(mut sessions) => match sessions.remove(&session_id) {
-                Some(_) => StatusCode::NO_CONTENT.into_response(),
+                Some(session) => {
+                    session.requests.close(RequestCancellationReason::Shutdown);
+                    StatusCode::NO_CONTENT.into_response()
+                }
                 None => rpc_error(StatusCode::NOT_FOUND, -32001, "MCP session not found"),
             },
             Err(_) => rpc_error(
@@ -434,6 +510,14 @@ async fn accept(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    let sessions = match state.sessions(Some(&body)) {
+        Ok(sessions) => sessions,
+        Err(response) => return response,
+    };
+    let request = match sessions.admit(&headers, &body) {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
     let Ok(permit) = state.request_capacity.clone().try_acquire_owned() else {
         return rpc_error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -441,16 +525,14 @@ async fn accept(
             "MCP request capacity reached",
         );
     };
-    let state = match state.sessions(Some(&body)) {
-        Ok(sessions) => sessions,
-        Err(response) => return response,
-    };
-    tokio::task::spawn_blocking(move || {
+    let mut disconnect = DisconnectGuard::new(request.context());
+    let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        state.dispatch(&headers, &body)
+        request.run()
     })
-    .await
-    .unwrap_or_else(|_| {
+    .await;
+    disconnect.disarm();
+    result.unwrap_or_else(|_| {
         rpc_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             -32603,
@@ -460,29 +542,12 @@ async fn accept(
 }
 
 async fn remove(State(state): State<Arc<HttpBootstrap>>, headers: HeaderMap) -> Response {
-    let Ok(permit) = state.request_capacity.clone().try_acquire_owned() else {
-        return rpc_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            -32000,
-            "MCP request capacity reached",
-        );
-    };
-    let state = match state.sessions(None) {
-        Ok(sessions) => sessions,
-        Err(response) => return response,
-    };
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        state.remove(&headers)
-    })
-    .await
-    .unwrap_or_else(|_| {
-        rpc_error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            -32603,
-            "request task failed",
-        )
-    })
+    // Session deletion is a cancellation control. It has no owner I/O and
+    // remains reachable when all ordinary blocking query slots are occupied.
+    match state.sessions(None) {
+        Ok(sessions) => sessions.remove(&headers),
+        Err(response) => response,
+    }
 }
 
 pub(super) fn main_entry(paths: &backend_runtime::WorkspacePaths, bind: LoopbackBind) -> ExitCode {
@@ -1252,6 +1317,233 @@ mod tests {
                 .await
                 .expect_err("test HTTP listener retired")
                 .is_cancelled()
+        );
+    }
+    fn cancellation_fixture() -> (
+        PrivateTokenFixture,
+        Arc<HttpBootstrap>,
+        Arc<Sessions>,
+        SessionId,
+        HeaderMap,
+    ) {
+        let fixture = PrivateTokenFixture::new();
+        let paths = bootstrap_paths(&fixture);
+        let token = BearerToken("cancellation-test-http-token".into());
+        let sessions = Arc::new(Sessions {
+            paths: paths.clone(),
+            project: canonical_project(paths.project()),
+            cursor_secret: [7; 32].into(),
+            token,
+            next_id: AtomicU64::new(0),
+            live: Mutex::new(HashMap::new()),
+        });
+        let response = sessions.initialize(br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"cancel-test","version":"1"}}}"#);
+        let session_id =
+            SessionId::from_headers(response.headers()).expect("admitted HTTP session");
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer cancellation-test-http-token"),
+        );
+        headers.insert(
+            SESSION_HEADER,
+            session_id.header_value().expect("session header"),
+        );
+        let state = Arc::new(HttpBootstrap::new(paths));
+        assert!(
+            state
+                .authentication
+                .set(Authentication::Ready(sessions.clone()))
+                .is_ok()
+        );
+        (fixture, state, sessions, session_id, headers)
+    }
+
+    fn hold_server(
+        session: Arc<LiveSession>,
+    ) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+        let (held, holding) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let _server = session.server.lock().expect("hold actual Server mutex");
+            held.send(()).expect("report held Server mutex");
+            let _ = released.recv_timeout(std::time::Duration::from_secs(5));
+        });
+        holding
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("actual Server mutex is held");
+        (release, worker)
+    }
+
+    #[tokio::test]
+    async fn cancellation_bypasses_locked_server_and_full_http_query_capacity() {
+        let (_fixture, state, sessions, session_id, headers) = cancellation_fixture();
+        let request = sessions
+            .admit(
+                &headers,
+                br#"{"jsonrpc":"2.0","id":7,"method":"tools/call"}"#,
+            )
+            .ok()
+            .expect("admitted before Server lock");
+        let context = request.context().expect("request-owned cancellation");
+        let session = sessions
+            .live
+            .lock()
+            .expect("sessions")
+            .get(&session_id)
+            .expect("session")
+            .clone();
+        let (release, held_server) = hold_server(session);
+        let _all_query_slots = state
+            .request_capacity
+            .clone()
+            .acquire_many_owned(MAX_IN_FLIGHT as u32)
+            .await
+            .expect("full HTTP query capacity");
+        let reply = accept(
+            State(state),
+            headers,
+            Bytes::from_static(
+                br#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}"#,
+            ),
+        )
+        .await;
+        release.send(()).expect("release Server mutex");
+        held_server.join().expect("Server holder retired");
+        assert_eq!(reply.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            context.cancellation_reason(),
+            Some(RequestCancellationReason::Explicit)
+        );
+        drop(request);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn dropped_http_response_future_cancels_its_admitted_blocking_request() {
+        let (_fixture, _state, sessions, session_id, headers) = cancellation_fixture();
+        let request = sessions
+            .admit(
+                &headers,
+                br#"{"jsonrpc":"2.0","id":7,"method":"tools/call"}"#,
+            )
+            .ok()
+            .expect("request admission");
+        let context = request.context().expect("request-owned cancellation");
+        let session = sessions
+            .live
+            .lock()
+            .expect("sessions")
+            .get(&session_id)
+            .expect("session")
+            .clone();
+        let (release, held_server) = hold_server(session);
+        let retained = context.clone();
+        let (started, start) = tokio::sync::oneshot::channel();
+        let response = tokio::spawn(async move {
+            let _disconnect = DisconnectGuard::new(Some(retained));
+            let task = tokio::task::spawn_blocking(move || request.run());
+            let _ = started.send(());
+            let _ = task.await;
+        });
+        start.await.expect("handler owns blocking task");
+        response.abort();
+        let dropped = response.await;
+        release.send(()).expect("release Server mutex");
+        held_server.join().expect("Server holder retired");
+        assert!(dropped.expect_err("dropped handler").is_cancelled());
+        assert_eq!(
+            context.cancellation_reason(),
+            Some(RequestCancellationReason::ClientDisconnected)
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn actual_http_client_socket_drop_cancels_its_pending_blocking_request() {
+        let (_fixture, state, sessions, session_id, _headers) = cancellation_fixture();
+        let session = sessions
+            .live
+            .lock()
+            .expect("sessions")
+            .get(&session_id)
+            .expect("session")
+            .clone();
+        let registry = session.requests.clone();
+        let (release, held_server) = hold_server(session);
+        let listener = tokio::net::TcpListener::bind(LoopbackBind::default().0)
+            .await
+            .expect("HTTP cancellation listener");
+        let address = listener.local_addr().expect("HTTP cancellation address");
+        let app = Router::new()
+            .route(MCP_PATH, post(accept))
+            .with_state(state);
+        let serving = tokio::spawn(IntoFuture::into_future(axum::serve(listener, app)));
+        let connection = tokio::task::spawn_blocking(move || {
+            use std::io::Write as _;
+            let mut connection = std::net::TcpStream::connect_timeout(
+                &address,
+                std::time::Duration::from_secs(2),
+            )
+            .expect("real HTTP client");
+            connection
+                .set_write_timeout(Some(std::time::Duration::from_secs(2)))
+                .expect("bounded client write");
+            let body = br#"{"jsonrpc":"2.0","id":7,"method":"ping"}"#;
+            write!(connection, "POST /mcp HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer cancellation-test-http-token\r\nMcp-Session-Id: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n", session_id.0, body.len()).expect("real HTTP headers");
+            connection.write_all(body).expect("actual request body");
+            connection
+        })
+        .await
+        .expect("wire client ready");
+        let admitted = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(context) = registry.in_flight_context(&json!(7)) {
+                    break context;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        drop(connection); // actual read/write transport disconnect, not a synthetic task abort
+        let stopped = match admitted {
+            Ok(context) => {
+                tokio::time::timeout(std::time::Duration::from_secs(2), context.cancelled())
+                    .await
+                    .ok()
+            }
+            Err(_) => None,
+        };
+        release.send(()).expect("release Server mutex");
+        held_server.join().expect("Server holder retired");
+        serving.abort();
+        let _ = serving.await;
+        assert_eq!(stopped, Some(RequestCancellationReason::ClientDisconnected));
+    }
+
+    #[test]
+    fn deleting_http_session_cancels_pending_requests_without_waiting_for_server() {
+        let (_fixture, _state, sessions, session_id, headers) = cancellation_fixture();
+        let request = sessions
+            .admit(&headers, br#"{"jsonrpc":"2.0","id":7,"method":"ping"}"#)
+            .ok()
+            .expect("pending request");
+        let context = request.context().expect("pending lifetime");
+        let session = sessions
+            .live
+            .lock()
+            .expect("sessions")
+            .get(&session_id)
+            .expect("session")
+            .clone();
+        let _held = session.server.lock().expect("active Server lock");
+        assert_eq!(sessions.remove(&headers).status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            context.cancellation_reason(),
+            Some(RequestCancellationReason::Shutdown)
+        );
+        assert!(
+            sessions
+                .admit(&headers, br#"{"jsonrpc":"2.0","id":8,"method":"ping"}"#)
+                .is_err()
         );
     }
 }

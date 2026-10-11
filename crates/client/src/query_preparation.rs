@@ -7,18 +7,21 @@ use std::time::Instant;
 
 /// One deadline spans revision selection and every exchange of this read.
 pub(super) struct QueryReadDeadline {
-    started: Instant,
-    budget: Duration,
+    deadline: Instant,
 }
 impl QueryReadDeadline {
-    pub(super) fn new(budget: Duration) -> Self {
-        Self {
-            started: Instant::now(),
-            budget,
-        }
+    pub(super) fn new(
+        budget: Duration,
+        context: Option<&RequestContext>,
+    ) -> Result<Self, ClientError> {
+        let deadline = match context {
+            Some(context) => context.read_deadline(budget)?.min(Instant::now() + budget),
+            None => Instant::now() + budget,
+        };
+        Ok(Self { deadline })
     }
     pub(super) fn remaining(&self) -> Result<Duration, ClientError> {
-        let remaining = self.budget.saturating_sub(self.started.elapsed());
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             Err(ClientError::RemoteDeadlineExceeded)
         } else {
@@ -43,6 +46,8 @@ pub struct QueryPreparationProgress {
 impl Session {
     /// Observes preparation without changing machine-readable result output.
     /// Returning false cancels only this read wait, never the shared worker.
+    /// This observer runs on the caller and must not block; arbitrary callback
+    /// code is not preempted. MCP's production observer uses a bounded try-send.
     pub fn observe_query_preparation(
         &mut self,
         observer: impl FnMut(QueryPreparationProgress) -> bool + Send + 'static,
@@ -82,6 +87,7 @@ impl Session {
         let interrupt = self.interrupt_handle();
         let mut last_progress = None;
         loop {
+            self.check_request_context()?;
             if interrupt
                 .as_ref()
                 .is_some_and(|handle| handle.0.interrupted.load(Ordering::Acquire))
@@ -104,17 +110,22 @@ impl Session {
             if remaining.is_zero() {
                 return Err(ClientError::RemoteDeadlineExceeded);
             }
+            let remaining = self
+                .request_context
+                .as_ref()
+                .map(RequestContext::remaining_read_budget)
+                .transpose()?
+                .flatten()
+                .map_or(remaining, |budget| remaining.min(budget));
             // No revision refresh or reconnect: query, credit, manifest,
             // cursor, source and certificate stay exactly as originally bound.
-            let reply = self
-                .transport
-                .request_with_budget(request, remaining)
-                .map_err(|error| match error {
-                    ClientError::Disconnected(kind) => {
-                        ClientError::QueryPreparationDisconnected { basis, kind }
-                    }
-                    error => error,
-                })?;
+            let result = self.transport.request_with_budget(request, remaining);
+            let reply = self.request_result(result).map_err(|error| match error {
+                ClientError::Disconnected(kind) => {
+                    ClientError::QueryPreparationDisconnected { basis, kind }
+                }
+                error => error,
+            })?;
             let CommandReply::Failed(CommandFailure::QueryPreparation {
                 basis: observed,
                 state,
@@ -137,6 +148,14 @@ impl Session {
             if last_progress.is_none_or(|(previous, at): (QueryPreparationState, Duration)| {
                 previous != *state || elapsed.saturating_sub(at) >= Duration::from_secs(1)
             }) {
+                if let Some(context) = &self.request_context {
+                    context.preparation_progress(QueryPreparationProgress {
+                        basis,
+                        state: *state,
+                        elapsed,
+                        remaining,
+                    });
+                }
                 if let Some(observer) = &mut self.preparation_progress
                     && !observer(QueryPreparationProgress {
                         basis,
@@ -157,6 +176,7 @@ impl Session {
             let pause = Duration::from_millis(100).min(budget.saturating_sub(started.elapsed()));
             let wake = Instant::now() + pause;
             while Instant::now() < wake {
+                self.check_request_context()?;
                 if interrupt
                     .as_ref()
                     .is_some_and(|handle| handle.0.interrupted.load(Ordering::Acquire))

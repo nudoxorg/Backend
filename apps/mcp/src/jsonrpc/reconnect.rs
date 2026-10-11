@@ -26,7 +26,7 @@
 //! same way, that is the daemon's answer and it is reported.
 
 use super::{Engine, Probe, Product};
-use backend_client::ClientError;
+use backend_client::{ClientError, RequestContext};
 use backend_library::{
     AdmittedGraphQueryInput, GraphQueryPage, HealthReport, PageContinuation, ReplyDto,
     SurfaceCommand, SurfaceReply, ViewStateRoot,
@@ -40,6 +40,8 @@ use backend_library::{
 pub(crate) trait Endpoint {
     /// The connected product this endpoint yields.
     type Product: Product;
+
+    fn set_request_context(&mut self, _context: Option<RequestContext>) {}
 
     /// Opens one fresh connection, transferring owner-admitted page state
     /// from the retired product when one exists.
@@ -75,6 +77,7 @@ pub(crate) struct Reconnecting<E: Endpoint> {
     /// state such as continuation certificates; it is never used for another
     /// request.
     product: Option<E::Product>,
+    request_context: Option<RequestContext>,
 }
 
 impl<E: Endpoint> Reconnecting<E> {
@@ -84,6 +87,7 @@ impl<E: Endpoint> Reconnecting<E> {
         Self {
             endpoint,
             product: Some(product),
+            request_context: None,
         }
     }
 
@@ -96,7 +100,25 @@ impl<E: Endpoint> Reconnecting<E> {
         Self {
             endpoint,
             product: None,
+            request_context: None,
         }
+    }
+
+    // Taking the dead lease transfers custody even if cancellation arrives
+    // at this boundary. Its endpoint must retain any continuation authority.
+    fn take_reconnect_lease(&mut self) -> Result<Option<E::Product>, ClientError> {
+        let previous = self.product.take();
+        if let Err(error) = self
+            .request_context
+            .as_ref()
+            .map_or(Ok(()), RequestContext::check)
+        {
+            if let Some(previous) = previous {
+                self.endpoint.retire(previous);
+            }
+            return Err(error);
+        }
+        Ok(previous)
     }
 
     /// Runs one call, reopening the connection if it is gone.
@@ -108,17 +130,41 @@ impl<E: Endpoint> Reconnecting<E> {
         repeatable: Repeatable,
         mut call: impl FnMut(&mut E::Product) -> Result<T, ClientError>,
     ) -> Result<T, ClientError> {
+        if let Some(context) = &self.request_context {
+            if repeatable == Repeatable::Yes {
+                context.read_deadline(backend_client::CLIENT_REQUEST_TIMEOUT)?;
+            }
+            context.check()?;
+        }
         // A failed reconnect leaves no lease behind. The next invocation is
         // therefore bounded to one fresh endpoint attempt rather than first
         // touching an already-dead product again.
         if self.product.is_none() {
             self.product = Some(self.endpoint.connect(None)?);
         }
+        if let Some(product) = &mut self.product {
+            product.set_request_context(self.request_context.clone())?;
+        }
+        if let Some(context) = &self.request_context {
+            context.check()?;
+        }
         let first = match self.product.as_mut() {
             Some(product) => call(product),
             None => Err(ClientError::Disconnected(std::io::ErrorKind::NotConnected)),
         };
+        let first = match &self.request_context {
+            Some(context) => context.check().and(first),
+            None => first,
+        };
         match first {
+            Err(
+                error @ (ClientError::RequestCancelled(_) | ClientError::RemoteDeadlineExceeded),
+            ) => {
+                if let Some(previous) = self.product.take() {
+                    self.endpoint.retire(previous);
+                }
+                Err(error)
+            }
             Err(error @ ClientError::QueryPreparationDisconnected { .. }) => {
                 // Keep the original pinned read's failure. A later explicit
                 // request can connect, but this call cannot acquire a new
@@ -132,12 +178,13 @@ impl<E: Endpoint> Reconnecting<E> {
                 // Drop the dead transport lease before opening a replacement
                 // either way: the agent's next call must not meet the same
                 // socket, even if opening the replacement fails.
-                let previous = self.product.take();
+                let previous = self.take_reconnect_lease()?;
                 let replacement = match self.endpoint.connect(previous) {
                     Ok(replacement) => replacement,
                     // A failed replacement cannot prove the mutation was
                     // unsent. Report the same ambiguous outcome whether the
                     // next lease opened or not.
+                    Err(error @ ClientError::RequestCancelled(_)) => return Err(error),
                     Err(_) if repeatable == Repeatable::No => {
                         return Err(ClientError::MutationOutcomeUnknown(kind));
                     }
@@ -146,7 +193,20 @@ impl<E: Endpoint> Reconnecting<E> {
                 match repeatable {
                     Repeatable::Yes => {
                         let mut replacement = replacement;
-                        let result = call(&mut replacement);
+                        if let Err(error) =
+                            replacement.set_request_context(self.request_context.clone())
+                        {
+                            self.endpoint.retire(replacement);
+                            return Err(error);
+                        }
+                        let result = match &self.request_context {
+                            Some(context) => context.check().and_then(|()| call(&mut replacement)),
+                            None => call(&mut replacement),
+                        };
+                        let result = match &self.request_context {
+                            Some(context) => context.check().and(result),
+                            None => result,
+                        };
                         // The replacement can itself be retired while the
                         // first retried read is in flight. Do not retain a
                         // second dead lease: the following request should
@@ -155,6 +215,8 @@ impl<E: Endpoint> Reconnecting<E> {
                         if matches!(
                             &result,
                             Err(ClientError::Disconnected(_)
+                                | ClientError::RequestCancelled(_)
+                                | ClientError::RemoteDeadlineExceeded
                                 | ClientError::QueryPreparationDisconnected { .. })
                         ) {
                             self.endpoint.retire(replacement);
@@ -272,6 +334,24 @@ impl<E: Endpoint> Engine for Reconnecting<E> {
 }
 
 impl<E: Endpoint> Product for Reconnecting<E> {
+    fn set_request_context(&mut self, context: Option<RequestContext>) -> Result<(), ClientError> {
+        if context.is_none()
+            && self
+                .request_context
+                .as_ref()
+                .is_some_and(|context| context.check().is_err())
+            && let Some(previous) = self.product.take()
+        {
+            self.endpoint.retire(previous);
+        }
+        self.request_context = context.clone();
+        self.endpoint.set_request_context(context.clone());
+        if let Some(product) = &mut self.product {
+            product.set_request_context(context.clone())?;
+        }
+        context.as_ref().map_or(Ok(()), RequestContext::check)
+    }
+
     fn encode_continuation(
         &mut self,
         continuation: PageContinuation,
@@ -1349,5 +1429,307 @@ mod tests {
         );
         assert_eq!(calls(&log), vec!["dead:index".to_owned()]);
         assert_eq!(handle.endpoint.0.connects, 2);
+    }
+    #[test]
+    fn request_cancellation_survives_socket_disconnect_without_replay() {
+        struct CancelConnection {
+            inner: Connection,
+            context: Option<RequestContext>,
+            cancel: bool,
+        }
+        impl Engine for CancelConnection {
+            fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
+                self.inner.revision()
+            }
+            fn health(&mut self) -> Result<HealthReport, ClientError> {
+                self.inner.health()
+            }
+            fn probe(&mut self, probe: Probe<'_>) -> Result<ReplyDto, ClientError> {
+                if self.cancel {
+                    self.context
+                        .as_ref()
+                        .expect("request context")
+                        .cancel(backend_client::RequestCancellationReason::Explicit);
+                }
+                self.inner.probe(probe)
+            }
+            fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
+                self.inner.surface(command)
+            }
+        }
+        impl Product for CancelConnection {
+            fn set_request_context(
+                &mut self,
+                context: Option<RequestContext>,
+            ) -> Result<(), ClientError> {
+                self.context = context;
+                self.context.as_ref().map_or(Ok(()), RequestContext::check)
+            }
+            fn encode_continuation(
+                &mut self,
+                continuation: PageContinuation,
+            ) -> Result<String, ClientError> {
+                self.inner.encode_continuation(continuation)
+            }
+            fn decode_continuation(
+                &mut self,
+                token: &str,
+            ) -> Result<PageContinuation, ClientError> {
+                self.inner.decode_continuation(token)
+            }
+            fn graph_query(
+                &mut self,
+                input: AdmittedGraphQueryInput,
+                limit: u16,
+                continuation: Option<PageContinuation>,
+            ) -> Result<GraphQueryPage, ClientError> {
+                self.inner.graph_query(input, limit, continuation)
+            }
+        }
+        struct CancelEndpoint {
+            log: Log,
+            connects: usize,
+        }
+        impl Endpoint for CancelEndpoint {
+            type Product = CancelConnection;
+            fn connect(&mut self, _: Option<Self::Product>) -> Result<Self::Product, ClientError> {
+                self.connects += 1;
+                Ok(CancelConnection {
+                    inner: Connection {
+                        log: self.log.clone(),
+                        alive: true,
+                    },
+                    context: None,
+                    cancel: false,
+                })
+            }
+        }
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut product = Reconnecting::new(
+            CancelEndpoint {
+                log: log.clone(),
+                connects: 0,
+            },
+            CancelConnection {
+                inner: Connection {
+                    log: log.clone(),
+                    alive: false,
+                },
+                context: None,
+                cancel: true,
+            },
+        );
+        product
+            .set_request_context(Some(RequestContext::new()))
+            .expect("request admission");
+        assert!(matches!(
+            product.probe(Probe::Packages),
+            Err(ClientError::RequestCancelled(
+                backend_client::RequestCancellationReason::Explicit
+            ))
+        ));
+        assert_eq!(
+            product.endpoint.connects, 0,
+            "cancellation never opens replacement to replay"
+        );
+        assert_eq!(*log.lock().expect("owner log"), ["dead:packages"]);
+        product
+            .set_request_context(None)
+            .expect("retire cancelled request");
+        product
+            .probe(Probe::Packages)
+            .expect("next independent request may reconnect");
+        assert_eq!(product.endpoint.connects, 1);
+        assert_eq!(
+            *log.lock().expect("owner log"),
+            ["dead:packages", "live:packages"]
+        );
+    }
+
+    #[test]
+    fn original_read_deadline_survives_preselection_replacement_dial() {
+        struct DelayedEndpoint {
+            log: Log,
+            context: Option<RequestContext>,
+            original: std::time::Instant,
+            connects: usize,
+        }
+        impl Endpoint for DelayedEndpoint {
+            type Product = Connection;
+            fn set_request_context(&mut self, context: Option<RequestContext>) {
+                self.context = context;
+            }
+            fn connect(&mut self, _: Option<Self::Product>) -> Result<Self::Product, ClientError> {
+                self.connects += 1;
+                let context = self.context.as_ref().expect("original request");
+                assert_eq!(
+                    context
+                        .read_deadline(backend_client::CLIENT_REQUEST_TIMEOUT)
+                        .expect("same deadline before dial"),
+                    self.original,
+                    "replacement cannot renew the read budget"
+                );
+                std::thread::sleep(
+                    self.original
+                        .saturating_duration_since(std::time::Instant::now())
+                        + std::time::Duration::from_millis(1),
+                );
+                Ok(Connection {
+                    log: self.log.clone(),
+                    alive: true,
+                })
+            }
+        }
+        let context = RequestContext::new();
+        let original = context
+            .read_deadline(std::time::Duration::from_millis(80))
+            .expect("original read lease");
+        let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let mut product = Reconnecting::new(
+            DelayedEndpoint {
+                log: log.clone(),
+                context: None,
+                original,
+                connects: 0,
+            },
+            Connection {
+                log: log.clone(),
+                alive: false,
+            },
+        );
+        product
+            .set_request_context(Some(context))
+            .expect("request admission");
+        assert!(matches!(
+            product.probe(Probe::Packages),
+            Err(ClientError::RemoteDeadlineExceeded)
+        ));
+        assert_eq!(product.endpoint.connects, 1);
+        assert_eq!(
+            *log.lock().expect("calls"),
+            ["dead:packages"],
+            "expired replacement must not submit another owner read"
+        );
+    }
+
+    #[test]
+    fn mutation_cancellation_context_does_not_install_a_read_deadline() {
+        let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let mut product = Reconnecting::new(
+            Fixture {
+                log: log.clone(),
+                connects: 0,
+            },
+            Connection { log, alive: true },
+        );
+        let context = RequestContext::new();
+        product
+            .set_request_context(Some(context.clone()))
+            .expect("request lifetime");
+        product
+            .probe(Probe::Index("/abs/project"))
+            .expect("mutation");
+        assert_eq!(
+            context.remaining_read_budget().expect("active request"),
+            None
+        );
+    }
+
+    #[test]
+    fn cancellation_at_pre_dial_transfer_retires_previous_before_returning() {
+        for expired in [false, true] {
+            let log: Log = Arc::new(Mutex::new(Vec::new()));
+            let mut product = Reconnecting::new(
+                RetireFixture {
+                    log: log.clone(),
+                    connects: 0,
+                    saw_previous: false,
+                    retired: false,
+                },
+                Connection { log, alive: false },
+            );
+            let context = RequestContext::new();
+            let expected = if expired {
+                context
+                    .read_deadline(std::time::Duration::ZERO)
+                    .expect_err("deterministically expired original read");
+                ClientError::RemoteDeadlineExceeded
+            } else {
+                context.cancel(backend_client::RequestCancellationReason::Explicit);
+                ClientError::RequestCancelled(backend_client::RequestCancellationReason::Explicit)
+            };
+            // Enter the exact take/check ownership boundary with cancellation
+            // already signalled, rather than hoping a thread wins its race.
+            product.request_context = Some(context);
+            assert!(matches!(product.take_reconnect_lease(), Err(error) if error == expected));
+            assert!(
+                product.endpoint.retired,
+                "endpoint receives the previous authority"
+            );
+            assert!(product.product.is_none());
+            assert_eq!(product.endpoint.connects, 0, "cancelled caller cannot dial");
+        }
+    }
+
+    #[test]
+    fn cancellation_during_replacement_admission_retires_restored_authority() {
+        struct CancelAfterConnect {
+            log: Log,
+            context: RequestContext,
+            connects: usize,
+            transferred: bool,
+            retired: bool,
+        }
+        impl Endpoint for CancelAfterConnect {
+            type Product = Connection;
+            fn connect(&mut self, previous: Option<Connection>) -> Result<Connection, ClientError> {
+                self.connects += 1;
+                self.transferred = previous.is_some();
+                self.context
+                    .cancel(backend_client::RequestCancellationReason::Explicit);
+                Ok(Connection {
+                    log: self.log.clone(),
+                    alive: true,
+                })
+            }
+            fn retire(&mut self, _previous: Connection) {
+                self.retired = true;
+            }
+        }
+        let log: Log = Arc::new(Mutex::new(Vec::new()));
+        let context = RequestContext::new();
+        let mut product = Reconnecting::new(
+            CancelAfterConnect {
+                log: log.clone(),
+                context: context.clone(),
+                connects: 0,
+                transferred: false,
+                retired: false,
+            },
+            Connection {
+                log: log.clone(),
+                alive: false,
+            },
+        );
+        product
+            .set_request_context(Some(context))
+            .expect("original request");
+        assert!(matches!(
+            product.probe(Probe::Packages),
+            Err(ClientError::RequestCancelled(
+                backend_client::RequestCancellationReason::Explicit
+            ))
+        ));
+        assert!(
+            product.endpoint.transferred,
+            "old authority reached replacement admission"
+        );
+        assert!(
+            product.endpoint.retired,
+            "cancelled replacement returned its restored authority"
+        );
+        assert!(product.product.is_none());
+        assert_eq!(product.endpoint.connects, 1);
+        assert_eq!(*log.lock().expect("owner calls"), ["dead:packages"]);
     }
 }

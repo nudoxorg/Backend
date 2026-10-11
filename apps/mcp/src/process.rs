@@ -71,7 +71,7 @@ fn json_rpc_main(paths: &backend_runtime::WorkspacePaths) -> ExitCode {
     let result = (|| {
         let stdin = io::stdin();
         let stdout = io::stdout();
-        serve_json_rpc_stdio(paths, &mut BufReader::new(stdin.lock()), &mut stdout.lock())
+        serve_json_rpc_stdio(paths, BufReader::new(stdin), &mut stdout.lock())
     })();
     #[cfg(not(any(unix, windows)))]
     let result: Result<(), String> =
@@ -88,7 +88,7 @@ fn json_rpc_main(paths: &backend_runtime::WorkspacePaths) -> ExitCode {
 #[cfg(any(unix, windows))]
 fn serve_json_rpc_stdio(
     paths: &backend_runtime::WorkspacePaths,
-    reader: &mut impl io::BufRead,
+    reader: impl io::BufRead + Send + 'static,
     writer: &mut impl Write,
 ) -> Result<(), String> {
     let project = backend_runtime::normalize_surface_path(paths.project())
@@ -364,9 +364,9 @@ mod tests {
                 )
             })
             .collect::<String>();
-        let mut input = io::Cursor::new(input.into_bytes());
+        let input = io::Cursor::new(input.into_bytes());
         let mut output = Vec::new();
-        serve_json_rpc_stdio(paths, &mut input, &mut output)
+        serve_json_rpc_stdio(paths, input, &mut output)
             .expect("stdio processes complete JSON-RPC requests");
         String::from_utf8(output)
             .expect("JSON-RPC output is UTF-8")

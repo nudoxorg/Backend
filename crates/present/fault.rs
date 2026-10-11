@@ -955,6 +955,12 @@ impl Fault {
                 format!("the local daemon could not be started or reached: {failure}"),
                 Affordance::startup(failure.recovery()),
             ),
+            ClientError::RequestCancelled(reason) => (
+                FaultSlug::Endpoint,
+                CauseSlug::Unreachable,
+                reason.to_string(),
+                Affordance::None,
+            ),
             ClientError::MutationOutcomeUnknown(kind) => (
                 FaultSlug::Endpoint,
                 CauseSlug::Unreachable,

@@ -810,6 +810,7 @@ impl<E: ReadEngine> PageReader for SessionReader<E> {
 #[must_use]
 pub fn failure(error: &ClientError) -> ReadFailure {
     let code = match error {
+        ClientError::RequestCancelled(_) => return ReadFailure::Cancelled,
         ClientError::CommandFailed(CommandFailure::NotFound) => FaultCode::Missing,
         ClientError::CommandFailed(_) | ClientError::Protocol(_) | ClientError::IncoherentView => {
             FaultCode::Protocol

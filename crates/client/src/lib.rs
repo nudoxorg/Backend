@@ -64,6 +64,10 @@ use backend_library::{
     SymbolAddress, SymbolKey, ViewProjectionError, ViewStateRoot, WireCertificate, WireClaim,
     WireSchema, encode_id, package_key, symbol_key,
 };
+mod request_context;
+pub use request_context::RequestCancellationReason;
+#[cfg(any(unix, windows))]
+pub use request_context::RequestContext;
 mod index_operation;
 pub use backend_replication::SelectedGenerationStamp as SelectedStamp;
 use backend_replication::{
@@ -215,6 +219,8 @@ pub enum ClientError {
     MutationOutcomeUnknown(std::io::ErrorKind),
     /// A remote-index connect or read-only request exceeded its bounded client lease.
     RemoteDeadlineExceeded,
+    /// Caller cancellation, never a reconnectable endpoint failure.
+    RequestCancelled(RequestCancellationReason),
     /// A frame, DTO, or identity proof failed admission.
     Protocol(String),
     /// A bounded transport allocation was rejected.
@@ -284,6 +290,7 @@ impl fmt::Display for ClientError {
             Self::RemoteDeadlineExceeded => {
                 formatter.write_str("remote index exceeded the bounded client request deadline")
             }
+            Self::RequestCancelled(reason) => write!(formatter, "{reason}"),
             Self::Protocol(message) => write!(formatter, "protocol: {message}"),
             Self::Transport(error) => write!(formatter, "transport: {error}"),
             Self::CommandFailed(failure) => write!(formatter, "command failed: {failure}"),
@@ -348,6 +355,10 @@ pub trait CommandTransport {
     fn interrupt_handle(&self) -> Option<TransportInterrupt> {
         None
     }
+
+    /// Carries the caller's request lifetime into asynchronous remote transports.
+    #[cfg(any(unix, windows))]
+    fn set_request_context(&mut self, _context: Option<RequestContext>) {}
 
     /// Replaces the underlying connection while retaining this transport's endpoint and grant.
     ///
@@ -445,17 +456,88 @@ impl UnixCommandTransport {
         connect_timeout: Duration,
         io_timeout: Duration,
     ) -> Result<Self, ClientError> {
+        Self::connect_with_context(path, connect_timeout, io_timeout, None)
+    }
+
+    /// Connects and authenticates inside one caller's cancellation lifetime.
+    /// # Errors
+    /// Returns cancellation or the original bounded dial/authentication error.
+    pub fn connect_with_context(
+        path: impl AsRef<Path>,
+        connect_timeout: Duration,
+        io_timeout: Duration,
+        context: Option<&RequestContext>,
+    ) -> Result<Self, ClientError> {
         let endpoint = backend_replication::UnixEndpointRef::new(path.as_ref())
             .map_err(|_| ClientError::Transport(ReplicationError::MessageTooLarge))?;
         let path = endpoint.as_path();
-        let stream = backend_replication::connect_local_timeout(path, connect_timeout)
-            .map_err(map_endpoint_connect_error)?;
+        let started = std::time::Instant::now();
+        let stream = loop {
+            if let Some(context) = context {
+                context.check()?;
+            }
+            let remaining = connect_timeout.saturating_sub(started.elapsed());
+            let remaining = match context {
+                Some(context) => context
+                    .remaining_read_budget()?
+                    .map_or(remaining, |budget| remaining.min(budget)),
+                None => remaining,
+            };
+            if remaining.is_zero() {
+                return Err(map_endpoint_connect_error(
+                    std::io::ErrorKind::TimedOut.into(),
+                ));
+            }
+            let slice = if context.is_some() {
+                remaining.min(Duration::from_millis(25))
+            } else {
+                remaining
+            };
+            match backend_replication::connect_local_timeout(path, slice) {
+                Ok(stream) => break stream,
+                Err(error)
+                    if context.is_some()
+                        && matches!(
+                            error.kind(),
+                            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                        ) =>
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                    continue;
+                }
+                Err(error) => {
+                    if let Some(context) = context {
+                        context.check()?;
+                    }
+                    return Err(map_endpoint_connect_error(error));
+                }
+            }
+        };
+        let interrupt = Some(TransportInterrupt::new(&stream)?);
+        if let Some(context) = context {
+            context.bind_transport(interrupt.clone())?;
+        }
         // Authentication also touches the new stream, so establish its I/O
         // deadlines before asking the local peer proof helper to inspect it.
-        configure_timeout(&stream, io_timeout)?;
-        let peer = backend_replication::AuthenticatedLocalPeer::authenticate(&stream, path)
-            .map_err(map_peer_authentication_error)?;
-        let interrupt = Some(TransportInterrupt::new(&stream)?);
+        let authentication_budget = match context {
+            Some(context) => context
+                .remaining_read_budget()?
+                .map_or(io_timeout, |remaining| io_timeout.min(remaining)),
+            None => io_timeout,
+        };
+        configure_timeout(&stream, authentication_budget)?;
+        let peer = match backend_replication::AuthenticatedLocalPeer::authenticate(&stream, path) {
+            Ok(peer) => peer,
+            Err(error) => {
+                if let Some(context) = context {
+                    context.check()?;
+                }
+                return Err(map_peer_authentication_error(error));
+            }
+        };
+        if let Some(context) = context {
+            context.check()?;
+        }
         Ok(Self {
             stream,
             interrupt,
@@ -609,6 +691,7 @@ impl CertifiedCommandTransport for UnixCommandTransport {
 pub struct Session {
     endpoint: std::path::PathBuf,
     transport: Box<dyn CommandTransport + Send>,
+    request_context: Option<RequestContext>,
     next_request_id: u64,
     admitted_owner: Option<backend_library::Cursor>,
     prepared_query: Option<CommandDto>,
@@ -693,12 +776,32 @@ impl Session {
                 io_timeout,
             )?),
             endpoint,
+            request_context: None,
             next_request_id: 1,
             admitted_owner: None,
             prepared_query: None,
             continuations: BTreeMap::new(),
             preparation_progress: None,
         })
+    }
+
+    /// Connects a session inside one request, including dial and authentication.
+    /// # Errors
+    /// Returns cancellation or the original connection admission failure.
+    pub fn connect_with_context(
+        path: impl AsRef<Path>,
+        context: RequestContext,
+    ) -> Result<Self, ClientError> {
+        let endpoint = path.as_ref().to_path_buf();
+        let transport = UnixCommandTransport::connect_with_context(
+            &endpoint,
+            LOCAL_CONNECT_TIMEOUT,
+            CLIENT_REQUEST_TIMEOUT,
+            Some(&context),
+        )?;
+        let mut session = Self::from_transport(endpoint, transport);
+        session.set_request_context(Some(context))?;
+        Ok(session)
     }
 
     /// Builds the same revision-aware product session over another admitted command transport.
@@ -709,12 +812,39 @@ impl Session {
         Self {
             endpoint: endpoint.into(),
             transport: Box::new(transport),
+            request_context: None,
             next_request_id: 1,
             admitted_owner: None,
             prepared_query: None,
             continuations: BTreeMap::new(),
             preparation_progress: None,
         }
+    }
+
+    /// Installs or retires the context for one caller-owned request.
+    /// # Errors
+    /// Returns cancellation if this request stopped before transport admission.
+    pub fn set_request_context(
+        &mut self,
+        context: Option<RequestContext>,
+    ) -> Result<(), ClientError> {
+        self.transport.set_request_context(context.clone());
+        self.request_context = context;
+        if let Some(context) = &self.request_context {
+            context.bind_transport(self.interrupt_handle())?;
+        }
+        Ok(())
+    }
+
+    fn check_request_context(&self) -> Result<(), ClientError> {
+        self.request_context
+            .as_ref()
+            .map_or(Ok(()), RequestContext::check)
+    }
+
+    fn request_result<T>(&self, result: Result<T, ClientError>) -> Result<T, ClientError> {
+        self.check_request_context()?;
+        result
     }
 
     /// Returns the endpoint this session was connected to.
@@ -954,7 +1084,10 @@ impl Session {
     /// # Errors
     /// Returns an error when the limit, revision, request, or reply fails admission.
     pub fn search(&mut self, text: &str, limit: u16) -> Result<ReplyDto, ClientError> {
-        let deadline = query_preparation::QueryReadDeadline::new(CLIENT_REQUEST_TIMEOUT);
+        let deadline = query_preparation::QueryReadDeadline::new(
+            CLIENT_REQUEST_TIMEOUT,
+            self.request_context.as_ref(),
+        )?;
         let revision = self.revision_with_budget(deadline.remaining()?)?;
         let limit = QueryLimit::new(limit)
             .ok_or_else(|| ClientError::Protocol("query limit is outside its bound".to_owned()))?;
@@ -987,7 +1120,8 @@ impl Session {
         continuation: Option<PageContinuation>,
         budget: Duration,
     ) -> Result<ReplyDto, ClientError> {
-        let deadline = query_preparation::QueryReadDeadline::new(budget);
+        let deadline =
+            query_preparation::QueryReadDeadline::new(budget, self.request_context.as_ref())?;
         if self.prepared_query.is_some() {
             return self.resume_prepared_query_with_budget(
                 "Search",
@@ -1308,7 +1442,10 @@ impl Session {
         continuation: Option<PageContinuation>,
         cancel: bool,
     ) -> Result<GraphQueryPage, ClientError> {
-        let deadline = query_preparation::QueryReadDeadline::new(CLIENT_REQUEST_TIMEOUT);
+        let deadline = query_preparation::QueryReadDeadline::new(
+            CLIENT_REQUEST_TIMEOUT,
+            self.request_context.as_ref(),
+        )?;
         if let Some(prepared) = self.prepared_query.take() {
             let Command::GraphQuery(query) = &prepared.command else {
                 return Err(ClientError::Protocol(
@@ -1692,7 +1829,18 @@ impl Session {
             Some(certificate) => CommandDto::new(request_id, command).with_certificate(certificate),
             None => CommandDto::new(request_id, command),
         };
-        self.transport.request(request)
+        self.check_request_context()?;
+        let read_budget = self
+            .request_context
+            .as_ref()
+            .map(RequestContext::remaining_read_budget)
+            .transpose()?
+            .flatten();
+        let result = match read_budget {
+            Some(remaining) => self.transport.request_with_budget(request, remaining),
+            None => self.transport.request(request),
+        };
+        self.request_result(result)
     }
 
     fn send_success(
@@ -1717,7 +1865,16 @@ impl Session {
         if let Some(certificate) = certificate {
             request = request.with_certificate(certificate);
         }
-        self.transport.request_with_budget(request, remaining)
+        self.check_request_context()?;
+        let read_budget = self
+            .request_context
+            .as_ref()
+            .map(RequestContext::remaining_read_budget)
+            .transpose()?
+            .flatten();
+        let remaining = read_budget.map_or(remaining, |budget| remaining.min(budget));
+        let result = self.transport.request_with_budget(request, remaining);
+        self.request_result(result)
     }
 
     fn send_success_with_budget(

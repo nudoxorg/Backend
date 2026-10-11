@@ -2098,3 +2098,40 @@ fn search_selection_and_preparation_share_one_deadline() {
         assert_eq!(searches, budgets.len() - 1);
     }
 }
+
+#[test]
+fn caller_context_cancels_preparation_without_sending_shared_worker_control() {
+    let library = Arc::new(Mutex::new(owner(1, 7, 0)));
+    let (mut session, sent, _) = preparing_session(
+        &library,
+        &[backend_library::QueryPreparationState::Preparing],
+        true,
+        None,
+    );
+    let context = RequestContext::new();
+    session
+        .set_request_context(Some(context.clone()))
+        .expect("bind request context even without a socket");
+    session.observe_query_preparation(move |_| {
+        context.cancel(RequestCancellationReason::Explicit);
+        true
+    });
+    assert!(matches!(
+        session.search("Thing", 2),
+        Err(ClientError::RequestCancelled(
+            RequestCancellationReason::Explicit
+        ))
+    ));
+    let sent = sent.lock().expect("exact owner command log");
+    assert_eq!(
+        sent.iter()
+            .filter(|request| matches!(request.command, Command::Search(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        sent.len(),
+        2,
+        "only one Revision and one Search; cancellation sends no owner control"
+    );
+}
