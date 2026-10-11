@@ -2582,8 +2582,10 @@ fn document_and_source_tools_advertise_their_useful_default_detail() {
             tool["inputSchema"]["properties"]["detail"]["default"], "standard",
             "{name} must advertise the same useful default that execution applies"
         );
-        assert_eq!(tool["inputSchema"]["properties"]["detail"]["description"],
-            "Page text and structured fields: summary, standard, or full.");
+        assert_eq!(
+            tool["inputSchema"]["properties"]["detail"]["description"],
+            "Page text and structured fields: summary, standard, or full."
+        );
     }
     let search = tool_named(&listed["result"]["tools"], "backend.search");
     assert_eq!(
@@ -2975,6 +2977,15 @@ fn page_projection_mcp_combined_summary_retains_real_faults_and_section_notes() 
         result["structuredContent"]["notes"][0]["detail"],
         "MCP_SECTION_FAULT_SENTINEL"
     );
+    let decoded: backend_present::SummaryPageDto =
+        serde_json::from_value(result["structuredContent"].clone())
+            .expect("Summary page retains its typed public fault grammar");
+    assert_eq!(decoded.identity.coordinate, DECLARATION);
+    let fault = decoded.source_fault.expect("retained source fault");
+    assert_eq!(fault.cause, "unconfigured");
+    assert_eq!(fault.operand, DECLARATION);
+    assert_eq!(decoded.notes.len(), 1);
+    assert_eq!(decoded.notes[0].detail, "MCP_SECTION_FAULT_SENTINEL");
     assert!(result["structuredContent"].get("source").is_none());
     let text = text_of(&result);
     assert!(text.contains(DECLARATION));

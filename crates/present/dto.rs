@@ -29,8 +29,9 @@ use crate::{Detail, PageProjection};
 
 /// Projects whichever answer a surface produced, tagged by its `answer` field.
 ///
-/// The CLI's `--format json` and the MCP's `structuredContent` both emit this
-/// value, so a consumer that learns one has learned the other.
+/// This is the complete Standard/Full projection. CLI JSON and MCP structured
+/// output apply the requested detail and budget through the shared projection
+/// boundary; Summary pages use [`SummaryPageDto`].
 ///
 /// The discriminator is `answer` rather than the obvious `kind` because a page
 /// already has a `kind` — its declaration kind — and a tag that overwrites a
@@ -424,6 +425,12 @@ pub struct SummaryPageDto {
     /// The retained signature text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+    /// Why captured source is unavailable, when the producer supplied a fault.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_fault: Option<FaultDto>,
+    /// Retained failures explaining unavailable page sections.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<FaultDto>,
 }
 
 /// Members that share one kind.
