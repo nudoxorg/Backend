@@ -675,44 +675,16 @@ impl<'checkpoint> BindResultReducer<'checkpoint> {
                     }
                 }
 
-                // Merge wildcard reexports from this file.
-                // Each entry is (source_module, is_type_only). Value re-export
-                // (is_type_only=false) takes priority over type-only re-export.
-                for (file_name, source_entries) in result.wildcard_reexports.iter() {
+                // Preserve every lexical wildcard edge, including same-spelled
+                // edges with different request modes or type-only attributes.
+                // Selected request consumers recover the exact owning AST edge
+                // from this input-file/lexical order; specifier dedup loses it.
+                for (owner, source_entries) in result.wildcard_reexports.iter() {
                     tick_or_return!(self);
-                    let entry = self
-                        .wildcard_reexports
-                        .entry(file_name.clone())
-                        .or_default();
-
-                    if entry.len() + source_entries.len() <= 16 {
-                        for (source_module, source_is_type_only) in source_entries {
-                            tick_or_return!(self);
-                            if let Some(pos) = entry.iter().position(|(m, _)| m == source_module) {
-                                // Already have this source — if this path is non-type-only,
-                                // override the existing flag (value re-export takes priority).
-                                if !*source_is_type_only {
-                                    entry[pos].1 = false;
-                                }
-                            } else {
-                                entry.push((source_module.clone(), *source_is_type_only));
-                            }
-                        }
-                    } else {
-                        let mut seen: FxHashMap<String, usize> =
-                            entry.iter().map(|(m, _)| m.clone()).zip(0..).collect();
-                        for (source_module, source_is_type_only) in source_entries {
-                            tick_or_return!(self);
-                            if let Some(&pos) = seen.get(source_module) {
-                                if !*source_is_type_only {
-                                    entry[pos].1 = false;
-                                }
-                            } else {
-                                let pos = entry.len();
-                                seen.insert(source_module.clone(), pos);
-                                entry.push((source_module.clone(), *source_is_type_only));
-                            }
-                        }
+                    let entry = self.wildcard_reexports.entry(owner.clone()).or_default();
+                    for edge in source_entries {
+                        tick_or_return!(self);
+                        entry.push(edge.clone());
                     }
                 }
                 // Copy symbols from this file to global arena, getting new IDs

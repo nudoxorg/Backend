@@ -2271,3 +2271,115 @@ fn captured_file_and_ambient_owner_key_collision_refuses_reexport_rows() {
         );
     }
 }
+
+#[test]
+fn merged_external_ambient_owners_keep_all_exact_wildcard_edges() {
+    for first_has_edge in [false, true] {
+        for admitted in [false, true] {
+            for (return_type, codes) in [("number", vec![]), ("string", vec![2322])] {
+                let first_edge = if first_has_edge {
+                    "export * from 'first';"
+                } else {
+                    ""
+                };
+                let files = vec![
+                    (
+                        "src/main.ts".to_owned(),
+                        format!(
+                            "import * as observed from 'pkg'; export function read(): {return_type} {{ return observed.value; }}"
+                        ),
+                    ),
+                    (
+                        "ambient-a.d.ts".to_owned(),
+                        format!(
+                            "declare module 'pkg' {{ export const marker: string; {first_edge} }}"
+                        ),
+                    ),
+                    (
+                        "ambient-b.d.ts".to_owned(),
+                        "declare module 'pkg' { export * from 'second'; }".to_owned(),
+                    ),
+                    (
+                        "src/first.ts".to_owned(),
+                        "export const foreign: string = 'first';".to_owned(),
+                    ),
+                    (
+                        "src/second.ts".to_owned(),
+                        "export const value: number = 42;".to_owned(),
+                    ),
+                    (
+                        "src/wrong.ts".to_owned(),
+                        "export const value: string = 'wrong';".to_owned(),
+                    ),
+                ];
+                let mut resolutions = vec![
+                    ProjectModuleResolution {
+                        importer_path: "src/main.ts".to_owned(),
+                        specifier: "pkg".to_owned(),
+                        request_kind: ProjectModuleRequestKind::EsmImport,
+                        resolution_mode: None,
+                        target: ProjectModuleResolutionTarget::External {
+                            identity: "admitted-ambient:pkg".to_owned(),
+                        },
+                    },
+                    ProjectModuleResolution {
+                        importer_path: "ambient-b.d.ts".to_owned(),
+                        specifier: "second".to_owned(),
+                        request_kind: ProjectModuleRequestKind::EsmReExport,
+                        resolution_mode: None,
+                        target: if admitted {
+                            ProjectModuleResolutionTarget::File {
+                                path: "src/second.ts".to_owned(),
+                            }
+                        } else {
+                            ProjectModuleResolutionTarget::Unresolved
+                        },
+                    },
+                    ProjectModuleResolution {
+                        importer_path: "ambient-b.d.ts".to_owned(),
+                        specifier: "second".to_owned(),
+                        request_kind: ProjectModuleRequestKind::EsmImport,
+                        resolution_mode: None,
+                        target: ProjectModuleResolutionTarget::File {
+                            path: "src/wrong.ts".to_owned(),
+                        },
+                    },
+                ];
+                if first_has_edge {
+                    resolutions.push(ProjectModuleResolution {
+                        importer_path: "ambient-a.d.ts".to_owned(),
+                        specifier: "first".to_owned(),
+                        request_kind: ProjectModuleRequestKind::EsmReExport,
+                        resolution_mode: None,
+                        target: ProjectModuleResolutionTarget::File {
+                            path: "src/first.ts".to_owned(),
+                        },
+                    });
+                }
+                assert_cold_request_semantics_and_owner(
+                    files,
+                    &resolutions,
+                    if admitted { &codes } else { &[2339] },
+                    admitted.then_some(TypeId::NUMBER),
+                    (!admitted).then_some((2, &[2307][..])),
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn merged_wildcard_rows_preserve_exact_lexical_edges_before_resolution() {
+    let program = compile_files_with_libs(vec![
+        ("a.d.ts".to_owned(), "declare module 'pkg' { export type * from 'dep' with { 'resolution-mode': 'import' }; export * from 'dep'; }".to_owned()),
+        ("b.d.ts".to_owned(), "declare module 'pkg' { export type * from 'dep' with { 'resolution-mode': 'import' }; }".to_owned()),
+    ], &[]);
+    assert_eq!(
+        program.wildcard_reexports.get("pkg").unwrap(),
+        &vec![
+            ("dep".to_owned(), true),
+            ("dep".to_owned(), false),
+            ("dep".to_owned(), true)
+        ]
+    );
+}

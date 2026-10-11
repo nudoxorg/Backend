@@ -86,6 +86,75 @@ impl<'source> SelectedModuleRequest<'source> {
     }
 }
 
+/// Walk the retained lexical export order without cloning an AST or request row.
+struct WildcardEdgeCursor<'owner> {
+    owner: &'owner str,
+    wanted: usize,
+    next: usize,
+}
+
+impl WildcardEdgeCursor<'_> {
+    fn visit_source(
+        &mut self,
+        ctx: &CheckerContext<'_>,
+        arena: &tsz_parser::parser::node::NodeArena,
+    ) -> Option<Option<NodeIndex>> {
+        let source = arena.source_files.first()?;
+        for &statement in &source.statements.nodes {
+            if let Some(found) =
+                self.visit(ctx, arena, statement, source.file_name == self.owner, 0)?
+            {
+                return Some(Some(found));
+            }
+        }
+        Some(None)
+    }
+
+    fn visit(
+        &mut self,
+        ctx: &CheckerContext<'_>,
+        arena: &tsz_parser::parser::node::NodeArena,
+        statement: NodeIndex,
+        in_owner: bool,
+        depth: usize,
+    ) -> Option<Option<NodeIndex>> {
+        if depth >= 128 {
+            return None;
+        }
+        ctx.types.execution_checkpoint(1).ok()?;
+        let node = arena.get(statement)?;
+        if let Some(module) = arena.get_module(node) {
+            let in_owner = arena
+                .get_literal_text(module.name)
+                .map_or(in_owner, |name| name == self.owner);
+            let Some(body) = arena.get(module.body) else {
+                return Some(None);
+            };
+            if let Some(block) = arena.get_module_block(body) {
+                if let Some(statements) = block.statements.as_ref() {
+                    for &child in &statements.nodes {
+                        if let Some(found) = self.visit(ctx, arena, child, in_owner, depth + 1)? {
+                            return Some(Some(found));
+                        }
+                    }
+                }
+            } else if arena.get_module(body).is_some() {
+                return self.visit(ctx, arena, module.body, in_owner, depth + 1);
+            }
+        } else if in_owner
+            && arena.get_export_decl(node).is_some_and(|export| {
+                export.export_clause.is_none() && export.module_specifier.is_some()
+            })
+        {
+            if self.next == self.wanted {
+                return Some(Some(statement));
+            }
+            self.next += 1;
+        }
+        Some(None)
+    }
+}
+
 impl<'a> CheckerContext<'a> {
     pub(crate) fn select_module_request<'source>(
         &'source self,
@@ -406,21 +475,39 @@ impl<'a> CheckerContext<'a> {
         selected
     }
 
+    /// Exact source-key membership, using the existing immutable index. Every
+    /// fallback iteration is charged even when no source matches the key.
+    pub(crate) fn is_captured_program_file_key(&self, key: &str) -> Option<bool> {
+        self.types.execution_checkpoint(1 + key.len() as u64).ok()?;
+        let arenas = self.all_arenas.as_ref()?;
+        if let Some(index) = self.global_file_name_index.as_ref() {
+            return Some(
+                index
+                    .get(key)
+                    .and_then(|&file| arenas.get(file))
+                    .and_then(|arena| arena.source_files.first())
+                    .is_some_and(|source| source.file_name == key),
+            );
+        }
+        for arena in arenas.iter() {
+            self.types.execution_checkpoint(1).ok()?;
+            if arena
+                .source_files
+                .first()
+                .is_some_and(|source| source.file_name == key)
+            {
+                return Some(true);
+            }
+        }
+        Some(false)
+    }
+
     /// Legacy export tables share string keys for files and ambient modules.
     /// A collision cannot prove which lexical owner supplied a retained row.
     fn reexport_owner_is_ambiguous(&self, importer: usize, owner: &str) -> Option<bool> {
-        let arenas = self.all_arenas.as_ref()?;
-        let is_file = arenas.iter().any(|arena| {
-            arena
-                .source_files
-                .first()
-                .is_some_and(|source| source.file_name == owner)
-        });
-        if !is_file {
+        if !self.is_captured_program_file_key(owner)? {
             return Some(false);
         }
-        // Per-binder declared names are lexical ambient evidence; the global
-        // module export index also contains file keys and cannot prove this.
         self.get_binder_for_file(importer)?;
         for binder in self.all_binders.as_ref()?.iter() {
             self.types.execution_checkpoint(1).ok()?;
@@ -524,44 +611,38 @@ impl<'a> CheckerContext<'a> {
             return None;
         }
         let arena = self.all_arenas.as_ref()?.get(importer)?;
-        let source = arena.source_files.first()?;
-        let file_statements =
-            std::iter::once(&source.statements).filter(|_| source.file_name == owner);
-        let module_statements = arena.nodes.iter().filter_map(|node| {
-            let module = arena.get_module(node)?;
-            if arena.get_literal_text(module.name) != Some(owner) {
-                return None;
-            }
-            arena
-                .get(module.body)
-                .and_then(|node| arena.get_module_block(node))?
-                .statements
-                .as_ref()
-        });
-        let mut edge_index = 0;
-        for statements in file_statements.chain(module_statements) {
-            for &declaration in &statements.nodes {
+        let mut cursor = WildcardEdgeCursor {
+            owner,
+            wanted: row_index,
+            next: 0,
+        };
+        let declaration = if arena.source_files.first()?.file_name == owner {
+            // A non-colliding file owner has rows from exactly this file.
+            cursor.visit_source(self, arena)??
+        } else {
+            // Ambient rows append input files in lexical edge order. A global
+            // ordinal cannot be interpreted as a local declaration ordinal.
+            let mut selected = None;
+            for (file, candidate) in self.all_arenas.as_ref()?.iter().enumerate() {
                 self.types.execution_checkpoint(1).ok()?;
-                let export = arena
-                    .get(declaration)
-                    .and_then(|node| arena.get_export_decl(node));
-                let Some(export) = export else {
-                    continue;
-                };
-                if export.export_clause.is_some() || export.module_specifier.is_none() {
-                    continue;
-                }
-                if edge_index == row_index {
-                    if export.is_type_only != is_type_only {
+                if let Some(declaration) = cursor.visit_source(self, candidate)? {
+                    if file != importer {
                         return None;
                     }
-                    let request = self.bound_module_request_at(importer, declaration)?;
-                    return (request.specifier == specifier).then_some(request);
+                    selected = Some(declaration);
+                    break;
                 }
-                edge_index += 1;
             }
+            selected?
+        };
+        let export = arena
+            .get(declaration)
+            .and_then(|node| arena.get_export_decl(node))?;
+        if export.is_type_only != is_type_only {
+            return None;
         }
-        None
+        let request = self.bound_module_request_at(importer, declaration)?;
+        (request.specifier == specifier).then_some(request)
     }
 
     pub(crate) fn resolve_named_reexport_target_from_file(

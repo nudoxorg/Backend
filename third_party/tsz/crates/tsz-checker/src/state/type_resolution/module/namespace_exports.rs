@@ -393,20 +393,23 @@ impl<'a> CheckerState<'a> {
                         &mut combined,
                     );
                 }
-                if let Some(owner) = exports
-                    .iter()
-                    .find_map(|(_, &symbol)| self.ctx.resolve_symbol_declaring_file_index(symbol))
-                {
-                    let mut visited = rustc_hash::FxHashSet::default();
-                    self.collect_reexported_symbols(
-                        owner,
-                        Some(ambient_key),
-                        &mut combined,
-                        &mut visited,
-                    );
-                } else if let Some(files) = self.ctx.files_for_module_specifier(ambient_key) {
+                let mut visited = rustc_hash::FxHashSet::default();
+                // A direct export in one declaration does not certify the
+                // completeness of other declarations of this ambient owner.
+                if let Some(files) = self.ctx.files_for_module_specifier(ambient_key) {
                     for &owner in files {
-                        let mut visited = rustc_hash::FxHashSet::default();
+                        self.collect_reexported_symbols(
+                            owner,
+                            Some(ambient_key),
+                            &mut combined,
+                            &mut visited,
+                        );
+                    }
+                }
+                // Retain the stable declaration fallback for contexts whose
+                // ambient file index is incomplete; the visited set deduplicates.
+                for (_, &symbol) in exports.iter() {
+                    if let Some(owner) = self.ctx.resolve_symbol_declaring_file_index(symbol) {
                         self.collect_reexported_symbols(
                             owner,
                             Some(ambient_key),

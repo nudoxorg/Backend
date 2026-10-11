@@ -201,17 +201,9 @@ impl CheckerContext<'_> {
             .as_ref()
             .map(|map| map.as_ref())
             .unwrap_or(binder.module_exports.as_ref());
-        let is_program_key = |key: &str| {
-            self.all_arenas.as_ref().is_some_and(|arenas| {
-                arenas.iter().any(|arena| {
-                    arena
-                        .source_files
-                        .first()
-                        .is_some_and(|source| source.file_name == key)
-                })
-            })
-        };
-        if self.declared_modules_contains(binder, spelling) && !is_program_key(spelling) {
+        if self.declared_modules_contains(binder, spelling)
+            && !self.is_captured_program_file_key(spelling)?
+        {
             return map
                 .get_key_value(spelling)
                 .map(|(key, exports)| (key.as_str(), exports));
@@ -228,7 +220,7 @@ impl CheckerContext<'_> {
                 spelling,
             )?
         };
-        if is_program_key(key) {
+        if self.is_captured_program_file_key(key)? {
             return None;
         }
         map.get_key_value(key)
