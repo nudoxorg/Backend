@@ -24,6 +24,8 @@ pub mod executable_identity;
 pub mod file_identity;
 mod linkage;
 pub mod local;
+#[cfg(target_os = "linux")]
+pub mod monotonic;
 #[cfg(target_os = "macos")]
 pub mod macos_process;
 mod native_path;

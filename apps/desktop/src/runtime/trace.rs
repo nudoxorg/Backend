@@ -21,6 +21,8 @@ static SINK: OnceLock<Option<Sink>> = OnceLock::new();
 
 struct Sink {
     epoch: Instant,
+    #[cfg(target_os = "linux")]
+    _native_clock: Option<backend_platform::monotonic::EpochAnchor>,
     out: Mutex<Output>,
 }
 
@@ -38,23 +40,43 @@ fn sink() -> Option<&'static Sink> {
     let sink = SINK.get_or_init(|| {
         let path = std::env::var_os("NUDOX_TRACE")?;
         let file = File::create(path).ok()?;
+        #[cfg(target_os = "linux")]
+        let native_clock = backend_platform::monotonic::EpochAnchor::capture().ok();
+        #[cfg(target_os = "linux")]
+        let epoch = native_clock.as_ref().map_or_else(Instant::now, backend_platform::monotonic::EpochAnchor::epoch);
+        #[cfg(not(target_os = "linux"))]
         let epoch = Instant::now();
+        #[cfg(target_os = "linux")]
+        let native_detail = native_clock_detail(native_clock.as_ref());
+        #[cfg(not(target_os = "linux"))]
+        let native_detail = "";
         let unix_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0.0, |since| since.as_secs_f64() * 1e3);
         let mut out = BufWriter::with_capacity(64 * 1024, file);
         let failed = writeln!(
             out,
-            "{{\"t_ms\":0,\"name\":\"trace.epoch\",\"detail\":\"pid {}\",\"unix_ms\":{unix_ms:.3}}}",
+            "{{\"t_ms\":0,\"name\":\"trace.epoch\",\"detail\":\"pid {}\",\"unix_ms\":{unix_ms:.3}{native_detail}}}",
             std::process::id()
         ).is_err();
         Some(Sink {
             epoch,
+            #[cfg(target_os = "linux")]
+            _native_clock: native_clock,
             out: Mutex::new(Output { writer: out, failed }),
         })
     });
     STATE.store(if sink.is_some() { ON } else { OFF }, Ordering::Relaxed);
     sink.as_ref()
+}
+
+#[cfg(target_os = "linux")]
+fn native_clock_detail(clock: Option<&backend_platform::monotonic::EpochAnchor>) -> String {
+    clock.map(|clock| {
+        let [before, after] = clock.interval_ns();
+        let (volume, object) = clock.namespace().parts();
+        format!(",\"monotonic_epoch_interval_ns\":[{before},{after}],\"time_namespace\":{{\"volume\":{volume},\"object\":{object}}}")
+    }).unwrap_or_default()
 }
 
 /// Whether tracing is on for this process.
@@ -377,11 +399,26 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn native_epoch_fields_bind_the_retained_monotonic_anchor_and_namespace() {
+        let clock = backend_platform::monotonic::EpochAnchor::capture().expect("native Linux anchor");
+        let detail = native_clock_detail(Some(&clock));
+        let row: serde_json::Value = serde_json::from_str(&format!("{{\"t_ms\":0{detail}}}")).expect("trace epoch fields");
+        assert_eq!(row["monotonic_epoch_interval_ns"], serde_json::json!(clock.interval_ns()));
+        let (volume, object) = clock.namespace().parts();
+        assert_eq!(row["time_namespace"]["volume"].as_u64(), Some(volume));
+        assert_eq!(row["time_namespace"]["object"].as_u64().map(u128::from), Some(object));
+        assert!(native_clock_detail(None).is_empty(), "unavailable native clock must not claim an exact anchor");
+    }
+
     #[test]
     fn a_collection_watermark_follows_the_flushed_batch_and_keeps_loss_visible() {
         let (file, output) = TraceFile::create();
         let cut = Instant::now();
         let sink = Sink {
+            #[cfg(target_os = "linux")]
+            _native_clock: None,
             epoch: cut,
             out: Mutex::new(Output {
                 writer: BufWriter::new(output),
@@ -453,6 +490,8 @@ mod tests {
         let (file, output) = TraceFile::create();
         let cut = Instant::now();
         let sink = Sink {
+            #[cfg(target_os = "linux")]
+            _native_clock: None,
             epoch: cut,
             out: Mutex::new(Output {
                 writer: BufWriter::new(output),
@@ -495,6 +534,8 @@ mod tests {
         let (file, output) = TraceFile::create();
         drop(output);
         let sink = Sink {
+            #[cfg(target_os = "linux")]
+            _native_clock: None,
             epoch: Instant::now(),
             out: Mutex::new(Output {
                 writer: BufWriter::new(File::open(&file.0).unwrap()),
