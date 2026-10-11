@@ -4121,18 +4121,18 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
         self.publisher.shutdown()
     }
 
-    /// Compiles every member of one admitted package frontier and publishes
-    /// the resulting compact fragments and semantic images as one generation.
+    /// Compiles the active semantic members of one admitted package frontier and
+    /// publishes their compact fragments and semantic images as one generation.
     ///
-    /// Each language authority enters with the complete package root while
-    /// retaining the member's exact path. Publication becomes visible only
-    /// after all members lower successfully, and returned images are copied
-    /// only from the owner-reopened immutable closure.
+    /// Every captured source is accounted for by an artifact or an explicit
+    /// coverage gap. Out-of-scope sources retain their exact input provenance
+    /// and make package coverage Partial. Returned images are copied only from
+    /// the owner-reopened immutable closure.
     ///
     /// # Errors
     /// Returns the first exact authority, compilation, capacity, publication,
-    /// reopen, or image-admission failure. No partial package generation is
-    /// returned.
+    /// reopen, or image-admission failure. A frontier with no active semantic
+    /// member cannot produce a semantic generation.
     pub fn compile_package_sources<Progress>(
         &mut self,
         package: PackageSourceSet<'_>,
