@@ -2941,11 +2941,11 @@ for identity in items:
     }
 
     #[test]
-    fn adding_a_row_rebinds_resident_payloads_and_writes_one_vector() {
+    fn adding_a_row_keeps_prior_full_binding_residences_and_writes_separate_vectors() {
         let (coordinator, coverage, documents, _, recipe) = http_projection_inputs();
         let (workspace, view) = super::super::tests::selected_view();
         let kept = documents.len();
-        let (endpoint, server) = serve_resident(11);
+        let (endpoint, server) = serve_resident(10);
         let client =
             qdrant::QdrantHttpClient::new(test_transport(endpoint), recipe).expect("HTTP client");
         let configured = ConfiguredQdrant {
@@ -2961,9 +2961,10 @@ for identity in items:
             active_embedding_identities: BTreeMap::new(),
             active: None,
         };
-        configured
+        let first = configured
             .activate(&coordinator, coverage, documents.clone())
             .expect("first projection");
+        let first_binding = first.index.binding();
         let extra_id = RowId::Symbol(backend_engine::symbol_key("next::generation"));
         let mut next_rows = view.rows().to_vec();
         next_rows.push(Row::new(extra_id, view.basis(), "next generation"));
@@ -2985,33 +2986,337 @@ for identity in items:
             next_evidence,
         )
         .expect("next coordinator");
-        let mut next_documents = documents;
+        let mut next_documents = documents.clone();
         next_documents.push(QdrantDocument {
             row: extra_id,
             coordinates: Arc::from([0.0, 1.0]),
             write: qdrant::CoordinateWrite::Hold,
         });
-        configured
-            .activate(&next, coverage, next_documents)
-            .expect("rebound projection");
+        let second = configured
+            .activate(&next, coverage, next_documents.clone())
+            .expect("separately bound projection");
+        let second_binding = second.index.binding();
+        assert_ne!(first_binding.root, second_binding.root);
+        assert_ne!(first_binding.authority, second_binding.authority);
+        assert_ne!(first_binding.read_manifest, second_binding.read_manifest);
+        assert_eq!(first_binding.workspace, second_binding.workspace);
+        assert_eq!(first_binding.recipe, second_binding.recipe);
+        assert_eq!(first_binding.frontier, second_binding.frontier);
+        assert!(first.matches(&coordinator));
+        assert!(!first.matches(&next));
+        assert!(second.matches(&next));
         let events = server.join().expect("fixture server");
         assert_eq!(
             events.iter().map(|event| event.kind).collect::<Vec<_>>(),
             [
-                "get", "get", "retrieve", "put", "count", "get", "get", "retrieve", "put",
-                "payload", "count"
+                "get", "get", "retrieve", "put", "count", "get", "get", "retrieve", "put", "count"
             ]
         );
         assert_eq!(events[3].points, kept);
         assert!(events[3].carries_vector);
         assert!(events[3].bytes > 0);
-        assert_eq!(events[8].points, 1);
+        assert_eq!(events[2].points, 0);
+        assert_eq!(events[4].points, kept);
+        assert_eq!(events[7].points, 0);
+        assert_eq!(events[8].points, kept + 1);
         assert!(events[8].carries_vector);
         assert!(events[8].bytes > 0);
-        assert!(events[8].bytes < events[3].bytes);
-        assert_eq!(events[9].points, kept);
+        assert!(events[8].bytes > events[3].bytes);
+        assert_eq!(events[9].points, kept + 1);
         assert!(!events[9].carries_vector);
         assert!(events[9].bytes > 0);
+        let old_points = &events[3].stored;
+        let new_points = resident_upsert_points(&events[8]);
+        assert_eq!(old_points.len(), kept);
+        assert_eq!(new_points.len(), kept + 1);
+        assert!(old_points.keys().all(|id| !new_points.contains_key(id)));
+        assert_resident_vectors(old_points, &coordinator, &documents, first_binding);
+        assert_resident_vectors(&new_points, &next, &next_documents, second_binding);
+        let final_points = &events[9].stored;
+        assert_eq!(final_points.len(), kept * 2 + 1);
+        for (id, point) in old_points {
+            assert_eq!(
+                final_points.get(id),
+                Some(point),
+                "old physical point, vector and full binding must not be restamped"
+            );
+        }
+        for (id, point) in new_points {
+            assert_eq!(final_points.get(&id), Some(&point));
+        }
+        assert_exact_count_filter(&events[4], first_binding, kept);
+        assert_exact_count_filter(&events[9], second_binding, kept + 1);
+        // Retain both sources through the assertions. These activations use
+        // the existing test-only pin path, not a native publication receipt.
+        drop((first, second));
+    }
+
+    #[test]
+    fn same_binding_activation_reuses_all_resident_vectors_without_writes() {
+        let (coordinator, coverage, documents, _, recipe) = http_projection_inputs();
+        let kept = documents.len();
+        let (endpoint, server) = serve_resident(9);
+        let client =
+            qdrant::QdrantHttpClient::new(test_transport(endpoint), recipe).expect("HTTP client");
+        let configured = ConfiguredQdrant {
+            client,
+            recipe,
+            projection_scope: [0; 32],
+            producer: None,
+            producer_health: ProducerHealth::Ready,
+            document_embeddings: BTreeMap::new(),
+            embedding_cache: None,
+            projection_state: None,
+            projection_uncertain: false,
+            active_embedding_identities: BTreeMap::new(),
+            active: None,
+        };
+        let first = configured
+            .activate(&coordinator, coverage, documents.clone())
+            .expect("cold same-binding projection");
+        let second = configured
+            .activate(&coordinator, coverage, documents.clone())
+            .expect("resident same-binding projection");
+        let binding = first.index.binding();
+        assert_eq!(binding, second.index.binding());
+        let events = server.join().expect("fixture server");
+        assert_eq!(
+            events.iter().map(|event| event.kind).collect::<Vec<_>>(),
+            [
+                "get", "get", "retrieve", "put", "count", "get", "get", "retrieve", "count"
+            ]
+        );
+        assert_eq!(events[2].points, 0);
+        assert_eq!(events[3].points, kept);
+        assert!(events[3].carries_vector);
+        assert_eq!(events[7].points, kept);
+        assert!(!events[7].carries_vector);
+        assert_eq!(events[3].stored, events[8].stored);
+        assert_resident_vectors(&events[8].stored, &coordinator, &documents, binding);
+        assert_exact_count_filter(&events[4], binding, kept);
+        assert_exact_count_filter(&events[8], binding, kept);
+        assert_eq!(events[2].request["ids"], events[7].request["ids"]);
+        assert_eq!(
+            events[7].response["result"]
+                .as_array()
+                .expect("retrieved rows")
+                .len(),
+            kept
+        );
+        drop((first, second));
+    }
+
+    #[test]
+    fn same_binding_transport_payload_restamp_uploads_no_vector() {
+        // This is an upsert transport control: reminting a logical candidate
+        // under a held binding does not certify an activated semantic view.
+        let (coordinator, coverage, documents, _, recipe) = http_projection_inputs();
+        let vectors = documents
+            .iter()
+            .map(|document| {
+                qdrant::DocumentVector::from_shared(
+                    recipe,
+                    coordinator
+                        .semantic_candidate(document.row)
+                        .expect("candidate"),
+                    Arc::clone(&document.coordinates),
+                )
+                .expect("vector")
+            })
+            .collect::<Vec<_>>();
+        let envelope = ProjectionEnvelope::for_recipe(recipe)
+            .expect("envelope")
+            .admit(vectors.len())
+            .expect("bounded vectors");
+        let (binding, _) = vector_facts(&coordinator, coverage, recipe, &vectors, envelope)
+            .expect("original complete binding");
+        let projection = qdrant::ProjectionBinding::new(binding);
+        let residence =
+            qdrant::PointResidence::for_row(projection.identity(), &documents[0].row.stable_key())
+                .expect("original row residence");
+        let candidate = vectors[0].point().id();
+        let replacement_candidate = qdrant::CandidateId::new(
+            candidate
+                .0
+                .checked_add(1)
+                .expect("bounded fixture candidate"),
+        )
+        .expect("different nonzero candidate");
+        assert_ne!(candidate, replacement_candidate);
+        let replacement = qdrant::DocumentVector::from_shared(
+            recipe,
+            replacement_candidate,
+            Arc::clone(&documents[0].coordinates),
+        )
+        .expect("same coordinates, distinct candidate");
+        let (endpoint, server) = serve_resident(4);
+        let client =
+            qdrant::QdrantHttpClient::new(test_transport(endpoint), recipe).expect("HTTP client");
+        let cold = client
+            .upsert_resident(
+                projection,
+                &[qdrant::ResidentDocument {
+                    residence,
+                    write: qdrant::CoordinateWrite::Hold,
+                    document: &vectors[0],
+                }],
+            )
+            .expect("cold transport upsert");
+        assert_eq!(
+            cold,
+            qdrant::ResidentMutationReceipt {
+                vectors: 1,
+                payloads: 0,
+                unchanged: 0,
+                batches: 1,
+            }
+        );
+        let warm = client
+            .upsert_resident(
+                projection,
+                &[qdrant::ResidentDocument {
+                    residence,
+                    write: qdrant::CoordinateWrite::Hold,
+                    document: &replacement,
+                }],
+            )
+            .expect("same-binding payload update");
+        assert_eq!(
+            warm,
+            qdrant::ResidentMutationReceipt {
+                vectors: 0,
+                payloads: 1,
+                unchanged: 0,
+                batches: 1,
+            }
+        );
+        let events = server.join().expect("fixture server");
+        assert_eq!(
+            events.iter().map(|event| event.kind).collect::<Vec<_>>(),
+            ["retrieve", "put", "retrieve", "payload"]
+        );
+        assert_eq!(events[2].points, 1);
+        assert_eq!(events[3].points, 1);
+        assert!(!events[3].carries_vector);
+        let (id, before) = events[1]
+            .stored
+            .first_key_value()
+            .expect("cold stored point");
+        assert_eq!(events[3].stored.len(), 1);
+        let after = events[3].stored.get(id).expect("same physical residence");
+        assert_eq!(before["vector"], after["vector"]);
+        assert_eq!(
+            before["payload"]["coordinate_key"],
+            after["payload"]["coordinate_key"]
+        );
+        assert_eq!(
+            before["payload"]["residence"],
+            after["payload"]["residence"]
+        );
+        assert_full_binding(&before["payload"], binding);
+        assert_full_binding(&after["payload"], binding);
+        assert_eq!(
+            before["payload"]["candidate"],
+            format!("{:016x}", candidate.0)
+        );
+        assert_eq!(
+            after["payload"]["candidate"],
+            format!("{:016x}", replacement_candidate.0)
+        );
+        let mut expected = before.clone();
+        expected["payload"]["candidate"] =
+            serde_json::json!(format!("{:016x}", replacement_candidate.0));
+        assert_eq!(
+            *after, expected,
+            "only the logical candidate payload changes"
+        );
+    }
+
+    fn resident_upsert_points(event: &ResidentEvent) -> BTreeMap<String, serde_json::Value> {
+        event.request["points"]
+            .as_array()
+            .expect("upsert points")
+            .iter()
+            .map(|point| {
+                (
+                    point["id"].as_str().expect("physical id").to_owned(),
+                    point.clone(),
+                )
+            })
+            .collect()
+    }
+
+    fn assert_full_binding(payload: &serde_json::Value, binding: qdrant::Binding) {
+        for (key, bytes) in [
+            ("workspace", binding.workspace.as_bytes()),
+            ("root", binding.root.as_bytes()),
+            ("recipe", binding.recipe.as_bytes()),
+            ("authority", binding.authority.as_bytes()),
+            ("read_manifest", binding.read_manifest.as_bytes()),
+            ("frontier", binding.frontier.as_bytes()),
+        ] {
+            assert_eq!(
+                payload[key],
+                backend_engine::encode_id(bytes),
+                "binding field {key}"
+            );
+        }
+    }
+
+    fn assert_resident_vectors(
+        points: &BTreeMap<String, serde_json::Value>,
+        coordinator: &QueryCoordinator,
+        documents: &[QdrantDocument],
+        binding: qdrant::Binding,
+    ) {
+        assert_eq!(points.len(), documents.len());
+        for document in documents {
+            let candidate = coordinator
+                .semantic_candidate(document.row)
+                .expect("selected candidate");
+            let candidate = format!("{:016x}", candidate.0);
+            let matching = points
+                .values()
+                .filter(|point| point["payload"]["candidate"] == candidate)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                matching.len(),
+                1,
+                "one physical point per selected logical candidate"
+            );
+            let point = matching[0];
+            assert_full_binding(&point["payload"], binding);
+            assert_eq!(
+                point["vector"],
+                serde_json::json!(document.coordinates.as_ref())
+            );
+            let residence = qdrant::PointResidence::for_row(
+                qdrant::ProjectionIdentity::from_binding(binding),
+                &document.row.stable_key(),
+            )
+            .expect("full-binding residence");
+            let expected_residence = format!("{:032x}", u128::from_be_bytes(residence.digest()));
+            assert_eq!(point["payload"]["residence"], expected_residence);
+        }
+    }
+
+    fn assert_exact_count_filter(event: &ResidentEvent, binding: qdrant::Binding, count: usize) {
+        assert_eq!(event.request["exact"], true);
+        let must = event.request["filter"]["must"]
+            .as_array()
+            .expect("full binding filter");
+        assert_eq!(must.len(), 6);
+        let mut payload = serde_json::Map::new();
+        for condition in must {
+            let key = condition["key"].as_str().expect("filter field").to_owned();
+            assert!(
+                payload
+                    .insert(key, condition["match"]["value"].clone())
+                    .is_none()
+            );
+        }
+        assert_full_binding(&serde_json::Value::Object(payload), binding);
+        assert_eq!(event.response["result"]["count"], count);
     }
 
     fn http_projection_inputs() -> (
@@ -3127,10 +3432,14 @@ for identity in items:
         points: usize,
         bytes: usize,
         carries_vector: bool,
+        request: serde_json::Value,
+        response: serde_json::Value,
+        stored: BTreeMap<String, serde_json::Value>,
     }
 
     fn serve_resident(requests: usize) -> (String, FixtureServer<Vec<ResidentEvent>>) {
-        let metadata = r#"{"result":{"config":{"params":{"vectors":{"size":2,"distance":"Cosine"}}}}}"#;
+        let metadata =
+            r#"{"result":{"config":{"params":{"vectors":{"size":2,"distance":"Cosine"}}}}}"#;
         remote_http_fixture::spawn(requests, move |connections| {
             let mut stored = std::collections::HashMap::<String, serde_json::Value>::new();
             let mut events = Vec::with_capacity(requests);
@@ -3147,7 +3456,8 @@ for identity in items:
                 let (kind, points, response) = if first.starts_with("GET ") {
                     ("get", 0, metadata.to_owned())
                 } else if first.starts_with("PUT ") && first.contains("/points") {
-                    let value: serde_json::Value = serde_json::from_slice(body).expect("upsert JSON");
+                    let value: serde_json::Value =
+                        serde_json::from_slice(body).expect("upsert JSON");
                     let points = value["points"].as_array().cloned().unwrap_or_default();
                     let count = points.len();
                     for point in points {
@@ -3160,7 +3470,8 @@ for identity in items:
                         r#"{"result":{"status":"completed"}}"#.to_owned(),
                     )
                 } else if first.contains("/points/batch") {
-                    let value: serde_json::Value = serde_json::from_slice(body).expect("payload JSON");
+                    let value: serde_json::Value =
+                        serde_json::from_slice(body).expect("payload JSON");
                     let mut count = 0_usize;
                     for operation in value["operations"].as_array().into_iter().flatten() {
                         let payload = operation["set_payload"]["payload"].clone();
@@ -3181,7 +3492,8 @@ for identity in items:
                         r#"{"result":{"status":"completed"}}"#.to_owned(),
                     )
                 } else if first.contains("/points/count") {
-                    let value: serde_json::Value = serde_json::from_slice(body).expect("count JSON");
+                    let value: serde_json::Value =
+                        serde_json::from_slice(body).expect("count JSON");
                     let matched = stored
                         .values()
                         .filter(|point| payload_matches_filter(point, &value["filter"]))
@@ -3192,7 +3504,8 @@ for identity in items:
                         serde_json::json!({"result": {"count": matched}}).to_string(),
                     )
                 } else if first.contains("/points/delete") {
-                    let value: serde_json::Value = serde_json::from_slice(body).expect("delete JSON");
+                    let value: serde_json::Value =
+                        serde_json::from_slice(body).expect("delete JSON");
                     let ids = value["points"].as_array().cloned().unwrap_or_default();
                     for id in &ids {
                         stored.remove(id.as_str().expect("point id"));
@@ -3203,7 +3516,8 @@ for identity in items:
                         r#"{"result":{"status":"completed"}}"#.to_owned(),
                     )
                 } else if first.contains("/points") {
-                    let value: serde_json::Value = serde_json::from_slice(body).expect("retrieve JSON");
+                    let value: serde_json::Value =
+                        serde_json::from_slice(body).expect("retrieve JSON");
                     let points = value["ids"]
                         .as_array()
                         .into_iter()
@@ -3230,6 +3544,17 @@ for identity in items:
                     points,
                     bytes: body.len(),
                     carries_vector,
+                    request: if body.is_empty() {
+                        serde_json::Value::Null
+                    } else {
+                        serde_json::from_slice(body).expect("actual resident request JSON")
+                    },
+                    response: serde_json::from_str(&response)
+                        .expect("actual resident response JSON"),
+                    stored: stored
+                        .iter()
+                        .map(|(id, point)| (id.clone(), point.clone()))
+                        .collect(),
                 });
                 connections.respond(&mut stream, "200 OK", &response);
             }
