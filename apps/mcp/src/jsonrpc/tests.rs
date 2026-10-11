@@ -4429,7 +4429,14 @@ fn deeply_nested_json_is_rejected_before_tool_admission() {
 
 #[test]
 fn the_handshake_reports_the_stable_protocol_and_its_instructions() {
-    let mut server = Server::with_authority(Fake::default(), PROJECT.to_owned(), [9; 32]);
+    let mut server = Server::with_authority(
+        Fake {
+            offline: true,
+            ..Fake::default()
+        },
+        PROJECT.to_owned(),
+        [9; 32],
+    );
     let initialized = server
         .handle(br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#)
         .expect("initialize response");
@@ -4437,10 +4444,59 @@ fn the_handshake_reports_the_stable_protocol_and_its_instructions() {
         initialized["result"]["protocolVersion"],
         MCP_PROTOCOL_VERSION
     );
+    assert_eq!(
+        initialized["result"]["capabilities"],
+        json!({
+            "tools": {"listChanged": false},
+            "resources": {"subscribe": false, "listChanged": false},
+            "prompts": {"listChanged": false}
+        })
+    );
     let instructions = initialized["result"]["instructions"]
         .as_str()
         .unwrap_or_default();
     assert!(instructions.contains("backend.index"), "{instructions}");
+    assert!(
+        instructions.contains("copy the returned index_poll.call verbatim as your next backend.index_progress tool call"),
+        "{instructions}"
+    );
+    assert!(
+        instructions.contains("Repeat only while index_poll is present"),
+        "{instructions}"
+    );
+    assert!(
+        instructions.contains("inspect the terminal receipt's outcome"),
+        "{instructions}"
+    );
+    assert!(
+        instructions
+            .contains("Unknown, unresolved and expired observations do not establish publication"),
+        "{instructions}"
+    );
+    assert!(
+        instructions.contains("published receipt does not make every optional lane ready"),
+        "{instructions}"
+    );
+    assert!(
+        instructions
+            .find("backend.packages")
+            .expect("shelf instruction")
+            < instructions
+                .find("backend.index")
+                .expect("explicit index instruction"),
+        "existing shelf inspection precedes any suggested mutation: {instructions}"
+    );
+    assert_eq!(
+        server.product.probe_calls, 0,
+        "cold handshake never needs an owner read"
+    );
+    assert!(
+        server.product.surface_commands.is_empty(),
+        "instructions admit no mutation or status poll"
+    );
+    let mut line = Vec::new();
+    write_message(&mut line, &initialized).expect("production initialize line");
+    assert_stdio_line_accounting(std::str::from_utf8(&line).expect("UTF-8"));
     assert!(instructions.contains("absolute path"), "{instructions}");
     assert!(instructions.contains("backend.document"), "{instructions}");
     assert!(instructions.contains("nudox add ."), "{instructions}");

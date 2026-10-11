@@ -632,7 +632,8 @@ impl<P: Product> Server<P> {
         let mut instructions = String::with_capacity(INSTRUCTIONS.len() + project.len() + 400);
         instructions.push_str(INSTRUCTIONS);
         instructions.push_str(
-            "\n\nQuick start: `nudox add .`, then `nudox search \"error handling\"`. \
+            "\n\nQuick start: `nudox add .`; for accepted work, copy the returned poll command \
+             and inspect its terminal receipt before `nudox search \"error handling\"`. \
              Register this stdio server in Claude Code with `claude mcp add --scope user \
              --transport stdio nudox -- \"$(command -v backend-mcp)\" --project \
              '${CLAUDE_PROJECT_DIR:-.}'`, then verify with \
@@ -1373,9 +1374,13 @@ impl<P: Product> Server<P> {
     }
 }
 
-const INSTRUCTIONS: &str = "This server attaches to the current index without changing it. Index or \
-reindex a repository explicitly with backend.index and its absolute path, then call \
-backend.packages. An empty shelf means no project has been indexed yet, and a lane that is not \
+const INSTRUCTIONS: &str = "This server attaches to the current index without changing it. Call \
+backend.packages to inspect the shelf. Index or reindex a repository explicitly with backend.index \
+and its absolute path. For accepted or active indexing work, copy the returned index_poll.call \
+verbatim as your next backend.index_progress tool call. Repeat only while index_poll is present \
+and inspect the terminal receipt's outcome. Unknown, unresolved \
+and expired observations do not establish publication. A published receipt does not make every \
+optional lane ready. An empty shelf means no project has been indexed yet, and a lane that is not \
 configured is not an empty codebase. Find \
 a coordinate with backend.search, or with backend.outline when you do not know the names. Copy \
 that coordinate verbatim into backend.document for the signature and docs, backend.source for \
