@@ -63,36 +63,42 @@ impl TypeInterner {
         checkpoint: &dyn ExecutionCheckpoint,
     ) -> Result<TypeId, ProjectExecutionStop> {
         self.with_union_execution_work(checkpoint, |work| {
-            let mut reduced: TypeListBuffer = SmallVec::new();
-            for member in flat {
-                tick_union_execution_work(work, 1)?;
-                reduced.push(member);
-            }
-            if !self.strict_null_checks() {
-                if let Some(collapsed) =
-                    self.reduce_and_collapse_nonstrict_with_work(&mut reduced, work)?
-                {
-                    flush_union_execution_work(work)?;
-                    Ok(collapsed)
-                } else {
-                    flush_union_execution_work(work)?;
-                    let list_id = self.intern_type_list_from_slice(&reduced);
-                    Ok(self.intern(TypeData::Union(list_id)))
-                }
-            } else {
-                if reduced.is_empty() {
-                    flush_union_execution_work(work)?;
-                    Ok(TypeId::NEVER)
-                } else if reduced.len() == 1 {
-                    flush_union_execution_work(work)?;
-                    Ok(reduced[0])
-                } else {
-                    flush_union_execution_work(work)?;
-                    let list_id = self.intern_type_list_from_slice(&reduced);
-                    Ok(self.intern(TypeData::Union(list_id)))
-                }
-            }
+            self.union_from_sorted_vec_with_work(flat, work)
         })
+    }
+
+    fn union_from_sorted_vec_with_work(
+        &self,
+        flat: Vec<TypeId>,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<TypeId, ProjectExecutionStop> {
+        let mut reduced: TypeListBuffer = SmallVec::new();
+        for member in flat {
+            tick_union_execution_work(work, 1)?;
+            reduced.push(member);
+        }
+        if !self.strict_null_checks() {
+            if let Some(collapsed) =
+                self.reduce_and_collapse_nonstrict_with_work(&mut reduced, work)?
+            {
+                flush_union_execution_work(work)?;
+                Ok(collapsed)
+            } else {
+                flush_union_execution_work(work)?;
+                let list_id = self.intern_type_list_from_slice(&reduced);
+                Ok(self.intern(TypeData::Union(list_id)))
+            }
+        } else if reduced.is_empty() {
+            flush_union_execution_work(work)?;
+            Ok(TypeId::NEVER)
+        } else if reduced.len() == 1 {
+            flush_union_execution_work(work)?;
+            Ok(reduced[0])
+        } else {
+            flush_union_execution_work(work)?;
+            let list_id = self.intern_type_list_from_slice(&reduced);
+            Ok(self.intern(TypeData::Union(list_id)))
+        }
     }
 
     pub(crate) fn union2_with_execution_checkpoint(
@@ -646,5 +652,92 @@ impl TypeInterner {
         }
         flat.truncate(write);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod sorted_vec_checkpoint_tests {
+    use super::TypeInterner;
+    use crate::types::{TypeData, TypeId};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use tsz_common::{ExecutionCheckpoint, ProjectExecutionStop};
+
+    struct ContinueCheckpoint;
+
+    impl ExecutionCheckpoint for ContinueCheckpoint {
+        fn checkpoint(&self, _work_units: u64) -> Result<(), ProjectExecutionStop> {
+            Ok(())
+        }
+    }
+
+    struct StopAfterOneUnit(AtomicU64);
+
+    impl ExecutionCheckpoint for StopAfterOneUnit {
+        fn checkpoint(&self, work_units: u64) -> Result<(), ProjectExecutionStop> {
+            if self
+                .0
+                .fetch_add(work_units, Ordering::AcqRel)
+                .saturating_add(work_units)
+                > 1
+            {
+                Err(ProjectExecutionStop::Cancelled)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn sorted_vec_shared_path_preserves_strict_and_nonstrict_results() {
+        let strict = TypeInterner::new();
+        let sorted = vec![TypeId::NUMBER, TypeId::NULL];
+        let ordinary = strict.union_from_sorted_vec(sorted.clone());
+        assert!(matches!(strict.lookup(ordinary), Some(TypeData::Union(_))));
+        let checked = strict
+            .union_from_sorted_vec_with_execution_checkpoint(sorted, &ContinueCheckpoint)
+            .expect("continuing checkpoint preserves the ordinary result");
+        assert_eq!(checked, ordinary);
+        assert_eq!(
+            strict.union_from_sorted_vec(Vec::new()),
+            strict
+                .union_from_sorted_vec_with_execution_checkpoint(Vec::new(), &ContinueCheckpoint,)
+                .expect("empty sorted input completes"),
+        );
+        assert_eq!(
+            strict.union_from_sorted_vec(vec![TypeId::STRING]),
+            strict
+                .union_from_sorted_vec_with_execution_checkpoint(
+                    vec![TypeId::STRING],
+                    &ContinueCheckpoint,
+                )
+                .expect("singleton sorted input completes"),
+        );
+
+        let nonstrict = TypeInterner::new();
+        nonstrict.set_strict_null_checks(false);
+        let sorted = vec![TypeId::NUMBER, TypeId::NULL];
+        let ordinary = nonstrict.union_from_sorted_vec(sorted.clone());
+        assert_eq!(ordinary, TypeId::NUMBER);
+        let checked = nonstrict
+            .union_from_sorted_vec_with_execution_checkpoint(sorted, &ContinueCheckpoint)
+            .expect("continuing checkpoint preserves nonstrict absorption");
+        assert_eq!(checked, ordinary);
+    }
+
+    #[test]
+    fn sorted_vec_stop_flushes_before_interning_result() {
+        let interner = TypeInterner::new();
+        let before = interner.len();
+        let checkpoint = StopAfterOneUnit(AtomicU64::new(0));
+
+        assert_eq!(
+            interner.union_from_sorted_vec_with_execution_checkpoint(
+                vec![TypeId::NUMBER, TypeId::NULL],
+                &checkpoint,
+            ),
+            Err(ProjectExecutionStop::Cancelled),
+        );
+        assert_eq!(interner.len(), before);
+        assert!(!interner.is_union_too_complex());
     }
 }
