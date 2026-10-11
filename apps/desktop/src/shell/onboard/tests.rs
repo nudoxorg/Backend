@@ -100,7 +100,9 @@ fn the_first_screen_says_what_the_app_is_for_and_offers_the_way_in(cx: &mut Test
     assert!(add.1.size.width > gpui::px(40.0) && add.1.size.height > gpui::px(16.0), "and it has a body: {:?}", add.1);
     let words = drawn(&mut rig);
     assert!(words.iter().any(|line| line == "or press"), "the key that does the same is offered: {words:#?}");
-    assert_eq!(crate::shell::keys::cap(crate::shell::keys::Command::AddFolder), "⌘O", "and it is ⌘O");
+    let cap = if cfg!(target_os = "macos") { "⌘O" } else { "Ctrl+O" };
+    assert!(words.iter().any(|line| line == cap), "the drawn shortcut matches this platform: {words:#?}");
+    assert_eq!(crate::shell::keys::cap(crate::shell::keys::Command::AddFolder), cap);
 }
 
 #[gpui::test]
@@ -213,6 +215,9 @@ fn enter_adds_the_folder_and_lands_on_the_library_saying_what_it_is_doing(cx: &m
         !said.iter().any(|line| line.contains('%')),
         "the owner reports no percentage, so none is drawn: {said:#?}"
     );
+    let words = drawn(&mut rig);
+    let cap = if cfg!(target_os = "macos") { "⌘O" } else { "Ctrl+O" };
+    assert!(words.iter().any(|line| line == cap), "Add another folder draws the platform shortcut: {words:#?}");
 }
 
 #[gpui::test]

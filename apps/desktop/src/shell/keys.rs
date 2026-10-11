@@ -5,7 +5,7 @@
 //! Plain letters listen only outside text inputs, so typing in Ask never
 //! walks focus. Rows marked *provisional* are the owner's first placement.
 
-use gpui::{KeyBinding, actions};
+use gpui::{KeyBinding, Keystroke, actions};
 
 actions!(
     nudox,
@@ -205,19 +205,16 @@ pub(crate) struct Key {
     pub command: Command,
     /// GPUI keystroke spelling (`secondary` is ⌘ on macOS, Ctrl elsewhere).
     pub chord: &'static str,
-    /// The cap the key shows while ⌘ is held (and in Settings › Keys).
-    pub cap: &'static str,
     /// Where it listens.
     pub scope: Scope,
     /// What it does, in the words Settings › Keys uses.
     pub says: &'static str,
 }
 
-const fn key(command: Command, chord: &'static str, cap: &'static str, scope: Scope, says: &'static str) -> Key {
+const fn key(command: Command, chord: &'static str, scope: Scope, says: &'static str) -> Key {
     Key {
         command,
         chord,
-        cap,
         scope,
         says,
     }
@@ -225,61 +222,65 @@ const fn key(command: Command, chord: &'static str, cap: &'static str, scope: Sc
 
 /// The table. The first row for a command is its primary chord (its cap).
 pub(crate) const TABLE: &[Key] = &[
-    key(Command::FocusNext, "j", "J", Scope::Plain, "walk focus down"),
-    key(Command::FocusNext, "down", "↓", Scope::Plain, "walk focus down"),
-    key(Command::FocusPrev, "k", "K", Scope::Plain, "walk focus up"),
-    key(Command::FocusPrev, "up", "↑", Scope::Plain, "walk focus up"),
-    key(Command::ReaderPageDown, "pagedown", "Page Down", Scope::Reader, "scroll the page down"),
-    key(Command::ReaderPageUp, "pageup", "Page Up", Scope::Reader, "scroll the page up"),
-    key(Command::ReaderTop, "home", "Home", Scope::Reader, "scroll to the top of the page"),
-    key(Command::ReaderBottom, "end", "End", Scope::Reader, "scroll to the bottom of the page"),
-    key(Command::Activate, "enter", "↵", Scope::Plain, "open what the focus stands on"),
-    key(Command::Peek, "space", "Space", Scope::Plain, "peek; again to pin"),
-    key(Command::PeelSource, "s", "S", Scope::Plain, "the focused declaration's code"),
+    key(Command::FocusNext, "j", Scope::Plain, "walk focus down"),
+    key(Command::FocusNext, "down", Scope::Plain, "walk focus down"),
+    key(Command::FocusPrev, "k", Scope::Plain, "walk focus up"),
+    key(Command::FocusPrev, "up", Scope::Plain, "walk focus up"),
+    key(Command::ReaderPageDown, "pagedown", Scope::Reader, "scroll the page down"),
+    key(Command::ReaderPageUp, "pageup", Scope::Reader, "scroll the page up"),
+    key(Command::ReaderTop, "home", Scope::Reader, "scroll to the top of the page"),
+    key(Command::ReaderBottom, "end", Scope::Reader, "scroll to the bottom of the page"),
+    key(Command::Activate, "enter", Scope::Plain, "open what the focus stands on"),
+    key(Command::Peek, "space", Scope::Plain, "peek; again to pin"),
+    key(Command::PeelSource, "s", Scope::Plain, "the focused declaration's code"),
     // provisional (owner, 2026-09-25)
-    key(Command::Graph, "g", "G", Scope::Plain, "the graph"),
+    key(Command::Graph, "g", Scope::Plain, "the graph"),
     // provisional (owner, 2026-09-25)
-    key(Command::CodePage, "secondary-.", "⌘.", Scope::Shell, "code ↔ page"),
-    key(Command::HintMode, "f", "F", Scope::Plain, "hint mode"),
-    key(Command::Ask, "secondary-k", "⌘K", Scope::Shell, "ask"),
-    key(Command::Back, "secondary-[", "⌘[", Scope::Shell, "back along the thread"),
-    key(Command::Forward, "secondary-]", "⌘]", Scope::Shell, "forward along the thread"),
-    key(Command::Surface, "secondary-up", "⌘↑", Scope::Plain, "surface one depth"),
+    key(Command::CodePage, "secondary-.", Scope::Shell, "code ↔ page"),
+    key(Command::HintMode, "f", Scope::Plain, "hint mode"),
+    key(Command::Ask, "secondary-k", Scope::Shell, "ask"),
+    key(Command::Back, "secondary-[", Scope::Shell, "back along the thread"),
+    key(Command::Forward, "secondary-]", Scope::Shell, "forward along the thread"),
+    key(Command::Surface, "secondary-up", Scope::Plain, "surface one depth"),
     // provisional: ⌘. went to code ↔ page
-    key(Command::Zen, "secondary-shift-.", "⌘⇧.", Scope::Shell, "zen: one page, no shelf"),
-    key(Command::ToggleShelf, "secondary-\\", "⌘\\", Scope::Shell, "the shelf"),
-    key(Command::NextZone, "tab", "Tab", Scope::Plain, "next zone"),
-    key(Command::PrevZone, "shift-tab", "⇧Tab", Scope::Plain, "previous zone"),
-    key(Command::Escape, "escape", "Esc", Scope::Shell, "close the topmost thing; back to the pinned release"),
-    key(Command::ZoomIn, "secondary-=", "⌘+", Scope::Shell, "text larger"),
-    key(Command::ZoomIn, "secondary-+", "⌘+", Scope::Shell, "text larger"),
-    key(Command::ZoomOut, "secondary--", "⌘−", Scope::Shell, "text smaller"),
-    key(Command::ZoomReset, "secondary-0", "⌘0", Scope::Shell, "text at the system's size"),
+    key(Command::Zen, "secondary-shift-.", Scope::Shell, "zen: one page, no shelf"),
+    key(Command::ToggleShelf, "secondary-\\", Scope::Shell, "the shelf"),
+    key(Command::NextZone, "tab", Scope::Plain, "next zone"),
+    key(Command::PrevZone, "shift-tab", Scope::Plain, "previous zone"),
+    key(Command::Escape, "escape", Scope::Shell, "close the topmost thing; back to the pinned release"),
+    key(Command::ZoomIn, "secondary-=", Scope::Shell, "text larger"),
+    key(Command::ZoomIn, "secondary-+", Scope::Shell, "text larger"),
+    key(Command::ZoomOut, "secondary--", Scope::Shell, "text smaller"),
+    key(Command::ZoomReset, "secondary-0", Scope::Shell, "text at the system's size"),
     // Depth moved to ⌃ when the hand took ⌘1–⌘5 (lead, 2026-09-27).
-    key(Command::DepthOrbit, "ctrl-1", "⌃1", Scope::Shell, "Orbit"),
-    key(Command::DepthPackage, "ctrl-2", "⌃2", Scope::Shell, "the package"),
-    key(Command::DepthPage, "ctrl-3", "⌃3", Scope::Shell, "the page"),
-    key(Command::DepthCode, "ctrl-4", "⌃4", Scope::Shell, "the code"),
-    key(Command::OpenSettings, "secondary-,", "⌘,", Scope::Shell, "settings"),
-    key(Command::Hold, "secondary-d", "⌘D", Scope::Shell, "hold it in the hand"),
-    key(Command::OpenHand, "h", "H", Scope::Plain, "the hand"),
-    key(Command::HandCard1, "secondary-1", "⌘1", Scope::Shell, "the hand's first card"),
-    key(Command::HandCard2, "secondary-2", "⌘2", Scope::Shell, "the hand's second card"),
-    key(Command::HandCard3, "secondary-3", "⌘3", Scope::Shell, "the hand's third card"),
-    key(Command::HandCard4, "secondary-4", "⌘4", Scope::Shell, "the hand's fourth card"),
-    key(Command::HandCard5, "secondary-5", "⌘5", Scope::Shell, "the hand's fifth card"),
-    key(Command::CopyAddress, "secondary-shift-c", "⌘⇧C", Scope::Shell, "copy the address"),
-    key(Command::Tour, "t", "T", Scope::Plain, "tour this package in the graph"),
-    key(Command::AddFolder, "secondary-o", "⌘O", Scope::Shell, "add a folder"),
+    key(Command::DepthOrbit, "ctrl-1", Scope::Shell, "Orbit"),
+    key(Command::DepthPackage, "ctrl-2", Scope::Shell, "the package"),
+    key(Command::DepthPage, "ctrl-3", Scope::Shell, "the page"),
+    key(Command::DepthCode, "ctrl-4", Scope::Shell, "the code"),
+    key(Command::OpenSettings, "secondary-,", Scope::Shell, "settings"),
+    key(Command::Hold, "secondary-d", Scope::Shell, "hold it in the hand"),
+    key(Command::OpenHand, "h", Scope::Plain, "the hand"),
+    key(Command::HandCard1, "secondary-1", Scope::Shell, "the hand's first card"),
+    key(Command::HandCard2, "secondary-2", Scope::Shell, "the hand's second card"),
+    key(Command::HandCard3, "secondary-3", Scope::Shell, "the hand's third card"),
+    key(Command::HandCard4, "secondary-4", Scope::Shell, "the hand's fourth card"),
+    key(Command::HandCard5, "secondary-5", Scope::Shell, "the hand's fifth card"),
+    key(Command::CopyAddress, "secondary-shift-c", Scope::Shell, "copy the address"),
+    key(Command::Tour, "t", Scope::Plain, "tour this package in the graph"),
+    key(Command::AddFolder, "secondary-o", Scope::Shell, "add a folder"),
 ];
+
+impl Key {
+    /// The platform's caption for the same chord admitted by the key binding.
+    pub(crate) fn cap(&self) -> String {
+        gpui_component::kbd::Kbd::format(&Keystroke::parse(self.chord).expect("static shell key chord"))
+    }
+}
 
 /// The cap a command shows (its first row).
 #[must_use]
-pub(crate) fn cap(command: Command) -> &'static str {
-    TABLE
-        .iter()
-        .find(|key| key.command == command)
-        .map_or("", |key| key.cap)
+pub(crate) fn cap(command: Command) -> String {
+    TABLE.iter().find(|key| key.command == command).map_or_else(String::new, Key::cap)
 }
 
 fn binding_context(key: &Key) -> String {

@@ -252,7 +252,7 @@ impl HoverIntent {
 
 /// A key cap that shows over a shell-drawn control while ⌘ is held (facet
 /// controls rise their own through `.key(…)`).
-pub(crate) fn keycap(shown: bool, label: &'static str, measure: &Measure) -> Option<gpui::AnyElement> {
+pub(crate) fn keycap(shown: bool, label: impl Into<SharedString>, measure: &Measure) -> Option<gpui::AnyElement> {
     shown.then(|| {
         div()
             .absolute()

@@ -293,7 +293,7 @@ pub(crate) fn empty(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
                     .gap(measure.space(Space::Roomy))
                     .child(add)
                     .child(text(ty::SMALL, &measure, palette.ink3).child("or press"))
-                    .child(kbd("⌘O", &measure).voice(KbdVoice::Quiet)),
+                    .child(kbd(crate::shell::keys::cap(crate::shell::keys::Command::AddFolder), &measure).voice(KbdVoice::Quiet)),
             )
             .child(find)
             .child(
@@ -414,7 +414,7 @@ pub(crate) fn add_another(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
             .gap(measure.space(Space::Roomy))
             .child(add)
             .child(text(ty::SMALL, &measure, palette.ink3).child("or press"))
-            .child(kbd("⌘O", &measure).voice(KbdVoice::Quiet))
+            .child(kbd(crate::shell::keys::cap(crate::shell::keys::Command::AddFolder), &measure).voice(KbdVoice::Quiet))
             .child(find),
     )
 }

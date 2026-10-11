@@ -292,7 +292,7 @@ impl Render for Titlebar {
                 id.clone(),
                 facet::controls::icon_button(id, Icon::SideL, "Toggle the shelf", &measure)
                     .on(shelf_on)
-                    .key("⌘\\")
+                    .key(super::keys::cap(super::keys::Command::ToggleShelf))
                     .on_click(move |window, cx| act(window, cx)),
             ),
         );
@@ -513,7 +513,7 @@ impl Titlebar {
                         if !matches!(event, ClickEvent::Keyboard(_)) { click_act(window, cx); }
                     })
                     .on_key_down(move |event, window, cx| activate_key(event, &key_act, window, cx))
-                    .children(keycap(keys, "⌘[", measure)),
+                    .children(keycap(keys, super::keys::cap(super::keys::Command::Back), measure)),
             ));
         } else {
             bar = bar.child(div()
@@ -716,7 +716,7 @@ impl Titlebar {
                             float::leave(&"jump-address".into(), window, cx);
                         }
                     })
-                    .children(keycap(keys, "⌘K", measure)),
+                    .children(keycap(keys, super::keys::cap(super::keys::Command::Ask), measure)),
         );
         bar.into_any_element()
     }
@@ -860,7 +860,7 @@ impl Titlebar {
                         if !matches!(event, ClickEvent::Keyboard(_)) { click_act(window, cx); }
                     })
                     .on_key_down(move |event, window, cx| activate_key(event, &key_act, window, cx))
-                    .children(keycap(keys, "⌘K", measure)),
+                    .children(keycap(keys, super::keys::cap(super::keys::Command::Ask), measure)),
             )
             .into_any_element()
     }
