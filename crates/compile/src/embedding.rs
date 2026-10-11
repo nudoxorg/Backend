@@ -3570,11 +3570,16 @@ while True:
             ),
             ("PATH".into(), "/usr/bin:/bin".into()),
         ])?;
-        let (root, _, runtime) = activate_fixture(
+        // The two 1.25-second responses must share the original two-second
+        // request budget, independently of the positive-fixture default.
+        let limits = ProcessLimits::new(256, 64, Duration::from_secs(2), 256)?
+            .with_input_bytes_limit(2_048)?;
+        let (root, _, runtime) = activate_fixture_with_limits(
             root,
             program,
             vec!["--persistent-bem2-v1".into()],
             environment,
+            limits,
         )?;
         // With a 2,048-byte request cap, eleven 128-byte inputs fit and twelve do not;
         // the model therefore needs exactly two API microbatches.
