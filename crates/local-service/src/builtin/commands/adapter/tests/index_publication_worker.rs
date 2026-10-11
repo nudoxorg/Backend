@@ -1612,13 +1612,21 @@ fn staged_selection_removal(fixture: &mut AdapterFixture) -> PreparedProductSele
         .selected_product_keys_for_package(package)
         .expect("actual prior selection");
     assert!(!keys.is_empty(), "native prior generation is required");
+    let coordinate = keys[0]
+        .coordinate()
+        .as_str()
+        .split('#')
+        .next()
+        .unwrap()
+        .to_owned();
     let reference = backend_engine::PackageReference::parse(label.clone()).unwrap();
     let prefix = "directory/".repeat(20);
     for index in 0..6_000 {
         keys.push(
             ProductSemanticPublicationKey::new(
                 reference.clone(),
-                PackageUrl::parse(format!("{label}#{prefix}unavailable_{index:05}.py")).unwrap(),
+                PackageUrl::parse(format!("{coordinate}#{prefix}unavailable_{index:05}.py"))
+                    .unwrap(),
                 LanguageProfile::Python(PythonVersion::Python314),
             )
             .unwrap(),
