@@ -39,6 +39,14 @@ struct Probe {
     completion: Completion,
 }
 
+/// One filesystem request. The active request is retained until it physically
+/// completes; cancellation only retires its authority to change the form.
+/// There is at most one later request, replaced by the latest input/submit.
+enum Work {
+    Probe { typed: String, edit: u64, shelf: Vec<LocalProjectId> },
+    Admit { typed: String, edit: u64, submission: u64, answer: Option<Task<Result<Folder, Refusal>>> },
+}
+
 /// The dialog's content: the field, what the disk says under it, the buttons.
 pub(crate) struct Form {
     links: Links,
@@ -57,11 +65,16 @@ pub(crate) struct Form {
     walking: Option<usize>,
     /// The refusal said under the field, once, until the next edit.
     said: Option<Refusal>,
-    asking: Option<Task<()>>,
+    active: Option<Task<()>>,
+    pending: Option<Work>,
+    #[cfg(test)]
+    started: u64,
+    #[cfg(test)]
+    active_probe: Option<u64>,
     /// An admission belongs to one uninterrupted editing session. Covering
     /// the form retires it even when the field is retained for a later return.
     submission: u64,
-    submitted: Option<Task<()>>,
+    submitted: bool,
     /// ↵ put a folder on the shelf (or went to one already there): the
     /// dialog closes onto a Library that changed under it.
     landed: bool,
@@ -81,7 +94,7 @@ impl Form {
         });
         let overlay = cx.subscribe(&links.store, |add: &mut Self, _, event, cx| {
             if event.is_branch(Branch::Overlay) {
-                let pending = add.submitted.is_some();
+                let pending = add.submitted;
                 add.retire_submission();
                 if pending { cx.notify(); }
             }
@@ -95,9 +108,14 @@ impl Form {
             edit: 0,
             walking: None,
             said: None,
-            asking: None,
+            active: None,
+            pending: None,
+            #[cfg(test)]
+            started: 0,
+            #[cfg(test)]
+            active_probe: None,
             submission: 0,
-            submitted: None,
+            submitted: false,
             landed: false,
             _subscriptions: vec![events, overlay],
         }
@@ -110,7 +128,7 @@ impl Form {
         self.observed_text.clear();
         self.walking = None;
         self.said = None;
-        self.asking = None;
+        self.pending = None;
         self.landed = false;
         self.edit = self.edit.wrapping_add(1);
         self.input.update(cx, |input, cx| {
@@ -142,7 +160,8 @@ impl Form {
 
     pub(crate) fn retire_submission(&mut self) {
         self.submission = self.submission.wrapping_add(1);
-        self.submitted = None;
+        self.submitted = false;
+        if matches!(self.pending, Some(Work::Admit { .. })) { self.pending = None; }
     }
 
     /// The field's edit: ask the disk, off this thread, about the new text.
@@ -155,31 +174,15 @@ impl Form {
         self.edit = self.edit.wrapping_add(1);
         self.walking = None;
         self.said = None;
-        let edit = self.edit;
-        let shelf = self.shelf(cx);
-        let asked = typed.clone();
-        self.asking = Some(cx.spawn(async move |add, cx| {
-            let probe = cx
-                .background_executor()
-                .spawn(async move {
-                    let home = path::home();
-                    let admitted = (!asked.trim().is_empty()).then(|| path::admit(&asked, home.as_deref(), &shelf));
-                    Probe { completion: path::complete(&asked, home.as_deref()), admitted }
-                })
-                .await;
-            let _ = add.update(cx, |add, cx| {
-                if add.edit == edit {
-                    add.probe = probe;
-                    add.asking = None;
-                    cx.notify();
-                }
-            });
-        }));
+        self.enqueue(Work::Probe { typed, edit: self.edit, shelf: self.shelf(cx) }, cx);
         cx.notify();
     }
 
     #[cfg(test)]
-    pub(super) fn probe_pending(&self) -> bool { self.asking.is_some() }
+    pub(super) fn probe_pending(&self) -> bool {
+        self.active_probe == Some(self.edit)
+            || matches!(&self.pending, Some(Work::Probe { edit, .. }) if *edit == self.edit)
+    }
 
     fn shelf(&self, cx: &App) -> Vec<LocalProjectId> {
         self.links.snapshot(cx).workspace().projects.iter().map(|project| project.id.clone()).collect()
@@ -222,34 +225,89 @@ impl Form {
         if self.walking.is_some() && self.complete(window, cx) {
             return;
         }
-        let typed = self.typed(cx);
-        let admission = cx.background_executor().spawn(async move {
-            // Admission is fresh, not the possibly older typing probe. Shelf
-            // membership is checked against the live shelf when it lands.
-            path::admit(&typed, path::home().as_deref(), &[])
-        });
-        self.admit_submission(admission, cx);
+        self.request_admission(None, cx);
     }
 
     fn can_submit(&self, cx: &App) -> bool {
-        !self.landed && self.submitted.is_none() && self.links.snapshot(cx).overlay() == Some(Overlay::AddProject)
+        !self.landed && !self.submitted && self.links.snapshot(cx).overlay() == Some(Overlay::AddProject)
     }
 
+    #[cfg(test)]
     pub(super) fn admit_submission(&mut self, admission: Task<Result<Folder, Refusal>>, cx: &mut Context<Self>) {
+        self.request_admission(Some(admission), cx);
+    }
+
+    fn request_admission(&mut self, answer: Option<Task<Result<Folder, Refusal>>>, cx: &mut Context<Self>) {
         if !self.can_submit(cx) { return; }
-        let typed = self.typed(cx);
-        let edit = self.edit;
-        let submission = self.submission;
-        self.submitted = Some(cx.spawn(async move |add, cx| {
-            let answer = admission.await;
-            let _ = add.update(cx, |add, cx| {
-                if add.submission != submission || add.edit != edit || add.typed(cx) != typed
-                    || add.landed || add.links.snapshot(cx).overlay() != Some(Overlay::AddProject) { return; }
-                add.submitted = None;
-                add.admitted(answer, cx);
-            });
-        }));
+        self.submitted = true;
+        self.enqueue(Work::Admit { typed: self.typed(cx), edit: self.edit, submission: self.submission, answer }, cx);
         cx.notify();
+    }
+
+    fn enqueue(&mut self, work: Work, cx: &mut Context<Self>) {
+        if self.active.is_some() {
+            self.pending = Some(work);
+        } else {
+            self.start(work, cx);
+        }
+    }
+
+    fn start(&mut self, work: Work, cx: &mut Context<Self>) {
+        debug_assert!(self.active.is_none());
+        #[cfg(test)] {
+            self.started += 1;
+            self.active_probe = match &work { Work::Probe { edit, .. } => Some(*edit), Work::Admit { .. } => None };
+        }
+        self.active = Some(cx.spawn(async move |add, cx| {
+            match work {
+                Work::Probe { typed, edit, shelf } => {
+                    let probe = cx.background_executor().spawn(async move {
+                        let home = path::home();
+                        let admitted = (!typed.trim().is_empty()).then(|| path::admit(&typed, home.as_deref(), &shelf));
+                        Probe { completion: path::complete(&typed, home.as_deref()), admitted }
+                    }).await;
+                    let _ = add.update(cx, |add, cx| {
+                        if add.edit == edit {
+                            add.probe = probe;
+                            cx.notify();
+                        }
+                        add.finished(cx);
+                    });
+                }
+                Work::Admit { typed, edit, submission, answer } => {
+                    let request_text = typed.clone();
+                    let answer = match answer {
+                        Some(answer) => answer.await,
+                        None => cx.background_executor().spawn(async move {
+                            path::admit(&request_text, path::home().as_deref(), &[])
+                        }).await,
+                    };
+                    let _ = add.update(cx, |add, cx| {
+                        if add.submission == submission && add.edit == edit && add.typed(cx) == typed
+                            && !add.landed && add.links.snapshot(cx).overlay() == Some(Overlay::AddProject) {
+                            add.submitted = false;
+                            add.admitted(answer, cx);
+                        }
+                        add.finished(cx);
+                    });
+                }
+            }
+        }));
+    }
+
+    fn finished(&mut self, cx: &mut Context<Self>) {
+        // Releasing logical authority never releases this occupancy slot.
+        // Only the actual completion above can start the latest request.
+        self.active = None;
+        #[cfg(test)] { self.active_probe = None; }
+        if let Some(work) = self.pending.take() { self.start(work, cx); }
+    }
+
+    #[cfg(test)]
+    pub(super) fn work_state(&self) -> (u64, bool, Option<String>) {
+        (self.started, self.active.is_some(), self.pending.as_ref().map(|work| match work {
+            Work::Probe { typed, .. } | Work::Admit { typed, .. } => typed.clone(),
+        }))
     }
 
     fn admitted(&mut self, answer: Result<Folder, Refusal>, cx: &mut Context<Self>) {
@@ -428,7 +486,7 @@ impl Render for Form {
                                 button("add-folder-add", "Add", &measure)
                                     .primary()
                                     .disabled(typed_nothing)
-                                    .busy(self.submitted.is_some())
+                                    .busy(self.submitted)
                                     .on_click(move |window, cx| chosen.update(cx, |add, cx| add.submit(window, cx))),
                             ),
                     ),

@@ -118,6 +118,57 @@ fn unsettled_admission(rig: &mut Rig, folder: &std::path::Path) -> async_channel
     release
 }
 
+fn folder_work(rig: &mut Rig) -> (u64, bool, Option<String>) {
+    rig.cx.update(|window, cx| super::form(window, cx).expect("retained form").read(cx).work_state())
+}
+
+#[gpui::test]
+fn held_folder_work_coalesces_native_edits_into_one_latest_probe(cx: &mut TestAppContext) {
+    let (_, folder) = project("bounded-edits");
+    let mut rig = first_run(cx, 1440.0);
+    rig.keys("secondary-o");
+    type_in(&mut rig, folder.to_str().expect("path"));
+    let release = held_admission(&mut rig, &folder);
+    let (started, active, pending) = folder_work(&mut rig);
+    assert!(active);
+    assert!(pending.is_none());
+    for _ in 0..64 { type_in(&mut rig, "x"); }
+    let latest = rig.cx.update(|window, cx| super::field(window, cx).expect("field").read(cx).value().to_string());
+    assert_eq!(folder_work(&mut rig), (started, true, Some(latest)),
+        "logical retirement must retain physical occupancy and only the latest pending edit");
+    let _ = release.try_send(());
+    rig.settle();
+    assert_eq!(folder_work(&mut rig), (started + 1, false, None),
+        "only one latest filesystem probe starts after the old operation actually completes");
+    assert!(snapshot(&mut rig).workspace().projects.is_empty());
+    assert_eq!(overlay(&mut rig), Some(Overlay::AddProject));
+}
+
+#[gpui::test]
+fn queued_folder_submission_and_cover_do_not_release_held_physical_occupancy(cx: &mut TestAppContext) {
+    let (_, folder) = project("bounded-cover");
+    let mut rig = first_run(cx, 1440.0);
+    rig.keys("secondary-o");
+    type_in(&mut rig, folder.to_str().expect("path"));
+    let release = held_admission(&mut rig, &folder);
+    let started = folder_work(&mut rig).0;
+    type_in(&mut rig, "-changed");
+    rig.keys("enter enter enter");
+    assert_eq!(folder_work(&mut rig).0, started, "submitting behind a blocked call cannot start another worker");
+    rig.go(Intent::OpenSettings(crate::navigation::SettingsPage::Appearance));
+    rig.keys("escape");
+    assert_eq!(overlay(&mut rig), Some(Overlay::AddProject));
+    assert_eq!(folder_work(&mut rig), (started, true, None),
+        "cover and return retire queued submission, not the still-active physical call");
+    type_in(&mut rig, "-latest");
+    let latest = rig.cx.update(|window, cx| super::field(window, cx).expect("field").read(cx).value().to_string());
+    assert_eq!(folder_work(&mut rig), (started, true, Some(latest)));
+    let _ = release.try_send(());
+    rig.settle();
+    assert_eq!(folder_work(&mut rig), (started + 1, false, None));
+    assert!(snapshot(&mut rig).workspace().projects.is_empty(), "neither retired submission can land after return");
+}
+
 #[gpui::test]
 fn native_no_op_delete_does_not_cancel_admission_while_the_typing_probe_is_pending(cx: &mut TestAppContext) {
     let (_, folder) = project("held-no-op-delete");
