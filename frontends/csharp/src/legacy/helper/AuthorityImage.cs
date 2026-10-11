@@ -420,14 +420,17 @@ internal static class AuthorityImage
                 {
                     // An implementation binding whose interface member lives
                     // in another assembly has no local row: the binding is
-                    // still real compiler-proved authority, so the row keeps
-                    // an absent target and the member name as the foreign
-                    // spelling the reader keys on.
+                    // still real compiler-proved authority. Include the
+                    // declaring interface in the spelling: different
+                    // interfaces can expose identically named members, and
+                    // this binding also discriminates their implementations.
                     var targetRow = declarationMap.TryGetValue(target, out var row) ? row : Absent;
                     var span = Span(info.Span);
                     var nameEnd = U(offsets[info.NameSpan.End]);
                     var binding = new byte[28]; Put(binding, 0, owner); Put(binding, 4, targetRow);
-                    Put(binding, 8, Atom(target.Name)); Put(binding, 12, TreeFileAtom());
+                    var spelling = TryQualifiedMemberSpelling(target.ContainingType, target.Name, out var qualified)
+                        ? qualified : target.Name;
+                    Put(binding, 8, Atom(spelling)); Put(binding, 12, TreeFileAtom());
                     Put(binding, 16, span.Start); Put(binding, 20, nameEnd); binding[24] = 5; references.Add(binding);
                 }
             }

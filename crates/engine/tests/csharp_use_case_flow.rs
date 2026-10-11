@@ -145,12 +145,13 @@ fn oracle_image(dotnet: &Path, source: &[u8]) -> Option<Vec<u8>> {
 
 fn compile_flow(dotnet: &Path, source: &[u8]) -> Result<(Ir, Duration), String> {
     let image = oracle_image(dotnet, source).ok_or_else(|| "Roslyn authority image".to_owned())?;
-    let authority =
-        backend_frontend_csharp::legacy::CSharpImage::open(&image).map_err(|error| error.to_string())?;
+    let authority = backend_frontend_csharp::legacy::CSharpImage::open(&image)
+        .map_err(|error| error.to_string())?;
     let changed: Vec<_> = authority
         .declarations()
         .filter_map(|declared| declared.ok())
         .filter(|declared| declared.kind == DeclarationKind::Event)
+        .filter(|declared| declared.flags.is_explicit_interface)
         .filter(|declared| declared.name.bytes == b"Changed")
         .collect();
     if changed.len() != 2 {
@@ -205,9 +206,14 @@ fn explicit_events_flow() {
         Err(error) => panic!("explicit interface events must lower: {error}"),
     };
 
+    let host = ir
+        .items()
+        .find(|item| item.kind() == EntityKind::Record && item.name() == b"Host")
+        .expect("the event host type must lower");
     let changed: Vec<_> = ir
         .items()
         .filter(|item| item.kind() == EntityKind::Field && item.name() == b"Changed")
+        .filter(|item| item.parent() == Some(host.id()))
         .collect();
     assert_eq!(
         changed.len(),

@@ -287,14 +287,19 @@ public final class App {
         classpath: &[],
         release: JavaRelease::Java21,
     };
+    let empty_corpus = root.join("empty-corpus");
+    fs::create_dir(&empty_corpus)?;
     let mut output = Vec::new();
     let error = harness
-        .image(&jdk, request, &mut output)
+        .image_with_corpus(&jdk, request, &[], Some(&empty_corpus), &mut output)
         .err()
         .ok_or_else(|| io::Error::other("missing dependency unexpectedly compiled"))?;
     let _ = fs::remove_dir_all(&root);
     let HarnessError::UnresolvedDependencies {
-        packages, stderr, ..
+        packages,
+        stderr,
+        exit_code,
+        ..
     } = error
     else {
         panic!(
@@ -306,8 +311,13 @@ public final class App {
         "the missing package must be named: {packages}"
     );
     assert!(
-        stderr.contains("not weakened"),
-        "the error must say the compiler was not relaxed: {stderr}"
+        stderr.contains("error: package com.google.common.base does not exist"),
+        "javac must reject the retained missing import: {stderr}"
+    );
+    assert_ne!(exit_code, "0", "javac must reject unresolved imports");
+    assert!(
+        output.is_empty(),
+        "no authority image on unresolved imports"
     );
     Ok(())
 }

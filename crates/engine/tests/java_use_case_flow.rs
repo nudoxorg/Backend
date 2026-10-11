@@ -149,24 +149,41 @@ fn generic_box_flow() {
         classpath: &[],
         release: HarnessRelease::Java21,
     };
+    // This refusal deliberately has no dependency sources. The fleet corpus
+    // contains Guava, so inheriting it would turn this missing-import fixture
+    // into a compilation of unrelated corpus dependencies.
+    let empty_corpus = harness.classes_dir().join("empty-corpus");
+    fs::create_dir(&empty_corpus).expect("empty fixture dependency corpus");
     let mut output = Vec::new();
     let error = harness
-        .image(&jdk, request, &mut output)
+        .image_with_corpus(&jdk, request, &[], Some(&empty_corpus), &mut output)
         .expect_err("a missing import must not seal as success");
     match error {
-        HarnessError::UnresolvedDependencies { packages, stderr, .. } => {
+        HarnessError::UnresolvedDependencies {
+            packages,
+            stderr,
+            exit_code,
+            ..
+        } => {
             assert!(
                 packages.contains("com.google.common.base"),
                 "the missing package must be named: {packages:?}"
             );
             assert!(
-                stderr.contains("not weakened"),
-                "the compiler must stay at full strictness: {stderr}"
+                stderr.contains("error: package com.google.common.base does not exist"),
+                "javac must reject the retained missing import: {stderr}"
+            );
+            assert_ne!(
+                exit_code, "0",
+                "the compiler must reject unresolved imports"
             );
         }
         other => panic!("missing dependency must be UnresolvedDependencies, not {other:?}"),
     }
-    assert!(output.is_empty(), "no authority image on unresolved imports");
+    assert!(
+        output.is_empty(),
+        "no authority image on unresolved imports"
+    );
 
     use_case_support::finish("java", "generic-box", compile_elapsed, &ir)
         .expect("use-case bench report");
