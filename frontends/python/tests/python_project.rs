@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use backend_frontend_python::legacy::checker::{
     CheckerError, InferenceSite, InferredType, NativePythonProjectAuthority, PythonProjectControl,
-    PythonProjectCoverageGapKind, PythonProjectSource, SymbolOutcome,
+    PythonProjectCoverageGapKind, PythonProjectSource, PythonProjectSourceStatus, SymbolOutcome,
 };
 use backend_semantic::vocabulary::PythonVersion;
 
