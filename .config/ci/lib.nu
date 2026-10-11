@@ -39,6 +39,18 @@ export def --env ci-step [lane: string, name: string, body: closure]: nothing ->
     let elapsed = (date now) - $started
     print $"== ($lane): ($name) ($verdict) in ($elapsed) =="
     print $"CI-TIMING lane=($lane) step=\"($name)\" seconds=($elapsed / 1sec | math round) result=($verdict)"
+    if (in-ci) {
+        let metric = {
+            kind: "ci-step"
+            head_sha: $env.CI_HEAD_SHA
+            lane: $lane
+            step: $name
+            started_at: ($started | format date "%+")
+            seconds: ($elapsed / 1sec | math round --precision 3)
+            outcome: $verdict
+        }
+        print $"CI-METRIC ($metric | to json --raw)"
+    }
     if $verdict == "TIMEOUT" {
         $env.CI_TIMED_OUT = ($env.CI_TIMED_OUT? | default [] | append $name)
     }

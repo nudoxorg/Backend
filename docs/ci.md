@@ -68,13 +68,16 @@ python3 .config/ci/report.py run-1.log run-2.log
 ```
 
 The report deduplicates exported attempts and separates passed and failed
-checks. It reports compilation means, maximums, and artifact reuse. It omits
+checks. It reports compilation means, maximums, and artifact reuse, plus
+separate named-step summaries for structural checks and runtime tests. It omits
 p99 below 100 attempts; even larger samples need a representative workload and
 time window. A few repeated warm runs are cache experiments, not a reliable
 developer-latency p99.
 
-These metrics exclude queueing, clone time, shell realization, and runtime
-testing. End-to-end latency requires a recorded push/webhook timestamp joined
+Compilation metrics exclude queueing, clone time, shell realization, and runtime
+testing. Named-step metrics include that step's compilation and execution, but
+still exclude scheduler queueing and dev-shell preparation. Failed and timed-out
+steps have separate summaries. End-to-end latency requires a recorded push/webhook timestamp joined
 to the exact head's final status. A commit's authored timestamp is not a push
 timestamp. Until that link is measured, do not advertise a push-to-green average
 or p99. Report full-runtime and fast-gate results separately.

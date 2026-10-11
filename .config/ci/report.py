@@ -12,11 +12,16 @@ import statistics
 
 def summarize(logs):
     attempts = {}
+    step_attempts = {}
     for log in logs:
         for line in re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", log).splitlines():
             if not line.startswith("CI-METRIC "):
                 continue
             record = json.loads(line.removeprefix("CI-METRIC "))
+            if record.get("kind") == "ci-step":
+                key = (record["head_sha"], record["lane"], record["step"], record["started_at"])
+                step_attempts[key] = record
+                continue
             if record.get("kind") != "cargo-check":
                 continue
             key = (record["head_sha"], record["target"], record["started_at"])
@@ -42,11 +47,29 @@ def summarize(logs):
             "rebuilt_artifacts": rebuilt,
             "artifact_reuse_fraction": round(fresh / (fresh + rebuilt), 4) if fresh + rebuilt else None,
         })
+    step_groups = defaultdict(list)
+    for record in step_attempts.values():
+        step_groups[(record["lane"], record["step"], record["outcome"])].append(record)
+    step_summaries = []
+    for (lane, step, outcome), records in sorted(step_groups.items()):
+        seconds = sorted(record["seconds"] for record in records)
+        step_summaries.append({
+            "lane": lane,
+            "step": step,
+            "outcome": outcome,
+            "attempts": len(records),
+            "mean_seconds": round(statistics.mean(seconds), 3),
+            "max_seconds": max(seconds),
+            "observed_p99_seconds": seconds[math.ceil(len(seconds) * .99) - 1] if len(seconds) >= 100 else None,
+        })
     return {
         "measurement": "Cargo check execution only; excludes queueing, checkout, shell preparation and runtime tests",
         "p99_note": "Observed nearest-rank percentile; omitted below 100 attempts. Sample size and workload mix still matter.",
         "summaries": summaries,
         "attempts": list(attempts.values()),
+        "step_measurement": "Named CI step execution; excludes queueing, checkout and dev-shell preparation. Failed and timed-out steps are separate from passes.",
+        "step_summaries": step_summaries,
+        "step_attempts": list(step_attempts.values()),
     }
 
 
