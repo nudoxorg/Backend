@@ -1,0 +1,934 @@
+{
+  "schema": "nudox.runtime-installed-checkpoint-evidence.v1",
+  "checked_at_utc": "2026-10-11T08:38:04.858472+00:00",
+  "source": {
+    "commit": "be7b91c0124d0eaf7301d0dd40384c2118cc55c7",
+    "tree": "3062e6784b23ae134683cd9e6cd4e2691fc2e839",
+    "clean": true,
+    "cargo_lock_sha256": "8201d7cdb691e3ac5094bd9aef516fb96dc6f98fe40abf8d84163c6f16e75719",
+    "clean_before": true,
+    "clean_after": true
+  },
+  "build": {
+    "receipt": {
+      "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/current-private-package-review-03/current-trio-be7-08/receipt.json",
+      "bytes": 24186,
+      "sha256": "a6bd9270f60edc5f8743cfe650cfcb68a58daa95ab8c4616471b4398ba3de9f4"
+    },
+    "stderr": {
+      "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/current-private-package-review-03/current-trio-be7-08/stderr.log",
+      "bytes": 263480,
+      "sha256": "e7dbd89836b3359dee045a334e61d98016d73fa327fabc98b807764cef4d5c2d"
+    },
+    "argv": [
+      "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+      "build",
+      "--locked",
+      "--offline",
+      "-j2",
+      "-p",
+      "backend-cli",
+      "-p",
+      "backend-mcp",
+      "-p",
+      "backend-locald"
+    ],
+    "exit": 0,
+    "seconds": 401.9110997009557,
+    "profile": "dev-debug-unoptimized"
+  },
+  "derivation": {
+    "receipt": {
+      "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/current-private-package-review-03/current-trio-be7-stripped-01/receipt.json",
+      "bytes": 41777,
+      "sha256": "80728e3927bb452f9cbc96bda31f7e42078b438ed4fd86c5069c7525252f4915"
+    },
+    "kind": "owned-copy-strip-debug",
+    "allocated_file_backed_sections_equal": true,
+    "artifacts": {
+      "backend-cli": {
+        "path": "/root/sol61-ilo-real-cli-mcp-20261011/current-trio-be7-stripped-01/backend-cli",
+        "bytes": 178952584,
+        "sha256": "30a0abd297b17814c4347d99ab3f096e0605bf804e21fe0dcdd623acfae7fb76"
+      },
+      "backend-mcp": {
+        "path": "/root/sol61-ilo-real-cli-mcp-20261011/current-trio-be7-stripped-01/backend-mcp",
+        "bytes": 130220096,
+        "sha256": "0f3b8a68a3af860c9f9885b918b229a82064cf7755c8e74c02231d08f670662a"
+      },
+      "backend-locald": {
+        "path": "/root/sol61-ilo-real-cli-mcp-20261011/current-trio-be7-stripped-01/backend-locald",
+        "bytes": 494451960,
+        "sha256": "2792d333a645d253e4f4ccf6ca2df83a8741091f220dfcecc85b60d2c3ee066b"
+      }
+    },
+    "original_artifacts": {
+      "backend-cli": {
+        "path": "/root/codex-worktrees/sol61-ilo-integrated-20261011/.local/target/debug/backend-cli",
+        "sha256": "d388bb5876ee883e069a469312dba5f0c4b2e18d887362b1feec3e173b0f3c38",
+        "bytes": 1381645728
+      },
+      "backend-mcp": {
+        "path": "/root/codex-worktrees/sol61-ilo-integrated-20261011/.local/target/debug/backend-mcp",
+        "sha256": "4ed9cdf1522a10f0f84279112c5d016c23645b8b76488469631cddaedacb2bd5",
+        "bytes": 1209139608
+      },
+      "backend-locald": {
+        "path": "/root/codex-worktrees/sol61-ilo-integrated-20261011/.local/target/debug/backend-locald",
+        "sha256": "75250d86fe4baf5b79f41d24ca996030f2e9490d77bd11945f6ef0b2b39853af",
+        "bytes": 1681013848
+      }
+    }
+  },
+  "custody": {
+    "original_unstripped_named_paths_retained": false,
+    "cause": "The managed wrapper reclaimed slot-0 when its workspace identity changed for the Qdrant fixture job.",
+    "retained": "Persistent stripped copies, package, source, original build logs/receipts and before/after allocated-section hashes.",
+    "follow_up": "Copy original artifacts into a persistent receipt directory before reassigning mutable build slots."
+  },
+  "private_package": {
+    "release_manifest": {
+      "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/current-private-package-review-03/current-linux-be7-03/release-manifest.json",
+      "bytes": 698,
+      "sha256": "2fdd5e9b35be6303242c5e29e2749afa5656ac1b729bbbb06b1dcb75d1cfdce8"
+    },
+    "packaging_manifest": {
+      "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/current-private-package-review-03/current-linux-be7-03/nudox-linux-x86_64/packaging-manifest.json",
+      "bytes": 40327,
+      "sha256": "7b2affa431c8704c91ab9d8e3cd20ab305afda3aa3587af5bea27ad9a76b49c1"
+    },
+    "archive": {
+      "asset": "nudox-linux-x86_64-be7b91c012.tar.gz",
+      "size_bytes": 219332662,
+      "sha256": "4f01cf998668fbafe7770a9e4f8ec3af6516bfb6977a1660cb3bf6e120715c33"
+    },
+    "minimum_glibc": "2.39",
+    "published": false
+  },
+  "native_gates": [
+    {
+      "receipt": {
+        "path": "/private/tmp/nudox-root-native-oct11-new-gates/present-mcp-default.receipt.json",
+        "bytes": 26173,
+        "sha256": "875a906b7e030bd11ea63d6eca716be9a9261afb9e7108e26ff29904f3cdd98c"
+      },
+      "log": {
+        "path": "/private/tmp/nudox-root-native-oct11-new-gates/present-mcp-default.stdout.log",
+        "bytes": 25269,
+        "sha256": "39149a9ccfcdaa71242aedf7bcd7988a66cdb01261810285aa60b54305fed504"
+      },
+      "source": {
+        "commit": "be7b91c0124d0eaf7301d0dd40384c2118cc55c7",
+        "tree": "3062e6784b23ae134683cd9e6cd4e2691fc2e839",
+        "clean": true,
+        "cargo_lock_sha256": "8201d7cdb691e3ac5094bd9aef516fb96dc6f98fe40abf8d84163c6f16e75719"
+      },
+      "exit": 101,
+      "seconds": 17.98002948006615,
+      "result_lines": [
+        "test result: ok. 149 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.14s",
+        "test result: FAILED. 124 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.32s"
+      ]
+    },
+    {
+      "receipt": {
+        "path": "/private/tmp/nudox-root-native-oct11-new-gates/ts-membership-nine.receipt.json",
+        "bytes": 26079,
+        "sha256": "50ef7f5c478c23faccf16bf0c0bf009b89aaa5edcbb51a255dcc008a342fb8c1"
+      },
+      "log": {
+        "path": "/private/tmp/nudox-root-native-oct11-new-gates/ts-membership-nine.stderr.log",
+        "bytes": 253706,
+        "sha256": "73446470cb6086d35abda7fa07a46d8cd829ab9dc41de3b116ecd3e6a87cf66b"
+      },
+      "source": {
+        "commit": "e9875cd5a791dbfb253ae72a93eac3b31150ad2e",
+        "tree": "fc710311ceabba6be6d348f81e7db605f6495f92",
+        "clean": true,
+        "cargo_lock_sha256": "8201d7cdb691e3ac5094bd9aef516fb96dc6f98fe40abf8d84163c6f16e75719"
+      },
+      "exit": 101,
+      "seconds": 584.2845483210403,
+      "result_lines": []
+    }
+  ],
+  "qdrant_fixture_gates": [
+    {
+      "receipt": {
+        "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/resident-fixture-controls-099f-13/receipt.json",
+        "bytes": 22294,
+        "sha256": "13da16d5630c03e3363971a986632892aa2820e2b30b380ce2787b5320af83ad"
+      },
+      "exit": 0,
+      "seconds": 239.64117893204093,
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-local-service",
+        "--lib",
+        "builtin::query::remote::remote_http_fixture::",
+        "--",
+        "--nocapture"
+      ],
+      "stdout": {
+        "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/resident-fixture-controls-099f-13/stdout.log",
+        "bytes": 642,
+        "sha256": "7b62d80e628157ddd0ce401eb6c63bb0eac090340c8e9d0fbfede710b04935aa"
+      },
+      "stderr": {
+        "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/resident-fixture-controls-099f-13/stderr.log",
+        "bytes": 336437,
+        "sha256": "ed74e8aa9de4e8c436bb807a6d81ed4cdfc1ee9b0c944e5a69aa7bd223355fd6"
+      },
+      "result_lines": [
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 1238 filtered out; finished in 1.06s"
+      ]
+    },
+    {
+      "receipt": {
+        "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/resident-original-diagnostic-099f-14/receipt.json",
+        "bytes": 22354,
+        "sha256": "4c7f5a8a2e982190052760ae96d806f0edb36f157263dd56f2c1104a46a89ca5"
+      },
+      "exit": 101,
+      "seconds": 2.101411576149985,
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-local-service",
+        "--lib",
+        "builtin::query::remote::tests::adding_a_row_rebinds_resident_payloads_and_writes_one_vector",
+        "--",
+        "--exact",
+        "--nocapture"
+      ],
+      "stdout": {
+        "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/resident-original-diagnostic-099f-14/stdout.log",
+        "bytes": 345,
+        "sha256": "5bef077698c8b398fcb9081c1aea744197d0d589b1b5d0347ee27579b9145a3b"
+      },
+      "stderr": {
+        "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/resident-original-diagnostic-099f-14/stderr.log",
+        "bytes": 346639,
+        "sha256": "11f0af664f92cb34bad03d42161a481aaa87d8cb6b17c6d67fb3f3981cbcc541"
+      },
+      "result_lines": [
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1242 filtered out; finished in 0.06s"
+      ]
+    }
+  ],
+  "independent_installed_flow": {
+    "evidence_archive": {
+      "path": "/private/tmp/nudox-sol61-fresh-app-acceptance-20261011/mealie-first-current-01-evidence.tar.gz",
+      "bytes": 22732,
+      "sha256": "76a89be84a49aadcc766197ea63d757931101339850dd4fdef425387481b72d0"
+    },
+    "environment": {
+      "environment": {
+        "HOME": "/home/acceptance",
+        "PATH": "/home/acceptance/.local/bin:/usr/local/bin:/usr/bin:/bin",
+        "LANG": "C.UTF-8",
+        "NO_COLOR": "1",
+        "XDG_CONFIG_HOME": "/home/acceptance/.config",
+        "XDG_DATA_HOME": "/home/acceptance/.local/share",
+        "XDG_STATE_HOME": "/home/acceptance/.local/state",
+        "XDG_CACHE_HOME": "/home/acceptance/.cache",
+        "XDG_RUNTIME_DIR": "/home/acceptance/run"
+      },
+      "uid": 1000,
+      "gid": 1000,
+      "os_release": "PRETTY_NAME=\"Ubuntu 24.04.5 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"24.04\"\nVERSION=\"24.04.5 LTS (Noble Numbat)\"\nVERSION_CODENAME=noble\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=noble\nLOGO=ubuntu-logo\n",
+      "glibc": "glibc 2.39",
+      "kernel": "6.18.38",
+      "token_count_method": "cl100k_base"
+    },
+    "prefix_before": {
+      "home": "/home/acceptance",
+      "prefix": "/home/acceptance/.local",
+      "nudox_exists": false,
+      "mcp_exists": false,
+      "observed_utc": "2026-10-11T07:42:39.024796+00:00"
+    },
+    "installer": {
+      "argv": [
+        "/usr/bin/python3",
+        "/work/sol61-fresh-runtime-01/package/install-linux-x64.py",
+        "--candidate-directory",
+        "/work/sol61-fresh-runtime-01/package"
+      ],
+      "exit": 0,
+      "seconds": 7.804247415158898,
+      "finished_utc": "2026-10-11T07:44:55.115333+00:00"
+    },
+    "version_event": {
+      "kind": "cli",
+      "argv": [
+        "/home/acceptance/.local/bin/nudox",
+        "--version"
+      ],
+      "cwd": "/work/mealie",
+      "pid": 1912005,
+      "exit": 0,
+      "timeout": false,
+      "seconds": 0.0033794620539993048,
+      "stderr_bytes": 0,
+      "started_utc": "2026-10-11T07:45:26.011326+00:00",
+      "json_requested": false,
+      "admission": {
+        "id": "e31be31e15fe47a587d292076b4a5b5e",
+        "runtime_lease_id": "5b70a352b8324a3d9b5951b86d270176",
+        "guard_age_seconds": 12.2128,
+        "seconds": 19.544363941065967
+      },
+      "label": "first-observed-version",
+      "sequence": 1,
+      "wire_file": "/evidence/mealie-first-current-01/0001-first-observed-version.raw",
+      "sha256": "965a77fc510a369f2e6fca796bcc1a436bd5ec2720a78c339811e5e1193ca712",
+      "bytes": 14,
+      "tokens": 8,
+      "approx_tokens": null,
+      "expected": "success",
+      "finished_utc": "2026-10-11T07:45:26.015157+00:00",
+      "outcome": "pass-transport-and-protocol",
+      "byte_budget": 49152,
+      "token_budget": 12000,
+      "byte_budget_pass": true,
+      "token_budget_pass": true,
+      "reported_budgets": []
+    },
+    "add_event": {
+      "kind": "cli",
+      "argv": [
+        "/home/acceptance/.local/bin/nudox",
+        "--json",
+        "--detail",
+        "full",
+        "add",
+        "."
+      ],
+      "cwd": "/work/mealie",
+      "pid": 1916660,
+      "exit": 0,
+      "timeout": false,
+      "seconds": 90.10127891297452,
+      "stderr_bytes": 155,
+      "started_utc": "2026-10-11T07:45:58.691962+00:00",
+      "json_requested": true,
+      "admission": {
+        "id": "1fc84a9f2b86493c9d73b013aab8bb75",
+        "runtime_lease_id": "5b70a352b8324a3d9b5951b86d270176",
+        "guard_age_seconds": 12.880974,
+        "seconds": 21.111441649962217
+      },
+      "label": "first-add",
+      "sequence": 2,
+      "wire_file": "/evidence/mealie-first-current-01/0002-first-add.raw",
+      "sha256": "c4956c92689eadf71fa727218961370c8562b3724136249f77da98f19192b19a",
+      "bytes": 1021,
+      "tokens": 342,
+      "approx_tokens": null,
+      "expected": "success",
+      "finished_utc": "2026-10-11T07:47:28.793591+00:00",
+      "outcome": "pass-transport-and-protocol",
+      "byte_budget": 49152,
+      "token_budget": 12000,
+      "byte_budget_pass": true,
+      "token_budget_pass": true,
+      "reported_budgets": [
+        {
+          "bytes": 1021,
+          "estimatedTokens": 256,
+          "bytesPerToken": 4
+        }
+      ]
+    },
+    "actual_add_reply": {
+      "heading": "index-operation",
+      "records": [
+        {
+          "title": "index operation active at scanning",
+          "operand": "946d63121832832d7f172c73c14c88fc37ceb9c3464c32a82be5a1151b4bd114",
+          "tags": [
+            "package /work/mealie"
+          ]
+        }
+      ],
+      "index_job": {
+        "kind": "started",
+        "value": {
+          "state": "started",
+          "data": {
+            "ticket": {
+              "id": 1,
+              "owner_epoch": [
+                174,
+                189,
+                224,
+                247,
+                213,
+                193,
+                84,
+                72,
+                12,
+                180,
+                171,
+                226,
+                22,
+                38,
+                92,
+                138
+              ],
+              "package": {
+                "kind": "local",
+                "value": "/work/mealie"
+              }
+            },
+            "stage": "scanning"
+          }
+        }
+      },
+      "index_operation": {
+        "state": "known",
+        "detail": {
+          "operation_key": "946d63121832832d7f172c73c14c88fc37ceb9c3464c32a82be5a1151b4bd114",
+          "request_digest": "df74a6cc6248908ed43433c2de9d8e66328b202eeceeaa4e063526607963c3aa",
+          "package": {
+            "kind": "local",
+            "value": "/work/mealie"
+          },
+          "execution_intent": "interactive",
+          "state": {
+            "state": "active",
+            "detail": {
+              "ticket": {
+                "id": 1,
+                "owner_epoch": [
+                  174,
+                  189,
+                  224,
+                  247,
+                  213,
+                  193,
+                  84,
+                  72,
+                  12,
+                  180,
+                  171,
+                  226,
+                  22,
+                  38,
+                  92,
+                  138
+                ],
+                "package": {
+                  "kind": "local",
+                  "value": "/work/mealie"
+                }
+              },
+              "stage": "scanning"
+            }
+          }
+        }
+      },
+      "answer": "product",
+      "detail": "full",
+      "budget": {
+        "bytes": 1021,
+        "estimatedTokens": 256,
+        "bytesPerToken": 4
+      }
+    },
+    "published": false,
+    "admission_refusal": {
+      "grant": {
+        "path": "/private/tmp/nudox-root-mealie-first-current-01/ubuntu24/work/sol61-fresh-runtime-01/admission/34c2a5b33eea4c9183c90020616f1444.grant.json",
+        "bytes": 20670,
+        "sha256": "ba288d39121e646b8c3d483920677ca680945f3fdf5166b2b024e13156e1d256"
+      },
+      "reason": "ILO capacity overlay would admit 9 slots under its cap of 8; next packages command never launched.",
+      "raw_guard_allowed": true,
+      "fleet_slots_after_grant": 14
+    },
+    "interruption_cleanup": {
+      "receipt": {
+        "path": "/private/tmp/nudox-root-mealie-first-current-01/mealie-first-runtime-01/receipt.json",
+        "bytes": 24141,
+        "sha256": "33bca95914cc54ceb83506dc8b08b7dc8484af3109f739ebc4e6694c9196c318"
+      },
+      "exit": 1,
+      "permit_released": true,
+      "two_consecutive_complete_empty_scans": true
+    },
+    "cold_recovery": {
+      "evidence_archive": {
+        "path": "/private/tmp/nudox-sol61-fresh-app-acceptance-20261011/mealie-cold-current-02-evidence.tar.gz",
+        "bytes": 42716,
+        "sha256": "161bfedffa283f80f4cc1a3a326dc5a5ea84efd155819b1cba5ac7129a6ee3e6"
+      },
+      "calls": [
+        {
+          "frame": {
+            "path": "/private/tmp/nudox-root-mealie-cold-02/ubuntu24/evidence/mealie-cold-operation-02/0003-persisted-operation-progress.raw",
+            "bytes": 1552,
+            "sha256": "428b15ced4dd6142e53338851df6bb0af49ab58449950e26ca769a0d62553124"
+          },
+          "seconds": 0.6495994769502431,
+          "tokens": 487,
+          "rpc_id": 3,
+          "actual_operation": {
+            "operation_key": "946d63121832832d7f172c73c14c88fc37ceb9c3464c32a82be5a1151b4bd114",
+            "request_digest": "df74a6cc6248908ed43433c2de9d8e66328b202eeceeaa4e063526607963c3aa",
+            "package": {
+              "kind": "local",
+              "value": "/work/mealie"
+            },
+            "execution_intent": "interactive",
+            "state": {
+              "state": "failed",
+              "detail": {
+                "reason": "worker-failed",
+                "detail": "owner restarted or stopped before the exact commit was selected"
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "path": "/private/tmp/nudox-root-mealie-cold-02/ubuntu24/evidence/mealie-cold-operation-02/0004-same-key-index-start.raw",
+            "bytes": 1553,
+            "sha256": "d15a393bba508be885263667955f3acf14ff8014da6d681dc9c8eae75b2583e8"
+          },
+          "seconds": 0.014152768068015575,
+          "tokens": 488,
+          "rpc_id": 4,
+          "actual_operation": {
+            "operation_key": "946d63121832832d7f172c73c14c88fc37ceb9c3464c32a82be5a1151b4bd114",
+            "request_digest": "df74a6cc6248908ed43433c2de9d8e66328b202eeceeaa4e063526607963c3aa",
+            "package": {
+              "kind": "local",
+              "value": "/work/mealie"
+            },
+            "execution_intent": "interactive",
+            "state": {
+              "state": "failed",
+              "detail": {
+                "reason": "worker-failed",
+                "detail": "owner restarted or stopped before the exact commit was selected"
+              }
+            }
+          }
+        },
+        {
+          "frame": {
+            "path": "/private/tmp/nudox-root-mealie-cold-02/ubuntu24/evidence/mealie-cold-operation-02/0005-persisted-operation-terminal.raw",
+            "bytes": 1552,
+            "sha256": "f9669190acc15f6f7dd651e2cfc383ba6747a41b0930fbc206042f1601f65f23"
+          },
+          "seconds": 0.006883112946525216,
+          "tokens": 487,
+          "rpc_id": 5,
+          "actual_operation": {
+            "operation_key": "946d63121832832d7f172c73c14c88fc37ceb9c3464c32a82be5a1151b4bd114",
+            "request_digest": "df74a6cc6248908ed43433c2de9d8e66328b202eeceeaa4e063526607963c3aa",
+            "package": {
+              "kind": "local",
+              "value": "/work/mealie"
+            },
+            "execution_intent": "interactive",
+            "state": {
+              "state": "failed",
+              "detail": {
+                "reason": "worker-failed",
+                "detail": "owner restarted or stopped before the exact commit was selected"
+              }
+            }
+          }
+        }
+      ],
+      "cleanup_receipt": {
+        "path": "/private/tmp/nudox-root-mealie-cold-02/mealie-cold-runtime-02/receipt.json",
+        "bytes": 26770,
+        "sha256": "7aafcb708df5699ef4488702fc6d698b9e3740d750ed25de022cd97b15a1b1c6"
+      },
+      "outcome": "Exact interrupted operation remains terminal failed; same-key start replays failure and does not reschedule.",
+      "published": false
+    },
+    "next_gate": "A distinct acknowledged new attempt must publish before large-application queries are claimed."
+  },
+  "installed_go_flow": {
+    "evidence_archive": {
+      "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/go-current-frozen-proof-03/raw-evidence.tar.gz",
+      "bytes": 503519,
+      "sha256": "afca95e91ebcd91cf0a41c3f40d6b8bfcdf0326d2f7e641e30c8e83786202c11"
+    },
+    "environment": {
+      "HOME": "/home/sol61-cli-proof",
+      "PATH": "/home/sol61-cli-proof/.local/bin:/usr/local/bin:/usr/bin:/bin",
+      "XDG_CONFIG_HOME": "/home/sol61-cli-proof/.config",
+      "XDG_DATA_HOME": "/home/sol61-cli-proof/.local/share",
+      "XDG_STATE_HOME": "/home/sol61-cli-proof/.local/state",
+      "XDG_CACHE_HOME": "/home/sol61-cli-proof/.cache",
+      "XDG_RUNTIME_DIR": "/work/sol61-cli-proof/evidence-primary-03/run",
+      "NO_COLOR": "1"
+    },
+    "status": {
+      "availability": "available",
+      "publication": "populated",
+      "readiness": "ready",
+      "revision": "fbefe04d93803af3e265b90d9be38957faa14f538c2433e9f7ab1f7578a0dc72",
+      "revision_tag": "fbefe04d",
+      "source": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
+      "source_tag": "a98a2689",
+      "sequence": 2,
+      "rows": 378,
+      "coverage": [
+        {
+          "lane": "exact",
+          "state": "complete"
+        },
+        {
+          "lane": "names",
+          "state": "complete"
+        },
+        {
+          "lane": "graph",
+          "state": "complete"
+        },
+        {
+          "lane": "semantic",
+          "state": "unavailable",
+          "reason": "unconfigured"
+        }
+      ],
+      "capabilities": {
+        "frontends_ready": 9,
+        "frontends_total": 9,
+        "oracles_ready": 0,
+        "oracles_total": 18,
+        "embedding": "unconfigured",
+        "unavailable": [
+          {
+            "reason": "no-manifest",
+            "count": 17
+          }
+        ],
+        "summary": "frontends 9/9 ready \u00b7 oracles 0/18 ready \u00b7 17 no-manifest \u00b7 embedding unconfigured"
+      },
+      "answer": "status",
+      "detail": "full",
+      "budget": {
+        "bytes": 857,
+        "estimatedTokens": 215,
+        "bytesPerToken": 4
+      }
+    },
+    "status_frame": {
+      "path": "/private/tmp/nudox-root-go-current-03/0004-gorilla-mux-stock-status.stdout",
+      "bytes": 857,
+      "sha256": "3c20df938b014bc4f719ce977bf651205409c0e82d8bf2e286b982ef84c23598"
+    },
+    "verified_rpc_frames": 57,
+    "chronology": [
+      {
+        "id": 45,
+        "request": {
+          "jsonrpc": "2.0",
+          "method": "tools/call",
+          "params": {
+            "name": "backend.graph",
+            "arguments": {
+              "coordinate": "/work/sol61-cli-proof/corpora/gorilla-mux::mux.go:47::Router"
+            }
+          },
+          "id": 45
+        },
+        "frame": {
+          "path": "/private/tmp/nudox-root-go-current-03/0066-mcp-wire.json",
+          "bytes": 44502,
+          "sha256": "cfb1ba42074a4ad694b4452dd87e03c95142853df1a4d55f095836473e1d89a9"
+        },
+        "seconds": 0.04623073199763894,
+        "bytes_excluding_newline": 44501,
+        "failed": false
+      },
+      {
+        "id": 46,
+        "request": {
+          "jsonrpc": "2.0",
+          "method": "tools/call",
+          "params": {
+            "name": "backend.read",
+            "arguments": {
+              "coordinate": [
+                "/work/sol61-cli-proof/corpora/gorilla-mux::mux.go:47::Router",
+                "/work/sol61-cli-proof/corpora/gorilla-mux::mux_test.go:2175::router"
+              ]
+            }
+          },
+          "id": 46
+        },
+        "frame": {
+          "path": "/private/tmp/nudox-root-go-current-03/0067-mcp-wire.json",
+          "bytes": 614,
+          "sha256": "f0199bdee0ae447f19d961da34f64fee4eafac76b4c2229cd9add265588dfe45"
+        },
+        "seconds": 60.818190257065,
+        "bytes_excluding_newline": 613,
+        "failed": true
+      },
+      {
+        "id": 47,
+        "request": {
+          "jsonrpc": "2.0",
+          "method": "tools/call",
+          "params": {
+            "name": "backend.graph",
+            "arguments": {
+              "coordinate": "/work/sol61-cli-proof/corpora/gorilla-mux::mux.go:47::Router",
+              "limit": 3
+            }
+          },
+          "id": 47
+        },
+        "frame": {
+          "path": "/private/tmp/nudox-root-go-current-03/0068-mcp-wire.json",
+          "bytes": 737,
+          "sha256": "9292dc4ee03b45d20cd36b0b72b58abc03c09be9671b74671a08e7c26f330aa5"
+        },
+        "seconds": 60.54076550109312,
+        "bytes_excluding_newline": 736,
+        "failed": true
+      },
+      {
+        "id": 48,
+        "request": {
+          "jsonrpc": "2.0",
+          "method": "tools/call",
+          "params": {
+            "name": "backend.document",
+            "arguments": {
+              "coordinate": "/work/sol61-cli-proof/corpora/gorilla-mux::mux.go:47::Router",
+              "detail": "summary"
+            }
+          },
+          "id": 48
+        },
+        "frame": {
+          "path": "/private/tmp/nudox-root-go-current-03/0069-mcp-wire.json",
+          "bytes": 737,
+          "sha256": "68df9f89d9fc0b25192d25647fb1864e244aa9fb4df924f2ad62d3e855c185d4"
+        },
+        "seconds": 60.477287385147065,
+        "bytes_excluding_newline": 736,
+        "failed": true
+      },
+      {
+        "id": 49,
+        "request": {
+          "jsonrpc": "2.0",
+          "method": "tools/call",
+          "params": {
+            "name": "backend.read",
+            "arguments": {
+              "coordinate": [
+                "/work/sol61-cli-proof/corpora/gorilla-mux::mux.go:47::Router",
+                "/work/sol61-cli-proof/corpora/gorilla-mux::mux_test.go:2175::router"
+              ],
+              "detail": "summary"
+            }
+          },
+          "id": 49
+        },
+        "frame": {
+          "path": "/private/tmp/nudox-root-go-current-03/0070-mcp-wire.json",
+          "bytes": 614,
+          "sha256": "9424b15d56152d199145ea141b5a849f92f22dec157f7a3b9f2a44c3707f63f7"
+        },
+        "seconds": 60.342226564884186,
+        "bytes_excluding_newline": 613,
+        "failed": true
+      },
+      {
+        "id": 50,
+        "request": {
+          "jsonrpc": "2.0",
+          "method": "tools/call",
+          "params": {
+            "name": "backend.document",
+            "arguments": {
+              "coordinate": "/work/sol61-cli-proof/corpora/gorilla-mux::mux.go:47::Router",
+              "detail": "standard"
+            }
+          },
+          "id": 50
+        },
+        "frame": {
+          "path": "/private/tmp/nudox-root-go-current-03/0071-mcp-wire.json",
+          "bytes": 30743,
+          "sha256": "1f0b2604265da6a33364451d7d97dd91974b59d44820b214b25aa27c4ef1d904"
+        },
+        "seconds": 36.627307618036866,
+        "bytes_excluding_newline": 30742,
+        "failed": false
+      },
+      {
+        "id": 51,
+        "request": {
+          "jsonrpc": "2.0",
+          "method": "tools/call",
+          "params": {
+            "name": "backend.read",
+            "arguments": {
+              "coordinate": [
+                "/work/sol61-cli-proof/corpora/gorilla-mux::mux.go:47::Router",
+                "/work/sol61-cli-proof/corpora/gorilla-mux::mux_test.go:2175::router"
+              ],
+              "detail": "standard"
+            }
+          },
+          "id": 51
+        },
+        "frame": {
+          "path": "/private/tmp/nudox-root-go-current-03/0072-mcp-wire.json",
+          "bytes": 2638,
+          "sha256": "94483e48db8c8bdcc046e60e7d8bca9d961486f45d1a221188f9503f7f9178fb"
+        },
+        "seconds": 0.9573687089141458,
+        "bytes_excluding_newline": 2637,
+        "failed": false
+      },
+      {
+        "id": 52,
+        "request": {
+          "jsonrpc": "2.0",
+          "method": "tools/call",
+          "params": {
+            "name": "backend.document",
+            "arguments": {
+              "coordinate": "/work/sol61-cli-proof/corpora/gorilla-mux::mux.go:47::Router",
+              "detail": "full"
+            }
+          },
+          "id": 52
+        },
+        "frame": {
+          "path": "/private/tmp/nudox-root-go-current-03/0073-mcp-wire.json",
+          "bytes": 30739,
+          "sha256": "fef0e3d2b39b2285d825507729513cdb083a2e4ea202067527e36c0bbe62f6e0"
+        },
+        "seconds": 0.14300257409922779,
+        "bytes_excluding_newline": 30738,
+        "failed": false
+      },
+      {
+        "id": 53,
+        "request": {
+          "jsonrpc": "2.0",
+          "method": "tools/call",
+          "params": {
+            "name": "backend.read",
+            "arguments": {
+              "coordinate": [
+                "/work/sol61-cli-proof/corpora/gorilla-mux::mux.go:47::Router",
+                "/work/sol61-cli-proof/corpora/gorilla-mux::mux_test.go:2175::router"
+              ],
+              "detail": "full"
+            }
+          },
+          "id": 53
+        },
+        "frame": {
+          "path": "/private/tmp/nudox-root-go-current-03/0074-mcp-wire.json",
+          "bytes": 2634,
+          "sha256": "6f0a0577177d0d3223fe532d398912379c2d9015f8d0eda180084003f3efea9b"
+        },
+        "seconds": 1.2391649598721415,
+        "bytes_excluding_newline": 2633,
+        "failed": false
+      },
+      {
+        "id": 57,
+        "request": {
+          "jsonrpc": "2.0",
+          "method": "tools/call",
+          "params": {
+            "name": "backend.search",
+            "arguments": {
+              "query": "Router",
+              "limit": 3
+            }
+          },
+          "id": 57
+        },
+        "frame": {
+          "path": "/private/tmp/nudox-root-go-current-03/0078-mcp-wire.json",
+          "bytes": 12498,
+          "sha256": "d914cf8fad659a66d652dbd779f5813961557cafaf60dadff6aab1794a2dde76"
+        },
+        "seconds": 0.03153610392473638,
+        "bytes_excluding_newline": 12497,
+        "failed": false
+      }
+    ],
+    "graph": {
+      "frame": {
+        "path": "/private/tmp/nudox-root-go-current-03/0066-mcp-wire.json",
+        "bytes": 44502,
+        "sha256": "cfb1ba42074a4ad694b4452dd87e03c95142853df1a4d55f095836473e1d89a9"
+      },
+      "bytes_excluding_newline": 44501,
+      "measured_cl100k_base_tokens": 23805,
+      "token_target": 12000,
+      "records": 25,
+      "more": true,
+      "cursor_characters": 12304,
+      "quoted_cursor_json_bytes": 12306,
+      "cursor_duplicated_in_preview": true,
+      "pagination_complete": false
+    },
+    "summary": {
+      "started": "2026-10-11T07:52:47.617636+00:00",
+      "projects": [],
+      "harness_error": "RuntimeError('fresh native reindex admission denied')",
+      "finished": "2026-10-11T07:59:43.449250+00:00"
+    },
+    "caveats": [
+      "Small Go library baseline, not a large Go application.",
+      "Four delayed endpoint faults; later document/read/search recover in the same session. Cause unproven without pre-stop stacks.",
+      "No graph edge-completeness, cancellation or positive cold-reindex proof.",
+      "Invalid arguments fail locally and are not owner-readiness proof."
+    ]
+  },
+  "public_channel": {
+    "current_source_replacement_published": false,
+    "mac_source": "a659d5d1819078b3c0046937191a9b54a76b1dfb",
+    "linux_source": "c0016d4f4fc9b0f0a452c7c9556954e2287948b3"
+  },
+  "source_only_pending": {
+    "pr": 138,
+    "head": "3a1d9237ae1f32e5f7bedfdf5eaf80cfafe66a14",
+    "native_result": "UNRUN at this audit",
+    "repairs": [
+      "Typed TypeScript selected/excluded membership and repaired test consumers",
+      "Qualified/native declaration identity and strict wire admission",
+      "Shared page detail and typed startup recovery",
+      "Fault diagnostic/projection field separation and summary semantic status"
+    ]
+  },
+  "open_gates": [
+    "Large TypeScript/Python installed publication and full MCP flows",
+    "Four delayed Go read/document/graph faults followed by recovery; current-source repair and installed replay pending",
+    "Oversized actual tokenizer cost of duplicate continuation previews",
+    "Cold default semantic query setup (ordinary installation remains lexical-only)",
+    "Full local-service, Clippy, current GUI and new platform acceptance"
+  ],
+  "release_performance_proof": false
+}
