@@ -2034,6 +2034,19 @@ mod tests {
         use std::io::{Error, ErrorKind};
         let cases = [
             (
+                RuntimeError::Io(Error::from(ErrorKind::NotFound)),
+                StartupFailureCause::Io(ErrorKind::NotFound),
+                StartupRecovery::RepairConfiguration,
+            ),
+            (
+                RuntimeError::EndpointUnavailable {
+                    endpoint: "/socket".into(),
+                    source: Error::from(ErrorKind::NotFound),
+                },
+                StartupFailureCause::EndpointUnavailable(ErrorKind::NotFound),
+                StartupRecovery::RetryOriginalCommand,
+            ),
+            (
                 RuntimeError::MissingExecutable("/debug/deps/backend-locald".into()),
                 StartupFailureCause::MissingCompanion,
                 StartupRecovery::RepairCompanion,

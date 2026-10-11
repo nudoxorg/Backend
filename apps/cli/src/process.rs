@@ -436,6 +436,13 @@ mod startup_tests {
             ),
             (
                 RuntimeError::Io(Error::from(ErrorKind::NotFound)),
+                Affordance::None,
+            ),
+            (
+                RuntimeError::EndpointUnavailable {
+                    endpoint: "/socket".into(),
+                    source: Error::from(ErrorKind::NotFound),
+                },
                 Affordance::Retry,
             ),
             (

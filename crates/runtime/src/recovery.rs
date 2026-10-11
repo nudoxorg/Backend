@@ -53,11 +53,10 @@ impl StartupFailureCause {
             Self::MissingCompanion => StartupRecovery::RepairCompanion,
             #[cfg(unix)]
             Self::CompanionMismatch => StartupRecovery::RepairCompanion,
-            Self::Io(kind) | Self::EndpointUnavailable(kind)
-                if is_transient_io(kind) || matches!(kind, ErrorKind::NotFound) =>
-            {
+            Self::Io(kind) | Self::EndpointUnavailable(kind) if is_transient_io(kind) => {
                 StartupRecovery::RetryOriginalCommand
             }
+            Self::EndpointUnavailable(ErrorKind::NotFound) => StartupRecovery::RetryOriginalCommand,
             Self::Spawn(kind) if is_transient_io(kind) => StartupRecovery::RetryOriginalCommand,
             Self::OwnerExited(Some(code))
                 if code == i32::from(crate::OWNER_CONTENDED_EXIT_CODE) =>
@@ -162,6 +161,9 @@ impl RuntimeError {
     ///
     /// Only direct runtime I/O in these classes triggers automatic reconnect;
     /// a missing executable, rejected path, or spawn refusal must be reported.
+    /// Direct `Io(NotFound)` retains the historical MCP restart-window class
+    /// here. Its unqualified source context does not justify a manual retry in
+    /// a startup observation; known socket absence is `EndpointUnavailable`.
     #[must_use]
     pub fn reconnect_kind(&self) -> Option<ErrorKind> {
         match self {
@@ -205,6 +207,22 @@ mod tests {
         use StartupFailureCause as Cause;
         use StartupRecovery as Recovery;
         let cases = [
+            (
+                RuntimeError::Io(io::Error::new(
+                    ErrorKind::NotFound,
+                    "selected current directory /deleted was not found",
+                )),
+                Cause::Io(ErrorKind::NotFound),
+                Recovery::RepairConfiguration,
+            ),
+            (
+                RuntimeError::EndpointUnavailable {
+                    endpoint: PathBuf::from("/socket"),
+                    source: io::Error::from(ErrorKind::NotFound),
+                },
+                Cause::EndpointUnavailable(ErrorKind::NotFound),
+                Recovery::RetryOriginalCommand,
+            ),
             (
                 RuntimeError::MissingExecutable(PathBuf::from("/debug/deps/backend-locald")),
                 Cause::MissingCompanion,
@@ -392,10 +410,12 @@ mod tests {
         ] {
             let error = RuntimeError::Io(io::Error::from(kind));
             assert_eq!(error.reconnect_kind(), Some(kind));
-            assert_eq!(
-                error.startup_recovery(),
+            let manual_recovery = if kind == ErrorKind::NotFound {
+                StartupRecovery::RepairConfiguration
+            } else {
                 StartupRecovery::RetryOriginalCommand
-            );
+            };
+            assert_eq!(error.startup_recovery(), manual_recovery);
             let spawn = RuntimeError::Spawn {
                 executable: PathBuf::from("/bin/locald"),
                 source: io::Error::from(kind),
