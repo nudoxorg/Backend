@@ -47,12 +47,16 @@ mod tests {
 
     #[test]
     fn a_query_fault_needs_an_independent_loss_before_failing_an_attachment() {
-        let gate = OwnerGate::ready(VersionedRoot::unserved(), ServiceMode::Attached);
-        let epoch = gate.attached_ready_epoch().expect("attached generation");
-        let query = ClientError::QueryPreparationDisconnected {
+        assert_attachment_needs_independent_loss(ClientError::Io("query failed".to_owned()));
+        assert_attachment_needs_independent_loss(ClientError::QueryPreparationDisconnected {
             basis: backend_library::view_state_root(&[]).into(),
             kind: std::io::ErrorKind::ConnectionReset,
-        };
+        });
+    }
+
+    fn assert_attachment_needs_independent_loss(query: ClientError) {
+        let gate = OwnerGate::ready(VersionedRoot::unserved(), ServiceMode::Attached);
+        let epoch = gate.attached_ready_epoch().expect("attached generation");
         assert!(!confirm_attached_loss(&gate, epoch, &query, Ok(())));
         assert!(matches!(gate.state(), OwnerState::Ready { .. }), "a healthy independent probe keeps the owner ready");
 
