@@ -171,6 +171,37 @@ def collect_once(
     return samples
 
 
+def _resolve_sample_scope(
+    *,
+    destination: str,
+    exclude_hosts: list[str],
+    exclusion_reason: Any,
+    hosts: Mapping[str, Mapping[str, Any]] = DEFAULT_HOSTS,
+) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
+    """Resolve the one approved temporary ILO scope without inferring outages."""
+    if not exclude_hosts:
+        if exclusion_reason is not None:
+            raise ValueError("--exclusion-reason requires --exclude-host")
+        return {name: dict(config) for name, config in hosts.items()}, {}
+    if destination != "ilo" or exclude_hosts != ["h16001mac"]:
+        raise ValueError(
+            "the approved temporary exclusion is exactly one h16001mac exclusion for destination ilo"
+        )
+    if (
+        type(exclusion_reason) is not str
+        or not exclusion_reason.strip()
+        or len(exclusion_reason) > 500
+    ):
+        raise ValueError(
+            "--exclude-host requires a non-empty --exclusion-reason of at most 500 characters"
+        )
+    active_hosts = {name: dict(config) for name, config in hosts.items()}
+    if "h16001mac" not in active_hosts:
+        raise ValueError("the requested excluded host is not present in the configured fleet")
+    active_hosts.pop("h16001mac")
+    return active_hosts, {"h16001mac": exclusion_reason}
+
+
 def _index_cargo_entries(
     rows: Any,
     *,
@@ -336,12 +367,26 @@ def evaluate_fleet(
     max_age_seconds: int = MAX_SAMPLE_AGE_SECONDS,
     allow_local_over_cap_for_remote: bool = False,
     destination_memory_only_for_remote: bool = False,
+    excluded_hosts: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Fail closed on missing/stale/incomplete evidence and enforce fleet caps."""
     now = (now or dt.datetime.now(dt.timezone.utc)).astimezone(dt.timezone.utc)
     reasons: list[str] = []
+    if excluded_hosts is not None and not isinstance(excluded_hosts, Mapping):
+        reasons.append("fleet-excluded-hosts-shape-invalid")
+        excluded: dict[Any, Any] = {}
+    else:
+        excluded = dict(excluded_hosts or {})
     if set(samples) != set(hosts):
         reasons.append("fleet-host-set-incomplete-or-unexpected")
+    if set(hosts).intersection(excluded) or set(hosts).union(excluded) != set(DEFAULT_HOSTS):
+        reasons.append("fleet-sample-scope-invalid")
+    if excluded and (set(excluded) != {"h16001mac"} or destination != "ilo"):
+        reasons.append("fleet-host-exclusion-not-authorized-for-this-scope")
+    for name, reason in excluded.items():
+        if type(reason) is not str or not reason.strip() or len(reason) > 500:
+            label = name if type(name) is str else "unknown-host"
+            reasons.append(f"{label}:host-exclusion-reason-invalid")
     if destination not in hosts:
         reasons.append("destination-unknown")
     if type(requested_jobs) is not int or not 1 <= requested_jobs <= MAX_CARGO_JOBS_PER_PROCESS:
@@ -506,10 +551,32 @@ def evaluate_fleet(
         elif type(disk) is int and reserved and disk < reserved:
             reasons.append("destination-root-disk-below-ci-reserve")
     unique_reasons = list(dict.fromkeys(reasons))
+    safe_excluded_hosts = [
+        {
+            "host": name if type(name) is str else "unknown-host",
+            "reason": reason if type(reason) is str else None,
+        }
+        for name, reason in excluded.items()
+    ]
+    successfully_sampled_hosts = [
+        name for name, summary in host_summaries.items() if summary.get("complete") is True
+    ]
     return {
-        "schema": "compiler-capacity-admission.v5",
+        "schema": "compiler-capacity-admission.v6",
         "sampled_at_utc": now.isoformat(),
         "destination": destination,
+        "sample_scope": {
+            "requested_hosts": list(hosts),
+            "sampled_hosts": successfully_sampled_hosts,
+            "excluded_hosts": safe_excluded_hosts,
+            "full_fleet_sampled": (
+                not excluded
+                and set(hosts) == set(DEFAULT_HOSTS)
+                and set(samples) == set(hosts)
+                and set(successfully_sampled_hosts) == set(DEFAULT_HOSTS)
+            ),
+            "fleet_limit_applies_across_sampled_hosts": True,
+        },
         "allow_local_over_cap_for_remote": allow_local_over_cap_for_remote,
         "requested_cargo_jobs": requested_jobs,
         "current_fleet_compiler_group_count": total_groups,
@@ -580,15 +647,32 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--ilo-python", default=DEFAULT_HOSTS["ilo"]["python"])
     parser.add_argument("--mac-target", default=DEFAULT_HOSTS["h16001mac"]["ssh_target"])
     parser.add_argument("--mac-python", default=DEFAULT_HOSTS["h16001mac"]["python"])
+    parser.add_argument(
+        "--exclude-host", choices=("h16001mac",), action="append", default=[],
+        help="Explicitly omit the temporarily offline Mac only for ILO admission; the report records it as excluded, never sampled.",
+    )
+    parser.add_argument(
+        "--exclusion-reason",
+        help="Required report-visible reason for the explicitly excluded host.",
+    )
     args = parser.parse_args(argv)
     hosts = {name: dict(value) for name, value in DEFAULT_HOSTS.items()}
     hosts["ilo"].update(ssh_target=args.ilo_target, python=args.ilo_python)
     hosts["h16001mac"].update(ssh_target=args.mac_target, python=args.mac_python)
+    try:
+        hosts, excluded_hosts = _resolve_sample_scope(
+            destination=args.destination,
+            exclude_hosts=args.exclude_host,
+            exclusion_reason=args.exclusion_reason,
+            hosts=hosts,
+        )
+    except ValueError as error:
+        parser.error(str(error))
     census_path = pathlib.Path(__file__).with_name("build-census.py")
     try:
         source = census_path.read_bytes()
     except OSError as error:
-        print(json.dumps({"schema": "compiler-capacity-admission.v5", "advisory_allowed": False, "reasons": [f"native-sampler-read:{type(error).__name__}"], "slot_reserved": False}))
+        print(json.dumps({"schema": "compiler-capacity-admission.v6", "advisory_allowed": False, "reasons": [f"native-sampler-read:{type(error).__name__}"], "slot_reserved": False}))
         return 2
     started = dt.datetime.now(dt.timezone.utc)
     started_monotonic = time.monotonic()
@@ -601,6 +685,7 @@ def main(argv: list[str] | None = None) -> int:
         max_age_seconds=args.max_age_seconds,
         allow_local_over_cap_for_remote=args.allow_local_over_cap_for_remote,
         destination_memory_only_for_remote=args.destination_memory_only_for_remote,
+        excluded_hosts=excluded_hosts,
     )
     report["collector_started_at_utc"] = started.isoformat()
     report["sampler_path"] = str(census_path.resolve())

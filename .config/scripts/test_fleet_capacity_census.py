@@ -3,6 +3,7 @@
 import copy
 import datetime as dt
 import importlib.util
+import json
 from pathlib import Path
 import unittest
 
@@ -190,6 +191,91 @@ class FleetAdmissionTests(unittest.TestCase):
         report = self.report(destination_memory_only_for_remote=True)
         self.assertFalse(report["advisory_allowed"])
         self.assertIn("h16001mac:active-cargo-process-jobs-exceed-4", report["reasons"])
+
+    def test_explicit_mac_exclusion_is_reported_as_partial_scope(self):
+        hosts = {name: fleet.DEFAULT_HOSTS[name] for name in ("local", "ilo")}
+        samples = {name: self.samples[name] for name in hosts}
+        report = fleet.evaluate_fleet(
+            samples, destination="ilo", requested_jobs=1, hosts=hosts,
+            excluded_hosts={"h16001mac": "approved temporary offline exception"},
+            now=self.now, destination_memory_only_for_remote=True,
+        )
+        self.assertTrue(report["advisory_allowed"], report["reasons"])
+        self.assertEqual(report["sample_scope"]["requested_hosts"], ["local", "ilo"])
+        self.assertEqual(report["sample_scope"]["sampled_hosts"], ["local", "ilo"])
+        self.assertEqual(report["sample_scope"]["excluded_hosts"], [{
+            "host": "h16001mac", "reason": "approved temporary offline exception",
+        }])
+        self.assertFalse(report["sample_scope"]["full_fleet_sampled"])
+        self.assertNotIn("h16001mac", report["hosts"])
+
+    def test_cli_scope_resolver_requires_the_one_explicit_approved_exclusion(self):
+        active, excluded = fleet._resolve_sample_scope(
+            destination="ilo", exclude_hosts=["h16001mac"],
+            exclusion_reason="offline evidence", hosts=fleet.DEFAULT_HOSTS,
+        )
+        self.assertEqual(set(active), {"local", "ilo"})
+        self.assertEqual(excluded, {"h16001mac": "offline evidence"})
+
+        invalid_requests = (
+            ("local", ["h16001mac"], "offline evidence"),
+            ("h16001mac", ["h16001mac"], "offline evidence"),
+            ("ilo", ["ilo"], "offline evidence"),
+            ("ilo", ["h16001mac", "h16001mac"], "offline evidence"),
+            ("ilo", ["h16001mac"], None),
+            ("ilo", ["h16001mac"], "  "),
+            ("ilo", ["h16001mac"], "x" * 501),
+            ("ilo", ["h16001mac"], 42),
+            ("ilo", [], "reason without exclusion"),
+        )
+        for destination, excluded_hosts, reason in invalid_requests:
+            with self.subTest(destination=destination, excluded_hosts=excluded_hosts, reason=reason):
+                with self.assertRaises(ValueError):
+                    fleet._resolve_sample_scope(
+                        destination=destination, exclude_hosts=excluded_hosts,
+                        exclusion_reason=reason, hosts=fleet.DEFAULT_HOSTS,
+                    )
+
+    def test_missing_or_colliding_excluded_samples_refuse_without_false_sampling(self):
+        partial_hosts = {name: fleet.DEFAULT_HOSTS[name] for name in ("local", "ilo")}
+        excluded = {"h16001mac": "approved temporary offline exception"}
+        collision = fleet.evaluate_fleet(
+            self.samples, destination="ilo", requested_jobs=1, hosts=fleet.DEFAULT_HOSTS,
+            excluded_hosts=excluded, now=self.now,
+            destination_memory_only_for_remote=True,
+        )
+        self.assertFalse(collision["advisory_allowed"])
+        self.assertIn("fleet-sample-scope-invalid", collision["reasons"])
+
+        missing_live_host = fleet.evaluate_fleet(
+            {"ilo": self.samples["ilo"]}, destination="ilo", requested_jobs=1,
+            hosts=partial_hosts, excluded_hosts=excluded, now=self.now,
+            destination_memory_only_for_remote=True,
+        )
+        self.assertFalse(missing_live_host["advisory_allowed"])
+        self.assertIn("fleet-host-set-incomplete-or-unexpected", missing_live_host["reasons"])
+        self.assertNotIn("h16001mac", missing_live_host["sample_scope"]["sampled_hosts"])
+
+        no_exclusion_reason = fleet.evaluate_fleet(
+            {name: self.samples[name] for name in partial_hosts},
+            destination="ilo", requested_jobs=1, hosts=partial_hosts, now=self.now,
+            destination_memory_only_for_remote=True,
+        )
+        self.assertFalse(no_exclusion_reason["advisory_allowed"])
+        self.assertIn("fleet-sample-scope-invalid", no_exclusion_reason["reasons"])
+
+    def test_invalid_nonstring_exclusion_reason_fails_and_remains_json_safe(self):
+        hosts = {name: fleet.DEFAULT_HOSTS[name] for name in ("local", "ilo")}
+        samples = {name: self.samples[name] for name in hosts}
+        report = fleet.evaluate_fleet(
+            samples, destination="ilo", requested_jobs=1, hosts=hosts,
+            excluded_hosts={"h16001mac": 42}, now=self.now,
+            destination_memory_only_for_remote=True,
+        )
+        self.assertFalse(report["advisory_allowed"])
+        self.assertIn("h16001mac:host-exclusion-reason-invalid", report["reasons"])
+        self.assertIsNone(report["sample_scope"]["excluded_hosts"][0]["reason"])
+        json.dumps(report)
 
 
 if __name__ == "__main__":
