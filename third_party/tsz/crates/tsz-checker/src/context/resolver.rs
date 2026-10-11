@@ -60,7 +60,112 @@ pub(crate) struct BoundModuleRequest<'source> {
     pub kind: ResolutionRequestKind,
 }
 
+/// Successful compiler admission for one exact retained request. Construction
+/// stays at the outcome boundary; consumers cannot substitute a generic target.
+#[derive(Clone, Copy)]
+pub(crate) struct SelectedModuleRequest<'source> {
+    request: BoundModuleRequest<'source>,
+    outcome: &'source crate::context::ResolvedModuleRequestOutcome,
+}
+
+impl<'source> SelectedModuleRequest<'source> {
+    pub(crate) fn request(self) -> BoundModuleRequest<'source> {
+        self.request
+    }
+    pub(crate) fn file_target(self) -> Option<usize> {
+        match self.outcome {
+            crate::context::ResolvedModuleRequestOutcome::File(target) => Some(*target),
+            _ => None,
+        }
+    }
+    pub(crate) fn external_identity(self) -> Option<&'source str> {
+        match self.outcome {
+            crate::context::ResolvedModuleRequestOutcome::External { identity } => Some(identity),
+            _ => None,
+        }
+    }
+}
+
 impl<'a> CheckerContext<'a> {
+    pub(crate) fn select_module_request<'source>(
+        &'source self,
+        request: BoundModuleRequest<'source>,
+    ) -> Option<SelectedModuleRequest<'source>> {
+        let outcome = self.project_module_outcome_for_request(
+            request.importer,
+            request.specifier,
+            request.mode,
+            request.kind,
+        )?;
+        match outcome {
+            crate::context::ResolvedModuleRequestOutcome::File(_)
+            | crate::context::ResolvedModuleRequestOutcome::External { .. } => {
+                Some(SelectedModuleRequest { request, outcome })
+            }
+            crate::context::ResolvedModuleRequestOutcome::Unresolved => None,
+        }
+    }
+
+    /// In Node module modes a plain .ts file's format requires package evidence.
+    /// If that evidence is unavailable, use only a unique compiler-owned key for
+    /// this importer, spelling and kind. Competing modes are an ambiguity.
+    fn bound_request_mode(
+        &self,
+        importer: usize,
+        specifier: &str,
+        kind: ResolutionRequestKind,
+        explicit: Option<ResolutionModeOverride>,
+    ) -> Option<Option<ResolutionModeOverride>> {
+        if explicit.is_some() {
+            return Some(explicit);
+        }
+        if self
+            .project_module_outcome_for_request(importer, specifier, None, kind)
+            .is_some()
+        {
+            return Some(None);
+        }
+        let file_name = self
+            .all_arenas
+            .as_ref()
+            .and_then(|arenas| arenas.get(importer))
+            .and_then(|arena| arena.source_files.first())
+            .map(|source| source.file_name.as_str())
+            .unwrap_or(self.file_name.as_str());
+        let admitted_format = self
+            .file_is_esm_map
+            .as_ref()
+            .and_then(|map| super::lookup_file_is_esm_in_map(map, file_name))
+            .or_else(|| {
+                (importer == self.current_file_idx)
+                    .then_some(self.file_is_esm)
+                    .flatten()
+            });
+        if self.project_module_resolution_outcomes.is_some()
+            && self.compiler_options.module.is_node_module()
+            && admitted_format.is_none()
+            && matches!(
+                kind,
+                ResolutionRequestKind::EsmImport | ResolutionRequestKind::EsmReExport
+            )
+        {
+            let mut selected = None;
+            for ((file, spelling, mode, request_kind), _) in
+                self.project_module_resolution_outcomes.as_ref()?.iter()
+            {
+                if *file != importer || spelling != specifier || *request_kind != kind {
+                    continue;
+                }
+                if selected.is_some_and(|previous| previous != *mode) {
+                    return None;
+                }
+                selected = Some(*mode);
+            }
+            return selected;
+        }
+        Some(self.resolution_mode_for_request_from_file(importer, kind, explicit))
+    }
+
     /// Borrow the exact compiler-owned outcome, including authoritative
     /// negatives. A missing request cannot borrow another kind or mode.
     pub fn project_module_outcome_for_request(
@@ -169,15 +274,7 @@ impl<'a> CheckerContext<'a> {
                 }
             }
         }
-        let mode = if explicit_mode.is_none()
-            && self
-                .project_module_outcome_for_request(importer, specifier, None, kind)
-                .is_some()
-        {
-            None
-        } else {
-            self.resolution_mode_for_request_from_file(importer, kind, explicit_mode)
-        };
+        let mode = self.bound_request_mode(importer, specifier, kind, explicit_mode)?;
         Some(BoundModuleRequest {
             importer,
             specifier,
@@ -196,6 +293,11 @@ impl<'a> CheckerContext<'a> {
         let binder = self.get_binder_for_file(importer)?;
         let alias = binder.get_symbol(symbol)?;
         let arena = self.all_arenas.as_ref()?.get(importer)?;
+        if alias.declarations.is_empty()
+            || alias.declarations.len() != alias.stable_declarations.len()
+        {
+            return None;
+        }
         let mut selected = None;
         for (&declaration, stable) in alias.declarations.iter().zip(&alias.stable_declarations) {
             let node = arena.get(declaration)?;
@@ -788,19 +890,13 @@ impl<'a> CheckerContext<'a> {
         request_kind: ResolutionRequestKind,
         resolution_mode_override: Option<ResolutionModeOverride>,
     ) -> Option<ResolutionModeOverride> {
-        if resolution_mode_override.is_none()
-            && self
-                .project_module_outcome_for_request(
-                    self.current_file_idx,
-                    specifier,
-                    None,
-                    request_kind,
-                )
-                .is_some()
-        {
-            return None;
-        }
-        self.resolution_mode_for_request(request_kind, resolution_mode_override)
+        self.bound_request_mode(
+            self.current_file_idx,
+            specifier,
+            request_kind,
+            resolution_mode_override,
+        )
+        .flatten()
     }
 
     /// Compute the checker-side resolution-mode key used by the CLI driver for a request.

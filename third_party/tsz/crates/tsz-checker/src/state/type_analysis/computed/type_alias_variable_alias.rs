@@ -1150,10 +1150,19 @@ impl<'a> CheckerState<'a> {
                     // another file), the module_name is relative to the declaring file,
                     // not the current file. Use the symbol's declaring file for resolution.
                     let declaring_file_idx = self.ctx.resolve_symbol_file_index(sym_id);
-                    let exports_table = self.resolve_effective_module_exports_from_file(
-                        module_name,
-                        declaring_file_idx,
-                    );
+                    let exports_table = if self.ctx.project_module_resolution_outcomes.is_some() {
+                        self.ctx
+                            .bound_module_request_for_alias(sym_id)
+                            .and_then(|request| self.ctx.select_module_request(request))
+                            .and_then(|selected| {
+                                self.resolve_exports_for_selected_request(selected)
+                            })
+                    } else {
+                        self.resolve_effective_module_exports_from_file(
+                            module_name,
+                            declaring_file_idx,
+                        )
+                    };
                     if let Some(exports_table) = exports_table {
                         let ordered_exports = self.ordered_namespace_export_entries(&exports_table);
                         // Record cross-file symbol targets for all symbols in the table

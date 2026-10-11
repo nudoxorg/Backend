@@ -1358,3 +1358,233 @@ fn export_star_cannot_inspect_other_kind_export_equals_target() {
         results[0].diagnostics
     );
 }
+
+#[test]
+fn exact_external_aliases_keep_ambient_string_against_competing_file_number() {
+    use crate::checker::context::ResolutionModeOverride;
+    use tsz_common::common::ModuleKind;
+    for namespace in [false, true] {
+        for (name, return_type, expected) in [
+            ("value", "string", None),
+            ("value", "number", Some(2322)),
+            (
+                "foreignOnly",
+                "number",
+                Some(if namespace { 2339 } else { 2305 }),
+            ),
+        ] {
+            let expression = if namespace {
+                format!("dependency.{name}")
+            } else {
+                name.to_owned()
+            };
+            let import = if namespace {
+                "import * as dependency from 'dep';".to_owned()
+            } else {
+                format!("import {{ {name} }} from 'dep';")
+            };
+            let program = compile_files_with_libs(
+                vec![
+                    (
+                        "src/main.ts".to_owned(),
+                        format!(
+                            "{import} export function observed(): {return_type} {{ return {expression}; }}"
+                        ),
+                    ),
+                    (
+                        "src/wrong.ts".to_owned(),
+                        "export const value: number = 42; export const foreignOnly: number = 1;"
+                            .to_owned(),
+                    ),
+                    (
+                        "ambient.d.ts".to_owned(),
+                        "declare module 'dep' { export const value: string; }".to_owned(),
+                    ),
+                ],
+                &[],
+            );
+            let resolutions = [
+                ProjectModuleResolution {
+                    importer_path: "src/main.ts".to_owned(),
+                    specifier: "dep".to_owned(),
+                    request_kind: ProjectModuleRequestKind::EsmImport,
+                    resolution_mode: None,
+                    target: ProjectModuleResolutionTarget::External {
+                        identity: "admitted-ambient:dep".to_owned(),
+                    },
+                },
+                ProjectModuleResolution {
+                    importer_path: "src/main.ts".to_owned(),
+                    specifier: "dep".to_owned(),
+                    request_kind: ProjectModuleRequestKind::EsmReExport,
+                    resolution_mode: None,
+                    target: ProjectModuleResolutionTarget::File {
+                        path: "src/wrong.ts".to_owned(),
+                    },
+                },
+                ProjectModuleResolution {
+                    importer_path: "src/main.ts".to_owned(),
+                    specifier: "dep".to_owned(),
+                    request_kind: ProjectModuleRequestKind::EsmImport,
+                    resolution_mode: Some(ResolutionModeOverride::Require),
+                    target: ProjectModuleResolutionTarget::File {
+                        path: "src/wrong.ts".to_owned(),
+                    },
+                },
+            ];
+            let options = CheckerOptions {
+                module: ModuleKind::ESNext,
+                ..CheckerOptions::default()
+            };
+            let plan = ParallelCheckPlan::build(
+                &program,
+                &options,
+                &[],
+                ProjectSemanticOptions::declaration_scoped(),
+                Some(Arc::new(
+                    build_project_module_resolution_outcomes(&program, &resolutions).unwrap(),
+                )),
+                None,
+            )
+            .unwrap();
+            let checked = plan.check_file_partition(0, &program.files[..1]).unwrap();
+            let codes = checked[0]
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.code)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                codes,
+                expected.into_iter().collect::<Vec<_>>(),
+                "namespace={namespace}/{name}/{return_type}: {:?}",
+                checked[0].diagnostics
+            );
+            if name == "value" && !namespace {
+                let file = &program.files[0];
+                let usage = file
+                    .arena
+                    .nodes
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(raw, node)| {
+                        file.arena
+                            .get_identifier(node)
+                            .filter(|identifier| identifier.escaped_text == "value")
+                            .map(|_| NodeIndex(raw as u32))
+                    })
+                    .max_by_key(|&index| file.arena.get(index).unwrap().pos)
+                    .unwrap();
+                assert_eq!(
+                    plan.with_bound_file_checker_and_types(0, file, |checker, _, _, _| checker
+                        .get_type_of_node(usage)),
+                    TypeId::STRING
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn node_next_foreign_plain_ts_request_uses_unique_compiler_mode() {
+    use crate::checker::context::ResolutionModeOverride;
+    use tsz_common::common::ModuleKind;
+    for ambiguous in [false, true] {
+        let program = compile_files_with_libs(vec![
+            ("src/main.ts".to_owned(), "import { value } from './barrel'; export function observed(): number { return value; }".to_owned()),
+            ("src/barrel.ts".to_owned(), "export { value } from 'dep';".to_owned()),
+            ("src/dep.ts".to_owned(), "export const value: number = 42;".to_owned()),
+            ("src/wrong.ts".to_owned(), "export const value: string = 'wrong';".to_owned()),
+        ], &[]);
+        let mut resolutions = vec![
+            ProjectModuleResolution {
+                importer_path: "src/main.ts".to_owned(),
+                specifier: "./barrel".to_owned(),
+                request_kind: ProjectModuleRequestKind::EsmImport,
+                resolution_mode: Some(ResolutionModeOverride::Import),
+                target: ProjectModuleResolutionTarget::File {
+                    path: "src/barrel.ts".to_owned(),
+                },
+            },
+            ProjectModuleResolution {
+                importer_path: "src/barrel.ts".to_owned(),
+                specifier: "dep".to_owned(),
+                request_kind: ProjectModuleRequestKind::EsmReExport,
+                resolution_mode: Some(ResolutionModeOverride::Import),
+                target: ProjectModuleResolutionTarget::File {
+                    path: "src/dep.ts".to_owned(),
+                },
+            },
+        ];
+        if ambiguous {
+            resolutions.push(ProjectModuleResolution {
+                importer_path: "src/barrel.ts".to_owned(),
+                specifier: "dep".to_owned(),
+                request_kind: ProjectModuleRequestKind::EsmReExport,
+                resolution_mode: Some(ResolutionModeOverride::Require),
+                target: ProjectModuleResolutionTarget::File {
+                    path: "src/wrong.ts".to_owned(),
+                },
+            });
+        }
+        let options = CheckerOptions {
+            module: ModuleKind::NodeNext,
+            ..CheckerOptions::default()
+        };
+        let plan = ParallelCheckPlan::build(
+            &program,
+            &options,
+            &[],
+            ProjectSemanticOptions::declaration_scoped(),
+            Some(Arc::new(
+                build_project_module_resolution_outcomes(&program, &resolutions).unwrap(),
+            )),
+            None,
+        )
+        .unwrap();
+        let checked = plan.check_file_partition(0, &program.files[..1]).unwrap();
+        let file = &program.files[0];
+        let usage = file
+            .arena
+            .nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(raw, node)| {
+                file.arena
+                    .get_identifier(node)
+                    .filter(|identifier| identifier.escaped_text == "value")
+                    .map(|_| NodeIndex(raw as u32))
+            })
+            .max_by_key(|&index| file.arena.get(index).unwrap().pos)
+            .unwrap();
+        let observed = plan.with_bound_file_checker_and_types(0, file, |checker, _, _, _| {
+            checker.get_type_of_node(usage)
+        });
+        if ambiguous {
+            assert_ne!(
+                observed,
+                TypeId::NUMBER,
+                "conflicting modes cannot select the number file"
+            );
+            assert_ne!(
+                observed,
+                TypeId::STRING,
+                "conflicting modes cannot select the string file"
+            );
+            assert!(
+                checked[0]
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.code == 2305),
+                "ambiguous edge must refuse the member: {:?}",
+                checked[0].diagnostics
+            );
+        } else {
+            assert!(
+                checked[0].diagnostics.is_empty(),
+                "{:?}",
+                checked[0].diagnostics
+            );
+            assert_eq!(observed, TypeId::NUMBER);
+        }
+    }
+}

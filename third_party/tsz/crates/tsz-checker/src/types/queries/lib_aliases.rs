@@ -120,7 +120,17 @@ impl<'a> CheckerState<'a> {
                         return self.resolve_alias_symbol(selected, visited_aliases);
                     }
                 }
-                Some(crate::context::ResolvedModuleRequestOutcome::External { .. }) => {}
+                Some(crate::context::ResolvedModuleRequestOutcome::External { .. }) => {
+                    let selected = self.ctx.select_module_request(request)?;
+                    if let Some(export_name) = symbol.import_name().filter(|name| *name != "*") {
+                        let exports = self.resolve_exports_for_selected_request(selected)?;
+                        let target = exports.get(export_name)?;
+                        return self.resolve_alias_symbol(target, visited_aliases);
+                    }
+                    // Namespace aliases retain their declaration identity. Their
+                    // type construction consumes this same exact request proof.
+                    return Some(sym_id);
+                }
                 _ => return None,
             }
         }

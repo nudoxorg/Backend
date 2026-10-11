@@ -310,26 +310,43 @@ impl<'a> CheckerState<'a> {
         request_kind: crate::context::ResolutionRequestKind,
     ) -> Option<tsz_binder::SymbolTable> {
         if self.ctx.project_module_resolution_outcomes.is_some() {
-            return match self.ctx.project_module_outcome_for_request(
-                self.ctx.current_file_idx,
-                module_specifier,
-                resolution_mode,
-                request_kind,
-            ) {
-                Some(crate::context::ResolvedModuleRequestOutcome::File(target)) => Some(
-                    self.resolve_cross_file_namespace_exports_for_file(
-                        *target,
-                        Some(module_specifier),
-                    )
-                    .unwrap_or_default(),
-                ),
-                Some(crate::context::ResolvedModuleRequestOutcome::External { .. }) => {
-                    self.resolve_ambient_module_namespace_exports(module_specifier)
-                }
-                _ => None,
+            let request = crate::context::BoundModuleRequest {
+                importer: self.ctx.current_file_idx,
+                specifier: module_specifier,
+                mode: resolution_mode,
+                kind: request_kind,
             };
+            return self
+                .resolve_exports_for_selected_request(self.ctx.select_module_request(request)?);
         }
         self.resolve_effective_module_exports_with_mode(module_specifier, resolution_mode)
+    }
+
+    pub(crate) fn resolve_exports_for_selected_request(
+        &self,
+        selected: crate::context::SelectedModuleRequest<'_>,
+    ) -> Option<tsz_binder::SymbolTable> {
+        if let Some(target) = selected.file_target() {
+            return Some(
+                self.resolve_cross_file_namespace_exports_for_file(
+                    target,
+                    Some(selected.request().specifier),
+                )
+                .unwrap_or_default(),
+            );
+        }
+        selected.external_identity()?;
+        for binder in self.ctx.all_binders.as_ref()?.iter() {
+            if let Some(exports) = self
+                .ctx
+                .module_exports_for_external_request(binder, selected)
+            {
+                let mut combined = exports.clone();
+                self.merge_export_equals_members(binder, exports, &mut combined);
+                return Some(combined);
+            }
+        }
+        None
     }
 
     /// Like `resolve_effective_module_exports` but uses an explicit `resolution-mode`

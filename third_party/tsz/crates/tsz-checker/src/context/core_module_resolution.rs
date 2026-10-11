@@ -187,6 +187,39 @@ impl CheckerContext<'_> {
         self.lookup_wildcard_module_exports(module_key, map)
     }
 
+    /// Only the ambient surface admitted for this exact External request.
+    /// Program file keys and competing request kinds cannot lend exports.
+    pub(crate) fn module_exports_for_external_request<'b>(
+        &'b self,
+        binder: &'b tsz_binder::BinderState,
+        selected: super::SelectedModuleRequest<'_>,
+    ) -> Option<&'b tsz_binder::SymbolTable> {
+        selected.external_identity()?;
+        let spelling = selected.request().specifier;
+        let map = self
+            .program_module_exports
+            .as_ref()
+            .map(|map| map.as_ref())
+            .unwrap_or(binder.module_exports.as_ref());
+        let arenas = self.all_arenas.as_ref()?;
+        let ambient_names = || {
+            arenas.iter().flat_map(|arena| {
+                arena.nodes.iter().filter_map(|node| {
+                    let declaration = arena.get_module(node)?;
+                    arena.get_literal_text(declaration.name)
+                })
+            })
+        };
+        if ambient_names().any(|name| name == spelling) {
+            return map.get(spelling);
+        }
+        let key = crate::context::global_declared_modules::best_wildcard_match(
+            ambient_names().filter(|name| name.contains('*')),
+            spelling,
+        )?;
+        map.get(key)
+    }
+
     /// Resolve a concrete module specifier onto a declared *wildcard* ambient
     /// module's export table, when no exact `module_exports` key matched.
     ///
@@ -327,12 +360,20 @@ impl CheckerContext<'_> {
         let source_file_idx = self.resolve_symbol_file_index(alias_id)?;
         let target_idx = if self.project_module_resolution_outcomes.is_some() {
             let request = self.bound_module_request_for_alias(alias_id)?;
-            self.resolve_import_target_from_file_for_request(
-                request.importer,
-                request.specifier,
-                request.mode,
-                request.kind,
-            )?
+            let selected = self.select_module_request(request)?;
+            if selected.external_identity().is_some() {
+                let binders = self.all_binders.as_ref()?;
+                for binder in binders.iter() {
+                    if let Some(symbol) = self
+                        .module_exports_for_external_request(binder, selected)
+                        .and_then(|exports| exports.get(member_name))
+                    {
+                        return Some(symbol);
+                    }
+                }
+                return None;
+            }
+            selected.file_target()?
         } else {
             self.resolve_import_target_from_file(source_file_idx, module_specifier)?
         };
