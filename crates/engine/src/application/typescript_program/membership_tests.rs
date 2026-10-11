@@ -224,13 +224,10 @@ fn configured_membership_matches_independent_compiler_api_without_adding_configs
         .iter()
         .map(|source| fixture.root.join(&source.path))
         .chain(native.libraries.iter().map(|library| {
-            fixture.root.join("node_modules/typescript/lib").join(
-                library
-                    .file_name
-                    .strip_prefix("@compiler/lib.")
-                    .map(str::to_owned)
-                    .unwrap(),
-            )
+            fixture
+                .root
+                .join("node_modules/typescript/lib")
+                .join(library.file_name.strip_prefix("@compiler/lib.").unwrap())
         }))
         .collect::<BTreeSet<_>>();
     let expected = oracle["files"]
