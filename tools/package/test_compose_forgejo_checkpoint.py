@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import compose_forgejo_checkpoint as compose
 
@@ -111,6 +112,86 @@ class CandidateCompositionTests(unittest.TestCase):
         bad_platforms = replace(source, base_channel=extra_platforms)
         with self.assertRaisesRegex(compose.CandidateError, "channel and bootstrap pins disagree"):
             compose.compose_candidate(bad_platforms, package)
+
+    def test_linux_package_root_symlink_is_refused_before_resolution(self):
+        source, _ = synthetic_inputs()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            real_package = root / "real-package"
+            real_package.mkdir()
+            alias = root / "package-alias"
+            alias.symlink_to(real_package, target_is_directory=True)
+            with self.assertRaisesRegex(compose.CandidateError, "must not be a symlink"):
+                compose.validate_linux_package(alias, source)
+
+    def test_copy_refuses_preexisting_destination_without_removing_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.tar.gz"
+            destination = root / "destination.tar.gz"
+            source.write_bytes(b"expected candidate bytes")
+            destination.write_bytes(b"preserve existing destination")
+            before = destination.stat()
+
+            with self.assertRaises(FileExistsError):
+                compose.copy_verified(source, destination, hashlib.sha256(source.read_bytes()).hexdigest(),
+                                      source.stat().st_size)
+
+            after = destination.stat()
+            self.assertEqual((after.st_dev, after.st_ino), (before.st_dev, before.st_ino))
+            self.assertEqual(destination.read_bytes(), b"preserve existing destination")
+
+    def test_copy_failure_preserves_replacement_inode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.tar.gz"
+            destination = root / "destination.tar.gz"
+            source.write_bytes(b"expected candidate bytes")
+            replacement = b"a different process replacement"
+            real_stat = compose.os.stat
+            swapped = False
+
+            def replace_before_name_check(path, *args, **kwargs):
+                nonlocal swapped
+                if path == destination.name and kwargs.get("dir_fd") is not None and not swapped:
+                    destination.unlink()
+                    destination.write_bytes(replacement)
+                    swapped = True
+                return real_stat(path, *args, **kwargs)
+
+            with mock.patch.object(compose.os, "stat", side_effect=replace_before_name_check):
+                with self.assertRaisesRegex(compose.CandidateError, "staged candidate package asset"):
+                    compose.copy_verified(source, destination, hashlib.sha256(source.read_bytes()).hexdigest(),
+                                          source.stat().st_size)
+
+            self.assertTrue(swapped)
+            self.assertEqual(destination.read_bytes(), replacement)
+
+    def test_copy_failure_retains_partial_asset_for_inspection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.tar.gz"
+            destination = root / "destination.tar.gz"
+            expected = b"expected candidate bytes"
+            source.write_bytes(expected)
+
+            with self.assertRaisesRegex(compose.CandidateError, "changed while copying"):
+                compose.copy_verified(source, destination, "0" * 64, len(expected))
+
+            self.assertEqual(destination.read_bytes(), expected)
+
+    def test_failed_output_is_retained_for_inspection(self):
+        source, package = synthetic_inputs()
+        bundle = compose.compose_candidate(source, package)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "candidate"
+            with mock.patch.object(compose, "write_exclusive", side_effect=OSError("injected first-write failure")):
+                with self.assertRaisesRegex(compose.CandidateError, "private output was retained"):
+                    compose.prepare_output(bundle, output)
+
+            self.assertTrue(output.is_dir())
+            self.assertEqual(list(output.iterdir()), [])
 
 
 if __name__ == "__main__":

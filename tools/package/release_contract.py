@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import datetime
 import stat
@@ -20,7 +21,6 @@ import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
-import tarfile
 import zipfile
 from pathlib import Path
 
@@ -31,6 +31,9 @@ QA_CASES = PLATFORMS["macos"]["qa"]
 
 LINUX_ASSET_RE = re.compile(r"nudox-linux-x86_64-[a-f0-9]{10,40}\.tar\.gz\Z")
 LINUX_QA_CASES = {"cli_version", "project_add_search", "mcp_help", "mcp_session", "locald_sibling_discovery", "clean_environment_without_nix_paths", "ubuntu_glibc_floor"}
+LINUX_MAX_ARCHIVE_BYTES = 2 * 1024 * 1024 * 1024
+LINUX_MAX_ARCHIVE_MEMBERS = 10000
+LINUX_MAX_MEMBER_BYTES = 1024 * 1024 * 1024
 
 
 def sha256(path):
@@ -39,6 +42,110 @@ def sha256(path):
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def linux_archive_relative(member):
+    """Return the canonical path below the Linux tar root, or None for its directory."""
+    name = member.name
+    if not name or name.startswith("/") or "\\" in name:
+        raise ValueError("Linux archive contains an unsafe path")
+    stripped = name[:-1] if name.endswith("/") and member.isdir() else name
+    parts = stripped.split("/")
+    if any(part in {"", ".", ".."} for part in parts) or parts[0] != "nudox-linux-x86_64":
+        raise ValueError("Linux archive contains a noncanonical or unsafe path")
+    if member.issym() or member.islnk() or not (member.isdir() or member.isreg()):
+        raise ValueError("Linux archive contains links or special files")
+    if member.size < 0 or member.size > LINUX_MAX_MEMBER_BYTES:
+        raise ValueError("Linux archive member exceeds the safety limit")
+    if len(parts) == 1:
+        if member.isdir():
+            return None
+        raise ValueError("Linux archive root must be a directory")
+    return "/".join(parts[1:])
+
+
+def validate_linux_archive_members(members):
+    if not members or len(members) > LINUX_MAX_ARCHIVE_MEMBERS:
+        raise ValueError("Linux archive has an empty or excessive member list")
+    paths = {}
+    total = 0
+    for member in members:
+        relative = linux_archive_relative(member)
+        key = relative if relative is not None else "."
+        if key in paths:
+            raise ValueError("Linux archive has duplicate normalized paths")
+        paths[key] = member
+        total += member.size
+        if total > LINUX_MAX_ARCHIVE_BYTES:
+            raise ValueError("Linux archive uncompressed size exceeds the 2 GiB safety limit")
+
+    for relative, member in paths.items():
+        if relative == ".":
+            continue
+        parts = relative.split("/")
+        for index in range(1, len(parts)):
+            ancestor = "/".join(parts[:index])
+            if ancestor in paths and not paths[ancestor].isdir():
+                raise ValueError("Linux archive has a file used as a parent directory")
+
+    required_files = {
+        "bin/backend-cli", "bin/backend-mcp", "bin/backend-locald",
+        "build-manifest.json", "packaging-manifest.json", "README.txt",
+    }
+    regular_files = {path for path, member in paths.items() if member.isfile()}
+    if not required_files.issubset(regular_files):
+        raise ValueError("Linux archive has duplicate paths or omits required product files")
+    return paths
+
+
+def read_bounded_linux_members(bundle):
+    """Read archive headers lazily and stop before allocating beyond the member cap."""
+    members = []
+    total = 0
+    for member in bundle:
+        if len(members) >= LINUX_MAX_ARCHIVE_MEMBERS:
+            raise ValueError("Linux archive has too many members")
+        linux_archive_relative(member)
+        total += member.size
+        if total > LINUX_MAX_ARCHIVE_BYTES:
+            raise ValueError("Linux archive uncompressed size exceeds the 2 GiB safety limit")
+        members.append(member)
+    return members
+
+
+def linux_checkpoint_tag(manifest, installer_bytes, manifest_sha256):
+    """Bind the pinned Linux installer, package tag, archive name and manifest bytes."""
+    try:
+        tree = ast.parse(installer_bytes)
+        values = {}
+        required = {"PLATFORM", "PINNED_RELEASE_TAG", "PINNED_MANIFEST_SHA256"}
+        for node in tree.body:
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name) and node.targets[0].id in required):
+                name = node.targets[0].id
+                if name in values:
+                    raise ValueError(f"Linux installer assigns {name} more than once")
+                values[name] = ast.literal_eval(node.value)
+        if set(values) != required:
+            raise ValueError("Linux installer omits its immutable checkpoint pins")
+    except (SyntaxError, ValueError, TypeError) as error:
+        raise ValueError(f"Linux installer checkpoint pins are invalid: {error}") from error
+
+    source = manifest.get("source_sha")
+    tag = values["PINNED_RELEASE_TAG"]
+    if (values["PLATFORM"] != "linux-x64" or values["PINNED_MANIFEST_SHA256"] != manifest_sha256
+            or not isinstance(source, str) or not re.fullmatch(r"[a-f0-9]{40}", source)):
+        raise ValueError("Linux installer does not pin this platform, source and exact manifest bytes")
+    match = re.fullmatch(r"checkpoint-([0-9]{8})-([a-f0-9]{10})-linux-x64", tag) if isinstance(tag, str) else None
+    if match is None or match[2] != source[:10]:
+        raise ValueError("Linux installer checkpoint tag differs from the manifest source")
+    try:
+        datetime.datetime.strptime(match[1], "%Y%m%d")
+    except ValueError as error:
+        raise ValueError("Linux installer checkpoint date is invalid") from error
+    if manifest.get("asset") != f"nudox-linux-x86_64-{source[:10]}.tar.gz":
+        raise ValueError("Linux archive name differs from its source revision")
+    return tag
 
 
 def read_json(path):
@@ -184,7 +291,7 @@ def validate(directory, source=None, platform=None, require_qa=True):
     return manifest
 
 
-def validate_linux(directory, manifest, source=None, *, require_qa=True):
+def validate_linux(directory, manifest, source=None, *, require_qa=True, manifest_sha256=None):
     """Validate a receipted Ubuntu x86-64 package and, by default, its native QA."""
     required = {"schema", "version", "source_sha", "source_tree", "cargo_lock_sha256", "platform", "target", "asset", "sha256", "size_bytes", "minimum_glibc", "build_manifest_sha256", "packaging_manifest_sha256"}
     if set(manifest) != required or manifest["schema"] != 1:
@@ -201,53 +308,134 @@ def validate_linux(directory, manifest, source=None, *, require_qa=True):
         raise ValueError("Linux candidate has an unsupported platform, target or archive name")
     if not re.fullmatch(r"[0-9]+\.[0-9]+", manifest["minimum_glibc"]):
         raise ValueError("Linux candidate has an invalid minimum glibc version")
+    archive_size = manifest["size_bytes"]
+    if (type(archive_size) is not int or not 1 <= archive_size <= LINUX_MAX_ARCHIVE_BYTES):
+        raise ValueError("Linux candidate has an invalid or oversized archive size")
+    manifest_path = directory / "release-manifest.json"
+    if read_json(manifest_path) != manifest:
+        raise ValueError("Linux manifest file differs from the admitted manifest object")
+    actual_manifest_sha256 = sha256(manifest_path)
+    if manifest_sha256 is None:
+        manifest_sha256 = actual_manifest_sha256
+    elif manifest_sha256 != actual_manifest_sha256:
+        raise ValueError("Linux manifest bytes changed after admission")
+    if not isinstance(manifest_sha256, str) or not re.fullmatch(r"[a-f0-9]{64}", manifest_sha256):
+        raise ValueError("Linux manifest SHA-256 is invalid")
     archive = directory / manifest["asset"]
-    if archive.is_symlink() or not archive.is_file() or archive.stat().st_size != manifest["size_bytes"] or sha256(archive) != manifest["sha256"]:
+    if archive.is_symlink() or not archive.is_file() or archive.stat().st_size != archive_size or sha256(archive) != manifest["sha256"]:
         raise ValueError("Linux archive differs from its immutable manifest")
     checksum = directory / (manifest["asset"] + ".sha256")
     if checksum.is_symlink() or not checksum.is_file() or checksum.read_text() != f'{manifest["sha256"]}  {manifest["asset"]}\n':
         raise ValueError("Linux checksum sidecar differs from manifest")
-    required_files = {"nudox-linux-x86_64/bin/backend-cli", "nudox-linux-x86_64/bin/backend-mcp", "nudox-linux-x86_64/bin/backend-locald", "nudox-linux-x86_64/build-manifest.json", "nudox-linux-x86_64/packaging-manifest.json", "nudox-linux-x86_64/README.txt"}
     try:
         with tarfile.open(archive, "r:gz") as bundle:
-            members = bundle.getmembers()
-            names = [member.name for member in members]
-            if len(names) != len(set(names)) or not required_files.issubset(names):
-                raise ValueError("Linux archive has duplicate paths or omits required product files")
-            if len(members) > 10000:
-                raise ValueError("Linux archive has too many members")
-            for member in members:
-                path = Path(member.name)
-                archive_root = member.name == "nudox-linux-x86_64" and member.isdir()
-                if (member.name.startswith("/") or "\\" in member.name or ".." in path.parts
-                        or not (archive_root or member.name.startswith("nudox-linux-x86_64/"))):
-                    raise ValueError("Linux archive contains an unsafe path")
-                if member.issym() or member.islnk() or not (member.isdir() or member.isreg()):
-                    raise ValueError("Linux archive contains links or special files")
-                if member.size < 0 or member.size > 1024 * 1024 * 1024:
-                    raise ValueError("Linux archive member exceeds the safety limit")
-            for name in required_files & {"nudox-linux-x86_64/bin/backend-cli", "nudox-linux-x86_64/bin/backend-mcp", "nudox-linux-x86_64/bin/backend-locald"}:
-                if not (bundle.getmember(name).mode & 0o111):
+            members = read_bounded_linux_members(bundle)
+            paths = validate_linux_archive_members(members)
+            for name in ("bin/backend-cli", "bin/backend-mcp", "bin/backend-locald"):
+                member = paths[name]
+                if not (member.mode & 0o111):
                     raise ValueError("Linux product executable lost its executable bit")
-            build_bytes = bundle.extractfile("nudox-linux-x86_64/build-manifest.json").read(16 * 1024 * 1024 + 1)
-            packaging_bytes = bundle.extractfile("nudox-linux-x86_64/packaging-manifest.json").read(16 * 1024 * 1024 + 1)
+            build_bytes = bundle.extractfile(paths["build-manifest.json"]).read(16 * 1024 * 1024 + 1)
+            packaging_bytes = bundle.extractfile(paths["packaging-manifest.json"]).read(16 * 1024 * 1024 + 1)
             if len(build_bytes) > 16 * 1024 * 1024 or len(packaging_bytes) > 16 * 1024 * 1024:
                 raise ValueError("Linux package evidence exceeds the 16 MiB safety limit")
             if hashlib.sha256(build_bytes).hexdigest() != manifest["build_manifest_sha256"] or hashlib.sha256(packaging_bytes).hexdigest() != manifest["packaging_manifest_sha256"]:
                 raise ValueError("Linux archive evidence hashes differ from release manifest")
             build = json.loads(build_bytes)
             package = json.loads(packaging_bytes)
-            source_record = build.get("source", {})
-            build_revision = build.get("source_sha", (source_record.get("commit") or source_record.get("git_revision")) if isinstance(source_record, dict) else None)
-            if build_revision != manifest["source_sha"]:
-                raise ValueError("Linux build manifest source differs from release manifest")
-            if package.get("schema") != "nudox.linux-portable-package.v1":
-                raise ValueError("Linux package manifest has an unsupported schema")
-            release_tag = package.get("release_tag")
-            if not isinstance(release_tag, str) or not re.fullmatch(r"checkpoint-[0-9]{8}-[a-f0-9]{10}-linux-x64", release_tag) or not release_tag.endswith("-" + manifest["source_sha"][:10] + "-linux-x64"):
-                raise ValueError("Linux package has no source-bound immutable checkpoint tag")
+            executable_digests = {}
+            for executable in ("backend-cli", "backend-mcp", "backend-locald"):
+                member = paths[f"bin/{executable}"]
+                stream = bundle.extractfile(member)
+                if stream is None:
+                    raise ValueError("Linux archive executable could not be read")
+                digest = hashlib.sha256()
+                byte_count = 0
+                with stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        byte_count += len(chunk)
+                        digest.update(chunk)
+                executable_digests[executable] = {"sha256": digest.hexdigest(), "bytes": byte_count}
     except (tarfile.TarError, OSError, json.JSONDecodeError) as error:
         raise ValueError(f"could not validate Linux archive: {error}") from error
+
+    build_fields = {"schema", "source", "executables", "root_receipt"}
+    build_source_fields = {"commit", "tree", "clean"}
+    if (not isinstance(build, dict) or set(build) != build_fields
+            or build.get("schema") != "nudox.runtime-build-manifest.v1"):
+        raise ValueError("Linux build manifest has an unsupported runtime-artifact schema")
+    build_source = build.get("source")
+    if (not isinstance(build_source, dict) or set(build_source) != build_source_fields
+            or build_source.get("clean") is not True
+            or build_source.get("commit") != manifest["source_sha"]
+            or build_source.get("tree") != manifest["source_tree"]):
+        raise ValueError("Linux build manifest source commit/tree/clean identity differs from release metadata")
+    receipt = build.get("root_receipt")
+    if (not isinstance(receipt, dict) or set(receipt) != {"schema", "sha256"}
+            or receipt.get("schema") != "nudox.runtime-artifact-build-receipt.v1"
+            or not isinstance(receipt.get("sha256"), str)
+            or not re.fullmatch(r"[a-f0-9]{64}", receipt["sha256"])):
+        raise ValueError("Linux build manifest has no hash-bound artifact receipt")
+    executables = build.get("executables")
+    if not isinstance(executables, dict) or set(executables) != {"backend-cli", "backend-mcp", "backend-locald"}:
+        raise ValueError("Linux build manifest omits or adds executable identities")
+    for executable in executables.values():
+        if (not isinstance(executable, dict) or set(executable) != {"sha256", "bytes"}
+                or not isinstance(executable.get("sha256"), str)
+                or not re.fullmatch(r"[a-f0-9]{64}", executable["sha256"])
+                or type(executable.get("bytes")) is not int
+                or not 0 < executable["bytes"] <= 512 * 1024 * 1024):
+            raise ValueError("Linux build manifest has an invalid executable digest or size")
+
+    if not isinstance(package, dict) or package.get("schema") != "nudox.linux-portable-package.v1":
+        raise ValueError("Linux package manifest has an unsupported schema")
+    package_source = package.get("source")
+    if (not isinstance(package_source, dict) or set(package_source) != build_source_fields
+            or package_source != build_source):
+        raise ValueError("Linux package manifest source differs from the build manifest identity")
+    if package.get("build_manifest_sha256") != manifest["build_manifest_sha256"]:
+        raise ValueError("Linux package manifest does not bind the exact public build manifest")
+    if package.get("required_glibc") != manifest["minimum_glibc"]:
+        raise ValueError("Linux package glibc requirement differs from the release manifest")
+    package_executables = package.get("executables")
+    if not isinstance(package_executables, list) or len(package_executables) != 3:
+        raise ValueError("Linux package manifest omits or adds packaged executable identities")
+    packaged_by_name = {}
+    for record in package_executables:
+        if not isinstance(record, dict) or record.get("name") not in executables:
+            raise ValueError("Linux package manifest has an unknown executable identity")
+        name = record["name"]
+        if name in packaged_by_name:
+            raise ValueError("Linux package manifest has duplicate executable identities")
+        if (record.get("original_sha256") != executables[name]["sha256"]
+                or record.get("packaged_path") != f"bin/{name}"
+                or not isinstance(record.get("packaged_sha256"), str)
+                or not re.fullmatch(r"[a-f0-9]{64}", record["packaged_sha256"])
+                or type(record.get("packaged_bytes")) is not int
+                or not 0 < record["packaged_bytes"] <= 512 * 1024 * 1024):
+            raise ValueError(f"Linux package manifest has an invalid {name} packaged identity")
+        packaged_by_name[name] = record
+    if set(packaged_by_name) != set(executables):
+        raise ValueError("Linux package manifest omits packaged executable identities")
+    for name, record in packaged_by_name.items():
+        if (record["packaged_sha256"] != executable_digests[name]["sha256"]
+                or record["packaged_bytes"] != executable_digests[name]["bytes"]):
+            raise ValueError(f"Linux archived {name} bytes differ from the packaging manifest")
+
+    installer = directory / "install-linux-x64.py"
+    channel_installer = directory / "install-linux-x64-channel.py"
+    if installer.is_symlink() or not installer.is_file() or channel_installer.is_symlink() or not channel_installer.is_file():
+        raise ValueError("Linux candidate is missing its checkpoint or channel installer bootstrap")
+    if installer.stat().st_size > 1024 * 1024:
+        raise ValueError("Linux checkpoint installer exceeds its source bound")
+    try:
+        pinned_tag = linux_checkpoint_tag(manifest, installer.read_bytes(), manifest_sha256)
+    except ValueError as error:
+        raise ValueError(f"Linux checkpoint installer identity is invalid: {error}") from error
+    release_tag = package.get("release_tag")
+    if release_tag != pinned_tag:
+        raise ValueError("Linux package release tag differs from its pinned installer")
+
     if require_qa:
         qa = read_json(directory / "native-qa-linux-x64.json")
         qa_fields = {"schema", "platform", "archive_sha256", "source_sha", "tested_by", "tested_at", "ubuntu_release", "glibc_version", "cases"}
@@ -260,10 +448,6 @@ def validate_linux(directory, manifest, source=None, *, require_qa=True):
                 raise ValueError("Linux native QA requires operator, timestamp, Ubuntu release and glibc version")
         if set(qa["cases"]) != LINUX_QA_CASES or any(value is not True for value in qa["cases"].values()):
             raise ValueError("Linux native acceptance has missing or failed cases")
-    installer = directory / "install-linux-x64.py"
-    channel_installer = directory / "install-linux-x64-channel.py"
-    if installer.is_symlink() or not installer.is_file() or channel_installer.is_symlink() or not channel_installer.is_file():
-        raise ValueError("Linux candidate is missing its checkpoint or channel installer bootstrap")
     if source is not None:
         source = Path(source)
         revision = manifest["source_sha"]

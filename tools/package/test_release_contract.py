@@ -1,7 +1,10 @@
+import copy
 import io
 import hashlib
 import json
+import os
 import plistlib
+import subprocess
 import tarfile
 import tempfile
 import urllib.error
@@ -11,18 +14,58 @@ from unittest.mock import patch
 from pathlib import Path
 
 import release_contract as release
+import install_linux as linux_installer
 
 
-def linux_diagnostic_package(directory):
+def linux_diagnostic_package(directory, *, extra_members=(), build_changes=None,
+                             package_changes=None, pinned_tag=None, executable_changes=None,
+                             source_sha=None, source_tree=None, cargo_lock_sha256=None,
+                             version="0.2.0", manifest_changes=None):
     root = Path(directory)
-    source = "a" * 40
-    build = json.dumps({"source": {"commit": source}}).encode()
-    package = json.dumps({"schema": "nudox.linux-portable-package.v1",
-                          "release_tag": f"checkpoint-20261011-{source[:10]}-linux-x64"}).encode()
+    root.mkdir(parents=True, exist_ok=True)
+    source = source_sha or "a" * 40
+    tree = source_tree or "b" * 40
+    lock_sha = cargo_lock_sha256 or "c" * 64
+    tag = f"checkpoint-20261011-{source[:10]}-linux-x64"
+    executable_bodies = {"backend-cli": b"cli", "backend-mcp": b"mcp", "backend-locald": b"locald"}
+    build_object = {
+        "schema": "nudox.runtime-build-manifest.v1",
+        "source": {"commit": source, "tree": tree, "clean": True},
+        "executables": {
+            name: {"sha256": hashlib.sha256(body).hexdigest(), "bytes": len(body)}
+            for name, body in executable_bodies.items()
+        },
+        "root_receipt": {
+            "schema": "nudox.runtime-artifact-build-receipt.v1",
+            "sha256": "d" * 64,
+        },
+    }
+    build_object.update(copy.deepcopy(build_changes or {}))
+    archive_executable_bodies = {**executable_bodies, **(executable_changes or {})}
+    build = json.dumps(build_object, separators=(",", ":")).encode()
+    package_object = {
+        "schema": "nudox.linux-portable-package.v1",
+        "release_tag": tag,
+        "source": copy.deepcopy(build_object["source"]),
+        "build_manifest_sha256": hashlib.sha256(build).hexdigest(),
+        "required_glibc": "2.39",
+        "executables": [
+            {
+                "name": name,
+                "original_sha256": build_object["executables"][name]["sha256"],
+                "packaged_path": f"bin/{name}",
+                "packaged_sha256": hashlib.sha256(body).hexdigest(),
+                "packaged_bytes": len(body),
+            }
+            for name, body in executable_bodies.items()
+        ],
+    }
+    package_object.update(copy.deepcopy(package_changes or {}))
+    package = json.dumps(package_object, separators=(",", ":")).encode()
     members = {
-        "nudox-linux-x86_64/bin/backend-cli": (b"cli", 0o755),
-        "nudox-linux-x86_64/bin/backend-mcp": (b"mcp", 0o755),
-        "nudox-linux-x86_64/bin/backend-locald": (b"locald", 0o755),
+        "nudox-linux-x86_64/bin/backend-cli": (archive_executable_bodies["backend-cli"], 0o755),
+        "nudox-linux-x86_64/bin/backend-mcp": (archive_executable_bodies["backend-mcp"], 0o755),
+        "nudox-linux-x86_64/bin/backend-locald": (archive_executable_bodies["backend-locald"], 0o755),
         "nudox-linux-x86_64/build-manifest.json": (build, 0o644),
         "nudox-linux-x86_64/packaging-manifest.json": (package, 0o644),
         "nudox-linux-x86_64/README.txt": (b"synthetic diagnostic package", 0o644),
@@ -37,19 +80,36 @@ def linux_diagnostic_package(directory):
             member.size = len(body)
             member.mode = mode
             bundle.addfile(member, io.BytesIO(body))
+        for name, kind in extra_members:
+            member = tarfile.TarInfo(name)
+            member.type = tarfile.DIRTYPE if kind == "dir" else tarfile.REGTYPE
+            if kind == "file":
+                member.size = 1
+                bundle.addfile(member, io.BytesIO(b"x"))
+            else:
+                bundle.addfile(member)
     manifest = {
-        "schema": 1, "version": "0.2.0", "source_sha": source,
-        "source_tree": "b" * 40, "cargo_lock_sha256": "c" * 64,
+        "schema": 1, "version": version, "source_sha": source,
+        "source_tree": tree, "cargo_lock_sha256": lock_sha,
         "platform": "linux-x64", "target": "x86_64-unknown-linux-gnu",
         "asset": archive.name, "sha256": release.sha256(archive),
         "size_bytes": archive.stat().st_size, "minimum_glibc": "2.39",
         "build_manifest_sha256": hashlib.sha256(build).hexdigest(),
         "packaging_manifest_sha256": hashlib.sha256(package).hexdigest(),
     }
-    (root / "release-manifest.json").write_text(json.dumps(manifest))
+    manifest.update(copy.deepcopy(manifest_changes or {}))
+    manifest_bytes = json.dumps(manifest, separators=(",", ":")).encode()
+    (root / "release-manifest.json").write_bytes(manifest_bytes)
     (root / (archive.name + ".sha256")).write_text(f'{manifest["sha256"]}  {archive.name}\n')
-    (root / "install-linux-x64.py").write_text("# synthetic pinned installer\n")
-    (root / "install-linux-x64-channel.py").write_text("# synthetic channel installer\n")
+    installer_source = (Path(__file__).parent / "install_linux.py").read_bytes()
+    selected_tag = pinned_tag if pinned_tag is not None else tag
+    pinned_installer = installer_source.replace(b'PINNED_RELEASE_TAG = ""',
+                                                 f'PINNED_RELEASE_TAG = "{selected_tag}"'.encode(), 1)
+    pinned_installer = pinned_installer.replace(
+        b'PINNED_MANIFEST_SHA256 = ""',
+        f'PINNED_MANIFEST_SHA256 = "{hashlib.sha256(manifest_bytes).hexdigest()}"'.encode(), 1)
+    (root / "install-linux-x64.py").write_bytes(pinned_installer)
+    (root / "install-linux-x64-channel.py").write_bytes(installer_source)
     qa = {
         "schema": 1, "platform": "linux-x64",
         "archive_sha256": "replace-with-the-release-manifest-sha256",
@@ -59,6 +119,29 @@ def linux_diagnostic_package(directory):
     }
     (root / "native-qa-linux-x64.json").write_text(json.dumps(qa))
     return manifest
+
+
+def linux_source_checkout(path, *, version="0.2.0"):
+    path = Path(path)
+    package_tools = path / "tools" / "package"
+    package_tools.mkdir(parents=True)
+    (path / "Cargo.toml").write_text(
+        f'[workspace]\n[workspace.package]\nversion = "{version}"\n')
+    lock_bytes = b"# source-validation fixture lock\n"
+    (path / "Cargo.lock").write_bytes(lock_bytes)
+    (package_tools / "install_linux.py").write_bytes(
+        (Path(__file__).parent / "install_linux.py").read_bytes())
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    subprocess.run(["git", "-C", str(path), "add", "Cargo.toml", "Cargo.lock", "tools/package/install_linux.py"], check=True)
+    environment = os.environ.copy()
+    environment.update({"GIT_AUTHOR_NAME": "Nudox test", "GIT_AUTHOR_EMAIL": "test@example.invalid",
+                        "GIT_COMMITTER_NAME": "Nudox test", "GIT_COMMITTER_EMAIL": "test@example.invalid"})
+    subprocess.run(["git", "-C", str(path), "commit", "-q", "-m", "synthetic package source"],
+                   check=True, env=environment)
+    revision = subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip()
+    tree = subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD^{tree}"], text=True).strip()
+    return {"root": path, "revision": revision, "tree": tree,
+            "lock_sha256": hashlib.sha256(lock_bytes).hexdigest()}
 
 
 def candidate(directory):
@@ -124,6 +207,199 @@ class CandidateTests(unittest.TestCase):
                 stream.write(b"corruption")
             with self.assertRaisesRegex(ValueError, "archive differs from its immutable manifest"):
                 release.validate_linux(Path(directory), manifest, require_qa=False)
+
+    def test_linux_archive_raw_names_match_installer_policy(self):
+        for raw_name in (
+            "nudox-linux-x86_64//escaped",
+            "nudox-linux-x86_64/./escaped",
+            "nudox-linux-x86_64/../escaped",
+        ):
+            with self.subTest(raw_name=raw_name), tempfile.TemporaryDirectory() as directory:
+                manifest = linux_diagnostic_package(directory, extra_members=((raw_name, "file"),))
+                with self.assertRaisesRegex(ValueError, "noncanonical or unsafe"):
+                    release.validate_linux(Path(directory), manifest, require_qa=False)
+
+                member = tarfile.TarInfo(raw_name)
+                member.size = 1
+                with self.assertRaises(linux_installer.InstallError):
+                    linux_installer._safe_member(member, "nudox-linux-x86_64")
+
+    def test_linux_archive_allows_exact_root_and_rejects_normalized_duplicates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = linux_diagnostic_package(directory)
+            self.assertEqual(release.validate_linux(Path(directory), manifest, require_qa=False), manifest)
+
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = linux_diagnostic_package(directory, extra_members=(
+                ("nudox-linux-x86_64/extra/", "dir"),
+                ("nudox-linux-x86_64/extra", "dir"),
+            ))
+            with self.assertRaisesRegex(ValueError, "duplicate normalized paths"):
+                release.validate_linux(Path(directory), manifest, require_qa=False)
+
+    def test_linux_archive_rejects_file_parent_collisions_and_unbounded_headers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            manifest = linux_diagnostic_package(
+                directory, extra_members=(("nudox-linux-x86_64/bin", "file"),))
+            with self.assertRaisesRegex(ValueError, "file used as a parent"):
+                release.validate_linux(Path(directory), manifest, require_qa=False)
+
+        members = []
+        root = tarfile.TarInfo("nudox-linux-x86_64")
+        root.type = tarfile.DIRTYPE
+        members.append(root)
+        for name in (
+            "bin/backend-cli", "bin/backend-mcp", "bin/backend-locald",
+            "build-manifest.json", "packaging-manifest.json", "README.txt",
+        ):
+            member = tarfile.TarInfo("nudox-linux-x86_64/" + name)
+            member.size = 1
+            members.append(member)
+        for name, size in (("large-a", release.LINUX_MAX_MEMBER_BYTES),
+                           ("large-b", release.LINUX_MAX_MEMBER_BYTES),
+                           ("large-c", 1)):
+            member = tarfile.TarInfo("nudox-linux-x86_64/" + name)
+            member.size = size
+            members.append(member)
+        with self.assertRaisesRegex(ValueError, "uncompressed size exceeds"):
+            release.validate_linux_archive_members(members)
+
+        oversized_member = tarfile.TarInfo("nudox-linux-x86_64/oversized")
+        oversized_member.size = release.LINUX_MAX_MEMBER_BYTES + 1
+        with self.assertRaisesRegex(ValueError, "member exceeds the safety limit"):
+            release.validate_linux_archive_members([root, oversized_member])
+        with self.assertRaisesRegex(ValueError, "empty or excessive member list"):
+            release.validate_linux_archive_members([root] * (release.LINUX_MAX_ARCHIVE_MEMBERS + 1))
+
+    def test_linux_validation_stops_reading_headers_at_the_member_cap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = linux_diagnostic_package(root)
+
+            class LongTar:
+                consumed = 0
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    return False
+
+                def __iter__(self):
+                    while True:
+                        self.consumed += 1
+                        yield tarfile.TarInfo(f"nudox-linux-x86_64/member-{self.consumed}")
+
+            archive = LongTar()
+            with patch.object(release.tarfile, "open", return_value=archive):
+                with self.assertRaisesRegex(ValueError, "too many members"):
+                    release.validate_linux(root, manifest, require_qa=False)
+            self.assertEqual(archive.consumed, release.LINUX_MAX_ARCHIVE_MEMBERS + 1)
+
+    def test_linux_member_stream_rejects_size_limits_before_reading_more_headers(self):
+        class MemberStream:
+            def __init__(self, members):
+                self.members = iter(members)
+                self.consumed = 0
+
+            def __iter__(self):
+                for member in self.members:
+                    self.consumed += 1
+                    yield member
+
+        oversized = tarfile.TarInfo("nudox-linux-x86_64/oversized")
+        oversized.size = release.LINUX_MAX_MEMBER_BYTES + 1
+        stream = MemberStream([oversized])
+        with self.assertRaisesRegex(ValueError, "member exceeds the safety limit"):
+            release.read_bounded_linux_members(stream)
+        self.assertEqual(stream.consumed, 1)
+
+        aggregate_members = []
+        for name, size in (("large-a", release.LINUX_MAX_MEMBER_BYTES),
+                           ("large-b", release.LINUX_MAX_MEMBER_BYTES),
+                           ("large-c", 1), ("must-not-read", 1)):
+            member = tarfile.TarInfo("nudox-linux-x86_64/" + name)
+            member.size = size
+            aggregate_members.append(member)
+        stream = MemberStream(aggregate_members)
+        with self.assertRaisesRegex(ValueError, "uncompressed size exceeds"):
+            release.read_bounded_linux_members(stream)
+        self.assertEqual(stream.consumed, 3)
+
+    def test_linux_build_and_packaging_identities_are_cross_bound(self):
+        invalid_cases = (
+            ("dirty build", {"build_changes": {"source": {
+                "commit": "a" * 40, "tree": "b" * 40, "clean": False}}},
+             "commit/tree/clean identity"),
+            ("different build commit", {"build_changes": {"source": {
+                "commit": "f" * 40, "tree": "b" * 40, "clean": True}}},
+             "commit/tree/clean identity"),
+            ("different build tree", {"build_changes": {"source": {
+                "commit": "a" * 40, "tree": "c" * 40, "clean": True}}},
+             "commit/tree/clean identity"),
+            ("foreign package source", {"package_changes": {"source": {
+                "commit": "f" * 40, "tree": "b" * 40, "clean": True}}},
+             "source differs from the build"),
+            ("wrong package build digest", {"package_changes": {
+                "build_manifest_sha256": "e" * 64}}, "exact public build manifest"),
+            ("glibc floor mismatch", {"package_changes": {
+                "required_glibc": "2.40"}}, "glibc requirement differs"),
+            ("package tag differs from pinned installer", {"package_changes": {
+                "release_tag": "checkpoint-20261010-aaaaaaaaaa-linux-x64"}},
+             "release tag differs from its pinned installer"),
+            ("executable differs from build record", {"executable_changes": {
+                "backend-cli": b"changed cli bytes"}},
+             "archived backend-cli bytes differ"),
+        )
+        for label, kwargs, message in invalid_cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                manifest = linux_diagnostic_package(directory, **kwargs)
+                with self.assertRaisesRegex(ValueError, message):
+                    release.validate_linux(Path(directory), manifest, require_qa=False)
+
+    def test_linux_manifest_digest_is_exact_on_disk_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = linux_diagnostic_package(root)
+            admitted_digest = hashlib.sha256((root / "release-manifest.json").read_bytes()).hexdigest()
+            (root / "release-manifest.json").write_text(json.dumps(manifest, indent=2))
+            with self.assertRaisesRegex(ValueError, "manifest bytes changed after admission"):
+                release.validate_linux(root, manifest, require_qa=False,
+                                       manifest_sha256=admitted_digest)
+
+    def test_linux_source_lock_version_and_tree_match_the_selected_git_revision(self):
+        scenarios = (
+            ("matching source", {}, None),
+            ("different lock", {"manifest_changes": {"cargo_lock_sha256": "e" * 64}},
+             "lock differs from selected canonical source"),
+            ("different version", {"manifest_changes": {"version": "0.3.0"}},
+             "version/tree differs from selected canonical source"),
+            ("different source tree", {"source_tree": "f" * 40},
+             "version/tree differs from selected canonical source"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = linux_source_checkout(root / "source")
+            for label, changes, error in scenarios:
+                with self.subTest(label=label):
+                    package_dir = root / ("package-" + label.replace(" ", "-"))
+                    package_tree = changes.get("source_tree", source["tree"])
+                    package_changes = {key: value for key, value in changes.items() if key != "source_tree"}
+                    manifest = linux_diagnostic_package(
+                        package_dir,
+                        source_sha=source["revision"],
+                        source_tree=package_tree,
+                        cargo_lock_sha256=source["lock_sha256"],
+                        **package_changes,
+                    )
+                    if error is None:
+                        self.assertEqual(
+                            release.validate_linux(package_dir, manifest, source["root"], require_qa=False),
+                            manifest,
+                        )
+                    else:
+                        with self.assertRaisesRegex(ValueError, error):
+                            release.validate_linux(package_dir, manifest, source["root"], require_qa=False)
 
     def test_missing_release_lookup_closes_http_response(self):
         github = FakeGitHub()

@@ -8,13 +8,11 @@ from __future__ import annotations
 import argparse
 import ast
 from dataclasses import dataclass
-import datetime
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
-import shutil
 import stat
 import subprocess
 import sys
@@ -235,24 +233,10 @@ def selected_source_snapshot(source_root: Path) -> SourceSnapshot:
 
 
 def linux_checkpoint_tag(manifest: dict, installer: bytes, manifest_sha256: str) -> str:
-    constants = literal_assignments(installer, {"PLATFORM", "PINNED_RELEASE_TAG", "PINNED_MANIFEST_SHA256"})
-    tag = constants["PINNED_RELEASE_TAG"]
-    if constants["PLATFORM"] != "linux-x64" or constants["PINNED_MANIFEST_SHA256"] != manifest_sha256:
-        raise CandidateError("Linux installer does not pin this platform and exact manifest bytes")
-    source = manifest.get("source_sha")
-    if not isinstance(source, str) or not re.fullmatch(r"[a-f0-9]{40}", source):
-        raise CandidateError("Linux manifest has no valid source revision")
-    match = re.fullmatch(r"checkpoint-([0-9]{8})-([a-f0-9]{10})-linux-x64", tag) if isinstance(tag, str) else None
-    if match is None or match[2] != source[:10]:
-        raise CandidateError("Linux installer checkpoint tag differs from the manifest source")
     try:
-        datetime.datetime.strptime(match[1], "%Y%m%d")
+        return release.linux_checkpoint_tag(manifest, installer, manifest_sha256)
     except ValueError as error:
-        raise CandidateError("Linux installer checkpoint date is invalid") from error
-    expected_asset = f"nudox-linux-x86_64-{source[:10]}.tar.gz"
-    if manifest.get("asset") != expected_asset:
-        raise CandidateError("Linux archive name differs from its source revision")
-    return tag
+        raise CandidateError(str(error)) from error
 
 
 def uncompleted_linux_qa(package_dir: Path) -> tuple[str, str]:
@@ -293,14 +277,19 @@ def pin_linux_installer(template: bytes, tag: str, manifest_sha256: str) -> byte
 
 
 def validate_linux_package(directory: Path, source: SourceSnapshot) -> LinuxPackage:
-    package_dir = directory.resolve(strict=True)
-    if not package_dir.is_dir() or package_dir.is_symlink():
+    raw_directory = Path(directory)
+    # Reject a symlink used as the package root itself; parent path aliases are canonicalized below.
+    if raw_directory.is_symlink():
+        raise CandidateError("Linux package input must not be a symlink")
+    package_dir = raw_directory.resolve(strict=True)
+    if not package_dir.is_dir():
         raise CandidateError("Linux package input must be a real directory")
     manifest_path = package_dir / "release-manifest.json"
     manifest_bytes = read_regular(manifest_path, MAX_JSON, "Linux release manifest")
     manifest = checked_json(manifest_bytes, "Linux release manifest")
     try:
-        release.validate_linux(package_dir, manifest, source.root, require_qa=False)
+        release.validate_linux(package_dir, manifest, source.root, require_qa=False,
+                               manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest())
     except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
         raise CandidateError(f"Linux package or selected source failed validation: {error}") from error
     installer = read_regular(package_dir / LINUX_BOOTSTRAP_ASSET, MAX_SCRIPT, "pinned Linux installer")
@@ -444,15 +433,30 @@ def copy_verified(source: Path, destination: Path, expected_sha256: str, expecte
     if source.is_symlink() or not source.is_file():
         raise CandidateError(f"candidate package asset is not a regular file: {source.name}")
     source_hash = hashlib.sha256()
+    destination_parent_fd = None
+    destination_fd = None
+    destination_identity = None
     copied = 0
     try:
+        destination_parent_fd = os.open(
+            destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
         source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(source_fd, "rb") as incoming:
             before = os.fstat(incoming.fileno())
             if before.st_size != expected_bytes:
                 raise CandidateError(f"candidate package asset size changed: {source.name}")
-            target_fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-            with os.fdopen(target_fd, "wb") as outgoing:
+            destination_fd = os.open(
+                destination.name,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600,
+                dir_fd=destination_parent_fd,
+            )
+            created = os.fstat(destination_fd)
+            destination_identity = (created.st_dev, created.st_ino)
+            if not stat.S_ISREG(created.st_mode) or created.st_nlink != 1:
+                raise CandidateError(f"staged package asset is not a new regular file: {source.name}")
+            os.fchmod(destination_fd, 0o600)
+            with os.fdopen(os.dup(destination_fd), "wb") as outgoing:
                 while chunk := incoming.read(1024 * 1024):
                     copied += len(chunk)
                     if copied > expected_bytes:
@@ -465,12 +469,36 @@ def copy_verified(source: Path, destination: Path, expected_sha256: str, expecte
             if (identity(before) != identity(after) or identity(after) != identity(current)
                     or copied != expected_bytes or source_hash.hexdigest() != expected_sha256):
                 raise CandidateError(f"candidate package asset changed while copying: {source.name}")
-    except Exception:
-        destination.unlink(missing_ok=True)
-        raise
-    if release.sha256(destination) != expected_sha256:
-        destination.unlink(missing_ok=True)
-        raise CandidateError(f"staged candidate package asset differs from its admitted digest: {source.name}")
+
+        os.fsync(destination_fd)
+        target_before = os.fstat(destination_fd)
+        if (not stat.S_ISREG(target_before.st_mode) or target_before.st_nlink != 1
+                or target_before.st_size != expected_bytes
+                or (target_before.st_dev, target_before.st_ino) != destination_identity):
+            raise CandidateError(f"staged package asset identity changed: {source.name}")
+        os.lseek(destination_fd, 0, os.SEEK_SET)
+        destination_hash = hashlib.sha256()
+        verified_bytes = 0
+        while chunk := os.read(destination_fd, 1024 * 1024):
+            verified_bytes += len(chunk)
+            if verified_bytes > expected_bytes:
+                raise CandidateError(f"staged package asset grew while verifying: {source.name}")
+            destination_hash.update(chunk)
+        target_after = os.fstat(destination_fd)
+        named_target = os.stat(destination.name, dir_fd=destination_parent_fd, follow_symlinks=False)
+        if (verified_bytes != expected_bytes or destination_hash.hexdigest() != expected_sha256
+                or (target_after.st_dev, target_after.st_ino) != destination_identity
+                or target_after.st_size != expected_bytes or target_after.st_nlink != 1
+                or not stat.S_ISREG(target_after.st_mode)
+                or (named_target.st_dev, named_target.st_ino) != destination_identity
+                or named_target.st_size != expected_bytes or named_target.st_nlink != 1
+                or not stat.S_ISREG(named_target.st_mode)):
+            raise CandidateError(f"staged candidate package asset differs from its admitted identity: {source.name}")
+    finally:
+        if destination_fd is not None:
+            os.close(destination_fd)
+        if destination_parent_fd is not None:
+            os.close(destination_parent_fd)
 
 
 def prepare_output(bundle: CandidateBundle, output_dir: Path) -> dict:
@@ -482,6 +510,10 @@ def prepare_output(bundle: CandidateBundle, output_dir: Path) -> dict:
     if output == bundle.linux_package.directory or bundle.linux_package.directory in output.parents:
         raise CandidateError("candidate output directory must be outside the selected package input")
     output.mkdir(mode=0o700, parents=True)
+    created_output = output.lstat()
+    if (not stat.S_ISDIR(created_output.st_mode) or stat.S_ISLNK(created_output.st_mode)
+            or created_output.st_uid != os.geteuid()):
+        raise CandidateError("candidate output directory identity is not owned by this process")
     try:
         linux_file = f"{bundle.libraries['linux-x64'].asset_stem}-{bundle.libraries['linux-x64'].sha256[:16]}.py"
         mac_file = f"{bundle.libraries['macos-arm64'].asset_stem}-{bundle.libraries['macos-arm64'].sha256[:16]}.py"
@@ -536,9 +568,9 @@ def prepare_output(bundle: CandidateBundle, output_dir: Path) -> dict:
         receipt_bytes = (json.dumps(receipt, indent=2, sort_keys=True) + "\n").encode()
         write_exclusive(output / "candidate-assembly.json", receipt_bytes)
         return receipt
-    except Exception:
-        shutil.rmtree(output)
-        raise
+    except Exception as error:
+        raise CandidateError(
+            f"candidate assembly failed; private output was retained for inspection at {output}: {error}") from error
 
 
 def assemble(source_root: Path, linux_package_dir: Path, output_dir: Path) -> dict:
