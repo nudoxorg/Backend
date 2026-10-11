@@ -30,6 +30,25 @@ impl<'a> CheckerState<'a> {
             | symbol_flags::CLASS
             | symbol_flags::ENUM;
 
+        if self.ctx.project_module_resolution_outcomes.is_some() {
+            let request = crate::context::BoundModuleRequest {
+                importer: self.ctx.current_file_idx,
+                specifier: module_name,
+                mode: resolution_mode_override,
+                kind: crate::context::ResolutionRequestKind::EsmImport,
+            };
+            let Some(selected) = self.ctx.select_module_request(request) else {
+                return false;
+            };
+            let Some(symbol) = self.resolve_member_for_selected_request(selected, "export=") else {
+                return false;
+            };
+            return self
+                .get_cross_file_symbol(symbol)
+                .or_else(|| self.ctx.binder.get_symbol(symbol))
+                .is_some_and(|symbol| symbol.is_type_only || symbol.has_any_flags(TYPE_PROVIDING));
+        }
+
         let lib_binders = self.get_lib_binders();
         let ambient_export_equals_sym = self
             .ctx

@@ -107,8 +107,8 @@ impl<'a> CheckerContext<'a> {
     }
 
     /// In Node module modes a plain .ts file's format requires package evidence.
-    /// If that evidence is unavailable, use only a unique compiler-owned key for
-    /// this importer, spelling and kind. Competing modes are an ambiguity.
+    /// Without that evidence an implicit syntax edge cannot select another
+    /// edge's explicit mode, even when it is the sole compiler-owned outcome.
     fn bound_request_mode(
         &self,
         importer: usize,
@@ -149,19 +149,7 @@ impl<'a> CheckerContext<'a> {
                 ResolutionRequestKind::EsmImport | ResolutionRequestKind::EsmReExport
             )
         {
-            let mut selected = None;
-            for ((file, spelling, mode, request_kind), _) in
-                self.project_module_resolution_outcomes.as_ref()?.iter()
-            {
-                if *file != importer || spelling != specifier || *request_kind != kind {
-                    continue;
-                }
-                if selected.is_some_and(|previous| previous != *mode) {
-                    return None;
-                }
-                selected = Some(*mode);
-            }
-            return selected;
+            return None;
         }
         Some(self.resolution_mode_for_request_from_file(importer, kind, explicit))
     }
@@ -286,7 +274,7 @@ impl<'a> CheckerContext<'a> {
         })
     }
 
-    /// Recover a nested `typeof import(...)` request from its real annotation.
+    /// Recover an import-type request from its real call, qualifier, or typeof annotation.
     pub(crate) fn bound_import_type_request_at(
         &self,
         importer: usize,
@@ -294,13 +282,21 @@ impl<'a> CheckerContext<'a> {
     ) -> Option<BoundModuleRequest<'_>> {
         use tsz_parser::parser::syntax_kind_ext;
         let arena = self.all_arenas.as_ref()?.get(importer)?;
-        let query = arena
+        let mut call_index = arena
             .get(annotation)
-            .and_then(|node| arena.get_type_query(node))?;
-        let mut call_index = query.expr_name;
+            .and_then(|node| arena.get_type_query(node))
+            .map_or(annotation, |query| query.expr_name);
         for _ in 0..64 {
             self.types.execution_checkpoint(1).ok()?;
             let node = arena.get(call_index)?;
+            if let Some(parenthesized) = arena.get_parenthesized(node) {
+                call_index = parenthesized.expression;
+                continue;
+            }
+            if let Some(access) = arena.get_access_expr(node) {
+                call_index = access.expression;
+                continue;
+            }
             if let Some(qualified) = arena.get_qualified_name(node) {
                 call_index = qualified.left;
                 continue;
@@ -410,6 +406,31 @@ impl<'a> CheckerContext<'a> {
         selected
     }
 
+    /// Legacy export tables share string keys for files and ambient modules.
+    /// A collision cannot prove which lexical owner supplied a retained row.
+    fn reexport_owner_is_ambiguous(&self, importer: usize, owner: &str) -> Option<bool> {
+        let arenas = self.all_arenas.as_ref()?;
+        let is_file = arenas.iter().any(|arena| {
+            arena
+                .source_files
+                .first()
+                .is_some_and(|source| source.file_name == owner)
+        });
+        if !is_file {
+            return Some(false);
+        }
+        // Per-binder declared names are lexical ambient evidence; the global
+        // module export index also contains file keys and cannot prove this.
+        self.get_binder_for_file(importer)?;
+        for binder in self.all_binders.as_ref()?.iter() {
+            self.types.execution_checkpoint(1).ok()?;
+            if binder.declared_modules.contains(owner) {
+                return Some(true);
+            }
+        }
+        Some(false)
+    }
+
     /// The exact lexical owner of an export edge. A file export cannot borrow
     /// a same-spelled export inside an ambient module, or vice versa.
     fn reexport_owner_matches(
@@ -444,6 +465,9 @@ impl<'a> CheckerContext<'a> {
         exported_name: &str,
         original_name: &str,
     ) -> Option<BoundModuleRequest<'_>> {
+        if self.reexport_owner_is_ambiguous(importer, owner)? {
+            return None;
+        }
         let arena = self.all_arenas.as_ref()?.get(importer)?;
         let binder = self.get_binder_for_file(importer)?;
         let table = self
@@ -496,6 +520,9 @@ impl<'a> CheckerContext<'a> {
         row_index: usize,
         is_type_only: bool,
     ) -> Option<BoundModuleRequest<'_>> {
+        if self.reexport_owner_is_ambiguous(importer, owner)? {
+            return None;
+        }
         let arena = self.all_arenas.as_ref()?.get(importer)?;
         let source = arena.source_files.first()?;
         let file_statements =

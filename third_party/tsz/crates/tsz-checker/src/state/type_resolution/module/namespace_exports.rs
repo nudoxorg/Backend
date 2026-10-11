@@ -336,26 +336,32 @@ impl<'a> CheckerState<'a> {
                 .resolve_export_in_target_file(target, name, &mut visited);
         }
         selected.external_identity()?;
-        let spelling = selected.request().specifier;
         for binder in self.ctx.all_binders.as_ref()?.iter() {
-            if let Some(symbol) = self
+            let Some((ambient_key, exports)) = self
                 .ctx
-                .module_exports_for_external_request(binder, selected)
-                .and_then(|exports| exports.get(name))
-            {
+                .ambient_exports_for_selected_request(binder, selected)
+            else {
+                continue;
+            };
+            if let Some(symbol) = exports.get(name) {
                 return Some(symbol);
             }
-        }
-        for &owner in self.ctx.files_for_module_specifier(spelling)? {
-            visited.clear();
-            if let Some((symbol, _)) = self.resolve_export_in_file_with_module_key(
-                owner,
-                Some(spelling),
-                name,
-                &mut visited,
-            ) {
-                return Some(symbol);
+            // Index by the proven declared-ambient key, never by the requested
+            // spelling, which may also identify a program file.
+            if let Some(files) = self.ctx.files_for_module_specifier(ambient_key) {
+                for &owner in files {
+                    visited.clear();
+                    if let Some((symbol, _)) = self.resolve_export_in_file_with_module_key(
+                        owner,
+                        Some(ambient_key),
+                        name,
+                        &mut visited,
+                    ) {
+                        return Some(symbol);
+                    }
+                }
             }
+            return None;
         }
         None
     }
@@ -372,9 +378,9 @@ impl<'a> CheckerState<'a> {
         }
         selected.external_identity()?;
         for binder in self.ctx.all_binders.as_ref()?.iter() {
-            if let Some(exports) = self
+            if let Some((ambient_key, exports)) = self
                 .ctx
-                .module_exports_for_external_request(binder, selected)
+                .ambient_exports_for_selected_request(binder, selected)
             {
                 let mut combined = exports.clone();
                 self.merge_export_equals_members(binder, exports, &mut combined);
@@ -394,19 +400,16 @@ impl<'a> CheckerState<'a> {
                     let mut visited = rustc_hash::FxHashSet::default();
                     self.collect_reexported_symbols(
                         owner,
-                        Some(selected.request().specifier),
+                        Some(ambient_key),
                         &mut combined,
                         &mut visited,
                     );
-                } else if let Some(files) = self
-                    .ctx
-                    .files_for_module_specifier(selected.request().specifier)
-                {
+                } else if let Some(files) = self.ctx.files_for_module_specifier(ambient_key) {
                     for &owner in files {
                         let mut visited = rustc_hash::FxHashSet::default();
                         self.collect_reexported_symbols(
                             owner,
-                            Some(selected.request().specifier),
+                            Some(ambient_key),
                             &mut combined,
                             &mut visited,
                         );

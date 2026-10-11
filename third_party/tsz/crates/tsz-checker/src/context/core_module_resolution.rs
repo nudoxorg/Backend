@@ -189,11 +189,11 @@ impl CheckerContext<'_> {
 
     /// Only the ambient surface admitted for this exact External request.
     /// Program file keys and competing request kinds cannot lend exports.
-    pub(crate) fn module_exports_for_external_request<'b>(
+    pub(crate) fn ambient_exports_for_selected_request<'b>(
         &'b self,
         binder: &'b tsz_binder::BinderState,
         selected: super::SelectedModuleRequest<'_>,
-    ) -> Option<&'b tsz_binder::SymbolTable> {
+    ) -> Option<(&'b str, &'b tsz_binder::SymbolTable)> {
         selected.external_identity()?;
         let spelling = selected.request().specifier;
         let map = self
@@ -212,7 +212,9 @@ impl CheckerContext<'_> {
             })
         };
         if self.declared_modules_contains(binder, spelling) && !is_program_key(spelling) {
-            return map.get(spelling);
+            return map
+                .get_key_value(spelling)
+                .map(|(key, exports)| (key.as_str(), exports));
         }
         let key = if let Some(declared) = self.global_declared_modules.as_ref() {
             declared.best_matching_pattern(spelling)?
@@ -229,7 +231,17 @@ impl CheckerContext<'_> {
         if is_program_key(key) {
             return None;
         }
-        map.get(key)
+        map.get_key_value(key)
+            .map(|(key, exports)| (key.as_str(), exports))
+    }
+
+    pub(crate) fn module_exports_for_external_request<'b>(
+        &'b self,
+        binder: &'b tsz_binder::BinderState,
+        selected: super::SelectedModuleRequest<'_>,
+    ) -> Option<&'b tsz_binder::SymbolTable> {
+        self.ambient_exports_for_selected_request(binder, selected)
+            .map(|(_, exports)| exports)
     }
 
     /// Resolve a concrete module specifier onto a declared *wildcard* ambient

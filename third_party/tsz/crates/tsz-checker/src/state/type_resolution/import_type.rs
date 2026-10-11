@@ -136,7 +136,20 @@ impl<'a> CheckerState<'a> {
         module_specifier: &str,
         member_name: &str,
         resolution_mode_override: Option<crate::context::ResolutionModeOverride>,
+        type_name_idx: NodeIndex,
     ) -> Option<tsz_binder::SymbolId> {
+        if self.ctx.project_module_resolution_outcomes.is_some() {
+            let request = self
+                .ctx
+                .bound_import_type_request_at(self.ctx.current_file_idx, type_name_idx)?;
+            if request.specifier != module_specifier {
+                return None;
+            }
+            return self.resolve_member_for_selected_request(
+                self.ctx.select_module_request(request)?,
+                member_name,
+            );
+        }
         let from_file = self.ctx.current_file_idx;
 
         if let Some(source_binder) = self.ctx.get_binder_for_file(from_file)
@@ -499,9 +512,17 @@ impl<'a> CheckerState<'a> {
             module_specifier,
             &first_segment,
             resolution_mode_override,
+            type_name_idx,
         ) {
             Some(sym_id) => sym_id,
             None => {
+                if self.ctx.project_module_resolution_outcomes.is_some() {
+                    return Some((
+                        self.import_type_namespace_name(module_specifier, resolution_mode_override),
+                        first_segment,
+                        None,
+                    ));
+                }
                 let mut resolved_segments = Vec::new();
                 let mut current_type = match self.resolve_import_type_member_via_export_equals_type(
                     module_specifier,
@@ -669,11 +690,13 @@ impl<'a> CheckerState<'a> {
         // (`@typedef {number} Dotted.Name` declares `Dotted.Name`, not a
         // member `Dotted`), so the typedef lookup uses the whole segment
         // chain joined back into that qualified name.
-        if let Some(jsdoc_typedef_type) = self.resolve_import_type_jsdoc_typedef(
-            module_name,
-            &segments.join("."),
-            resolution_mode_override,
-        ) {
+        if self.ctx.project_module_resolution_outcomes.is_none()
+            && let Some(jsdoc_typedef_type) = self.resolve_import_type_jsdoc_typedef(
+                module_name,
+                &segments.join("."),
+                resolution_mode_override,
+            )
+        {
             return Some(jsdoc_typedef_type);
         }
 
@@ -681,6 +704,7 @@ impl<'a> CheckerState<'a> {
             module_name,
             &segments[0],
             resolution_mode_override,
+            type_name_idx,
         )?;
         if segments.len() > 1 {
             match self.walk_import_type_qualified_segments(current_sym, &segments) {
@@ -990,14 +1014,22 @@ impl<'a> CheckerState<'a> {
             self.current_file_is_commonjs_for_node16_or_node18()
                 .then(|| self.current_file_emit_resolution_mode())
         });
-        let target_idx = self
-            .ctx
-            .resolve_import_target_from_file_with_mode(
+        let target_idx = if self.ctx.project_module_resolution_outcomes.is_some() {
+            self.ctx.resolve_import_target_from_file_for_request(
                 self.ctx.current_file_idx,
                 module_name,
-                resolution_mode,
+                resolution_mode_override,
+                crate::context::ResolutionRequestKind::EsmImport,
             )
-            .or_else(|| self.ctx.resolve_import_target(module_name));
+        } else {
+            self.ctx
+                .resolve_import_target_from_file_with_mode(
+                    self.ctx.current_file_idx,
+                    module_name,
+                    resolution_mode,
+                )
+                .or_else(|| self.ctx.resolve_import_target(module_name))
+        };
 
         if let Some(target_idx) = target_idx
             && self.type_only_cjs_esm_resolution_mode_is_missing(
@@ -1030,7 +1062,23 @@ impl<'a> CheckerState<'a> {
         else {
             return TypeId::ERROR;
         };
-        let resolution_mode_override = self.get_import_type_resolution_mode_override(call_idx);
+        let resolution_mode_override = if self.ctx.project_module_resolution_outcomes.is_some() {
+            let request = self
+                .ctx
+                .bound_import_type_request_at(self.ctx.current_file_idx, call_idx);
+            let selected = request.and_then(|request| self.ctx.select_module_request(request));
+            let Some(selected) = selected else {
+                let (message, code) = self.module_not_found_diagnostic_for_site(
+                    &module_name,
+                    ModuleNotFoundSite::ImportType,
+                );
+                self.error_at_node(specifier_node, &message, code);
+                return TypeId::ERROR;
+            };
+            selected.request().mode
+        } else {
+            self.get_import_type_resolution_mode_override(call_idx)
+        };
         self.maybe_emit_import_type_cjs_esm_resolution_mode_missing(
             &module_name,
             specifier_node,
@@ -1105,6 +1153,20 @@ impl<'a> CheckerState<'a> {
             resolution_mode_override,
         ) {
             return resolved;
+        }
+
+        if self.ctx.project_module_resolution_outcomes.is_some() {
+            if has_named_member_segments {
+                return report_missing_import_type_member(self);
+            }
+            return if is_bare_import_type
+                && !bare_import_type_refers_to_type
+                && !suppress_bare_import_type_error
+            {
+                bare_import_type_error(self)
+            } else {
+                TypeId::ERROR
+            };
         }
 
         // Check if the module resolves through any of the known resolution paths.
@@ -1379,6 +1441,7 @@ impl<'a> CheckerState<'a> {
             &module_name,
             &segments[0],
             resolution_mode_override,
+            type_name_idx,
         )?;
         if segments.len() > 1 {
             match self.walk_import_type_qualified_segments(current_sym, &segments) {
