@@ -21,6 +21,18 @@ type TypeParamPushResult = (
     Vec<(String, Option<TypeId>, bool)>,
 );
 
+#[inline]
+fn is_nested_same_file_type_alias(
+    is_local_type_alias: bool,
+    symbol_resolution_depth: u32,
+    current_file_idx: usize,
+    resolve_owner_file_idx: impl FnOnce() -> Option<usize>,
+) -> bool {
+    is_local_type_alias
+        && symbol_resolution_depth > 0
+        && resolve_owner_file_idx() == Some(current_file_idx)
+}
+
 /// #14345 construction-stamp option, the same project semantic option the carrier's lowering stamp
 /// (`collect_type_parameters_decl_scoped`) reads). When on, the checker's
 /// def-type-param mint (`intern_type_param_for_decl`) stamps
@@ -1248,9 +1260,12 @@ impl CheckerState<'_> {
             .binder
             .get_symbol(sym_id)
             .is_some_and(|symbol| symbol.has_any_flags(symbol_flags::TYPE_ALIAS));
-        let is_nested_same_file_type_alias = is_local_type_alias
-            && self.ctx.symbol_resolution_depth.get() > 0
-            && self.ctx.resolve_symbol_file_index(sym_id) == Some(self.ctx.current_file_idx);
+        let is_nested_same_file_type_alias = is_nested_same_file_type_alias(
+            is_local_type_alias,
+            self.ctx.symbol_resolution_depth.get(),
+            self.ctx.current_file_idx,
+            || self.ctx.resolve_symbol_file_index(sym_id),
+        );
 
         // Shared cross-context stack-overflow breaker: probe → trip → grow.
         // Symbol type resolution is a node in the heritage-merge recursion
@@ -1961,5 +1976,45 @@ impl CheckerState<'_> {
         request: &TypingRequest,
     ) -> tsz_solver::TypeId {
         self.get_type_from_type_query_flow_sensitive_with_request(idx, request)
+    }
+}
+
+#[cfg(test)]
+mod nested_same_file_alias_guard_tests {
+    use super::is_nested_same_file_type_alias;
+
+    #[test]
+    fn stack_growth_is_limited_to_nested_local_aliases_with_current_owner() {
+        let current_file = 3;
+        assert!(is_nested_same_file_type_alias(
+            true,
+            1,
+            current_file,
+            || { Some(current_file) }
+        ));
+        assert!(!is_nested_same_file_type_alias(
+            true,
+            0,
+            current_file,
+            || { panic!("a root alias must not resolve its owner") }
+        ));
+        assert!(!is_nested_same_file_type_alias(
+            false,
+            1,
+            current_file,
+            || { panic!("a nonlocal alias must not resolve its owner") }
+        ));
+        assert!(!is_nested_same_file_type_alias(
+            true,
+            1,
+            current_file,
+            || { Some(current_file + 1) }
+        ));
+        assert!(!is_nested_same_file_type_alias(
+            true,
+            1,
+            current_file,
+            || None
+        ));
     }
 }

@@ -418,6 +418,39 @@ mod tests {
     }
 
     #[test]
+    fn same_file_alias_guard_uses_one_shared_probe_and_respects_trip() {
+        reset();
+        let mut calls = 0;
+        let healthy = with_same_file_alias_stack_guard(-1, || {
+            calls += 1;
+            42
+        });
+        assert_eq!(healthy, 42);
+        assert_eq!(calls, 1, "healthy guard runs its body once");
+        assert_eq!(
+            STACK_STATE.get() & 0xFF,
+            1,
+            "the grow-first helper enters exactly one shared guard"
+        );
+        assert!(!stack_overflow_tripped());
+
+        trip_stack_overflow();
+        let before = STACK_STATE.get();
+        let tripped = with_same_file_alias_stack_guard(-1, || {
+            calls += 1;
+            7
+        });
+        assert_eq!(tripped, -1, "a tripped breaker returns the fallback");
+        assert_eq!(calls, 1, "a tripped breaker does not run the body");
+        assert_eq!(
+            STACK_STATE.get(),
+            before,
+            "an already-tripped helper does not perform another probe"
+        );
+        reset();
+    }
+
+    #[test]
     fn with_stack_guard_bails_without_running_body_when_tripped() {
         reset();
         trip_stack_overflow();
