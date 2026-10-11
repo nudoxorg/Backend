@@ -2,6 +2,26 @@
 
 The Linux archive contains the matched `backend-cli`, `backend-mcp` and `backend-locald` executables. The desktop GUI is excluded. The three ELF files remain siblings under `~/.local/lib/nudox/versions/<release-tag>/bin`; any non-glibc shared-library dependencies live in that release's `lib/`. Commands under `~/.local/bin` point through an atomically replaced `current` symlink, preserving `backend-runtime`'s sibling lookup for locald.
 
+## Current diagnostic delivery
+
+The public R2 bootstrap is available at `https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install.py`. Its exact bytes remain 13,426 bytes, SHA-256 `36f0ea62e3b49cadebcef0f89e735639530c0ba1686e62d4dcbfea96294174f5`. This delivery installs historical Linux c001 (October 8) or Mac a659 (October 6) binaries. It does not contain subsequent Rust repairs or establish current native acceptance. The Linux validation boundary remains Ubuntu 24.04+ with glibc 2.39+; the tested NixOS loader was refused and the previous active pointer preserved.
+
+Download the bootstrap to a file before running it. A failed `curl | python3 -` pipeline can return success when Python receives empty stdin, and the observed RustPython shim treats stdin source as REPL fragments. Saved-file execution avoids that stdin behavior. Select a working CPython 3.8+ interpreter as `python3`, then run:
+
+```sh
+(
+  umask 077
+  installer_dir=$(mktemp -d "${TMPDIR:-/tmp}/nudox-install.XXXXXXXX") || exit 1
+  trap 'rm -rf "$installer_dir"' 0
+  curl -q --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+    --output "$installer_dir/install.py" \
+    'https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install.py' &&
+  python3 "$installer_dir/install.py"
+)
+```
+
+The reviewed launcher source is `tools/package/install_diagnostic_preview.sh`. It additionally checks the bootstrap's exact size and SHA-256, selects host CPython ahead of PATH shims, cleans up on failure/signals, and forwards `--prefix` and `--allow-downgrade` to the existing installation library. `NUDOX_INSTALL_PYTHON` can select an explicit CPython executable. This source is a publication candidate; no public shell-launcher URL is established by this document. Both paths retain the same managed aliases and print a correctly quoted PATH line when the prefix's `bin` is absent from PATH. They do not invoke `sudo` or edit shell profiles.
+
 ## Immutable checkpoint install
 
 The candidate installer embeds a unique checkpoint tag and the SHA-256 digest of its exact release manifest. It fetches that manifest and the archive over HTTPS, verifies the pinned manifest bytes, then checks archive size and SHA-256 before safe extraction. This path is usable while `linux-x64` remains `legacy` in the public catalog. The checkpoint installer is not a claim that the stable public channel is available.
