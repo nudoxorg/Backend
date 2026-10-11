@@ -11,54 +11,40 @@ use backend_flow::MaterializedIndex;
 use std::cmp::{Ordering, Reverse};
 use std::collections::BinaryHeap;
 
-struct RankedRow {
-    row: Row,
-    normalized_label: String,
-}
-
-impl RankedRow {
-    fn new(row: Row) -> Self {
-        let normalized_label = row.label.to_lowercase();
-        Self {
-            row,
-            normalized_label,
-        }
-    }
-}
-
 struct NameRanked {
-    candidate: RankedRow,
+    id: RowId,
+    normalized_label: String,
     placement: (bool, bool, u8),
 }
 
 impl NameRanked {
-    fn new(row: RankedRow, text: Option<&str>) -> Self {
+    fn new(row: &Row, text: Option<&str>) -> Option<Self> {
+        let normalized_label = row.label.to_lowercase();
+        if text.is_some_and(|text| !normalized_label.contains(text)) {
+            return None;
+        }
         // Coordinates carry an opaque identity before the declaration name.
         // Compare a complete name segment (including relative qualification),
         // never a suffix within a name such as `MockEnvironment`.
         let exact = text.is_some_and(|text| {
-            row.normalized_label == text
-                || row
-                    .normalized_label
+            normalized_label == text
+                || normalized_label
                     .strip_suffix(text)
                     .is_some_and(|prefix| prefix.ends_with("::"))
         });
-        Self {
+        Some(Self {
+            id: row.id,
+            normalized_label,
             placement: (
                 exact,
-                row.row.source.captured().is_some(),
-                row.row.kind.map_or(1, super::declaration_name_priority),
+                row.source.captured().is_some(),
+                row.kind.map_or(1, super::declaration_name_priority),
             ),
-            candidate: row,
-        }
+        })
     }
 
     fn ordering_key(&self) -> (Reverse<(bool, bool, u8)>, &str, RowId) {
-        (
-            Reverse(self.placement),
-            &self.candidate.normalized_label,
-            self.candidate.row.id,
-        )
+        (Reverse(self.placement), &self.normalized_label, self.id)
     }
 }
 
@@ -82,15 +68,23 @@ impl PartialOrd for NameRanked {
     }
 }
 
-struct SearchRanked(RankedRow);
+struct SearchRanked {
+    id: RowId,
+    normalized_label: String,
+    score: u32,
+}
 
 impl SearchRanked {
+    fn new(row: &Row) -> Self {
+        Self {
+            id: row.id,
+            normalized_label: row.label.to_lowercase(),
+            score: row.score.unwrap_or_default(),
+        }
+    }
+
     fn ordering_key(&self) -> (Reverse<u32>, &str, RowId) {
-        (
-            Reverse(self.0.row.score.unwrap_or_default()),
-            &self.0.normalized_label,
-            self.0.row.id,
-        )
+        (Reverse(self.score), &self.normalized_label, self.id)
     }
 }
 
@@ -129,10 +123,13 @@ fn retain_best_names(rows: impl Iterator<Item = NameRanked>, capacity: usize) ->
     retained.into_iter().collect()
 }
 
-fn retain_best_search(rows: impl Iterator<Item = RankedRow>, capacity: usize) -> Vec<SearchRanked> {
+fn retain_best_search(
+    rows: impl Iterator<Item = SearchRanked>,
+    capacity: usize,
+) -> Vec<SearchRanked> {
     let mut retained = BinaryHeap::with_capacity(capacity.min(usize::from(crate::QueryLimit::MAX)));
     for row in rows {
-        retained.push(SearchRanked(row));
+        retained.push(row);
         if retained.len() > capacity {
             retained.pop();
         }
@@ -201,7 +198,7 @@ impl ProjectionArrangement {
         ArrangementPage { ids, has_more }
     }
 
-    pub(crate) fn names_page<F, A>(
+    pub(crate) fn names_page<'view, F, A>(
         &self,
         selection: NameSelection<'_>,
         start: usize,
@@ -211,7 +208,7 @@ impl ProjectionArrangement {
         work: &WorkCounters,
     ) -> ArrangementPage
     where
-        F: Fn(RowId) -> Option<Row>,
+        F: Fn(RowId) -> Option<&'view Row>,
         A: Fn(RowId, AddressSelection<'_>) -> bool,
     {
         let text = selection.posting_text();
@@ -249,7 +246,7 @@ impl ProjectionArrangement {
     }
 
     /// Returns search matches in retained score/name order.
-    pub(crate) fn search_page<F>(
+    pub(crate) fn search_page<'view, F>(
         &self,
         text: &str,
         start: usize,
@@ -258,7 +255,7 @@ impl ProjectionArrangement {
         work: &WorkCounters,
     ) -> ArrangementPage
     where
-        F: Fn(RowId) -> Option<Row>,
+        F: Fn(RowId) -> Option<&'view Row>,
     {
         select_search_matches_page(
             text,
@@ -366,12 +363,12 @@ impl ProjectionArrangement {
         self.packages.as_ref().map_or(0, MaterializedIndex::len)
     }
 }
-fn select_name_matches_page(
+fn select_name_matches_page<'view>(
     selection: NameSelection<'_>,
     start: usize,
     limit: usize,
     postings: Option<&NamePostingTree>,
-    row_for_id: impl Fn(RowId) -> Option<Row>,
+    row_for_id: impl Fn(RowId) -> Option<&'view Row>,
     address_matches: impl Fn(RowId, AddressSelection<'_>) -> bool,
     work: &WorkCounters,
 ) -> ArrangementPage {
@@ -408,20 +405,14 @@ fn select_name_matches_page(
                 NameSelection::Address(address) => address_matches(id, address),
             })
             .filter_map(row_for_id)
-            .map(RankedRow::new)
-            .filter(|row| {
-                name_text
-                    .as_ref()
-                    .is_none_or(|text| row.normalized_label.contains(text))
-            })
-            .map(|row| NameRanked::new(row, name_text.as_deref())),
+            .filter_map(|row| NameRanked::new(row, name_text.as_deref())),
         capacity,
     );
     work.record_sort(rows.len());
     sort_names(&mut rows);
     let mut ids = rows
         .into_iter()
-        .map(|row| row.candidate.row.id)
+        .map(|row| row.id)
         .skip(start)
         .take(limit.saturating_add(1))
         .collect::<Vec<_>>();
@@ -430,12 +421,12 @@ fn select_name_matches_page(
     ArrangementPage { ids, has_more }
 }
 
-fn select_search_matches_page(
+fn select_search_matches_page<'view>(
     text: &str,
     start: usize,
     limit: usize,
     postings: Option<&SearchPostingTree>,
-    row_for_id: impl Fn(RowId) -> Option<Row>,
+    row_for_id: impl Fn(RowId) -> Option<&'view Row>,
     work: &WorkCounters,
 ) -> ArrangementPage {
     let normalized = text.to_lowercase();
@@ -464,14 +455,14 @@ fn select_search_matches_page(
             .filter_map(|(key, ())| key.id)
             .filter_map(row_for_id)
             .filter(|row| searchable_text(row).contains(&normalized))
-            .map(RankedRow::new),
+            .map(SearchRanked::new),
         capacity,
     );
     work.record_sort(rows.len());
     sort_search(&mut rows);
     let mut ids = rows
         .into_iter()
-        .map(|row| row.0.row.id)
+        .map(|row| row.id)
         .skip(start)
         .take(limit.saturating_add(1))
         .collect::<Vec<_>>();
@@ -517,8 +508,8 @@ mod ordering_laws {
             )]);
         changed.score = Some(987);
         assert_ne!(original, changed);
-        let original = NameRanked::new(RankedRow::new(original), Some("environment"));
-        let changed = NameRanked::new(RankedRow::new(changed), Some("environment"));
+        let original = NameRanked::new(&original, Some("environment")).expect("name candidate");
+        let changed = NameRanked::new(&changed, Some("environment")).expect("name candidate");
         assert!(original == changed);
         assert_eq!(original.cmp(&changed), Ordering::Equal);
 
@@ -530,7 +521,7 @@ mod ordering_laws {
             fixture("a::MockEnvironment", DeclarationKind::Class, true),
         ]
         .into_iter()
-        .map(|row| NameRanked::new(RankedRow::new(row), Some("environment")))
+        .map(|row| NameRanked::new(&row, Some("environment")).expect("name candidate"))
         .collect::<Vec<_>>();
         for (at, left) in tiers.iter().enumerate() {
             for (other_at, right) in tiers.iter().enumerate() {
@@ -555,7 +546,7 @@ mod ordering_laws {
         higher.score = Some(1);
         let rows = [original, changed, zero, higher]
             .into_iter()
-            .map(|row| SearchRanked(RankedRow::new(row)))
+            .map(|row| SearchRanked::new(&row))
             .collect::<Vec<_>>();
         for left in &rows {
             for right in &rows {
