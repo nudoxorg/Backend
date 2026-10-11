@@ -5,7 +5,7 @@
 //! evidence are exact length-delimited bytes. Expansion borrows those fields,
 //! emits the existing CommandDto JSON, and grants no identities or authority.
 
-use super::{CommandDto, CommandWire, command_to_wire};
+use super::{CommandDto, CommandEnvelopeRef, CommandWire, command_to_wire};
 use crate::{DTO_VERSION, MAX_COMMAND_BODY, WireCertificate, WireClaim, WireSchema};
 use serde::{Deserialize, Serialize, Serializer, ser::SerializeSeq};
 use std::fmt;
@@ -38,19 +38,12 @@ pub fn encode_binary_certificate_command(request: &CommandDto) -> Result<Vec<u8>
         request_id: request.request_id,
         command: command_to_wire(&request.command),
     };
-    #[derive(Serialize)]
-    struct OriginalEnvelope<'a> {
-        version: u16,
-        request_id: u64,
-        command: &'a CommandWire,
-        certificate: Option<&'a WireCertificate>,
-    }
     // A compact frame must never bypass the existing expanded JSON cap.
     // Count the borrowed certificate without cloning any canonical preimage.
     let mut expanded = CountWriter(0);
     serde_json::to_writer(
         &mut expanded,
-        &OriginalEnvelope {
+        &CommandEnvelopeRef {
             version: header.version,
             request_id: header.request_id,
             command: &header.command,

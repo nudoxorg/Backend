@@ -101,88 +101,91 @@ fn direct_cursor_legacy_vectors_preserve_exact_mcp1_domain_and_encoding() {
 #[test]
 fn direct_cursor_authenticates_version_expiry_payload_and_existing_context() {
     let server = Server::with_authority(Fake::default(), PROJECT.to_owned(), [7; 32]);
-    let owner = format!("pc3-{}", URL_SAFE_NO_PAD.encode([0xfb, 0xff, 0xfe]));
-    assert!(
-        owner.contains('-') && owner.contains('_'),
-        "exercise owner separators"
-    );
-    assert!(
-        owner.ends_with('-'),
-        "MAC must split after a trailing owner separator"
-    );
-    let token = server
-        .sign_cursor_token_at(u64::MAX, &owner, b"query-role-project")
-        .expect("direct token");
-    assert_eq!(
-        token,
-        cursor_wrapper_vector(
-            "mcp2",
+    for prefix in ["pc3-", "pc4-"] {
+        let owner = format!("{prefix}{}", URL_SAFE_NO_PAD.encode([0xfb, 0xff, 0xfe]));
+        assert!(
+            owner.contains('-') && owner.contains('_'),
+            "exercise owner separators"
+        );
+        assert!(
+            owner.ends_with('-'),
+            "MAC must split after a trailing owner separator"
+        );
+        let token = server
+            .sign_cursor_token_at(u64::MAX, &owner, b"query-role-project")
+            .expect("direct token");
+        assert_eq!(
+            token,
+            cursor_wrapper_vector(
+                "mcp2",
+                &u64::MAX.to_string(),
+                &owner,
+                [7; 32],
+                b"query-role-project"
+            )
+        );
+        assert_eq!(
+            server
+                .verify_cursor_token(&token, b"query-role-project")
+                .expect("direct verification")
+                .as_deref(),
+            Some(owner.as_str())
+        );
+        for changed in [
+            token.replacen("mcp2-", "mcp1-", 1),
+            token.replacen("mcp2-", "mcp3-", 1),
+            token.replacen(&u64::MAX.to_string(), "18446744073709551614", 1),
+            token.replacen(prefix, "pc2-", 1),
+            token.replacen(&owner, &format!("{prefix}AA"), 1),
+        ] {
+            assert!(
+                server
+                    .verify_cursor_token(&changed, b"query-role-project")
+                    .expect("tampered wrapper")
+                    .is_none()
+            );
+        }
+        for expiry in [
+            "0",
+            "018446744073709551615",
+            "+18446744073709551615",
+            "18446744073709551616",
+        ] {
+            let changed =
+                cursor_wrapper_vector("mcp2", expiry, &owner, [7; 32], b"query-role-project");
+            assert!(
+                server
+                    .verify_cursor_token(&changed, b"query-role-project")
+                    .expect("closed expiry grammar")
+                    .is_none()
+            );
+        }
+        assert!(
+            server
+                .verify_cursor_token(&token, b"other-query-role-project")
+                .expect("context mutation")
+                .is_none()
+        );
+        let rotated = Server::with_authority(Fake::default(), PROJECT.to_owned(), [8; 32]);
+        assert!(
+            rotated
+                .verify_cursor_token(&token, b"query-role-project")
+                .expect("rotated key")
+                .is_none()
+        );
+        let old = cursor_wrapper_vector(
+            "mcp1",
             &u64::MAX.to_string(),
-            &owner,
+            &URL_SAFE_NO_PAD.encode(owner.as_bytes()),
             [7; 32],
-            b"query-role-project"
-        )
-    );
-    assert_eq!(
-        server
-            .verify_cursor_token(&token, b"query-role-project")
-            .expect("direct verification")
-            .as_deref(),
-        Some(owner.as_str())
-    );
-    for changed in [
-        token.replacen("mcp2-", "mcp1-", 1),
-        token.replacen("mcp2-", "mcp3-", 1),
-        token.replacen(&u64::MAX.to_string(), "18446744073709551614", 1),
-        token.replacen("pc3-", "pc2-", 1),
-        token.replacen(&owner, "pc3-AA", 1),
-    ] {
-        assert!(
-            server
-                .verify_cursor_token(&changed, b"query-role-project")
-                .expect("tampered wrapper")
-                .is_none()
+            b"query-role-project",
+        );
+        assert_eq!(
+            old.len() - token.len(),
+            URL_SAFE_NO_PAD.encode(owner.as_bytes()).len() - owner.len(),
+            "savings are exactly the removed outer encoding"
         );
     }
-    for expiry in [
-        "0",
-        "018446744073709551615",
-        "+18446744073709551615",
-        "18446744073709551616",
-    ] {
-        let changed = cursor_wrapper_vector("mcp2", expiry, &owner, [7; 32], b"query-role-project");
-        assert!(
-            server
-                .verify_cursor_token(&changed, b"query-role-project")
-                .expect("closed expiry grammar")
-                .is_none()
-        );
-    }
-    assert!(
-        server
-            .verify_cursor_token(&token, b"other-query-role-project")
-            .expect("context mutation")
-            .is_none()
-    );
-    let rotated = Server::with_authority(Fake::default(), PROJECT.to_owned(), [8; 32]);
-    assert!(
-        rotated
-            .verify_cursor_token(&token, b"query-role-project")
-            .expect("rotated key")
-            .is_none()
-    );
-    let old = cursor_wrapper_vector(
-        "mcp1",
-        &u64::MAX.to_string(),
-        &URL_SAFE_NO_PAD.encode(owner.as_bytes()),
-        [7; 32],
-        b"query-role-project",
-    );
-    assert_eq!(
-        old.len() - token.len(),
-        URL_SAFE_NO_PAD.encode(owner.as_bytes()).len() - owner.len(),
-        "savings are exactly the removed outer encoding"
-    );
 }
 
 #[test]
@@ -199,7 +202,12 @@ fn direct_cursor_encoding_boundaries_do_not_mint_or_load_cold_authority() {
         "pc3-",
         "pc3-Zg=",
         "pc3-Zh",
-        "pc4-AA",
+        "pc4-",
+        "pc4-Zg=",
+        "pc4-Zh",
+        "pc4-λ",
+        "pc4-AA\n",
+        "pc5-AA",
         "pc3-λ",
         "pc3-AA\n",
         "{\"raw\":true}",
@@ -254,6 +262,7 @@ fn direct_cursor_owner_encodings_and_exact_size_survive_authenticated_roundtrip(
         page,
         "pc2-00ff".to_owned(),
         "pc3-AA".to_owned(),
+        "pc4-AA".to_owned(),
         FIXTURE_INDEX_CURSOR.to_owned(),
         largest,
     ] {
@@ -274,7 +283,7 @@ fn direct_cursor_owner_encodings_and_exact_size_survive_authenticated_roundtrip(
         "pc1-00",
         "pc2-0",
         "pc2-FF",
-        "pc4-AA",
+        "pc5-AA",
         "cGxhaW50ZXh0",
         "pc3-AA\0",
     ] {
@@ -331,6 +340,195 @@ fn direct_cursor_legacy_named_request_context_survives_and_cannot_cross_roles() 
     );
     assert_eq!(refused["isError"], true);
     assert!(other_role.product.surface_index_search_seen.is_empty());
+}
+
+fn retained_go_binary_owner() -> String {
+    let original = include_bytes!(
+        "../../../../crates/library/wire/command/fixtures/current-go-graph-continuation.json"
+    );
+    let request = backend_library::decode_command_body(original).expect("original strict proof");
+    backend_library::encode_command_body(&request).expect("unchanged encoder admission");
+    let binary =
+        backend_library::encode_binary_certificate_command(&request).expect("binary proof");
+    let expanded =
+        backend_library::expand_binary_certificate_command(&binary).expect("exact expansion");
+    assert_eq!(expanded.as_slice(), original);
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut encoder, &binary).expect("bounded actual proof");
+    format!(
+        "pc4-{}",
+        URL_SAFE_NO_PAD.encode(encoder.finish().expect("finish"))
+    )
+}
+
+#[test]
+fn actual_binary_owner_mac_restarts_and_refuses_cross_surface_query_detail_and_key() {
+    let fixture = LazyAuthorityFixture::new();
+    let owner = retained_go_binary_owner();
+    let arguments =
+        json!({"coordinate":"/work/sol61-cli-proof/corpora/gorilla-mux::mux.go:47::Router"});
+    let arguments = arguments.as_object().expect("arguments");
+    let context = continuation_context(PROJECT, "backend.graph", arguments, Detail::Summary);
+    let first = Server::with_authority(
+        Fake::default(),
+        PROJECT.to_owned(),
+        CursorAuthority::workspace(&fixture.paths),
+    );
+    let token = first
+        .sign_cursor_token(&owner, &context)
+        .expect("real signer");
+    drop(first);
+    let fresh = Server::with_authority(
+        Fake::default(),
+        PROJECT.to_owned(),
+        CursorAuthority::workspace(&fixture.paths),
+    );
+    for _ in 0..2 {
+        assert_eq!(
+            fresh
+                .verify_cursor_token(&token, &context)
+                .expect("durable authority")
+                .as_deref(),
+            Some(owner.as_str()),
+        );
+    }
+    let mut changed_coordinate = arguments.clone();
+    changed_coordinate.insert("coordinate".to_owned(), json!("/other::Router"));
+    let mut changed_limit = arguments.clone();
+    changed_limit.insert("limit".to_owned(), json!(3));
+    let mut changed_variables = arguments.clone();
+    changed_variables.insert("variables".to_owned(), json!({"scope":"other"}));
+    for other in [
+        continuation_context(
+            PROJECT,
+            "backend.graph",
+            &changed_coordinate,
+            Detail::Summary,
+        ),
+        continuation_context(PROJECT, "backend.graph", &changed_limit, Detail::Summary),
+        continuation_context(
+            PROJECT,
+            "backend.graph",
+            &changed_variables,
+            Detail::Summary,
+        ),
+        continuation_context(PROJECT, "backend.graph", arguments, Detail::Full),
+        continuation_context(PROJECT, "backend.search", arguments, Detail::Summary),
+        continuation_context(PROJECT, SURFACE_TOOL, arguments, Detail::Summary),
+        continuation_context(
+            "/other-workspace",
+            "backend.graph",
+            arguments,
+            Detail::Summary,
+        ),
+    ] {
+        assert!(
+            fresh
+                .verify_cursor_token(&token, &other)
+                .expect("changed context")
+                .is_none()
+        );
+    }
+    let foreign = LazyAuthorityFixture::new();
+    let foreign_server = Server::with_authority(
+        Fake::default(),
+        PROJECT.to_owned(),
+        CursorAuthority::workspace(&foreign.paths),
+    );
+    assert!(
+        foreign_server
+            .verify_cursor_token(&token, &context)
+            .expect("cold foreign authority")
+            .is_none()
+    );
+    assert!(
+        !foreign.paths.data().exists(),
+        "verification never mints an authority"
+    );
+    let rotated = Server::with_authority(Fake::default(), PROJECT.to_owned(), [8; 32]);
+    assert!(
+        rotated
+            .verify_cursor_token(&token, &context)
+            .expect("rotated key")
+            .is_none()
+    );
+    for changed in [
+        token.replacen("pc4-", "pc3-", 1),
+        token.replacen("mcp2-", "mcp1-", 1),
+    ] {
+        assert!(
+            fresh
+                .verify_cursor_token(&changed, &context)
+                .expect("changed version")
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn actual_go_25_row_summary_retains_typed_facts_and_a_valid_binary_owner_mac() {
+    // Egress fixture from actual Go 0066. It asserts preservation and signed
+    // transport, not that a fake product admits the captured native owner.
+    let fixture: Value =
+        serde_json::from_str(include_str!("fixtures/current-go-graph-summary-input.json"))
+            .expect("retained actual rows");
+    let body = &fixture["body"];
+    let typed: backend_present::RecordListDto =
+        serde_json::from_value(body.clone()).expect("typed Summary");
+    assert_eq!(typed.records.len(), 25);
+    assert!(typed.more);
+    let project = "/work/sol61-cli-proof/corpora/gorilla-mux";
+    let arguments = json!({"coordinate":&typed.query});
+    let context = continuation_context(
+        project,
+        "backend.graph",
+        arguments.as_object().expect("args"),
+        Detail::Summary,
+    );
+    let server = Server::with_authority(Fake::default(), project.to_owned(), [7; 32]);
+    let owner = retained_go_binary_owner();
+    let token = server
+        .sign_cursor_token_at(u64::MAX, &owner, &context)
+        .expect("production MAC");
+    assert_eq!(
+        server
+            .verify_cursor_token(&token, &context)
+            .expect("MAC admission")
+            .as_deref(),
+        Some(owner.as_str())
+    );
+    let payload = backend_present::encode_serializable(
+        "records",
+        Detail::Summary,
+        Some(&token),
+        body,
+        DEFAULT_RESPONSE_BUDGET_BYTES,
+    )
+    .expect("complete actual page fits byte budget");
+    let structured: Value = serde_json::from_slice(&payload.bytes).expect("typed envelope");
+    let preview = format!(
+        "{}\n25 row(s); complete records and native operands are in `structuredContent.records`.\nContinue `backend.graph` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.",
+        fixture["coverage_preview"]
+            .as_str()
+            .expect("actual coverage preview"),
+    );
+    let response = success(json!(45), tool_result(&preview, structured, false));
+    let restored: backend_present::RecordListDto =
+        serde_json::from_value(response["result"]["structuredContent"].clone())
+            .expect("typed retained rows");
+    assert_eq!(
+        restored, typed,
+        "all native operands, IDs, sites, facts, coverage and order"
+    );
+    assert_eq!(response["result"]["isError"], false);
+    assert_context_bounded(&response);
+    // Explicit opt-in evidence export lets the guarded native test supply a
+    // genuinely signed packet to the pinned tokenizer oracle. No token count
+    // is inferred from the byte estimate or claimed without that second check.
+    if let Some(path) = std::env::var_os("NUDOX_BINARY_CURSOR_PACKET") {
+        std::fs::write(path, serde_json::to_vec(&response).expect("exact packet"))
+            .expect("requested token-audit artifact");
+    }
 }
 
 // ---------------------------------------------------------------------------

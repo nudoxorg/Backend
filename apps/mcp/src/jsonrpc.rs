@@ -1347,6 +1347,7 @@ fn valid_direct_cursor_owner(owner: &str) -> bool {
     }
     let (encoded, portable) = owner
         .strip_prefix("pc3-")
+        .or_else(|| owner.strip_prefix("pc4-"))
         .map_or((owner, false), |encoded| (encoded, true));
     if encoded.is_empty()
         || !encoded

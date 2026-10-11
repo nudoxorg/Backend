@@ -108,7 +108,7 @@ def unpack(frame):
     if len(dump(value)) > CAP: raise ValueError('expanded cap')
     return value
 
-def run():
+def run(admitted_packet=None):
     source = Path('/private/tmp/nudox-root-go-current-03/0066-mcp-wire.json')
     raw = source.read_bytes().removesuffix(b'\n')
     assert hashlib.sha256(raw).hexdigest() == 'd55dfef0dd30ace553a18ab73cb21101725643bd24ee180650a07521d62ed4bf'
@@ -173,8 +173,42 @@ def run():
         'tokenizer': {'version': tiktoken.__version__, 'encoding': 'cl100k_base', 'artifact_sha256': artifact_sha},
         'modeled_summary_binary_response': {'bytes': len(modeled), 'tokens': len(encoding.encode(modeled.decode())), 'records': len(body['records']), 'within_12000_fixture_target': len(encoding.encode(modeled.decode())) <= 12000},
     }
+    if admitted_packet is not None:
+        # This mode consumes only the explicit artifact emitted by the guarded
+        # Rust regression, which calls the production signer and verifier.
+        # The Python tokenizer does not verify MACs or grant owner authority.
+        actual_bytes = Path(admitted_packet).read_bytes().removesuffix(b'\n')
+        actual = json.loads(actual_bytes)
+        actual_body = actual['result']['structuredContent']
+        expected = json.loads((fixture_directory.parents[4] / 'apps/mcp/src/jsonrpc/fixtures/current-go-graph-summary-input.json').read_bytes())['body']
+        for field, value in expected.items():
+            assert actual_body[field] == value, f'captured field changed: {field}'
+        assert len(actual_body['records']) == 25 and actual_body['more'] is True
+        assert actual['result']['isError'] is False
+        actual_signed_body, actual_mac = actual_body['nextCursor'].rsplit('-', 1)
+        assert len(actual_mac) == 32 and all(c in '0123456789abcdef' for c in actual_mac)
+        actual_expiry, actual_owner = actual_signed_body.removeprefix('mcp2-').split('-', 1)
+        assert actual_signed_body.startswith('mcp2-') and actual_expiry == str(int(actual_expiry))
+        assert actual_owner.startswith('pc4-')
+        encoded = actual_owner[4:]
+        actual_compressed = base64.urlsafe_b64decode(encoded + '=' * (-len(encoded) % 4))
+        assert base64.urlsafe_b64encode(actual_compressed).decode().rstrip('=') == encoded
+        inflater = zlib.decompressobj()
+        actual_frame = inflater.decompress(actual_compressed, CAP + 1)
+        assert len(actual_frame) <= CAP and inflater.eof and not inflater.unused_data
+        assert dump(unpack(actual_frame)) == original_body
+        measured_tokens = len(encoding.encode(actual_bytes.decode()))
+        assert len(actual_bytes) <= 49152 and measured_tokens <= 12000
+        report['guarded_signed_fixture_packet'] = {
+            'scope': 'Exact token measurement of the explicit Rust signer/verifier fixture artifact; not live native owner readiness.',
+            'path': str(admitted_packet), 'sha256': hashlib.sha256(actual_bytes).hexdigest(),
+            'bytes': len(actual_bytes), 'tokens': measured_tokens, 'records': 25,
+        }
     output = Path('/private/tmp/binary-certificate-source-evidence-20261011'); output.mkdir(exist_ok=True)
     (output / 'accounting.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, indent=2))
 
-if __name__ == '__main__': run()
+if __name__ == '__main__':
+    if len(sys.argv) == 1: run()
+    elif len(sys.argv) == 3 and sys.argv[1] == '--signed-fixture-packet': run(sys.argv[2])
+    else: raise SystemExit('usage: source-oracle.py [--signed-fixture-packet PATH]')

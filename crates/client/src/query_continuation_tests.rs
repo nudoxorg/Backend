@@ -617,7 +617,7 @@ fn portable_query_compressible_long_proof_preserves_every_canonical_byte() {
     let next = page(&reply).next.expect("successor exists");
     let exported = session.encode_query_continuation(PageContinuation::from_cursor(next));
     let token = exported.expect("bounded compact proof");
-    assert!(token.starts_with("pc3-"));
+    assert!(token.starts_with("pc4-"));
     let body = decode_portable_body(&token).expect("bounded expansion");
     backend_library::decode_command_body(&body).expect("strict canonical proof remains intact");
 }
@@ -780,6 +780,117 @@ fn portable_compact_proof_rejects_expansion_truncation_and_trailing_bytes() {
 }
 
 #[test]
+fn binary_portable_proof_bounds_canonical_encoding_and_format_are_closed_before_rpc() {
+    let (owner, requests) = fixture();
+    let good = first_token(&owner, &requests, false, 3);
+    assert!(good.starts_with("pc4-"));
+    let request = backend_library::decode_command_body(&decode_portable_body(&good).expect("JSON"))
+        .expect("strict command");
+    let binary = backend_library::encode_binary_certificate_command(&request).expect("binary");
+    let mut compressed = URL_SAFE_NO_PAD.decode(&good[4..]).expect("base64");
+    let mut trailing = compressed.clone();
+    trailing.push(0);
+    compressed.pop();
+    let mut bad_version = binary.clone();
+    bad_version[5] = 2;
+    let mut bad_length = binary.clone();
+    bad_length[6..10].copy_from_slice(&u32::MAX.to_be_bytes());
+    let mut corrupted = binary.clone();
+    // The complete predecessor root is the final claim in this issued proof.
+    assert_eq!(
+        token_value(&good)["certificate"]["claims"]
+            .as_array()
+            .expect("claims")
+            .last()
+            .expect("root")["kind"],
+        "root"
+    );
+    let end = corrupted.len() - 1;
+    corrupted[end] ^= 1;
+    let mut extended = binary.clone();
+    extended.push(0);
+    let json = decode_portable_body(&good).expect("original JSON");
+    let mutants = [
+        format!("pc4-{}", URL_SAFE_NO_PAD.encode(trailing)),
+        format!("pc4-{}", URL_SAFE_NO_PAD.encode(compressed)),
+        format!("{good}="),
+        "pc4-Zh".to_owned(),
+        good.replacen("pc4-", "pc3-", 1),
+        encode_portable_proof(&bad_version, "pc4-").expect("bad version compression"),
+        encode_portable_proof(&bad_length, "pc4-").expect("bad length compression"),
+        encode_portable_proof(&corrupted, "pc4-").expect("bad proof compression"),
+        encode_portable_proof(&extended, "pc4-").expect("trailing frame compression"),
+        encode_portable_proof(&json, "pc4-").expect("JSON is not binary"),
+    ];
+    for bad in mutants {
+        let before = requests.lock().expect("requests").len();
+        assert!(
+            session(&owner, &requests)
+                .decode_page_continuation(&bad)
+                .is_err()
+        );
+        assert_eq!(requests.lock().expect("requests").len(), before);
+    }
+    let oversized = vec![0; backend_library::MAX_COMMAND_BODY + 1];
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut encoder, &oversized).expect("compressed adversary");
+    let bomb = format!(
+        "pc4-{}",
+        URL_SAFE_NO_PAD.encode(encoder.finish().expect("finish"))
+    );
+    assert!(bomb.len() < MAX_PORTABLE_QUERY_TOKEN_BYTES);
+    let before = requests.lock().expect("requests").len();
+    assert!(matches!(
+        session(&owner, &requests).decode_page_continuation(&bomb),
+        Err(ClientError::Transport(ReplicationError::MessageTooLarge))
+    ));
+    assert_eq!(requests.lock().expect("requests").len(), before);
+}
+
+#[test]
+fn binary_and_legacy_query_proofs_reopen_exact_page_after_owner_and_session_restart() {
+    for names in [false, true] {
+        let owner = Arc::new(Mutex::new(self::owner(1, 4, 7)));
+        let requests = Arc::new(Mutex::new(vec![]));
+        let mut issuing = session(&owner, &requests);
+        let first = if names {
+            issuing.names_page("Thing", 1, None)
+        } else {
+            issuing.search_page("Thing", 1, None)
+        }
+        .expect("first");
+        let next = PageContinuation::from_cursor(page(&first).next.expect("next"));
+        let binary = issuing.encode_query_continuation(next).expect("pc4 export");
+        let body = decode_portable_body(&binary).expect("exact restored proof");
+        let expected = if names {
+            issuing.names_page("Thing", 1, Some(next))
+        } else {
+            issuing.search_page("Thing", 1, Some(next))
+        }
+        .expect("warm second");
+        drop(issuing);
+        for token in [
+            binary,
+            token_bytes(&body),
+            encode_compact_proof(&body).expect("pc3"),
+        ] {
+            *owner.lock().expect("owner") = self::owner(1, 4, 7);
+            let mut fresh = session(&owner, &requests);
+            assert!(fresh.continuations.is_empty());
+            let decoded = fresh.decode_page_continuation(&token).expect("cold proof");
+            assert_eq!(decoded, next);
+            let actual = if names {
+                fresh.names_page("Thing", 1, Some(decoded))
+            } else {
+                fresh.search_page("Thing", 1, Some(decoded))
+            }
+            .expect("cold exact page");
+            assert_eq!(page(&actual), page(&expected));
+        }
+    }
+}
+
+#[test]
 fn portable_names_public_rank_reproduces_full_rows_across_fresh_pages() {
     let owner = Arc::new(Mutex::new(owner_with_labels(
         1,
@@ -903,7 +1014,7 @@ fn graph_query_portable_continuation_reopens_in_fresh_session() {
     let token = first
         .encode_query_continuation(next)
         .expect("portable graph proof");
-    assert!(token.starts_with("pc3-"));
+    assert!(token.starts_with("pc4-"));
     assert!(token.len() <= MAX_PORTABLE_QUERY_TOKEN_BYTES);
     drop(first);
     // An intent-only owner advance retains the exact view and authority scope.
@@ -1131,7 +1242,7 @@ fn plain_graph_portable_continuation_reopens_exact_page_in_fresh_owner() {
         let token = issuing
             .encode_query_continuation(next)
             .expect("portable graph");
-        assert!(token.starts_with("pc3-"));
+        assert!(token.starts_with("pc4-"));
         backend_library::decode_command_body(&decode_portable_body(&token).expect("bytes"))
             .expect("strict canonical graph proof");
         // Existing pc1 remains valid in the compatible issuing active session.

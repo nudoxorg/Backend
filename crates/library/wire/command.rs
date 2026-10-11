@@ -569,6 +569,16 @@ struct CommandEnvelope {
     certificate: Option<WireCertificate>,
 }
 
+// Serialization borrows the complete proof. The owned envelope above remains
+// the strict untrusted decoder grammar; both have exactly the same fields.
+#[derive(Serialize)]
+struct CommandEnvelopeRef<'a> {
+    version: u16,
+    request_id: u64,
+    command: &'a CommandWire,
+    certificate: Option<&'a WireCertificate>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", deny_unknown_fields)]
 #[serde(rename_all = "snake_case")]
@@ -743,11 +753,11 @@ impl FrontierWire {}
 impl Serialize for CommandDto {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let command = command_to_wire(&self.command);
-        CommandEnvelope {
+        CommandEnvelopeRef {
             version: DTO_VERSION,
             request_id: self.request_id,
-            command,
-            certificate: self.certificate().cloned(),
+            command: &command,
+            certificate: self.certificate(),
         }
         .serialize(serializer)
     }

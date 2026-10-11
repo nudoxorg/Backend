@@ -106,23 +106,24 @@ fn every_claim_family_and_duplicate_survives_exact_existing_json_roundtrip() {
 
 #[test]
 fn all_explicit_schema_tags_and_optional_certificate_spelling_are_closed() {
-    for schema in [
-        WireSchema::Actor,
-        WireSchema::Package,
-        WireSchema::Symbol,
-        WireSchema::Object,
-        WireSchema::ViewRecipe,
-        WireSchema::ViewVersion,
-        WireSchema::Branch,
-        WireSchema::Log,
-        WireSchema::Document,
-        WireSchema::Name,
-        WireSchema::Outline,
-        WireSchema::SemanticShapeSource,
-        WireSchema::SemanticShapeBatch,
-        WireSchema::ViewRelation,
+    for (schema, tag) in [
+        (WireSchema::Actor, 1),
+        (WireSchema::Package, 2),
+        (WireSchema::Symbol, 3),
+        (WireSchema::Object, 4),
+        (WireSchema::ViewRecipe, 5),
+        (WireSchema::ViewVersion, 6),
+        (WireSchema::Branch, 7),
+        (WireSchema::Log, 8),
+        (WireSchema::Document, 9),
+        (WireSchema::Name, 10),
+        (WireSchema::Outline, 11),
+        (WireSchema::SemanticShapeSource, 12),
+        (WireSchema::SemanticShapeBatch, 13),
+        (WireSchema::ViewRelation, 14),
     ] {
-        let bytes = [schema_tag(schema)];
+        assert_eq!(schema_tag(schema), tag, "BQPC/1 numeric tag is stable");
+        let bytes = [tag];
         let mut reader = Reader(&bytes);
         assert_eq!(read_schema(&mut reader).expect("known schema"), schema);
         assert!(reader.0.is_empty());
@@ -211,7 +212,10 @@ fn unknown_header_fields_noncanonical_json_and_dto_versions_refuse() {
     .expect("bounded future header");
     future.extend_from_slice(tail);
     let error = expand_binary_certificate_command(&future).expect_err("future version refusal");
-    assert!(error.contains("unsupported command DTO version 65535"), "{error}");
+    assert!(
+        error.contains("unsupported command DTO version 65535"),
+        "{error}"
+    );
 }
 
 #[test]
