@@ -742,22 +742,30 @@ impl ProductView {
                     compiler_failure,
                 } => {
                     let operand = Operand::Text(status.operation_key.to_hex());
+                    let affordance = fresh_index_attempt_affordance(status);
                     self.fault = compiler_failure
                         .as_ref()
-                        .map(|failure| Fault::compiler_refusal(failure, operand.clone()))
+                        .map(|failure| {
+                            Fault::compiler_refusal(failure, operand.clone())
+                                .with_affordance(affordance.clone())
+                        })
                         .or_else(|| {
-                            (*reason != backend_library::IndexOperationFailureReason::Cancelled)
-                                .then(|| {
-                                    Fault::new(
-                                        crate::FaultSlug::Rejected,
-                                        operand,
-                                        crate::Cause::new(
-                                            crate::CauseSlug::Refused,
-                                            detail.as_str(),
-                                        ),
-                                        crate::Affordance::None,
-                                    )
-                                })
+                            let sentence = if *reason
+                                == backend_library::IndexOperationFailureReason::Cancelled
+                            {
+                                format!(
+                                    "index operation was cancelled before publication: {}",
+                                    detail.as_str()
+                                )
+                            } else {
+                                detail.as_str().to_owned()
+                            };
+                            Some(Fault::new(
+                                crate::FaultSlug::Rejected,
+                                operand,
+                                crate::Cause::new(crate::CauseSlug::Refused, sentence),
+                                affordance,
+                            ))
                         });
                 }
                 _ => {}
@@ -868,6 +876,21 @@ impl ProductView {
             semantic_data: None,
             package_discovery: None,
         }
+    }
+}
+
+fn fresh_index_attempt_affordance(
+    status: &backend_library::IndexOperationStatus,
+) -> crate::Affordance {
+    let backend_library::PackageReference::Local(path) = &status.package else {
+        return crate::Affordance::None;
+    };
+    if !std::path::Path::new(path.as_str()).is_absolute() {
+        return crate::Affordance::None;
+    }
+    crate::Affordance::RetryIndexAttempt {
+        path: path.as_str().to_owned(),
+        execution_intent: status.execution_intent,
     }
 }
 
@@ -1155,9 +1178,9 @@ fn index_operation_view(observation: &backend_library::IndexOperationObservation
                     )
                 }
                 backend_library::IndexOperationState::Failed {
+                    reason,
                     detail,
                     compiler_failure,
-                    ..
                 } => {
                     let sentence = compiler_failure.as_ref().map_or_else(
                         || detail.as_str().to_owned(),
@@ -1171,7 +1194,13 @@ fn index_operation_view(observation: &backend_library::IndexOperationObservation
                             .to_owned()
                         },
                     );
-                    format!("failed: {sentence}")
+                    let label =
+                        if *reason == backend_library::IndexOperationFailureReason::Cancelled {
+                            "cancelled"
+                        } else {
+                            "failed"
+                        };
+                    format!("{label}: {sentence}")
                 }
                 backend_library::IndexOperationState::Unresolved { detail, .. } => {
                     format!("unresolved: {}", detail.as_str())
@@ -3507,8 +3536,12 @@ mod tests {
     fn durable_index_operation_projection_preserves_all_states_and_published_receipt() {
         use backend_library::{
             CompileExecutionIntent, IndexOperationFailureReason, IndexOperationKey,
-            IndexOperationObservation, IndexOperationPublicationReceipt, IndexOperationState,
+            IndexOperationObservation, IndexOperationProfileRefusal,
+            IndexOperationPublicationReceipt, IndexOperationSemanticCoverage,
+            IndexOperationSemanticProfileState, IndexOperationSemanticUnavailableReason,
+            IndexOperationSourceCaptureReceipt, IndexOperationSourceProfile, IndexOperationState,
             IndexOperationStatus, IndexOperationUnresolvedReason, ProductText,
+            SemanticLanguageProfile,
         };
 
         let package = PackageReference::parse("/workspace/project").expect("local package");
@@ -3550,6 +3583,51 @@ mod tests {
             backend_library::Cursor::for_view_root(&view),
         )
         .expect("checked published receipt");
+        let rust_profile = SemanticLanguageProfile::from_name("rust").expect("Rust profile");
+        let typescript_profile =
+            SemanticLanguageProfile::from_name("typescript").expect("TypeScript profile");
+        let mut partial_profiles = vec![
+            IndexOperationSourceProfile {
+                profile: rust_profile,
+                source_version: [0x52; 32],
+                input_digest: [0x53; 32],
+                observation_sequence: 13,
+                source_count: 3,
+                state: IndexOperationSemanticProfileState::Published {
+                    generation: [0x54; 32],
+                    coverage: IndexOperationSemanticCoverage::Complete,
+                },
+            },
+            IndexOperationSourceProfile {
+                profile: typescript_profile,
+                source_version: [0x55; 32],
+                input_digest: [0x56; 32],
+                observation_sequence: 14,
+                source_count: 2,
+                state: IndexOperationSemanticProfileState::Unavailable {
+                    reason: IndexOperationSemanticUnavailableReason::Toolchain,
+                },
+            },
+        ];
+        partial_profiles.sort_by_key(|profile| profile.profile);
+        let partial_capture = IndexOperationSourceCaptureReceipt::from_checked_parts(
+            key,
+            [0x57; 32],
+            [0x58; 32],
+            8,
+            partial_profiles.into_boxed_slice(),
+        )
+        .expect("checked partial source capture");
+        let partial_status = status(IndexOperationState::PartiallyPublished {
+            receipt: receipt.clone(),
+            refused_profiles: vec![IndexOperationProfileRefusal {
+                profile: typescript_profile,
+                reason: IndexOperationSemanticUnavailableReason::Toolchain,
+                compiler_failure: None,
+            }]
+            .into_boxed_slice(),
+        })
+        .with_source_capture(Some(partial_capture));
         let compiler_failure = backend_library::PackageCompilerFailure::from_package_terminal(
             "classes/comparator.d.ts",
             &backend_library::interface::CompilerTerminal::Toolchain {
@@ -3579,9 +3657,15 @@ mod tests {
                 stage: backend_library::IndexJobStage::Compiling,
             })),
             IndexOperationObservation::Known(status(IndexOperationState::Published(receipt))),
+            IndexOperationObservation::Known(partial_status),
             IndexOperationObservation::Known(status(IndexOperationState::Failed {
                 reason: IndexOperationFailureReason::WorkerFailed,
                 detail: ProductText::new("bounded worker detail").expect("failure detail"),
+                compiler_failure: None,
+            })),
+            IndexOperationObservation::Known(status(IndexOperationState::Failed {
+                reason: IndexOperationFailureReason::Cancelled,
+                detail: ProductText::from_static("cancelled before publication"),
                 compiler_failure: None,
             })),
             IndexOperationObservation::Known(status(IndexOperationState::Failed {
@@ -3603,6 +3687,91 @@ mod tests {
             ] {
                 let view = product_view(&reply);
                 assert_eq!(view.index_operation(), Some(&observation));
+                if let IndexOperationObservation::Known(status) = &observation {
+                    match &status.state {
+                        IndexOperationState::Failed { .. } => {
+                            let fault = view.fault().expect("terminal failure fault");
+                            assert_eq!(
+                                fault.affordance(),
+                                &crate::Affordance::RetryIndexAttempt {
+                                    path: "/workspace/project".to_owned(),
+                                    execution_intent: CompileExecutionIntent::Interactive,
+                                }
+                            );
+                            let expected_call = serde_json::json!({
+                                "name": "backend.index",
+                                "arguments": {
+                                    "path": "/workspace/project",
+                                    "execution_intent": "interactive"
+                                }
+                            });
+                            assert_eq!(fault.affordance().tool_call(), Some(expected_call.clone()));
+                            assert_eq!(
+                                fault.affordance().shell().as_deref(),
+                                Some("nudox add /workspace/project --execution-intent interactive")
+                            );
+                            let projected = crate::dto::FaultDto::new(fault);
+                            assert_eq!(projected.call, Some(expected_call));
+                            assert!(projected.shell.as_deref().is_some_and(|shell| {
+                                shell.starts_with("nudox add /workspace/project ")
+                            }));
+                            assert!(
+                                !serde_json::to_string(&projected.call)
+                                    .expect("call JSON")
+                                    .contains("operation_key"),
+                                "a new attempt must not replay the consumed key"
+                            );
+                            let markdown = crate::render::markdown::product(&view);
+                            assert!(markdown.contains("backend.index"));
+                            assert!(
+                                !markdown.contains("backend.index_progress"),
+                                "terminal failure guidance must not send callers back to polling"
+                            );
+                            if matches!(
+                                &status.state,
+                                IndexOperationState::Failed {
+                                    reason: IndexOperationFailureReason::Cancelled,
+                                    ..
+                                }
+                            ) {
+                                assert!(view.records()[0].title().contains("cancelled:"));
+                                assert!(
+                                    fault
+                                        .cause()
+                                        .sentence()
+                                        .contains("cancelled before publication")
+                                );
+                            }
+                        }
+                        IndexOperationState::Active { .. } => {
+                            assert!(
+                                view.fault().is_none(),
+                                "active work remains a poll, not a retry"
+                            );
+                            assert!(
+                                crate::render::markdown::product(&view)
+                                    .contains("backend.index_progress")
+                            );
+                        }
+                        IndexOperationState::PartiallyPublished {
+                            refused_profiles, ..
+                        } => {
+                            let fault = view.fault().expect("partial publication fault");
+                            assert_eq!(fault.affordance(), &crate::Affordance::None);
+                            assert_eq!(refused_profiles.len(), 1);
+                            assert_eq!(
+                                status
+                                    .source_capture
+                                    .as_ref()
+                                    .expect("partial source capture")
+                                    .profiles()
+                                    .len(),
+                                2
+                            );
+                        }
+                        _ => {}
+                    }
+                }
                 if let IndexOperationObservation::Known(status) = &observation
                     && let IndexOperationState::Failed {
                         compiler_failure: Some(_),
@@ -3650,6 +3819,71 @@ mod tests {
                     assert_eq!(value["index_operation"], expected);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn retry_affordance_preserves_background_intent_and_refuses_unsafe_package_operands() {
+        use backend_library::{
+            CompileExecutionIntent, IndexOperationFailureReason, IndexOperationKey,
+            IndexOperationObservation, IndexOperationState, IndexOperationStatus, ProductText,
+        };
+
+        let key = IndexOperationKey::from_bytes([0x71; 32]).expect("operation key");
+        let local = PackageReference::parse("/workspace/project").expect("absolute local path");
+        let background = IndexOperationObservation::Known(IndexOperationStatus::new(
+            key,
+            local,
+            CompileExecutionIntent::Background,
+            IndexOperationState::Failed {
+                reason: IndexOperationFailureReason::WorkerFailed,
+                detail: ProductText::from_static("worker stopped before publication"),
+                compiler_failure: None,
+            },
+        ));
+        let background_view = product_view(&SurfaceReply::IndexOperationStatus(background));
+        let fault = background_view.fault().expect("failed operation fault");
+        assert_eq!(
+            fault.affordance().tool_call(),
+            Some(serde_json::json!({
+                "name": "backend.index",
+                "arguments": {
+                    "path": "/workspace/project",
+                    "execution_intent": "background"
+                }
+            }))
+        );
+        assert_eq!(
+            fault.affordance().shell().as_deref(),
+            Some("nudox add /workspace/project --execution-intent background")
+        );
+
+        for (number, package) in [
+            (
+                0x72,
+                PackageReference::parse("./project").expect("relative local path"),
+            ),
+            (
+                0x73,
+                PackageReference::parse("pkg:cargo/serde@1.0.228")
+                    .expect("pinned package coordinate"),
+            ),
+        ] {
+            let key = IndexOperationKey::from_bytes([number; 32]).expect("operation key");
+            let observation = IndexOperationObservation::Known(IndexOperationStatus::new(
+                key,
+                package,
+                CompileExecutionIntent::Interactive,
+                IndexOperationState::Failed {
+                    reason: IndexOperationFailureReason::Cancelled,
+                    detail: ProductText::from_static("cancelled before publication"),
+                    compiler_failure: None,
+                },
+            ));
+            let view = product_view(&SurfaceReply::IndexOperationStatus(observation));
+            let fault = view.fault().expect("terminal failure fault");
+            assert_eq!(fault.affordance(), &crate::Affordance::None);
+            assert_eq!(crate::dto::FaultDto::new(fault).call, None);
         }
     }
 

@@ -622,18 +622,28 @@ pub fn product(view: &ProductView, theme: Theme) -> String {
 
 fn index_job_footer(view: &ProductView, lines: &mut Lines, theme: Theme) {
     if let Some(observation) = view.index_operation() {
-        let key = match observation {
-            backend_library::IndexOperationObservation::Known(status) => status.operation_key,
-            backend_library::IndexOperationObservation::Unknown { operation_key }
-            | backend_library::IndexOperationObservation::OutsideReceiptWindow {
-                operation_key,
-                ..
-            } => *operation_key,
-        };
-        lines.push(theme.paint(
-            Style::Dim,
-            &format!("  Saved operation; backend index_progress --operation-key {key}"),
-        ));
+        let terminal_failure = matches!(
+            observation,
+            backend_library::IndexOperationObservation::Known(status)
+                if matches!(
+                    &status.state,
+                    backend_library::IndexOperationState::Failed { .. }
+                )
+        );
+        if !terminal_failure {
+            let key = match observation {
+                backend_library::IndexOperationObservation::Known(status) => status.operation_key,
+                backend_library::IndexOperationObservation::Unknown { operation_key }
+                | backend_library::IndexOperationObservation::OutsideReceiptWindow {
+                    operation_key,
+                    ..
+                } => *operation_key,
+            };
+            lines.push(theme.paint(
+                Style::Dim,
+                &format!("  Saved operation; backend index_progress --operation-key {key}"),
+            ));
+        }
     }
     let Some(job) = view.index_job() else {
         return;

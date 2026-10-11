@@ -295,6 +295,16 @@ pub enum Affordance {
         /// Project path to index.
         path: String,
     },
+    /// Start a fresh durable attempt for a terminal local index operation.
+    ///
+    /// The normal `add`/`backend.index` path owns the new caller-journal key;
+    /// this action deliberately carries no prior operation key.
+    RetryIndexAttempt {
+        /// Exact local project path from the durable request.
+        path: String,
+        /// Preserve the execution class of the completed request.
+        execution_intent: backend_library::CompileExecutionIntent,
+    },
     /// Open one path in the reader's file browser.
     OpenFolder {
         /// Path to reveal.
@@ -360,6 +370,14 @@ impl Affordance {
             Self::Reindex { path } => {
                 Some(format!("nudox add {}", crate::shell::quote_argument(path)))
             }
+            Self::RetryIndexAttempt {
+                path,
+                execution_intent,
+            } => Some(format!(
+                "nudox add {} --execution-intent {}",
+                crate::shell::quote_argument(path),
+                execution_intent_name(*execution_intent),
+            )),
             Self::OpenFolder { path } => {
                 Some(format!("open {}", crate::shell::quote_argument(path)))
             }
@@ -402,6 +420,16 @@ impl Affordance {
                 "name": "backend.index",
                 "arguments": { "path": path }
             })),
+            Self::RetryIndexAttempt {
+                path,
+                execution_intent,
+            } => Some(serde_json::json!({
+                "name": "backend.index",
+                "arguments": {
+                    "path": path,
+                    "execution_intent": execution_intent_name(*execution_intent),
+                }
+            })),
             Self::OpenFolder { path } => Some(serde_json::json!({
                 "name": "backend.packages",
                 "arguments": { "path": path }
@@ -422,6 +450,13 @@ impl Affordance {
                 "arguments": { "ticket": ticket, "after_sequence": after_sequence }
             })),
         }
+    }
+}
+
+const fn execution_intent_name(intent: backend_library::CompileExecutionIntent) -> &'static str {
+    match intent {
+        backend_library::CompileExecutionIntent::Interactive => "interactive",
+        backend_library::CompileExecutionIntent::Background => "background",
     }
 }
 
