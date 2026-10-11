@@ -27,6 +27,312 @@ const MODULE: &str = "/abs/polyglot::src/lib.rs";
 const DECLARATION: &str = "/abs/polyglot::src/lib.rs:2::ferris";
 const MISSING: &str = "/abs/polyglot::src/lib.rs:999::nothing";
 
+// Canonical unpadded base64url JSON, matching the index-search issuer's
+// encoding. The fixture product still owns its semantic state admission.
+const FIXTURE_INDEX_CURSOR: &str = "eyJ2ZXJzaW9uIjo0LCJmaXh0dXJlIjoibWF2ZW4tb3duZXItdjQifQ";
+
+fn fixture_page_cursor(continuation: PageContinuation) -> String {
+    // Use the same typed query cursor bytes as Client::encode_page_continuation.
+    format!(
+        "pc1-{}",
+        hex_bytes(continuation.cursor().encode_query().as_ref())
+    )
+}
+
+/// Independent historical/vector encoder: do not call the production signer
+/// or MAC helper, so the tests retain the exact old domain separation law.
+fn cursor_wrapper_vector(
+    version: &str,
+    expiry: &str,
+    payload: &str,
+    key: [u8; 32],
+    context: &[u8],
+) -> String {
+    let body = format!("{expiry}-{payload}");
+    let authenticated = if version == "mcp1" {
+        body.clone()
+    } else {
+        format!("{version}-{body}")
+    };
+    let mut bytes = authenticated.into_bytes();
+    bytes.push(0);
+    bytes.extend_from_slice(context);
+    let hash = blake3::keyed_hash(&key, &bytes);
+    format!("{version}-{body}-{}", hex_bytes(&hash.as_bytes()[..16]))
+}
+
+#[test]
+fn direct_cursor_legacy_vectors_preserve_exact_mcp1_domain_and_encoding() {
+    let server = Server::with_authority(Fake::default(), PROJECT.to_owned(), [7; 32]);
+    for owner in [FIXTURE_INDEX_CURSOR, "historical UTF-8 λ\0payload"] {
+        let encoded = URL_SAFE_NO_PAD.encode(owner.as_bytes());
+        for expiry in ["18446744073709551615", "018446744073709551615"] {
+            let token = cursor_wrapper_vector("mcp1", expiry, &encoded, [7; 32], b"legacy-context");
+            assert_eq!(
+                server
+                    .verify_cursor_token(&token, b"legacy-context")
+                    .expect("legacy verification")
+                    .as_deref(),
+                Some(owner)
+            );
+            assert!(
+                server
+                    .verify_cursor_token(&token, b"other-context")
+                    .expect("wrong context")
+                    .is_none()
+            );
+        }
+        let padded = cursor_wrapper_vector(
+            "mcp1",
+            "18446744073709551615",
+            &format!("{encoded}="),
+            [7; 32],
+            b"legacy-context",
+        );
+        assert!(
+            server
+                .verify_cursor_token(&padded, b"legacy-context")
+                .expect("noncanonical legacy encoding")
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn direct_cursor_authenticates_version_expiry_payload_and_existing_context() {
+    let server = Server::with_authority(Fake::default(), PROJECT.to_owned(), [7; 32]);
+    let owner = format!("pc3-{}", URL_SAFE_NO_PAD.encode([0xfb, 0xff, 0xfe]));
+    assert!(
+        owner.contains('-') && owner.contains('_'),
+        "exercise owner separators"
+    );
+    assert!(
+        owner.ends_with('-'),
+        "MAC must split after a trailing owner separator"
+    );
+    let token = server
+        .sign_cursor_token_at(u64::MAX, &owner, b"query-role-project")
+        .expect("direct token");
+    assert_eq!(
+        token,
+        cursor_wrapper_vector(
+            "mcp2",
+            &u64::MAX.to_string(),
+            &owner,
+            [7; 32],
+            b"query-role-project"
+        )
+    );
+    assert_eq!(
+        server
+            .verify_cursor_token(&token, b"query-role-project")
+            .expect("direct verification")
+            .as_deref(),
+        Some(owner.as_str())
+    );
+    for changed in [
+        token.replacen("mcp2-", "mcp1-", 1),
+        token.replacen("mcp2-", "mcp3-", 1),
+        token.replacen(&u64::MAX.to_string(), "18446744073709551614", 1),
+        token.replacen("pc3-", "pc2-", 1),
+        token.replacen(&owner, "pc3-AA", 1),
+    ] {
+        assert!(
+            server
+                .verify_cursor_token(&changed, b"query-role-project")
+                .expect("tampered wrapper")
+                .is_none()
+        );
+    }
+    for expiry in [
+        "0",
+        "018446744073709551615",
+        "+18446744073709551615",
+        "18446744073709551616",
+    ] {
+        let changed = cursor_wrapper_vector("mcp2", expiry, &owner, [7; 32], b"query-role-project");
+        assert!(
+            server
+                .verify_cursor_token(&changed, b"query-role-project")
+                .expect("closed expiry grammar")
+                .is_none()
+        );
+    }
+    assert!(
+        server
+            .verify_cursor_token(&token, b"other-query-role-project")
+            .expect("context mutation")
+            .is_none()
+    );
+    let rotated = Server::with_authority(Fake::default(), PROJECT.to_owned(), [8; 32]);
+    assert!(
+        rotated
+            .verify_cursor_token(&token, b"query-role-project")
+            .expect("rotated key")
+            .is_none()
+    );
+    let old = cursor_wrapper_vector(
+        "mcp1",
+        &u64::MAX.to_string(),
+        &URL_SAFE_NO_PAD.encode(owner.as_bytes()),
+        [7; 32],
+        b"query-role-project",
+    );
+    assert_eq!(
+        old.len() - token.len(),
+        URL_SAFE_NO_PAD.encode(owner.as_bytes()).len() - owner.len(),
+        "savings are exactly the removed outer encoding"
+    );
+}
+
+#[test]
+fn direct_cursor_encoding_boundaries_do_not_mint_or_load_cold_authority() {
+    let fixture = LazyAuthorityFixture::new();
+    let authority = CursorAuthority::workspace(&fixture.paths);
+    let server = Server::with_authority(Fake::default(), PROJECT.to_owned(), authority);
+    for owner in [
+        "",
+        "plaintext",
+        "pc1-short",
+        "pc2-0",
+        "pc2-AA",
+        "pc3-",
+        "pc3-Zg=",
+        "pc3-Zh",
+        "pc4-AA",
+        "pc3-λ",
+        "pc3-AA\n",
+        "{\"raw\":true}",
+    ] {
+        assert!(
+            server
+                .sign_cursor_token_at(u64::MAX, owner, b"query")
+                .is_err()
+        );
+        let forged = cursor_wrapper_vector("mcp2", &u64::MAX.to_string(), owner, [7; 32], b"query");
+        assert!(
+            server
+                .verify_cursor_token(&forged, b"query")
+                .expect("cold grammar rejection")
+                .is_none()
+        );
+        assert!(
+            !fixture.paths.data().exists(),
+            "invalid owner encoding must not provision state"
+        );
+    }
+    let oversized = "A".repeat(backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES + 1);
+    assert!(
+        server
+            .sign_cursor_token_at(u64::MAX, &oversized, b"query")
+            .is_err()
+    );
+    let forged = format!("mcp2-{}-{oversized}-{}", u64::MAX, "00".repeat(16));
+    assert!(
+        server
+            .verify_cursor_token(&forged, b"query")
+            .expect("raw size rejection")
+            .is_none()
+    );
+    assert!(!fixture.paths.data().exists());
+}
+
+#[test]
+fn direct_cursor_owner_encodings_and_exact_size_survive_authenticated_roundtrip() {
+    let server = Server::with_authority(Fake::default(), PROJECT.to_owned(), [7; 32]);
+    let max_body = format!(
+        "{{\"x\":\"{}\"}}",
+        "x".repeat(backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES / 4 * 3 - 8)
+    );
+    let largest = URL_SAFE_NO_PAD.encode(max_body);
+    assert_eq!(
+        largest.len(),
+        backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES
+    );
+    let page = fixture_page_cursor(PageContinuation::from_cursor(backend_library::Cursor::new()));
+    for owner in [
+        page,
+        "pc2-00ff".to_owned(),
+        "pc3-AA".to_owned(),
+        FIXTURE_INDEX_CURSOR.to_owned(),
+        largest,
+    ] {
+        let token = server
+            .sign_cursor_token_at(u64::MAX, &owner, b"same-context")
+            .expect("admitted owner encoding");
+        assert_eq!(
+            server
+                .verify_cursor_token(&token, b"same-context")
+                .expect("authenticated exact owner")
+                .as_deref(),
+            Some(owner.as_str())
+        );
+    }
+    for owner in [
+        "pc3-Zh",
+        "pc3-Zg=",
+        "pc1-00",
+        "pc2-0",
+        "pc2-FF",
+        "pc4-AA",
+        "cGxhaW50ZXh0",
+        "pc3-AA\0",
+    ] {
+        let token = cursor_wrapper_vector(
+            "mcp2",
+            &u64::MAX.to_string(),
+            owner,
+            [7; 32],
+            b"same-context",
+        );
+        assert!(
+            server
+                .verify_cursor_token(&token, b"same-context")
+                .expect("authentic MAC cannot bypass inner grammar")
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn direct_cursor_legacy_named_request_context_survives_and_cannot_cross_roles() {
+    // Exact historical BTreeMap serialization of the named-tool request.
+    // This vector must not derive its context from the current helper.
+    let context = br#"{"detail":"summary","limit":1,"query":"maven","schema":"mcp1","tool":"backend.index_search","workspace":"/abs/polyglot"}"#;
+    let token = cursor_wrapper_vector(
+        "mcp1",
+        "18446744073709551615",
+        &URL_SAFE_NO_PAD.encode(FIXTURE_INDEX_CURSOR),
+        [9; 32],
+        context,
+    );
+    let mut named = ready(Fake {
+        surface_index_search_pages: true,
+        ..Fake::default()
+    });
+    let resumed = call(
+        &mut named,
+        "backend.index_search",
+        &json!({"query":"maven","limit":1,"detail":"summary","cursor":token}),
+    );
+    assert_eq!(resumed["isError"], false);
+    assert_eq!(
+        named.product.surface_index_search_seen,
+        vec![Some(FIXTURE_INDEX_CURSOR.to_owned())]
+    );
+    let mut other_role = ready(Fake {
+        surface_index_search_pages: true,
+        ..Fake::default()
+    });
+    let refused = call(
+        &mut other_role,
+        SURFACE_TOOL,
+        &json!({"command":{"operation":"index-search","query":"maven","limit":1,"cursor":token},"detail":"summary"}),
+    );
+    assert_eq!(refused["isError"], true);
+    assert!(other_role.product.surface_index_search_seen.is_empty());
+}
+
 // ---------------------------------------------------------------------------
 // the fixture engine
 // ---------------------------------------------------------------------------
@@ -346,7 +652,7 @@ impl Engine for Fake {
                 let expected_cursor = self
                     .surface_index_search_owner_cursor
                     .as_deref()
-                    .unwrap_or("maven-owner-v4");
+                    .unwrap_or(FIXTURE_INDEX_CURSOR);
                 if let Some(cursor) = &cursor
                     && cursor.as_str() != expected_cursor
                 {
@@ -425,13 +731,13 @@ impl Product for Fake {
             return Err(error);
         }
         if let Some(catalog) = &self.page_catalog {
-            let token = format!("catalog-page-{}", continuation.cursor().query_offset());
+            let token = fixture_page_cursor(continuation);
             self.catalog_cursors
                 .insert(token.clone(), (continuation, catalog.revision_root()));
             return Ok(token);
         }
         if self.next_continuation == Some(continuation) {
-            Ok("fixture-page-1".to_owned())
+            Ok(fixture_page_cursor(continuation))
         } else {
             Err(ClientError::Protocol("unknown fixture cursor".to_owned()))
         }
@@ -496,7 +802,10 @@ impl Product for Fake {
             }
             return Ok(*cursor);
         }
-        if token == "fixture-page-1" {
+        if self
+            .next_continuation
+            .is_some_and(|cursor| token == fixture_page_cursor(cursor))
+        {
             if self.stale_cursor {
                 return Err(ClientError::StaleCursor);
             }
@@ -3304,14 +3613,14 @@ fn bounded_response_serialization_preserves_the_calling_request_id() {
 fn continuation_authority_binds_context_and_owner_payload() {
     let server = Server::with_authority(Fake::default(), PROJECT.to_owned(), [7; 32]);
     let token = server
-        .sign_cursor_token("pc1-owner-issued", b"query-a")
+        .sign_cursor_token(FIXTURE_INDEX_CURSOR, b"query-a")
         .expect("admitted key");
     assert_eq!(
         server
             .verify_cursor_token(&token, b"query-a")
             .expect("admitted key")
             .as_deref(),
-        Some("pc1-owner-issued")
+        Some(FIXTURE_INDEX_CURSOR)
     );
     // Verification is deliberately replayable: retrying a read page is safe,
     // while the MAC still prevents moving that page to another authority
@@ -3321,7 +3630,7 @@ fn continuation_authority_binds_context_and_owner_payload() {
             .verify_cursor_token(&token, b"query-a")
             .expect("admitted key")
             .as_deref(),
-        Some("pc1-owner-issued")
+        Some(FIXTURE_INDEX_CURSOR)
     );
     assert!(
         server
@@ -3354,7 +3663,7 @@ fn continuation_authority_binds_context_and_owner_payload() {
             .verify_cursor_token(&token, b"query-a")
             .expect("admitted key")
             .as_deref(),
-        Some("pc1-owner-issued")
+        Some(FIXTURE_INDEX_CURSOR)
     );
     let rotated = Server::with_authority(Fake::default(), PROJECT.to_owned(), [9; 32]);
     assert!(
@@ -3364,7 +3673,11 @@ fn continuation_authority_binds_context_and_owner_payload() {
             .is_none()
     );
     let expired = server
-        .sign_cursor_token_at(unix_seconds().saturating_sub(1), "pc1-old", b"query-a")
+        .sign_cursor_token_at(
+            unix_seconds().saturating_sub(1),
+            FIXTURE_INDEX_CURSOR,
+            b"query-a",
+        )
         .expect("admitted key");
     assert!(
         server
@@ -3373,7 +3686,7 @@ fn continuation_authority_binds_context_and_owner_payload() {
             .is_none()
     );
     let expires_now = server
-        .sign_cursor_token_at(unix_seconds(), "pc1-now", b"query-a")
+        .sign_cursor_token_at(unix_seconds(), FIXTURE_INDEX_CURSOR, b"query-a")
         .expect("admitted key");
     assert!(
         server
@@ -3639,15 +3952,15 @@ fn surface_index_search_cursor_round_trips_through_the_mcp_projection() {
         .as_str()
         .expect("index-search page carries a nested cursor")
         .to_owned();
-    assert!(cursor.starts_with("mcp1-"));
-    assert!(!cursor.contains("maven-owner-v4"));
+    assert!(cursor.starts_with("mcp2-"));
+    assert!(cursor.contains(FIXTURE_INDEX_CURSOR));
     assert!(text_of(&first).contains(&cursor));
     assert!(text_of(&first).contains("`command.cursor`"));
     assert!(!text_of(&first).contains("`--cursor`"));
     assert!(
-        !serde_json::to_string(&first)
+        serde_json::to_string(&first)
             .expect("tool result JSON")
-            .contains("maven-owner-v4")
+            .contains(FIXTURE_INDEX_CURSOR)
     );
 
     let structured = &first["structuredContent"];
@@ -3693,7 +4006,7 @@ fn surface_index_search_cursor_round_trips_through_the_mcp_projection() {
     assert_eq!(second["isError"], false);
     assert_eq!(
         restarted.product.surface_index_search_seen,
-        vec![Some("maven-owner-v4".to_owned())]
+        vec![Some(FIXTURE_INDEX_CURSOR.to_owned())]
     );
     assert!(second["structuredContent"]["surface"]["data"]["next_cursor"].is_null());
     assert!(!text_of(&second).contains("next cursor"));
@@ -3717,7 +4030,7 @@ fn index_search_tool_round_trips_mcp_cursors_at_summary_and_full_detail() {
             .as_str()
             .expect("product page carries the nested cursor")
             .to_owned();
-        assert!(cursor.starts_with("mcp1-"));
+        assert!(cursor.starts_with("mcp2-"));
         assert_eq!(
             first["structuredContent"]["nextCursor"].as_str(),
             Some(cursor.as_str())
@@ -3725,9 +4038,9 @@ fn index_search_tool_round_trips_mcp_cursors_at_summary_and_full_detail() {
         assert!(text_of(&first).contains(&cursor));
         assert!(text_of(&first).contains("`backend.index_search`"));
         assert!(
-            !serde_json::to_string(&first)
+            serde_json::to_string(&first)
                 .expect("tool result JSON")
-                .contains("maven-owner-v4")
+                .contains(FIXTURE_INDEX_CURSOR)
         );
         let structured = &first["structuredContent"];
         let measured = usize::try_from(
@@ -3757,7 +4070,7 @@ fn index_search_tool_round_trips_mcp_cursors_at_summary_and_full_detail() {
         assert_eq!(second["isError"], false, "detail={detail}");
         assert_eq!(
             server.product.surface_index_search_seen,
-            vec![None, Some("maven-owner-v4".to_owned())]
+            vec![None, Some(FIXTURE_INDEX_CURSOR.to_owned())]
         );
         assert!(
             second["structuredContent"]["index_search_page"]
@@ -3786,7 +4099,7 @@ fn index_search_tool_round_trips_mcp_cursors_at_summary_and_full_detail() {
         assert_eq!(after_restart["isError"], false, "detail={detail}");
         assert_eq!(
             restarted.product.surface_index_search_seen,
-            vec![Some("maven-owner-v4".to_owned())]
+            vec![Some(FIXTURE_INDEX_CURSOR.to_owned())]
         );
         assert!(
             after_restart["structuredContent"]
@@ -3831,7 +4144,7 @@ fn index_search_cursor_round_trips_between_servers_with_the_same_workspace_autho
     assert_eq!(resumed["isError"], false);
     assert_eq!(
         same_authority.product.surface_index_search_seen,
-        vec![Some("maven-owner-v4".to_owned())]
+        vec![Some(FIXTURE_INDEX_CURSOR.to_owned())]
     );
 
     // The same token cannot be replayed under a different workspace key or
@@ -3870,7 +4183,11 @@ fn index_search_cursor_round_trips_between_servers_with_the_same_workspace_autho
 
 #[test]
 fn oversized_signed_index_search_cursor_projection_is_refused_without_truncation() {
-    let owner_cursor = "x".repeat(26 * 1024);
+    let owner_cursor = URL_SAFE_NO_PAD.encode(format!(
+        "{{\"padding\":\"{}\"}}",
+        "x".repeat(26 * 1024 * 3 / 4)
+    ));
+    assert!((26 * 1024..27 * 1024).contains(&owner_cursor.len()));
     let mut server = ready(Fake {
         surface_index_search_pages: true,
         surface_index_search_owner_cursor: Some(owner_cursor.clone()),
@@ -3949,13 +4266,13 @@ fn index_search_tool_cursor_rejects_context_changes_and_raw_owner_tokens() {
                     server
                         .sign_cursor_token_at(
                             unix_seconds().saturating_sub(1),
-                            "maven-owner-v4",
+                            FIXTURE_INDEX_CURSOR,
                             &context
                         )
                         .expect("admitted key")
                 );
             }
-            "raw" => arguments["cursor"] = json!("maven-owner-v4"),
+            "raw" => arguments["cursor"] = json!(FIXTURE_INDEX_CURSOR),
             _ => unreachable!(),
         }
         let response = request(
@@ -4053,7 +4370,7 @@ fn stale_named_index_search_cursor_is_a_restartable_refusal() {
     assert!(text_of(&response).contains("restart the query"));
     assert_eq!(
         server.product.surface_index_search_seen,
-        vec![None, Some("maven-owner-v4".to_owned())]
+        vec![None, Some(FIXTURE_INDEX_CURSOR.to_owned())]
     );
 }
 
@@ -4121,13 +4438,13 @@ fn surface_index_search_cursor_binds_query_limit_project_and_detail() {
                     server
                         .sign_cursor_token_at(
                             unix_seconds().saturating_sub(1),
-                            "maven-owner-v4",
+                            FIXTURE_INDEX_CURSOR,
                             &context
                         )
                         .expect("admitted key")
                 );
             }
-            "raw" => command["cursor"] = json!("maven-owner-v4"),
+            "raw" => command["cursor"] = json!(FIXTURE_INDEX_CURSOR),
             _ => unreachable!(),
         }
         let response = request(
@@ -4849,7 +5166,7 @@ fn lazy_cursor_authority_is_durable_once_and_replayable_in_a_fresh_server() {
     let first = Server::with_authority(Fake::default(), PROJECT.to_owned(), authority.clone());
     assert!(!fixture.paths.data().exists());
     let token = first
-        .sign_cursor_token("pc1-real-owner-token", b"same-request")
+        .sign_cursor_token(FIXTURE_INDEX_CURSOR, b"same-request")
         .expect("first cursor durably admits its authority");
     let persisted = read_authority_secret(fixture.paths.authority_secret()).expect("durable key");
     assert_eq!(authority.key().expect("same admitted authority"), persisted);
@@ -4863,7 +5180,7 @@ fn lazy_cursor_authority_is_durable_once_and_replayable_in_a_fresh_server() {
             .verify_cursor_token(&token, b"same-request")
             .expect("cold process reads durable authority")
             .as_deref(),
-        Some("pc1-real-owner-token")
+        Some(FIXTURE_INDEX_CURSOR)
     );
     assert_eq!(
         read_authority_secret(fixture.paths.authority_secret()).expect("unchanged authority"),
@@ -4879,7 +5196,7 @@ fn lazy_cursor_authority_retries_after_repair_without_process_key_fallback() {
     let authority = CursorAuthority::workspace(&fixture.paths);
     let server = Server::with_authority(Fake::default(), PROJECT.to_owned(), authority.clone());
     let first = server
-        .sign_cursor_token("pc1-owner-token", b"query")
+        .sign_cursor_token(FIXTURE_INDEX_CURSOR, b"query")
         .expect_err("a durable authority refusal must not mint an ephemeral cursor");
     assert_eq!(first.kind, "transport");
     assert!(
@@ -4889,12 +5206,12 @@ fn lazy_cursor_authority_retries_after_repair_without_process_key_fallback() {
             .is_some_and(|detail| !detail.is_empty())
     );
     let repeated = server
-        .sign_cursor_token("pc1-owner-token", b"query")
+        .sign_cursor_token(FIXTURE_INDEX_CURSOR, b"query")
         .expect_err("the unchanged failure retains its original cause");
     assert_eq!(repeated.detail, first.detail);
     std::fs::remove_file(fixture.paths.data()).expect("retire unavailable fixture");
     let token = server
-        .sign_cursor_token("pc1-owner-token", b"query")
+        .sign_cursor_token(FIXTURE_INDEX_CURSOR, b"query")
         .expect("repaired workspace can admit its first durable authority");
     let persisted = read_authority_secret(fixture.paths.authority_secret()).expect("durable key");
     assert_eq!(authority.key().expect("admitted authority"), persisted);
@@ -4903,7 +5220,7 @@ fn lazy_cursor_authority_retries_after_repair_without_process_key_fallback() {
             .verify_cursor_token(&token, b"query")
             .expect("durable token")
             .as_deref(),
-        Some("pc1-owner-token")
+        Some(FIXTURE_INDEX_CURSOR)
     );
 }
 
@@ -4967,6 +5284,14 @@ fn cold_cursor_verification_never_initializes_authority_for_a_forged_token() {
         format!("mcp1-{future}-cGMxLWZvcmdlZA-{}", "00".repeat(16)),
         format!("mcp1-{future}-cGMxLWZvcmdlZA-not-a-canonical-mac"),
         format!("mcp1-{future}-invalid*base64-{}", "00".repeat(16)),
+        cursor_wrapper_vector(
+            "mcp2",
+            &future.to_string(),
+            FIXTURE_INDEX_CURSOR,
+            [7; 32],
+            b"query",
+        ),
+        format!("mcp2-{future}-{FIXTURE_INDEX_CURSOR}-not-a-canonical-mac"),
     ] {
         assert!(
             server
@@ -4986,14 +5311,14 @@ fn cold_cursor_verification_never_initializes_authority_for_a_forged_token() {
             .is_none()
     );
     let token = server
-        .sign_cursor_token("pc1-valid", b"query")
+        .sign_cursor_token(FIXTURE_INDEX_CURSOR, b"query")
         .expect("actual signing request can admit a durable key");
     assert_eq!(
         server
             .verify_cursor_token(&token, b"query")
             .expect("post-sign verification")
             .as_deref(),
-        Some("pc1-valid")
+        Some(FIXTURE_INDEX_CURSOR)
     );
     assert!(fixture.paths.authority_secret().is_file());
 }
