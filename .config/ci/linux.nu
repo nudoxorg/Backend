@@ -60,8 +60,18 @@ def print-captured-failures []: nothing -> nothing {
             | uniq-by key
         )
         if not ($blocks | is-empty) {
-            print $"== ($blocks | length) failing tests' stderr \(first 300, 20 lines each\) =="
-            for block in ($blocks | first 300) {
+            # A large failure family must not hide every later package. Keep
+            # bounded representative diagnostics from each package instead.
+            let representatives = (
+                $blocks
+                | group-by {|block| $block.key | str trim | split row " " | first | split row "::" | first }
+                | transpose package cases
+                | each {|group| $group.cases | first 20 }
+                | flatten
+                | first 300
+            )
+            print $"== ($blocks | length) failing tests; representative stderr \(up to 20 per package, 300 total, 20 lines each\) =="
+            for block in $representatives {
                 print $block.header
                 $output | skip $block.start | first 20 | str join (char nl) | print
                 print '--'

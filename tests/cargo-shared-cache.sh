@@ -95,8 +95,8 @@ printf '%s\n' '#!/bin/sh' \
 'if [ -n "${NUDOX_TEST_MUTATE_RUSTC:-}" ]; then printf "# changed during cargo\\n" >> "$NUDOX_TEST_MUTATE_RUSTC"; fi' \
 'if [ "${NUDOX_TEST_BREAK_PROVENANCE:-0}" != 0 ]; then printf "not a directory\\n" > "$CARGO_TARGET_DIR/.nudox-provenance"; fi' \
 'printf "%s|%s|%s|%s|%s|%s\\n" "${NUDOX_TEST_WORKTREE:-}" "${CARGO_BUILD_BUILD_DIR:-}" "${CARGO_TARGET_DIR:-}" "$*" "${CARGO_BUILD_JOBS:-}" "${RUSTC_WRAPPER:-}" >> "$NUDOX_TEST_LOG"' \
-'if [ -n "${NUDOX_TEST_CHILD_PID_FILE:-}" ]; then printf "%s\\n" "$$" > "$NUDOX_TEST_CHILD_PID_FILE"; fi' \
   'trap '\''if [ -n "${NUDOX_TEST_CHILD_DONE_FILE:-}" ]; then : > "$NUDOX_TEST_CHILD_DONE_FILE"; fi; exit 143'\'' HUP INT TERM' \
+'if [ -n "${NUDOX_TEST_CHILD_PID_FILE:-}" ]; then printf "%s\\n" "$$" > "$NUDOX_TEST_CHILD_PID_FILE"; fi' \
   'if [ "${NUDOX_TEST_CARGO_SLEEP:-0}" != 0 ]; then' \
   '  end=$(( $(date +%s) + NUDOX_TEST_CARGO_SLEEP ))' \
   '  while [ "$(date +%s)" -lt "$end" ]; do :; done' \
@@ -779,7 +779,7 @@ if [ "$signal_protocol" = file ]; then
   mkdir -p "$signal_cache/locks"
   printf 'persistent permit\n' > "$signal_cache/locks/slot-0.lock"
 fi
-signal_sleep="${NUDOX_TEST_SIGNAL_SLEEP:-1}"
+signal_sleep="${NUDOX_TEST_SIGNAL_SLEEP:-30}"
 NUDOX_TEST_WORKTREE="$test_root/roots/a" NUDOX_TEST_LOG="$signal_log" \
   NUDOX_BUILD_CACHE_ROOT="$signal_cache" NUDOX_CARGO_BUILD_SLOTS=1 \
   NUDOX_CARGO_SLOT_WAIT_MS=0 NUDOX_TEST_CARGO_SLEEP="$signal_sleep" \
@@ -818,10 +818,10 @@ kill -TERM "$signal_pid"
 signal_observed=0
 signal_waited=0
 while [ "$signal_waited" -lt 80 ] && [ ! -f "$signal_child_done" ]; do
-  if ! find "$signal_cache/locks" -type d -name 'worktree-*.lock' -print -quit 2>/dev/null | grep . >/dev/null; then
+  if ! find "$signal_cache/locks" -type d -name 'worktree-*.lock' -print -quit 2>/dev/null | grep . >/dev/null && [ ! -f "$signal_child_done" ]; then
     fail "cancelled compile released the lease before fake Cargo acknowledged TERM"
   fi
-  if ! find "$signal_build/.nudox-cargo/leases" -type d -name 'slot-*.lock' -print -quit 2>/dev/null | grep . >/dev/null; then
+  if ! find "$signal_build/.nudox-cargo/leases" -type d -name 'slot-*.lock' -print -quit 2>/dev/null | grep . >/dev/null && [ ! -f "$signal_child_done" ]; then
     fail "cancelled compile released the role-graph lease before fake Cargo acknowledged TERM"
   fi
   sleep 0.05
@@ -1072,8 +1072,8 @@ assert value["source_dirty_sha256"] == value["source_dirty_sha256_after"]
 assert len(value["source_dirty_sha256"]) == 64
 assert value["cargo_lock_sha256"] == hashlib.sha256((root / "Cargo.lock").read_bytes()).hexdigest()
 assert value["cargo_lock_sha256_after"] == value["cargo_lock_sha256"]
-assert value["cargo_build_dir"] == str(build_dir)
-assert value["cargo_target_dir"] == str(target_dir)
+assert pathlib.Path(value["cargo_build_dir"]).resolve() == build_dir.resolve()
+assert pathlib.Path(value["cargo_target_dir"]).resolve() == target_dir.resolve()
 assert value["features"]["features"] == ["smoke"]
 assert value["cargo_exit_status"] == 17
 assert value["toolchain"]["cargo"] == "cargo 1.97.1-test"

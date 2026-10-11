@@ -438,7 +438,18 @@ let
               fi
               "$locald_executable" --endpoint "$endpoint" --workspace "$workspace" --profile builtin --idle-timeout-ms 0 >"$logfile" 2>&1 &
               pid=$!
-              for attempt in $(seq 1 20); do kill -0 "$pid" 2>/dev/null && break; sleep 0.05; done
+              # Fork publishes a PID before exec has completed. Admit only the
+              # expected executable, with a stable start identity, before
+              # publishing an owner record that status/stop may consume.
+              for attempt in $(seq 1 100); do
+                if ! kill -0 "$pid" 2>/dev/null; then break; fi
+                if [ "$(process_executable "$pid")" = "$locald_executable" ]; then break; fi
+                sleep 0.05
+              done
+              if [ "$(process_executable "$pid")" != "$locald_executable" ]; then
+                echo "backend-locald did not establish its executable identity" >&2
+                exit 75
+              fi
               if ! kill -0 "$pid" 2>/dev/null; then echo "backend-locald exited before ownership could be recorded" >&2; exit 1; fi
               nonce="$(date +%s)-$$-$pid"
               start_identity=$(process_start "$pid")

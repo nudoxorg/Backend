@@ -240,7 +240,11 @@ def "main test pr" []: nothing -> record {
     let deep_accuracy = "binary_id(/^backend-engine::.*(corpus|repro|snapshot|terminals|golden|fleet|lane|render|image|lifecycle|packaging|identity_regressions)/) or binary_id(/^backend-flow::(compiler|system)_corpus$/) or binary_id(/^backend-compatibility-tests::render_snapshot_corpus$/) or package(backend-performance-tests)"
     let quarantined = pr-quarantine | each {|entry| $"\(($entry.filter)\)" }
     let quarantine = if ($quarantined | is-empty) { "" } else { $" and not \(($quarantined | str join ' or ')\)" }
-    let filter = $"not \(($deep_accuracy)\)($quarantine) and not test\(real_package_inventory_keeps_source_provenance_and_closed_terminals\) and not test\(all_two_hundred_ten_cases_compare_source_to_ir_publish_reopen_and_render\) and not test\(twenty_real_crates_compile_with_decoded_lanes\) and not test\(semantic_version_selection_is_exact_and_durable_across_restart\)"
+    # Cargo automatically admits this vendored path dependency as a workspace
+    # member. Its upstream LSP/laziness fixtures are not Backend PR acceptance.
+    # Keep backend-python's integration tests and compile Pyrefly as their
+    # dependency; the full workspace command still exercises upstream suites.
+    let filter = $"not package\(pyrefly\) and not \(($deep_accuracy)\)($quarantine) and not test\(real_package_inventory_keeps_source_provenance_and_closed_terminals\) and not test\(all_two_hundred_ten_cases_compare_source_to_ir_publish_reopen_and_render\) and not test\(twenty_real_crates_compile_with_decoded_lanes\) and not test\(semantic_version_selection_is_exact_and_durable_across_restart\)"
     # Contention proofs (dozens of writers, thousands of keys) starve the
     # timing-sensitive tests beside them (build 2397), and the nextest group
     # that once throttled them never started any of them on Linux (builds
@@ -330,6 +334,7 @@ def run-pr-pass [cargo: string, filter: string, threads]: nothing -> record {
                     "--locked"
                     "--no-tests=fail"
                     "--workspace"
+                    "--exclude" "pyrefly"
                     "--no-fail-fast"
                     "--config-file" $invocation.config
                     "--profile" "pr"

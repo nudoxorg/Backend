@@ -184,7 +184,8 @@ in
         ''
       else
         ''
-          nudox-gui-service-test
+          ^nudox-gui-service-test
+          if $env.LAST_EXIT_CODE != 0 { error make {msg: "GUI service lifecycle contract failed"} }
           mkdir ($env.out | path join "share")
           "validated" | save ($env.out | path join "share" "gui-service-contract")
         '';
@@ -316,6 +317,7 @@ in
     ];
     environment = {
       BACKEND_CONFIG_MODE = "immutable";
+      BACKEND_WORKSPACE_SNAPSHOT = "${workspaceRoot}";
       BACKEND_CONFIG_SNAPSHOT = "${../.}";
       BACKEND_CONTROL_PLANE = "${controlFile}/share/backend/control-plane.json";
       BACKEND_LUNA_TOOLS = commands.roleBundles."luna-pair";

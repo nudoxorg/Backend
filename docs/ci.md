@@ -192,3 +192,30 @@ configure probes then failed with â€œcannot determine return type of strerror_râ
 The pinned compiler probe reproduces the fortify warning at `-O0` and passes
 at `-O2`. Hardening and supplied C flags remain enabled; Rust test debug info
 remains disabled to keep output size bounded.
+
+### Overnight findings: PR scope and diagnostics
+
+The October 11 native run selected 16,791 cases because Cargo automatically
+added the vendored `pyrefly` path dependency to the workspace. Backend PR runs
+now exclude that upstream package's own LSP/laziness suites from Cargo selection
+and the nextest filter. The dependency still builds, Backend's Python/frontend
+integration tests still run, and `backend test workspace` retains the upstream
+suite. This scope change does not resolve the remaining Backend failures.
+
+Captured native failure diagnostics now sample each package rather than letting
+the first 300 failures from one large family hide later packages. Output remains
+bounded to 20 cases per package, 300 overall, with 20 stderr lines per case.
+
+The root packaging check reached a verdict after 57m36s with the longer budget,
+exposing contract failures beyond the previous timeout. Its Cargo cancellation
+fixture needed readiness after installing signal handlers and a second check
+for acknowledgement after observing released leases. The control-plane sandbox
+needed an explicit workspace snapshot. GUI service startup must wait for the
+expected executable identity before publishing its owner record. PID-reuse and
+lease-release safeguards remain enforced.
+
+Performance work should distinguish upstream dependency tests, product tests,
+release packaging and cache finalization. The runtime worker had 913 GiB free
+and 58 GiB available memory during diagnosis; these observed failures do not
+justify blaming disk exhaustion. Warm runtime cache reuse and repeated release
+compilation still need separate measurement.
