@@ -8869,9 +8869,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn nix_getconf_search_refuses_a_mutable_path_candidate() {
-        use std::os::unix::fs::PermissionsExt;
-
+    fn nix_getconf_search_refuses_an_uncontrolled_path_directory() {
         struct Scratch(PathBuf);
         impl Drop for Scratch {
             fn drop(&mut self) {
@@ -8886,11 +8884,7 @@ mod tests {
                 .expect("clock")
                 .as_nanos()
         )));
-        std::fs::create_dir_all(&scratch.0).expect("mutable PATH directory");
-        let getconf = scratch.0.join("getconf");
-        std::fs::write(&getconf, b"#!/bin/sh\nexit 0\n").expect("mutable getconf");
-        std::fs::set_permissions(&getconf, std::fs::Permissions::from_mode(0o755))
-            .expect("executable getconf");
+        std::fs::create_dir_all(&scratch.0).expect("uncontrolled PATH directory");
 
         let error = match nix_parallel_cargo_getconf_witness(
             &[],
@@ -8900,7 +8894,7 @@ mod tests {
             None,
         ) {
             Err(error) => error,
-            Ok(_) => panic!("mutable native PATH candidate must fail closed"),
+            Ok(_) => panic!("uncontrolled PATH directory must fail closed before candidate lookup"),
         };
         assert!(error.contains("writable and cannot be bound"));
     }
