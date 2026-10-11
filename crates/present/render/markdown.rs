@@ -574,14 +574,14 @@ fn index_search_page_footer(view: &ProductView, lines: &mut Lines) {
         page.result_count()
     ));
     if let Some(cursor) = page.next_cursor() {
-        let instruction = match page
+        let target = match page
             .cursor_projection()
             .map_or(CursorTarget::CliOption, |projection| projection.target())
         {
-            CursorTarget::CliOption => "pass `--cursor`",
-            CursorTarget::McpIndexSearchTool => "pass as `cursor` to `backend.index_search`",
-            CursorTarget::SurfaceCommand => "set `command.cursor` in `backend.surface`",
+            CursorTarget::CliOption => ContinuationTarget::CliOption,
+            CursorTarget::McpIndexSearchTool => ContinuationTarget::McpTool("backend.index_search"),
+            CursorTarget::SurfaceCommand => ContinuationTarget::McpSurfaceCommand,
         };
-        lines.push(format!("next cursor ({instruction}): `{cursor}`"));
+        lines.push(continuation_note(target, cursor));
     }
 }

@@ -3303,7 +3303,9 @@ mod tests {
             result_count: IndexSearchResultCount::AtLeast(1),
         });
         let view = product_view(&reply);
-        assert!(crate::markdown::product(&view).contains("pass `--cursor`"));
+        assert!(
+            crate::markdown::product(&view).contains("continue the same command with `--cursor`")
+        );
         assert!(crate::markdown::product(&view).contains("owner-v4-token"));
 
         let projected = view.project_cursor("mcp1-signed-token", CursorTarget::SurfaceCommand);
@@ -3315,9 +3317,9 @@ mod tests {
         );
         assert!(
             crate::markdown::product(&projected)
-                .contains("set `command.cursor` in `backend.surface`")
+                .contains("copy `structuredContent.surface.data.next_cursor` to `command.cursor`")
         );
-        assert!(crate::markdown::product(&projected).contains("mcp1-signed-token"));
+        assert!(!crate::markdown::product(&projected).contains("mcp1-signed-token"));
         assert!(!crate::markdown::product(&projected).contains("owner-v4-token"));
         assert!(matches!(
             projected.cursor_family(),

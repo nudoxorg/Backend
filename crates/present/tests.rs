@@ -1132,7 +1132,7 @@ fn continuation_renderings_name_the_actual_follow_up_and_nonpaged_fallback() {
         mcp.contains("copy `structuredContent.nextCursor` to `arguments.cursor`"),
         "{mcp}"
     );
-    assert!(mcp.contains(token), "{mcp}");
+    assert!(!mcp.contains(token), "{mcp}");
     assert!(!mcp.contains("raise `limit`"), "{mcp}");
 
     let nonpaged = RecordList::new(
@@ -1150,6 +1150,28 @@ fn continuation_renderings_name_the_actual_follow_up_and_nonpaged_fallback() {
         markdown::answer_with_cursor(&paged, None, ContinuationTarget::McpTool("backend.search"));
     assert!(omitted_token.contains("does not include the continuation token"));
     assert!(!omitted_token.contains("raise `limit`"));
+}
+
+#[test]
+fn structured_continuation_previews_do_not_scale_with_the_opaque_token() {
+    let token = "mcp2-opaque-owner-material-".repeat(1024);
+    for target in [
+        ContinuationTarget::McpTool("backend.search"),
+        ContinuationTarget::McpTool("backend.query"),
+        ContinuationTarget::McpTool("backend.index_search"),
+        ContinuationTarget::McpSurfaceCommand,
+    ] {
+        let short = crate::continuation_note(target, "short");
+        let long = crate::continuation_note(target, &token);
+        assert_eq!(long, short, "the structured channel owns the entire token");
+        assert!(long.contains("structuredContent"));
+        assert!(long.contains("cursor"));
+    }
+    let cli = crate::continuation_note(ContinuationTarget::CliOption, &token);
+    assert!(
+        cli.contains(&token),
+        "a text-only CLI must retain the exact operand"
+    );
 }
 
 #[test]

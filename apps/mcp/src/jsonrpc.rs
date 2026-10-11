@@ -1670,10 +1670,11 @@ fn graph_page_text(page: &GraphQueryPage, cursor: Option<&str>) -> String {
     match page.terminal {
         PageTerminal::More(_) => {
             if let Some(cursor) = cursor {
-                out.push_str("Continue `backend.query` with the same `query`, `variables`, and `limit`; copy `structuredContent.nextCursor` into `arguments.cursor`: ");
-                out.push('`');
-                out.push_str(cursor);
-                out.push_str("`\n");
+                out.push_str(&backend_present::continuation_note(
+                    ContinuationTarget::McpTool(QUERY_TOOL),
+                    cursor,
+                ));
+                out.push('\n');
             } else {
                 out.push_str("… more rows are available, but no continuation cursor was issued\n");
             }

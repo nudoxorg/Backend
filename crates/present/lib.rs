@@ -136,7 +136,8 @@ pub use product::{
 pub use projection::{PageProjection, PageSection};
 pub use record::{Record, RecordList, RecordState, Score};
 pub use render::{
-    Colour, ContinuationTarget, Style, Theme, Width, display_width, markdown, text,
+    Colour, ContinuationTarget, Style, Theme, Width, continuation_note, display_width, markdown,
+    text,
 };
 pub use sections::{LineRole, SectionKind, SectionReader};
 pub use shelf::{LanguageCount, Readiness, RowCount, Shelf, ShelfEntry};

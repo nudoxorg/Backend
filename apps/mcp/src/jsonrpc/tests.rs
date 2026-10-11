@@ -1325,7 +1325,7 @@ fn default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapsho
                 "{tool}: {preview}"
             );
             assert!(
-                preview.contains(&format!("`{cursor}`")),
+                !preview.contains(&format!("`{cursor}`")),
                 "{tool}: {preview}"
             );
             assert!(!preview.contains("raise `limit`"), "{tool}: {preview}");
@@ -4239,13 +4239,9 @@ fn graph_continuation_round_trip_is_bounded_and_authorized() {
             .expect("first graph page carries a cursor")
             .to_owned();
         let preview = text_of(&first);
-        assert!(
-            preview.contains(
-                "Continue `backend.query` with the same `query`, `variables`, and `limit`"
-            )
-        );
-        assert!(preview.contains("copy `structuredContent.nextCursor` into `arguments.cursor`"));
-        assert!(preview.contains(&format!("`{cursor}`")));
+        assert!(preview.contains("Continue `backend.query` with the same arguments"));
+        assert!(preview.contains("copy `structuredContent.nextCursor` to `arguments.cursor`"));
+        assert!(!preview.contains(&format!("`{cursor}`")));
         assert!(!preview.contains("raise `limit`"), "{preview}");
         assert!(!preview.contains("narrow the query"), "{preview}");
 
@@ -4312,7 +4308,7 @@ fn surface_index_search_cursor_round_trips_through_the_mcp_projection() {
         .to_owned();
     assert!(cursor.starts_with("mcp2-"));
     assert!(cursor.contains(FIXTURE_INDEX_CURSOR));
-    assert!(text_of(&first).contains(&cursor));
+    assert!(!text_of(&first).contains(&cursor));
     assert!(text_of(&first).contains("`command.cursor`"));
     assert!(!text_of(&first).contains("`--cursor`"));
     assert!(
@@ -4393,7 +4389,7 @@ fn index_search_tool_round_trips_mcp_cursors_at_summary_and_full_detail() {
             first["structuredContent"]["nextCursor"].as_str(),
             Some(cursor.as_str())
         );
-        assert!(text_of(&first).contains(&cursor));
+        assert!(!text_of(&first).contains(&cursor));
         assert!(text_of(&first).contains("`backend.index_search`"));
         assert!(
             serde_json::to_string(&first)
