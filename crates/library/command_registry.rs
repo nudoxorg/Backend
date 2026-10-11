@@ -110,7 +110,7 @@ pub const COMMANDS: [CommandSpec; 53] = [
         id: CommandId::Packages,
         name: "packages",
         title: "Packages",
-        description: "List every package on the shelf with its status and declaration counts.",
+        description: "List every package on the shelf with its readiness; declaration counts are unavailable in this package-only reply.",
         mutation: CommandMutation::Read,
         domain: CommandDomain::Library,
     },
