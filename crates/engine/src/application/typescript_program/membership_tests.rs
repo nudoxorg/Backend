@@ -122,17 +122,32 @@ const config = ts.getParsedCommandLineOfConfigFile(process.argv[2], {}, {...ts.s
 const p = ts.createProgram({rootNames:config.fileNames, options:config.options});
 const c = p.getTypeChecker();
 const calls=[];
+const requests = new Map();
+const request = (f, literal, kind) => {
+  const mode = p.getModeForUsageLocation(f, literal);
+  if (mode !== undefined && mode !== ts.ModuleKind.CommonJS && mode !== ts.ModuleKind.ESNext) throw Error('unsupported oracle resolution mode');
+  const row = {importer:f.fileName, specifier:literal.text, kind, mode:mode === undefined ? null : mode === ts.ModuleKind.CommonJS ? 'require' : 'import'};
+  requests.set(JSON.stringify(row), row);
+};
 for(const f of p.getSourceFiles()) {
   function visit(n) {
     if(ts.isCallExpression(n) && n.expression.getText(f)==='answer') {
       const sig=c.getResolvedSignature(n);
       calls.push({file:f.fileName, result:c.typeToString(c.getTypeAtLocation(n)), declaration:sig.declaration.getSourceFile().fileName});
     }
+    if(ts.isImportDeclaration(n) && n.moduleSpecifier && ts.isStringLiteralLike(n.moduleSpecifier)) request(f,n.moduleSpecifier,'EsmImport');
+    else if(ts.isExportDeclaration(n) && n.moduleSpecifier && ts.isStringLiteralLike(n.moduleSpecifier)) request(f,n.moduleSpecifier,'EsmReExport');
+    else if(ts.isImportTypeNode(n) && ts.isLiteralTypeNode(n.argument) && ts.isStringLiteralLike(n.argument.literal)) request(f,n.argument.literal,'EsmImport');
+    else if(ts.isImportEqualsDeclaration(n) && ts.isExternalModuleReference(n.moduleReference) && n.moduleReference.expression && ts.isStringLiteralLike(n.moduleReference.expression)) request(f,n.moduleReference.expression,'CjsRequire');
+    else if(ts.isCallExpression(n) && n.arguments.length && ts.isStringLiteralLike(n.arguments[0])) {
+      if(n.expression.kind === ts.SyntaxKind.ImportKeyword) request(f,n.arguments[0],'DynamicImport');
+      else if(ts.isIdentifier(n.expression) && n.expression.text === 'require') request(f,n.arguments[0],'CjsRequire');
+    }
     ts.forEachChild(n,visit);
   }
   visit(f);
 }
-process.stdout.write(JSON.stringify({files:p.getSourceFiles().map(f=>f.fileName), formats:Object.fromEntries(p.getSourceFiles().map(f=>[f.fileName, f.impliedNodeFormat === undefined ? 'unknown' : f.impliedNodeFormat === ts.ModuleKind.CommonJS ? 'common_js' : f.impliedNodeFormat === ts.ModuleKind.ESNext ? 'es_module' : 'unsupported'])), calls, errors:ts.getPreEmitDiagnostics(p).filter(d=>d.category===ts.DiagnosticCategory.Error).map(d=>d.code)}));
+process.stdout.write(JSON.stringify({files:p.getSourceFiles().map(f=>f.fileName), requests:Array.from(requests.values()), formats:Object.fromEntries(p.getSourceFiles().map(f=>[f.fileName, f.impliedNodeFormat === undefined ? 'unknown' : f.impliedNodeFormat === ts.ModuleKind.CommonJS ? 'common_js' : f.impliedNodeFormat === ts.ModuleKind.ESNext ? 'es_module' : 'unsupported'])), calls, errors:ts.getPreEmitDiagnostics(p).filter(d=>d.category===ts.DiagnosticCategory.Error).map(d=>d.code)}));
 "#;
         let args = [
             OsString::from(self.root.join("node_modules/typescript/lib/typescript.js")),
@@ -680,7 +695,7 @@ fn actual_compiler_node_formats_follow_package_type_with_identical_source_member
     use backend_frontend_typescript::{TszProjectFileFormat, TszProjectModuleRequestKind};
     use std::collections::BTreeMap;
     let fixture = Fixture::new();
-    let main = "import { value } from './dep.js';\nimport type { Token as I } from './dep.js' with { 'resolution-mode': 'import' };\nimport type { Token as R } from './dep.js' with { 'resolution-mode': 'require' };\nexport const result = value; export type Pair = [I, R];\n";
+    let main = "import { value } from './dep.js';\nimport type { Token as I } from './dep.js' with { 'resolution-mode': 'import' };\nimport type { Token as R } from './dep.js' with { 'resolution-mode': 'require' };\nexport const result = value; export type Pair = [I, R];\nexport { value as forwarded } from './dep.js';\nexport type InlineImport = import('./dep.js', { with: { 'resolution-mode': 'import' } }).Token;\nexport type InlineRequire = import('./dep.js', { with: { 'resolution-mode': 'require' } }).Token;\nimport legacy = require('./fixed.cjs'); export const legacyValue = legacy.cjs;\nexport const dynamic = import('./dep.js');\n";
     let dep = "export interface Token { value: number; } export const value = 42;\n";
     let source_pairs = [
         ("src/main.ts", main),
@@ -697,124 +712,180 @@ fn actual_compiler_node_formats_follow_package_type_with_identical_source_member
         .map(|(path, text)| PackageSource::new(path, text).unwrap())
         .collect();
     for module in ["Node16", "NodeNext"] {
-        fs::write(fixture.root.join("tsconfig.json"), serde_json::to_vec(&serde_json::json!({
-            "compilerOptions": {"strict": true, "target":"ES2022", "module": module, "moduleResolution": module},
-            "files": ["src/main.ts", "src/dep.ts", "src/fixed.mts", "src/fixed.cts"],
-        })).unwrap()).unwrap();
-        let mut prior = None;
-        for (package_type, format) in [
-            ("commonjs", TszProjectFileFormat::CommonJs),
-            ("module", TszProjectFileFormat::EsModule),
-        ] {
+        for explicit_resolution in [true, false] {
+            let mut compiler_options =
+                serde_json::json!({"strict":true, "target":"ES2022", "module":module});
+            if explicit_resolution {
+                compiler_options["moduleResolution"] = serde_json::json!(module);
+            }
             fs::write(
-                fixture.root.join("package.json"),
+                fixture.root.join("tsconfig.json"),
                 serde_json::to_vec(&serde_json::json!({
-                    "name":"program-membership", "version":"1.0.0", "type":package_type,
+                    "compilerOptions": compiler_options,
+                    "files": ["src/main.ts", "src/dep.ts", "src/fixed.mts", "src/fixed.cts"],
                 }))
                 .unwrap(),
             )
             .unwrap();
-            let native = fixture.native(&sources);
-            let oracle = fixture.oracle();
-            assert_eq!(oracle["errors"], serde_json::json!([]));
-            let formats: BTreeMap<_, _> = native
-                .options
-                .file_formats
-                .iter()
-                .map(|input| (input.path.as_str(), input.format))
-                .collect();
-            assert_eq!(formats.len(), 4);
-            assert_eq!(formats["src/main.ts"], format);
-            assert_eq!(formats["src/dep.ts"], format);
-            assert_eq!(formats["src/fixed.mts"], TszProjectFileFormat::EsModule);
-            assert_eq!(formats["src/fixed.cts"], TszProjectFileFormat::CommonJs);
-            assert!(!formats.contains_key("eslint.config.ts"));
-            for input in &native.options.file_formats {
-                let expected = match input.format {
-                    TszProjectFileFormat::Unknown => "unknown",
-                    TszProjectFileFormat::CommonJs => "common_js",
-                    TszProjectFileFormat::EsModule => "es_module",
-                };
-                assert_eq!(
-                    oracle["formats"][fixture.root.join(&input.path).to_str().unwrap()],
-                    expected
-                );
-            }
-            let requests: Vec<_> = native
-                .options
-                .module_resolutions
-                .iter()
-                .filter(|request| {
-                    request.importer_path == "src/main.ts"
-                        && request.specifier == "./dep.js"
-                        && request.request_kind == TszProjectModuleRequestKind::EsmImport
-                })
-                .collect();
-            assert_eq!(
-                requests.len(),
-                2,
-                "implicit and explicit same-mode observations deduplicate only their exact tuple"
-            );
-            assert!(
-                requests
-                    .iter()
-                    .any(|request| format!("{:?}", request.resolution_mode) == "Some(Import)")
-            );
-            assert!(
-                requests
-                    .iter()
-                    .any(|request| format!("{:?}", request.resolution_mode) == "Some(Require)")
-            );
-            // Exercise the same admitted real API recipe through TSZ rather
-            // than treating the compiler report as the only positive control.
-            let mut authority = backend_frontend_typescript::TszProjectAuthority::new();
-            authority
-                .update(
-                    native.sources.clone(),
-                    native.options.clone(),
-                    &native.libraries,
+            let mut prior = None;
+            for (package_type, format) in [
+                ("commonjs", TszProjectFileFormat::CommonJs),
+                ("module", TszProjectFileFormat::EsModule),
+            ] {
+                fs::write(
+                    fixture.root.join("package.json"),
+                    serde_json::to_vec(&serde_json::json!({
+                        "name":"program-membership", "version":"1.0.0", "type":package_type,
+                    }))
+                    .unwrap(),
                 )
                 .unwrap();
-            let project = authority.project().unwrap();
-            let main_index = project
-                .program()
-                .files
-                .iter()
-                .position(|file| file.file_name == "src/main.ts")
-                .unwrap();
-            project
-                .with_file_checker_and_types(main_index, |checker, _, _, _| {
+                let native = fixture.native(&sources);
+                let oracle = fixture.oracle();
+                assert_eq!(oracle["errors"], serde_json::json!([]));
+                let formats: BTreeMap<_, _> = native
+                    .options
+                    .file_formats
+                    .iter()
+                    .map(|input| (input.path.as_str(), input.format))
+                    .collect();
+                assert_eq!(formats.len(), 4);
+                assert_eq!(formats["src/main.ts"], format);
+                assert_eq!(formats["src/dep.ts"], format);
+                assert_eq!(formats["src/fixed.mts"], TszProjectFileFormat::EsModule);
+                assert_eq!(formats["src/fixed.cts"], TszProjectFileFormat::CommonJs);
+                assert!(!formats.contains_key("eslint.config.ts"));
+                for input in &native.options.file_formats {
+                    let expected = match input.format {
+                        TszProjectFileFormat::Unknown => "unknown",
+                        TszProjectFileFormat::CommonJs => "common_js",
+                        TszProjectFileFormat::EsModule => "es_module",
+                    };
                     assert_eq!(
-                        checker.ctx.file_is_esm,
-                        Some(format == TszProjectFileFormat::EsModule)
+                        oracle["formats"][fixture.root.join(&input.path).to_str().unwrap()],
+                        expected
                     );
-                    assert!(std::sync::Arc::ptr_eq(
-                        checker.ctx.file_is_esm_map.as_ref().unwrap(),
-                        &project.program().file_is_esm_map
-                    ));
-                    let target = checker
-                        .ctx
-                        .resolve_import_target_from_file_with_mode(main_index, "./dep.js", None)
-                        .unwrap();
-                    assert_eq!(project.program().files[target].file_name, "src/dep.ts");
-                })
-                .unwrap();
-            let snapshots: Vec<_> = native
-                .sources
-                .iter()
-                .map(|source| (source.path.clone(), source.source.clone()))
-                .collect();
-            if let Some((prior_sources, prior_environment)) = prior {
+                }
+                let requests: Vec<_> = native
+                    .options
+                    .module_resolutions
+                    .iter()
+                    .filter(|request| {
+                        request.importer_path == "src/main.ts"
+                            && request.specifier == "./dep.js"
+                            && request.request_kind == TszProjectModuleRequestKind::EsmImport
+                    })
+                    .collect();
                 assert_eq!(
-                    snapshots, prior_sources,
-                    "package format edit keeps exact source bytes and membership"
+                    requests.len(),
+                    2,
+                    "implicit and explicit same-mode observations deduplicate only their exact tuple"
                 );
-                assert_ne!(
-                    native.options.environment, prior_environment,
-                    "format-only package change invalidates durable semantics"
+                assert!(
+                    requests
+                        .iter()
+                        .any(|request| format!("{:?}", request.resolution_mode) == "Some(Import)")
                 );
+                assert!(
+                    requests
+                        .iter()
+                        .any(|request| format!("{:?}", request.resolution_mode) == "Some(Require)")
+                );
+                let expected_requests: BTreeSet<_> = oracle["requests"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|request| {
+                        let importer = Path::new(request["importer"].as_str().unwrap())
+                            .strip_prefix(&fixture.root)
+                            .unwrap()
+                            .to_str()
+                            .unwrap()
+                            .to_owned();
+                        (
+                            importer,
+                            request["specifier"].as_str().unwrap().to_owned(),
+                            request["kind"].as_str().unwrap().to_owned(),
+                            request["mode"].as_str().map(str::to_owned),
+                        )
+                    })
+                    .collect();
+                let actual_requests: BTreeSet<_> = native
+                    .options
+                    .module_resolutions
+                    .iter()
+                    .map(|request| {
+                        let mode = request.resolution_mode.map(|mode| match mode {
+                            backend_frontend_typescript::TszResolutionModeOverride::Import => {
+                                "import".to_owned()
+                            }
+                            backend_frontend_typescript::TszResolutionModeOverride::Require => {
+                                "require".to_owned()
+                            }
+                        });
+                        (
+                            request.importer_path.clone(),
+                            request.specifier.clone(),
+                            format!("{:?}", request.request_kind),
+                            mode,
+                        )
+                    })
+                    .collect();
+                assert_eq!(
+                    actual_requests, expected_requests,
+                    "exact SDK modes with module={module}, explicit moduleResolution={explicit_resolution}, package={package_type}"
+                );
+                // Exercise the same admitted real API recipe through TSZ rather
+                // than treating the compiler report as the only positive control.
+                let mut authority = backend_frontend_typescript::TszProjectAuthority::new();
+                authority
+                    .update(
+                        native.sources.clone(),
+                        native.options.clone(),
+                        &native.libraries,
+                    )
+                    .unwrap();
+                let project = authority.project().unwrap();
+                let main_index = project
+                    .program()
+                    .files
+                    .iter()
+                    .position(|file| file.file_name == "src/main.ts")
+                    .unwrap();
+                project
+                    .with_file_checker_and_types(main_index, |checker, _, _, _| {
+                        assert_eq!(
+                            checker.ctx.file_is_esm,
+                            Some(format == TszProjectFileFormat::EsModule)
+                        );
+                        assert!(std::sync::Arc::ptr_eq(
+                            checker.ctx.file_is_esm_map.as_ref().unwrap(),
+                            &project.program().file_is_esm_map
+                        ));
+                        let target = checker
+                            .ctx
+                            .resolve_import_target_from_file_with_mode(main_index, "./dep.js", None)
+                            .unwrap();
+                        assert_eq!(project.program().files[target].file_name, "src/dep.ts");
+                    })
+                    .unwrap();
+                let snapshots: Vec<_> = native
+                    .sources
+                    .iter()
+                    .map(|source| (source.path.clone(), source.source.clone()))
+                    .collect();
+                if let Some((prior_sources, prior_environment)) = prior {
+                    assert_eq!(
+                        snapshots, prior_sources,
+                        "package format edit keeps exact source bytes and membership"
+                    );
+                    assert_ne!(
+                        native.options.environment, prior_environment,
+                        "format-only package change invalidates durable semantics"
+                    );
+                }
+                prior = Some((snapshots, native.options.environment));
             }
-            prior = Some((snapshots, native.options.environment));
         }
     }
     // A package manifest alone cannot fabricate format evidence outside the

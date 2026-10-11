@@ -509,6 +509,7 @@ const add = value => { const k = JSON.stringify(value); observations.set(k, valu
 const result = value => { process.stdout.write(JSON.stringify(value)); };
 try {
   const ts = require(compilerApiPath);
+  if (typeof ts.getModeForUsageLocation !== 'function') throw new Error('selected TypeScript runtime does not expose its exact getModeForUsageLocation implementation');
   if (typeof ts.matchFiles !== 'function') throw closureFault('mismatch', 'selected TypeScript runtime does not expose its exact matchFiles implementation');
   const finishDirectoryQuery = (context, queryPath, value, kind, args, environment) => {
     for (const view of context.views.values()) {
@@ -749,27 +750,20 @@ try {
     }));
     const resolutions = [];
     const resolutionKeys = new Map();
-    const modeFor = (file, literal, kind) => {
-      const attributes = literal.parent && literal.parent.attributes;
-      if (attributes && Array.isArray(attributes.elements)) {
-        for (const item of attributes.elements) {
-          if (item.name && item.name.text === 'resolution-mode' && item.value && (item.value.text === 'import' || item.value.text === 'require')) return item.value.text;
-        }
-      }
-      if (kind === 'DynamicImport') return 'import';
-      if (kind === 'CjsRequire') return 'require';
-      const mr = options.moduleResolution === undefined ? undefined : ts.ModuleResolutionKind[options.moduleResolution];
-      if (mr !== 'Node16' && mr !== 'NodeNext') return null;
-      const format = file.impliedNodeFormat;
-      if (format === ts.ModuleKind.CommonJS) return 'require';
-      if (format === ts.ModuleKind.ESNext) return 'import';
-      return null;
+    const modeFor = (file, literal) => {
+      // The owning compiler interprets defaults, import type attributes,
+      // require syntax, and dynamic imports for this exact AST usage.
+      const mode = ts.getModeForUsageLocation(file, literal, options);
+      if (mode === undefined) return null;
+      if (mode === ts.ModuleKind.CommonJS) return 'require';
+      if (mode === ts.ModuleKind.ESNext) return 'import';
+      throw new Error('selected TypeScript runtime returned an unsupported exact request resolution mode');
     };
     const addRequest = (file, literal, kind) => {
       if (!literal || typeof literal.text !== 'string') return;
       const resolution = program.getResolvedModuleFromModuleSpecifier(literal, file);
       const resolved = resolution && resolution.resolvedModule;
-      const mode = modeFor(file, literal, kind);
+      const mode = modeFor(file, literal);
       const value = {importer:path.resolve(file.fileName), specifier:literal.text, kind, mode,
         target_path:resolved ? path.resolve(resolved.resolvedFileName) : null,
         package_id:resolved && resolved.packageId ? [resolved.packageId.name, resolved.packageId.version, resolved.packageId.subModuleName || ''].join('/') : null};
