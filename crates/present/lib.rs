@@ -72,6 +72,9 @@ mod outline;
 mod owner_recovery_tests;
 mod page;
 mod product;
+mod projection;
+#[cfg(test)]
+mod projection_tests;
 mod record;
 mod render;
 mod sections;
@@ -130,6 +133,7 @@ pub use product::{
     ProductSemanticData, ProductSemanticHistoryProofSummary, ProductSemanticHistoryStatus,
     ProductView, product_view, product_view_for_command,
 };
+pub use projection::{PageProjection, PageSection};
 pub use record::{Record, RecordList, RecordState, Score};
 pub use render::{
     Colour, ContinuationTarget, Style, Theme, Width, display_width, markdown, text,

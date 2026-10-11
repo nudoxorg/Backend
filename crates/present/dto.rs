@@ -22,6 +22,7 @@ use crate::record::{Record, RecordList};
 use crate::shelf::{Readiness, Shelf, ShelfEntry};
 use crate::signature::{Signature, Token};
 use crate::status::Status;
+use crate::{Detail, PageProjection};
 
 /// Projects whichever answer a surface produced, tagged by its `answer` field.
 ///
@@ -436,17 +437,28 @@ impl PageDto {
     /// Projects one page.
     #[must_use]
     pub fn new(page: &Page) -> Self {
+        Self::from_projection(&PageProjection::new(page, Detail::Standard))
+    }
+
+    /// Projects the fields chosen by the shared typed page policy.
+    #[must_use]
+    pub fn from_projection(page: &PageProjection<'_>) -> Self {
         Self {
             identity: IdentityDto::new(page.identity()),
             kind: page.kind().map(|kind| kind.name().to_owned()),
             language: page.language().name().to_owned(),
             signature: page.signature().map(Signature::text),
             tokens: page
-                .signature()
-                .map(SignatureTokenDto::all)
-                .unwrap_or_default(),
+                .signature_tokens()
+                .included()
+                .unwrap_or_default()
+                .iter()
+                .map(SignatureTokenDto::new)
+                .collect(),
             prose: page
                 .prose()
+                .included()
+                .unwrap_or_default()
                 .iter()
                 .map(|block| match block {
                     Prose::Text(text) | Prose::Code(text) | Prose::Link { label: text, .. } => {
@@ -456,6 +468,8 @@ impl PageDto {
                 .collect(),
             members: page
                 .members()
+                .included()
+                .unwrap_or_default()
                 .iter()
                 .map(|group| MemberGroupDto {
                     kind: group.kind().name().to_owned(),
@@ -480,6 +494,8 @@ impl PageDto {
                 .collect(),
             relations: page
                 .relations()
+                .included()
+                .unwrap_or_default()
                 .iter()
                 .map(|group| RelationGroupDto {
                     label: group.label().as_str().to_owned(),
@@ -490,8 +506,8 @@ impl PageDto {
                         .collect(),
                 })
                 .collect(),
-            source: source_dto(page.source()),
-            source_fault: page.source().fault().map(FaultDto::new),
+            source: page.source().included().and_then(source_dto),
+            source_fault: page.source_fault().map(FaultDto::new),
             notes: page.notes().iter().map(FaultDto::new).collect(),
         }
     }

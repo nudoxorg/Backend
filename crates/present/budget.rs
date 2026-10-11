@@ -10,13 +10,12 @@ use serde::Serialize;
 use serde_json::Value;
 use std::io::{self, Write};
 
-use crate::Answer;
 use crate::dto::{
     CapabilitiesDto, CoverageDto, FaultDto, IdentityDto, OutlineDto, OutlineNodeDto, PageDto,
     ProductDto, ProductIndexSearchPageDto, ProductRecordDto, RecordDto, RecordListDto, ShelfDto,
     ShelfEntryDto, StatusDto,
 };
-use crate::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand};
+use crate::{Affordance, Answer, Cause, CauseSlug, Fault, FaultSlug, Operand, PageProjection};
 
 /// Bytes-per-token ratio used for a stable, provider-independent estimate.
 ///
@@ -37,9 +36,13 @@ pub const MAX_RESPONSE_BUDGET_BYTES: usize = 256 * 1024;
 pub const MAX_PREVIEW_TEXT_BYTES: usize = 16 * 1024;
 
 /// How much detail a caller requests from a presentation answer.
+///
+/// Declaration page text and JSON share this field policy. Other answer
+/// variants retain their existing structured projection and text rendering.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Detail {
-    /// Keep identity, status, coverage, and short row summaries.
+    /// Keep identity, status, coverage, and short row summaries. A declaration
+    /// page retains its signature and actual source/section faults.
     #[default]
     Summary,
     /// Keep the normal typed DTO, subject to the byte budget.
@@ -165,12 +168,7 @@ pub fn encode_answer(
                 answer.kind(),
                 detail,
                 next_cursor,
-                SummaryPageDto {
-                    identity: IdentityDto::new(page.identity()),
-                    kind: page.kind().map(|kind| kind.name().to_owned()),
-                    language: page.language().name().to_owned(),
-                    signature: page.signature().map(crate::signature::Signature::text),
-                },
+                SummaryPageDto::new(&PageProjection::new(page, detail)),
                 budget,
             ),
             Answer::Records(list) => {
@@ -294,7 +292,7 @@ pub fn encode_answer(
             answer.kind(),
             detail,
             next_cursor,
-            PageDto::new(page),
+            PageDto::from_projection(&PageProjection::new(page, detail)),
             budget,
         ),
         Answer::Records(list) => encode_typed(
@@ -514,6 +512,23 @@ struct SummaryPageDto {
     language: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_fault: Option<FaultDto>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    notes: Vec<FaultDto>,
+}
+
+impl SummaryPageDto {
+    fn new(page: &PageProjection<'_>) -> Self {
+        Self {
+            identity: IdentityDto::new(page.identity()),
+            kind: page.kind().map(|kind| kind.name().to_owned()),
+            language: page.language().name().to_owned(),
+            signature: page.signature().map(crate::signature::Signature::text),
+            source_fault: page.source_fault().map(FaultDto::new),
+            notes: page.notes().iter().map(FaultDto::new).collect(),
+        }
+    }
 }
 
 #[derive(Serialize)]

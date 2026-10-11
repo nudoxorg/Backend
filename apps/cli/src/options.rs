@@ -125,7 +125,7 @@ impl Options {
         self.limit.as_deref()
     }
 
-    /// Returns the requested structured response projection.
+    /// Returns the requested response detail, shared by page text and JSON.
     #[must_use]
     pub const fn detail(&self) -> Detail {
         self.detail
