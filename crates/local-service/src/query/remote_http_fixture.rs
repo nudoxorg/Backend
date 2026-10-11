@@ -145,7 +145,10 @@ impl Connections {
 
 /// Explicitly stops accepting after the tested operations, then observes the
 /// owned worker's completion and panic. Dropping on assertion failure also
-/// closes the listener without leaving a detached accept loop.
+/// requests bounded accept/read handlers to close their listener. Each finish
+/// waits at most ten seconds; a join timeout leaves Drop one further wait.
+/// This owner observes completion; it cannot forcibly terminate arbitrary
+/// handler code that ignores the stop signal and its I/O deadlines.
 pub(super) struct FixtureServer<T> {
     worker: Option<JoinHandle<T>>,
     control: Arc<Control>,
@@ -263,4 +266,130 @@ where
             expected_requests,
         },
     )
+}
+
+#[test]
+fn missing_request_is_a_bounded_count_failure() {
+    let (_, server) = spawn(1, |connections| while connections.accept().is_some() {});
+    let started = Instant::now();
+    let error = server.join().expect_err("missing request must fail");
+    assert!(error.contains("expected 1 requests, observed 0"));
+    assert!(error.contains("actual request/response transcript:"));
+    assert!(started.elapsed() < SERVER_TIMEOUT);
+}
+
+#[test]
+fn worker_panic_preserves_the_completed_request_transcript() {
+    let (endpoint, server) = spawn::<(), _>(1, |connections| {
+        let mut stream = connections.accept().expect("request");
+        connections.read_request(&mut stream);
+        connections.respond(&mut stream, "200 OK", "response-sentinel");
+        panic!("worker-panic-sentinel");
+    });
+    let response = exchange(
+        &endpoint,
+        "POST /panic-sentinel HTTP/1.1\r\nContent-Length: 13\r\n\r\nbody-sentinel",
+    );
+    assert!(response.ends_with("response-sentinel"));
+    let error = server.join().expect_err("worker panic must fail");
+    assert!(error.contains("worker-panic-sentinel"));
+    assert!(error.contains("[0] POST /panic-sentinel HTTP/1.1"));
+    assert!(error.contains("request body: body-sentinel"));
+    assert!(error.contains("response-sentinel"));
+}
+
+#[test]
+fn incomplete_body_reports_fault_and_prior_completed_transcript() {
+    let (accepted, observed) = std::sync::mpsc::channel();
+    let (endpoint, server) = spawn::<(), _>(2, move |connections| {
+        while let Some(mut stream) = connections.accept() {
+            accepted.send(()).expect("accepted connection control");
+            connections.read_request(&mut stream);
+            connections.respond(&mut stream, "200 OK", "prior-response-sentinel");
+        }
+    });
+    let response = exchange(
+        &endpoint,
+        "POST /prior HTTP/1.1\r\nContent-Length: 14\r\n\r\nprior-sentinel",
+    );
+    assert!(response.ends_with("prior-response-sentinel"));
+    observed.recv_timeout(IO_TIMEOUT).expect("prior accepted");
+    let mut stream = connect(&endpoint);
+    stream
+        .write_all(b"POST /incomplete HTTP/1.1\r\nContent-Length: 100\r\n\r\npartial")
+        .expect("incomplete request");
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .expect("close incomplete body");
+    observed
+        .recv_timeout(IO_TIMEOUT)
+        .expect("incomplete accepted");
+    let error = server.join().expect_err("incomplete body must fail");
+    assert!(error.contains("POST /incomplete HTTP/1.1 after 7 of 100 bytes"));
+    assert!(error.contains("[0] POST /prior HTTP/1.1"));
+    assert!(error.contains("request body: prior-sentinel"));
+    assert!(error.contains("prior-response-sentinel"));
+}
+
+#[test]
+fn silent_body_has_a_read_deadline() {
+    let (accepted, observed) = std::sync::mpsc::channel();
+    let (endpoint, server) = spawn::<(), _>(1, move |connections| {
+        let mut stream = connections.accept().expect("request");
+        accepted.send(()).expect("accepted connection control");
+        connections.read_request(&mut stream);
+    });
+    let mut stream = connect(&endpoint);
+    stream
+        .write_all(b"POST /silent-body HTTP/1.1\r\nContent-Length: 1\r\n\r\n")
+        .expect("body without data");
+    observed
+        .recv_timeout(IO_TIMEOUT)
+        .expect("silent body accepted");
+    // Keep the write half open: the worker must use its deadline, not EOF.
+    let started = Instant::now();
+    let error = server.join().expect_err("silent body must time out");
+    assert!(error.contains("fixture HTTP body failed for POST /silent-body HTTP/1.1"));
+    assert!(started.elapsed() < SERVER_TIMEOUT);
+    drop(stream);
+}
+
+#[test]
+fn drop_stops_accept_and_observes_worker_completion() {
+    let completed = Arc::new(AtomicBool::new(false));
+    let worker_completed = completed.clone();
+    let (endpoint, server) = spawn(0, move |connections| {
+        while connections.accept().is_some() {}
+        worker_completed.store(true, Ordering::Release);
+    });
+    let started = Instant::now();
+    drop(server);
+    assert!(completed.load(Ordering::Acquire));
+    assert!(started.elapsed() < SERVER_TIMEOUT);
+    let address = endpoint.strip_prefix("http://").expect("loopback endpoint");
+    assert!(TcpStream::connect(address).is_err());
+}
+
+fn connect(endpoint: &str) -> TcpStream {
+    let address = endpoint.strip_prefix("http://").expect("loopback endpoint");
+    let stream = TcpStream::connect(address).expect("fixture connection");
+    stream
+        .set_read_timeout(Some(IO_TIMEOUT + IO_TIMEOUT))
+        .expect("control read deadline");
+    stream
+        .set_write_timeout(Some(IO_TIMEOUT))
+        .expect("control write deadline");
+    stream
+}
+
+fn exchange(endpoint: &str, request: &str) -> String {
+    let mut stream = connect(endpoint);
+    stream
+        .write_all(request.as_bytes())
+        .expect("control request");
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .expect("control response");
+    response
 }
