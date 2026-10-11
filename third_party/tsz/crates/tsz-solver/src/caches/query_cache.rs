@@ -46,7 +46,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use tsz_binder::SymbolId;
-use tsz_common::ProjectSemanticOptions;
+use tsz_common::{ExecutionCheckpoint, ProjectSemanticOptions};
 use tsz_common::interner::Atom;
 
 mod js_signature_display;
