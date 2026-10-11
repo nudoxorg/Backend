@@ -4,23 +4,17 @@ The Linux archive contains the matched `backend-cli`, `backend-mcp` and `backend
 
 ## Current diagnostic delivery
 
-The public R2 bootstrap is available at `https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install.py`. Its exact bytes remain 13,426 bytes, SHA-256 `36f0ea62e3b49cadebcef0f89e735639530c0ba1686e62d4dcbfea96294174f5`. This delivery installs historical Linux c001 (October 8) or Mac a659 (October 6) binaries. It does not contain subsequent Rust repairs or establish current native acceptance. The Linux validation boundary remains Ubuntu 24.04+ with glibc 2.39+; the tested NixOS loader was refused and the previous active pointer preserved.
+The public R2 shell launcher is available at `https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install.sh`, with the same bytes at `install-shell-7e7bedf26d431193.sh` on that release. Both anonymously returned HTTP 200 on October 11 at 05:44 UTC: 4,318 bytes, SHA-256 `7e7bedf26d43119396fc62127464a2fa4af2affdad3238cbb5e8016402c46a44`, matching `tools/package/install_diagnostic_preview.sh` integrated at `e3321a4327d8cf4cf6fee60ff0f5962d0e6d8d0a` through PR 132. The launcher downloads the unchanged 13,426-byte R2 Python bootstrap and verifies SHA-256 `36f0ea62e3b49cadebcef0f89e735639530c0ba1686e62d4dcbfea96294174f5` before execution.
 
-Download the bootstrap to a file before running it. A failed `curl | python3 -` pipeline can return success when Python receives empty stdin, and the observed RustPython shim treats stdin source as REPL fragments. Saved-file execution avoids that stdin behavior. Select a working CPython 3.8+ interpreter as `python3`, then run:
+Download the shell launcher to an owned temporary file before running it. This command preserves HTTP/download and launcher failures, and cleans up the saved script:
 
 ```sh
-(
-  umask 077
-  installer_dir=$(mktemp -d "${TMPDIR:-/tmp}/nudox-install.XXXXXXXX") || exit 1
-  trap 'rm -rf "$installer_dir"' 0
-  curl -q --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-    --output "$installer_dir/install.py" \
-    'https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install.py' &&
-  python3 "$installer_dir/install.py"
-)
+(umask 077; installer_dir=$(mktemp -d "${TMPDIR:-/tmp}/nudox-launcher.XXXXXXXX") || exit 1; trap 'rm -rf "$installer_dir"' 0; curl -q --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --output "$installer_dir/install.sh" 'https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install.sh' && sh "$installer_dir/install.sh")
 ```
 
-The reviewed launcher source is `tools/package/install_diagnostic_preview.sh`. It additionally checks the bootstrap's exact size and SHA-256, selects host CPython ahead of PATH shims, cleans up on failure/signals, and forwards `--prefix` and `--allow-downgrade` to the existing installation library. `NUDOX_INSTALL_PYTHON` can select an explicit CPython executable. This source is a publication candidate; no public shell-launcher URL is established by this document. Both paths retain the same managed aliases and print a correctly quoted PATH line when the prefix's `bin` is absent from PATH. They do not invoke `sudo` or edit shell profiles.
+The launcher requires curl with HTTPS support and CPython 3.8+, prefers a suitable host `/usr/bin/python3` ahead of PATH shims, and executes saved Python source. `NUDOX_INSTALL_PYTHON` can select an explicit CPython executable. To select a prefix or permit a guarded downgrade, append `--prefix /absolute/path` or `--allow-downgrade` to the final `sh "$installer_dir/install.sh"` invocation. The existing library creates all six `nudox`/`backend` aliases and prints a correctly quoted PATH line when the prefix's `bin` is absent from PATH. It does not invoke `sudo` or edit shell profiles. Failed download pipelines can otherwise appear successful when an interpreter receives empty input; the observed RustPython shim also misparses Python source on stdin.
+
+Root verified a fresh public shell install, repeat install, and update of the existing default `~/.local` install with exit 0, and CLI/MCP/locald help checks with exit 0. These checks installed historical Mac a659 (October 6) binaries. The same channel retains historical Linux c001 (October 8); its validation boundary remains Ubuntu 24.04+ with glibc 2.39+, while the tested NixOS loader was refused and the previous active pointer preserved. This delivery does not contain later Rust repairs or establish current Angular/index/MCP/GUI native acceptance. The October 11 publication and installation evidence is recorded in `docs/audits/diagnostic-installer-shell-publication-evidence-20261011.json`; the earlier unpublished source audit remains a historical record.
 
 ## Immutable checkpoint install
 
@@ -29,7 +23,7 @@ The candidate installer embeds a unique checkpoint tag and the SHA-256 digest of
 Once a real candidate has passed every Ubuntu native QA case and its GitHub release assets have been read-back verified, publish the exact command printed for its immutable tag. The command will have this form:
 
 ```sh
-curl -fsSL "https://github.com/nudoxorg/Backend/releases/download/${NUDOX_LINUX_TAG}/install-linux-x64.py" | python3 -
+(umask 077; installer_dir=$(mktemp -d "${TMPDIR:-/tmp}/nudox-checkpoint.XXXXXXXX") || exit 1; trap 'rm -rf "$installer_dir"' 0; curl -q --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --output "$installer_dir/install.py" "https://github.com/nudoxorg/Backend/releases/download/${NUDOX_LINUX_TAG}/install-linux-x64.py" && python3 "$installer_dir/install.py")
 ```
 
 `NUDOX_LINUX_TAG` is a placeholder until an actual candidate passes QA and is published; this example is not an installable release URL. The bootstrap uses Python 3, installs by default under `~/.local`, does not invoke `sudo`, and prints a PATH line when `~/.local/bin` is not on `PATH`. It creates both `nudox` aliases and the `backend-cli`, `backend-mcp`, and `backend-locald` compatibility names used by current MCP setup guidance. It checks the detected glibc against the package's measured minimum before installing, refuses unsupported architectures, and reports HTTP, metadata, checksum or extraction failures without claiming success.

@@ -1,0 +1,129 @@
+{
+  "schema": "nudox.diagnostic-installer-shell-publication.v1",
+  "checked_at": "2026-10-11T05:46:19.849034+00:00",
+  "canonical_source": "e3321a4327d8cf4cf6fee60ff0f5962d0e6d8d0a",
+  "launcher_source_commit": "a79ee40748190d7c4555e615886356444e161592",
+  "launcher_pr": 132,
+  "release_id": 17,
+  "tag": "nudox-diagnostic-installer-20261009-r2",
+  "draft": false,
+  "prerelease": true,
+  "assets": [
+    {
+      "role": "shell-launcher",
+      "id": 14,
+      "name": "install.sh",
+      "public_url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install.sh",
+      "bytes": 4318,
+      "sha256": "7e7bedf26d43119396fc62127464a2fa4af2affdad3238cbb5e8016402c46a44",
+      "anonymous_readback": true,
+      "http_status_lines": [
+        "HTTP/2 200"
+      ],
+      "response_date": "Sun, 11 Oct 2026 05:44:41 GMT",
+      "matches_integrated_source": true,
+      "asset_created_at": "2026-10-11T01:29:58-04:00"
+    },
+    {
+      "role": "digest-named-shell-launcher",
+      "id": 13,
+      "name": "install-shell-7e7bedf26d431193.sh",
+      "public_url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install-shell-7e7bedf26d431193.sh",
+      "bytes": 4318,
+      "sha256": "7e7bedf26d43119396fc62127464a2fa4af2affdad3238cbb5e8016402c46a44",
+      "anonymous_readback": true,
+      "http_status_lines": [
+        "HTTP/2 200"
+      ],
+      "response_date": "Sun, 11 Oct 2026 05:44:43 GMT",
+      "matches_integrated_source": true,
+      "asset_created_at": "2026-10-11T01:29:25-04:00"
+    }
+  ],
+  "existing_bootstrap_and_channel_modified": false,
+  "historical_binary_cohorts": {
+    "macos-arm64": {
+      "source": "a659d5d1819078b3c0046937191a9b54a76b1dfb",
+      "tag": "checkpoint-20261006-a659d5d181-macos-arm64",
+      "archive_sha256": "f88b841030699ae277afe697b6c92e98dfbb09a815f40388e3d2fbee0661e110"
+    },
+    "linux-x64": {
+      "source": "c0016d4f4fc9b0f0a452c7c9556954e2287948b3",
+      "tag": "checkpoint-20261008-c0016d4f4f-linux-x64",
+      "archive_sha256": "b394e10203d02898b20140f0f9f9869aa8412e6e288fb8d8e25ac01469df7a05",
+      "validation_boundary": "Ubuntu 24.04+ / glibc 2.39+; tested NixOS stub loader refused without promotion"
+    }
+  },
+  "root_fresh_shell_receipt": {
+    "original_path": "/private/tmp/nudox-root-real-installer-20261011/root-fresh-shell-receipt.json",
+    "bytes": 1167,
+    "sha256": "d6da3f21962493f9d110a16a2b0f6f4920d542160e5fe97fb9ed8cbdf3df4727",
+    "receipt": {
+      "schema": "nudox.installer-real-receipt.v1",
+      "status": "fresh-shell-install-succeeded",
+      "bootstrap_sha256": "36f0ea62e3b49cadebcef0f89e735639530c0ba1686e62d4dcbfea96294174f5",
+      "launcher_sha256": "7e7bedf26d43119396fc62127464a2fa4af2affdad3238cbb5e8016402c46a44",
+      "current": "/private/tmp/nudox-root-shell-install-20261011/lib/nudox/versions/checkpoint-20261006-a659d5d181-macos-arm64",
+      "installed": {
+        "asset": "nudox-macos-arm64-a659d5d181.tar.gz",
+        "sha256": "f88b841030699ae277afe697b6c92e98dfbb09a815f40388e3d2fbee0661e110",
+        "source_sha": "a659d5d1819078b3c0046937191a9b54a76b1dfb",
+        "tag": "checkpoint-20261006-a659d5d181-macos-arm64",
+        "version": "0.0.0"
+      },
+      "executables": {
+        "backend-cli": {
+          "sha256": "5a522b1238f52cd9d876f23b269674df4d5a36b6887f5ad5b2752088e8e8ea2d",
+          "bytes": 34398048
+        },
+        "backend-mcp": {
+          "sha256": "e342fa310db971793b68663951619009de72125952b779898388c351f0299134",
+          "bytes": 26456752
+        },
+        "backend-locald": {
+          "sha256": "668d8bff54ab60f407845cf063bbc1ac0a01855b72522544af2fea82780a6f1b",
+          "bytes": 116465904
+        }
+      },
+      "native_indexing_tested": false
+    }
+  },
+  "root_reported_actual_checks": {
+    "evidence_authority": "Root reports; this docs worker repeated anonymous reads only and launched no native process",
+    "fresh_public_shell_install": {
+      "prefix": "/private/tmp/nudox-root-shell-install-20261011",
+      "exit": 0
+    },
+    "repeat_public_shell_install": {
+      "prefix": "/private/tmp/nudox-root-shell-install-20261011",
+      "exit": 0
+    },
+    "existing_default_prefix_update": {
+      "prefix": "~/.local",
+      "exit": 0
+    },
+    "startup_help": {
+      "nudox": 0,
+      "backend-mcp": 0,
+      "backend-locald": 0
+    }
+  },
+  "regression_before_publication": {
+    "installer_controls": 56,
+    "all_packaging_controls": 201,
+    "result": "PASS",
+    "packaging_fixture_isolation": "CPython 3.12.14; per-test umask restored; temporary git -c commit.gpgsign=false wrapper for fixture commits. No persistent config edits."
+  },
+  "native_indexing_tested": false,
+  "current_source_angular_index_mcp_gui_acceptance": "UNPROVEN - current native gate in progress at this snapshot",
+  "historical_source_audit_preserved": "docs/audits/installer-recovery-source-evidence-20261011.json",
+  "publication_or_native_jobs_performed_by_this_docs_worker": false,
+  "documented_command_validation": {
+    "shell_syntax": "PASS",
+    "curl_failure_exit": 22,
+    "partial_download_executed": false,
+    "launcher_failure_exit": 7,
+    "temporary_cleanup": "PASS",
+    "transport_and_script": "Harmless local fixtures only; no new native runtime job."
+  }
+}
