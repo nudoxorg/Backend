@@ -102,6 +102,7 @@ impl<S> VectorIndex<S> {
             || facts.model() != self.base.model()
             || facts.metric() != self.base.metric()
             || facts.dimensions() != self.base.dimensions()
+            || facts.admitted_recipe() != self.facts.admitted_recipe()
         {
             return Err(Error::StaleRoot);
         }
@@ -156,6 +157,7 @@ impl<S> VectorIndex<S> {
             || facts.model() != self.base.model()
             || facts.metric() != self.base.metric()
             || facts.dimensions() != self.base.dimensions()
+            || facts.admitted_recipe() != self.facts.admitted_recipe()
         {
             return Err(Error::StaleRoot);
         }
@@ -192,6 +194,8 @@ impl VectorIndex<crate::MemorySource> {
     /// additions are already present and tombstoned rows are already absent.
     /// Borrowing those facts avoids copying coordinates or reconstructing an
     /// overlay union. Only the best `limit` scores are retained as scratch.
+    /// Facts must carry the full declared recipe admitted by
+    /// [`VectorFacts::from_recipe`]; legacy model/metric facts are insufficient.
     ///
     /// # Errors
     /// Returns a binding, recipe, dimension, coverage or resource error before
@@ -208,6 +212,7 @@ impl VectorIndex<crate::MemorySource> {
         if selected != self.binding()
             || self.facts.binding() != selected
             || query.recipe().version() != selected.recipe
+            || self.facts.admitted_recipe() != Some(query.recipe())
         {
             return Err(Error::StaleRoot);
         }
@@ -246,7 +251,10 @@ impl VectorIndex<crate::MemorySource> {
         {
             return Err(Error::SizeLimit);
         }
-        let mut candidates = Vec::<ScoredCandidate>::with_capacity(limit.min(count));
+        let mut candidates = Vec::<ScoredCandidate>::new();
+        candidates
+            .try_reserve_exact(limit.min(count))
+            .map_err(|_| Error::SizeLimit)?;
         for id in self.facts.ids() {
             let point = self.facts.encoded_point(id).ok_or(Error::MalformedInput)?;
             let score = score_admitted(self.facts.metric(), query.values(), &point);

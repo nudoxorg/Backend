@@ -361,6 +361,10 @@ fn exact_local_search_refuses_every_selected_binding_field_and_recipe_change() {
             ..recipe
         },
         EmbeddingRecipe {
+            pooling: EmbeddingPooling::LastToken,
+            ..recipe
+        },
+        EmbeddingRecipe {
             query_treatment: TreatmentVersion::from_value(b"other"),
             ..recipe
         },
@@ -437,10 +441,21 @@ fn exact_local_search_refuses_resource_limits_without_returning_a_prefix() {
         overflow.search_exact_embedding(overflow.binding(), &query, 1, Limits::default()),
         Err(Error::MalformedInput)
     );
+    let huge = Limits {
+        max_candidates: usize::MAX,
+        max_tombstones: usize::MAX,
+        max_payload_bytes: usize::MAX,
+        max_total_payload_bytes: usize::MAX,
+        max_page: usize::MAX,
+    };
+    let bounded = index
+        .search_exact_embedding(index.binding(), &query, usize::MAX, huge)
+        .expect("scratch is capped by complete actual corpus, not requested limit");
+    assert_eq!(bounded.candidates.len(), 2);
 }
 
 #[test]
-fn exact_local_search_checks_fact_metadata_and_complete_coverage() {
+fn exact_local_search_refuses_legacy_facts_and_checks_complete_coverage() {
     let recipe = recipe(Metric::EuclideanSquared, 2);
     let (state, _) = fixture(recipe, &[(1, vec![1.0, 1.0])]);
     let query = QueryVector::new(recipe, vec![0.0, 0.0]).expect("query");
@@ -452,11 +467,12 @@ fn exact_local_search_checks_fact_metadata_and_complete_coverage() {
     )
     .expect("source");
     for (model, metric) in [
+        (recipe.model, recipe.metric),
         (ModelVersion::from_value(b"wrong model"), recipe.metric),
         (recipe.model, Metric::NegativeDot),
     ] {
-        // The legacy facts constructor can name a recipe binding separately
-        // from model/metric metadata. The exact route must still reject it.
+        // Matching model/metric/dimension and even a claimed recipe binding
+        // cannot substitute for full stored-recipe admission.
         let facts = VectorFacts::new(state.clone(), model, metric, 2).expect("legacy facts");
         let base =
             AnnBase::from_facts(&facts, SearchQuality::Exact, Limits::default()).expect("base");
@@ -468,8 +484,16 @@ fn exact_local_search_checks_fact_metadata_and_complete_coverage() {
                 1,
                 Limits::default()
             ),
-            Err(Error::DimensionMismatch)
+            Err(Error::StaleRoot)
         );
+        if model == recipe.model && metric == recipe.metric {
+            assert!(
+                inconsistent
+                    .search_embedding(&query, 1, Limits::default())
+                    .is_ok(),
+                "legacy ANN remains usable"
+            );
+        }
     }
     let coverage = backend_version::CoverageWitness::closed_relation(
         backend_version::ClosedRelationScope::from_scope_root(
@@ -507,4 +531,142 @@ fn exact_local_search_checks_fact_metadata_and_complete_coverage() {
         closed.search_exact_embedding(binding, &query, 1, Limits::default()),
         Err(Error::IncompleteCoverage)
     );
+}
+
+fn rebind_recipe(state: &CandidateState, recipe: EmbeddingRecipe) -> CandidateState {
+    CandidateState::new(
+        Binding {
+            recipe: recipe.version(),
+            ..state.binding()
+        },
+        state.coverage(),
+        state
+            .iter()
+            .map(|(id, payload)| (id, payload.to_vec()))
+            .collect(),
+        Limits::default(),
+    )
+    .expect("rebound recipe")
+}
+
+#[test]
+fn full_recipe_facts_admit_stored_normalization_and_encoding_once() {
+    let plain = recipe(Metric::CosineDistance, 2);
+    let unit = EmbeddingRecipe {
+        normalization: EmbeddingNormalization::UnitL2,
+        ..plain
+    };
+    for values in [vec![2.0, 0.0], vec![0.0, 0.0]] {
+        let (state, _) = fixture(plain, &[(1, values)]);
+        assert_eq!(
+            VectorFacts::from_recipe(rebind_recipe(&state, unit), unit),
+            Err(Error::MalformedInput)
+        );
+    }
+    let (state, _) = fixture(plain, &[(1, vec![0.6, 0.8])]);
+    let facts = VectorFacts::from_recipe(rebind_recipe(&state, unit), unit).expect("unit facts");
+    let base = AnnBase::from_facts(&facts, SearchQuality::Exact, Limits::default()).expect("base");
+    let source = MemorySource::new(
+        facts.binding(),
+        facts.coverage(),
+        facts.ids().collect(),
+        Limits::default(),
+    )
+    .expect("source");
+    let index = VectorIndex::new(base, facts, source).expect("index");
+    assert_exact(
+        &index,
+        unit,
+        &[0.0, 1.0],
+        &[(1, vec![0.6, 0.8])],
+        1,
+        Limits::default(),
+    );
+    let quantized = EmbeddingRecipe {
+        encoding: EmbeddingEncoding::SignedInt8,
+        ..plain
+    };
+    assert_eq!(
+        VectorFacts::from_recipe(rebind_recipe(&state, quantized), quantized),
+        Err(Error::MalformedInput),
+        "canonical facts contain float32, not signed-int8"
+    );
+}
+
+#[test]
+fn full_recipe_proof_survives_overlay_and_rebuild_and_cannot_be_downgraded() {
+    let recipe = recipe(Metric::EuclideanSquared, 2);
+    let (state, index) = fixture(recipe, &[(1, vec![1.0, 1.0])]);
+    let delta = state
+        .prepare_delta(vec![CandidateChange::Upsert {
+            id: CandidateId(1),
+            payload: VectorPoint::new(CandidateId(1), vec![0.0, 0.0])
+                .expect("replacement")
+                .to_payload(),
+        }])
+        .expect("delta");
+    let target = state.apply_delta(&delta).expect("target state");
+    let legacy =
+        VectorFacts::new(target.clone(), recipe.model, recipe.metric, 2).expect("legacy target");
+    assert_eq!(
+        index.advance(&delta, legacy.clone(), OverlayLimits::default()),
+        Err(Error::StaleRoot)
+    );
+    assert_eq!(
+        index.rebuild(legacy, OverlayLimits::default()),
+        Err(Error::StaleRoot)
+    );
+    let admitted = VectorFacts::from_recipe(target.clone(), recipe).expect("full target recipe");
+    let outcome = index
+        .advance(&delta, admitted.clone(), OverlayLimits::default())
+        .expect("advance");
+    let RefreshOutcome::Advanced(advanced) = outcome else {
+        assert!(matches!(outcome, RefreshOutcome::Advanced(_)));
+        return;
+    };
+    assert_exact(
+        &advanced,
+        recipe,
+        &[0.0, 0.0],
+        &[(1, vec![0.0, 0.0])],
+        1,
+        Limits::default(),
+    );
+    let rebuilt = advanced
+        .rebuild(admitted, OverlayLimits::default())
+        .expect("rebuild");
+    assert!(rebuilt.overlay().is_none());
+    assert_exact(
+        &rebuilt,
+        recipe,
+        &[0.0, 0.0],
+        &[(1, vec![0.0, 0.0])],
+        1,
+        Limits::default(),
+    );
+    for changed in [
+        EmbeddingRecipe {
+            pooling: EmbeddingPooling::LastToken,
+            ..recipe
+        },
+        EmbeddingRecipe {
+            tokenizer: TokenizerVersion::from_value(b"changed tokenizer"),
+            ..recipe
+        },
+        EmbeddingRecipe {
+            document_treatment: TreatmentVersion::from_value(b"changed treatment"),
+            ..recipe
+        },
+    ] {
+        let changed = VectorFacts::from_recipe(rebind_recipe(&target, changed), changed)
+            .expect("changed recipe facts");
+        assert_eq!(
+            index.advance(&delta, changed.clone(), OverlayLimits::default()),
+            Err(Error::StaleRoot)
+        );
+        assert_eq!(
+            index.rebuild(changed, OverlayLimits::default()),
+            Err(Error::StaleRoot)
+        );
+    }
 }

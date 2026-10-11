@@ -276,6 +276,7 @@ pub struct VectorFacts {
     model: ModelVersion,
     metric: Metric,
     dimensions: usize,
+    admitted_recipe: Option<EmbeddingRecipe>,
 }
 
 /// Borrowed coordinates whose canonical payload, dimension, and finite-value
@@ -349,7 +350,10 @@ impl<'a> AdmittedEncodedPoint<'a> {
 }
 
 impl VectorFacts {
-    /// Builds exact facts only when the durable relation is bound to this complete recipe.
+    /// Admits a full recipe and validates its stored float32 coordinates once.
+    ///
+    /// This establishes the declared recipe, payload shape and normalization;
+    /// it does not attest which inference process produced the coordinates.
     ///
     /// # Errors
     /// Returns a typed binding, coverage, coordinate, dimension, or size error.
@@ -357,12 +361,32 @@ impl VectorFacts {
         if state.binding().recipe != recipe.version() {
             return Err(Error::StaleRoot);
         }
+        if recipe.encoding != EmbeddingEncoding::Float32 {
+            return Err(Error::MalformedInput);
+        }
         let dimensions = usize::try_from(recipe.dimensions.get()).map_err(|_| Error::SizeLimit)?;
-        Self::new(state, recipe.model, recipe.metric, dimensions)
+        let mut facts = Self::new(state, recipe.model, recipe.metric, dimensions)?;
+        if recipe.normalization == EmbeddingNormalization::UnitL2 {
+            for id in facts.ids() {
+                let point = facts.encoded_point(id).ok_or(Error::MalformedInput)?;
+                let squared_norm = point
+                    .coordinates()
+                    .map(|value| f64::from(value).powi(2))
+                    .sum::<f64>();
+                if (squared_norm - 1.0).abs() > 1.0e-4 {
+                    return Err(Error::MalformedInput);
+                }
+            }
+        }
+        facts.admitted_recipe = Some(recipe);
+        Ok(facts)
     }
 
     /// Validates every relation payload once and binds the model/metric
     /// recipe to the exact relation root.
+    ///
+    /// This legacy constructor does not admit a full embedding recipe. Use
+    /// `from_recipe` for complete local semantic search.
     ///
     /// # Errors
     ///
@@ -391,7 +415,13 @@ impl VectorFacts {
             model,
             metric,
             dimensions,
+            admitted_recipe: None,
         })
+    }
+
+    /// Full declared recipe admitted by `from_recipe`, absent for legacy facts.
+    pub(super) const fn admitted_recipe(&self) -> Option<EmbeddingRecipe> {
+        self.admitted_recipe
     }
 
     /// Returns the exact relation binding.
