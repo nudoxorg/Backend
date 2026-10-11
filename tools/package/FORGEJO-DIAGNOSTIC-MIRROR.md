@@ -15,7 +15,10 @@ The existing public repository is `philocalyst/Backend` on
 `https://dev.nudox.org/git/`. Canonical `Nudox/Backend` is private. R2's public
 entrypoint, digest-named bootstrap, channel, both platform libraries and Linux
 manifest were anonymously read back on October 11 and retained their exact
-published bytes. Archive bytes and real installation remain separate checks.
+published bytes. The shell launcher was added to R2 on October 11 and both
+named shell URLs were independently read back anonymously at 05:44 UTC.
+Each returned HTTP 200 and the integrated source's exact 4,318 bytes/SHA-256
+`7e7bedf26d43119396fc62127464a2fa4af2affdad3238cbb5e8016402c46a44`.
 
 Root's publication destinations are:
 
@@ -28,6 +31,12 @@ Root's publication destinations are:
   `forgejo-preview-channel.json` bytes as `preview-channel.json`. The same
   bootstrap bytes are published as `install.py`. R1 remains a separate
   immutable release and its older library asset is unchanged.
+* Published shell assets on R2: `install.sh` (asset 14) and
+  `install-shell-7e7bedf26d431193.sh` (asset 13), both 4,318 bytes/SHA-256
+  `7e7bedf26d43119396fc62127464a2fa4af2affdad3238cbb5e8016402c46a44`.
+  Launcher source commit `a79ee40748190d7c4555e615886356444e161592` was
+  integrated through PR 132 at `e3321a4327d8cf4cf6fee60ff0f5962d0e6d8d0a`.
+  The existing Python bootstrap, channel and platform identities were retained.
 * Mac tag: `checkpoint-20261006-a659d5d181-macos-arm64`. Upload unchanged
   `install-macos-arm64-82f71f98a05a2b13.py` and
   `nudox-macos-arm64-a659d5d181.tar.gz` (70,309,994 bytes, SHA-256
@@ -56,15 +65,16 @@ checked against the installed Forgejo 15.0.9 Swagger schema and upstream
 `models/repo/attachment.go`. Named release downloads call `ServeAttachment`
 directly. The installed local attachment storage needs no external redirect.
 The documented v15 attachment limit defaults to 2,048 MiB and the inspected
-configuration has no override. Actual publication/downloads remain Root's gate.
+configuration has no override. Root performed the shell publication and
+anonymous readbacks; this documentation/evidence update changes no release.
 Transport uses a 120-second socket timeout per blocking read, with no overall
 download deadline; slow successful reads can prolong installation. No instant
 installation or bounded wall-clock download claim is made.
 
 Use saved-file execution: a curl failure can otherwise produce empty Python
 stdin and a successful final pipeline status. The observed RustPython PATH
-shim also misparses source on stdin. `install_diagnostic_preview.sh` is a
-portable shell publication candidate that downloads the exact R2 bootstrap,
+shim also misparses source on stdin. Published `install_diagnostic_preview.sh`
+is the portable shell source that downloads the exact R2 bootstrap,
 verifies its size/hash and selects CPython 3.8+ before executing the saved
 file. Prefer host `/usr/bin/python3` when suitable; an explicit
 `NUDOX_INSTALL_PYTHON` override must pass the same implementation/stdlib probe.
@@ -75,14 +85,11 @@ private temporary directory on exit/signals. It forwards `--prefix` and
 the unchanged installer retains its full ownership/lease, archive/inventory,
 existing-install checks, startup probes and atomic pointer publication.
 
-When Root has published and independently read back the shell asset, its user
-command must also download before execution; `curl | sh` can report success
-after a failed download because an empty shell script succeeds. Use this
-one-line form, replacing `PUBLISHED_SHELL_URL` with the verified HTTPS asset
-URL. This placeholder is not an installable URL:
+The public user command also downloads before execution, preserving a curl
+failure instead of running an empty shell script:
 
 ```sh
-(umask 077; installer_dir=$(mktemp -d "${TMPDIR:-/tmp}/nudox-launcher.XXXXXXXX") || exit 1; trap 'rm -rf "$installer_dir"' 0; curl -q --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --output "$installer_dir/install.sh" 'PUBLISHED_SHELL_URL' && sh "$installer_dir/install.sh")
+(umask 077; installer_dir=$(mktemp -d "${TMPDIR:-/tmp}/nudox-launcher.XXXXXXXX") || exit 1; trap 'rm -rf "$installer_dir"' 0; curl -q --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --output "$installer_dir/install.sh" 'https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install.sh' && sh "$installer_dir/install.sh")
 ```
 
 The command preserves curl or launcher failures through its final exit status,
@@ -96,7 +103,13 @@ row limit. Linux c001 is an October 8 GNU diagnostic trio requiring glibc
 control timed out and whole-application acceptance remains open. The channel
 retains these exact limitations.
 
-Validation is Python/shell-only. Actual stdin/file subprocesses use fixture
+The 56 installer controls and broader 201 package controls passed before
+publication. Their stdin/file subprocesses use fixture
 HTTPS responses and harmless shell executables, while invoking the unchanged
-platform installation library normally. They are not real public download,
-native binary, GUI, indexing, or production acceptance evidence.
+platform installation library normally. These fixtures are distinct from
+Root's successful actual fresh/repeat public shell installs, default-prefix
+update and CLI/MCP/locald help probes on the historical Mac a659 archive.
+The receipt explicitly records `native_indexing_tested: false`. Current
+Angular/index/MCP/GUI native acceptance remains unproven. The new audit is
+`docs/audits/diagnostic-installer-shell-publication-evidence-20261011.json`;
+the earlier source audit's unpublished state is preserved as historical evidence.
