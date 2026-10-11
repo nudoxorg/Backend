@@ -1853,15 +1853,17 @@ impl fmt::Display for RemoteConfigError {
 impl std::error::Error for RemoteConfigError {}
 
 #[cfg(test)]
+#[path = "remote_http_fixture.rs"]
+mod remote_http_fixture;
+
+#[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
+    use super::remote_http_fixture::{self, FixtureServer};
     use super::super::{CoverageBasis, Freshness, LocalQuery};
     use super::*;
     use backend_engine::{CapabilityFamily, CapabilityLifecycle, CapabilityUnavailable, Row};
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
     use std::process::Command;
-    use std::thread;
 
     const CONFIG: [(&str, &str); 6] = [
         (QDRANT_ENDPOINT_ENV, "https://qdrant.invalid"),
@@ -3127,17 +3129,13 @@ for identity in items:
         carries_vector: bool,
     }
 
-    fn serve_resident(requests: usize) -> (String, thread::JoinHandle<Vec<ResidentEvent>>) {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("fixture listener");
-        let address = listener.local_addr().expect("fixture address");
-        let metadata =
-            r#"{"result":{"config":{"params":{"vectors":{"size":2,"distance":"Cosine"}}}}}"#;
-        let server = thread::spawn(move || {
+    fn serve_resident(requests: usize) -> (String, FixtureServer<Vec<ResidentEvent>>) {
+        let metadata = r#"{"result":{"config":{"params":{"vectors":{"size":2,"distance":"Cosine"}}}}}"#;
+        remote_http_fixture::spawn(requests, move |connections| {
             let mut stored = std::collections::HashMap::<String, serde_json::Value>::new();
             let mut events = Vec::with_capacity(requests);
-            for _ in 0..requests {
-                let (mut stream, _) = listener.accept().expect("fixture connection");
-                let request = read_request(&mut stream);
+            while let Some(mut stream) = connections.accept() {
+                let request = connections.read_request(&mut stream);
                 let header_end = request
                     .windows(4)
                     .position(|window| window == b"\r\n\r\n")
@@ -3149,8 +3147,7 @@ for identity in items:
                 let (kind, points, response) = if first.starts_with("GET ") {
                     ("get", 0, metadata.to_owned())
                 } else if first.starts_with("PUT ") && first.contains("/points") {
-                    let value: serde_json::Value =
-                        serde_json::from_slice(body).expect("upsert JSON");
+                    let value: serde_json::Value = serde_json::from_slice(body).expect("upsert JSON");
                     let points = value["points"].as_array().cloned().unwrap_or_default();
                     let count = points.len();
                     for point in points {
@@ -3163,8 +3160,7 @@ for identity in items:
                         r#"{"result":{"status":"completed"}}"#.to_owned(),
                     )
                 } else if first.contains("/points/batch") {
-                    let value: serde_json::Value =
-                        serde_json::from_slice(body).expect("payload JSON");
+                    let value: serde_json::Value = serde_json::from_slice(body).expect("payload JSON");
                     let mut count = 0_usize;
                     for operation in value["operations"].as_array().into_iter().flatten() {
                         let payload = operation["set_payload"]["payload"].clone();
@@ -3185,8 +3181,7 @@ for identity in items:
                         r#"{"result":{"status":"completed"}}"#.to_owned(),
                     )
                 } else if first.contains("/points/count") {
-                    let value: serde_json::Value =
-                        serde_json::from_slice(body).expect("count JSON");
+                    let value: serde_json::Value = serde_json::from_slice(body).expect("count JSON");
                     let matched = stored
                         .values()
                         .filter(|point| payload_matches_filter(point, &value["filter"]))
@@ -3197,8 +3192,7 @@ for identity in items:
                         serde_json::json!({"result": {"count": matched}}).to_string(),
                     )
                 } else if first.contains("/points/delete") {
-                    let value: serde_json::Value =
-                        serde_json::from_slice(body).expect("delete JSON");
+                    let value: serde_json::Value = serde_json::from_slice(body).expect("delete JSON");
                     let ids = value["points"].as_array().cloned().unwrap_or_default();
                     for id in &ids {
                         stored.remove(id.as_str().expect("point id"));
@@ -3209,8 +3203,7 @@ for identity in items:
                         r#"{"result":{"status":"completed"}}"#.to_owned(),
                     )
                 } else if first.contains("/points") {
-                    let value: serde_json::Value =
-                        serde_json::from_slice(body).expect("retrieve JSON");
+                    let value: serde_json::Value = serde_json::from_slice(body).expect("retrieve JSON");
                     let points = value["ids"]
                         .as_array()
                         .into_iter()
@@ -3238,16 +3231,10 @@ for identity in items:
                     bytes: body.len(),
                     carries_vector,
                 });
-                write!(
-                    stream,
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
-                    response.len()
-                )
-                .expect("fixture response");
+                connections.respond(&mut stream, "200 OK", &response);
             }
             events
-        });
-        (format!("http://{address}"), server)
+        })
     }
 
     fn payload_matches_filter(point: &serde_json::Value, filter: &serde_json::Value) -> bool {
@@ -3265,7 +3252,7 @@ for identity in items:
     fn qdrant_fixture(
         expected_points: usize,
         selected_point: usize,
-    ) -> (String, thread::JoinHandle<Vec<String>>) {
+    ) -> (String, FixtureServer<Vec<String>>) {
         serve_projection(ProjectionScript {
             requests: 7,
             expected_points,
@@ -3287,17 +3274,13 @@ for identity in items:
         fail_query: bool,
     }
 
-    fn serve_projection(script: ProjectionScript) -> (String, thread::JoinHandle<Vec<String>>) {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("fixture listener");
-        let address = listener.local_addr().expect("fixture address");
-        let metadata =
-            r#"{"result":{"config":{"params":{"vectors":{"size":2,"distance":"Cosine"}}}}}"#;
-        let server = thread::spawn(move || {
+    fn serve_projection(script: ProjectionScript) -> (String, FixtureServer<Vec<String>>) {
+        let metadata = r#"{"result":{"config":{"params":{"vectors":{"size":2,"distance":"Cosine"}}}}}"#;
+        remote_http_fixture::spawn(script.requests, move |connections| {
             let mut lines = Vec::with_capacity(script.requests);
             let mut captured = Vec::new();
-            for _ in 0..script.requests {
-                let (mut stream, _) = listener.accept().expect("fixture connection");
-                let request = read_request(&mut stream);
+            while let Some(mut stream) = connections.accept() {
+                let request = connections.read_request(&mut stream);
                 let header = std::str::from_utf8(&request).expect("HTTP header");
                 let first = header.lines().next().expect("request line").to_owned();
                 lines.push(first.clone());
@@ -3309,8 +3292,8 @@ for identity in items:
                 let body = if first.starts_with("GET ") {
                     metadata.to_owned()
                 } else if first.starts_with("PUT ") {
-                    let value: serde_json::Value = serde_json::from_slice(&request[body_start..])
-                        .expect("upsert request JSON");
+                    let value: serde_json::Value =
+                        serde_json::from_slice(&request[body_start..]).expect("upsert request JSON");
                     captured = value["points"]
                         .as_array()
                         .map(|points| {
@@ -3359,16 +3342,10 @@ for identity in items:
                 } else {
                     "200 OK"
                 };
-                write!(
-                    stream,
-                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                )
-                .expect("fixture response");
+                connections.respond(&mut stream, status, &body);
             }
             lines
-        });
-        (format!("http://{address}"), server)
+        })
     }
 
     fn request_kinds(lines: &[String]) -> Vec<&'static str> {
@@ -3396,26 +3373,4 @@ for identity in items:
             .collect()
     }
 
-    fn read_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
-        let mut request = Vec::new();
-        let mut byte = [0_u8; 1];
-        while !request.ends_with(b"\r\n\r\n") {
-            stream.read_exact(&mut byte).expect("request header");
-            request.push(byte[0]);
-        }
-        let header = std::str::from_utf8(&request).expect("HTTP header");
-        let content_length = header
-            .lines()
-            .find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                name.eq_ignore_ascii_case("content-length")
-                    .then_some(value.trim())
-            })
-            .and_then(|length| length.parse::<usize>().ok())
-            .unwrap_or(0);
-        let mut body = vec![0_u8; content_length];
-        stream.read_exact(&mut body).expect("request body");
-        request.extend_from_slice(&body);
-        request
-    }
 }
