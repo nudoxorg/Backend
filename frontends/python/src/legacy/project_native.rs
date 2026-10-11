@@ -421,7 +421,9 @@ pub(super) fn analyze(
             let mut unavailable_report = CheckerReport::default();
             if compiled_sources.contains(source.relative_path) {
                 let mut gap_sites = BTreeSet::new();
-                for import in &imports[source.relative_path] {
+                let source_imports = &imports[source.relative_path];
+                let mut unavailable_imports = Vec::with_capacity(source_imports.len());
+                for import in source_imports {
                     checkpoint(control)?;
                     if compiled_imports.contains_key(&(
                         source.relative_path,
@@ -435,13 +437,14 @@ pub(super) fn analyze(
                             kind: PythonProjectCoverageGapKind::UnavailableCompiledImport,
                         });
                     }
-                    unavailable_report.imports.push(ImportResolution {
+                    unavailable_imports.push(ImportResolution {
                         binding: import.binding.clone(),
                         module: import.module.as_str().to_owned(),
                         module_span: import.span,
                         resolved: false,
                     });
                 }
+                unavailable_report.imports = unavailable_imports.into_boxed_slice();
             }
             modules.insert(source.relative_path.into(), unavailable_report);
             if !compiled_sources.contains(source.relative_path) {
