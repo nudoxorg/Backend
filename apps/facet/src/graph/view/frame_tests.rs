@@ -64,6 +64,259 @@ fn native_secondary_find_edits_locally_without_declaration_activation(cx: &mut T
     }
 }
 
+
+// These targets are read from the committed native tree, never semantic
+// callbacks. Bounds, role, action and authored identity must agree.
+fn tour_button(cx: &mut VisualTestContext, id: gpui::ElementId, label: &str)
+    -> (gpui::accesskit::NodeId, gpui::Point<Pixels>) {
+    cx.update(|window, _| {
+        let tree = window.a11y_tree().expect("forced tour tree");
+        let matches = tree.nodes.iter().filter(|(_, node)| node.label() == Some(label)).collect::<Vec<_>>();
+        assert_eq!(matches.len(), 1, "one authored tour control: {label}");
+        let (target, node) = matches[0];
+        assert_eq!(node.role(), gpui::Role::Button);
+        assert!(!node.is_disabled() && node.supports_action(gpui::AccessibleAction::Click));
+        let json: serde_json::Value = serde_json::from_str(&window.debug_a11y_tree_json().expect("native identity")).expect("tree JSON");
+        let ids = json["nodes"].as_object().expect("nodes").values()
+            .filter(|node| node["element_id"].as_str() == Some(format!("{id:?}").as_str())).collect::<Vec<_>>();
+        assert_eq!(ids.len(), 1, "one authored native ID");
+        assert_eq!(ids[0]["aria"]["label"].as_str(), Some(label));
+        let actual = gpui::accesskit::NodeId(ids[0]["accesskit_id"].as_str().expect("AccessKit id").parse().expect("node id"));
+        assert_eq!(actual, *target, "authored geometry and actual action are one target");
+        let bounds = window.a11y_node_bounds(*target).expect("native control bounds");
+        assert!(bounds.size.width > px(0.0) && bounds.size.height > px(0.0));
+        (*target, bounds.center())
+    })
+}
+fn tour_ax_click(cx: &mut VisualTestContext, target: gpui::accesskit::NodeId) {
+    cx.update(|window, cx| window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+        action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT,
+        target_node: target, data: None,
+    }, cx));
+}
+
+#[gpui::test]
+fn retained_tour_buttons_share_native_pointer_keyboard_and_accessibility_without_open_authority(cx: &mut TestAppContext) {
+    use std::{cell::Cell, rc::Rc};
+    cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
+    for transport in ["pointer", "keyboard", "accessibility"] {
+        let scene = scene();
+        let expected = Discovery::from_prepared(Discovery::prepare(&scene.world)).package_tour(1).expect("real tour").clone();
+        assert!(expected.shown() && expected.stops.len() > 1);
+        let opened = Rc::new(Cell::new(0));
+        let (graph, cx) = cx.add_window_view(|window, cx| {
+            let mut graph = GraphView::with_scene(scene.clone(), Start::Focus(3), window, cx);
+            graph.on_interaction_admission(Rc::new(|phase, _| phase == super::InteractionPhase::LocalFocus));
+            let opened = opened.clone();
+            graph.on_open(Rc::new(move |_, _, _| opened.set(opened.get() + 1)));
+            graph
+        });
+        cx.update(|window, _| window.set_a11y_forced(true));
+        settle(cx);
+        let label = format!("Start a guided tour of {}", scene.world.packages[1].name);
+        let (start, at) = tour_button(cx, "graph-start-here".into(), &label);
+        match transport {
+            "pointer" => {
+                cx.simulate_mouse_down(at, gpui::MouseButton::Left, gpui::Modifiers::none());
+                assert_eq!(graph.read_with(cx, |graph, _| graph.tour_stop()), None, "press alone never starts a tour");
+                cx.simulate_mouse_up(at, gpui::MouseButton::Left, gpui::Modifiers::none());
+            }
+            "keyboard" => {
+                cx.update(|window, cx| {
+                    let graph = graph.read(cx);
+                    assert!(window.is_focus_handle_mounted(&graph.tour_focus[0]));
+                    graph.tour_focus[0].focus(window, cx);
+                });
+                cx.simulate_keystrokes("enter");
+            }
+            _ => tour_ax_click(cx, start),
+        }
+        settle(cx);
+        assert_eq!(graph.read_with(cx, |graph, _| graph.tour_stop()), Some(expected.stops[0].node), "{transport}");
+        cx.update(|window, cx| {
+            let graph = graph.read(cx);
+            window.focus(&graph.focus_handle, cx);
+            assert_eq!(graph.step_native(true, window, cx), super::NativeFocusStep::Moved);
+            assert!(graph.tour_focus[1].is_focused(window), "Tab enters the current tour stop without opening Find");
+            assert!(!graph.find_open() && graph.focused().is_none());
+        });
+        let label = format!("Tour stop 2: {}", scene.world.name_of(expected.stops[1].node));
+        let (second, at) = tour_button(cx, ("graph-tour-stop", 1usize).into(), &label);
+        match transport {
+            "pointer" => {
+                cx.simulate_mouse_down(at, gpui::MouseButton::Left, gpui::Modifiers::none());
+                assert_eq!(graph.read_with(cx, |graph, _| graph.tour_stop()), Some(expected.stops[0].node));
+                cx.simulate_mouse_up(at, gpui::MouseButton::Left, gpui::Modifiers::none());
+            }
+            "keyboard" => {
+                cx.update(|window, cx| graph.read(cx).tour_focus[2].focus(window, cx));
+                cx.simulate_keystrokes("space");
+            }
+            _ => tour_ax_click(cx, second),
+        }
+        settle(cx);
+        assert_eq!(graph.read_with(cx, |graph, _| graph.tour_stop()), Some(expected.stops[1].node), "{transport}");
+        cx.update(|window, cx| window.focus(&graph.focus_handle(cx), cx));
+        cx.simulate_keystrokes("enter");
+        assert_eq!(opened.get(), 0, "retained tour navigation grants no declaration-open capability");
+        assert_eq!(graph.read_with(cx, |graph, _| graph.focused()), None);
+    }
+}
+
+#[gpui::test]
+fn retained_tour_keys_work_offline_but_retire_with_the_reading_visit(cx: &mut TestAppContext) {
+    use std::{cell::Cell, rc::Rc};
+    cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
+    let scene = scene();
+    let expected = Discovery::from_prepared(Discovery::prepare(&scene.world)).package_tour(1).expect("tour").clone();
+    let allowed = Rc::new(Cell::new(true));
+    let (graph, cx) = cx.add_window_view(|window, cx| {
+        let mut graph = GraphView::with_scene(scene, Start::Focus(3), window, cx);
+        let allowed = allowed.clone();
+        graph.on_interaction_admission(Rc::new(move |phase, _| phase == super::InteractionPhase::LocalFocus && allowed.get()));
+        graph
+    });
+    settle(cx);
+    cx.update(|window, cx| window.focus(&graph.focus_handle(cx), cx));
+    for (key, stop) in [("t", 0), ("right", 1), ("left", 0), ("space", 1)] {
+        cx.simulate_keystrokes(key); settle(cx);
+        assert_eq!(graph.read_with(cx, |graph, _| graph.tour_stop()), Some(expected.stops[stop].node), "{key}");
+    }
+    allowed.set(false);
+    cx.simulate_keystrokes("left"); cx.simulate_keystrokes("escape");
+    assert_eq!(graph.read_with(cx, |graph, _| graph.tour_stop()), Some(expected.stops[1].node), "covered or retired visit cannot navigate the retained tour");
+    allowed.set(true);
+    cx.simulate_keystrokes("escape");
+    assert_eq!(graph.read_with(cx, |graph, _| graph.tour_stop()), None);
+}
+
+#[gpui::test]
+fn committed_tour_controls_cannot_adopt_a_new_visit_stop_or_scene(cx: &mut TestAppContext) {
+    use std::{cell::Cell, rc::Rc};
+    cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
+    let scene = scene();
+    let expected = Discovery::from_prepared(Discovery::prepare(&scene.world)).package_tour(1).expect("tour").clone();
+    let allowed = Rc::new(Cell::new(true));
+    let (graph, cx) = cx.add_window_view(|window, cx| {
+        let mut graph = GraphView::with_scene(scene.clone(), Start::Focus(3), window, cx);
+        let allowed = allowed.clone();
+        graph.on_interaction_admission(Rc::new(move |phase, _| phase == super::InteractionPhase::LocalFocus && allowed.get()));
+        graph
+    });
+    cx.update(|window, _| window.set_a11y_forced(true)); settle(cx);
+    let label = format!("Start a guided tour of {}", scene.world.packages[1].name);
+    let (start, at) = tour_button(cx, "graph-start-here".into(), &label);
+    cx.simulate_mouse_down(at, gpui::MouseButton::Left, gpui::Modifiers::none());
+    allowed.set(false); // Cover arrives between real press and release, before redraw.
+    let covered_focus = cx.update(|window, cx| (window.focused(cx), window.focus_epoch()));
+    cx.simulate_mouse_up(at, gpui::MouseButton::Left, gpui::Modifiers::none());
+    tour_ax_click(cx, start);
+    cx.simulate_keystrokes("enter");
+    assert_eq!(graph.read_with(cx, |graph, _| graph.tour_stop()), None);
+    assert_eq!(cx.update(|window, cx| (window.focused(cx), window.focus_epoch())), covered_focus,
+        "denied release, keyboard and AX cannot establish a new focus intent");
+    allowed.set(true);
+    cx.update(|window, cx| window.focus(&graph.focus_handle(cx), cx));
+    cx.simulate_keystrokes("t"); // New navigation generation, same immutable scene, no redraw.
+    let current_generation = graph.read_with(cx, |graph, _| graph.state.generation);
+    tour_ax_click(cx, start);
+    assert_eq!(graph.read_with(cx, |graph, _| graph.state.generation), current_generation,
+        "old start capability cannot restart the new tour even at its first stop");
+    assert_eq!(graph.read_with(cx, |graph, _| graph.tour_stop()), Some(expected.stops[0].node));
+    settle(cx);
+    let label = format!("Tour stop 1: {}", scene.world.name_of(expected.stops[0].node));
+    let (first, _) = tour_button(cx, ("graph-tour-stop", 0usize).into(), &label);
+    cx.update(|window, cx| window.focus(&graph.focus_handle(cx), cx));
+    cx.simulate_keystrokes("right"); // Same generation, changed exact tour stop, still old native tree.
+    tour_ax_click(cx, first);
+    assert_eq!(graph.read_with(cx, |graph, _| graph.tour_stop()), Some(expected.stops[1].node));
+    settle(cx);
+    let (first, _) = tour_button(cx, ("graph-tour-stop", 0usize).into(), &label);
+    graph.update(cx, |graph, _| graph.scene = Some(Arc::new(Scene::new(scene.world.clone(), scene.layout.clone()))));
+    tour_ax_click(cx, first); // Same world and reading state, different immutable scene, no redraw.
+    assert_eq!(graph.read_with(cx, |graph, _| graph.tour_stop()), Some(expected.stops[1].node));
+}
+
+#[gpui::test]
+fn stale_tour_focus_cannot_lend_local_enter_to_a_new_find_owner(cx: &mut TestAppContext) {
+    use std::rc::Rc;
+    cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
+    let scene = scene();
+    let search = Discovery::query_prepared(Discovery::prepare(&scene.world), &scene.world, "Page");
+    assert_eq!(search.rows.first().map(|row| row.node), Some(0), "independent prepared Find result");
+    let (graph, cx) = cx.add_window_view(|window, cx| {
+        let mut graph = GraphView::with_scene(scene, Start::Focus(3), window, cx);
+        graph.on_interaction_admission(Rc::new(|phase, _| phase == super::InteractionPhase::LocalFocus));
+        graph
+    });
+    settle(cx);
+    cx.update(|window, cx| {
+        let graph = graph.read(cx);
+        assert!(window.is_focus_handle_mounted(&graph.tour_focus[0]));
+        graph.tour_focus[0].focus(window, cx);
+    });
+    // Hold the original native tree while Find's actual result and current
+    // resource producer advance. Its old local tour handle is still focused.
+    graph.update(cx, |graph, cx| {
+        graph.state.apply(super::Event::OpenFind);
+        graph.deliver_search(graph.state.generation, "Page", search, cx);
+        graph.on_interaction_admission(Rc::new(|_, _| true));
+    });
+    let focus = cx.update(|window, cx| (window.focused(cx), window.focus_epoch()));
+    cx.simulate_keystrokes("enter");
+    graph.read_with(cx, |graph, _| {
+        assert!(graph.find_open(), "old tour Enter cannot select Find using a new producer's authority");
+        assert_eq!(graph.focused(), Some(3), "the newly ready result cannot replace the current selection");
+        assert_eq!(graph.results.first(), Some(&0));
+    });
+    assert_eq!(cx.update(|window, cx| (window.focused(cx), window.focus_epoch())), focus);
+}
+
+#[gpui::test]
+fn focused_native_tour_chips_delegate_arrows_and_escape_to_the_current_graph(cx: &mut TestAppContext) {
+    use std::{cell::Cell, rc::Rc};
+    cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Facet::default() }, cx); });
+    let scene = scene();
+    let expected = Discovery::from_prepared(Discovery::prepare(&scene.world)).package_tour(1).expect("tour").clone();
+    let allowed = Rc::new(Cell::new(true));
+    let (graph, cx) = cx.add_window_view(|window, cx| {
+        let mut graph = GraphView::with_scene(scene, Start::Focus(3), window, cx);
+        let allowed = allowed.clone();
+        graph.on_interaction_admission(Rc::new(move |phase, _| phase == super::InteractionPhase::LocalFocus && allowed.get()));
+        graph
+    });
+    settle(cx);
+    cx.update(|window, cx| window.focus(&graph.focus_handle(cx), cx));
+    cx.simulate_keystrokes("t"); settle(cx);
+    for (key, stop, slot) in [("right", Some(1), 1), ("left", Some(0), 2), ("escape", None, 1)] {
+        cx.update(|window, cx| {
+            let graph = graph.read(cx);
+            assert!(window.is_focus_handle_mounted(&graph.tour_focus[slot]));
+            graph.tour_focus[slot].focus(window, cx);
+        });
+        allowed.set(false);
+        cx.simulate_keystrokes(key);
+        cx.update(|window, cx| assert!(graph.read(cx).tour_focus[slot].is_focused(window), "a cover cannot hand off native focus"));
+        allowed.set(true);
+        cx.simulate_keystrokes(key);
+        settle(cx);
+        cx.update(|window, cx| {
+            let graph = graph.read(cx);
+            assert_eq!(graph.tour_stop(), stop.map(|at| expected.stops[at].node), "{key}");
+            assert!(graph.focus_handle.is_focused(window), "admitted local key keeps a mounted persistent receiver");
+            assert!(graph.focused().is_none() && !graph.find_open());
+        });
+    }
+    cx.simulate_keystrokes("t"); settle(cx);
+    cx.update(|window, cx| graph.read(cx).tour_focus[1].focus(window, cx));
+    cx.simulate_keystrokes("secondary-k"); draw(cx);
+    cx.update(|window, cx| {
+        let graph = graph.read(cx);
+        assert!(graph.find_open() && graph.find_focused(window, cx), "the native chip yields Ctrl/Cmd+K to Graph's real local input");
+        assert!(graph.tour_stop().is_none() && graph.focused().is_none());
+    });
+}
+
 struct Region { graph: Entity<GraphView>, bounds: Bounds<Pixels> }
 impl Render for Region {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
