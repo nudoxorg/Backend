@@ -485,10 +485,9 @@ const ADDITIONS: [PackageFacts; 15] = [
         decorators: &[b"overload"],
         spot: SpotCheck::ParameterKinds {
             symbol: "lineof",
-            kinds: &[
-                PythonParameterKind::PositionalOrKeyword,
-                PythonParameterKind::PositionalOrKeyword,
-            ],
+            // SectionWrapper.lineof(self, name): the receiver is represented
+            // separately from the one explicit call parameter.
+            kinds: &[PythonParameterKind::PositionalOrKeyword],
         },
     },
     PackageFacts {
@@ -542,10 +541,8 @@ const ADDITIONS: [PackageFacts; 15] = [
         decorators: &[b"t.overload", b"property"],
         spot: SpotCheck::ParameterKinds {
             symbol: "dumps",
-            kinds: &[
-                PythonParameterKind::PositionalOnly,
-                PythonParameterKind::PositionalOnly,
-            ],
+            // Serializer.dumps(self, obj, /, ...): self is a receiver.
+            kinds: &[PythonParameterKind::PositionalOnly],
         },
     },
     PackageFacts {
