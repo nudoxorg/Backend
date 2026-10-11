@@ -1316,6 +1316,21 @@ impl BuiltinIntent {
         }
     }
 
+    /// Compacts only the value transferred to the daemon queue. Prepared
+    /// publication/removal planners retain their canonical descriptors outside
+    /// that queue under the same bounded stage admission. Model::prepare
+    /// hydrates the pinned request/base before inspecting queued intent rows.
+    pub(super) fn into_queue_carrier(mut self) -> Self {
+        if self.staged.is_some() {
+            self.changes = Box::new([]);
+            self.semantic_changes = Box::new([]);
+            self.capture_changes = Box::new([]);
+            self.source_facts_changes = Box::new([]);
+            self.semantic_selection = None;
+        }
+        self
+    }
+
     fn canonical_bytes(&self) -> Vec<u8> {
         self.encode_canonical()
     }
@@ -1671,12 +1686,32 @@ fn added_package_semantic_terminal(
 
 impl backend_engine::queue::QueueSized for BuiltinIntent {
     fn queue_bytes(&self) -> usize {
+        self.checked_queue_bytes().unwrap_or(usize::MAX)
+    }
+
+    fn checked_queue_bytes(&self) -> Result<usize, backend_engine::QueueError> {
         if self.staged.is_some() {
+            // The stage reservation and exact membership/base pins stay in
+            // Arc<StagedIntent> until every queued/draining clone drops. Its
+            // separately bounded CAS scope is not resident canonical payload.
+            // Charge the carrier plus any payload retained by a hydrated
+            // replay object; no requeue can hide descriptor arrays.
             self.encode()
                 .len()
-                .saturating_add(self.staging_parts().0.len())
+                .checked_add(self.staging_parts().0.len())
+                .and_then(|bytes| bytes.checked_add(self.label.capacity()))
+                .and_then(|bytes| bytes.checked_add(size_of::<Self>()))
+                .and_then(|bytes| {
+                    bytes.checked_add(size_of::<super::staged_transport::StagedIntent>())
+                })
+                .and_then(|bytes| {
+                    bytes.checked_add(size_of::<super::staged_intent::StageAdmission>())
+                })
+                // Fixed headers of the staged/admission Arc allocations.
+                .and_then(|bytes| bytes.checked_add(4 * size_of::<usize>()))
+                .ok_or(backend_engine::QueueError::Accounting)
         } else {
-            self.encode().len()
+            Ok(self.encode().len())
         }
     }
 }

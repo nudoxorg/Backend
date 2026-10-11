@@ -5676,7 +5676,7 @@ pub(in crate::builtin) fn commit_prepared_builtin_intent(
     }
     let expected = owner.head().expectation();
     let request = prepared.request_identity;
-    let intent = prepared.intent;
+    let intent = prepared.intent.into_queue_carrier();
     let receiver = daemon
         .client()
         .request(

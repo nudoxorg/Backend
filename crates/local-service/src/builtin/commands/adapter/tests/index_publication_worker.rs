@@ -3,14 +3,18 @@
 //! controls below also require genuine compiled Python claims and partials.
 //! None of these controls simulates process death during publication.
 use super::*;
-use crate::builtin::BuiltinModelError;
 use crate::builtin::commands::adapter::index_profile_worker::{
     ProfileCompletion, ProfileOutcome, ProfileWorker,
 };
 use crate::builtin::commands::adapter::index_publication_worker::{
     Completion, Disposition, Event, Head, TestHook, TestStage,
 };
-use crate::builtin::commands::adapter::{capture_recovery, commit_builtin_intent};
+use crate::builtin::commands::adapter::{
+    capture_recovery, commit_builtin_intent, prepare_builtin_intent_at_snapshot,
+    selected_semantic_removals,
+};
+use crate::builtin::{BuiltinModelError, BuiltinSemanticChange};
+use backend_engine::builtin::ProductSemanticPublicationRecord;
 use backend_library::CommandReply;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::time::{Duration, Instant};
@@ -1592,4 +1596,152 @@ fn index_publication_worker_panicking_payload_drop_preserves_exact_selector_and_
         }),
         "the next native publication must replace its actual generation"
     );
+}
+
+// Typed descriptor volume exercises the production stage boundary. Only the
+// initial selection is a native compiler claim; filler rows are unavailable.
+fn staged_selection_removal(fixture: &mut AdapterFixture) -> PreparedProductSelection {
+    use backend_engine::builtin::SemanticUnavailableReason;
+    use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, PythonVersion};
+    let package = fixture.package;
+    let label = fixture.label.clone();
+    let mut keys = fixture
+        .parts()
+        .0
+        .semantic_authority
+        .selected_product_keys_for_package(package)
+        .expect("actual prior selection");
+    assert!(!keys.is_empty(), "native prior generation is required");
+    let reference = backend_engine::PackageReference::parse(label.clone()).unwrap();
+    let prefix = "directory/".repeat(20);
+    for index in 0..6_000 {
+        keys.push(
+            ProductSemanticPublicationKey::new(
+                reference.clone(),
+                PackageUrl::parse(format!("{label}#{prefix}unavailable_{index:05}.py")).unwrap(),
+                LanguageProfile::Python(PythonVersion::Python314),
+            )
+            .unwrap(),
+        );
+    }
+    let intent = BuiltinIntent::index_with_semantics(
+        package,
+        label,
+        Vec::new(),
+        keys.into_iter()
+            .map(|key| BuiltinSemanticChange {
+                key,
+                after: Some(ProductSemanticPublicationRecord::Unavailable(
+                    SemanticUnavailableReason::ProjectAuthority,
+                )),
+            })
+            .collect(),
+    )
+    .unwrap();
+    let base = fixture.parts().1.engine().daemon().owner().snapshot();
+    let staged =
+        prepare_builtin_intent_at_snapshot(&base, &intent, None, Arc::new(AtomicBool::new(false)))
+            .expect("actual production staging");
+    assert!(
+        staged.intent.staged().is_some(),
+        "must cross CAS staging threshold"
+    );
+    assert!(
+        !selected_semantic_removals(&staged.intent).is_empty(),
+        "selection planner must receive retained descriptors before queue transfer"
+    );
+    PreparedProductSelection {
+        intent: Some(intent),
+        selected: Vec::new(),
+        revision_fence: None,
+        profile_refusals: Box::new([]),
+        partial_plan: None,
+    }
+}
+
+fn assert_selection_removed(fixture: &mut AdapterFixture, keys: &[ProductSemanticPublicationKey]) {
+    let package = fixture.package;
+    let (adapter, daemon) = fixture.parts();
+    assert!(
+        adapter
+            .semantic_authority
+            .selected_product_keys_for_package(package)
+            .expect("actual selector after publication")
+            .is_empty()
+    );
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let relation = snapshot.relation::<BuiltinSemanticRelation>().unwrap();
+    for key in keys {
+        assert!(matches!(
+            relation.lookup(key).unwrap(),
+            Some(ProductSemanticPublicationRecord::Unavailable(_))
+        ));
+    }
+}
+
+#[test]
+fn legacy_finish_add_removes_native_selection_after_staging_before_queue_compaction() {
+    let mut fixture = native_fixture();
+    let package = fixture.package;
+    let keys = fixture
+        .parts()
+        .0
+        .semantic_authority
+        .selected_product_keys_for_package(package)
+        .unwrap();
+    let prepared = staged_selection_removal(&mut fixture);
+    let reference = backend_library::PackageReference::parse(fixture.label.clone()).unwrap();
+    let (adapter, daemon) = fixture.parts();
+    adapter
+        .finish_add(
+            daemon,
+            &prepared,
+            0xd1,
+            package,
+            reference,
+            None,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .expect("actual legacy publication");
+    assert_selection_removed(&mut fixture, &keys);
+}
+
+#[test]
+fn publication_worker_removes_native_selection_after_staging() {
+    let mut fixture = native_fixture();
+    let package = fixture.package;
+    let label = fixture.label.clone();
+    let keys = fixture
+        .parts()
+        .0
+        .semantic_authority
+        .selected_product_keys_for_package(package)
+        .unwrap();
+    let prepared = staged_selection_removal(&mut fixture);
+    let reference = backend_library::PackageReference::parse(label.clone()).unwrap();
+    let (adapter, daemon) = fixture.parts();
+    let ticket = adapter.issue_index_ticket(reference).unwrap();
+    let mut job = IndexJob {
+        owner_ticket: ticket.clone(),
+        operation_key: None,
+        captures: BTreeMap::new(),
+        legacy_add: None,
+        awaiters: Vec::new(),
+        cancelled: Arc::new(AtomicBool::new(false)),
+        progress_sequence: 0,
+        progress_stage: Some(backend_library::IndexJobStage::Publishing),
+        request_id: 0xd2,
+        captured_package: package,
+        captured_label: label,
+        requested_package: package,
+        execution_intent: CompileExecutionIntent::Interactive,
+        _staged_project: None,
+        work: IndexJobWork::Transition,
+    };
+    adapter
+        .start_index_publication(daemon, &mut job, prepared)
+        .unwrap();
+    adapter.indexing = Some(job);
+    published(&mut fixture, &ticket);
+    assert_selection_removed(&mut fixture, &keys);
 }
