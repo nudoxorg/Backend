@@ -178,7 +178,8 @@ fn native_no_op_delete_does_not_cancel_admission_while_the_typing_probe_is_pendi
     type_in(&mut rig, typed.strip_suffix('n').expect("fixture name ends in n"));
     // Dispatch the final native key without the simulator's automatic
     // run-until-parked, which would finish the fresh typing probe first.
-    rig.cx.cx.dispatch_keystroke(rig.cx.window, gpui::Keystroke::parse("n").expect("native key"));
+    let window = rig.cx.update(|window, _| window.window_handle());
+    rig.cx.cx.dispatch_keystroke(window, gpui::Keystroke::parse("n").expect("native key"));
     let release = unsettled_admission(&mut rig, &folder);
     assert!(rig.cx.update(|window, cx| super::form(window, cx).expect("form").read(cx).probe_pending()),
         "native Delete must exercise a pending typing answer, not the already answered probe");
