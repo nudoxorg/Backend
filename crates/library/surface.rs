@@ -7192,7 +7192,7 @@ mod tests {
         );
         assert_eq!(
             crate::DTO_VERSION,
-            27,
+            28,
             "partial publication remains in the current closed live DTO cohort"
         );
         let command = crate::CommandDto::new(
@@ -7212,7 +7212,7 @@ mod tests {
         assert_eq!(decoded_reply, reply);
         let mut old_peer: serde_json::Value =
             serde_json::from_slice(&encoded_reply).expect("encoded reply fields");
-        for old_version in [22, 23, 24, 25, 26] {
+        for old_version in [22, 23, 24, 25, 26, 27] {
             old_peer["version"] = serde_json::json!(old_version);
             let old_bytes = serde_json::to_vec(&old_peer).expect("old peer version header");
             let error = crate::decode_reply_body(&old_bytes).expect_err("old partial peer refused");
