@@ -1,0 +1,786 @@
+{
+  "schema": "nudox.root-native-evidence.v1",
+  "source": {
+    "commit": "452645a8141faa80abc4d07c8db0302f727d438d",
+    "tree": "aa165ea2f984b163fc491f9ce59d454a507918cb",
+    "clean": true,
+    "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+    "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350",
+    "clean_before": true,
+    "clean_after": true
+  },
+  "frozen_manifest_sha256": "ee6188b203701082fdcababf37d6e932ae5b461303f809733abb9f6a647c93bd",
+  "receipt_sha256": "ca75d82b44cfa456f0e6ab4648458070e9286ee45c6d2fea1b39495a323af018",
+  "stdout_sha256": "d80f3993ff60e3cb0f70efcc169387d84f30a93e176f598ce7ba26e67163a5e3",
+  "stderr_sha256": "f63cdc76d6e7d993040d497436a663be694c5f00d8108330bd2debae2ed5abbc",
+  "argv": [
+    "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+    "test",
+    "--locked",
+    "--offline",
+    "-j2",
+    "-p",
+    "backend-mcp",
+    "--lib",
+    "--message-format=json-render-diagnostics",
+    "--",
+    "--nocapture",
+    "--test-threads=2"
+  ],
+  "cargo_pid": 3321507,
+  "started_utc": "2026-10-11T21:06:39.224531+00:00",
+  "finished_utc": "2026-10-11T21:07:00.540527+00:00",
+  "build_and_test_seconds": 19.301752295112237,
+  "actual_tests": {
+    "passed": 172,
+    "failed": 4,
+    "ignored": 0,
+    "filtered": 0
+  },
+  "verified_test_results": [
+    {
+      "name": "http::tests::actual_http_client_socket_drop_cancels_its_pending_blocking_request",
+      "result": "ok"
+    },
+    {
+      "name": "http::tests::actual_http_body_accounts_success_refusal_error_and_exact_ceiling",
+      "result": "ok"
+    },
+    {
+      "name": "http::tests::automatic_http_token_is_private_and_survives_restart_without_rotation",
+      "result": "ok"
+    },
+    {
+      "name": "http::tests::bind_proof_rejects_non_loopback_addresses",
+      "result": "ok"
+    },
+    {
+      "name": "http::tests::bound_http_answers_pending_before_blocked_durable_authentication_and_admits_afterward",
+      "result": "FAILED"
+    },
+    {
+      "name": "http::tests::cancellation_bypasses_locked_server_and_full_http_query_capacity",
+      "result": "ok"
+    },
+    {
+      "name": "http::tests::actual_http_oversized_initialize_identity_admits_no_session",
+      "result": "ok"
+    },
+    {
+      "name": "http::tests::deleting_http_session_cancels_pending_requests_without_waiting_for_server",
+      "result": "ok"
+    },
+    {
+      "name": "http::tests::dropped_http_response_future_cancels_its_admitted_blocking_request",
+      "result": "ok"
+    },
+    {
+      "name": "http::tests::concurrent_http_initializers_admit_one_complete_credential",
+      "result": "ok"
+    },
+    {
+      "name": "http::tests::token_comparison_includes_length",
+      "result": "ok"
+    },
+    {
+      "name": "http::tests::failed_http_authentication_retains_first_cause_and_admits_no_sessions",
+      "result": "ok"
+    },
+    {
+      "name": "http::tests::unsafe_or_oversized_http_token_files_refuse_without_replacing_or_echoing_bytes",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::codec::tests::emitted_tool_success_and_refusal_metadata_preserve_escaped_payloads",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::codec::tests::metadata_fixed_point_crosses_decimal_widths_and_the_exact_context_ceiling",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::codec::tests::ordinary_results_protocol_errors_and_fallbacks_share_exact_encoding",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::codec::tests::transport_admission_counts_only_the_framing_it_emits",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::codec::tests::transport_lengths_and_counting_refuse_integer_overflow",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::codec::tests::transport_preview_fitting_preserves_full_structured_page_and_owner_cursor",
+      "result": "ok"
+    },
+    {
+      "name": "http::tests::unavailable_authentication_response_keeps_an_oversized_request_id_bounded",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::reconnect::tests::a_mutating_surface_command_is_not_repeated",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::reconnect::tests::a_product_fault_does_not_reconnect",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::reconnect::tests::a_mutation_reconnects_without_being_sent_twice",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::reconnect::tests::a_read_reconnects_and_returns_its_reply",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::reconnect::tests::a_second_disconnect_parks_the_replacement_for_the_next_call",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::reconnect::tests::cancellation_at_pre_dial_transfer_retires_previous_before_returning",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::reconnect::tests::daemon_restart_io_kinds_are_reconnectable_but_configuration_errors_are_not",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::reconnect::tests::cancellation_during_replacement_admission_retires_restored_authority",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::reconnect::tests::every_read_only_surface_variant_is_repeatable",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::reconnect::tests::deterministic_idle_gap_matrix_reconnects_only_after_the_timeout",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::reconnect::tests::failed_reconnect_does_not_reuse_the_dead_lease",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::reconnect::tests::failed_startup_after_ambiguous_mutation_does_not_offer_unsent_retry",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::reconnect::tests::mutation_cancellation_context_does_not_install_a_read_deadline",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::reconnect::tests::pinned_preparation_disconnect_does_not_reconnect_or_rebind_the_same_call",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::reconnect::tests::reconnect_transfers_the_retired_product_to_the_endpoint",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::reconnect::tests::replacement_pinned_first_reply_failure_is_retired_without_a_third_attempt",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::reconnect::tests::request_cancellation_survives_socket_disconnect_without_replay",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::reconnect::tests::revision_health_and_graph_query_all_recover",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::reconnect::tests::the_next_explicit_mutation_uses_the_replacement_lease",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::requests::tests::exact_ids_unknown_ids_id_reuse_and_sessions_cannot_cross_cancel",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::requests::tests::malformed_controls_never_acquire_cancellation_authority",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::requests::tests::registry_capacity_shutdown_and_disconnect_guard_are_exact_and_bounded",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::a_document_call_returns_the_markdown_page_and_the_typed_answer",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::a_malformed_operand_names_the_argument_and_the_closed_set",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::a_missing_resource_is_refused_rather_than_guessed",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::a_refused_surface_operation_reports_its_typed_cause",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::a_standard_search_call_leads_with_honest_coverage_then_two_lines_per_record",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::actual_binary_owner_mac_restarts_and_refuses_cross_surface_query_detail_and_key",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::actual_go_25_row_summary_retains_typed_facts_and_a_valid_binary_owner_mac",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::adapter_errors_keep_continuation_transport_refusal_separate_from_compiler_facts",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::adapter_errors_keep_valid_json_and_coordinate_protocol_strings_unproven",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::adapter_errors_preserve_typed_compiler_facts_at_exact_boundaries",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::advertised_registry_lookups_reach_the_typed_product_commands",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::an_affordance_is_the_exact_next_tool_call_an_agent_can_paste",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::an_explicit_project_is_active_even_when_the_launch_directory_differs",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::an_outline_call_is_a_tree_of_names_never_bare_digests",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::an_unknown_coordinate_is_refused_with_the_operand_and_a_next_tool_call",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::reconnect::tests::original_read_deadline_survives_preselection_replacement_dial",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::an_unknown_tool_is_a_protocol_error_not_a_result",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::an_unsent_startup_retry_preserves_exact_mutation_arguments_as_advice",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::an_unreachable_endpoint_is_a_fault_with_the_retry_affordance",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::blocking_owner_await_is_not_exposed_over_mcp",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::cancellation_notifications_are_silent_and_do_not_poison_the_session",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::cancelled_endpoint_admission_preserves_previous_and_parked_continuation_proofs",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::authenticated_continuation_decode_preserves_domain_and_server_fault_distinctions",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::combined_budget_shortens_only_the_readable_preview_with_explicit_provenance",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::continuation_authority_binds_context_and_owner_payload",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::continuation_context_binds_workspace_query_limit_and_detail",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::cold_cursor_verification_never_initializes_authority_for_a_forged_token",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::deeply_nested_json_is_rejected_before_tool_admission",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::copied_ticket_string_uses_the_object_decoder_and_preserves_the_owner_ticket",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::default_search_summary_keeps_exact_native_records_with_a_concise_coverage_preview",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::dependency_refusal_marks_tool_failure_and_keeps_the_exact_requested_package",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::direct_and_generic_graph_routes_preserve_typed_domain_and_protocol_failures",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::direct_cursor_authenticates_version_expiry_payload_and_existing_context",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::direct_cursor_encoding_boundaries_do_not_mint_or_load_cold_authority",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::direct_cursor_legacy_named_request_context_survives_and_cannot_cross_roles",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::direct_cursor_legacy_vectors_preserve_exact_mcp1_domain_and_encoding",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::direct_cursor_owner_encodings_and_exact_size_survive_authenticated_roundtrip",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::document_and_source_tools_advertise_their_useful_default_detail",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapshots",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::every_metadata_route_stays_within_the_context_budget",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::every_registry_row_is_reachable_as_exactly_one_tool",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::generic_surface_dependency_refusal_keeps_exact_package_action_and_typed_fault",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::explicit_source_refuses_unavailable_text_while_document_retains_its_native_identity",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::generic_surface_progress_and_cancel_keep_the_request_ticket_projection",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::graph_page_text_does_not_treat_cancellation_or_missing_cursor_as_limit_advice",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::graph_continuation_round_trip_is_bounded_and_authorized",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::graph_query_limits_are_rejected_before_the_product_boundary",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::index_cancel_preserves_terminal_races_and_rejects_fabricated_tickets",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::index_progress_distinguishes_prior_owner_tickets_and_terminal_refusals",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::index_progress_maximum_owner_page_fits_the_combined_mcp_result_budget",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::index_progress_returns_bounded_events_and_the_exact_next_sequence",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::index_requires_its_advertised_path_before_owner_admission",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::index_search_cursor_cannot_cross_between_named_and_generic_mcp_tools",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::index_search_cursor_round_trips_between_servers_with_the_same_workspace_authority",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::high_fanout_graph_and_surface_pages_refuse_atomically",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::index_search_tool_cursor_rejects_context_changes_and_raw_owner_tokens",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::index_search_tool_round_trips_mcp_cursors_at_summary_and_full_detail",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::index_start_keeps_the_exact_owner_ticket_and_routes_purls_to_the_owner_job_api",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::initialize_negotiates_only_the_library_supported_protocols",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::initialized_notification_cannot_bypass_initialize",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::keyed_index_progress_preserves_durable_owner_evidence_and_rejects_mixed_identities",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::index_tool_advertises_and_validates_execution_intent",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::lazy_cursor_authority_is_durable_once_and_replayable_in_a_fresh_server",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::malformed_call_tool_envelopes_and_unknown_routes_remain_rpc_errors",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::malformed_or_expired_cursor_does_not_admit_a_workspace_authority",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::missing_index_path_returns_actionable_structured_usage_before_owner_work",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::missing_required_mcp_argument_names_the_tool_field_not_cli_usage",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::newline_codec_is_bounded_and_compact",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::lazy_cursor_authority_retries_after_repair_without_process_key_fallback",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::outline_resource_templates_preserve_readable_and_absent_projects",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::oversized_signed_index_search_cursor_projection_is_refused_without_truncation",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::oversized_unsent_startup_call_keeps_typed_fault_without_a_partial_call",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::owner_index_job_tools_advertise_exact_tickets_and_immediate_progress",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::page_projection_mcp_combined_summary_retains_real_faults_and_section_notes",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::page_projection_mcp_summary_keeps_source_failure_and_source_tool_refusal",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::page_projection_mcp_summary_omits_captured_body_and_preserves_exact_identity",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_same_mcp_wire_result",
+      "result": "FAILED"
+    },
+    {
+      "name": "jsonrpc::tests::query_preparation_is_a_typed_transient_tool_result_with_exact_retry_not_index_failure",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::recognized_tools_share_typed_missing_input_results_before_any_owner_call",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::registry_lookup_tools_are_advertised_with_bounded_typed_inputs",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::registry_schema_primitive_types_are_enforced_before_the_product_boundary",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::resource_discovery_needs_no_owner_and_outline_reads_preserve_protocol_failure",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::resources_are_the_same_markdown_their_tools_return",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::semantic_shapes_actual_jsonrpc_preserves_full_view_in_summary_and_full",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::newline_codec_rejects_malformed_and_oversized_jsonrpc_frames",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::semantic_shapes_jsonrpc_refuses_oversized_view_without_dropping_required_facts",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::semantic_versions_jsonrpc_keeps_true_oversize_refusals_atomic",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::simultaneous_lazy_cursor_admission_uses_one_durable_identity",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::stale_graph_roots_are_reported_as_a_restartable_cursor_error",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::stale_named_index_search_cursor_is_a_restartable_refusal",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::stale_surface_index_search_cursor_is_reported_as_restartable",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::standard_mcp_text_is_the_same_shared_markdown_the_cli_renders",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::status_is_a_rollup_a_reader_can_hold_not_a_capability_dump",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::stdio_finite_pipe_half_close_drains_owner_reads_and_flushes_replies",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::stdio_reader_cancels_an_active_call_then_allows_completed_id_reuse",
+      "result": "FAILED"
+    },
+    {
+      "name": "jsonrpc::tests::surface_errors_keep_valid_compiler_json_and_coordinates_as_unproven_protocol",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::surface_errors_preserve_typed_compiler_facts_across_all_job_routes",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::surface_index_search_cursor_binds_query_limit_project_and_detail",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::semantic_versions_jsonrpc_preserves_captured_semver_and_matches_the_cli_projection",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::surface_index_search_cursor_round_trips_through_the_mcp_projection",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::the_handshake_reports_the_stable_protocol_and_its_instructions",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::the_packages_call_states_readiness_for_every_project",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::the_references_tool_serves_occurrence_sites_with_source_spans",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::the_query_card_carries_worked_queries_over_the_declared_schema",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::the_session_list_hides_the_surface_escape_hatch",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::the_surface_escape_hatch_returns_the_typed_reply_and_a_readable_block",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::the_typed_query_lane_reports_its_terminal_and_revision",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::the_session_tool_list_leads_with_packages_and_index",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::tree_open_routes_record_the_initialized_mcp_client",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::typed_startup_failures_preserve_recovery_and_original_diagnostic_in_mcp",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::tool_catalog_names_callable_routes_without_advertising_unready_surfaces",
+      "result": "ok"
+    },
+    {
+      "name": "process::tests::stdio_metadata_answers_when_durable_workspace_admission_is_unavailable",
+      "result": "ok"
+    },
+    {
+      "name": "process::tests::stdio_metadata_does_not_initialize_a_new_workspace",
+      "result": "ok"
+    },
+    {
+      "name": "process::tests::stdio_returns_correlated_mcp_error_when_owner_startup_fails",
+      "result": "FAILED"
+    },
+    {
+      "name": "tests::certified_framed_dispatch_admits_identity_before_presentation",
+      "result": "ok"
+    },
+    {
+      "name": "tests::embedded_client_rejects_an_intent_for_another_package_before_execution",
+      "result": "ok"
+    },
+    {
+      "name": "tests::endpoint_error_extracts_correlation_without_admitting_claims",
+      "result": "ok"
+    },
+    {
+      "name": "tests::endpoint_error_keeps_a_valid_request_id",
+      "result": "ok"
+    },
+    {
+      "name": "tests::framed_dispatch_preserves_cli_reply_shape",
+      "result": "ok"
+    },
+    {
+      "name": "tests::frames_are_bounded_and_round_trip",
+      "result": "ok"
+    },
+    {
+      "name": "tests::graph_requests_retain_their_revision_for_endpoint_admission",
+      "result": "ok"
+    },
+    {
+      "name": "tests::health_cannot_be_claimed_without_a_producer_certificate",
+      "result": "ok"
+    },
+    {
+      "name": "tests::in_process_client_does_not_cache_replies",
+      "result": "ok"
+    },
+    {
+      "name": "tests::injected_transport_checks_basis_and_freshness",
+      "result": "ok"
+    },
+    {
+      "name": "tests::malformed_request_gets_a_framed_reply",
+      "result": "ok"
+    },
+    {
+      "name": "tests::mcp_admission_bounds_requests_and_replies",
+      "result": "ok"
+    },
+    {
+      "name": "tests::mcp_outer_frame_matches_the_canonical_local_codec",
+      "result": "ok"
+    },
+    {
+      "name": "tests::replies_must_match_the_requested_command_shape",
+      "result": "ok"
+    },
+    {
+      "name": "tests::request_encoding_rejects_a_certificate_for_another_package",
+      "result": "ok"
+    },
+    {
+      "name": "tests::unix_endpoint_path_is_bounded",
+      "result": "ok"
+    },
+    {
+      "name": "tests::unix_transport_consumes_producer_certified_success_without_expected_cache",
+      "result": "ok"
+    },
+    {
+      "name": "tests::unix_transport_executes_one_correlated_request",
+      "result": "ok"
+    },
+    {
+      "name": "tests::unix_transport_rejects_digest_only_identity_success",
+      "result": "ok"
+    },
+    {
+      "name": "jsonrpc::tests::wire_budget_metadata_counts_the_complete_escaped_jsonrpc_line",
+      "result": "ok"
+    }
+  ],
+  "failed_tests": [
+    "http::tests::bound_http_answers_pending_before_blocked_durable_authentication_and_admits_afterward",
+    "jsonrpc::tests::partial_terminal_keeps_error_flag_exact_ticket_partition_and_receipt_in_the_same_mcp_wire_result",
+    "jsonrpc::tests::stdio_reader_cancels_an_active_call_then_allows_completed_id_reuse",
+    "process::tests::stdio_returns_correlated_mcp_error_when_owner_startup_fails"
+  ],
+  "emitted_artifact_observation": {
+    "path": "/root/.cache/nudox/cargo-1.97/build/slot-0/debug/deps/backend_mcp-a252b578bc3db2f1",
+    "sha256": "eaff26b33190da3cce5bcf1f8c0242427d7188edbf57ae582914677487bb5cc3",
+    "bytes": 148593128,
+    "target": {
+      "kind": [
+        "lib"
+      ],
+      "crate_types": [
+        "lib"
+      ],
+      "name": "backend_mcp",
+      "src_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/apps/mcp/src/lib.rs",
+      "edition": "2024",
+      "doc": true,
+      "doctest": true,
+      "test": true
+    },
+    "package_id": "path+file:///root/codex-worktrees/sol61-resident-fixture-20261011/apps/mcp#backend-mcp@0.2.0",
+    "profile": {
+      "opt_level": "0",
+      "debuginfo": 0,
+      "debug_assertions": true,
+      "overflow_checks": true,
+      "test": true
+    },
+    "features": [
+      "default"
+    ],
+    "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/apps/mcp/Cargo.toml"
+  },
+  "verification": "Root independently rehashed the frozen manifest, receipt and both raw logs; counted all 176 unique test results and the unfiltered summary; checked exact source, lockfiles, toolchain, fresh destination guard, process-group drain and resource envelopes. Executable bytes and custody compression remain producer observations, not independently rehashed executable bytes.",
+  "production_binary_or_runtime_acceptance": false,
+  "production_ready": false
+}
