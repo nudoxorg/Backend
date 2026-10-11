@@ -838,13 +838,11 @@ impl TszProject {
         None
     }
 
-    /// Borrows a property's raw identifier spelling from its exact TSZ owner.
-    ///
-    /// `PropertyInfo::parent_id` normally names the declaring class, rather than
-    /// the member symbol. Only direct parsed members of that bound class or
-    /// interface may supply spelling. A directly bound member declaration is
-    /// also accepted. Every declaration must retain aligned file-stable proof;
-    /// missing provenance, nested members and unrelated names are refused.
+    /// Borrows one property's exact identifier token from its bound owner.
+    /// Repeated declarations with identical raw spellings agree; distinct raw
+    /// spellings of the same decoded name are ambiguous and return `None`.
+    /// Batch consumers should use [`Self::with_property_name_sources_from_owner`]
+    /// to scan an owner's direct members only once with their shared checkpoint.
     #[must_use]
     pub fn property_name_source_from_owner(
         &self,
@@ -854,26 +852,77 @@ impl TszProject {
         if expected.is_empty() {
             return None;
         }
-        let owner = self.program.symbols.get(symbol)?;
+        let mut spelling = None;
+        self.with_property_name_sources_from_owner(
+            symbol,
+            |_| Ok(()),
+            |name, raw| {
+                if name == expected {
+                    match spelling {
+                        None => spelling = Some(Some(raw)),
+                        Some(Some(previous)) if previous != raw => spelling = Some(None),
+                        _ => {}
+                    }
+                }
+            },
+        )
+        .ok()?;
+        spelling.flatten()
+    }
+
+    /// Visits borrowed decoded names and raw tokens of an exact declaring owner.
+    ///
+    /// Only direct parsed class/interface members, or a directly bound member
+    /// declaration, may lend tokens. Raw declarations must align with their
+    /// stable file/spans and retain the exact declaration-node symbol binding.
+    /// No nested-member or global name scan participates. Each declaration,
+    /// direct member and token byte is charged before it is exposed.
+    ///
+    /// Callers must discard any local index populated by `consume` on error;
+    /// the visitor retains no cache or partial result. Duplicate decoded names
+    /// are visited separately so the caller can refuse conflicting raw tokens.
+    ///
+    /// # Errors
+    /// Propagates the shared execution checkpoint's exact stop reason.
+    pub fn with_property_name_sources_from_owner<'source>(
+        &'source self,
+        symbol: TszSymbolId,
+        mut checkpoint: impl FnMut(u64) -> Result<(), tsz_common::ProjectExecutionStop>,
+        mut consume: impl FnMut(&'source str, &'source str),
+    ) -> Result<(), tsz_common::ProjectExecutionStop> {
+        checkpoint(0)?;
+        let Some(owner) = self.program.symbols.get(symbol) else {
+            return Ok(());
+        };
         if owner.declarations.len() != owner.stable_declarations.len() {
-            return None;
+            return Ok(());
         }
         for (declaration, stable) in owner.declarations.iter().zip(&owner.stable_declarations) {
+            checkpoint(1)?;
             if stable.file_idx == u32::MAX || stable.pos >= stable.end {
                 continue;
             }
-            let file = self
-                .program
-                .files
-                .get(usize::try_from(stable.file_idx).ok()?)?;
+            let Some(file) = usize::try_from(stable.file_idx)
+                .ok()
+                .and_then(|index| self.program.files.get(index))
+            else {
+                continue;
+            };
             let arena = &file.arena;
             if arena.pos_end_at(*declaration) != Some((stable.pos, stable.end))
                 || file.node_symbols.get(&declaration.0) != Some(&symbol)
             {
                 continue;
             }
-            let node = arena.get(*declaration)?;
-            let source = arena.get_source_file_at(file.source_file)?.text.as_ref();
+            let Some(node) = arena.get(*declaration) else {
+                continue;
+            };
+            let Some(source) = arena
+                .get_source_file_at(file.source_file)
+                .map(|file| file.text.as_ref())
+            else {
+                continue;
+            };
             let members = arena
                 .get_class(node)
                 .map(|class| &class.members)
@@ -884,6 +933,7 @@ impl TszProject {
                 });
             if let Some(members) = members {
                 for &member in &members.nodes {
+                    checkpoint(1)?;
                     if arena.get_extended(member).map(|node| node.parent) != Some(*declaration)
                         || !arena.pos_end_at(member).is_some_and(|(start, end)| {
                             stable.pos <= start && start < end && end <= stable.end
@@ -891,18 +941,27 @@ impl TszProject {
                     {
                         continue;
                     }
-                    if let Some(token) = exact_property_name_token(arena, source, member, expected)
-                    {
-                        return Some(token);
+                    if let Some((name, raw)) = exact_property_name_tokens(arena, source, member) {
+                        checkpoint(
+                            u64::try_from(name.len())
+                                .unwrap_or(u64::MAX)
+                                .saturating_add(u64::try_from(raw.len()).unwrap_or(u64::MAX)),
+                        )?;
+                        consume(name, raw);
                     }
                 }
-            } else if let Some(token) =
-                exact_property_name_token(arena, source, *declaration, expected)
+            } else if let Some((name, raw)) =
+                exact_property_name_tokens(arena, source, *declaration)
             {
-                return Some(token);
+                checkpoint(
+                    u64::try_from(name.len())
+                        .unwrap_or(u64::MAX)
+                        .saturating_add(u64::try_from(raw.len()).unwrap_or(u64::MAX)),
+                )?;
+                consume(name, raw);
             }
         }
-        None
+        checkpoint(0)
     }
 
     /// Content identity for one exact retained project or library source.
@@ -1114,12 +1173,11 @@ fn digest_part(digest: &mut Sha256, part: &[u8]) {
     digest.update(part);
 }
 
-fn exact_property_name_token<'a>(
-    arena: &tsz::parser::NodeArena,
+fn exact_property_name_tokens<'a>(
+    arena: &'a tsz::parser::NodeArena,
     source: &'a str,
     member: TszNodeIndex,
-    expected: &str,
-) -> Option<&'a str> {
+) -> Option<(&'a str, &'a str)> {
     let node = arena.get(member)?;
     let name = arena
         .get_property_decl(node)
@@ -1127,17 +1185,20 @@ fn exact_property_name_token<'a>(
         .or_else(|| arena.get_signature(node).map(|signature| signature.name))
         .or_else(|| arena.get_method_decl(node).map(|method| method.name))
         .or_else(|| arena.get_accessor(node).map(|accessor| accessor.name))?;
-    if arena.get_extended(name)?.parent != member
-        || arena.get_identifier(arena.get(name)?)?.escaped_text != expected
-    {
+    if arena.get_extended(name)?.parent != member {
         return None;
     }
+    let decoded = arena
+        .get_identifier(arena.get(name)?)?
+        .escaped_text
+        .as_str();
     let (lower, upper) = arena.pos_end_at(member)?;
     let (start, end) = arena.pos_end_at(name)?;
     if start < lower || end > upper || start >= end {
         return None;
     }
-    source.get(usize::try_from(start).ok()?..usize::try_from(end).ok()?)
+    let raw = source.get(usize::try_from(start).ok()?..usize::try_from(end).ok()?)?;
+    Some((decoded, raw))
 }
 
 fn symbol_name_in_arena<'a, 'symbols, I>(
@@ -1648,6 +1709,124 @@ mod tests {
             None,
             "an unadmitted file cannot lend property spelling"
         );
+    }
+
+    #[test]
+    fn property_owner_batch_preserves_ambiguity_and_stops_before_publishing_an_index() {
+        let mut authority = TszProjectAuthority::new();
+        authority.update(vec![input("input.ts", concat!(
+            r"export class Owner { same!: string; s\u0061me!: number; café!: string; ",
+            "identical(value: string): void; identical(value: number): void; identical(value: unknown): void {} }\n",
+            "export class Foreign { same!: boolean; foreignOnly!: string; }",
+        ))], options(), &[]).expect("actual conflicting member declarations");
+        let project = authority.project().unwrap();
+        let file = &project.program().files[0];
+        let owner_symbol = |expected: &str| {
+            file.arena
+                .nodes
+                .iter()
+                .enumerate()
+                .find_map(|(raw, node)| {
+                    let class = file.arena.get_class(node)?;
+                    let name = file.arena.get_identifier(file.arena.get(class.name)?)?;
+                    (name.escaped_text == expected)
+                        .then(|| file.node_symbols.get(&u32::try_from(raw).ok()?).copied())
+                        .flatten()
+                })
+                .expect("actual bound owner")
+        };
+        let owner = owner_symbol("Owner");
+        let foreign = owner_symbol("Foreign");
+        assert_ne!(owner, foreign);
+        assert_eq!(
+            project.property_name_source_from_owner(owner, "same"),
+            None,
+            "two raw spellings of a decoded name are ambiguous within this owner"
+        );
+        assert_eq!(
+            project.property_name_source_from_owner(owner, "identical"),
+            Some("identical"),
+            "repeated identical overload spelling is unambiguous"
+        );
+        assert_eq!(
+            project.property_name_source_from_owner(foreign, "same"),
+            Some("same")
+        );
+        assert_eq!(
+            project.property_name_source_from_owner(owner, "foreignOnly"),
+            None
+        );
+        let mut charged = 0;
+        let mut tokens = Vec::new();
+        project
+            .with_property_name_sources_from_owner(
+                owner,
+                |work| {
+                    charged += work;
+                    Ok(())
+                },
+                |name, raw| tokens.push((name, raw)),
+            )
+            .unwrap();
+        assert_eq!(
+            tokens.len(),
+            6,
+            "one visit per direct parsed member, including overloads"
+        );
+        let expected = 1
+            + tokens.len() as u64
+            + tokens
+                .iter()
+                .map(|(name, raw)| (name.len() + raw.len()) as u64)
+                .sum::<u64>();
+        assert_eq!(
+            charged, expected,
+            "one owner scan charges declarations, direct members and retained token bytes"
+        );
+        for stop in [
+            tsz_common::ProjectExecutionStop::Cancelled,
+            tsz_common::ProjectExecutionStop::Deadline,
+            tsz_common::ProjectExecutionStop::WorkBudgetExhausted,
+        ] {
+            let mut consumed = 0;
+            let mut build = || {
+                let mut remaining = 15_u64;
+                let mut local = Vec::new();
+                project.with_property_name_sources_from_owner(
+                    owner,
+                    |work| {
+                        remaining = remaining.checked_sub(work).ok_or(stop)?;
+                        Ok(())
+                    },
+                    |name, raw| {
+                        consumed += 1;
+                        local.push((name, raw));
+                    },
+                )?;
+                Ok::<_, tsz_common::ProjectExecutionStop>(local)
+            };
+            assert_eq!(
+                build(),
+                Err(stop),
+                "no prefix index is returned on a typed stop"
+            );
+            assert_eq!(
+                consumed, 1,
+                "the stop occurs during a scan after its first actual token"
+            );
+            let mut recovered = Vec::new();
+            project
+                .with_property_name_sources_from_owner(
+                    owner,
+                    |_| Ok(()),
+                    |name, raw| recovered.push((name, raw)),
+                )
+                .unwrap();
+            assert_eq!(
+                recovered, tokens,
+                "a stopped visitor has no persistent partial cache"
+            );
+        }
     }
 
     #[test]
