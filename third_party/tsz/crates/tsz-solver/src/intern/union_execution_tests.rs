@@ -387,6 +387,45 @@ fn discriminant_partition_copy_is_metered_after_all_groups_reduce() {
 }
 
 #[test]
+fn discriminant_fallback_copy_observes_stop_without_interning() {
+    let interner = TypeInterner::new();
+    let mut members: Vec<TypeId> = (0..10)
+        .map(|index| {
+            let tag = interner.literal_number(f64::from(index));
+            interner.object(vec![property(&interner, "tag", tag)])
+        })
+        .collect();
+    members.push(TypeId::STRING);
+    let type_count_before = interner.len();
+
+    let continue_checkpoint = ContinueCheckpoint;
+    let mut work = UnionExecutionWork::new(&continue_checkpoint).expect("initial checkpoint");
+    let mut metered_work = Some(&mut work);
+    assert_eq!(
+        interner.try_partition_union_reduction_with_work(&members, &mut metered_work),
+        Ok(None),
+        "the non-object member remains in the fallback and preserves the input"
+    );
+    drop(metered_work);
+    assert_eq!(work.flush(), Ok(()));
+    assert_eq!(interner.len(), type_count_before);
+
+    // The ten object groups account for 63 work units before the single
+    // fallback member is copied. Its tick crosses the 64-unit poll, which
+    // must stop before the local result can be returned or interned.
+    let checkpoint = ControlledCheckpoint::stop_after(63);
+    let mut work = UnionExecutionWork::new(&checkpoint).expect("initial checkpoint");
+    let mut metered_work = Some(&mut work);
+    assert_eq!(
+        interner.try_partition_union_reduction_with_work(&members, &mut metered_work),
+        Err(ProjectExecutionStop::Cancelled),
+    );
+    assert_eq!(checkpoint.charged_units.load(Ordering::Acquire), 64);
+    assert_eq!(interner.len(), type_count_before);
+    assert!(!interner.is_union_too_complex());
+}
+
+#[test]
 fn mid_normalization_stop_does_not_publish_union_or_complexity_memo() {
     let interner = TypeInterner::new();
     let members: Vec<TypeId> = (0..128)

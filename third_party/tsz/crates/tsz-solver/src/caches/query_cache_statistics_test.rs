@@ -70,13 +70,17 @@ fn query_cache_latches_union_stop_before_unknown_or_memo_publication() {
 fn shared_eval_memo_sink_rechecks_after_local_insert_latches_stop() {
     let interner = TypeInterner::new();
     let shared = SharedQueryCache::new();
-    // `insert_eval_memo` polls once at entry. The local cache writer's own
-    // guard observes the next poll, so its stop must prevent the later shared
-    // write-through sink from publishing the value.
-    let source = StopOnPoll(std::sync::atomic::AtomicUsize::new(1));
+    // `insert_eval_memo` and its local writer both pass their guards. The
+    // shared-tier sink observes the next poll, after the local insertion, and
+    // must refuse to publish the value across files.
+    let source = StopOnPoll(std::sync::atomic::AtomicUsize::new(2));
     let db = QueryCache::new_with_shared(&interner, &shared).with_execution_checkpoint(&source);
     db.insert_eval_memo(TypeId::BOOLEAN, false, TypeId::STRING);
-    assert_eq!(db.statistics().eval_cache_entries, 0);
+    assert_eq!(db.statistics().eval_cache_entries, 1);
+    assert_eq!(
+        db.lookup_eval_memo(TypeId::BOOLEAN, false),
+        Some(TypeId::STRING)
+    );
 
     let observer = QueryCache::new_with_shared(&interner, &shared);
     assert_eq!(observer.lookup_eval_memo(TypeId::BOOLEAN, false), None);
@@ -86,8 +90,8 @@ fn shared_eval_memo_sink_rechecks_after_local_insert_latches_stop() {
 fn shared_application_eval_sink_rechecks_stop_before_local_publish() {
     let interner = TypeInterner::new();
     let shared = SharedQueryCache::new();
-    // The first poll admits the call; the shared-tier sink sees the one-shot
-    // stop before either shared or local application-cache publication.
+    // The entry poll admits the call; the shared-tier guard sees the stop,
+    // and the following local-write guard must keep it out of both tiers.
     let source = StopOnPoll(std::sync::atomic::AtomicUsize::new(1));
     let db = QueryCache::new_with_shared(&interner, &shared).with_execution_checkpoint(&source);
     db.insert_application_eval_cache(DefId(913), &[TypeId::STRING], false, TypeId::NUMBER);
