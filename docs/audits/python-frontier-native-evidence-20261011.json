@@ -1,0 +1,626 @@
+{
+  "schema": "nudox-root-python-frontier-native-audit.v1",
+  "gates": [
+    {
+      "number": 44,
+      "receipt_path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/python-controls-7dcc-44/receipt.json",
+      "receipt_sha256": "ba9df5d10e148e6e5a46c3aeee1fdfa1ee3ac717953f8e2b10f6923f91673fe9",
+      "source": {
+        "commit": "7dcc61e6455aa129e30fe7afc08aca76a634b061",
+        "tree": "bdc2d5ddcea9df250df681a93d0a3be34c3ae901",
+        "clean": true,
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_after": {
+        "commit": "7dcc61e6455aa129e30fe7afc08aca76a634b061",
+        "status": "",
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_unchanged": true,
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "backend-frontend-python",
+        "-j2",
+        "--test",
+        "python_import_candidates",
+        "--test",
+        "python_project",
+        "--test",
+        "python_source_intake",
+        "--test",
+        "python_package_source_policy",
+        "--",
+        "--nocapture"
+      ],
+      "wall_seconds": 153.12541216402315,
+      "exit": 101,
+      "test_results": [],
+      "raw_sha256": {
+        "stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr": "d301318f35489831a6fdfe071e6231799074d20f093cf71913551010e29817d4"
+      },
+      "owned_group_empty": true,
+      "guard_sha256": "0fee90b587a7cb24b797c8606080d2c90bad455165a0fb967bf5f69b425a3ac9"
+    },
+    {
+      "number": 45,
+      "receipt_path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/python-controls-4d6-45/receipt.json",
+      "receipt_sha256": "bf73cc3445d675790029fc4d3320560362fcb0786aafb03b6d4ffad227841ccf",
+      "source": {
+        "commit": "4d6d842790007c8fddee00da211153fc55982506",
+        "tree": "f782d3e5f0f893f10b5157144fb8cd58db92f87b",
+        "clean": true,
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_after": {
+        "commit": "4d6d842790007c8fddee00da211153fc55982506",
+        "status": "",
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_unchanged": true,
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "backend-frontend-python",
+        "-j2",
+        "--test",
+        "python_import_candidates",
+        "--test",
+        "python_project",
+        "--test",
+        "python_source_intake",
+        "--test",
+        "python_package_source_policy",
+        "--",
+        "--nocapture"
+      ],
+      "wall_seconds": 5.296574153937399,
+      "exit": 101,
+      "test_results": [],
+      "raw_sha256": {
+        "stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "stderr": "c150f143a9a6287c05c302df6d1f5ed8bec8a2421326308feb9d027031643000"
+      },
+      "owned_group_empty": true,
+      "guard_sha256": "c12b5a6fe968375e8008001b89825af5d79b944c2bf6a37e0db0a3fc81289a8e"
+    },
+    {
+      "number": 46,
+      "receipt_path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/python-controls-0439-46/receipt.json",
+      "receipt_sha256": "6559f797c6f2f8988a7410b10ccb64856c05e2f893d57e8d95003768f5e31662",
+      "source": {
+        "commit": "04394029ab880223135fa0797d58d01724801b02",
+        "tree": "d29c6cdac3753b02e7d8f0e86b59c74d21531f67",
+        "clean": true,
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_after": {
+        "commit": "04394029ab880223135fa0797d58d01724801b02",
+        "status": "",
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_unchanged": true,
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "backend-frontend-python",
+        "-j2",
+        "--test",
+        "python_import_candidates",
+        "--test",
+        "python_project",
+        "--test",
+        "python_source_intake",
+        "--test",
+        "python_package_source_policy",
+        "--",
+        "--nocapture"
+      ],
+      "wall_seconds": 16.867934692883864,
+      "exit": 101,
+      "test_results": [
+        {
+          "status": "FAILED",
+          "passed": 4,
+          "failed": 2,
+          "ignored": 0,
+          "seconds": 14.94
+        }
+      ],
+      "raw_sha256": {
+        "stdout": "ef14abca2550ee860a242ea5b8898fb476820de9fd2a274c30f345bfaf31b0e8",
+        "stderr": "3c9f0624e2848265403466264c338801fd3dea2f1fabf02c88bce9ace5af4ef9"
+      },
+      "owned_group_empty": true,
+      "guard_sha256": "b650573849a70793b1a9a4ac90676ff9111449c24626ece46396fb06d2e16784"
+    },
+    {
+      "number": 47,
+      "receipt_path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/python-remaining-0439-47/receipt.json",
+      "receipt_sha256": "17b799cb7251989895205a5970cbe4bd09ab4364096ee680e19364ef45979437",
+      "source": {
+        "commit": "04394029ab880223135fa0797d58d01724801b02",
+        "tree": "d29c6cdac3753b02e7d8f0e86b59c74d21531f67",
+        "clean": true,
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_after": {
+        "commit": "04394029ab880223135fa0797d58d01724801b02",
+        "status": "",
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_unchanged": true,
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "backend-frontend-python",
+        "-j2",
+        "--test",
+        "python_project",
+        "--test",
+        "python_source_intake",
+        "--test",
+        "python_package_source_policy",
+        "--",
+        "--nocapture"
+      ],
+      "wall_seconds": 40.01207376806997,
+      "exit": 0,
+      "test_results": [
+        {
+          "status": "ok",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0,
+          "seconds": 5.66
+        },
+        {
+          "status": "ok",
+          "passed": 12,
+          "failed": 0,
+          "ignored": 1,
+          "seconds": 25.06
+        },
+        {
+          "status": "ok",
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0,
+          "seconds": 8.21
+        }
+      ],
+      "raw_sha256": {
+        "stdout": "94b86da8daff49ba7faa05f080f3e49393203d7d7c612e1537b132f5e5f4b698",
+        "stderr": "f6d1069bbb932c4b926c5996be7667120e06d4651b04dc05aadb807e8d5304ec"
+      },
+      "owned_group_empty": true,
+      "guard_sha256": "9a6d39207fe2946b81bcac18c6caf95144e5245ece0b1acebe131a7d6041afa9"
+    },
+    {
+      "number": 48,
+      "receipt_path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/python-vendor-7ea-48/receipt.json",
+      "receipt_sha256": "0d56d21afbf51e2baf3f303a62b98f468e0dd752030197611815d998920abb1b",
+      "source": {
+        "commit": "7ea763a54855f07e9c8ff83d696dca821b29eacd",
+        "tree": "eae95412084db8ba0c2550a772692bc1603affde",
+        "clean": true,
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_after": {
+        "commit": "7ea763a54855f07e9c8ff83d696dca821b29eacd",
+        "status": "",
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_unchanged": true,
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "pyrefly@1.2.0-dev.1",
+        "--lib",
+        "module::finder::tests::test_cached_and_uncached",
+        "--",
+        "--nocapture"
+      ],
+      "wall_seconds": 52.08809316600673,
+      "exit": 0,
+      "test_results": [
+        {
+          "status": "ok",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0,
+          "seconds": 0.0
+        }
+      ],
+      "raw_sha256": {
+        "stdout": "4f90125d99d3a6cfaf19671c8abe11cfe5d4d39cbb38794064b7d06322320adc",
+        "stderr": "4f9a62733aa6e23276a3a6c3dc7f3de9676ec61bf3f117d4f3a5cc58f648ea11"
+      },
+      "owned_group_empty": true,
+      "guard_sha256": "80801e51ea6ab7269676a3458ab447c1e564a8795461dc9e70a53645e0a4ed96"
+    },
+    {
+      "number": 49,
+      "receipt_path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/python-controls-7ea-49/receipt.json",
+      "receipt_sha256": "b564a7dc647489b97a14084e4c096e2fa21836e6d967b9df10ec21148a16b236",
+      "source": {
+        "commit": "7ea763a54855f07e9c8ff83d696dca821b29eacd",
+        "tree": "eae95412084db8ba0c2550a772692bc1603affde",
+        "clean": true,
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_after": {
+        "commit": "7ea763a54855f07e9c8ff83d696dca821b29eacd",
+        "status": "",
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_unchanged": true,
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-frontend-python",
+        "--test",
+        "python_import_candidates",
+        "--test",
+        "python_project",
+        "--test",
+        "python_source_intake",
+        "--test",
+        "python_package_source_policy",
+        "--",
+        "--nocapture"
+      ],
+      "wall_seconds": 90.21145902085118,
+      "exit": 0,
+      "test_results": [
+        {
+          "status": "ok",
+          "passed": 7,
+          "failed": 0,
+          "ignored": 0,
+          "seconds": 26.45
+        },
+        {
+          "status": "ok",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0,
+          "seconds": 5.7
+        },
+        {
+          "status": "ok",
+          "passed": 12,
+          "failed": 0,
+          "ignored": 1,
+          "seconds": 24.81
+        },
+        {
+          "status": "ok",
+          "passed": 4,
+          "failed": 0,
+          "ignored": 0,
+          "seconds": 8.22
+        }
+      ],
+      "raw_sha256": {
+        "stdout": "8c55807b125c4a4335e36f363fb5fdfac052b604e01f07f1f53ce67e06ebf6be",
+        "stderr": "6a6b48cc68ce0aba98d8642593f632acb308b49943f2376371443af111b85ac6"
+      },
+      "owned_group_empty": true,
+      "guard_sha256": "8ecf3dee6894d9f6f174c9979267e36e76ebb0d554f64888e0479e7e4a9b4636"
+    },
+    {
+      "number": 51,
+      "receipt_path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/python-httpie-133-7ea-51/receipt.json",
+      "receipt_sha256": "813379ad986c29c6bf244967cd249cf3fdea11afc033f097502b38a776a85f3a",
+      "source": {
+        "commit": "7ea763a54855f07e9c8ff83d696dca821b29eacd",
+        "tree": "eae95412084db8ba0c2550a772692bc1603affde",
+        "clean": true,
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_after": {
+        "commit": "7ea763a54855f07e9c8ff83d696dca821b29eacd",
+        "status": "",
+        "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_unchanged": true,
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-j2",
+        "-p",
+        "backend-frontend-python",
+        "--test",
+        "python_httpie_capture_replay",
+        "real_httpie_133_sources_beside_normal_venv_keep_exact_native_frontier",
+        "--",
+        "--ignored",
+        "--exact",
+        "--nocapture"
+      ],
+      "wall_seconds": 12.464464677963406,
+      "exit": 0,
+      "test_results": [
+        {
+          "status": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "seconds": 10.0
+        }
+      ],
+      "raw_sha256": {
+        "stdout": "24c076d7ed3a693a5c074a9c1705b1dc60fdf93185d5be71636624cd8c5d9321",
+        "stderr": "da1e655954bc54f87295b51e7d4ccba7a4e96f5a2d6e29d82ea3ec41b56ef127"
+      },
+      "owned_group_empty": true,
+      "guard_sha256": "2fed3b519cff0733021440edd021d30d0180d8957b8c7194289072d11cb22c1e"
+    }
+  ],
+  "native_httpie_baseline": {
+    "source_pin": "5b604c37c6c67e18e7c3e9aee6c88a8c22b98345",
+    "sources": 133,
+    "exact_local_targets": 2620,
+    "dependency_gaps": 158,
+    "diagnostics": 1447,
+    "test_seconds": 10.0,
+    "scope": "Direct native frontend replay of all unchanged TSV-baseline sources beside the real normal venv; not installed producer membership or successful publication proof."
+  },
+  "native_gui05": {
+    "receipt_path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/gui-six-05/receipt.json",
+    "receipt_sha256": "3fef27d6f7ec2a7cf1d4a8dfe6741e2c4a90cdc316ad88c2cc997c4644c9c687",
+    "stages": [
+      {
+        "filter": "shell::jump_tests::world_header_renews_after_authority_changes_without_chrome_resources",
+        "exit": 0,
+        "single_test_passed": true,
+        "binary": {
+          "path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role/debug/deps/backend_desktop-12121bb8b76207ba",
+          "sha256": "c20a64634461902b8a128d6f6704d9cad9af58a72f441742dff29658ede14bba",
+          "bytes": 783166208,
+          "manifest_path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/apps/desktop/Cargo.toml",
+          "features": [],
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        },
+        "source": {
+          "commit": "2ddf8832cba51d4067c5f24c63b4614ae768aab1",
+          "tree": "c88a290d895b23a30709f200833deebbd65e4a5f",
+          "status": "",
+          "lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd"
+        },
+        "raw_sha256": {
+          "stdout": "b4b4802dc5087166be3bcaaab685e64897b2508520b18e136da3dc7c492476c4",
+          "stderr": "81f54bf121b1f91b4f45cb08c6ab43773d81978bba703f3114cf2c706c1d8546"
+        }
+      },
+      {
+        "filter": "shell::jump_tests::world_header_renews_after_coalesced_same_root_owner_replacement",
+        "exit": 101,
+        "single_test_passed": false,
+        "binary": {
+          "path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role/debug/deps/backend_desktop-12121bb8b76207ba",
+          "sha256": "c20a64634461902b8a128d6f6704d9cad9af58a72f441742dff29658ede14bba",
+          "bytes": 783166208,
+          "manifest_path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/apps/desktop/Cargo.toml",
+          "features": [],
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        },
+        "source": {
+          "commit": "2ddf8832cba51d4067c5f24c63b4614ae768aab1",
+          "tree": "c88a290d895b23a30709f200833deebbd65e4a5f",
+          "status": "",
+          "lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd"
+        },
+        "raw_sha256": {
+          "stdout": "45ad2b9c442aa43d13091737f9118aadc914f02ed2011cb8cbcdaddccfcbbdcc",
+          "stderr": "1c5dba395b31dd92c8ab7cecac4f7ccfaceb38bdcd46e9a90d8db8d196ab77b2"
+        }
+      }
+    ],
+    "remaining_controls_unrun": 4,
+    "native_windows": 0,
+    "images": 0,
+    "failure": "Coalesced same-root owner replacement emits an incidental branch; producer or fixture cause under investigation. Link repaired using exact realized XCB/XKB target-suffixed Nix flags, no Rustflags/profile change.",
+    "prior_gui04": "Link failure; zero tests executed; raw receipt retained separately."
+  },
+  "native_gui06": {
+    "receipt_path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/gui-six-06/receipt.json",
+    "receipt_sha256": "3ef05832d00baa75cb8e17e849ab23553dd79173117142a6fd5e6c7268a142d8",
+    "outer_receipt_sha256": "aee0684e9f9f37a3dcf8e6a0de76b3bac074303c081bc5fb9d34c993d5cb0807",
+    "stages": [
+      {
+        "filter": "shell::jump_tests::world_header_renews_after_authority_changes_without_chrome_resources",
+        "exit": 0,
+        "binary": {
+          "path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role/debug/deps/backend_desktop-12121bb8b76207ba",
+          "sha256": "a348bdefc37a7ce10f90459a4d0b8c6d1769ba8805848d35829fea36210a9111",
+          "bytes": 783179496,
+          "manifest_path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/apps/desktop/Cargo.toml",
+          "features": [],
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        },
+        "source": {
+          "commit": "fe093120ef02cb89de14e86e143da5e85fce75e3",
+          "tree": "dd39cfbeb599b77d932001d240ad0b5507e8738e",
+          "status": "",
+          "lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd"
+        },
+        "raw_sha256": {
+          "stdout": "e86b4f8d0adac8b9166ff4a042409695f8ea68e91baa22771ab117a0e2f2da6b",
+          "stderr": "4cd0bcf3fde5e9314fd6f50a789fcdd28bbf63cda95691d6eed02a833e99b30a"
+        }
+      },
+      {
+        "filter": "shell::jump_tests::world_header_renews_after_coalesced_same_root_owner_replacement",
+        "exit": 101,
+        "binary": {
+          "path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role/debug/deps/backend_desktop-12121bb8b76207ba",
+          "sha256": "a348bdefc37a7ce10f90459a4d0b8c6d1769ba8805848d35829fea36210a9111",
+          "bytes": 783179496,
+          "manifest_path": "/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/apps/desktop/Cargo.toml",
+          "features": [],
+          "profile": {
+            "opt_level": "0",
+            "debuginfo": 0,
+            "debug_assertions": true,
+            "overflow_checks": true,
+            "test": true
+          }
+        },
+        "source": {
+          "commit": "fe093120ef02cb89de14e86e143da5e85fce75e3",
+          "tree": "dd39cfbeb599b77d932001d240ad0b5507e8738e",
+          "status": "",
+          "lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd"
+        },
+        "raw_sha256": {
+          "stdout": "4278cc57a0ce14594dc80cc2c23102bbde7153bde757993a22c381963d869023",
+          "stderr": "8000d28e839461c724b4f2d37b16cd3893afc643ebbf33fea74ba9ffe33e5091"
+        }
+      }
+    ],
+    "remaining_controls_unrun": 4,
+    "native_windows": 0,
+    "images": 0,
+    "actual_event_vector": "events=[Snapshot(Settings), Resource(Orbit), Resource(Health), Resource(Orbit), Snapshot(Owner), Resource(Orbit)]",
+    "diagnosis": "The pre-ready harness gate starts at epoch0, which its watcher already treats as seen. The replacement becomes the first consumed Ready event, legitimately admitting Attached settings. No GraphFocus event, focus change or notice change occurred; this run does not demonstrate a failed production Owner wake. Observable initial Ready contract repair and its rerun remain pending."
+  },
+  "installer": {
+    "source_head": "7e22d20b73e945ea4fd7f228571dab2ae5726653",
+    "source_pr": 149,
+    "canonical_merge": "9c5b2c621a2668b8fcf8cf881f25fb04e13a40f7",
+    "root_cpython_controls": 57,
+    "root_stdout_sha256": "70e2766418be8ca696b9fe24fba098cc555904cf3cc3ff4c77328c74db41d7b0",
+    "root_stderr_sha256": "679caef5ce53ad63ecfd6c63a588abcc2696995a02272e996e9cf635096caabc",
+    "unsupported_rustpython_attempt": {
+      "passed_test_count_not_credited": true,
+      "failures": 15,
+      "errors": 2,
+      "stdout_sha256": "70e2766418be8ca696b9fe24fba098cc555904cf3cc3ff4c77328c74db41d7b0",
+      "stderr_sha256": "8d472d4f7377112ef6cb1c379c91cc447c6ff61cf1001098a12ce64f04a1941e"
+    },
+    "public_prior_r2": {
+      "receipt_path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/public-installer-r2-managed-01/evidence/receipt.json",
+      "receipt_sha256": "f8d70b3905884b458813b25ad96e7789bc98eb1c2437ac4bc9bc76cf1cadbceb",
+      "historical_source": "c0016d4f4fc9b0f0a452c7c9556954e2287948b3",
+      "counts": {
+        "fresh_installs": 1,
+        "repeat_installs": 1,
+        "different_release_updates": 0,
+        "help_probes": 3,
+        "version_probes": 1
+      },
+      "current_source_application_acceptance": "UNRUN"
+    },
+    "published_supplemental_launcher": {
+      "bytes": 4329,
+      "sha256": "bda51e0f6f413754e2e9e79b84bc06995377ef9872bf251fb18bc42634217a71",
+      "url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install-shell-bda51e0f6f413754.sh",
+      "old_install_sh_unchanged": true,
+      "fresh_linux_candidate_proof": "PASS",
+      "receipt_path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/public-installer-r2-bda51-managed-02/evidence/receipt.json",
+      "receipt_sha256": "b466f900ac5e8956d59517e8441e44f15d6dcc1976c1daf75b7aab249f83fde1",
+      "outer_receipt_sha256": "50112a78219e4db9927bb71b4afb0375d045dd1c1be812a4556a2960e3b7f655",
+      "raw_sha256": {
+        "stdout": "ca05da460cf0ce98717379837a4bb63b5383727068908bcff9a694623db471c5",
+        "stderr": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "wall_seconds": 7.230739295948297,
+      "counts": {
+        "fresh_installs": 1,
+        "repeat_installs": 1,
+        "different_release_updates": 0,
+        "help_probes": 3,
+        "version_probes": 1
+      },
+      "uid": 1001,
+      "glibc": "2.39",
+      "historical_source": "c0016d4f4fc9b0f0a452c7c9556954e2287948b3",
+      "binaries": {
+        "backend-cli": {
+          "path": "/home/sol61-cli-proof/installer-public-r2-bda51-02/prefix/lib/nudox/versions/checkpoint-20261008-c0016d4f4f-linux-x64/bin/backend-cli",
+          "bytes": 46839129,
+          "sha256": "8db8898e9f9423eabe2a21ec1a0c76de9b760e2bfd9c336f6974d9dd87f6fe13"
+        },
+        "backend-mcp": {
+          "path": "/home/sol61-cli-proof/installer-public-r2-bda51-02/prefix/lib/nudox/versions/checkpoint-20261008-c0016d4f4f-linux-x64/bin/backend-mcp",
+          "bytes": 34791897,
+          "sha256": "567de09f425db399029d71ebfe8b03a42e68a0e987c31ef97d55492088df89d4"
+        },
+        "backend-locald": {
+          "path": "/home/sol61-cli-proof/installer-public-r2-bda51-02/prefix/lib/nudox/versions/checkpoint-20261008-c0016d4f4f-linux-x64/bin/backend-locald",
+          "bytes": 147553369,
+          "sha256": "eb8a762d8eb6710c4a492fd72dea76633f4ebe09dd0e541f9c4ef7c3df66319e"
+        }
+      },
+      "current_source_application_acceptance": "UNRUN"
+    }
+  },
+  "not_proven": [
+    "configured TypeScript request successor",
+    "current installed CLI/MCP/daemon trio",
+    "live HTTPie publication",
+    "live Mealie publication",
+    "current native GUI complete six controls or screenshots",
+    "full local-service and Clippy",
+    "configured semantic search",
+    "large Go and Rust acceptance",
+    "user reported installer failure cause"
+  ]
+}
