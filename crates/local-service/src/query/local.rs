@@ -129,12 +129,12 @@ pub(crate) struct Placement {
 /// package itself) before a callable, before a field or a module, before a
 /// `use` that only brings the name in.
 fn kind_weight(kind: &str) -> u8 {
-    match kind {
-        "project" | "struct" | "enum" | "trait" | "union" | "class" | "interface" => 4,
-        "type" | "function" | "method" | "macro" | "constant" | "constructor" => 3,
-        "field" | "property" | "variant" | "variable" | "module" => 2,
-        "import" => 0,
-        _ => 1,
+    if kind == "project" {
+        4
+    } else {
+        backend_library::declaration_name_priority(backend_library::DeclarationKind::from_name(
+            kind,
+        ))
     }
 }
 

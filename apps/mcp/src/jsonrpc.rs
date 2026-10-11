@@ -1065,14 +1065,26 @@ impl<P: Product> Server<P> {
         owner_token: &str,
         context: &[u8],
     ) -> Result<String, RpcError> {
-        let encoded_owner = URL_SAFE_NO_PAD.encode(owner_token.as_bytes());
-        let body = format!("{expiry}-{encoded_owner}");
+        if !valid_direct_cursor_owner(owner_token) {
+            return Err(RpcError::invalid(
+                "owner cursor has an unsupported encoding or exceeds its bound",
+            ));
+        }
+        // Owner tokens already use URL-safe encodings. Sign their exact bytes
+        // rather than expanding them through a redundant second base64 layer.
+        // Include the version in the authenticated body to prevent rebinding.
+        let body = format!("mcp2-{expiry}-{owner_token}");
         let key = self.cursor_secret.key()?;
         let mac = Self::cursor_mac(&key, &body, context);
-        Ok(format!("mcp1-{body}-{}", hex_bytes(&mac.as_bytes()[..16])))
+        Ok(format!("{body}-{}", hex_bytes(&mac.as_bytes()[..16])))
     }
 
     fn verify_cursor_token(&self, token: &str, context: &[u8]) -> Result<Option<String>, RpcError> {
+        if token.starts_with("mcp2-") {
+            return self.verify_direct_cursor_token(token, context);
+        }
+        // Keep the historical mcp1 parser, canonical outer base64 check and
+        // MAC domain unchanged so previously issued tokens remain verifiable.
         let parsed = (|| {
             let body = token.strip_prefix("mcp1-")?;
             let (body, encoded_mac) = body.rsplit_once('-')?;
@@ -1103,6 +1115,47 @@ impl<P: Product> Server<P> {
             return Ok(None);
         }
         Ok(Some(owner))
+    }
+
+    fn verify_direct_cursor_token(
+        &self,
+        token: &str,
+        context: &[u8],
+    ) -> Result<Option<String>, RpcError> {
+        // Bound the raw string before parsing, allocating or hashing it.
+        if token.len() > backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES.saturating_add(59) {
+            return Ok(None);
+        }
+        let Some((body, encoded_mac)) = token.rsplit_once('-') else {
+            return Ok(None);
+        };
+        let Some((expiry_text, owner)) = body
+            .strip_prefix("mcp2-")
+            .and_then(|body| body.split_once('-'))
+        else {
+            return Ok(None);
+        };
+        let Some(expiry) = expiry_text.parse::<u64>().ok() else {
+            return Ok(None);
+        };
+        if expiry <= unix_seconds()
+            || expiry.to_string() != expiry_text
+            || !valid_direct_cursor_owner(owner)
+            || encoded_mac.len() != 32
+            || !encoded_mac
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Ok(None);
+        }
+        let Some(key) = self.cursor_secret.verification_key()? else {
+            return Ok(None);
+        };
+        let expected = Self::cursor_mac(&key, body, context);
+        if encoded_mac != hex_bytes(&expected.as_bytes()[..16]) {
+            return Ok(None);
+        }
+        Ok(Some(owner.to_owned()))
     }
 
     fn cursor_mac(key: &[u8; 32], body: &str, context: &[u8]) -> blake3::Hash {
@@ -1223,6 +1276,9 @@ fn continuation_context(
 ) -> Vec<u8> {
     let mut canonical = BTreeMap::new();
     canonical.insert("detail", Value::String(detail.name().to_owned()));
+    // This request-context schema is shared with already issued mcp1 tokens.
+    // mcp2 binds its wrapper version in the MAC body, not by changing the
+    // query/project/role context and invalidating legacy continuations.
     canonical.insert("schema", Value::String("mcp1".to_owned()));
     canonical.insert("tool", Value::String(name.to_owned()));
     canonical.insert("workspace", Value::String(workspace.to_owned()));
@@ -1276,6 +1332,46 @@ fn decode_cursor_owner(encoded: &str) -> Option<String> {
     String::from_utf8(decoded)
         .ok()
         .filter(|owner_token| !owner_token.is_empty())
+}
+
+/// Encoding admission only: the owner still checks the retained proof,
+/// selected roots, query roles and index state after wrapper authentication.
+fn valid_direct_cursor_owner(owner: &str) -> bool {
+    if owner.is_empty() || owner.len() > backend_library::MAX_INDEX_SEARCH_CURSOR_BYTES {
+        return false;
+    }
+    if let Some(encoded) = owner.strip_prefix("pc1-") {
+        return encoded.len() == backend_library::CURSOR_QUERY_BYTES.saturating_mul(2)
+            && encoded
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    }
+    if let Some(encoded) = owner.strip_prefix("pc2-") {
+        return !encoded.is_empty()
+            && encoded.len() % 2 == 0
+            && encoded
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    }
+    let (encoded, portable) = owner
+        .strip_prefix("pc3-")
+        .map_or((owner, false), |encoded| (encoded, true));
+    if encoded.is_empty()
+        || !encoded
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return false;
+    }
+    let Ok(decoded) = URL_SAFE_NO_PAD.decode(encoded) else {
+        return false;
+    };
+    if decoded.is_empty() || URL_SAFE_NO_PAD.encode(&decoded) != encoded {
+        return false;
+    }
+    // The unprefixed index-search issuer serializes a JSON object. This is a
+    // framing check, not authority to admit its fields or its selected state.
+    portable || (decoded.first() == Some(&b'{') && decoded.last() == Some(&b'}'))
 }
 
 /// Renders one answer: Markdown for a reader, the typed DTO for a program.

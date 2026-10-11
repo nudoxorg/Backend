@@ -392,7 +392,15 @@ fn append_compiler_query_facts(
                         ),
                     ),
                     backend_extension_trustfall::SemanticQueryPresentation {
-                        coordinate: format!("{label}::external::{id}"),
+                        coordinate: super::identity::external_semantic_coordinate(
+                            &label,
+                            super::identity::external_semantic_symbol(
+                                package,
+                                image_digest,
+                                target,
+                            ),
+                            &name,
+                        ),
                         id,
                         kind: "external".to_owned(),
                         name,

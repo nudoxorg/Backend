@@ -244,7 +244,7 @@ impl Library {
                 query.selection(),
                 offset,
                 limit,
-                |id| self.view.row(id),
+                |id| self.view.row_ref(id),
                 |id, address| {
                     self.view
                         .row_ref(id)
@@ -498,7 +498,7 @@ impl Library {
                 query.text(),
                 offset,
                 limit,
-                |id| self.view.row(id),
+                |id| self.view.row_ref(id),
                 &self.work,
             )
         })?;
@@ -506,7 +506,7 @@ impl Library {
             query.text(),
             start,
             limit,
-            |id| self.view.row(id),
+            |id| self.view.row_ref(id),
             &self.work,
         );
         if query.cursor.is_some() && page.ids.is_empty() {

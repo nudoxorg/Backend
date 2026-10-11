@@ -3443,6 +3443,27 @@ impl SurfaceCommand {
     }
 }
 
+/// Completeness of source text retained by a batched declaration read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DeclarationReadExtent {
+    /// The complete captured declaration fits in the returned text.
+    Complete,
+    /// The returned source is a bounded prefix of the declaration.
+    Truncated,
+}
+
+impl DeclarationReadExtent {
+    /// Returns the stable source completeness spelling.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Truncated => "truncated",
+        }
+    }
+}
+
 /// Compact declaration result used by batched reads.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -3451,8 +3472,14 @@ pub struct DeclarationRecord {
     pub label: ProductText,
     /// Stable row digest bytes when found.
     pub stable_id: Option<[u8; 32]>,
-    /// Canonical signature when captured.
+    /// Captured source text, or the canonical signature when source is unavailable.
     pub signature: Option<ProductText>,
+    /// Completeness when `signature` contains captured source text.
+    /// Absent for a missing row, a signature fallback, or a legacy record that
+    /// predates this optional field. Live peer replies still require the
+    /// current DTO version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extent: Option<DeclarationReadExtent>,
 }
 
 /// How a declaration changed between package versions.
@@ -5005,7 +5032,15 @@ impl SurfaceReply {
         }
         let count = match self {
             Self::Advisory(_) => 1,
-            Self::Read(v) => v.len(),
+            Self::Read(records) => {
+                if records.iter().any(|record| {
+                    record.extent.is_some()
+                        && (record.stable_id.is_none() || record.signature.is_none())
+                }) {
+                    return Err(ProductAdmissionError::DeclarationReadShape);
+                }
+                records.len()
+            }
             Self::References { references, .. } => references.len(),
             Self::Diff(rows) => rows.iter().try_fold(rows.len(), |count, row| {
                 if !row.has_valid_identity_shape()
@@ -5632,6 +5667,8 @@ pub enum ProductAdmissionError {
     RowBound,
     /// Reply and command identities differ.
     CommandMismatch,
+    /// Batch source completeness has no found declaration or captured text.
+    DeclarationReadShape,
     /// A semantic diff contradicts its declaration sides or graph evidence lifecycle.
     DiffShape,
     /// A semantic generation record or selection is internally inconsistent.
@@ -5686,6 +5723,7 @@ impl core::fmt::Display for ProductAdmissionError {
             Self::ProjectName => "project name is invalid",
             Self::RowBound => "product row count exceeds its bound",
             Self::CommandMismatch => "product reply does not match its command",
+            Self::DeclarationReadShape => "batch source extent has no declaration or captured text",
             Self::DiffShape => "semantic diff has inconsistent identities or evidence",
             Self::SemanticVersionShape => "semantic version selection is inconsistent",
             Self::DependencyShape => "dependency fact has an invalid or duplicate identity",
@@ -7154,8 +7192,8 @@ mod tests {
         );
         assert_eq!(
             crate::DTO_VERSION,
-            25,
-            "partial publication remains in the joined closed wire-25 cohort"
+            27,
+            "partial publication remains in the current closed live DTO cohort"
         );
         let command = crate::CommandDto::new(
             61,
@@ -7169,12 +7207,12 @@ mod tests {
         );
         let encoded_reply = serde_json::to_vec(&reply).expect("partial reply envelope");
         let decoded_reply =
-            crate::decode_reply_body(&encoded_reply).expect("wire-25 partial reply");
+            crate::decode_reply_body(&encoded_reply).expect("current partial reply");
         crate::admit_reply(&command, &decoded_reply).expect("admit exact partial status route");
         assert_eq!(decoded_reply, reply);
         let mut old_peer: serde_json::Value =
             serde_json::from_slice(&encoded_reply).expect("encoded reply fields");
-        for old_version in [22, 23, 24] {
+        for old_version in [22, 23, 24, 25, 26] {
             old_peer["version"] = serde_json::json!(old_version);
             let old_bytes = serde_json::to_vec(&old_peer).expect("old peer version header");
             let error = crate::decode_reply_body(&old_bytes).expect_err("old partial peer refused");

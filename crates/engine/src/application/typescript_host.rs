@@ -42,6 +42,12 @@ const MAX_RESOLVER_METADATA_BYTES: usize = 64 * 1024 * 1024;
 const MAX_RESOLVER_DEPTH: usize = 32;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConfigDependencyKind {
+    Extends,
+    References,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FileIdentity {
     pub(crate) first: u64,
     pub(crate) second: super::toolchain_probe::FileObjectId,
@@ -2211,21 +2217,19 @@ fn collect_project_configs(
         let value = parse_typescript_config(&canonical, &bytes)?;
         let extends = config_paths_from_field(
             &value,
-            "extends",
             &canonical,
             &project_root,
             &workspace_root,
             &module_root,
-            false,
+            ConfigDependencyKind::Extends,
         )?;
         let references = config_paths_from_field(
             &value,
-            "references",
             &canonical,
             &project_root,
             &workspace_root,
             &module_root,
-            true,
+            ConfigDependencyKind::References,
         )?;
         pending.extend(extends.iter().cloned());
         pending.extend(references.iter().cloned());
@@ -2258,9 +2262,20 @@ fn collect_project_configs(
 fn validate_config_graph_acyclic(
     configs: &std::collections::BTreeMap<PathBuf, TypeScriptConfigInput>,
 ) -> Result<(), TypeScriptProjectHostError> {
+    fn dependencies(
+        config: &TypeScriptConfigInput,
+        kind: ConfigDependencyKind,
+    ) -> &[Box<Path>] {
+        match kind {
+            ConfigDependencyKind::Extends => &config.extends,
+            ConfigDependencyKind::References => &config.references,
+        }
+    }
+
     fn visit(
         path: &Path,
         configs: &std::collections::BTreeMap<PathBuf, TypeScriptConfigInput>,
+        kind: ConfigDependencyKind,
         visiting: &mut std::collections::BTreeSet<PathBuf>,
         visited: &mut std::collections::BTreeSet<PathBuf>,
     ) -> Result<(), TypeScriptProjectHostError> {
@@ -2273,8 +2288,8 @@ fn validate_config_graph_acyclic(
             });
         }
         if let Some(config) = configs.get(path) {
-            for dependency in config.extends.iter().chain(config.references.iter()) {
-                visit(dependency, configs, visiting, visited)?;
+            for dependency in dependencies(config, kind) {
+                visit(dependency, configs, kind, visiting, visited)?;
             }
         }
         visiting.remove(path);
@@ -2282,10 +2297,15 @@ fn validate_config_graph_acyclic(
         Ok(())
     }
 
-    let mut visiting = std::collections::BTreeSet::new();
-    let mut visited = std::collections::BTreeSet::new();
-    for path in configs.keys() {
-        visit(path, configs, &mut visiting, &mut visited)?;
+    for kind in [
+        ConfigDependencyKind::Extends,
+        ConfigDependencyKind::References,
+    ] {
+        let mut visiting = std::collections::BTreeSet::new();
+        let mut visited = std::collections::BTreeSet::new();
+        for path in configs.keys() {
+            visit(path, configs, kind, &mut visiting, &mut visited)?;
+        }
     }
     Ok(())
 }
@@ -2611,38 +2631,42 @@ fn strip_jsonc(text: &str) -> Option<String> {
 
 fn config_paths_from_field(
     value: &serde_json::Value,
-    field: &str,
     source: &Path,
     project_root: &Path,
     workspace_root: &Path,
     module_root: &Path,
-    references: bool,
+    kind: ConfigDependencyKind,
 ) -> Result<Vec<PathBuf>, TypeScriptProjectHostError> {
+    let field = match kind {
+        ConfigDependencyKind::Extends => "extends",
+        ConfigDependencyKind::References => "references",
+    };
     let Some(field_value) = value.get(field) else {
         return Ok(Vec::new());
     };
-    let strings = if references {
-        let entries =
-            field_value
-                .as_array()
-                .ok_or_else(|| TypeScriptProjectHostError::ConfigInvalid {
-                    config: source.to_path_buf().into_boxed_path(),
-                    message: "references must be an array".into(),
-                })?;
-        entries
-            .iter()
-            .map(|entry| {
-                entry
-                    .get("path")
-                    .and_then(serde_json::Value::as_str)
+    let strings = match kind {
+        ConfigDependencyKind::References => {
+            let entries =
+                field_value
+                    .as_array()
                     .ok_or_else(|| TypeScriptProjectHostError::ConfigInvalid {
                         config: source.to_path_buf().into_boxed_path(),
-                        message: "each reference must contain a string path".into(),
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?
-    } else {
-        match field_value {
+                        message: "references must be an array".into(),
+                    })?;
+            entries
+                .iter()
+                .map(|entry| {
+                    entry
+                        .get("path")
+                        .and_then(serde_json::Value::as_str)
+                        .ok_or_else(|| TypeScriptProjectHostError::ConfigInvalid {
+                            config: source.to_path_buf().into_boxed_path(),
+                            message: "each reference must contain a string path".into(),
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        }
+        ConfigDependencyKind::Extends => match field_value {
             serde_json::Value::String(value) => vec![value.as_str()],
             serde_json::Value::Array(values) => values
                 .iter()
@@ -2661,11 +2685,14 @@ fn config_paths_from_field(
                     message: "extends must be a string or an array of strings".into(),
                 });
             }
-        }
+        },
     };
     let mut resolved = Vec::new();
     for raw in strings {
-        if references || raw.starts_with('.') || Path::new(raw).is_absolute() {
+        if kind == ConfigDependencyKind::References
+            || raw.starts_with('.')
+            || Path::new(raw).is_absolute()
+        {
             let candidate = if Path::new(raw).is_absolute() {
                 PathBuf::from(raw)
             } else {
@@ -4638,24 +4665,195 @@ printf 'Version 5.9.3\n'
     }
 
     #[test]
+    fn angular_solution_references_and_child_inheritance_are_independent_graphs() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let root_bytes = br#"{
+  "compilerOptions": {
+    "strict": true,
+    "target": "ES2022",
+    "baseUrl": ".",
+    "paths": {"@shared/*": ["shared/*"]}
+  },
+  "files": [],
+  "references": [
+    {"path": "./tsconfig.app.json"},
+    {"path": "./tsconfig.spec.json"}
+  ]
+}"#;
+        let app_bytes = br#"{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {"outDir": "./out-tsc/app"},
+  "files": ["src/main.ts"],
+  "include": ["src/**/*.d.ts"]
+}"#;
+        let spec_bytes = br#"{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {"outDir": "./out-tsc/spec"},
+  "files": ["src/test.ts"],
+  "include": ["src/**/*.d.ts"]
+}"#;
+        fs::write(
+            fixture.0.join("angular.json"),
+            r#"{"projects":{"app":{"architect":{"build":{"options":{"tsConfig":"tsconfig.app.json"}}}}}}"#,
+        )
+        .expect("write Angular build configuration");
+        fs::write(fixture.0.join("tsconfig.json"), root_bytes)
+            .expect("write solution config");
+        fs::write(fixture.0.join("tsconfig.app.json"), app_bytes)
+            .expect("write app config");
+        fs::write(fixture.0.join("tsconfig.spec.json"), spec_bytes)
+            .expect("write spec config");
+        let module_root = fs::canonicalize(modules).expect("canonical module root");
+        let (selected, _) = angular_build_config_paths(&fixture.0, &module_root)
+            .expect("select Angular build config");
+
+        let configs = collect_project_configs(&fixture.0, &fixture.0, &module_root, &selected)
+            .expect("capture Angular solution, build, and spec configs");
+        assert_eq!(configs.len(), 3);
+
+        let root = fs::canonicalize(fixture.0.join("tsconfig.json"))
+            .expect("canonical solution config");
+        let app = fs::canonicalize(fixture.0.join("tsconfig.app.json"))
+            .expect("canonical app config");
+        let spec = fs::canonicalize(fixture.0.join("tsconfig.spec.json"))
+            .expect("canonical spec config");
+        let root_input = configs
+            .iter()
+            .find(|config| config.path.as_ref() == root)
+            .expect("solution config is captured");
+        let app_input = configs
+            .iter()
+            .find(|config| config.path.as_ref() == app)
+            .expect("selected app config is captured");
+        let spec_input = configs
+            .iter()
+            .find(|config| config.path.as_ref() == spec)
+            .expect("spec config is captured");
+
+        assert!(root_input.extends.is_empty());
+        assert_eq!(root_input.references.len(), 2);
+        assert_eq!(app_input.extends.len(), 1);
+        assert_eq!(app_input.extends[0].as_ref(), root.as_path());
+        assert!(app_input.references.is_empty());
+        assert_eq!(spec_input.extends.len(), 1);
+        assert_eq!(spec_input.extends[0].as_ref(), root.as_path());
+        assert!(spec_input.references.is_empty());
+        assert!(app_input.selected_build_config);
+        assert_eq!(root_input.bytes.as_ref(), root_bytes);
+        assert_eq!(app_input.bytes.as_ref(), app_bytes);
+        assert_eq!(spec_input.bytes.as_ref(), spec_bytes);
+    }
+
+    #[test]
+    fn config_closure_captures_shared_diamond_nodes_once() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        fs::create_dir_all(fixture.0.join("packages/left")).expect("create left project");
+        fs::create_dir_all(fixture.0.join("packages/right")).expect("create right project");
+        fs::create_dir_all(fixture.0.join("configs")).expect("create shared configs");
+        fs::write(
+            fixture.0.join("tsconfig.json"),
+            r#"{"references":[{"path":"./packages/left"},{"path":"./packages/right"}]}"#,
+        )
+        .expect("write solution config");
+        fs::write(
+            fixture.0.join("packages/left/tsconfig.json"),
+            r#"{"extends":"../../configs/shared"}"#,
+        )
+        .expect("write left config");
+        fs::write(
+            fixture.0.join("packages/right/tsconfig.json"),
+            r#"{"extends":"../../configs/shared"}"#,
+        )
+        .expect("write right config");
+        fs::write(
+            fixture.0.join("configs/shared.json"),
+            r#"{"extends":"./base","compilerOptions":{"strict":true}}"#,
+        )
+        .expect("write shared config");
+        fs::write(
+            fixture.0.join("configs/base.json"),
+            r#"{"compilerOptions":{"target":"ES2022"}}"#,
+        )
+        .expect("write common base config");
+        let module_root = fs::canonicalize(modules).expect("canonical module root");
+
+        let configs = collect_project_configs(&fixture.0, &fixture.0, &module_root, &[])
+            .expect("capture shared inheritance and reference closure");
+
+        assert_eq!(configs.len(), 5);
+        let mut paths = configs
+            .iter()
+            .map(|config| config.path.as_ref())
+            .collect::<Vec<_>>();
+        paths.sort_unstable();
+        paths.dedup();
+        assert_eq!(paths.len(), configs.len());
+        let shared = fs::canonicalize(fixture.0.join("configs/shared.json"))
+            .expect("canonical shared config");
+        let base = fs::canonicalize(fixture.0.join("configs/base.json"))
+            .expect("canonical base config");
+        let shared_input = configs
+            .iter()
+            .find(|config| config.path.as_ref() == shared)
+            .expect("shared config is captured once");
+        assert_eq!(shared_input.extends.len(), 1);
+        assert_eq!(shared_input.extends[0].as_ref(), base.as_path());
+        assert_eq!(
+            configs
+                .iter()
+                .filter(|config| config.path.as_ref() == shared.as_path())
+                .count(),
+            1
+        );
+        assert_eq!(
+            configs
+                .iter()
+                .filter(|config| config.path.as_ref() == base.as_path())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn config_graph_cycles_and_workspace_escapes_are_typed_refusals() {
         let fixture = Fixture::new();
         let modules = fixture.install("5.9.3");
         let module_root = fs::canonicalize(modules).expect("canonical module root");
 
+        fs::create_dir_all(fixture.0.join("configs")).expect("create config closure");
+        fs::create_dir_all(fixture.0.join("child")).expect("create child project");
         fs::write(
             fixture.0.join("tsconfig.json"),
-            r#"{"extends":"./configs/base","references":[{"path":"./child"}]}"#,
+            r#"{"extends":"./configs/base"}"#,
         )
-        .expect("write root config");
-        fs::create_dir_all(fixture.0.join("configs")).expect("create config closure");
+        .expect("write root config with extends edge");
         fs::write(
             fixture.0.join("configs/base.json"),
+            r#"{"extends":"../tsconfig.json"}"#,
+        )
+        .expect("write direct inheritance cycle");
+        assert!(matches!(
+            collect_project_configs(&fixture.0, &fixture.0, &module_root, &[]),
+            Err(TypeScriptProjectHostError::ConfigCycle { .. })
+        ));
+
+        fs::write(
+            fixture.0.join("tsconfig.json"),
+            r#"{"references":[{"path":"./child"}]}"#,
+        )
+        .expect("write root config with project reference");
+        fs::write(
+            fixture.0.join("configs/base.json"),
+            r#"{"compilerOptions":{"strict":true}}"#,
+        )
+        .expect("remove prior inheritance cycle");
+        fs::write(
+            fixture.0.join("child/tsconfig.json"),
             r#"{"references":[{"path":"../tsconfig.json"}]}"#,
         )
-        .expect("write config with mixed-edge cycle");
-        fs::create_dir_all(fixture.0.join("child")).expect("create child project");
-        fs::write(fixture.0.join("child/tsconfig.json"), "{}").expect("write child config");
+        .expect("write direct project reference cycle");
         assert!(matches!(
             collect_project_configs(&fixture.0, &fixture.0, &module_root, &[]),
             Err(TypeScriptProjectHostError::ConfigCycle { .. })

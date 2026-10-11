@@ -9468,7 +9468,7 @@ mod tests {
         for (id, command) in [
             (
                 603,
-                Command::Name(backend_engine::NameQuery::new(
+                Command::Name(backend_library::NameQuery::new(
                     "project",
                     daemon.engine().daemon().library().view().root(),
                     backend_engine::QueryLimit::default(),

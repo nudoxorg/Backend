@@ -389,7 +389,14 @@ fn shelf_entry(row: &Row, counts: &BTreeMap<String, BTreeMap<Language, u64>>) ->
         .fold(0_u64, |total, count| {
             total.saturating_add(count.declarations().get())
         });
-    ShelfEntry::new(identity, readiness_of(row, published)).with_languages(languages)
+    let entry = ShelfEntry::new(identity, readiness_of(row, published));
+    if languages.is_empty() {
+        // Package-only replies carry no declaration count evidence. Do not
+        // turn the absence of symbol rows into an authoritative zero.
+        entry
+    } else {
+        entry.with_languages(languages)
+    }
 }
 
 /// Reads one project's readiness from the row the owner published.
