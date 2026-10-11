@@ -139,8 +139,93 @@ mod tests {
     use backend_replication::{
         DeferredCommandAck, current_local_owner_binding, unwrap_deferred_command,
     };
+    use std::os::unix::ffi::OsStrExt as _;
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
+
+    /// A private short-path directory for named-socket tests. `temp_dir()` can
+    /// point into a deeply nested runner directory, longer than `sun_path`.
+    /// Prefer the conventional short roots and reject any path that leaves a
+    /// wide margin below the smallest common Unix socket-path limit.
+    struct PrivateSocketDir(std::path::PathBuf);
+
+    impl PrivateSocketDir {
+        fn new() -> Self {
+            use std::os::unix::fs::DirBuilderExt as _;
+            use std::sync::atomic::{AtomicU64, Ordering};
+
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos();
+            let pid = std::process::id();
+            let roots = [
+                std::path::PathBuf::from("/tmp"),
+                std::path::PathBuf::from("/var/tmp"),
+                std::env::temp_dir(),
+            ];
+            let mut unavailable = None;
+            for root in roots {
+                // `/owner.sock` plus a NUL terminator must fit under 80 bytes.
+                if root.as_os_str().as_bytes().len() + b"/owner.sock\0".len() >= 80 {
+                    continue;
+                }
+                for _ in 0..64 {
+                    let path = root.join(format!(
+                        "mcp-{}-{nonce:x}-{:x}",
+                        pid,
+                        NEXT.fetch_add(1, Ordering::Relaxed)
+                    ));
+                    if path.join("owner.sock").as_os_str().as_bytes().len() >= 80 {
+                        continue;
+                    }
+                    let mut builder = std::fs::DirBuilder::new();
+                    builder.mode(0o700);
+                    match builder.create(&path) {
+                        Ok(()) => return Self(path),
+                        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::NotFound
+                                    | std::io::ErrorKind::PermissionDenied
+                                    | std::io::ErrorKind::ReadOnlyFilesystem
+                            ) =>
+                        {
+                            unavailable = Some(error);
+                            break;
+                        }
+                        Err(error) => panic!("create private socket directory: {error}"),
+                    }
+                }
+            }
+            panic!("no short writable Unix socket directory is available: {unavailable:?}")
+        }
+
+        fn socket_path(&self) -> std::path::PathBuf {
+            self.0.join("owner.sock")
+        }
+    }
+
+    impl Drop for PrivateSocketDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(self.socket_path());
+            let _ = std::fs::remove_dir(&self.0);
+        }
+    }
+
+    #[test]
+    fn private_socket_fixture_uses_a_short_owner_only_directory() {
+        use std::os::unix::fs::MetadataExt as _;
+
+        let directory = PrivateSocketDir::new();
+        assert!(directory.socket_path().as_os_str().as_bytes().len() < 80);
+        let mode = std::fs::metadata(&directory.0)
+            .expect("private fixture directory")
+            .mode();
+        assert_eq!(mode & 0o077, 0, "fixture directory is private to its owner");
+    }
 
     #[test]
     fn budgeted_partial_frame_writes_share_one_absolute_deadline() {
@@ -207,15 +292,12 @@ mod tests {
         case: &str,
         wait: Duration,
     ) -> (Result<backend_library::ReplyDto, ClientError>, Duration) {
-        let path = std::env::temp_dir().join(format!(
-            "ack-{}-{}-{}.sock",
-            std::process::id(),
-            case,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
+        let socket_dir = PrivateSocketDir::new();
+        let path = socket_dir.socket_path();
+        assert!(
+            path.as_os_str().as_bytes().len() < 80,
+            "socket fixture path must fit sun_path"
+        );
         let listener = backend_replication::LocalListener::bind(&path).expect("private listener");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
             .expect("private endpoint");
@@ -304,7 +386,7 @@ mod tests {
         let _ = release_peer.send(());
         drop(client);
         server.join().expect("owned server kernel wait");
-        let _ = std::fs::remove_file(path);
+        drop(socket_dir);
         (result, elapsed)
     }
 
