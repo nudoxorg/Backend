@@ -841,6 +841,116 @@
         "destination_memory_bytes": 58816831488,
         "destination_disk_bytes": 107572981760
       }
+    },
+    {
+      "number": 42,
+      "local_directory": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/tsz-engine-worker-refusal-63bbc-42",
+      "receipt_sha256": "3f8ed5dc61a7dd37ff9bfc4a8315b11f9d9129c1e3aba5a105ebff2d9c502184",
+      "source": {
+        "commit": "63bbc385d9418fd536b5b100cb00a8edbb4a7677",
+        "tree": "127ba147e3b6cc69593faf54a843a6ca5061b9bc",
+        "clean": true,
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_after": {
+        "commit": "63bbc385d9418fd536b5b100cb00a8edbb4a7677",
+        "status": "",
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "backend-engine",
+        "--lib",
+        "-j2",
+        "native_checker_worker_start_refusal_keeps_native_provenance",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "wall_seconds": 271.70584741490893,
+      "source_unchanged": true,
+      "completed_group_empty": true,
+      "test_results": [
+        {
+          "status": "ok",
+          "passed": 1,
+          "failed": 0,
+          "ignored": 0,
+          "seconds": 0.0
+        }
+      ],
+      "raw_sha256": {
+        "stdout": "43093d81fa0fada249e55e845957a1d214fa48f0a85ff7cfa838bf2249dc3ab9",
+        "stderr": "27ed920d459f597366c839b7b4d5a22896089800adb2e2194492af4574fc8292"
+      },
+      "guard": {
+        "sha256": "516f3dd503813695b71476527541646d579416f9cf9f088478618b62bbd77c4d",
+        "sampled_at_utc": "2026-10-11T12:00:35.567568+00:00",
+        "requested_cargo_jobs": 2,
+        "destination_memory_bytes": 60584370176,
+        "destination_disk_bytes": 107508719616
+      }
+    },
+    {
+      "number": 43,
+      "local_directory": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/tsz-engine-failure-63bbc-43",
+      "receipt_sha256": "0f1d2f50dae52cef9bc4ef691c8316873bd3864802ca3d75ba9a95912abea17e",
+      "source": {
+        "commit": "63bbc385d9418fd536b5b100cb00a8edbb4a7677",
+        "tree": "127ba147e3b6cc69593faf54a843a6ca5061b9bc",
+        "clean": true,
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "source_after": {
+        "commit": "63bbc385d9418fd536b5b100cb00a8edbb4a7677",
+        "status": "",
+        "cargo_lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd",
+        "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+      },
+      "argv": [
+        "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+        "test",
+        "--locked",
+        "--offline",
+        "-p",
+        "backend-engine",
+        "--lib",
+        "-j2",
+        "typescript_failure_",
+        "--",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "wall_seconds": 1.4852653320413083,
+      "source_unchanged": true,
+      "completed_group_empty": true,
+      "test_results": [
+        {
+          "status": "ok",
+          "passed": 2,
+          "failed": 0,
+          "ignored": 0,
+          "seconds": 0.0
+        }
+      ],
+      "raw_sha256": {
+        "stdout": "4ade607db372f7e408e64360bff5b9663cd7f6a263794f46611f58c4818bd3df",
+        "stderr": "ef4286b5fdd1b39cb3fa3cdab6195ed95fed132feb83ad153deb5c17f0390735"
+      },
+      "guard": {
+        "sha256": "311b57b6d3845c696a0b03983ba93efc2d1386fe9b02261bbbfa438e7c0851ad",
+        "sampled_at_utc": "2026-10-11T12:11:36.260446+00:00",
+        "requested_cargo_jobs": 2,
+        "destination_memory_bytes": 59444428800,
+        "destination_disk_bytes": 103057936384
+      }
     }
   ],
   "native32_distinct_replay": {
@@ -905,6 +1015,43 @@
     "final_images": 6,
     "allocated_bytes_reclaimed": 4443594752,
     "limitation": "Only six owned final ELF copies retired after exact lossless gzip custody and empty-holder checks; no rlib/rmeta or foreign files removed."
+  },
+  "native_gui_compile": {
+    "receipt_sha256": "aa816bbf56468205a670b697efb2a11bf704deeb061a85cb586505575392b591",
+    "source": {
+      "commit": "3a5e6db24e1b1d68b376d5d3166a8e120a115d3f",
+      "tree": "0487eb386ba43a0695ec8c5cc2420825b987d5a4",
+      "status": "",
+      "lock_sha256": "234f60c37d81cc80b66f69facfbc6c7a1592c63d5228b36f7fd0064c603871cd"
+    },
+    "argv": [
+      "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/cargo",
+      "--config",
+      "build.build-dir=\"/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-role\"",
+      "--config",
+      "build.target-dir=\"/root/codex-worktrees/sol61-gui-native-owner-3a5e6-20261011/.local/gui-native-target\"",
+      "test",
+      "--locked",
+      "--offline",
+      "-j2",
+      "-p",
+      "backend-desktop",
+      "--lib",
+      "--message-format=json-render-diagnostics",
+      "shell::jump_tests::world_header_renews_after_authority_changes_without_chrome_resources",
+      "--",
+      "--exact",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    "exit": 101,
+    "tests_executed": 0,
+    "images": 0,
+    "owned_group_empty": true,
+    "verified_stderr_sha256": "7034a12da404b1132c7671268729bc152de5cdd5ae3fad1eff7984a311c4e019",
+    "failure": "E0004: runtime/client.rs fault match omits ClientError::Startup",
+    "source_successor": "2ddf8832cba51d4067c5f24c63b4614ae768aab1",
+    "successor_native_status": "UNRUN"
   },
   "not_proven": [
     "current installed trio",
