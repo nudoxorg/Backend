@@ -450,7 +450,7 @@ pub(crate) fn rig_with_engine_gate(
     ))
 }
 
-fn rig_with_engine_gate_at_root(
+pub(crate) fn rig_with_engine_gate_at_root(
     cx: &mut TestAppContext,
     route: Option<Route>,
     width: f32,
