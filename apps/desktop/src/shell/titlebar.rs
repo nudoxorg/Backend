@@ -36,7 +36,7 @@ use facet::tokens::ty;
 use facet::{ActiveFacet as _, Measure, Palette, Set as _, Space};
 use gpui_component::input::{Input, InputState};
 use gpui::{
-    AnyElement, App, ClickEvent, Context, InteractiveElement, IntoElement, KeyDownEvent, MouseButton, ParentElement, Pixels, Render, SharedString,
+    AnyElement, App, ClickEvent, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString,
     StatefulInteractiveElement, Styled, Task, Window, WindowControlArea, div, px,
 };
 use std::cell::Cell;
@@ -139,15 +139,6 @@ impl JumpAction {
     }
 }
 
-fn activate_key(event: &KeyDownEvent, action: &super::focus::Act, window: &mut Window, cx: &mut App) {
-    if !event.keystroke.modifiers.modified()
-        && matches!(event.keystroke.key.as_str(), "enter" | "space")
-        && !event.is_held
-    {
-        action(window, cx);
-        cx.stop_propagation();
-    }
-}
 
 fn jump_act(action: JumpAction, links: &Links, targets: &Targets) -> super::focus::Act {
     let links = links.clone();
@@ -291,11 +282,13 @@ impl Render for Titlebar {
                 shell.read(app).admits_shelf_toggle_scope(scope, app)))
         }), act);
         let act = target_action.callback();
-        self.targets.push(Target { id: id.clone(), label: "Toggle the shelf".into(), action: target_action, peek: None, source: None });
+        self.targets.push(Target { id: id.clone(), label: "Toggle the shelf".into(), action: target_action.clone(), peek: None, source: None });
+        let focus = self.targets.native_handle(&id, cx);
         left = left.child(
             self.targets.track(
                 id.clone(),
                 facet::controls::icon_button(id, Icon::SideL, "Toggle the shelf", &measure)
+                    .focus_handle(focus).when_current(Rc::new(move |cx| target_action.admits(cx)))
                     .on(shelf_on)
                     .key(super::keys::cap(super::keys::Command::ToggleShelf))
                     .on_click(move |window, cx| act(window, cx)),
@@ -331,10 +324,12 @@ impl Render for Titlebar {
             ));
             let target_action = local_target_action(&self.links, act, cx);
             let act = target_action.callback();
-            self.targets.push(Target { id: id.into(), label: "Add package".into(), action: target_action, peek: None, source: None });
+            self.targets.push(Target { id: id.into(), label: "Add package".into(), action: target_action.clone(), peek: None, source: None });
+            let focus = self.targets.native_handle(&id.into(), cx);
             right = right.child(self.targets.track(
                 id,
                 facet::controls::icon_button(id, Icon::Package, "Add package", &measure)
+                    .focus_handle(focus).when_current(Rc::new(move |cx| target_action.admits(cx)))
                     .on_click(move |window, cx| act(window, cx)),
             ));
         }
@@ -344,11 +339,13 @@ impl Render for Titlebar {
             let act: super::focus::Act = Rc::new(move |_, cx| target_links.dispatch(Intent::OpenInbox, cx));
             let target_action = local_target_action(&self.links, act, cx);
             let act = target_action.callback();
-            self.targets.push(Target { id: id.into(), label: "Inbox".into(), action: target_action, peek: None, source: None });
+            self.targets.push(Target { id: id.into(), label: "Inbox".into(), action: target_action.clone(), peek: None, source: None });
             let fade = if bar.from.is_some_and(|from| from < Bar::Snug) { arriving } else { 1.0 };
+            let focus = self.targets.native_handle(&id.into(), cx);
             right = right.child(div().opacity(fade).child(self.targets.track(
                 id,
-                facet::controls::icon_button(id, Icon::Inbox, "Inbox", &measure).on_click(move |window, cx| act(window, cx)),
+                facet::controls::icon_button(id, Icon::Inbox, "Inbox", &measure)
+                    .focus_handle(focus).when_current(Rc::new(move |cx| target_action.admits(cx))).on_click(move |window, cx| act(window, cx)),
             )));
         }
 
@@ -626,17 +623,15 @@ impl Titlebar {
         if let Some(action) = action {
             let target_action = jump_target_action(action, &self.links, &self.targets, cx);
             let act = target_action.callback();
-            let click_act = Rc::clone(&act);
-            let key_act = Rc::clone(&act);
             self.targets.push(Target { id: last_id.clone(), label: format!("Show {} siblings", here.name).into(), action: target_action.clone(), peek: None, source: None });
-            here_name = here_name
-                .role(gpui::Role::Button)
-                .aria_label(format!("Show {} siblings", here.name))
-                .focusable().cursor_pointer()
-                .on_click(move |event: &ClickEvent, window, cx| {
-                    if !matches!(event, ClickEvent::Keyboard(_)) { click_act(window, cx); }
-                })
-                .on_key_down(move |event, window, cx| activate_key(event, &key_act, window, cx));
+            let focus = self.targets.native_handle(&last_id, cx);
+            here_name = facet::controls::button::capture_activation_admission(
+                facet::controls::button::native_button(
+                    here_name.role(gpui::Role::Button).aria_label(format!("Show {} siblings", here.name)).cursor_pointer(),
+                    &focus, move |window, cx| act(window, cx),
+                ),
+                Rc::new(move |cx| target_action.admits(cx)),
+            );
         }
         let here_name = if actionable {
             self.targets.track(last_id.clone(), here_name).into_any_element()
@@ -668,22 +663,17 @@ impl Titlebar {
         }
         let target_action = jump_target_action(JumpAction::Ask, &self.links, &self.targets, cx);
         let ask = target_action.callback();
-        let click_ask = Rc::clone(&ask);
-        let key_ask = Rc::clone(&ask);
         self.targets.push(Target { id: "here".into(), label: "Ask anything, or find a package".into(), action: target_action.clone(), peek: None, source: None });
-        plate = plate.child(
-            self.targets.track("here", div()
-                .id("here")
-                .role(gpui::Role::Button)
-                .aria_label("Ask anything, or find a package")
-                .focusable()
-                .cursor_pointer()
-                .child(icons::ui(Icon::Search, IconSize::S14, palette.ink4).size(measure.icon(14.0)))
-                .on_click(move |event: &ClickEvent, window, cx| {
-                    if !matches!(event, ClickEvent::Keyboard(_)) { click_ask(window, cx); }
-                })
-                .on_key_down(move |event, window, cx| activate_key(event, &key_ask, window, cx))),
+        let focus = self.targets.native_handle(&"here".into(), cx);
+        let face = facet::controls::button::capture_activation_admission(
+            facet::controls::button::native_button(
+                div().id("here").role(gpui::Role::Button).aria_label("Ask anything, or find a package").cursor_pointer()
+                    .child(icons::ui(Icon::Search, IconSize::S14, palette.ink4).size(measure.icon(14.0))),
+                &focus, move |window, cx| ask(window, cx),
+            ),
+            Rc::new(move |cx| target_action.admits(cx)),
         );
+        plate = plate.child(self.targets.track("here", face));
         let hover_targets = self.targets.clone();
         // A graph focus is fixture data, and the tip says so.
         let address = SharedString::from(
@@ -722,7 +712,7 @@ impl Titlebar {
 
     /// One segment before the name: its siblings, or its page when it has
     /// none to list (the package).
-    fn segment(&mut self, id: SharedString, index: usize, segment: &Segment, measure: &Measure, palette: &Palette, cx: &App) -> AnyElement {
+    fn segment(&mut self, id: SharedString, index: usize, segment: &Segment, measure: &Measure, palette: &Palette, cx: &mut App) -> AnyElement {
         let snapshot = self.links.snapshot(cx);
         let store = self.links.store.read(cx);
         let visit = JumpVisit::at(&snapshot, store);
@@ -735,35 +725,21 @@ impl Titlebar {
         let label = if navigates { format!("Open {}", segment.name) } else { format!("Show {} siblings", segment.name) };
         let target_action = jump_target_action(action, &self.links, &self.targets, cx);
         let act = target_action.callback();
-        let click_act = Rc::clone(&act);
-        let key_act = Rc::clone(&act);
         self.targets.push(Target { id: id.clone(), label: label.clone().into(), action: target_action.clone(), peek: None, source: None });
-        // At least 24 × 24 to hit (gui-plan.md:213), grown by padding that
-        // a matching negative margin takes back: the plate looks the same.
+        // Keep the 24px hit area and the original negative-margin typography.
         let side = hit_side(measure);
         let pad = ((side - super::text_fit::text_width(&segment.name, &measure.role(ty::SMALL), cx)) / 2.0).max(px(0.0));
-        self.targets
-            .track(
-                id.clone(),
-                div()
-                    .id(id)
-                    .role(role)
-                    .aria_label(label)
-                    .focusable()
-                    .cursor_pointer()
-                    .flex_none()
-                    .h(side)
-                    .flex()
-                    .items_center()
-                    .px(pad)
-                    .mx(-pad)
-                    .child(text(ty::SMALL, measure, palette.ink2).whitespace_nowrap().child(segment.name.clone()))
-                    .on_click(move |event: &ClickEvent, window, cx| {
-                        if !matches!(event, ClickEvent::Keyboard(_)) { click_act(window, cx); }
-                    })
-                    .on_key_down(move |event, window, cx| activate_key(event, &key_act, window, cx)),
-            )
-            .into_any_element()
+        let focus = self.targets.native_handle(&id, cx);
+        let face = facet::controls::button::capture_activation_admission(
+            facet::controls::button::native_button(
+                div().id(id.clone()).role(role).aria_label(label).cursor_pointer().flex_none().h(side)
+                    .flex().items_center().px(pad).mx(-pad)
+                    .child(text(ty::SMALL, measure, palette.ink2).whitespace_nowrap().child(segment.name.clone())),
+                &focus, move |window, cx| act(window, cx),
+            ),
+            Rc::new(move |cx| target_action.admits(cx)),
+        );
+        self.targets.track(id, face).into_any_element()
     }
 
     /// The bar while Ask is open: the query, live, on the plate the field
@@ -812,8 +788,6 @@ impl Titlebar {
     fn ask_field(&mut self, measure: &Measure, palette: &Palette, keys: bool, cx: &mut Context<Self>) -> AnyElement {
         let target_action = jump_target_action(JumpAction::Ask, &self.links, &self.targets, cx);
         let act = target_action.callback();
-        let click_act = Rc::clone(&act);
-        let key_act = Rc::clone(&act);
         self.targets.push(Target {
             id: "ask".into(),
             label: "Ask anything, or find a package".into(),
@@ -822,14 +796,11 @@ impl Titlebar {
             source: None,
         });
         let height = px(32.0 * measure.scale());
-        self.targets
-            .track(
-                "ask",
-                div()
+        let focus = self.targets.native_handle(&"ask".into(), cx);
+        let face = div()
                     .id("ask")
                     .role(gpui::Role::Button)
                     .aria_label("Ask anything, or find a package")
-                    .focusable()
                     .relative()
                     .min_w(px(0.0))
                     .flex_1()
@@ -855,13 +826,12 @@ impl Titlebar {
                                     .child("Ask anything, or find a package"),
                             ),
                     )
-                    .on_click(move |event: &ClickEvent, window, cx| {
-                        if !matches!(event, ClickEvent::Keyboard(_)) { click_act(window, cx); }
-                    })
-                    .on_key_down(move |event, window, cx| activate_key(event, &key_act, window, cx))
-                    .children(keycap(keys, super::keys::cap(super::keys::Command::Ask), measure)),
-            )
-            .into_any_element()
+                    .children(keycap(keys, super::keys::cap(super::keys::Command::Ask), measure));
+        let face = facet::controls::button::capture_activation_admission(
+            facet::controls::button::native_button(face, &focus, move |window, cx| act(window, cx)),
+            Rc::new(move |cx| target_action.admits(cx)),
+        );
+        self.targets.track("ask", face).into_any_element()
     }
 
     fn view_switch(&mut self, active: View, measure: &Measure, palette: &Palette, keys: bool, cx: &mut App) -> AnyElement {

@@ -373,14 +373,15 @@ fn exercise(fixture: &OwnerFixture) {
 
 
 const VIEW_CHILD: &str = "NUDOX_TEST_PRODUCTION_HEADER_CHILD";
-/// History controls precede view controls when history exists. Walk the
-/// actual mounted order without assuming Back/Forward are absent.
+/// Walk the actual represented header order, which includes the shelf,
+/// history, breadcrumbs and local controls according to the current route.
 fn header_tab_to(rig: &mut Rig, targets: &crate::shell::focus::Targets, id: &str) {
-    for _ in 0..4 {
+    let count = targets.list_probe().upgrade().expect("live header targets").borrow().len();
+    for _ in 0..count {
         rig.keys("tab");
         if rig.cx.update(|window, _| targets.native_focused(window)).as_deref() == Some(id) { return; }
     }
-    panic!("native header Tab must reach {id} through at most two history controls");
+    panic!("native header Tab must reach {id} through its represented current controls");
 }
 
 const VIEW_NAME: &str = "shell::graph_tests::production::production_graph_header_native_controls_open_and_return_to_the_exact_selected_symbol";
@@ -446,7 +447,7 @@ fn exercise_header_controls(fixture: &OwnerFixture) {
             shell.take_zone(super::super::focus::Zone::Titlebar, window, cx)));
         header_tab_to(&mut rig, &targets, "view-page");
         assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(), Some("view-page"),
-            "Tab reaches the real Page receiver through mounted history controls");
+            "Tab reaches the real Page receiver through the mounted header controls");
         if view == View::Code { rig.keys("tab"); }
         assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(), Some(id));
         let native = header_node(&mut rig, if view == View::Page { "Show Page view" } else { "Show Code view" });

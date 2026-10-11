@@ -4,7 +4,7 @@
 //! **on** tints it mint (the shelf is open, the filter is set); keyboard
 //! focus doubles the bevel in periwinkle.
 
-use super::button::{Handler, sunk, wire};
+use super::button::{ActivationAdmission, Handler, sunk, wire_with_admission};
 use super::{clear, muted};
 use super::kbd::key_badge;
 use super::state::{Look, Touch, hover_zone, track};
@@ -15,7 +15,7 @@ use crate::overlay::tooltip::Tipped as _;
 use crate::paint::{Bevel, Chamfer, Edge, Plate, cut, mix};
 use crate::theme::ActiveFacet;
 use gpui::{
-    ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
+    ElementId, FocusHandle, Hsla, InteractiveElement, IntoElement, ParentElement, RenderOnce, SharedString,
     StatefulInteractiveElement, Styled, Window, px,
 };
 use std::rc::Rc;
@@ -55,6 +55,8 @@ pub struct IconButton {
     look: Look,
     measure: Measure,
     on_click: Option<Handler>,
+    admission: Option<ActivationAdmission>,
+    focus_handle: Option<FocusHandle>,
 }
 
 /// A medium, off icon button showing `icon`, named `label` (its tooltip and
@@ -77,10 +79,26 @@ pub fn icon_button(
         look: Look::LIVE,
         measure: *measure,
         on_click: None,
+        admission: None,
+        focus_handle: None,
     }
 }
 
 impl IconButton {
+    /// Use the host's existing mounted native focus handle.
+    #[must_use]
+    pub fn focus_handle(mut self, focus: FocusHandle) -> Self {
+        self.focus_handle = Some(focus);
+        self
+    }
+
+    /// Admit the current host before pointer focus and again at activation.
+    #[must_use]
+    pub fn when_current(mut self, admit: ActivationAdmission) -> Self {
+        self.admission = Some(admit);
+        self
+    }
+
     /// The plate size.
     #[must_use]
     pub const fn size(mut self, size: IconButtonSize) -> Self {
@@ -141,7 +159,7 @@ impl RenderOnce for IconButton {
         let palette = cx.palette();
         let measure = self.measure;
         let active = !self.disabled;
-        let touch = Touch::read(&self.id, self.look, active, window, cx);
+        let touch = Touch::read_with_focus(&self.id, self.look, active, self.focus_handle.clone(), window, cx);
         let motion = touch.motion.clone();
         let id = self.id.clone();
         let (side_base, icon_base) = self.size.metrics();
@@ -231,7 +249,9 @@ impl RenderOnce for IconButton {
             .aria_label(self.label.clone())
             .aria_disabled(self.disabled)
             .opacity(if self.disabled { 0.42 } else { 1.0 });
-        let plate = if active { wire(plate, &touch, self.on_click) } else { plate };
+        let plate = if active {
+            wire_with_admission(plate, &touch, self.on_click, self.admission)
+        } else { plate };
         // The label is the button's tooltip (an icon says nothing until it is
         // named): it rises after a rest, like every tip.
         hover_zone(plate.tip(self.label), &touch, chamfer, active)

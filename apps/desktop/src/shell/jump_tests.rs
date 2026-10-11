@@ -326,6 +326,44 @@ fn a_retired_held_back_press_cannot_open_the_next_routes_history(cx: &mut TestAp
 }
 
 #[gpui::test]
+fn header_native_tab_opens_add_packages_ask_and_breadcrumbs(cx: &mut TestAppContext) {
+    use gpui::AppContext as _;
+    use gpui_component::WindowExt as _;
+    use crate::navigation::{BrowseRoute, Overlay};
+    fn tab_to(rig: &mut Rig, id: &str) {
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_targets(cx));
+        rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx|
+            shell.take_zone(super::focus::Zone::Titlebar, window, cx)));
+        let count = targets.list_probe().upgrade().expect("mounted target list").borrow().len();
+        for _ in 0..count {
+            rig.keys("tab");
+            if rig.cx.update(|window, _| targets.native_focused(window)).as_deref() == Some(id) { return; }
+        }
+        panic!("native Tab must reach represented header control {id}");
+    }
+    let mut rig = open(cx, "RelationLabel");
+    tab_to(&mut rig, "tb-find-packages");
+    rig.native_press("space");
+    assert_eq!(rig.route(), Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome)), "native Add package opens package discovery");
+    rig.keys("secondary-[");
+    assert_eq!(rig.route(), page_route("RelationLabel"));
+    tab_to(&mut rig, "here");
+    rig.native_press("enter");
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), Some(Overlay::CommandPalette));
+    assert!(rig.cx.update(|window, cx| window.has_focused_input(cx)), "native Ask transfers typing to the mounted query");
+    rig.keys("escape");
+    tab_to(&mut rig, "jump-seg-1");
+    rig.native_press("space");
+    assert!(is_open(&mut rig, "jump-siblings-1"), "the admitted breadcrumb opens its actual siblings menu on release");
+    assert_eq!(rig.route(), page_route("RelationLabel"), "listing siblings does not navigate early");
+    rig.keys("escape");
+    let shelf = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().shelf_open);
+    tab_to(&mut rig, "tb-shelf");
+    rig.native_press("enter");
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().shelf_open), !shelf, "native shelf control retains its actual toggle semantics");
+}
+
+#[gpui::test]
 fn a_module_segment_opens_its_siblings_from_the_outline(cx: &mut TestAppContext) {
     let mut rig = open(cx, "RelationLabel");
     click(&mut rig, "jump-seg-1", MouseButton::Left);
