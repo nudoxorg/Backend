@@ -2416,3 +2416,270 @@ fn merged_wildcard_rows_preserve_exact_lexical_edges_before_resolution() {
         assert_eq!(retained.owner_location.file_idx, retained.location.file_idx);
     }
 }
+
+#[test]
+fn nested_identifier_namespace_cannot_shift_ambient_wildcard_edge_mode() {
+    use crate::checker::context::ResolutionModeOverride;
+    for depth in [1, 160] {
+        for admitted in [false, true] {
+            for (return_type, codes) in [("number", vec![]), ("string", vec![2322])] {
+                let nested = format!(
+                    "{} export type * from 'bad' with {{ 'resolution-mode': 'require' }}; {}",
+                    "namespace N {".repeat(depth),
+                    "}".repeat(depth)
+                );
+                let files = vec![
+                    (
+                        "src/main.ts".to_owned(),
+                        format!(
+                            "import type {{ Shape }} from 'pkg'; declare const observed: Shape; export function read(): {return_type} {{ return observed.value; }}"
+                        ),
+                    ),
+                    (
+                        "ambient.d.ts".to_owned(),
+                        format!(
+                            "declare module 'pkg' {{ {nested} export type * from 'good' with {{ 'resolution-mode': 'import' }}; }}"
+                        ),
+                    ),
+                    (
+                        "src/owner.ts".to_owned(),
+                        "export interface Shape { value: number }".to_owned(),
+                    ),
+                    (
+                        "src/wrong.ts".to_owned(),
+                        "export interface Shape { value: string }".to_owned(),
+                    ),
+                ];
+                let request = |specifier: &str, mode, target| ProjectModuleResolution {
+                    importer_path: "ambient.d.ts".to_owned(),
+                    specifier: specifier.to_owned(),
+                    request_kind: ProjectModuleRequestKind::EsmReExport,
+                    resolution_mode: mode,
+                    target,
+                };
+                let resolutions = [
+                    ProjectModuleResolution {
+                        importer_path: "src/main.ts".to_owned(),
+                        specifier: "pkg".to_owned(),
+                        request_kind: ProjectModuleRequestKind::EsmImport,
+                        resolution_mode: None,
+                        target: ProjectModuleResolutionTarget::External {
+                            identity: "admitted-ambient:pkg".to_owned(),
+                        },
+                    },
+                    request(
+                        "good",
+                        Some(ResolutionModeOverride::Import),
+                        if admitted {
+                            ProjectModuleResolutionTarget::File {
+                                path: "src/owner.ts".to_owned(),
+                            }
+                        } else {
+                            ProjectModuleResolutionTarget::Unresolved
+                        },
+                    ),
+                    request(
+                        "good",
+                        Some(ResolutionModeOverride::Require),
+                        ProjectModuleResolutionTarget::File {
+                            path: "src/wrong.ts".to_owned(),
+                        },
+                    ),
+                    request(
+                        "bad",
+                        Some(ResolutionModeOverride::Require),
+                        ProjectModuleResolutionTarget::File {
+                            path: "src/wrong.ts".to_owned(),
+                        },
+                    ),
+                ];
+                // The nested namespace's invalid edge is retained as a file
+                // edge by the real binder. It cannot occupy the ambient row,
+                // even before a later valid sibling or beyond 128 namespaces.
+                assert_cold_request_semantics(
+                    files,
+                    &resolutions,
+                    if admitted { &codes } else { &[2305] },
+                    admitted.then_some(TypeId::NUMBER),
+                );
+            }
+        }
+    }
+}
+
+// These source forms are intentionally invalid export locations. The binder
+// nevertheless visits their declarations: blocks, both IF branches, callable
+// bodies, loops, switch clauses, try blocks, and labeled statements. Retained
+// identity must select the actual following sibling independently of that walk.
+const NESTED_WILDCARD_SOURCE_FORMS: &[(&str, &str)] = &[
+    ("block", "{ EDGE }"),
+    ("if_then", "if (true) { EDGE }"),
+    ("if_else", "if (false) {} else { EDGE }"),
+    ("function_body", "function nested() { EDGE }"),
+    ("while_body", "while (false) { EDGE }"),
+    ("switch_clause", "switch (0) { case 0: EDGE break; }"),
+    ("try_block", "try { EDGE } catch {}"),
+    ("labeled_block", "nested: { EDGE }"),
+];
+
+fn nested_wildcard_owner_source(form: &str, ambient: bool) -> String {
+    let invalid = form.replace(
+        "EDGE",
+        "export type * from 'bad' with { 'resolution-mode': 'require' };",
+    );
+    let body =
+        format!("{invalid} export type * from 'good' with {{ 'resolution-mode': 'import' }};");
+    if ambient {
+        format!("declare module 'pkg' {{ {body} }}")
+    } else {
+        body
+    }
+}
+
+#[test]
+fn nested_statement_wildcards_retain_actual_declaration_and_owner() {
+    for &(name, form) in NESTED_WILDCARD_SOURCE_FORMS {
+        for ambient in [false, true] {
+            let program = compile_files_with_libs(
+                vec![(
+                    "src/barrel.ts".to_owned(),
+                    nested_wildcard_owner_source(form, ambient),
+                )],
+                &[],
+            );
+            let owner_key = if ambient { "pkg" } else { "src/barrel.ts" };
+            let rows = program.wildcard_reexports.get(owner_key).unwrap();
+            assert_eq!(
+                rows.iter().map(|row| row.0.as_str()).collect::<Vec<_>>(),
+                ["bad", "good"],
+                "actual binder must retain both {name} declarations (ambient={ambient})"
+            );
+            let file = &program.files[0];
+            let mut declarations = Vec::new();
+            for edge in rows.edges() {
+                let retained = edge.declaration.unwrap();
+                assert_eq!(retained.location.file_idx, 0);
+                assert_eq!(retained.owner_location.file_idx, 0);
+                let node = file.arena.get(retained.declaration).unwrap();
+                assert_eq!(
+                    (node.pos, node.end),
+                    (retained.location.pos, retained.location.end)
+                );
+                let export = file.arena.get_export_decl(node).unwrap();
+                assert_eq!(
+                    file.arena.get_literal_text(export.module_specifier),
+                    Some(edge.target.0.as_str())
+                );
+                assert!(export.is_type_only);
+                let owner = file.arena.get(retained.owner).unwrap();
+                assert_eq!(
+                    (owner.pos, owner.end),
+                    (retained.owner_location.pos, retained.owner_location.end)
+                );
+                if ambient {
+                    let module = file.arena.get_module(owner).unwrap();
+                    assert_eq!(file.arena.get_literal_text(module.name), Some("pkg"));
+                } else {
+                    assert_eq!(owner.kind, syntax_kind_ext::SOURCE_FILE);
+                }
+                declarations.push(retained.declaration);
+            }
+            assert_ne!(declarations[0], declarations[1]);
+        }
+    }
+}
+
+#[test]
+fn nested_statement_wildcards_cannot_retarget_following_sibling_request() {
+    use crate::checker::context::ResolutionModeOverride;
+    for &(_, form) in NESTED_WILDCARD_SOURCE_FORMS {
+        for ambient in [false, true] {
+            for admitted in [false, true] {
+                for (return_type, codes) in [("number", vec![]), ("string", vec![2322])] {
+                    let source = if ambient { "pkg" } else { "./barrel" };
+                    let files = vec![
+                        (
+                            "src/main.ts".to_owned(),
+                            format!(
+                                "import type {{ Shape }} from '{source}'; declare const observed: Shape; export function read(): {return_type} {{ return observed.value; }}"
+                            ),
+                        ),
+                        (
+                            "src/barrel.ts".to_owned(),
+                            nested_wildcard_owner_source(form, ambient),
+                        ),
+                        (
+                            "src/owner.ts".to_owned(),
+                            "export interface Shape { value: number }".to_owned(),
+                        ),
+                        (
+                            "src/wrong.ts".to_owned(),
+                            "export interface Shape { value: string }".to_owned(),
+                        ),
+                        (
+                            "src/bad.ts".to_owned(),
+                            "export interface ForeignShape { value: string }".to_owned(),
+                        ),
+                    ];
+                    let request = |specifier: &str, mode, target| ProjectModuleResolution {
+                        importer_path: "src/barrel.ts".to_owned(),
+                        specifier: specifier.to_owned(),
+                        request_kind: ProjectModuleRequestKind::EsmReExport,
+                        resolution_mode: mode,
+                        target,
+                    };
+                    let resolutions = [
+                        ProjectModuleResolution {
+                            importer_path: "src/main.ts".to_owned(),
+                            specifier: source.to_owned(),
+                            request_kind: ProjectModuleRequestKind::EsmImport,
+                            resolution_mode: None,
+                            target: if ambient {
+                                ProjectModuleResolutionTarget::External {
+                                    identity: "admitted-ambient:pkg".to_owned(),
+                                }
+                            } else {
+                                ProjectModuleResolutionTarget::File {
+                                    path: "src/barrel.ts".to_owned(),
+                                }
+                            },
+                        },
+                        request(
+                            "good",
+                            Some(ResolutionModeOverride::Import),
+                            if admitted {
+                                ProjectModuleResolutionTarget::File {
+                                    path: "src/owner.ts".to_owned(),
+                                }
+                            } else {
+                                ProjectModuleResolutionTarget::Unresolved
+                            },
+                        ),
+                        request(
+                            "good",
+                            Some(ResolutionModeOverride::Require),
+                            ProjectModuleResolutionTarget::File {
+                                path: "src/wrong.ts".to_owned(),
+                            },
+                        ),
+                        request(
+                            "bad",
+                            Some(ResolutionModeOverride::Require),
+                            ProjectModuleResolutionTarget::File {
+                                path: "src/bad.ts".to_owned(),
+                            },
+                        ),
+                    ];
+                    // Only the consumer is checked first: malformed owner syntax
+                    // cannot lend a competitor or erase the admitted sibling.
+                    assert_cold_request_semantics(
+                        files,
+                        &resolutions,
+                        if admitted { &codes } else { &[2305] },
+                        admitted.then_some(TypeId::NUMBER),
+                    );
+                }
+            }
+        }
+    }
+}
