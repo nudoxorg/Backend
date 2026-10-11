@@ -48,94 +48,6 @@ impl TypeInterner {
         }
     }
 
-    /// Pre-compute cached data for a type to avoid repeated lookups during sort.
-    ///
-    /// This gathers `builtin_sort_key`, `lookup` (TypeData), object/callable symbol,
-    /// and `alloc_order` in a single pass per union member.
-    fn cache_union_member(&self, id: TypeId) -> CachedUnionMember {
-        let builtin_key = Self::builtin_sort_key(id);
-        if builtin_key.is_some() {
-            // Builtins don't need further lookups
-            return CachedUnionMember {
-                id,
-                builtin_key,
-                data: None,
-                obj_symbol: None,
-                obj_anon_shape: None,
-                callable_symbol: None,
-                string_literal_text: None,
-                app_components: None,
-                elem_components: None,
-                alloc_order: None,
-            };
-        }
-
-        let data = self.lookup(id);
-        let alloc_order = self.lookup_alloc_order(id);
-
-        let mut obj_symbol = None;
-        let mut obj_anon_shape = None;
-        let mut callable_symbol = None;
-        let mut string_literal_text = None;
-        let mut app_components = None;
-        let mut elem_components = None;
-
-        if let Some(ref d) = data {
-            match d {
-                TypeData::Literal(LiteralValue::String(atom)) => {
-                    string_literal_text = Some(self.string_interner.resolve(*atom));
-                }
-                TypeData::Object(s) | TypeData::ObjectWithIndex(s) => {
-                    let shape = self.object_shape(*s);
-                    if let Some(sym) = shape.symbol {
-                        obj_symbol = Some(sym.0);
-                    } else {
-                        obj_anon_shape = Some(s.0);
-                    }
-                }
-                TypeData::Callable(s) => {
-                    let shape = self.callable_shape(*s);
-                    if let Some(sym) = shape.symbol {
-                        callable_symbol = Some(sym.0);
-                    }
-                }
-                TypeData::Application(app) => {
-                    let app = self.type_application(*app);
-                    let mut keys = Vec::with_capacity(1 + app.args.len());
-                    keys.push(self.app_component_key(app.base));
-                    keys.extend(app.args.iter().map(|&arg| self.app_component_key(arg)));
-                    app_components = Some(keys.into_boxed_slice());
-                }
-                TypeData::Tuple(list_id) => {
-                    let elems = self.tuple_list(*list_id);
-                    let keys: Vec<AppComponentKey> = elems
-                        .iter()
-                        .map(|elem| self.widened_app_component_key(elem.type_id))
-                        .collect();
-                    elem_components = Some(keys.into_boxed_slice());
-                }
-                TypeData::Array(elem) => {
-                    elem_components =
-                        Some(vec![self.widened_app_component_key(*elem)].into_boxed_slice());
-                }
-                _ => {}
-            }
-        }
-
-        CachedUnionMember {
-            id,
-            builtin_key,
-            data,
-            obj_symbol,
-            obj_anon_shape,
-            callable_symbol,
-            string_literal_text,
-            app_components,
-            elem_components,
-            alloc_order,
-        }
-    }
-
     fn cache_union_member_with_work(
         &self,
         id: TypeId,
@@ -571,29 +483,6 @@ impl TypeInterner {
         }
     }
 
-    /// Sort union members using pre-cached lookups to avoid redundant `DashMap` reads.
-    ///
-    /// Instead of `sort_by(compare_union_members)` which does 4-6 DashMap/arena lookups
-    /// per comparison (O(N log N * lookups)), this pre-caches all lookup data for each
-    /// member in O(N) reads, then sorts using the cached data with zero further lookups.
-    pub(crate) fn sort_union_members(&self, flat: &mut TypeListBuffer) {
-        if flat.len() <= 1 {
-            return;
-        }
-
-        // Pre-cache all lookup data for each member in a single pass: O(N) reads
-        let mut cached: SmallVec<[CachedUnionMember; TYPE_LIST_INLINE]> =
-            flat.iter().map(|&id| self.cache_union_member(id)).collect();
-
-        // Sort using cached data: O(N log N) comparisons with zero further lookups.
-        cached.sort_by(Self::compare_cached_members);
-
-        // Write sorted TypeIds back
-        for (i, member) in cached.iter().enumerate() {
-            flat[i] = member.id;
-        }
-    }
-
     pub(crate) fn sort_union_members_with_work(
         &self,
         flat: &mut TypeListBuffer,
@@ -604,13 +493,16 @@ impl TypeInterner {
         }
 
         tick_union_execution_work(work, flat.len() as u64)?;
-        let mut source = Vec::with_capacity(flat.len());
+        let mut source: SmallVec<[Option<CachedUnionMember>; TYPE_LIST_INLINE]> =
+            SmallVec::with_capacity(flat.len());
         for &id in flat.iter() {
             source.push(Some(self.cache_union_member_with_work(id, work)?));
         }
         let len = source.len();
         tick_union_execution_work(work, len as u64)?;
-        let mut target: Vec<Option<CachedUnionMember>> = (0..len).map(|_| None).collect();
+        let mut target: SmallVec<[Option<CachedUnionMember>; TYPE_LIST_INLINE]> =
+            SmallVec::with_capacity(len);
+        target.resize_with(len, || None);
 
         // Stable bottom-up merge sort keeps the same comparator and tie order
         // as slice::sort_by while allowing a stop to end the sort at a poll.

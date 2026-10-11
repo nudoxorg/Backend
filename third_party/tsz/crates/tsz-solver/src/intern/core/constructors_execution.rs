@@ -101,66 +101,41 @@ impl TypeInterner {
         right: TypeId,
         checkpoint: &dyn ExecutionCheckpoint,
     ) -> Result<TypeId, ProjectExecutionStop> {
-        self.with_union_execution_work(checkpoint, |work| {
-            let result = if left == right {
+        self.with_union_execution_work(checkpoint, |work| self.union2_with_work(left, right, work))
+    }
+
+    fn union2_with_work(
+        &self,
+        left: TypeId,
+        right: TypeId,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<TypeId, ProjectExecutionStop> {
+        let result = if left == right {
+            flush_union_execution_work(work)?;
+            left
+        } else if left == TypeId::NEVER {
+            flush_union_execution_work(work)?;
+            right
+        } else if right == TypeId::NEVER {
+            flush_union_execution_work(work)?;
+            left
+        } else if !self.strict_null_checks() {
+            self.union_from_iter_with_work([left, right], work)?
+        } else if right.is_nullable()
+            && let Some(TypeData::Union(list_id)) = self.lookup(left)
+        {
+            let members = self.type_list(list_id);
+            let mut found = false;
+            for &member in members.iter() {
+                tick_union_execution_work(work, 1)?;
+                if member == right {
+                    found = true;
+                    break;
+                }
+            }
+            if found {
                 flush_union_execution_work(work)?;
                 left
-            } else if left == TypeId::NEVER {
-                flush_union_execution_work(work)?;
-                right
-            } else if right == TypeId::NEVER {
-                flush_union_execution_work(work)?;
-                left
-            } else if !self.strict_null_checks() {
-                self.union_from_iter_with_work([left, right], work)?
-            } else if right.is_nullable()
-                && let Some(TypeData::Union(list_id)) = self.lookup(left)
-            {
-                let members = self.type_list(list_id);
-                let mut found = false;
-                for &member in members.iter() {
-                    tick_union_execution_work(work, 1)?;
-                    if member == right {
-                        found = true;
-                        break;
-                    }
-                }
-                if found {
-                    flush_union_execution_work(work)?;
-                    left
-                } else if let Some(result) = self.try_union2_insert_with_work(work, left, right)? {
-                    flush_union_execution_work(work)?;
-                    result
-                } else if let Some(result) = self.try_union2_insert_with_work(work, right, left)? {
-                    flush_union_execution_work(work)?;
-                    result
-                } else {
-                    self.union_from_iter_with_work([left, right], work)?
-                }
-            } else if left.is_nullable()
-                && let Some(TypeData::Union(list_id)) = self.lookup(right)
-            {
-                let members = self.type_list(list_id);
-                let mut found = false;
-                for &member in members.iter() {
-                    tick_union_execution_work(work, 1)?;
-                    if member == left {
-                        found = true;
-                        break;
-                    }
-                }
-                if found {
-                    flush_union_execution_work(work)?;
-                    right
-                } else if let Some(result) = self.try_union2_insert_with_work(work, left, right)? {
-                    flush_union_execution_work(work)?;
-                    result
-                } else if let Some(result) = self.try_union2_insert_with_work(work, right, left)? {
-                    flush_union_execution_work(work)?;
-                    result
-                } else {
-                    self.union_from_iter_with_work([left, right], work)?
-                }
             } else if let Some(result) = self.try_union2_insert_with_work(work, left, right)? {
                 flush_union_execution_work(work)?;
                 result
@@ -169,9 +144,41 @@ impl TypeInterner {
                 result
             } else {
                 self.union_from_iter_with_work([left, right], work)?
-            };
-            Ok(result)
-        })
+            }
+        } else if left.is_nullable()
+            && let Some(TypeData::Union(list_id)) = self.lookup(right)
+        {
+            let members = self.type_list(list_id);
+            let mut found = false;
+            for &member in members.iter() {
+                tick_union_execution_work(work, 1)?;
+                if member == left {
+                    found = true;
+                    break;
+                }
+            }
+            if found {
+                flush_union_execution_work(work)?;
+                right
+            } else if let Some(result) = self.try_union2_insert_with_work(work, left, right)? {
+                flush_union_execution_work(work)?;
+                result
+            } else if let Some(result) = self.try_union2_insert_with_work(work, right, left)? {
+                flush_union_execution_work(work)?;
+                result
+            } else {
+                self.union_from_iter_with_work([left, right], work)?
+            }
+        } else if let Some(result) = self.try_union2_insert_with_work(work, left, right)? {
+            flush_union_execution_work(work)?;
+            result
+        } else if let Some(result) = self.try_union2_insert_with_work(work, right, left)? {
+            flush_union_execution_work(work)?;
+            result
+        } else {
+            self.union_from_iter_with_work([left, right], work)?
+        };
+        Ok(result)
     }
 
     fn try_union2_insert_with_work(
@@ -222,6 +229,71 @@ impl TypeInterner {
         self.with_union_execution_work(checkpoint, |work| {
             self.union_from_iter_with_work([first, second, third], work)
         })
+    }
+
+    pub(crate) fn union_preserve_members_with_execution_checkpoint(
+        &self,
+        members: Vec<TypeId>,
+        checkpoint: &dyn ExecutionCheckpoint,
+    ) -> Result<TypeId, ProjectExecutionStop> {
+        self.with_union_execution_work(checkpoint, |work| {
+            self.union_preserve_members_with_work(members, work)
+        })
+    }
+
+    fn union_preserve_members_with_work(
+        &self,
+        members: Vec<TypeId>,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<TypeId, ProjectExecutionStop> {
+        let mut flat = self.collect_union_members_with_work(members, work)?;
+
+        let mut has_any = false;
+        let mut has_unknown = false;
+        for &id in &flat {
+            tick_union_execution_work(work, 1)?;
+            if id == TypeId::ERROR {
+                flush_union_execution_work(work)?;
+                return Ok(TypeId::ERROR);
+            }
+            if id == TypeId::ANY {
+                has_any = true;
+            } else if id == TypeId::UNKNOWN {
+                has_unknown = true;
+            }
+        }
+        if has_any {
+            flush_union_execution_work(work)?;
+            return Ok(TypeId::ANY);
+        }
+        if has_unknown {
+            flush_union_execution_work(work)?;
+            return Ok(TypeId::UNKNOWN);
+        }
+
+        self.sort_union_members_with_work(&mut flat, work)?;
+        self.dedup_union_members_with_work(&mut flat, work)?;
+        let mut write = 0;
+        for read in 0..flat.len() {
+            tick_union_execution_work(work, 1)?;
+            if flat[read] != TypeId::NEVER {
+                flat[write] = flat[read];
+                write += 1;
+            }
+        }
+        flat.truncate(write);
+
+        // Preserve distinct subtype members for narrowing while applying the
+        // same universal non-strict nullish absorption used by ordinary union
+        // construction.
+        if let Some(collapsed) = self.reduce_and_collapse_nonstrict_with_work(&mut flat, work)? {
+            flush_union_execution_work(work)?;
+            return Ok(collapsed);
+        }
+
+        flush_union_execution_work(work)?;
+        let list_id = self.intern_type_list_from_slice(&flat);
+        Ok(self.intern(TypeData::Union(list_id)))
     }
 
     pub(crate) fn union_from_iter_with_work<I>(

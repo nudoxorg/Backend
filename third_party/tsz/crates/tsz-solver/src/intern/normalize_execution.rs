@@ -1,7 +1,6 @@
 // Checkpoint-aware union reduction implementation included by normalize.rs.
 
 impl TypeInterner {
-
     pub(crate) fn reduce_union_subtypes_with_work(
         &self,
         flat: &mut TypeListBuffer,
@@ -39,7 +38,7 @@ impl TypeInterner {
                 reducible.push(id);
             }
             self.sort_union_members_with_work(&mut reducible, work)?;
-            reducible.dedup();
+            self.dedup_union_members_with_work(&mut reducible, work)?;
             *flat = reducible;
             return Ok(());
         }
@@ -56,7 +55,14 @@ impl TypeInterner {
         for (index, &id) in flat.iter().enumerate() {
             tick_union_execution_work(work, 1)?;
             if self.is_identity_comparable_type(id) {
-                if matches!(id, TypeId::STRING | TypeId::NUMBER | TypeId::BOOLEAN | TypeId::BIGINT | TypeId::SYMBOL) {
+                if matches!(
+                    id,
+                    TypeId::STRING
+                        | TypeId::NUMBER
+                        | TypeId::BOOLEAN
+                        | TypeId::BIGINT
+                        | TypeId::SYMBOL
+                ) {
                     has_primitive = true;
                 }
                 if let Some(TypeData::Literal(LiteralValue::String(atom))) = self.lookup(id) {
@@ -135,7 +141,11 @@ impl TypeInterner {
         if len <= 1 {
             return Ok(());
         }
-        let mut keep = if len == 64 { u64::MAX } else { (1u64 << len) - 1 };
+        let mut keep = if len == 64 {
+            u64::MAX
+        } else {
+            (1u64 << len) - 1
+        };
         let kinds: SmallVec<[ShallowReduceKind; 64]> = flat
             .iter()
             .map(|&id| self.shallow_reduce_kind(id))
@@ -156,7 +166,8 @@ impl TypeInterner {
                     debug_assert!(
                         !self.is_subtype_shallow_with_work(flat[i], flat[j], work)?,
                         "shallow_reduce_kind skipped a relating pair: {:?} <: {:?}",
-                        kinds[i], kinds[j],
+                        kinds[i],
+                        kinds[j],
                     );
                     continue;
                 }
@@ -181,6 +192,26 @@ impl TypeInterner {
         Ok(())
     }
 
+    pub(crate) fn dedup_union_members_with_work(
+        &self,
+        members: &mut TypeListBuffer,
+        work: &mut Option<&mut UnionExecutionWork<'_>>,
+    ) -> Result<(), ProjectExecutionStop> {
+        if members.len() < 2 {
+            return Ok(());
+        }
+        let mut write = 1;
+        for read in 1..members.len() {
+            tick_union_execution_work(work, 1)?;
+            if members[read] != members[write - 1] {
+                members[write] = members[read];
+                write += 1;
+            }
+        }
+        members.truncate(write);
+        Ok(())
+    }
+
     fn reduce_union_subtypes_large_row_with_work(
         &self,
         flat: &mut TypeListBuffer,
@@ -190,7 +221,11 @@ impl TypeInterner {
         if len <= 1 {
             return Ok(());
         }
-        let mut keep = vec![true; len];
+        let mut keep = Vec::with_capacity(len);
+        for _ in 0..len {
+            tick_union_execution_work(work, 1)?;
+            keep.push(true);
+        }
         let mut kinds = Vec::with_capacity(len);
         for &id in flat.iter() {
             tick_union_execution_work(work, 1)?;
@@ -212,7 +247,8 @@ impl TypeInterner {
                     debug_assert!(
                         !self.is_subtype_shallow_with_work(flat[i], flat[j], work)?,
                         "shallow_reduce_kind skipped a relating pair: {:?} <: {:?}",
-                        kinds[i], kinds[j],
+                        kinds[i],
+                        kinds[j],
                     );
                     continue;
                 }
@@ -237,7 +273,7 @@ impl TypeInterner {
         Ok(())
     }
 
-    fn try_partition_union_reduction_with_work(
+    pub(crate) fn try_partition_union_reduction_with_work(
         &self,
         members: &[TypeId],
         work: &mut Option<&mut UnionExecutionWork<'_>>,
@@ -259,11 +295,17 @@ impl TypeInterner {
         if object_count < 8 {
             return Ok(None);
         }
-        let discriminant = prop_counts
-            .into_iter()
-            .filter(|&(_, count)| count >= object_count / 2)
-            .max_by_key(|&(_, count)| count)
-            .map(|(name, _)| name);
+        let mut discriminant = None;
+        let mut highest_count = 0;
+        for (name, count) in prop_counts {
+            tick_union_execution_work(work, 1)?;
+            if count >= object_count / 2 && (discriminant.is_none() || count >= highest_count) {
+                // `Iterator::max_by_key` keeps the last item on ties; retain
+                // that choice while polling every candidate in the map scan.
+                discriminant = Some(name);
+                highest_count = count;
+            }
+        }
         let Some(discriminant) = discriminant else {
             return Ok(None);
         };

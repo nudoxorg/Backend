@@ -39,6 +39,7 @@ impl<'checkpoint> UnionExecutionWork<'checkpoint> {
     }
 }
 
+#[inline]
 pub(crate) fn tick_union_execution_work(
     work: &mut Option<&mut UnionExecutionWork<'_>>,
     work_units: u64,
@@ -49,6 +50,7 @@ pub(crate) fn tick_union_execution_work(
     Ok(())
 }
 
+#[inline]
 pub(crate) fn flush_union_execution_work(
     work: &mut Option<&mut UnionExecutionWork<'_>>,
 ) -> Result<(), ProjectExecutionStop> {
@@ -56,4 +58,16 @@ pub(crate) fn flush_union_execution_work(
         work.flush()?;
     }
     Ok(())
+}
+
+/// Extracts the result of the same checked union algorithm when no checkpoint
+/// was supplied. With `work == None`, its only error-producing operations are
+/// inert, so a stop here would indicate an implementation error.
+pub(crate) fn expect_unmetered_union<Output>(
+    result: Result<Output, ProjectExecutionStop>,
+) -> Output {
+    match result {
+        Ok(output) => output,
+        Err(stop) => unreachable!("unmetered union construction stopped: {stop:?}"),
+    }
 }

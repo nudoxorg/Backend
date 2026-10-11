@@ -46,8 +46,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use tsz_binder::SymbolId;
-use tsz_common::interner::Atom;
 use tsz_common::ProjectSemanticOptions;
+use tsz_common::interner::Atom;
 
 mod js_signature_display;
 mod predicate_cache;
@@ -420,10 +420,7 @@ impl<'a> QueryCache<'a> {
     /// Attach the immutable TypeScript project semantics for every operation performed through
     /// this query database.
     #[must_use]
-    pub const fn with_project_semantic_options(
-        mut self,
-        options: ProjectSemanticOptions,
-    ) -> Self {
+    pub const fn with_project_semantic_options(mut self, options: ProjectSemanticOptions) -> Self {
         self.project_semantic_options = options;
         self
     }
@@ -633,9 +630,11 @@ impl<'a> QueryCache<'a> {
         if let Some(shared) = self.shared
             && let Some(result) = relation.shared_slot(shared).get(&key).map(|r| *r)
         {
-            self.relation_local_cache(relation)
-                .borrow_mut()
-                .insert(key, result);
+            if !self.execution_stopped() {
+                self.relation_local_cache(relation)
+                    .borrow_mut()
+                    .insert(key, result);
+            }
             self.relation_cache_counter(relation).record_hit();
             return Some(result);
         }
@@ -938,7 +937,9 @@ impl TypeWidenCache for QueryCache<'_> {
     }
 
     fn set_widen_type_memo(&self, type_id: TypeId, result: TypeId) {
-        self.interner.set_widen_type_memo(type_id, result);
+        if !self.execution_stopped() {
+            self.interner.set_widen_type_memo(type_id, result);
+        }
     }
 }
 
@@ -954,7 +955,9 @@ impl TypeExtractParamsCache for QueryCache<'_> {
     }
 
     fn set_extract_type_params_memo(&self, type_id: TypeId, params: Arc<[TypeParamInfo]>) {
-        self.interner.set_extract_type_params_memo(type_id, params);
+        if !self.execution_stopped() {
+            self.interner.set_extract_type_params_memo(type_id, params);
+        }
     }
 
     fn contravariant_infer_names_memo(&self, type_id: TypeId) -> Option<Arc<[Atom]>> {
@@ -962,8 +965,10 @@ impl TypeExtractParamsCache for QueryCache<'_> {
     }
 
     fn set_contravariant_infer_names_memo(&self, type_id: TypeId, names: Arc<[Atom]>) {
-        self.interner
-            .set_contravariant_infer_names_memo(type_id, names);
+        if !self.execution_stopped() {
+            self.interner
+                .set_contravariant_infer_names_memo(type_id, names);
+        }
     }
 }
 
@@ -973,8 +978,10 @@ impl TypeContainsByIdCache for QueryCache<'_> {
     }
 
     fn set_contains_type_by_id_memo(&self, root: TypeId, target: TypeId, result: bool) {
-        self.interner
-            .set_contains_type_by_id_memo(root, target, result);
+        if !self.execution_stopped() {
+            self.interner
+                .set_contains_type_by_id_memo(root, target, result);
+        }
     }
 }
 
@@ -984,7 +991,9 @@ impl TypePruneUnionCache for QueryCache<'_> {
     }
 
     fn set_prune_union_members_memo(&self, type_id: TypeId, result: TypeId) {
-        self.interner.set_prune_union_members_memo(type_id, result);
+        if !self.execution_stopped() {
+            self.interner.set_prune_union_members_memo(type_id, result);
+        }
     }
 }
 
@@ -1112,7 +1121,9 @@ impl TypeDatabase for QueryCache<'_> {
     }
 
     fn insert_shared_def_variance(&self, def_id: DefId, mask: Arc<[Variance]>, gaps: Arc<[DefId]>) {
-        self.interner.insert_shared_def_variance(def_id, mask, gaps);
+        if !self.execution_stopped() {
+            self.interner.insert_shared_def_variance(def_id, mask, gaps);
+        }
     }
 
     fn literal_string(&self, value: &str) -> TypeId {
@@ -1310,7 +1321,13 @@ impl TypeDatabase for QueryCache<'_> {
     }
 
     fn union_preserve_members(&self, members: Vec<TypeId>) -> TypeId {
-        self.interner.union_preserve_members(members)
+        match self.execution_checkpoint {
+            Some(checkpoint) => self
+                .interner
+                .union_preserve_members_with_execution_checkpoint(members, checkpoint)
+                .unwrap_or(TypeId::UNKNOWN),
+            None => self.interner.union_preserve_members(members),
+        }
     }
 
     fn readonly_type(&self, inner: TypeId) -> TypeId {
@@ -1407,6 +1424,9 @@ impl CollectPropertiesResultCache for QueryCache<'_> {
         resolver_generation: u64,
         result: PropertyCollectionResult,
     ) {
+        if self.execution_stopped() {
+            return;
+        }
         self.collect_properties_result_cache.borrow_mut().insert(
             type_id,
             resolver_generation,
@@ -1606,7 +1626,9 @@ impl QueryDatabase for QueryCache<'_> {
                     // partition, each a distinct window, so it must be evicted at
                     // the next file boundary rather than shadow the next file's
                     // authoritative answer (#16553).
-                    self.registration_window_eval_keys.borrow_mut().insert(key);
+                    if !self.execution_stopped() {
+                        self.registration_window_eval_keys.borrow_mut().insert(key);
+                    }
                 }
                 // The shared cache is the run-wide, cross-window cache other
                 // files/threads read without ever entering this window; per
@@ -1719,7 +1741,9 @@ impl QueryDatabase for QueryCache<'_> {
                     && shared.shares_instantiation_family()
                 {
                     if let Some(result) = shared.instantiation_cache.get(key).map(|entry| *entry) {
-                        self.instantiation_cache.insert(key.clone(), result);
+                        if !self.execution_stopped() {
+                            self.instantiation_cache.insert(key.clone(), result);
+                        }
                         self.instantiation_cache_stats.record_hit();
                         self.instantiation_cache_stats.record_shared_hit();
                         tsz_common::perf_counters::record_shared_instantiation_cache_hit();
@@ -1743,6 +1767,9 @@ impl QueryDatabase for QueryCache<'_> {
         result: TypeId,
         stable_for_project_cache: bool,
     ) {
+        if self.execution_stopped() {
+            return;
+        }
         if let Some(shared) = self.shared
             && shared.shares_instantiation_family()
             && stable_for_project_cache
@@ -1779,6 +1806,9 @@ impl QueryDatabase for QueryCache<'_> {
         key: SubtypeReductionKey,
         result: std::sync::Arc<[TypeId]>,
     ) {
+        if self.execution_stopped() {
+            return;
+        }
         self.subtype_reduction_cache.insert(key, result);
     }
 
@@ -1827,6 +1857,9 @@ impl QueryDatabase for QueryCache<'_> {
     /// Never overwrites an existing definitive entry (a sibling checker may
     /// hold an honest `false`); upgrades an existing `LimitTrue` to definitive.
     fn promote_subtype_cache_true(&self, key: RelationCacheKey) {
+        if self.execution_stopped() {
+            return;
+        }
         {
             let mut local = self.subtype_cache.borrow_mut();
             match local.entry(key) {
@@ -1859,6 +1892,9 @@ impl QueryDatabase for QueryCache<'_> {
     /// Never overwrites a definitive entry; merges with an existing
     /// `LimitTrue` by keeping the larger band (the stronger statement).
     fn insert_subtype_limit_true(&self, key: RelationCacheKey, fuel_band: u32) {
+        if self.execution_stopped() {
+            return;
+        }
         let merge = |existing: &mut RelationCacheValue| {
             if let RelationCacheValue::LimitTrue {
                 fuel_band: existing_band,
@@ -1917,6 +1953,9 @@ impl QueryDatabase for QueryCache<'_> {
         resolver_generation: u64,
         result: Option<TypeId>,
     ) {
+        if self.execution_stopped() {
+            return;
+        }
         self.intersection_merge_cache.borrow_mut().insert(
             intersection_id,
             resolver_generation,
@@ -2052,9 +2091,11 @@ impl QueryDatabase for QueryCache<'_> {
             .iter()
             .map(|param| crate::relations::variance::compute_variance(self, body, param.name))
             .collect();
-        self.variance_cache
-            .borrow_mut()
-            .insert(def_id, Arc::clone(&result));
+        if !self.execution_stopped() {
+            self.variance_cache
+                .borrow_mut()
+                .insert(def_id, Arc::clone(&result));
+        }
         Some(result)
     }
 
@@ -2063,7 +2104,9 @@ impl QueryDatabase for QueryCache<'_> {
     }
 
     fn insert_type_param_variance(&self, def_id: DefId, variance: Arc<[Variance]>) {
-        self.variance_cache.borrow_mut().insert(def_id, variance);
+        if !self.execution_stopped() {
+            self.variance_cache.borrow_mut().insert(def_id, variance);
+        }
     }
 
     fn canonical_id(&self, type_id: TypeId) -> TypeId {

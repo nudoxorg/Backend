@@ -2,6 +2,7 @@
 
 use crate::caches::db::{
     IntersectionMergeCacheEntry, QueryDatabase, TypeApplicationEvalCache, TypeDatabase,
+    TypePredicateCache,
 };
 use crate::caches::instantiation_cache::{CanonicalSubst, InstantiationCacheKey};
 use crate::caches::query_cache::{QueryCache, SharedQueryCache};
@@ -31,6 +32,43 @@ fn query_cache_type_database_identity_is_backing_interner() {
         db_a.type_database_identity(),
         other_db.type_database_identity(),
         "different interners should remain distinct TypeId universes"
+    );
+}
+
+#[test]
+fn stopped_query_cache_does_not_publish_shared_or_interner_memos() {
+    let interner = TypeInterner::new();
+    let shared = SharedQueryCache::new();
+    let cancelled = std::sync::atomic::AtomicBool::new(true);
+    let source = tsz_common::ProjectExecutionBudget::new(
+        std::time::Instant::now() + std::time::Duration::from_secs(30),
+        &cancelled,
+        100,
+    );
+    let checkpoint = tsz_common::LatchedExecutionCheckpoint::new(&source);
+    let db = QueryCache::new_with_shared(&interner, &shared).with_execution_checkpoint(&checkpoint);
+
+    db.insert_application_eval_cache(DefId(901), &[TypeId::STRING], false, TypeId::NUMBER);
+    assert_eq!(
+        db.lookup_application_eval_cache(DefId(901), &[TypeId::STRING], false),
+        None,
+        "a stopped callback must not seed local or shared application results"
+    );
+
+    db.set_contains_infer_types_cache(TypeId::NUMBER, true);
+    assert_eq!(
+        interner.contains_infer_types_cached(TypeId::NUMBER),
+        None,
+        "a stopped callback must not publish interner-wide predicate results"
+    );
+
+    // A stopped request's local guard must not disable writes from another
+    // QueryCache over the same TypeInterner.
+    let running_db = QueryCache::new(&interner);
+    running_db.set_contains_infer_types_cache(TypeId::NUMBER, true);
+    assert_eq!(
+        interner.contains_infer_types_cached(TypeId::NUMBER),
+        Some(true),
     );
 }
 
