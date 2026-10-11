@@ -218,13 +218,11 @@ impl<'a> CheckerState<'a> {
             .wildcard_reexports_for_file(target_binder, &target_file_name)
         {
             let source_modules = source_modules.clone();
-            for (edge_index, (source_module, is_type_only)) in source_modules.iter().enumerate() {
+            for edge in source_modules.edges() {
                 if let Some(source_idx) = self.ctx.resolve_wildcard_reexport_target_from_file(
                     file_idx,
                     &target_file_name,
-                    source_module,
-                    edge_index,
-                    *is_type_only,
+                    edge,
                 ) && self.resolve_import_in_file(source_idx, import_name, visited)
                 {
                     return true;

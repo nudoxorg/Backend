@@ -1095,7 +1095,8 @@ fn test_export_resolution_multiple_wildcards() {
         vec![
             ("./moduleA".to_string(), false),
             ("./moduleB".to_string(), false),
-        ],
+        ]
+        .into(),
     );
 
     // Test resolution: funcA should be found via index -> moduleA

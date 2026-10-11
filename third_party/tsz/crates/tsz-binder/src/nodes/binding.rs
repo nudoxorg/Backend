@@ -633,7 +633,7 @@ impl BinderState {
             k if k == syntax_kind_ext::EXPORT_DECLARATION
                 || k == syntax_kind_ext::NAMESPACE_EXPORT_DECLARATION =>
             {
-                self.bind_export_declaration(arena, node, idx);
+                self.bind_export_declaration_with_execution_checkpoint(arena, node, idx, checkpoint)?;
             }
             // Export assignment - bind the assigned expression
             k if k == syntax_kind_ext::EXPORT_ASSIGNMENT => {

@@ -332,11 +332,87 @@ impl BinderState {
         &self.debugger.current_file
     }
 
+    pub(crate) fn bind_export_declaration_with_execution_checkpoint(
+        &mut self,
+        arena: &NodeArena,
+        node: &Node,
+        idx: NodeIndex,
+        checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+    ) -> Result<(), tsz_common::ProjectExecutionStop> {
+        let retained = if arena.get_export_decl(node).is_some_and(|export| {
+            export.export_clause.is_none() && export.module_specifier.is_some()
+        }) {
+            self.retain_wildcard_declaration(arena, idx, checkpoint)?
+        } else {
+            None
+        };
+        self.bind_export_declaration(arena, node, idx, retained);
+        Ok(())
+    }
+
+    // Bind-time parent work is performed once, using the same admitted budget.
+    // Preserve this base's owner-key semantics; namespace-owner policy belongs
+    // to the independently reviewed immediate correctness repair.
+    fn retain_wildcard_declaration(
+        &self,
+        arena: &NodeArena,
+        declaration: NodeIndex,
+        checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+    ) -> Result<
+        Option<(String, crate::RetainedReexportDeclaration)>,
+        tsz_common::ProjectExecutionStop,
+    > {
+        let Some(edge) = arena.get(declaration) else {
+            return Ok(None);
+        };
+        let mut ancestor = arena.parent_of(declaration);
+        for _ in 0..arena.len() {
+            if let Some(checkpoint) = checkpoint {
+                checkpoint.checkpoint(1)?;
+            }
+            let Some(index) = ancestor else {
+                return Ok(None);
+            };
+            let Some(node) = arena.get(index) else {
+                return Ok(None);
+            };
+            let key = if let Some(module) = arena.get_module(node) {
+                Some(
+                    arena
+                        .get_literal_text(module.name)
+                        .unwrap_or(&self.debugger.current_file),
+                )
+            } else if node.kind == tsz_parser::parser::syntax_kind_ext::SOURCE_FILE {
+                Some(self.debugger.current_file.as_str())
+            } else {
+                None
+            };
+            if let Some(key) = key {
+                return Ok(Some((
+                    key.to_owned(),
+                    crate::RetainedReexportDeclaration {
+                        declaration,
+                        location: crate::StableLocation::new(self.file_idx, edge.pos, edge.end),
+                        owner: index,
+                        owner_location: crate::StableLocation::new(
+                            self.file_idx,
+                            node.pos,
+                            node.end,
+                        ),
+                    },
+                )));
+            }
+            ancestor = arena.parent_of(index);
+        }
+        Ok(None)
+    }
+
     pub(crate) fn bind_export_declaration(
         &mut self,
         arena: &NodeArena,
         node: &Node,
         idx: NodeIndex,
+        retained: Option<(String, crate::RetainedReexportDeclaration)>,
     ) {
         if let Some(export) = arena.get_export_decl(node) {
             // Export clause can be:
@@ -932,12 +1008,18 @@ impl BinderState {
                 };
 
                 if let Some(source_module) = module_name {
-                    let current_file = self.reexport_owner_key(arena, idx).to_owned();
-                    // A file can have multiple `export * from` — each entry is (source_module, is_type_only).
+                    let (current_file, declaration) = retained.map_or_else(
+                        || (self.debugger.current_file.clone(), None),
+                        |(key, declaration)| (key, Some(declaration)),
+                    );
+                    // Semantic facts and exact origin travel together through reduction.
                     Arc::make_mut(&mut self.wildcard_reexports)
                         .entry(current_file)
                         .or_default()
-                        .push((source_module, export_type_only));
+                        .push_retained(crate::RetainedWildcardReexport {
+                            target: (source_module, export_type_only),
+                            declaration,
+                        });
                 }
             }
         }
@@ -1020,5 +1102,54 @@ impl BinderState {
             || kind == syntax_kind_ext::ENUM_DECLARATION
             || kind == syntax_kind_ext::MODULE_DECLARATION
             || kind == syntax_kind_ext::IMPORT_EQUALS_DECLARATION
+    }
+}
+
+#[cfg(test)]
+mod retained_edge_checkpoint_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use tsz_common::{ExecutionCheckpoint, ProjectExecutionStop};
+    use tsz_parser::parser::ParserState;
+
+    struct StopAt {
+        work: AtomicU64,
+        stop: u64,
+    }
+    impl ExecutionCheckpoint for StopAt {
+        fn checkpoint(&self, units: u64) -> Result<(), ProjectExecutionStop> {
+            let work = self.work.fetch_add(units, Ordering::Relaxed) + units;
+            if work >= self.stop {
+                Err(ProjectExecutionStop::Cancelled)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn stopped_bind_owner_scan_cannot_install_a_wildcard_prefix() {
+        let mut parser = ParserState::new("a.ts".into(), "export * from 'dep';".into());
+        let root = parser.parse_source_file();
+        let arena = parser.get_arena();
+        let statement = arena.get_source_file_at(root).unwrap().statements.nodes[0];
+        let node = arena.get(statement).unwrap();
+        let mut binder = BinderState::new();
+        let checkpoint = StopAt {
+            work: AtomicU64::new(0),
+            stop: 1,
+        };
+        assert_eq!(
+            binder.bind_export_declaration_with_execution_checkpoint(
+                arena,
+                node,
+                statement,
+                Some(&checkpoint)
+            ),
+            Err(ProjectExecutionStop::Cancelled)
+        );
+        assert!(binder.wildcard_reexports.is_empty());
+        assert!(binder.file_import_sources.is_empty());
+        assert_eq!(checkpoint.work.load(Ordering::Relaxed), 1);
     }
 }

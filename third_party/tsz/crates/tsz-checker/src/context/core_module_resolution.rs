@@ -111,7 +111,7 @@ impl CheckerContext<'_> {
         &'b self,
         binder: &'b tsz_binder::BinderState,
         file_name: &str,
-    ) -> Option<&'b Vec<(String, bool)>> {
+    ) -> Option<&'b tsz_binder::WildcardReexportRows> {
         if let Some(ref idx) = self.program_wildcard_reexports {
             return Self::lookup_any_file_key(file_name, idx.as_ref());
         }
@@ -453,15 +453,11 @@ impl CheckerContext<'_> {
         // Wildcard re-exports: `export * from './other'`.
         if let Some(source_modules) = self.wildcard_reexports_for_file(target_binder, &file_name) {
             let source_modules = source_modules.clone();
-            for (edge_index, (source_module, is_type_only)) in source_modules.iter().enumerate() {
-                if let Some(source_idx) = self.resolve_wildcard_reexport_target_from_file(
-                    target_idx,
-                    &file_name,
-                    source_module,
-                    edge_index,
-                    *is_type_only,
-                ) && let Some(resolved) =
-                    self.resolve_export_in_target_file(source_idx, export_name, visited)
+            for edge in source_modules.edges() {
+                if let Some(source_idx) =
+                    self.resolve_wildcard_reexport_target_from_file(target_idx, &file_name, edge)
+                    && let Some(resolved) =
+                        self.resolve_export_in_target_file(source_idx, export_name, visited)
                 {
                     return Some(resolved);
                 }
@@ -535,19 +531,16 @@ impl CheckerContext<'_> {
         // Wildcard re-exports: `export * from './other'`.
         if let Some(source_modules) = self.wildcard_reexports_for_file(target_binder, &file_name) {
             let source_modules = source_modules.clone();
-            for (edge_index, (source_module, is_type_only)) in source_modules.iter().enumerate() {
-                if let Some(source_idx) = self.resolve_wildcard_reexport_target_from_file(
-                    target_idx,
-                    &file_name,
-                    source_module,
-                    edge_index,
-                    *is_type_only,
-                ) && let Some(resolved) = self.resolve_export_in_target_file_with_owner(
-                    source_idx,
-                    export_name,
-                    visited,
-                    remaining_steps,
-                ) {
+            for edge in source_modules.edges() {
+                if let Some(source_idx) =
+                    self.resolve_wildcard_reexport_target_from_file(target_idx, &file_name, edge)
+                    && let Some(resolved) = self.resolve_export_in_target_file_with_owner(
+                        source_idx,
+                        export_name,
+                        visited,
+                        remaining_steps,
+                    )
+                {
                     return Some(resolved);
                 }
             }

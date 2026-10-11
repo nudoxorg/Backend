@@ -86,75 +86,6 @@ impl<'source> SelectedModuleRequest<'source> {
     }
 }
 
-/// Walk the retained lexical export order without cloning an AST or request row.
-struct WildcardEdgeCursor<'owner> {
-    owner: &'owner str,
-    wanted: usize,
-    next: usize,
-}
-
-impl WildcardEdgeCursor<'_> {
-    fn visit_source(
-        &mut self,
-        ctx: &CheckerContext<'_>,
-        arena: &tsz_parser::parser::node::NodeArena,
-    ) -> Option<Option<NodeIndex>> {
-        let source = arena.source_files.first()?;
-        for &statement in &source.statements.nodes {
-            if let Some(found) =
-                self.visit(ctx, arena, statement, source.file_name == self.owner, 0)?
-            {
-                return Some(Some(found));
-            }
-        }
-        Some(None)
-    }
-
-    fn visit(
-        &mut self,
-        ctx: &CheckerContext<'_>,
-        arena: &tsz_parser::parser::node::NodeArena,
-        statement: NodeIndex,
-        in_owner: bool,
-        depth: usize,
-    ) -> Option<Option<NodeIndex>> {
-        if depth >= 128 {
-            return None;
-        }
-        ctx.types.execution_checkpoint(1).ok()?;
-        let node = arena.get(statement)?;
-        if let Some(module) = arena.get_module(node) {
-            let in_owner = arena
-                .get_literal_text(module.name)
-                .map_or(in_owner, |name| name == self.owner);
-            let Some(body) = arena.get(module.body) else {
-                return Some(None);
-            };
-            if let Some(block) = arena.get_module_block(body) {
-                if let Some(statements) = block.statements.as_ref() {
-                    for &child in &statements.nodes {
-                        if let Some(found) = self.visit(ctx, arena, child, in_owner, depth + 1)? {
-                            return Some(Some(found));
-                        }
-                    }
-                }
-            } else if arena.get_module(body).is_some() {
-                return self.visit(ctx, arena, module.body, in_owner, depth + 1);
-            }
-        } else if in_owner
-            && arena.get_export_decl(node).is_some_and(|export| {
-                export.export_clause.is_none() && export.module_specifier.is_some()
-            })
-        {
-            if self.next == self.wanted {
-                return Some(Some(statement));
-            }
-            self.next += 1;
-        }
-        Some(None)
-    }
-}
-
 impl<'a> CheckerContext<'a> {
     pub(crate) fn select_module_request<'source>(
         &'source self,
@@ -597,52 +528,54 @@ impl<'a> CheckerContext<'a> {
         Some(request)
     }
 
-    /// Correlate one retained wildcard row with its actual declaration in lexical
-    /// statement order. Distinct same-specifier edges retain distinct modes.
+    /// Admit the exact bound edge; table ordering is never source provenance.
     pub(crate) fn bound_wildcard_reexport_request(
         &self,
         importer: usize,
         owner: &str,
-        specifier: &str,
-        row_index: usize,
-        is_type_only: bool,
+        edge: &tsz_binder::RetainedWildcardReexport,
     ) -> Option<BoundModuleRequest<'_>> {
+        self.types.execution_checkpoint(1).ok()?;
         if self.reexport_owner_is_ambiguous(importer, owner)? {
             return None;
         }
-        let arena = self.all_arenas.as_ref()?.get(importer)?;
-        let mut cursor = WildcardEdgeCursor {
-            owner,
-            wanted: row_index,
-            next: 0,
-        };
-        let declaration = if arena.source_files.first()?.file_name == owner {
-            // A non-colliding file owner has rows from exactly this file.
-            cursor.visit_source(self, arena)??
-        } else {
-            // Ambient rows append input files in lexical edge order. A global
-            // ordinal cannot be interpreted as a local declaration ordinal.
-            let mut selected = None;
-            for (file, candidate) in self.all_arenas.as_ref()?.iter().enumerate() {
-                self.types.execution_checkpoint(1).ok()?;
-                if let Some(declaration) = cursor.visit_source(self, candidate)? {
-                    if file != importer {
-                        return None;
-                    }
-                    selected = Some(declaration);
-                    break;
-                }
-            }
-            selected?
-        };
-        let export = arena
-            .get(declaration)
-            .and_then(|node| arena.get_export_decl(node))?;
-        if export.is_type_only != is_type_only {
+        let retained = edge.declaration?;
+        if retained.location.file_idx as usize != importer
+            || retained.owner_location.file_idx != retained.location.file_idx
+            || !retained.location.is_known()
+            || !retained.owner_location.is_known()
+        {
             return None;
         }
-        let request = self.bound_module_request_at(importer, declaration)?;
-        (request.specifier == specifier).then_some(request)
+        let arena = self.all_arenas.as_ref()?.get(importer)?;
+        let node = arena.get(retained.declaration)?;
+        let owner_node = arena.get(retained.owner)?;
+        if (node.pos, node.end) != (retained.location.pos, retained.location.end)
+            || (owner_node.pos, owner_node.end)
+                != (retained.owner_location.pos, retained.owner_location.end)
+            || node.pos < owner_node.pos
+            || node.end > owner_node.end
+        {
+            return None;
+        }
+        let matches_owner = if let Some(module) = arena.get_module(owner_node) {
+            arena.get_literal_text(module.name) == Some(owner)
+        } else {
+            owner_node.kind == tsz_parser::parser::syntax_kind_ext::SOURCE_FILE
+                && arena.source_files.first()?.file_name == owner
+        };
+        if !matches_owner {
+            return None;
+        }
+        let export = arena.get_export_decl(node)?;
+        if export.export_clause.is_some()
+            || export.module_specifier.is_none()
+            || export.is_type_only != edge.target.1
+        {
+            return None;
+        }
+        let request = self.bound_module_request_at(importer, retained.declaration)?;
+        (request.specifier == edge.target.0).then_some(request)
     }
 
     pub(crate) fn resolve_named_reexport_target_from_file(
@@ -671,21 +604,13 @@ impl<'a> CheckerContext<'a> {
         &self,
         importer: usize,
         owner: &str,
-        specifier: &str,
-        row_index: usize,
-        is_type_only: bool,
+        edge: &tsz_binder::RetainedWildcardReexport,
     ) -> Option<usize> {
         if self.project_module_resolution_outcomes.is_some() {
-            let request = self.bound_wildcard_reexport_request(
-                importer,
-                owner,
-                specifier,
-                row_index,
-                is_type_only,
-            )?;
+            let request = self.bound_wildcard_reexport_request(importer, owner, edge)?;
             self.select_module_request(request)?.file_target()
         } else {
-            self.resolve_import_target_from_file(importer, specifier)
+            self.resolve_import_target_from_file(importer, &edge.target.0)
         }
     }
 
@@ -2719,5 +2644,135 @@ impl<'a> TypeResolver for CheckerContext<'a> {
             "ctx_get_enum_namespace_type"
         );
         found
+    }
+}
+
+#[cfg(test)]
+mod retained_wildcard_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tsz_binder::BinderState;
+    use tsz_common::{ExecutionCheckpoint, ProjectExecutionStop};
+
+    struct Cancel(AtomicBool);
+    impl ExecutionCheckpoint for Cancel {
+        fn checkpoint(&self, _: u64) -> Result<(), ProjectExecutionStop> {
+            if self.0.load(Ordering::Relaxed) {
+                Err(ProjectExecutionStop::Cancelled)
+            } else {
+                Ok(())
+            }
+        }
+    }
+    use tsz_parser::parser::ParserState;
+    use tsz_solver::construction::{QueryCache, TypeInterner};
+
+    #[test]
+    fn exact_edge_admission_preserves_mode_and_refuses_source_lending() {
+        let text = "declare module 'pkg' { export type * from 'dep' with { 'resolution-mode': 'import' }; export type * from 'dep' with { 'resolution-mode': 'require' }; } declare module 'other' { export * from 'dep'; }";
+        let mut parser = ParserState::new("a.d.ts".into(), text.into());
+        let root = parser.parse_source_file();
+        assert!(parser.get_diagnostics().is_empty());
+        let arena = Arc::new(parser.into_arena());
+        let mut binder = BinderState::new();
+        binder.set_file_idx(0);
+        binder.bind_source_file(&arena, root);
+        let binder = Arc::new(binder);
+        let interner = TypeInterner::new();
+        let cancel = Cancel(AtomicBool::new(false));
+        let queries = QueryCache::new(&interner).with_execution_checkpoint(&cancel);
+        let mut ctx = CheckerContext::new(
+            &arena,
+            &binder,
+            &queries,
+            "a.d.ts".into(),
+            Default::default(),
+        );
+        ctx.all_arenas = Some(Arc::new(vec![arena.clone()]));
+        ctx.all_binders = Some(Arc::new(vec![binder.clone()]));
+        let edges = binder
+            .wildcard_reexports
+            .get("pkg")
+            .unwrap()
+            .edges()
+            .collect::<Vec<_>>();
+        let first = ctx
+            .bound_wildcard_reexport_request(0, "pkg", edges[0])
+            .unwrap();
+        let second = ctx
+            .bound_wildcard_reexport_request(0, "pkg", edges[1])
+            .unwrap();
+        assert_eq!(first.kind, ResolutionRequestKind::EsmReExport);
+        assert_eq!(first.mode, Some(ResolutionModeOverride::Import));
+        assert_eq!(second.mode, Some(ResolutionModeOverride::Require));
+        assert_eq!(first.specifier, "dep");
+        assert!(
+            ctx.bound_wildcard_reexport_request(0, "other", edges[0])
+                .is_none()
+        );
+        assert!(
+            ctx.bound_wildcard_reexport_request(1, "pkg", edges[0])
+                .is_none()
+        );
+        for changed in [0, 1, 2, 3, 4] {
+            let mut forged = edges[0].clone();
+            match changed {
+                0 => forged.declaration = None,
+                1 => forged.declaration.as_mut().unwrap().location.pos += 1,
+                2 => forged.declaration.as_mut().unwrap().owner_location.end -= 1,
+                3 => forged.target.0 = "absent".into(),
+                4 => forged.target.1 = false,
+                _ => unreachable!(),
+            }
+            assert!(
+                ctx.bound_wildcard_reexport_request(0, "pkg", &forged)
+                    .is_none(),
+                "mutation {changed}"
+            );
+        }
+        // Reordering rows cannot alter the source-owned mode attached to each.
+        for edge in edges.into_iter().rev() {
+            let request = ctx.bound_wildcard_reexport_request(0, "pkg", edge).unwrap();
+            assert_eq!(
+                request.mode,
+                Some(
+                    if edge.declaration
+                        == binder
+                            .wildcard_reexports
+                            .get("pkg")
+                            .unwrap()
+                            .edges()
+                            .next()
+                            .unwrap()
+                            .declaration
+                    {
+                        ResolutionModeOverride::Import
+                    } else {
+                        ResolutionModeOverride::Require
+                    }
+                )
+            );
+        }
+        cancel.0.store(true, Ordering::Relaxed);
+        let edge = binder
+            .wildcard_reexports
+            .get("pkg")
+            .unwrap()
+            .edges()
+            .next()
+            .unwrap();
+        assert!(
+            ctx.bound_wildcard_reexport_request(0, "pkg", edge)
+                .is_none()
+        );
+        cancel.0.store(false, Ordering::Relaxed);
+        assert_eq!(
+            ctx.types.execution_checkpoint(0),
+            Err(ProjectExecutionStop::Cancelled)
+        );
+        assert!(
+            ctx.bound_wildcard_reexport_request(0, "pkg", edge)
+                .is_none()
+        );
     }
 }

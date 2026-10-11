@@ -2375,11 +2375,44 @@ fn merged_wildcard_rows_preserve_exact_lexical_edges_before_resolution() {
         ("b.d.ts".to_owned(), "declare module 'pkg' { export type * from 'dep' with { 'resolution-mode': 'import' }; }".to_owned()),
     ], &[]);
     assert_eq!(
-        program.wildcard_reexports.get("pkg").unwrap(),
-        &vec![
+        program
+            .wildcard_reexports
+            .get("pkg")
+            .unwrap()
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![
             ("dep".to_owned(), true),
             ("dep".to_owned(), false),
             ("dep".to_owned(), true)
         ]
     );
+    let rows = program.wildcard_reexports.get("pkg").unwrap();
+    let file_indices = rows
+        .edges()
+        .map(|edge| edge.declaration.unwrap().location.file_idx)
+        .collect::<Vec<_>>();
+    assert_eq!(file_indices, vec![0, 0, 1]);
+    for edge in rows.edges() {
+        let retained = edge.declaration.unwrap();
+        let file = &program.files[retained.location.file_idx as usize];
+        let node = file.arena.get(retained.declaration).unwrap();
+        assert_eq!(
+            (node.pos, node.end),
+            (retained.location.pos, retained.location.end)
+        );
+        let export = file.arena.get_export_decl(node).unwrap();
+        assert_eq!(export.is_type_only, edge.target.1);
+        assert_eq!(
+            file.arena.get_literal_text(export.module_specifier),
+            Some(edge.target.0.as_str())
+        );
+        let owner = file.arena.get(retained.owner).unwrap();
+        assert_eq!(
+            (owner.pos, owner.end),
+            (retained.owner_location.pos, retained.owner_location.end)
+        );
+        assert_eq!(retained.owner_location.file_idx, retained.location.file_idx);
+    }
 }

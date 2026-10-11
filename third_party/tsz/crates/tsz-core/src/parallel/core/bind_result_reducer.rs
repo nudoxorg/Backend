@@ -677,14 +677,18 @@ impl<'checkpoint> BindResultReducer<'checkpoint> {
 
                 // Preserve every lexical wildcard edge, including same-spelled
                 // edges with different request modes or type-only attributes.
-                // Selected request consumers recover the exact owning AST edge
-                // from this input-file/lexical order; specifier dedup loses it.
+                // Each row carries its exact owning AST edge; lexical order remains
+                // semantic precedence, never a source-location authority.
                 for (owner, source_entries) in result.wildcard_reexports.iter() {
                     tick_or_return!(self);
                     let entry = self.wildcard_reexports.entry(owner.clone()).or_default();
-                    for edge in source_entries {
+                    for edge in source_entries.edges() {
                         tick_or_return!(self);
-                        entry.push(edge.clone());
+                        let mut edge = edge.clone();
+                        if let Some(declaration) = &mut edge.declaration {
+                            declaration.stamp_file_idx(file_idx as u32);
+                        }
+                        entry.push_retained(edge);
                     }
                 }
                 // Copy symbols from this file to global arena, getting new IDs

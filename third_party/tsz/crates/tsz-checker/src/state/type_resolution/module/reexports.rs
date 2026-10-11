@@ -189,15 +189,12 @@ impl<'a> CheckerState<'a> {
             // type-only path in the list.
             let mut type_only_fallback: Option<(tsz_binder::SymbolId, usize)> = None;
 
-            for (edge_index, (source_module, source_is_type_only)) in
-                source_modules.iter().enumerate()
-            {
+            for edge in source_modules.edges() {
+                let (source_module, source_is_type_only) = &edge.target;
                 if let Some(source_idx) = self.ctx.resolve_wildcard_reexport_target_from_file(
                     file_idx,
                     reexport_owner,
-                    source_module,
-                    edge_index,
-                    *source_is_type_only,
+                    edge,
                 ) && let Some(result) = self.resolve_export_in_file_with_module_key(
                     source_idx,
                     Some(source_module),
@@ -371,16 +368,15 @@ impl<'a> CheckerState<'a> {
             })
         {
             let source_modules = source_modules.clone();
-            for (edge_index, (source_module, is_type_only)) in source_modules.iter().enumerate() {
+            for edge in source_modules.edges() {
+                let (source_module, is_type_only) = &edge.target;
                 if *is_type_only {
                     continue;
                 }
                 if let Some(source_idx) = self.ctx.resolve_wildcard_reexport_target_from_file(
                     file_idx,
                     reexport_owner,
-                    source_module,
-                    edge_index,
-                    *is_type_only,
+                    edge,
                 ) && let Some(source_binder) = self.ctx.get_binder_for_file(source_idx)
                 {
                     let source_file_name = self
