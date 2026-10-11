@@ -17,19 +17,145 @@ fn control(cancelled: &AtomicBool) -> PythonProjectControl<'_> {
 }
 
 #[test]
+fn comma_separated_child_imports_keep_distinct_compiled_probe_identity() {
+    let root = std::env::temp_dir().join(format!(
+        "nudox-compiled-alias-probes-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(root.join("pkg")).unwrap();
+    let source = "from pkg import a as first, b as second\n";
+    let local = "def answer():\n    return 42\n";
+    std::fs::write(root.join("core.py"), source).unwrap();
+    std::fs::write(root.join("pkg/b.py"), local).unwrap();
+    let compiled = root.join("pkg/a.pyx");
+    std::fs::write(&compiled, b"opaque compiled candidate").unwrap();
+    let sources = [
+        PythonProjectSource {
+            relative_path: "core.py",
+            source,
+        },
+        PythonProjectSource {
+            relative_path: "pkg/b.py",
+            source: local,
+        },
+    ];
+    let cancelled = AtomicBool::new(false);
+    let checker = NativePythonProjectAuthority::admit().unwrap();
+    let report = checker
+        .analyze_project(
+            &root,
+            "pkg",
+            &sources,
+            PythonVersion::Python314,
+            control(&cancelled),
+        )
+        .unwrap();
+    let Some(PythonProjectSourceStatus::UnavailableCompiledImport { imports }) =
+        report.source_status("core.py")
+    else {
+        panic!("actual compiled candidate must quarantine the direct source")
+    };
+    assert_eq!(
+        imports.len(),
+        1,
+        "one compiled child must not classify its sibling binding as compiled"
+    );
+    let first = &imports[0];
+    assert_eq!(first.binding.as_ref(), "first");
+    assert_eq!(first.module.as_ref(), "pkg");
+    assert_eq!(
+        &source[first.binding_span.start as usize..first.binding_span.end as usize],
+        "first"
+    );
+    assert_eq!(
+        &source[first.module_span.start as usize..first.module_span.end as usize],
+        "pkg"
+    );
+    assert_eq!(first.candidates.as_ref(), [compiled.clone()]);
+    let gaps = report
+        .coverage_gaps()
+        .iter()
+        .filter(|gap| {
+            gap.relative_path.as_ref() == "core.py"
+                && gap.kind == PythonProjectCoverageGapKind::UnavailableCompiledImport
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        gaps.len(),
+        1,
+        "shared module coordinates do not duplicate coverage gaps"
+    );
+    assert_eq!(gaps[0].span, first.module_span);
+    assert_eq!(
+        report.source_status("pkg/b.py"),
+        Some(&PythonProjectSourceStatus::Analyzed)
+    );
+    assert!(!report.module("pkg/b.py").unwrap().inferences.is_empty());
+    assert!(report.module("core.py").unwrap().inferences.is_empty());
+    assert!(report.module("core.py").unwrap().symbols.is_empty());
+    report
+        .witness()
+        .validate_current(control(&cancelled))
+        .unwrap();
+    let other = root.join("pkg/b.pyd");
+    std::fs::write(&other, b"second opaque compiled candidate").unwrap();
+    assert!(
+        report
+            .witness()
+            .validate_current(control(&cancelled))
+            .is_err()
+    );
+    let both = checker
+        .analyze_project(
+            &root,
+            "pkg",
+            &sources,
+            PythonVersion::Python314,
+            control(&cancelled),
+        )
+        .unwrap();
+    let Some(PythonProjectSourceStatus::UnavailableCompiledImport { imports }) =
+        both.source_status("core.py")
+    else {
+        panic!("both candidate probes must remain unavailable")
+    };
+    assert_eq!(imports.len(), 2);
+    assert_eq!(imports[0].binding.as_ref(), "first");
+    assert_eq!(imports[1].binding.as_ref(), "second");
+    assert_ne!(imports[0].binding_span, imports[1].binding_span);
+    assert_eq!(imports[0].module_span, imports[1].module_span);
+    assert_eq!(imports[1].candidates.as_ref(), [other]);
+    assert_eq!(
+        both.coverage_gaps()
+            .iter()
+            .filter(|gap| gap.relative_path.as_ref() == "core.py"
+                && gap.kind == PythonProjectCoverageGapKind::UnavailableCompiledImport)
+            .count(),
+        1
+    );
+    both.witness()
+        .validate_current(control(&cancelled))
+        .unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn local_compiled_stdlib_collision_never_claims_mirror_fallback_authority() {
     let root = std::env::temp_dir().join(format!(
         "nudox-compiled-stdlib-shadow-{}",
         std::process::id()
     ));
     std::fs::create_dir_all(root.join("venv")).unwrap();
-    let source = "import venv\n\ndef builder():\n    return venv.EnvBuilder()\n";
-    let consumer = "from core import builder\n\ndef consume():\n    return builder()\n";
-    let independent = "import json\n\ndef local_answer():\n    return 42\n";
+    let source = "import venv\n\ndef builder():\n    return venv.EnvBuilder()\n\ndef wrong():\n    return venv.nudox_nonexistent\n";
+    let consumer =
+        "from core import builder\n\ndef consume():\n    return builder().nudox_nonexistent\n";
+    let independent = "import json\n\ndef local_answer():\n    return 42\n\ndef wrong() -> int:\n    return 'bad'\n";
+    let broken = "import venv\ndef broken(:\n";
     for (name, bytes) in [
         ("core.py", source),
         ("consumer.py", consumer),
         ("independent.py", independent),
+        ("broken.py", broken),
     ] {
         std::fs::write(root.join(name), bytes).unwrap();
     }
@@ -45,6 +171,10 @@ fn local_compiled_stdlib_collision_never_claims_mirror_fallback_authority() {
         PythonProjectSource {
             relative_path: "independent.py",
             source: independent,
+        },
+        PythonProjectSource {
+            relative_path: "broken.py",
+            source: broken,
         },
     ];
     let checker = NativePythonProjectAuthority::admit().unwrap();
@@ -89,6 +219,38 @@ fn local_compiled_stdlib_collision_never_claims_mirror_fallback_authority() {
         .witness()
         .validate_current(control(&cancelled))
         .unwrap();
+    for path in ["core.py", "consumer.py"] {
+        assert!(
+            baseline
+                .diagnostics()
+                .iter()
+                .any(|diagnostic| diagnostic.relative_path.as_ref() == path
+                    && diagnostic.kind.as_ref() == "missing-attribute"),
+            "the actual bundled fallback produces a semantic diagnostic for {path} before shadowing"
+        );
+    }
+    assert!(
+        baseline
+            .diagnostics()
+            .iter()
+            .any(
+                |diagnostic| diagnostic.relative_path.as_ref() == "independent.py"
+                    && diagnostic.kind.as_ref() == "bad-return"
+            )
+    );
+    assert_eq!(
+        baseline.source_status("broken.py"),
+        Some(&PythonProjectSourceStatus::UnavailableSyntax)
+    );
+    assert!(
+        baseline
+            .diagnostics()
+            .iter()
+            .any(
+                |diagnostic| diagnostic.relative_path.as_ref() == "broken.py"
+                    && diagnostic.kind.as_ref() == "parse-error"
+            )
+    );
     for suffix in ["pyx", "pyd"] {
         let candidate = root.join(format!("venv.{suffix}"));
         std::fs::write(&candidate, b"opaque local compiled-module bytes").unwrap();
@@ -113,11 +275,15 @@ fn local_compiled_stdlib_collision_never_claims_mirror_fallback_authority() {
                 .any(|import| import.module == "venv" && !import.resolved),
             "a mirrored standard-library fallback is not authority for the shadowed original import"
         );
+        assert!(
+            matches!(shadow.source_status("core.py"), Some(PythonProjectSourceStatus::UnavailableCompiledImport { imports }) if imports.len() == 1 && imports[0].binding.as_ref() == "venv" && imports[0].candidates.as_ref() == [candidate.clone()]),
+            "the direct compiled refusal has actual candidates, not a fictitious graph self-edge"
+        );
+        assert!(
+            matches!(shadow.source_status("consumer.py"), Some(PythonProjectSourceStatus::UnavailableDependency { dependencies }) if dependencies.iter().any(|dependency| dependency.as_ref() == "core.py")),
+            "the reverse dependent is reached through the committed native graph"
+        );
         for path in ["core.py", "consumer.py"] {
-            assert!(
-                matches!(shadow.source_status(path), Some(PythonProjectSourceStatus::UnavailableDependency { dependencies }) if dependencies.iter().any(|dependency| dependency.as_ref() == "core.py")),
-                "the actual importing source and native reverse-dependent are quarantined"
-            );
             let quarantined = shadow.module(path).unwrap();
             assert!(
                 quarantined.inferences.is_empty(),
@@ -127,10 +293,48 @@ fn local_compiled_stdlib_collision_never_claims_mirror_fallback_authority() {
                 quarantined.symbols.is_empty(),
                 "no precise fallback definition/callee escapes from {path}"
             );
+            assert!(
+                !shadow
+                    .diagnostics()
+                    .iter()
+                    .any(|diagnostic| diagnostic.relative_path.as_ref() == path),
+                "no fallback-based semantic diagnostic escapes from quarantined {path}"
+            );
         }
         assert_eq!(
             shadow.source_status("independent.py"),
             Some(&PythonProjectSourceStatus::Analyzed)
+        );
+        assert!(
+            shadow
+                .diagnostics()
+                .iter()
+                .any(
+                    |diagnostic| diagnostic.relative_path.as_ref() == "independent.py"
+                        && diagnostic.kind.as_ref() == "bad-return"
+                ),
+            "an independent real semantic diagnostic remains available"
+        );
+        assert_eq!(
+            shadow.source_status("broken.py"),
+            Some(&PythonProjectSourceStatus::UnavailableSyntax)
+        );
+        assert!(
+            shadow
+                .diagnostics()
+                .iter()
+                .any(
+                    |diagnostic| diagnostic.relative_path.as_ref() == "broken.py"
+                        && diagnostic.kind.as_ref() == "parse-error"
+                ),
+            "actual native parser errors survive the quarantine"
+        );
+        assert!(
+            shadow
+                .diagnostics()
+                .iter()
+                .filter(|diagnostic| diagnostic.relative_path.as_ref() == "broken.py")
+                .all(|diagnostic| diagnostic.kind.as_ref() == "parse-error")
         );
         let independent_report = shadow.module("independent.py").unwrap();
         assert!(

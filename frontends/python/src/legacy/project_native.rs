@@ -10,6 +10,7 @@ use pyrefly::state::state::State;
 use pyrefly_config::base::{InferReturnTypes, Preset};
 use pyrefly_config::config::{ConfigFile, ConfigSource, FallbackSearchPath, ProjectLayout};
 use pyrefly_config::finder::{ConfigError, ConfigFinder};
+use pyrefly_config::error_kind::ErrorKind;
 use pyrefly_python::ast::Ast;
 use pyrefly_python::module::TextRangeWithModule;
 use pyrefly_python::module_name::{ModuleName, ModuleNameWithKind};
@@ -27,9 +28,10 @@ use ruff_text_size::Ranged as SyntaxRanged;
 
 use super::project::{
     CandidateWitness, CapturedBaselines, CapturedProjectLayout, DefinitionTarget, DirectoryWitness,
-    PythonProjectBytesSource, PythonProjectControl, PythonProjectCoverageGap,
-    PythonProjectCoverageGapKind, PythonProjectDiagnostic, PythonProjectSource,
-    PythonTypeProjectionFault, SourceDirectoryWitness, checkpoint, project_error,
+    PythonCompiledImportUnavailable, PythonProjectBytesSource, PythonProjectControl,
+    PythonProjectCoverageGap, PythonProjectCoverageGapKind, PythonProjectDiagnostic,
+    PythonProjectSource, PythonTypeProjectionFault, SourceDirectoryWitness, checkpoint,
+    project_error,
 };
 use super::{
     CheckerError, CheckerReport, ImportResolution, Inference, InferenceSite, InferredType,
@@ -42,6 +44,7 @@ use crate::legacy::{
 pub(super) struct NativeProjectResult {
     pub(super) modules: BTreeMap<Box<str>, CheckerReport>,
     pub(super) unavailable_dependencies: BTreeMap<Box<str>, Box<[Box<str>]>>,
+    pub(super) compiled_imports: BTreeMap<Box<str>, Box<[PythonCompiledImportUnavailable]>>,
     pub(super) configuration_fingerprint: [u8; 32],
     pub(super) candidates: Vec<CandidateWitness>,
     pub(super) diagnostics: Vec<PythonProjectDiagnostic>,
@@ -117,7 +120,7 @@ pub(super) fn analyze(
         .collect::<Vec<_>>();
     let mut imports = BTreeMap::new();
     let mut candidates = BTreeMap::new();
-    let mut compiled_imports = BTreeSet::new();
+    let mut compiled_imports = BTreeMap::<(&str, u32, u32), BTreeSet<std::path::PathBuf>>::new();
     let mut roots = BTreeSet::new();
     for handle in &raw_handles {
         let config = finder.python_file(handle.module_kind(), handle.path());
@@ -232,11 +235,14 @@ pub(super) fn analyze(
                                 .strip_prefix(original_root)
                                 .expect("configured package-local root");
                             if kind == ImportCandidateKind::CompiledExtension && probe.is_file() {
-                                compiled_imports.insert((
-                                    source.relative_path,
-                                    import.span.start,
-                                    import.span.end,
-                                ));
+                                compiled_imports
+                                    .entry((
+                                        source.relative_path,
+                                        import.binding_span.start,
+                                        import.binding_span.end,
+                                    ))
+                                    .or_default()
+                                    .insert(path.clone());
                             }
                             // A directory is a namespace membership candidate, not
                             // evidence that Python source bytes were omitted. In
@@ -312,9 +318,11 @@ pub(super) fn analyze(
     // State's exact Handle dependency graph, preserving configured path/style
     // selection; no textual module-name matching supplies the reverse closure.
     let mut compiled_sources = BTreeSet::new();
-    for (path, _, _) in &compiled_imports {
+    for (path, _, _) in compiled_imports.keys() {
         checkpoint(control)?;
-        compiled_sources.insert(*path);
+        if syntax.contains_key(*path) {
+            compiled_sources.insert(*path);
+        }
     }
     let unavailable_paths = raw_sources
         .iter()
@@ -328,16 +336,6 @@ pub(super) fn analyze(
         .map(|(source, handle)| (handle.path().as_path(), source.relative_path))
         .collect::<BTreeMap<_, _>>();
     let mut unavailable_dependencies = BTreeMap::<Box<str>, BTreeSet<Box<str>>>::new();
-    // Seed the importing resources themselves even before inspecting rdeps.
-    // Dependency names here identify the selected resource that became
-    // unavailable, not an invented captured file for the compiled candidate.
-    for path in &compiled_sources {
-        checkpoint(control)?;
-        unavailable_dependencies
-            .entry((*path).into())
-            .or_default()
-            .insert((*path).into());
-    }
     for loaded in read.handles() {
         checkpoint(control)?;
         let Some(path) = selected_native_paths
@@ -417,16 +415,20 @@ pub(super) fn analyze(
                 "native selected module differs from captured bytes",
             ));
         }
-        if unavailable_dependencies.contains_key(source.relative_path) {
+        if compiled_sources.contains(source.relative_path)
+            || unavailable_dependencies.contains_key(source.relative_path)
+        {
             let mut unavailable_report = CheckerReport::default();
             if compiled_sources.contains(source.relative_path) {
+                let mut gap_sites = BTreeSet::new();
                 for import in &imports[source.relative_path] {
                     checkpoint(control)?;
-                    if compiled_imports.contains(&(
+                    if compiled_imports.contains_key(&(
                         source.relative_path,
-                        import.span.start,
-                        import.span.end,
-                    )) {
+                        import.binding_span.start,
+                        import.binding_span.end,
+                    )) && gap_sites.insert((import.span.start, import.span.end))
+                    {
                         coverage_gaps.push(PythonProjectCoverageGap {
                             relative_path: source.relative_path.into(),
                             span: import.span,
@@ -442,14 +444,16 @@ pub(super) fn analyze(
                 }
             }
             modules.insert(source.relative_path.into(), unavailable_report);
-            coverage_gaps.push(PythonProjectCoverageGap {
-                relative_path: source.relative_path.into(),
-                span: Span {
-                    start: 0,
-                    end: source.source.len() as u32,
-                },
-                kind: PythonProjectCoverageGapKind::UnavailableDependency,
-            });
+            if !compiled_sources.contains(source.relative_path) {
+                coverage_gaps.push(PythonProjectCoverageGap {
+                    relative_path: source.relative_path.into(),
+                    span: Span {
+                        start: 0,
+                        end: source.source.len() as u32,
+                    },
+                    kind: PythonProjectCoverageGapKind::UnavailableDependency,
+                });
+            }
             continue;
         }
         let Some(facts) = syntax.get(source.relative_path) else {
@@ -810,10 +814,10 @@ pub(super) fn analyze(
                     coverage_gaps.push(PythonProjectCoverageGap {
                         relative_path: source.relative_path.into(),
                         span: import.span,
-                        kind: if compiled_imports.contains(&(
+                        kind: if compiled_imports.contains_key(&(
                             source.relative_path,
-                            import.span.start,
-                            import.span.end,
+                            import.binding_span.start,
+                            import.binding_span.end,
                         )) {
                             PythonProjectCoverageGapKind::UnavailableCompiledImport
                         } else {
@@ -844,6 +848,15 @@ pub(super) fn analyze(
         let Some(path) = selected_native_paths.get(error.path().as_path()) else {
             continue;
         };
+        // Checker recovery/fallback diagnostics share the same tainted native
+        // authority as types and targets. ParseError is emitted by the native
+        // parser from exact source bytes; other kinds (including InvalidSyntax,
+        // also emitted by type-dependent special forms) are not parser proof.
+        if (unavailable_dependencies.contains_key(*path) || unavailable_paths.contains(*path))
+            && error.error_kind() != ErrorKind::ParseError
+        {
+            continue;
+        }
         diagnostics.push(PythonProjectDiagnostic {
             relative_path: (*path).into(),
             span: Span {
@@ -855,8 +868,34 @@ pub(super) fn analyze(
             message: error.msg().into_boxed_str(),
         });
     }
+    let mut direct_compiled_imports = BTreeMap::new();
+    for path in &compiled_sources {
+        checkpoint(control)?;
+        let mut unavailable = Vec::new();
+        for import in &imports[*path] {
+            checkpoint(control)?;
+            if let Some(candidates) =
+                compiled_imports.get(&(*path, import.binding_span.start, import.binding_span.end))
+            {
+                let mut captured_candidates = Vec::new();
+                for candidate in candidates {
+                    checkpoint(control)?;
+                    captured_candidates.push(candidate.clone());
+                }
+                unavailable.push(PythonCompiledImportUnavailable {
+                    binding: import.binding.clone().into_boxed_str(),
+                    module: import.module.as_str().into(),
+                    module_span: import.span,
+                    binding_span: import.binding_span,
+                    candidates: captured_candidates.into_boxed_slice(),
+                });
+            }
+        }
+        direct_compiled_imports.insert((*path).into(), unavailable.into_boxed_slice());
+    }
     Ok(NativeProjectResult {
         modules,
+        compiled_imports: direct_compiled_imports,
         unavailable_dependencies: unavailable_dependencies
             .into_iter()
             .map(|(path, dependencies)| (path, dependencies.into_iter().collect()))
@@ -1248,7 +1287,7 @@ fn captured_finder(
     let mut effective = BTreeMap::new();
     let mut scope_identity = blake3::Hasher::new();
     scope_identity.update(b"compiler.python.effective-config-scope.v1\0");
-    scope_identity.update(b"root-isolated;named-package-import-root.v1;captured-diagnostic-baseline.v1;native-priority;candidate-kind+presence+absence;namespace-membership-only+compiled-shadow-unavailable-rdeps.v3;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
+    scope_identity.update(b"root-isolated;named-package-import-root.v1;captured-diagnostic-baseline.v1;native-priority;candidate-kind+presence+absence;namespace-membership-only+compiled-shadow-unavailable-rdeps+binding-site-compiled-cause+parse-only-tainted-diagnostics.v4;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
     for directory in directories {
         let mut candidates = Vec::new();
         for (depth, ancestor) in directory

@@ -2961,7 +2961,8 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     PythonProjectSourceStatus::UnavailableEncoding(_) => {
                         Some(PackageSourceCoverageGapCause::PythonSourceEncodingUnavailable)
                     }
-                    PythonProjectSourceStatus::UnavailableDependency { .. } => {
+                    PythonProjectSourceStatus::UnavailableDependency { .. }
+                    | PythonProjectSourceStatus::UnavailableCompiledImport { .. } => {
                         Some(PackageSourceCoverageGapCause::PythonSourceDependencyUnavailable)
                     }
                 };

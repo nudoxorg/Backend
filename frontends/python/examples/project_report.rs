@@ -20,6 +20,16 @@ fn source_status_json(status: &PythonProjectSourceStatus) -> serde_json::Value {
         PythonProjectSourceStatus::UnavailableDependency { dependencies } => {
             json!({"kind":"unavailable-dependency","dependencies":dependencies})
         }
+        PythonProjectSourceStatus::UnavailableCompiledImport { imports } => json!({
+            "kind": "unavailable-compiled-import",
+            "imports": imports.iter().map(|import| json!({
+                "binding": import.binding,
+                "module": import.module,
+                "module_span": {"start": import.module_span.start, "end": import.module_span.end},
+                "binding_span": {"start": import.binding_span.start, "end": import.binding_span.end},
+                "candidates": import.candidates,
+            })).collect::<Vec<_>>()
+        }),
         PythonProjectSourceStatus::UnavailableEncoding(fault) => {
             let fault = match fault {
                 PythonSourceDecodeFault::SourceExtent { actual } => {
