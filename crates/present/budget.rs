@@ -197,6 +197,8 @@ pub fn encode_answer(
                         readiness: list.coverage().readiness(),
                         records,
                         more: list.has_more(),
+                        empty_reason: list.empty_reason(),
+                        semantic_search: list.coverage().semantic_search_status(),
                     },
                     budget,
                 )
@@ -582,6 +584,10 @@ struct SummaryRecordsDto<'a> {
     readiness: &'a str,
     records: Vec<SummaryRecordDto>,
     more: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    empty_reason: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    semantic_search: Option<backend_library::SemanticSearchStatus>,
 }
 
 #[derive(Serialize)]
@@ -667,6 +673,74 @@ impl Write for CountingWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn summary_records_preserve_explanations_and_exact_semantic_lane_outcomes() {
+        use backend_library::{Coverage, SemanticSearchReason, SemanticSearchStatus};
+        let statuses = [
+            None,
+            Some(SemanticSearchStatus::Available),
+            Some(SemanticSearchStatus::Unavailable {
+                reason: SemanticSearchReason::Unconfigured,
+            }),
+            Some(SemanticSearchStatus::Stale {
+                reason: SemanticSearchReason::StaleProjection,
+            }),
+        ];
+        for status in statuses {
+            for explanation in [None, Some("this declaration has no outgoing references")] {
+                let mut list = crate::record::RecordList::new(
+                    "draw",
+                    crate::coverage::CoverageLine::new(&[Coverage::Complete], Some(0)),
+                    Vec::<crate::record::Record>::new(),
+                );
+                if let Some(status) = status {
+                    list = list.with_semantic_search_status(status);
+                }
+                if let Some(explanation) = explanation {
+                    list = list.with_empty_reason(explanation);
+                }
+                let answer = Answer::Records(Box::new(list));
+                let mut projections = Vec::new();
+                for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+                    let encoded = encode_answer(
+                        &answer,
+                        detail,
+                        None,
+                        DEFAULT_RESPONSE_BUDGET_BYTES,
+                    )
+                    .expect("complete result with diagnostic context");
+                    assert_eq!(encoded.budget.bytes, encoded.bytes.len());
+                    let value: Value = serde_json::from_slice(&encoded.bytes).expect("JSON");
+                    assert!(value.get("nextCursor").is_none());
+                    assert_eq!(value["records"], serde_json::json!([]));
+                    assert_eq!(value["more"], false);
+                    assert_eq!(value.get("empty_reason").is_some(), explanation.is_some());
+                    assert_eq!(value.get("semantic_search").is_some(), status.is_some());
+                    if let Some(explanation) = explanation {
+                        assert_eq!(value["empty_reason"], explanation);
+                    }
+                    if let Some(status) = status {
+                        let actual: SemanticSearchStatus =
+                            serde_json::from_value(value["semantic_search"].clone())
+                                .expect("exact typed semantic outcome");
+                        assert_eq!(actual, status);
+                    }
+                    projections.push(value);
+                }
+                for field in [
+                    "query",
+                    "coverage",
+                    "readiness",
+                    "empty_reason",
+                    "semantic_search",
+                ] {
+                    assert_eq!(projections[0][field], projections[1][field], "{field}");
+                    assert_eq!(projections[0][field], projections[2][field], "{field}");
+                }
+            }
+        }
+    }
 
     // Deserialize directly from serialized bytes before Value can collapse
     // duplicate object keys. This validator deliberately rejects the original
