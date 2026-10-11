@@ -82,6 +82,9 @@ def main []: nothing -> nothing {
     let checks = ci-step "fast" "structural flake checks" {||
         with-plain-tmp {|| run-bounded 20min "python3" ($env.FILE_PWD | path join "structural-checks.py") ...$installables }
     }
+    # Formatting/config failures already reject the head. Do not spend the
+    # next minutes compiling three platforms before returning that verdict.
+    if not $checks { finish-lane "fast" [$checks] }
     stop-if-superseded "fast"
     # Native first: a plain compile error shows up before the foreign targets
     # spend their minutes on it.

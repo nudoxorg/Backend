@@ -6,13 +6,14 @@ from collections import defaultdict
 import json
 import math
 from pathlib import Path
+import re
 import statistics
 
 
 def summarize(logs):
     attempts = {}
     for log in logs:
-        for line in log.splitlines():
+        for line in re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", log).splitlines():
             if not line.startswith("CI-METRIC "):
                 continue
             record = json.loads(line.removeprefix("CI-METRIC "))

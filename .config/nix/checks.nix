@@ -58,7 +58,11 @@ in
   ci-compile-telemetry = helpers.nuCheck {
     inherit pkgs;
     name = "backend-ci-compile-telemetry";
-    packages = [ pkgs.python3 ];
+    packages = [
+      pkgs.python3
+      pkgs.nushell
+      pkgs.coreutils
+    ];
     build = ''
       python3 -m unittest discover -s ${../ci} -p 'test_*.py' -v
       mkdir $env.out

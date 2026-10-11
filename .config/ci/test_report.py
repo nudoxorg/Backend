@@ -15,7 +15,7 @@ class ReportTests(unittest.TestCase):
         base = {"kind": "cargo-check", "head_sha": "abc", "target": "linux", "started_at": "first", "seconds": 4, "exit_code": 0, "fresh_artifacts": 9, "rebuilt_artifacts": 1}
         failed = dict(base, started_at="second", seconds=1, exit_code=101)
         log = "CI-METRIC " + json.dumps(base) + "\nCI-METRIC " + json.dumps(failed)
-        report = module.summarize([log, log])
+        report = module.summarize([log, "\x1b[0m" + log])
         self.assertEqual(len(report["attempts"]), 2)
         green = next(row for row in report["summaries"] if row["outcome"] == "passed")
         self.assertEqual(green["attempts"], 1)
