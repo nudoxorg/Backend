@@ -308,6 +308,9 @@ let
         packages = crossAttrs.packages ++ [
           pkgs.cargo-nextest
           pkgs.qemu-user
+          # Process-group tests need full PID-inspection syntax, absent in
+          # the task image's BusyBox ps.
+          pkgs.procps
           # Process tests run host tools as children (the embedding fixtures
           # are Python scripts); an emulated test execs them natively.
           pkgs.python3

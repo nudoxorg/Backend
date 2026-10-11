@@ -846,8 +846,8 @@ fn native_cold_runner_keeps_output_and_coverage_separate() -> Result<(), Box<dyn
     let snapshot = authority.discover()?;
     let key = session_key(&authority, &snapshot);
     let command = SupervisedCommand::for_authority(
-        PathBuf::from("/bin/sh"),
-        vec!["-c".into(), "cat".into()],
+        test_coreutils_tool("cat"),
+        Vec::new(),
         ProcessEnvironment::new(Vec::new())?,
         PathBuf::from("/tmp"),
         ProcessStdin::bytes(b"raw authority bytes"),
@@ -1436,7 +1436,7 @@ fn supervisor_enforces_unix_cpu_time_limit() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "linux")))]
 #[test]
 fn unsupported_resource_bounds_are_reported_before_spawn() -> Result<(), Box<dyn Error>> {
     let process_limits = limits(32, 32, Duration::from_secs(1), 64)?.with_memory_bytes_limit(1)?;

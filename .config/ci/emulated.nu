@@ -175,7 +175,16 @@ def main [
     # The JUnit report names every failure even where the CI log keeps none
     # of nextest's own output (Concourse gives the task a terminal).
     let store = $env.CARGO_TARGET_DIR? | default "target" | path join "nextest"
+    # Concurrent QEMU guests contend on fsync and short process deadlines.
+    # Build concurrency is separate; bound emulated runtime contention.
+    let threads = if $platform == "arm64" { ["--test-threads" "4"] } else { [] }
     $"[store]\ndir = \"($store)\"\n\n" + "[profile.emulated]\nfail-fast = false\nretries = 1\nslow-timeout = { period = \"60s\", terminate-after = 3 }\n\n[profile.emulated.junit]\npath = \"junit.xml\"\n" | save --force $config
+    if $platform == "arm64" {
+        # Measured 176s alone and 120s on retry, against a 180s default.
+        # Keep this large frontier test enabled with a bounded six-minute cap.
+        "\n[[profile.emulated.overrides]]\nfilter = 'binary_id(backend-store) and test(=tests::stored_extension_installs_auxiliary_children_before_membership_rebind)'\nslow-timeout = { period = '60s', terminate-after = 6 }\n"
+        | save --append $config
+    }
     let packages = platform-packages | each {|name| ["-p" $name] } | flatten
     print $"== emulated: ($platform) \(($lane.target)\) on (platform-packages | length) crates =="
     let counts = (
@@ -221,7 +230,7 @@ def main [
     # between listing and execution.
     let passed = if $run_attempted {
         try {
-            ^cargo nextest run --locked --no-tests=fail --no-fail-fast --hide-progress-bar --config-file $config --profile emulated --target $lane.target ...$packages -E $filter
+            ^cargo nextest run --locked --no-tests=fail --no-fail-fast --hide-progress-bar --config-file $config --profile emulated --target $lane.target ...$threads ...$packages -E $filter
             true
         } catch { false }
     } else {

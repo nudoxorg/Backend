@@ -16,16 +16,16 @@ const REPLAY_RECORDS: usize = 64;
 // mistaken for a zero-allocation admission path. A one-slot channel costs the shared counter and
 // its slot buffer (656 bytes on 64-bit targets); platforms whose std mutex is a lazily boxed
 // pthread mutex add one 64-byte allocation when the channel first locks. The numbers are measured
-// per platform family with the workspace toolchain (rustc 1.97.1): the unix figure is the one the
-// ledger recorded, the Windows figure was measured on x86_64-pc-windows-msvc where the SRW lock is
-// inline.
-#[cfg(not(windows))]
+// per platform family with the workspace toolchain (rustc 1.97.1): the boxed-mutex figure was recorded
+// on Darwin. Linux uses an inline futex mutex (measured on aarch64 Linux), and Windows
+// uses an inline SRW lock (measured on x86_64-pc-windows-msvc).
+#[cfg(not(any(windows, target_os = "linux")))]
 const SYNC_CHANNEL_COUNT: u64 = 3;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 const SYNC_CHANNEL_BYTES: u64 = 720;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const SYNC_CHANNEL_COUNT: u64 = 2;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const SYNC_CHANNEL_BYTES: u64 = 656;
 
 #[derive(Debug, Error)]
