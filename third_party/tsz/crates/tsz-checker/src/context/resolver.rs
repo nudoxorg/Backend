@@ -52,6 +52,55 @@ thread_local! {
 }
 
 impl<'a> CheckerContext<'a> {
+    /// Borrow the exact compiler-owned outcome, including authoritative
+    /// negatives. A missing request cannot borrow another kind or mode.
+    pub fn project_module_outcome_for_request(
+        &self,
+        source_file_idx: usize,
+        specifier: &str,
+        resolution_mode: Option<ResolutionModeOverride>,
+        request_kind: ResolutionRequestKind,
+    ) -> Option<&crate::context::ResolvedModuleRequestOutcome> {
+        let outcomes = self.project_module_resolution_outcomes.as_ref()?;
+        for candidate in module_specifier_candidates(specifier) {
+            if let Some(outcome) =
+                outcomes.get(&(source_file_idx, candidate, resolution_mode, request_kind))
+            {
+                return Some(outcome);
+            }
+        }
+        None
+    }
+
+    /// Exact project outcomes dominate the standalone specifier-only set.
+    /// Neither an unresolved nor an absent request is a successful resolution.
+    pub fn module_resolved_for_request(
+        &self,
+        specifier: &str,
+        resolution_mode: Option<ResolutionModeOverride>,
+        request_kind: ResolutionRequestKind,
+    ) -> bool {
+        if self.project_module_resolution_outcomes.is_some() {
+            return matches!(
+                self.project_module_outcome_for_request(
+                    self.current_file_idx,
+                    specifier,
+                    resolution_mode,
+                    request_kind,
+                ),
+                Some(
+                    crate::context::ResolvedModuleRequestOutcome::File(_)
+                        | crate::context::ResolvedModuleRequestOutcome::External { .. }
+                )
+            );
+        }
+        self.resolved_modules.as_ref().is_some_and(|resolved| {
+            module_specifier_candidates(specifier)
+                .iter()
+                .any(|candidate| resolved.contains(candidate))
+        })
+    }
+
     /// Whether `def_id` was classified as a force-eligible simple lib interface
     /// (the value-position / `ensure_refs_resolved` predicate
     /// `CheckerState::force_eligible_lib_def`). Reads the per-`DefId` cache only;
@@ -256,21 +305,16 @@ impl<'a> CheckerContext<'a> {
         resolution_mode_override: Option<ResolutionModeOverride>,
         request_kind: ResolutionRequestKind,
     ) -> bool {
-        if let Some(outcomes) = self.project_module_resolution_outcomes.as_ref() {
-            for candidate in module_specifier_candidates(specifier) {
-                if let Some(outcome) = outcomes.get(&(
+        if self.project_module_resolution_outcomes.is_some() {
+            return matches!(
+                self.project_module_outcome_for_request(
                     self.current_file_idx,
-                    candidate,
+                    specifier,
                     resolution_mode_override,
                     request_kind,
-                )) {
-                    return matches!(
-                        outcome,
-                        crate::context::ResolvedModuleRequestOutcome::External { .. }
-                    );
-                }
-            }
-            return false;
+                ),
+                Some(crate::context::ResolvedModuleRequestOutcome::External { .. })
+            );
         }
         let Some(resolved) = self.resolved_modules.as_ref() else {
             return false;
@@ -468,20 +512,18 @@ impl<'a> CheckerContext<'a> {
         resolution_mode_override: Option<ResolutionModeOverride>,
         request_kind: ResolutionRequestKind,
     ) -> Option<usize> {
-        if let Some(outcomes) = self.project_module_resolution_outcomes.as_ref() {
-            for candidate in module_specifier_candidates(specifier) {
-                if let Some(crate::context::ResolvedModuleRequestOutcome::File(target_idx)) =
-                    outcomes.get(&(
-                        source_file_idx,
-                        candidate,
-                        resolution_mode_override,
-                        request_kind,
-                    ))
-                {
-                    return Some(*target_idx);
+        if self.project_module_resolution_outcomes.is_some() {
+            return match self.project_module_outcome_for_request(
+                source_file_idx,
+                specifier,
+                resolution_mode_override,
+                request_kind,
+            ) {
+                Some(crate::context::ResolvedModuleRequestOutcome::File(target_idx)) => {
+                    Some(*target_idx)
                 }
-            }
-            return None;
+                _ => None,
+            };
         }
         if let Some(paths) = self.resolved_module_request_paths.as_ref() {
             for candidate in module_specifier_candidates(specifier) {
@@ -560,6 +602,32 @@ impl<'a> CheckerContext<'a> {
             }
         }
         if saw_request { target } else { None }
+    }
+
+    /// A compiler-owned `None` outcome means mode is inapplicable to this exact
+    /// request kind, including dynamic/require requests if the producer supplies
+    /// that key. Preserve it instead of adopting a standalone CLI-inferred mode.
+    /// An explicit syntax override always remains exact. A missing `None` key
+    /// keeps the checker calculation; it never borrows a different kind/mode.
+    pub fn resolution_mode_for_project_request(
+        &self,
+        specifier: &str,
+        request_kind: ResolutionRequestKind,
+        resolution_mode_override: Option<ResolutionModeOverride>,
+    ) -> Option<ResolutionModeOverride> {
+        if resolution_mode_override.is_none()
+            && self
+                .project_module_outcome_for_request(
+                    self.current_file_idx,
+                    specifier,
+                    None,
+                    request_kind,
+                )
+                .is_some()
+        {
+            return None;
+        }
+        self.resolution_mode_for_request(request_kind, resolution_mode_override)
     }
 
     /// Compute the checker-side resolution-mode key used by the CLI driver for a request.

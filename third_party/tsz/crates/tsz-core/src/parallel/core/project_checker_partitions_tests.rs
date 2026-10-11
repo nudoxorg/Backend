@@ -161,7 +161,10 @@ fn partitions_keep_exact_unresolved_requests_and_typed_bad_targets() {
         )],
         &[],
     );
-    let options = CheckerOptions::default();
+    let options = CheckerOptions {
+        module: tsz_common::common::ModuleKind::ESNext,
+        ..CheckerOptions::default()
+    };
     let semantic = ProjectSemanticOptions::structural();
     let unresolved = ProjectModuleResolution {
         importer_path: "src/main.ts".to_owned(),
@@ -185,6 +188,22 @@ fn partitions_keep_exact_unresolved_requests_and_typed_bad_targets() {
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == 2307)
+    );
+    let classic = check_files_parallel_with_project_inputs_and_execution_checkpoint(
+        &program,
+        &CheckerOptions::default(),
+        &[],
+        semantic,
+        &[unresolved.clone()],
+        &execution_budget(&cancelled),
+    )
+    .unwrap();
+    assert!(
+        classic.file_results[0]
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == 2792),
+        "default Classic module diagnostics still retain authoritative unresolved membership"
     );
     let actual_program = compile_files_with_libs(
         vec![(
@@ -579,6 +598,23 @@ fn cold_consumer_before_interface_owner_keeps_inherited_member_semantics() {
         "cold consumer must resolve the inherited member before owner check: {:?}",
         consumer[0].diagnostics
     );
+    let file = &program.files[0];
+    let inherited_member = (0..file.arena.len())
+        .map(|index| NodeIndex(index as u32))
+        .find(|&index| {
+            file.arena
+                .get(index)
+                .is_some_and(|node| node.kind == syntax_kind_ext::PROPERTY_ACCESS_EXPRESSION)
+        })
+        .expect("inherited member expression");
+    let observed = plan.with_bound_file_checker_and_types(0, file, |checker, _, _, _| {
+        checker.get_type_of_node(inherited_member)
+    });
+    assert_eq!(
+        observed,
+        TypeId::NUMBER,
+        "consumer must retain exact inherited number before owner check"
+    );
     let owner = plan.check_file_partition(1, &program.files[1..]).unwrap();
     assert!(
         owner[0].diagnostics.is_empty(),
@@ -754,10 +790,41 @@ fn library_name_index_stop_drops_partial_names_and_legacy_index_is_unchanged() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn two_worker_cold_consumer_finishes_before_interface_owner_starts() {
+    use crate::checker::context::ResolutionModeOverride;
     use std::sync::{Mutex, mpsc};
+    use tsz_common::common::ModuleKind;
     // Each case owns a pristine program/store. The incorrect string return
     // must observe the inherited number; UNKNOWN/any cannot pass this oracle.
-    for (return_type, expected_diagnostics) in [("number", 0), ("string", 1)] {
+    for (module, resolution_mode, return_type, expected_diagnostics) in [
+        (ModuleKind::None, None, "number", 0),
+        (ModuleKind::None, None, "string", 1),
+        (ModuleKind::ESNext, None, "number", 0),
+        (ModuleKind::ESNext, None, "string", 1),
+        (
+            ModuleKind::ESNext,
+            Some(ResolutionModeOverride::Import),
+            "number",
+            0,
+        ),
+        (
+            ModuleKind::ESNext,
+            Some(ResolutionModeOverride::Import),
+            "string",
+            1,
+        ),
+        (
+            ModuleKind::NodeNext,
+            Some(ResolutionModeOverride::Require),
+            "number",
+            0,
+        ),
+        (
+            ModuleKind::NodeNext,
+            Some(ResolutionModeOverride::Require),
+            "string",
+            1,
+        ),
+    ] {
         let semantic = ProjectSemanticOptions::declaration_scoped();
         let binds = parse_and_bind_parallel_with_libs(vec![
         ("src/consumer.ts".to_owned(), format!("import type {{ Derived }} from './owner'; export function inherited(value: Derived<number>): {return_type} {{ return value.base; }}")),
@@ -767,12 +834,15 @@ fn two_worker_cold_consumer_finishes_before_interface_owner_starts() {
         let program = merge_bind_results_ref_with_project_semantic_options(&refs, semantic);
         assert_eq!(program.files[0].file_name, "src/consumer.ts");
         assert_eq!(program.files[1].file_name, "src/owner.ts");
-        let options = CheckerOptions::default();
+        let options = CheckerOptions {
+            module,
+            ..CheckerOptions::default()
+        };
         let resolutions = [ProjectModuleResolution {
             importer_path: "src/consumer.ts".to_owned(),
             specifier: "./owner".to_owned(),
             request_kind: ProjectModuleRequestKind::EsmImport,
-            resolution_mode: None,
+            resolution_mode,
             target: ProjectModuleResolutionTarget::File {
                 path: "src/owner.ts".to_owned(),
             },

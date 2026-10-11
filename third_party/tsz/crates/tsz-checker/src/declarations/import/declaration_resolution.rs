@@ -2,7 +2,6 @@
 //! module/file resolution utilities.
 //!
 //! Contains:
-//! - `resolved_module_set_contains_specifier` — O(1) resolved-module lookup
 //! - `check_reexport_chain_for_cycles` — circular `export *` guard
 //! - `would_create_cycle` — import stack cycle test
 //! - `resolve_import_via_target_binder` / `resolve_import_via_all_binders` — cross-binder lookup
@@ -26,14 +25,6 @@ pub(crate) fn path_has_node_modules_segment(file_name: &str) -> bool {
 }
 
 impl<'a> CheckerState<'a> {
-    pub(crate) fn resolved_module_set_contains_specifier(&self, module_name: &str) -> bool {
-        self.ctx.resolved_modules.as_ref().is_some_and(|resolved| {
-            crate::module_resolution::module_specifier_candidates(module_name)
-                .iter()
-                .any(|candidate| resolved.contains(candidate))
-        })
-    }
-
     // =========================================================================
     // Re-export Cycle Detection
     // =========================================================================

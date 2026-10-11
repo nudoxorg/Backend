@@ -1654,6 +1654,134 @@ mod project_module_resolution_tests {
     }
 
     #[test]
+    fn exact_project_requests_dominate_legacy_success_for_every_kind_mode_and_outcome() {
+        let program = compile_files_with_libs(
+            vec![
+                ("src/main.ts".to_owned(), "export {};".to_owned()),
+                (
+                    "src/dep.ts".to_owned(),
+                    "export const value = 1;".to_owned(),
+                ),
+                (
+                    "src/wrong.ts".to_owned(),
+                    "export const value = 'wrong';".to_owned(),
+                ),
+            ],
+            &[],
+        );
+        let source = program
+            .files
+            .iter()
+            .position(|file| file.file_name == "src/main.ts")
+            .unwrap();
+        let target = program
+            .files
+            .iter()
+            .position(|file| file.file_name == "src/dep.ts")
+            .unwrap();
+        let wrong = program
+            .files
+            .iter()
+            .position(|file| file.file_name == "src/wrong.ts")
+            .unwrap();
+        let kinds = [
+            ProjectModuleRequestKind::EsmImport,
+            ProjectModuleRequestKind::EsmReExport,
+            ProjectModuleRequestKind::DynamicImport,
+            ProjectModuleRequestKind::CjsRequire,
+        ];
+        let checker_kinds = [
+            ResolutionRequestKind::EsmImport,
+            ResolutionRequestKind::EsmReExport,
+            ResolutionRequestKind::DynamicImport,
+            ResolutionRequestKind::CjsRequire,
+        ];
+        let modes = [
+            None,
+            Some(ResolutionModeOverride::Import),
+            Some(ResolutionModeOverride::Require),
+        ];
+        let options = CheckerOptions::default();
+        for (kind, checker_kind) in kinds.iter().zip(checker_kinds) {
+            for mode in modes {
+                for outcome in [
+                    Some(ProjectModuleResolutionTarget::File {
+                        path: "src/dep.ts".to_owned(),
+                    }),
+                    Some(ProjectModuleResolutionTarget::External {
+                        identity: "admitted-external:dep".to_owned(),
+                    }),
+                    Some(ProjectModuleResolutionTarget::Unresolved),
+                    None,
+                ] {
+                    let is_file =
+                        matches!(outcome, Some(ProjectModuleResolutionTarget::File { .. }));
+                    let is_external = matches!(
+                        outcome,
+                        Some(ProjectModuleResolutionTarget::External { .. })
+                    );
+                    let resolutions = outcome
+                        .as_ref()
+                        .map(|outcome| ProjectModuleResolution {
+                            importer_path: "src/main.ts".to_owned(),
+                            specifier: "./dep".to_owned(),
+                            request_kind: kind.clone(),
+                            resolution_mode: mode,
+                            target: outcome.clone(),
+                        })
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                    let plan = ParallelCheckPlan::build(
+                        &program,
+                        &options,
+                        &[],
+                        ProjectSemanticOptions::structural(),
+                        Some(Arc::new(
+                            build_project_module_resolution_outcomes(&program, &resolutions)
+                                .unwrap(),
+                        )),
+                        None,
+                    )
+                    .unwrap();
+                    for legacy_success in [false, true] {
+                        plan.with_bound_file_checker_and_types(source, &program.files[source], |checker, _, _, _| {
+                            checker.ctx.set_resolved_modules(if legacy_success {
+                                FxHashSet::from_iter(["./dep".to_owned()])
+                            } else { FxHashSet::default() });
+                            checker.ctx.set_resolved_module_paths(Arc::new(FxHashMap::from_iter([
+                                ((source, "./dep".to_owned()), wrong),
+                            ])));
+                            assert_eq!(checker.ctx.module_resolved_for_request("./dep", mode, checker_kind), is_file || is_external);
+                            assert_eq!(checker.ctx.resolve_import_target_from_file_for_request(source, "./dep", mode, checker_kind), is_file.then_some(target));
+                            assert_eq!(checker.ctx.module_resolved_without_program_file_for_request("./dep", mode, checker_kind), is_external);
+                            if outcome.is_some() {
+                                assert_eq!(checker.ctx.resolution_mode_for_project_request("./dep", checker_kind, mode), mode);
+                            }
+                            for explicit in [ResolutionModeOverride::Import, ResolutionModeOverride::Require] {
+                                assert_eq!(checker.ctx.resolution_mode_for_project_request("./dep", checker_kind, Some(explicit)), Some(explicit), "explicit override cannot borrow an authoritative None key");
+                            }
+                            for absent_kind in checker_kinds {
+                                if absent_kind != checker_kind || mode.is_some() || outcome.is_none() {
+                                    assert_eq!(checker.ctx.resolution_mode_for_project_request("./dep", absent_kind, None), checker.ctx.resolution_mode_for_request(absent_kind, None), "missing None key cannot borrow another kind or mode");
+                                }
+                            }
+                            for other_kind in checker_kinds {
+                                for other_mode in modes {
+                                    if other_kind != checker_kind || other_mode != mode {
+                                        assert!(!checker.ctx.module_resolved_for_request("./dep", other_mode, other_kind));
+                                        assert_eq!(checker.ctx.resolve_import_target_from_file_for_request(source, "./dep", other_mode, other_kind), None);
+                                        assert!(!checker.ctx.module_resolved_without_program_file_for_request("./dep", other_mode, other_kind));
+                                    }
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn stopped_lazy_alias_walk_does_not_poison_a_fresh_project_session() {
         let mut source = String::from("type Alias0 = string;\n");
         for index in 1..=48 {
@@ -1680,8 +1808,8 @@ mod project_module_resolution_tests {
 
         let stopped = stopped_session.with_file_checker(file_index, |checker, binder, _file| {
             let alias = binder.file_locals.get("Alias48").unwrap();
-            let alias_type = checker.get_type_of_symbol(alias);
             stop.arm_after(5);
+            let alias_type = checker.get_type_of_symbol(alias);
             checker.resolve_lazy_type(alias_type)
         });
         assert!(matches!(
@@ -1690,6 +1818,10 @@ mod project_module_resolution_tests {
                 tsz_common::ProjectExecutionStop::WorkBudgetExhausted
             ))
         ));
+        assert!(
+            stop.stopped.load(Ordering::Acquire),
+            "the real alias walk must exhaust the armed work budget"
+        );
 
         let cancelled = std::sync::atomic::AtomicBool::new(false);
         let fresh_budget = tsz_common::ProjectExecutionBudget::new(

@@ -303,7 +303,8 @@ impl<'a> CheckerState<'a> {
             && let Some((spec_start, spec_length)) =
                 self.require_specifier_span(import.module_specifier)
         {
-            let request_resolution_mode = self.ctx.resolution_mode_for_request(
+            let request_resolution_mode = self.ctx.resolution_mode_for_project_request(
+                &require_specifier,
                 crate::context::ResolutionRequestKind::CjsRequire,
                 None,
             );
@@ -888,7 +889,9 @@ impl<'a> CheckerState<'a> {
         }
 
         let request_kind = crate::context::ResolutionRequestKind::CjsRequire;
-        let request_resolution_mode = self.ctx.resolution_mode_for_request(request_kind, None);
+        let request_resolution_mode =
+            self.ctx
+                .resolution_mode_for_project_request(module_name, request_kind, None);
         let request_target_idx = self.ctx.resolve_import_target_from_file_for_request(
             self.ctx.current_file_idx,
             module_name,

@@ -530,7 +530,9 @@ impl<'a> CheckerState<'a> {
         let module_name = &literal.text;
 
         let request_kind = crate::context::ResolutionRequestKind::DynamicImport;
-        let request_resolution_mode = self.ctx.resolution_mode_for_request(request_kind, None);
+        let request_resolution_mode =
+            self.ctx
+                .resolution_mode_for_project_request(module_name, request_kind, None);
 
         // TS2846/TS5097: a dynamic `import()` specifier obeys the same
         // TypeScript-extension rule as `import ... from`, `export ... from`,

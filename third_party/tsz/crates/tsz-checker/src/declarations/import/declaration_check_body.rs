@@ -146,10 +146,6 @@ impl<'a> CheckerState<'a> {
             return;
         };
         let request_kind = crate::context::ResolutionRequestKind::EsmImport;
-        let request_resolution_mode = self.ctx.resolution_mode_for_request(
-            request_kind,
-            self.get_resolution_mode_override(import.attributes),
-        );
 
         let is_type_only_import = self
             .ctx
@@ -292,6 +288,11 @@ impl<'a> CheckerState<'a> {
         };
 
         let module_name = &literal.text;
+        let request_resolution_mode = self.ctx.resolution_mode_for_project_request(
+            module_name,
+            request_kind,
+            self.get_resolution_mode_override(import.attributes),
+        );
         // tsc emits TS2307 independently per import declaration, even when multiple
         // imports reference the same module.  Clear the per-module dedup entry so
         // this declaration gets its own chance to report a module-not-found error.
@@ -619,7 +620,10 @@ impl<'a> CheckerState<'a> {
         }
 
         // Check if module was successfully resolved
-        if self.resolved_module_set_contains_specifier(module_name) {
+        if self
+            .ctx
+            .module_resolved_for_request(module_name, request_resolution_mode, request_kind)
+        {
             if let Some(target_idx) = self
                 .ctx
                 .resolve_import_target_from_file_for_request(
@@ -628,7 +632,13 @@ impl<'a> CheckerState<'a> {
                     request_resolution_mode,
                     request_kind,
                 )
-                .or_else(|| self.ctx.resolve_import_target(module_name))
+                .or_else(|| {
+                    if self.ctx.project_module_resolution_outcomes.is_some() {
+                        None
+                    } else {
+                        self.ctx.resolve_import_target(module_name)
+                    }
+                })
             {
                 // When a module was successfully resolved to a target file, do NOT
                 // emit TS2307 regardless of its export surface. TS2307 means the
