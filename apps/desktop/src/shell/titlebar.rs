@@ -51,6 +51,7 @@ const LONG_PRESS: Duration = Duration::from_millis(400);
 #[derive(Clone)]
 struct JumpVisit {
     route: Route,
+    reading: crate::navigation::presentation::VisitId,
     subject: jump::JumpSubject,
     graph_selection: crate::runtime::graph_focus::GraphViewEligibility,
     attachment: Option<crate::runtime::store::OwnerAttachment>,
@@ -60,7 +61,7 @@ struct JumpVisit {
 
 impl PartialEq for JumpVisit {
     fn eq(&self, other: &Self) -> bool {
-        self.route == other.route && self.subject == other.subject
+        self.route == other.route && self.reading == other.reading && self.subject == other.subject
             && self.graph_selection == other.graph_selection && self.attachment == other.attachment
             && self.overlay == other.overlay && self.root.same_authority(other.root)
     }
@@ -70,6 +71,7 @@ impl JumpVisit {
     fn at(snapshot: &AppSnapshot, store: &DataStore) -> Self {
         Self {
             route: snapshot.route().clone(),
+            reading: snapshot.session().reading.current.id,
             subject: jump::bar_subject(snapshot, store),
             graph_selection: store.graph_view_eligibility(),
             attachment: store.current_owner_attachment(),
@@ -82,6 +84,7 @@ impl JumpVisit {
         let store = links.store.read(cx);
         let snapshot = store.snapshot();
         snapshot.route() == &self.route
+            && snapshot.session().reading.current.id == self.reading
             && snapshot.overlay() == self.overlay
             && snapshot.key().same_authority(self.root)
             && jump::bar_subject(&snapshot, store) == self.subject
@@ -206,11 +209,13 @@ pub(crate) struct Titlebar {
 
 impl Titlebar {
     pub(crate) fn new(links: Links, store: &DataStore) -> Self {
+        // World has no chrome keys whose resources could renew these cached
+        // controls. Keep every action-bound context, including the reading
+        // visit, observable without repainting for its local editing fields.
+        let mut core = RegionCore::new(store, &[Branch::Root, Branch::Route, Branch::Overlay, Branch::Settings, Branch::GraphFocus]);
+        core.watch_reading_visit(store);
         Self {
-            // Every JumpVisit binds the producer authority as well as its
-            // route and selection. World has no chrome keys whose resource
-            // events could otherwise renew these cached native controls.
-            core: RegionCore::new(store, &[Branch::Root, Branch::Route, Branch::Overlay, Branch::Settings, Branch::GraphFocus]),
+            core,
             links,
             targets: Targets::named("titlebar"),
             press: None,

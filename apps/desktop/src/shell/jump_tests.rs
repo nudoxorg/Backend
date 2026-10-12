@@ -471,3 +471,59 @@ fn every_jump_bar_target_is_at_least_24_px_square(cx: &mut TestAppContext) {
     let glyph = ledger.texts.iter().find(|text| text.content == "glyph").expect("the module's word");
     assert!(glyph.bounds.height < 20.0, "the word itself is not enlarged: {}", glyph.bounds.height);
 }
+
+#[gpui::test]
+fn coalesced_same_route_reading_retires_old_header_input_and_renews_native_back(cx: &mut TestAppContext) {
+    use crate::shell::focus::Zone;
+    let mut rig = rig(cx, None, 1440.0, 900.0);
+    rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+    rig.go(Intent::Navigate(Route::World));
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    rig.repaint();
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_targets(cx));
+    rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx| shell.take_zone(Zone::Titlebar, window, cx)));
+    for _ in 0..=targets.native_keys().len() {
+        if rig.cx.update(|window, _| targets.native_focused(window).as_deref() == Some("jump-back")) { break; }
+        rig.native_press("tab");
+    }
+    assert!(rig.cx.update(|window, _| targets.native_focused(window).as_deref() == Some("jump-back")), "native header Tab reaches Back");
+    let retired = captured_back(&mut rig);
+    let bounds = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("jump-back", cx)).expect("old native Back bounds");
+    let native = rig.cx.update(|window, _| window.a11y_tree().expect("committed native tree").nodes.iter()
+        .find(|(_, node)| node.role() == gpui::Role::Button && node.label() == Some("Back"))
+        .map(|(id, _)| *id).expect("actual Back node"));
+    let original = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let renders = rig.counts().titlebar;
+    let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+    rig.cx.update(|window, cx| {
+        let focused = window.focused(cx);
+        rig.graph.root.update(cx, |root, cx| {
+            root.dispatch(Intent::Navigate(Route::Orbit(OrbitRoute::Home)), cx);
+            root.dispatch(Intent::Navigate(Route::World), cx);
+        });
+        let latest = rig.graph.store.read(cx).snapshot();
+        assert_eq!(latest.route(), original.route());
+        assert!(latest.key().same_authority(original.key()));
+        assert_ne!(latest.session().reading.current.id, original.session().reading.current.id);
+        retired(window, cx); // The exact retained TargetAction callback also retires.
+        window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+            position: bounds.center(), modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1, first_mouse: false,
+        }), cx);
+        window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+            position: bounds.center(), modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1,
+        }), cx);
+        for key in ["enter", "space"] {
+            let keystroke = gpui::Keystroke::parse(key).expect("native release key");
+            window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent { keystroke: keystroke.clone(), is_held: false, prefer_character_input: false }), cx);
+            window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
+        }
+        window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+            action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: native, data: None,
+        }, cx);
+        assert_eq!(window.focused(cx), focused, "the old reading cannot admit native focus");
+        assert_eq!(window.a11y_frame_number(), frame, "same committed native frame throughout the old-input batch");
+        assert_eq!(rig.graph.store.read(cx).snapshot().route(), &Route::World);
+    });
+    assert_eq!(rig.route(), Route::World, "retired queued native header actions cannot navigate after dispatch returns");
+    press_passively_renewed_back(&mut rig, renders, frame);
+}
