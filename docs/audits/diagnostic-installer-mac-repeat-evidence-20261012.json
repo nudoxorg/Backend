@@ -1,0 +1,113 @@
+{
+  "schema": "nudox.independent-diagnostic-installer.mac-repeat.v1",
+  "observed_utc": "2026-10-12T02:32:18.128969+00:00",
+  "public_launcher_url": "https://dev.nudox.org/git/philocalyst/Backend/releases/download/nudox-diagnostic-installer-20261009-r2/install-shell-d837c1fc8130285f.sh",
+  "public_anonymous_download": {
+    "http_status": 200,
+    "bytes": 5845,
+    "sha256": "d837c1fc8130285fe60d1dc44ef96f93fa2177f18bdb2c1db031eab7fc28a8ac",
+    "saved_path": "/private/tmp/nudox-public-verified-r2-20261012.sh"
+  },
+  "actual_repeat_install": {
+    "argv": [
+      "/bin/sh",
+      "/private/tmp/nudox-public-verified-r2-20261012.sh"
+    ],
+    "exit": 0,
+    "exec_session": 2489,
+    "evidence": "Root actual execution from anonymously downloaded exact bytes; installation marker unchanged."
+  },
+  "installed_release": {
+    "asset": "nudox-macos-arm64-a659d5d181.tar.gz",
+    "sha256": "f88b841030699ae277afe697b6c92e98dfbb09a815f40388e3d2fbee0661e110",
+    "source_sha": "a659d5d1819078b3c0046937191a9b54a76b1dfb",
+    "tag": "checkpoint-20261006-a659d5d181-macos-arm64",
+    "version": "0.0.0"
+  },
+  "current_target": "/Users/mileswirht/.local/lib/nudox/versions/checkpoint-20261006-a659d5d181-macos-arm64",
+  "aliases": {
+    "nudox": "/Users/mileswirht/.local/lib/nudox/versions/checkpoint-20261006-a659d5d181-macos-arm64/bin/backend-cli",
+    "backend-cli": "/Users/mileswirht/.local/lib/nudox/versions/checkpoint-20261006-a659d5d181-macos-arm64/bin/backend-cli",
+    "backend-mcp": "/Users/mileswirht/.local/lib/nudox/versions/checkpoint-20261006-a659d5d181-macos-arm64/bin/backend-mcp",
+    "backend-locald": "/Users/mileswirht/.local/lib/nudox/versions/checkpoint-20261006-a659d5d181-macos-arm64/bin/backend-locald"
+  },
+  "manifest_sha256": "86912c7d6ffc7889e57275d8fbae6e287f21572e39af06627f7bb3ff4f4d4a23",
+  "installed_files_independently_verified": [
+    {
+      "path": "/Users/mileswirht/.local/lib/nudox/current/bin/backend-cli",
+      "bytes": 34398048,
+      "sha256": "5a522b1238f52cd9d876f23b269674df4d5a36b6887f5ad5b2752088e8e8ea2d"
+    },
+    {
+      "path": "/Users/mileswirht/.local/lib/nudox/current/bin/backend-mcp",
+      "bytes": 26456752,
+      "sha256": "e342fa310db971793b68663951619009de72125952b779898388c351f0299134"
+    },
+    {
+      "path": "/Users/mileswirht/.local/lib/nudox/current/bin/backend-locald",
+      "bytes": 116465904,
+      "sha256": "668d8bff54ab60f407845cf063bbc1ac0a01855b72522544af2fea82780a6f1b"
+    },
+    {
+      "path": "/Users/mileswirht/.local/lib/nudox/current/lib/libiconv.2.dylib",
+      "bytes": 109904,
+      "sha256": "2fbbe9796199ea41388cef1d4a707dafb2f45d2ceafb0554b9b75cf75bfe613d"
+    },
+    {
+      "path": "/Users/mileswirht/.local/lib/nudox/current/lib/libcharset.1.dylib",
+      "bytes": 68976,
+      "sha256": "cbde7311dae0ec0bcd8af251f00b5a5794986fc800270fadb5f6a5563dc47ce9"
+    }
+  ],
+  "actual_help_runs": [
+    {
+      "argv": [
+        "/Users/mileswirht/.local/bin/nudox",
+        "--help"
+      ],
+      "exit": 0,
+      "seconds": 0.021137374991667457,
+      "stdout_bytes": 8687,
+      "stdout_sha256": "6eaf93b618db1d1c45c2af58e150fcbe314ae7599ebaad07ea9f95b6669225d8",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "argv": [
+        "/Users/mileswirht/.local/bin/backend-mcp",
+        "--help"
+      ],
+      "exit": 0,
+      "seconds": 0.020237499993527308,
+      "stdout_bytes": 108,
+      "stdout_sha256": "0c7e44479d944d0716038f797045c69c9159b89bbdcf5e14103724af7d583b93",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "argv": [
+        "/Users/mileswirht/.local/bin/backend-locald",
+        "--help"
+      ],
+      "exit": 0,
+      "seconds": 0.12328174999856856,
+      "stdout_bytes": 1623,
+      "stdout_sha256": "668604356d3adf5018728922634ab030dcb2f6e4dc9fea348d727813f6878f12",
+      "stderr_bytes": 0,
+      "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "github_delivery": {
+    "status": "RED",
+    "anonymous_http_status": 404,
+    "reason": "All three release records returned to draft after publication; no anonymous working GitHub delivery claimed."
+  },
+  "scope": {
+    "current_source_fixes_included": false,
+    "new_project_indexing_run": false,
+    "semantic_acceptance": false,
+    "gui_included": false,
+    "production_ready": false,
+    "linux_first_use_by_this_audit": false
+  }
+}
