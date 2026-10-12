@@ -266,8 +266,8 @@ let
   # T1 smoke tier (`.config/ci/t1.nu`): build the three product surfaces for
   # the host, then start each one headless. Lean on purpose: no corpus or
   # native-compiler authorities, so entering it costs seconds, not the
-  # minutes the `compiler` closure does. Incremental stays on: T1 reuses one
-  # persistent target dir, which is the whole point of its warm build.
+  # minutes the `compiler` closure does. T1 reuses a persistent build graph
+  # and target dir; the managed wrapper selects compiler-cache defaults.
   smoke = pkgs.mkShell (
     tools.linuxGraphicsEnvironment
     // {
@@ -297,6 +297,34 @@ let
       shellHook = ''
         export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-$PWD/.local/target}"
       '';
+    }
+  );
+  # T2 runtime only: reuse T1 binaries, with native compiler authorities.
+  # Corpus selection is the harness's job; do not fetch the legacy deep corpus.
+  surface = pkgs.mkShell (
+    builtins.removeAttrs common [
+      "NUDOX_RUST_CORPUS_DIR"
+      "NUDOX_TYPESCRIPT_CORPUS_DIR"
+      "NUDOX_PYTHON_CORPUS_DIR"
+      "NUDOX_GO_CORPUS_DIR"
+      "NUDOX_JAVA_CORPUS_DIR"
+      "NUDOX_CSHARP_CORPUS_DIR"
+      "NUDOX_CLANG_CORPUS_DIR"
+      # The legacy prebuilt Go oracle cannot prove the cgo-disabled closure.
+      # The admitted Go toolchain builds the embedded package-aware helper.
+      "NUDOX_GO_ORACLE"
+      "NUDOX_GO_ORACLE_BIN"
+    ]
+    // {
+      packages = tools.nativeCompilers ++ [
+        pkgs.python3
+        pkgs.coreutils
+        pkgs.jdk25
+      ];
+      # Product discovery selects java-25; the legacy corpus shell uses JDK 21.
+      COMPILER_JAVA_COMPILER = "${pkgs.jdk25}/bin/javac";
+      NUDOX_JAVAC = "${pkgs.jdk25}/bin/javac";
+      NUDOX_JDK = pkgs.jdk25.home;
     }
   );
   # Emulated test lanes: the `cross` shell plus what running a test needs that
@@ -371,6 +399,7 @@ in
     observability
     services
     smoke
+    surface
     verification
     ;
 }

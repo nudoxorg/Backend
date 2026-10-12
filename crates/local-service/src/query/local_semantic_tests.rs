@@ -785,7 +785,7 @@ fn selected_many(
         base.frontier(),
         rows,
         vec![backend_engine::ViewCoverage::Complete],
-        capability,
+        capability.clone(),
     )
     .map_err(|error| format!("fixture view admission refused: {error:?}"))?;
     let evidence = super::super::tests::semantic_evidence(head.root(), &view);

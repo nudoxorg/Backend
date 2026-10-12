@@ -289,22 +289,21 @@ impl CommandGrammar {
     /// They use the same generic parser and help grammar as product options.
     #[must_use]
     pub fn cli_options(self) -> &'static [ArgumentSpec] {
-        if self.name == "add" {
-            &[
-                ArgumentSpec::optional(
-                    "wait",
-                    ArgumentKind::Flag,
-                    "Wait for this exact durable operation's terminal receipt; failures return nonzero. Without this flag Add returns acceptance immediately.",
-                ),
-                ArgumentSpec::optional(
-                    "wait-timeout",
-                    ArgumentKind::DurationSeconds,
-                    "With --wait, bound observation to 0–900 seconds after acceptance (default 900). Timeout retains the operation; resume with the returned index_progress command.",
-                ),
-            ]
-        } else {
-            &[]
-        }
+        // A `const` is promoted to 'static; a runtime array literal of const-fn
+        // calls is a temporary (E0515).
+        const ADD: &[ArgumentSpec] = &[
+            ArgumentSpec::optional(
+                "wait",
+                ArgumentKind::Flag,
+                "Wait for this exact durable operation's terminal receipt; failures return nonzero. Without this flag Add returns acceptance immediately.",
+            ),
+            ArgumentSpec::optional(
+                "wait-timeout",
+                ArgumentKind::DurationSeconds,
+                "With --wait, bound observation to 0–900 seconds after acceptance (default 900). Timeout retains the operation; resume with the returned index_progress command.",
+            ),
+        ];
+        if self.name == "add" { ADD } else { &[] }
     }
 
     /// Returns the sentence that says *when* to reach for this command.

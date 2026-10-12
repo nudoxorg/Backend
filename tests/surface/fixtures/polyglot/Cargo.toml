@@ -1,0 +1,6 @@
+[package]
+name = "t2-polyglot"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]

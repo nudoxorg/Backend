@@ -46,6 +46,15 @@ class ArtifactTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 verify(self.root, source, target)
 
+    def test_missing_or_invalid_toolchain_identity_rejected(self):
+        for identity in [None, "", "   ", 42]:
+            self.manifest["toolchain"] = identity
+            self.save()
+            self.reject()
+        del self.manifest["toolchain"]
+        self.save()
+        self.reject()
+
     def test_schema_mismatch(self):
         self.manifest["schema"] = 2
         self.save()
