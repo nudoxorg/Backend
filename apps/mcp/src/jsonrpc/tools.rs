@@ -602,6 +602,7 @@ fn ticket_schema() -> Value {
 /// Returns the canonical `tools/list` projection for the offline budget
 /// fixture generator. This is kept at the protocol edge so the generator
 /// cannot accidentally grow a second hand-written tool schema.
+#[cfg(feature = "token-budget")]
 pub(crate) fn token_budget_tools() -> Value {
     tools_value()
 }
@@ -632,7 +633,7 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
     properties.insert("detail".to_owned(), detail_property(grammar.tool()));
     if matches!(
         grammar.name(),
-        "search" | "resolve" | "name" | "graph" | "index-search"
+        "search" | "resolve" | "name" | "graph" | "index-search" | "outline"
     ) {
         properties.insert(
             "cursor".to_owned(),
@@ -641,15 +642,17 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
                 "description": "Opaque continuation returned by the preceding page."
             }),
         );
-        if grammar.name() == "graph" {
+        if matches!(grammar.name(), "graph" | "outline") {
             properties.insert(
                 "limit".to_owned(),
                 json!({
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 200,
-                    "default": 25,
-                    "description": "Maximum graph rows in this page."
+                    "default": if grammar.name() == "outline" { 200 } else { 25 },
+                    "description": if grammar.name() == "outline" {
+                        "Maximum declarations requested. The first page may use a smaller effective limit to fit the named token budget; continue with page.limit and the returned cursor."
+                    } else { "Maximum graph rows in this page." }
                 }),
             );
         }

@@ -59,8 +59,6 @@ mod call;
 mod client_fault_tests;
 #[cfg(test)]
 mod compiler_fault_tests;
-#[cfg(test)]
-mod readiness_tests;
 mod coverage;
 mod drive;
 mod dto;
@@ -77,13 +75,16 @@ mod product;
 mod projection;
 #[cfg(test)]
 mod projection_tests;
+#[cfg(test)]
+mod readiness_tests;
 mod record;
 mod render;
 mod sections;
 mod shelf;
-mod signature;
 mod shell;
+mod signature;
 mod status;
+mod token_count;
 
 pub use assemble::{
     outline_tree, page_from_document, page_from_document_with_graph_relations, project_of,
@@ -110,9 +111,10 @@ pub use drive::{Answer, ContinuationCursor, Engine, Probe, answer, answer_paged,
 pub use dto::{
     CapabilitiesDto, CompilerToolRequirementDto, CoverageDto, FaultDto, IdentityDto,
     IdentitySemanticData, IndexPollDto, LanguageCountDto, MemberGroupDto, OutlineDto,
-    OutlineNodeDto, PageDto, ProductDto, ProductIndexSearchPageDto, ProductRecordDto, ReasonDto,
-    RecordDto, RecordListDto, RelationGroupDto, SelectedSymbolIdDto, ShelfDto, ShelfEntryDto,
-    SignatureTokenDto, SourceDto, StatusDto, SummaryPageDto, answer_value, fault_value,
+    OutlineNodeDto, OutlinePageDto, PageDto, ProductDto, ProductIndexSearchPageDto,
+    ProductRecordDto, ReasonDto, RecordDto, RecordListDto, RelationGroupDto, SelectedSymbolIdDto,
+    ShelfDto, ShelfEntryDto, SignatureTokenDto, SourceDto, StatusDto, SummaryPageDto, answer_value,
+    fault_value,
 };
 pub use fault::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand, OwnerContext};
 pub use glyph::{KindGlyph, LanguageGlyph, RelationDirection, RelationLabel, relation_label};
@@ -148,6 +150,8 @@ pub use status::{
     CapabilitySummary, EmbeddingState, FamilyRollup, PublishedRows, ReasonRollup, Sequence,
     SlotCount, Status, VisiblePublicationState, unavailable_name,
 };
+
+pub use token_count::{CL100K_POLICY, CL100K_VOCABULARY_SHA256, Cl100kError, cl100k_tokens};
 
 /// Widest human rendering used when no terminal width is known.
 pub const DEFAULT_WIDTH: usize = 100;

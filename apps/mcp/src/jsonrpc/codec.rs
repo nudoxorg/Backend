@@ -133,20 +133,6 @@ pub(super) fn empty_cursor(params: &Value) -> Result<(), RpcError> {
     }
 }
 
-pub(super) fn percent_encode(value: &str) -> String {
-    let mut output = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            output.push(char::from(byte));
-        } else {
-            output.push('%');
-            output.push(hex_digit(byte >> 4));
-            output.push(hex_digit(byte & 0x0f));
-        }
-    }
-    output
-}
-
 pub(super) fn percent_decode(value: &str) -> Result<String, RpcError> {
     let bytes = value.as_bytes();
     let mut output = Vec::with_capacity(bytes.len());
@@ -168,13 +154,6 @@ pub(super) fn percent_decode(value: &str) -> Result<String, RpcError> {
         }
     }
     String::from_utf8(output).map_err(|_| RpcError::invalid("resource URI is not UTF-8"))
-}
-
-const fn hex_digit(value: u8) -> char {
-    match value {
-        0..=9 => (b'0' + value) as char,
-        _ => (b'A' + value - 10) as char,
-    }
 }
 
 const fn hex_value(value: u8) -> Option<u8> {
@@ -305,17 +284,8 @@ pub(crate) fn finalize_response(
     value: Value,
     transport: ResponseTransport,
 ) -> io::Result<EncodedResponse> {
-    let value = super::bound_rpc_reply(value, transport);
-    let is_result = value.get("result").is_some();
-    let mut body = BoundedBuffer::new(transport.limit_bytes());
-    serde_json::to_writer(&mut body, &value).map_err(io::Error::other)?;
-    if transport == ResponseTransport::StdioLine {
-        body.write_all(b"\n")?;
-    }
-    Ok(EncodedResponse {
-        bytes: body.bytes,
-        is_result,
-    })
+    let (bytes, is_result) = super::bound_rpc_envelope(value, transport).into_frame()?;
+    Ok(EncodedResponse { bytes, is_result })
 }
 
 pub(crate) fn encode_response(value: Value, transport: ResponseTransport) -> io::Result<Vec<u8>> {
@@ -355,11 +325,13 @@ impl Write for ResponseByteCounter {
     }
 }
 
+#[cfg(test)]
 struct BoundedBuffer {
     bytes: Vec<u8>,
     limit: usize,
 }
 
+#[cfg(test)]
 impl BoundedBuffer {
     fn new(limit: usize) -> Self {
         Self {
@@ -369,6 +341,7 @@ impl BoundedBuffer {
     }
 }
 
+#[cfg(test)]
 impl Write for BoundedBuffer {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if self

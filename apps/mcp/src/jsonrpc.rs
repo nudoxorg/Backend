@@ -27,11 +27,14 @@ use backend_library::{
     PageTerminal, ProductText, ReplyDto, SurfaceCommand, SurfaceReply, TreeOpener, ViewStateRoot,
     encode_id,
 };
+#[cfg(test)]
+use backend_present::cl100k_tokens;
 use backend_present::{
-    Answer, BudgetExceeded, ContinuationCursor, ContinuationTarget, CursorTarget,
-    DEFAULT_RESPONSE_BUDGET_BYTES, Detail, ESTIMATED_BYTES_PER_TOKEN, Engine, Fault, Invocation,
-    Probe, Request, answer_paged, bounded_text, encode_answer, encode_serializable,
-    estimate_tokens, fault_value, lower_with_opener, markdown, oversized_fault, record_list,
+    Answer, BudgetExceeded, CL100K_POLICY, CL100K_VOCABULARY_SHA256, ContinuationCursor,
+    ContinuationTarget, CursorTarget, DEFAULT_RESPONSE_BUDGET_BYTES, Detail,
+    ESTIMATED_BYTES_PER_TOKEN, Engine, Fault, Invocation, Probe, Request, answer_paged,
+    bounded_text, encode_answer, encode_serializable, estimate_tokens, fault_value,
+    lower_with_opener, markdown, oversized_fault, record_list,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{
@@ -45,8 +48,10 @@ use std::io::{self, BufRead, Write};
 mod codec;
 mod cursor_authority;
 mod index_progress;
+mod wire_admission;
 pub(super) use codec::{ResponseTransport, encode_response, finalize_response};
 pub(super) use cursor_authority::CursorAuthority;
+use wire_admission::MeasuredEnvelope;
 mod reconnect;
 pub(crate) mod requests;
 mod resources;
@@ -169,6 +174,7 @@ impl Engine for SessionProduct {
         match probe {
             Probe::Search { text, limit } => self.0.search_page(text, limit, continuation),
             Probe::Names { text, limit } => self.0.names_page(text, limit, continuation),
+            Probe::OutlinePage { path, limit } => self.0.outline_page(path, limit, continuation),
             _ if continuation.is_none() => self.probe(probe),
             _ => Err(ClientError::Protocol(
                 "this MCP command does not support continuation pages".to_owned(),
@@ -788,6 +794,9 @@ impl<P: Product> Server<P> {
                 "Use backend.index_progress for bounded polling",
             )));
         }
+        if name == "backend.outline" {
+            return self.outline_tool(arguments, detail);
+        }
         let context = continuation_context(&self.project, name, arguments, detail);
         let grammar = match route {
             ToolRoute::Registry(grammar) => Some(grammar),
@@ -851,6 +860,157 @@ impl<P: Product> Server<P> {
             Err(fault) => Err(RpcError::from_fault(&fault)),
         }
     }
+    /// A complete native outline page is selected before output admission.
+    /// Only the first page may be re-read with a smaller effective limit. Every
+    /// candidate must retain the original producer basis/frontier; continuation
+    /// requests retain their issued limit and are never silently resized.
+    fn outline_tool(
+        &mut self,
+        arguments: &Map<String, Value>,
+        detail: Detail,
+    ) -> Result<Value, RpcError> {
+        let lifetime = self.request_context.clone().unwrap_or_default();
+        lifetime
+            .read_deadline(backend_client::CLIENT_REQUEST_TIMEOUT)
+            .map_err(|error| {
+                RpcError::from_fault(&Fault::from_client_error(
+                    &error,
+                    backend_present::Operand::Whole,
+                ))
+            })?;
+        self.product
+            .set_request_context(Some(lifetime.clone()))
+            .map_err(|error| {
+                RpcError::from_fault(&Fault::from_client_error(
+                    &error,
+                    backend_present::Operand::Whole,
+                ))
+            })?;
+        no_extra(arguments, &["path", "limit", "cursor", "detail"])?;
+        let grammar = backend_present::grammar_for_tool("backend.outline")
+            .ok_or_else(|| RpcError::new(-32602, "Unknown tool"))?;
+        let mut command = arguments.clone();
+        command.remove("detail");
+        command.remove("limit");
+        command.remove("cursor");
+        validate_registry_arguments(grammar, &command)?;
+        let invocation = Invocation::from_json(grammar, &command)
+            .map_err(|fault| RpcError::from_fault(&fault))?;
+        let request = lower_with_opener(&invocation, &self.project, self.opener()?)
+            .map_err(|fault| RpcError::from_fault(&fault))?;
+        let Request::Outline(path) = request else {
+            return Err(RpcError::invalid("outline request changed shape"));
+        };
+        let mut effective = match arguments.get("limit") {
+            Some(_) => limit(arguments)?,
+            None => backend_library::QueryLimit::MAX,
+        };
+        let mut page_arguments = arguments.clone();
+        page_arguments.insert("path".to_owned(), json!(path));
+        page_arguments.insert("limit".to_owned(), json!(effective));
+        let mut context =
+            continuation_context(&self.project, "backend.outline", &page_arguments, detail);
+        let continuation = self.continuation(arguments, &context)?;
+        let mut pinned = None;
+        loop {
+            lifetime.check().map_err(|error| {
+                RpcError::from_fault(&Fault::from_client_error(
+                    &error,
+                    backend_present::Operand::Whole,
+                ))
+            })?;
+            let answer = answer_paged(
+                &mut self.product,
+                &Request::OutlinePage {
+                    path: path.clone(),
+                    limit: effective,
+                },
+                continuation,
+            )
+            .map_err(|fault| RpcError::from_fault(&fault))?;
+            let Answer::Outline(tree) = &answer else {
+                return Err(RpcError::invalid("outline page changed shape"));
+            };
+            let basis = tree
+                .page_basis()
+                .ok_or_else(|| RpcError::invalid("outline page omits producer basis"))?;
+            if pinned.is_some_and(|expected| expected != basis) {
+                return Err(RpcError::tool(
+                    "outline source changed while selecting a bounded page; restart the outline explicitly",
+                ));
+            }
+            pinned = Some(basis);
+            let mut result = self.rendered(
+                &answer,
+                detail,
+                &context,
+                CursorTarget::CliOption,
+                "backend.outline",
+            )?;
+            // The opaque token appears once. Copy these exact arguments and
+            // take cursor from structuredContent.nextCursor; no second token
+            // copy is charged to the agent context.
+            if result
+                .get("structuredContent")
+                .is_some_and(|value| value.get("nextCursor").is_some())
+            {
+                let next_arguments =
+                    json!({"path":path, "limit":effective, "detail":detail.name()});
+                if let Some(text) = result
+                    .get_mut("content")
+                    .and_then(Value::as_array_mut)
+                    .and_then(|content| content.first_mut())
+                    .and_then(|entry| entry.get_mut("text"))
+                {
+                    let preview = text.as_str().unwrap_or_default();
+                    *text = Value::String(format!(
+                        "{preview}\n\nContinue `backend.outline` with arguments `{next_arguments}` and `cursor` copied from `structuredContent.nextCursor`."
+                    ));
+                }
+            }
+            // Select against a complete provisional envelope; final encoding
+            // independently measures the actual caller ID and transport. A
+            // large ID can still receive an honest final admission fault.
+            let candidate = MeasuredEnvelope::new(
+                attach_wire_budget(
+                    codec::success(Value::Null, result),
+                    ResponseTransport::StdioLine,
+                ),
+                ResponseTransport::StdioLine,
+            );
+            let fitted = if candidate.fits() {
+                candidate
+            } else {
+                fit_measured_preview(candidate, ResponseTransport::StdioLine)
+            };
+            if fitted.fits()
+                && !fitted
+                    .value()
+                    .get("result")
+                    .and_then(|result| result.get("isError"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+            {
+                let mut frame = fitted.into_value();
+                return Ok(frame
+                    .as_object_mut()
+                    .and_then(|frame| frame.remove("result"))
+                    .unwrap_or(Value::Null));
+            }
+            if continuation.is_some() || effective == 1 {
+                let mut frame = fitted.into_value();
+                return Ok(frame
+                    .as_object_mut()
+                    .and_then(|frame| frame.remove("result"))
+                    .unwrap_or(Value::Null));
+            }
+            effective = effective.div_ceil(2);
+            page_arguments.insert("limit".to_owned(), json!(effective));
+            context =
+                continuation_context(&self.project, "backend.outline", &page_arguments, detail);
+        }
+    }
+
     fn opener(&self) -> Result<&TreeOpener, RpcError> {
         self.opener
             .as_ref()
@@ -1623,54 +1783,88 @@ fn bound_route_value(value: Value) -> Result<Value, RpcError> {
     })))
 }
 
+/// Named ordinary-token contract; other encodings may have different counts.
+const MCP_CL100K_TOKEN_LIMIT: usize = 12_000;
+
+#[cfg(test)]
+fn wire_tokens(value: &Value) -> Result<usize, backend_present::Cl100kError> {
+    MeasuredEnvelope::new(value.clone(), ResponseTransport::HttpBody).tokens()
+}
+#[cfg(test)]
+fn wire_fits(value: &Value, transport: ResponseTransport) -> bool {
+    MeasuredEnvelope::new(value.clone(), transport).fits()
+}
+
+#[cfg(any(test, feature = "token-budget"))]
 fn bound_rpc_reply(value: Value, transport: ResponseTransport) -> Value {
+    bound_rpc_envelope(value, transport).into_value()
+}
+
+fn bound_rpc_envelope(value: Value, transport: ResponseTransport) -> MeasuredEnvelope {
     let budget = transport.limit_bytes();
-    let value = attach_wire_budget(value, transport);
-    let value = if transport_serialized_bytes(&value, transport) > budget {
-        fit_tool_preview(value, transport)
+    let measured = MeasuredEnvelope::new(attach_wire_budget(value, transport), transport);
+    let measured = if measured.fits() {
+        measured
     } else {
-        value
+        fit_measured_preview(measured, transport)
     };
-    let bytes = transport_serialized_bytes(&value, transport);
-    if bytes <= budget {
-        return value;
+    if measured.fits() {
+        return measured;
     }
+    let bytes = measured.bytes();
+    let value = measured.value();
     let id = value.get("id").cloned().unwrap_or(Value::Null);
-    // Retain an error's diagnosis when only its caller identity is too large.
-    // HTTP authentication failures enter this same encoding boundary.
     if value.get("error").is_some() {
         let mut uncorrelated = value.clone();
         uncorrelated["id"] = Value::Null;
-        let uncorrelated = attach_wire_budget(uncorrelated, transport);
-        if transport_serialized_bytes(&uncorrelated, transport) <= budget {
+        let uncorrelated =
+            MeasuredEnvelope::new(attach_wire_budget(uncorrelated, transport), transport);
+        if uncorrelated.fits() {
             return uncorrelated;
         }
     }
-    let fault = oversized_fault(BudgetExceeded { bytes, budget });
-    let fallback = attach_wire_budget(
-        error_reply(
-            id.clone(),
-            -32000,
-            "MCP response exceeds the bounded context budget",
-            Some(json!({
-                "kind": fault.slug().as_str(),
-                "detail": bounded_text(&markdown::fault(&fault)),
-                "structuredContent": fault_value(&fault),
-            })),
+    let fault = if bytes > budget {
+        oversized_fault(BudgetExceeded { bytes, budget })
+    } else {
+        let detail = match measured.tokens() {
+            Ok(tokens) => format!(
+                "complete MCP JSON envelope has {tokens} {CL100K_POLICY} tokens, above the {MCP_CL100K_TOKEN_LIMIT} token budget; use the returned paging limit or request a narrower page"
+            ),
+            Err(error) => error.to_string(),
+        };
+        Fault::new(
+            backend_present::FaultSlug::Transport,
+            backend_present::Operand::Argument("response".to_owned()),
+            backend_present::Cause::new(backend_present::CauseSlug::Oversized, detail),
+            backend_present::Affordance::None,
+        )
+    };
+    let fallback = MeasuredEnvelope::new(
+        attach_wire_budget(
+            error_reply(
+                id,
+                -32000,
+                "MCP response exceeds the bounded context budget",
+                Some(
+                    json!({"kind":fault.slug().as_str(),"detail":bounded_text(&markdown::fault(&fault)),"structuredContent":fault_value(&fault)}),
+                ),
+            ),
+            transport,
         ),
         transport,
     );
-    if transport_serialized_bytes(&fallback, transport) <= budget {
+    if fallback.fits() {
         fallback
     } else {
-        attach_wire_budget(
-            error_reply(
-                // A request ID is normally a scalar, but preserve the hard cap
-                // even if a caller supplied a very large valid JSON string.
-                Value::Null,
-                -32000,
-                "MCP response exceeds the bounded context budget",
-                None,
+        MeasuredEnvelope::new(
+            attach_wire_budget(
+                error_reply(
+                    Value::Null,
+                    -32000,
+                    "MCP response exceeds the bounded context budget",
+                    None,
+                ),
+                transport,
             ),
             transport,
         )
@@ -1680,9 +1874,16 @@ fn bound_rpc_reply(value: Value, transport: ResponseTransport) -> Value {
 /// Reclaims only duplicate human-readable text when a large request ID makes
 /// the caller-specific JSON-RPC envelope exceed the budget. Structured rows,
 /// terminal state, and owner cursors stay byte-for-byte intact.
-fn fit_tool_preview(mut value: Value, transport: ResponseTransport) -> Value {
-    let budget = transport.limit_bytes();
-    let Some(current_text) = value
+#[cfg(test)]
+fn fit_tool_preview(value: Value, transport: ResponseTransport) -> Value {
+    fit_measured_preview(MeasuredEnvelope::new(value, transport), transport).into_value()
+}
+fn fit_measured_preview(
+    measured: MeasuredEnvelope,
+    transport: ResponseTransport,
+) -> MeasuredEnvelope {
+    let Some(current_text) = measured
+        .value()
         .get("result")
         .and_then(|result| result.get("content"))
         .and_then(Value::as_array)
@@ -1691,15 +1892,15 @@ fn fit_tool_preview(mut value: Value, transport: ResponseTransport) -> Value {
         .and_then(Value::as_str)
         .map(str::to_owned)
     else {
-        return value;
+        return measured;
     };
     let prefix = current_text
         .strip_suffix(PREVIEW_MARKER)
-        .unwrap_or(&current_text)
-        .to_owned();
+        .unwrap_or(&current_text);
+    let mut value = measured.into_value();
     value["result"]["content"][0]["text"] = Value::String(PREVIEW_MARKER.to_owned());
-    let mut best = attach_wire_budget(value.clone(), transport);
-    if transport_serialized_bytes(&best, transport) > budget {
+    let mut best = MeasuredEnvelope::new(attach_wire_budget(value.clone(), transport), transport);
+    if !best.fits() {
         return best;
     }
     let mut lower = 0;
@@ -1707,12 +1908,12 @@ fn fit_tool_preview(mut value: Value, transport: ResponseTransport) -> Value {
     let mut best_end = 0;
     while lower < upper {
         let midpoint = lower + (upper - lower).div_ceil(2);
-        let end = readable_prefix_end(&prefix, midpoint);
+        let end = readable_prefix_end(prefix, midpoint);
         let mut candidate = value.clone();
         candidate["result"]["content"][0]["text"] =
             Value::String(format!("{}{PREVIEW_MARKER}", &prefix[..end]));
-        candidate = attach_wire_budget(candidate, transport);
-        if transport_serialized_bytes(&candidate, transport) <= budget {
+        let candidate = MeasuredEnvelope::new(attach_wire_budget(candidate, transport), transport);
+        if candidate.fits() {
             lower = midpoint;
             if end >= best_end {
                 best_end = end;
@@ -1766,6 +1967,10 @@ fn attach_wire_budget(mut value: Value, transport: ResponseTransport) -> Value {
             "estimatedTokens": 0,
             "bytesPerToken": ESTIMATED_BYTES_PER_TOKEN,
             "limitBytes": transport.limit_bytes(),
+            "tokenPolicy": CL100K_POLICY,
+            "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
+            "limitTokens": MCP_CL100K_TOKEN_LIMIT,
+            "vocabularySha256": CL100K_VOCABULARY_SHA256,
             "scope": transport.scope()
         });
     }

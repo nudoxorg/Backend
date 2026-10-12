@@ -27,6 +27,8 @@ use backend_present::{domain_name, grammar_for};
 mod index_overlap;
 #[path = "tests/surface_fidelity.rs"]
 mod surface_fidelity;
+#[path = "tests/token_outline.rs"]
+mod token_outline;
 
 const PROJECT: &str = "/abs/polyglot";
 const MODULE: &str = "/abs/polyglot::src/lib.rs";
@@ -612,6 +614,8 @@ struct Fake {
     probe_calls: usize,
     /// Real catalog projection used to exercise owner-issued page contracts.
     page_catalog: Option<backend_library::Library>,
+    /// Changes only the exact source snapshot before a budget-driven re-read.
+    outline_source_after_first_page: Option<backend_library::Library>,
     /// Each cursor keeps its actual selected owner root at issuance.
     catalog_cursors: BTreeMap<String, (PageContinuation, ViewStateRoot)>,
     /// Actual page bounds admitted by the catalog adapter.
@@ -844,10 +848,20 @@ impl Engine for Fake {
                     ),
                 )
             }
-            Probe::OutlinePage { .. } => CommandReply::ProjectionPage(ProjectionPage {
-                snapshot: snapshot(vec![module_row(), declaration_row()]),
-                terminal: PageTerminal::Complete,
-            }),
+            Probe::OutlinePage { .. } => {
+                if let Some(error) = self.outline_error.take() {
+                    return Err(error);
+                }
+                if self.empty_outline {
+                    return Err(ClientError::CommandFailed(
+                        backend_library::CommandFailure::NotFound,
+                    ));
+                }
+                CommandReply::ProjectionPage(ProjectionPage {
+                    snapshot: snapshot(vec![module_row(), declaration_row()]),
+                    terminal: PageTerminal::Complete,
+                })
+            }
         };
         Ok(ReplyDto::new(1, reply))
     }
@@ -857,12 +871,29 @@ impl Engine for Fake {
         probe: Probe<'_>,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
+        if matches!(probe, Probe::OutlinePage { .. }) && !self.page_limits.is_empty() {
+            if let Some(replacement) = self.outline_source_after_first_page.take() {
+                self.page_catalog = Some(replacement);
+            }
+        }
         let Some(catalog) = &self.page_catalog else {
             if continuation.is_some() {
                 return Err(ClientError::StaleCursor);
             }
             return self.probe(probe);
         };
+        if let Probe::OutlinePage { path, limit } = probe {
+            self.page_limits.push(limit);
+            let request = backend_library::PageRequest::new(
+                catalog.revision_root(),
+                backend_library::QueryLimit::new(limit).expect("bounded outline"),
+            );
+            let request = continuation.map_or(request, |cursor| request.with_continuation(cursor));
+            let page = catalog
+                .outline_page(package_key(path), request)
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+            return Ok(ReplyDto::new(1, CommandReply::ProjectionPage(page)));
+        }
         let (text, limit, names) = match probe {
             Probe::Search { text, limit } => (text, limit, false),
             Probe::Names { text, limit } => (text, limit, true),
@@ -5315,7 +5346,9 @@ fn wire_budget_metadata_counts_the_complete_escaped_jsonrpc_line() {
     let large_id = format!("request-{}", "אב🙂".repeat(2_000));
     let large_structured = json!({
         "answer":"records",
-        "rows":"s".repeat(31_000),
+        // Same byte pressure, but legal under the named token bound too.
+        // The original dense `s` payload remains a refusal control below.
+        "rows":" ".repeat(31_000),
         "more":true,
         "nextCursor":"opaque-owner-cursor-page-two"
     });

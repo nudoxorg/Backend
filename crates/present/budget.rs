@@ -224,6 +224,7 @@ pub fn encode_answer(
                         extent: outline.extent,
                         declarations: outline.declarations,
                         unnamed: outline.unnamed,
+                        page: outline.page,
                     },
                     budget,
                 )
@@ -662,6 +663,8 @@ struct SummaryOutlineDto {
     extent: String,
     declarations: usize,
     unnamed: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    page: Option<crate::dto::OutlinePageDto>,
 }
 
 #[derive(Serialize)]
@@ -753,13 +756,9 @@ mod tests {
                 let answer = Answer::Records(Box::new(list));
                 let mut projections = Vec::new();
                 for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
-                    let encoded = encode_answer(
-                        &answer,
-                        detail,
-                        None,
-                        DEFAULT_RESPONSE_BUDGET_BYTES,
-                    )
-                    .expect("complete result with diagnostic context");
+                    let encoded =
+                        encode_answer(&answer, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES)
+                            .expect("complete result with diagnostic context");
                     assert_eq!(encoded.budget.bytes, encoded.bytes.len());
                     let value: Value = serde_json::from_slice(&encoded.bytes).expect("JSON");
                     assert!(value.get("nextCursor").is_none());
@@ -1321,24 +1320,43 @@ mod tests {
             worst.bytes.as_ref(),
             include_bytes!("fixtures/worst-200-full-records-selected-id.json")
         );
-        let current: serde_json::Value = serde_json::from_slice(&worst.bytes).expect("actual native JSON");
-        assert_eq!(serde_json::to_vec(&current).expect("Value serializer").len(), worst.bytes.len(),
-            "stream and Value encoders measure the same complete JSON");
-        let historical: serde_json::Value = serde_json::from_slice(
-            include_bytes!("fixtures/worst-200-full-records.json"))
-            .expect("retained prior golden bytes");
+        let current: serde_json::Value =
+            serde_json::from_slice(&worst.bytes).expect("actual native JSON");
+        assert_eq!(
+            serde_json::to_vec(&current)
+                .expect("Value serializer")
+                .len(),
+            worst.bytes.len(),
+            "stream and Value encoders measure the same complete JSON"
+        );
+        let historical: serde_json::Value =
+            serde_json::from_slice(include_bytes!("fixtures/worst-200-full-records.json"))
+                .expect("retained prior golden bytes");
         let mut without_selected_ids = current;
-        for (index, record) in without_selected_ids["records"].as_array_mut().expect("records").iter_mut().enumerate() {
-            let selected = record["identity"].as_object_mut().expect("identity")
-                .remove("semantic_data").expect("exact selected symbol identity");
-            assert_eq!(selected, serde_json::json!({
-                "kind": "selected-symbol-id",
-                "value": backend_library::symbol_key(&format!("typed-budget-{index}")).to_bytes(),
-            }));
+        for (index, record) in without_selected_ids["records"]
+            .as_array_mut()
+            .expect("records")
+            .iter_mut()
+            .enumerate()
+        {
+            let selected = record["identity"]
+                .as_object_mut()
+                .expect("identity")
+                .remove("semantic_data")
+                .expect("exact selected symbol identity");
+            assert_eq!(
+                selected,
+                serde_json::json!({
+                    "kind": "selected-symbol-id",
+                    "value": backend_library::symbol_key(&format!("typed-budget-{index}")).to_bytes(),
+                })
+            );
         }
         without_selected_ids["budget"] = historical["budget"].clone();
-        assert_eq!(without_selected_ids, historical,
-            "only exact selected IDs and derived budget metadata changed");
+        assert_eq!(
+            without_selected_ids, historical,
+            "only exact selected IDs and derived budget metadata changed"
+        );
         let refused = encode_answer(&worst_answer, Detail::Full, None, 48 * 1024)
             .expect_err("an oversized complete page is refused before allocation");
         assert_eq!(refused.budget, 48 * 1024);
