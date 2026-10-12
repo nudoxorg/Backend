@@ -394,8 +394,8 @@ fn index_progress_tool() -> Value {
                     "description": "Exact full active observation fingerprint returned in index_poll.call; requires operation_key. Changes of owner, state, request or source capture cannot be represented as unchanged."
                 },
                 "wait_millis": {
-                    "type": "integer", "minimum": 0, "maximum": 10000, "default": 0,
-                    "description": "Bounded conditional wait under the original request deadline/cancellation. With an operation_key requires after_observation; ticket uses after_sequence. Never starts or cancels owner work."
+                    "type": "integer", "minimum": 0, "maximum": 10000,
+                    "description": "Defaults to 10000 when after_observation is supplied, otherwise 0. Explicit 0 reads immediately. Bounded conditional wait under the original request deadline/cancellation. With an operation_key requires after_observation; ticket uses after_sequence. Never starts or cancels owner work."
                 },
                 "detail": detail_property(INDEX_PROGRESS_TOOL)
             },

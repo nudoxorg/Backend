@@ -39,6 +39,7 @@ impl<P: Product> Server<P> {
             .transpose()
             .map_err(|error| RpcError::invalid(error.to_string()))?;
         let wait = match arguments.get("wait_millis") {
+            None if after.is_some() => backend_client::MAX_INDEX_PROGRESS_WAIT_MILLIS,
             None => 0,
             Some(value) => value.as_u64().ok_or_else(|| {
                 RpcError::invalid("wait_millis must be an integer between 0 and 10000")
@@ -61,17 +62,10 @@ impl<P: Product> Server<P> {
                 self.surface_reply_result(command, &reply, detail, context)?
             }
             IndexProgressUpdate::Unchanged(reference) => {
-                let action = backend_present::Affordance::ObserveIndexChanges {
-                    reference: reference.clone(),
-                };
-                let index_poll = backend_present::IndexPollDto {
-                    shell: action.shell().ok_or_else(|| {
-                        RpcError::tool("pending progress has no exact CLI observation")
-                    })?,
-                    call: action.tool_call().ok_or_else(|| {
-                        RpcError::tool("pending progress has no exact MCP observation")
-                    })?,
-                };
+                let index_poll = backend_present::IndexPollDto::for_reference(&reference, detail)
+                    .ok_or_else(|| {
+                    RpcError::tool("pending progress has no exact observation")
+                })?;
                 let text = format!(
                     "Operation remains pending; the referenced observation is unchanged.\n\nObserve changes with `{}`. Omit the conditional options to read the complete current receipt.",
                     index_poll.call

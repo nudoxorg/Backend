@@ -249,7 +249,7 @@ pub fn encode_answer(
                 )
             }
             Answer::Product(product) => {
-                let product = ProductDto::new(product);
+                let product = ProductDto::for_detail(product, detail);
                 encode_typed(
                     answer.kind(),
                     detail,
@@ -313,7 +313,7 @@ pub fn encode_answer(
             answer.kind(),
             detail,
             next_cursor,
-            ProductDto::new(product),
+            ProductDto::for_detail(product, detail),
             budget,
         ),
     }
