@@ -201,16 +201,10 @@ fn document_certificate(
             BuiltinModelError("document symbol is absent from the admitted owner view".to_owned())
         })?;
     if let Some(selection) = &document.selection {
-        let selected = if row.package.is_none() && selection.coordinate() == row.label {
-            owner_root
-                .unique_symbol_by_label(selection.coordinate())
-                .map(|row| row.id)
-        } else {
-            backend_library::resolve_selected_view_address(owner_root, selection.coordinate())
-                .declaration()
+        let selected =
+            backend_library::resolve_selected_document_row(owner_root, selection.coordinate())
                 .map_err(|failure| BuiltinModelError(failure.to_string()))?
-                .map(|row| row.id)
-        };
+                .map(|row| row.id);
         if selected != Some(row.id)
             || selection.symbol() != document.symbol
             || selection.source()

@@ -112,6 +112,29 @@ fn assert_external_operand_roundtrip(library: &backend_library::Library, row: &R
     assert_eq!(document.excerpt, SourceExcerpt::NotCaptured);
     assert!(document.signature.is_none());
     assert!(document.fragments.is_empty());
+    let source = backend_library::Basis {
+        root: library.revision_root(),
+        ..library.view().basis()
+    };
+    let selected = backend_library::resolve_selected_document_row(library.view(), &row.label)
+        .expect("copied external document address")
+        .expect("exact retained native row");
+    assert_eq!(selected.id, row.id);
+    let selection =
+        backend_library::DocumentSelection::from_selected_view(library.view(), source, &row.label)
+            .expect("copied external operand retains its native identity");
+    let document = document
+        .with_selection(selection)
+        .expect("same native document");
+    assert!(
+        document.admits_query(
+            &backend_library::DocumentQuery::new(
+                backend_library::symbol_key(&row.label),
+                library.revision_root(),
+            )
+            .with_source_basis(source)
+        )
+    );
     let graph = library
         .graph(backend_library::GraphNeighborhoodQuery::selected(
             symbol,

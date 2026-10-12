@@ -298,7 +298,7 @@ pub use view::{
     RowIdentityPreimage, RowIdentityPreimageError, RowState, SelectedViewAddress,
     SourceAvailability, ViewDelta, ViewError, ViewPageCursor, ViewPageError, ViewProjection,
     ViewProjectionError, ViewRoot, ViewRootDescriptor, ViewRootDescriptorClaim, ViewSnapshot,
-    ViewSnapshotPage, resolve_selected_view_address,
+    ViewSnapshotPage, resolve_selected_document_row, resolve_selected_view_address,
 };
 pub use wire::SemanticShapeExport;
 pub use wire::{
