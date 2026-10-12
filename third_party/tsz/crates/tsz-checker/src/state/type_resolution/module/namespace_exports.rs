@@ -628,18 +628,15 @@ impl<'a> CheckerState<'a> {
                     match self.ctx.project_module_outcome_for_request(
                         request.importer, request.specifier, request.mode, request.kind,
                     ) {
-                        Some(crate::context::ResolvedModuleRequestOutcome::File(target)) => {
-                            if let Some(symbol) = self.resolve_owner_edge_file_member(
-                                *target, original, visited, ambient_guard,
-                            ) {
-                                return Some(symbol);
-                            }
-                        }
-                        // A named source declaration still publishes its alias
-                        // when its exact target is unresolved. Type resolution of
-                        // that alias retains the same negative request; a wildcard
-                        // or absent/malformed request cannot invent this name.
-                        Some(crate::context::ResolvedModuleRequestOutcome::Unresolved) => {
+                        Some(crate::context::ResolvedModuleRequestOutcome::File(_)
+                            | crate::context::ResolvedModuleRequestOutcome::External { .. }
+                            | crate::context::ResolvedModuleRequestOutcome::Unresolved) => {
+                            // The exact source declaration publishes this name.
+                            // Retain its real ALIAS instead of stripping the wrapper:
+                            // the shared alias walker follows this same bound request
+                            // with its cycle guard, and sees every type-only edge.
+                            // An unresolved named alias remains present; a wildcard
+                            // or absent/malformed owner cannot invent the name.
                             return Some(alias);
                         }
                         _ => {}
@@ -756,12 +753,16 @@ impl<'a> CheckerState<'a> {
                     ) else {
                         continue;
                     };
-                    // Preserve the export wrapper's type-only status before
-                    // following it to a value-bearing terminal declaration.
-                    if binder.get_symbol(alias).is_none_or(|symbol| symbol.is_type_only) {
-                        continue;
+                    // Prove the exact admitted chain through the shared runtime
+                    // validator, retaining every source alias and its type-only
+                    // flag. Its selected resolver supports both File and External
+                    // targets; no specifier-only or file-local fallback is used.
+                    if self.ctx.select_module_request(request).is_some()
+                        && self.runtime_namespace_alias_target(alias).is_some()
+                    {
+                        result.set(name.clone(), alias);
                     }
-                    self.ctx.select_module_request(request).and_then(|selected| selected.file_target())
+                    continue;
                 } else {
                     self.ctx.resolve_named_reexport_target_from_file(
                         owner, owner_key, source, name, original,

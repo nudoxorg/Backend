@@ -798,38 +798,60 @@ impl<'a> CheckerState<'a> {
         if symbol.is_type_only {
             return true;
         }
+        let mut selected_export_equals = None;
         if let Some(module_specifier) = symbol.import_module() {
-            let Some((export_name, is_namespace_binding)) =
-                self.effective_import_binding_name(symbol)
-            else {
-                return false;
-            };
-            // Check across all binders for transitive type-only export chains
-            if !is_namespace_binding
-                && self.is_export_type_only_across_binders(module_specifier, &export_name)
-            {
-                return true;
-            }
-            // Check if the target module has `export = X` where X is a type-only
-            // import. This propagates type-only status through `export =` chains:
-            //   // b.ts: import type * as ns from './a'; export = ns;
-            //   // d.ts: import types from './b';         → type-only
-            //   // e.ts: import types = require('./b');    → type-only
-            //   // f.ts: import * as types from './b';    → type-only
-            if self.is_module_export_equals_type_only(module_specifier) {
-                return true;
-            }
-            // Namespace imports always create a value (the module namespace object),
-            // regardless of whether internal exports are type-only. Don't walk the
-            // alias chain for namespace bindings — individual type-only members
-            // should surface as TS2339 at the property access site.
-            if is_namespace_binding {
-                return false;
+            if self.ctx.project_module_resolution_outcomes.is_some() {
+                // None also denotes import-equals. Preserve export= type-only
+                // classification for that binding and ESM namespace imports,
+                // but derive it from this alias's exact admitted request.
+                if symbol.import_name().is_none_or(|name| name == "*") {
+                    let Some(request) = self.ctx.bound_module_request_for_alias(sym_id) else {
+                        return false;
+                    };
+                    let Some(selected) = self.ctx.select_module_request(request) else {
+                        return false;
+                    };
+                    selected_export_equals =
+                        self.resolve_member_for_selected_request(selected, "export=");
+                    if selected_export_equals.is_none() {
+                        return false; // the admitted module namespace is a value
+                    }
+                }
+            } else {
+                let Some((export_name, is_namespace_binding)) =
+                    self.effective_import_binding_name(symbol)
+                else {
+                    return false;
+                };
+                // Check across all binders for transitive type-only export chains
+                if !is_namespace_binding
+                    && self.is_export_type_only_across_binders(module_specifier, &export_name)
+                {
+                    return true;
+                }
+                // Check if the target module has `export = X` where X is a type-only
+                // import. This propagates type-only status through `export =` chains:
+                //   // b.ts: import type * as ns from './a'; export = ns;
+                //   // d.ts: import types from './b';         → type-only
+                //   // e.ts: import types = require('./b');    → type-only
+                //   // f.ts: import * as types from './b';    → type-only
+                if self.is_module_export_equals_type_only(module_specifier) {
+                    return true;
+                }
+                // Namespace imports always create a value (the module namespace object),
+                // regardless of whether internal exports are type-only. Don't walk the
+                // alias chain for namespace bindings — individual type-only members
+                // should surface as TS2339 at the property access site.
+                if is_namespace_binding {
+                    return false;
+                }
             }
         }
 
         let mut visited = AliasCycleTracker::new();
-        let target = match self.resolve_alias_symbol(sym_id, &mut visited) {
+        let target = match self
+            .resolve_alias_symbol(selected_export_equals.unwrap_or(sym_id), &mut visited)
+        {
             Some(target) => target,
             None => return false,
         };
@@ -852,6 +874,9 @@ impl<'a> CheckerState<'a> {
             None => return false,
         };
 
+        if selected_export_equals.is_some() && self.export_symbol_has_no_value(target) {
+            return true;
+        }
         if target_symbol.is_type_only {
             return true;
         }

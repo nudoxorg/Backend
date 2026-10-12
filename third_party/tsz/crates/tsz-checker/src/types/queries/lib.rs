@@ -542,6 +542,12 @@ impl<'a> CheckerState<'a> {
         member_id: SymbolId,
         property_name: &str,
     ) -> Option<TypeId> {
+        if self.ctx.project_module_resolution_outcomes.is_some() {
+            // The selected walker already records the actual owner. Do not
+            // overwrite it with the importer or consult unrelated binders.
+            let member = self.runtime_namespace_alias_target(member_id)?;
+            return self.get_validated_member_type(member, property_name);
+        }
         let parent_name = self
             .get_cross_file_symbol(parent_sym_id)
             .or_else(|| self.ctx.binder.get_symbol(parent_sym_id))
@@ -604,36 +610,7 @@ impl<'a> CheckerState<'a> {
             return Some(namespace_type);
         }
 
-        let resolved_member_id = if let Some(member_symbol) = self.get_cross_file_symbol(member_id)
-            && member_symbol.has_any_flags(symbol_flags::ALIAS)
-        {
-            let mut visited_aliases = AliasCycleTracker::new();
-            let resolved = self
-                .resolve_alias_symbol(member_id, &mut visited_aliases)
-                .unwrap_or(member_id);
-
-            // Check if any intermediate alias in the chain is type-only.
-            // This catches transitive type-only through import chains, e.g.:
-            //   b.ts: import A from './a';  (not explicitly type-only)
-            //   a.ts: export type { A as default };  (type-only export specifier)
-            // The export specifier in a.ts has is_type_only = true, so A
-            // should not be resolvable as a value member of b's namespace.
-            let lib_binders = self.get_lib_binders();
-            for alias_sym_id in &visited_aliases {
-                if let Some(alias_sym) = self
-                    .ctx
-                    .binder
-                    .get_symbol_with_libs(alias_sym_id, &lib_binders)
-                    && alias_sym.is_type_only
-                {
-                    return None;
-                }
-            }
-
-            resolved
-        } else {
-            member_id
-        };
+        let resolved_member_id = self.runtime_namespace_alias_target(member_id)?;
 
         self.get_validated_member_type(resolved_member_id, property_name)
             .or_else(|| {
@@ -646,6 +623,37 @@ impl<'a> CheckerState<'a> {
                 self.propagate_cross_file_target(parent_sym_id, alt_member_id);
                 self.get_validated_member_type(alt_member_id, property_name)
             })
+    }
+
+    /// Validate every actual alias wrapper before exposing a namespace value.
+    /// Selected requests never substitute another binder or unresolved alias.
+    pub(crate) fn runtime_namespace_alias_target(&self, member: SymbolId) -> Option<SymbolId> {
+        let lib_binders = self.get_lib_binders();
+        let symbol = self.ctx.binder.get_symbol_with_libs(member, &lib_binders)?;
+        if symbol.is_type_only {
+            return None;
+        }
+        if !symbol.has_any_flags(symbol_flags::ALIAS) {
+            return Some(member);
+        }
+        let mut visited = AliasCycleTracker::new();
+        let resolved = self.resolve_alias_symbol(member, &mut visited);
+        for alias in &visited {
+            if self
+                .ctx
+                .binder
+                .get_symbol_with_libs(alias, &lib_binders)
+                .is_some_and(|symbol| symbol.is_type_only)
+            {
+                return None;
+            }
+        }
+        resolved.or_else(|| {
+            self.ctx
+                .project_module_resolution_outcomes
+                .is_none()
+                .then_some(member)
+        })
     }
 
     fn namespace_has_umd_augmentation_member(
@@ -688,6 +696,11 @@ impl<'a> CheckerState<'a> {
         resolved_member_id: SymbolId,
         property_name: &str,
     ) -> Option<TypeId> {
+        let resolved_member_id = if self.ctx.project_module_resolution_outcomes.is_some() {
+            self.runtime_namespace_alias_target(resolved_member_id)?
+        } else {
+            resolved_member_id
+        };
         if self.symbol_member_is_type_only(resolved_member_id, Some(property_name)) {
             return None;
         }
@@ -1735,7 +1748,8 @@ impl<'a> CheckerState<'a> {
                 }
             }
             if let Some(member) = exports.get(property_name) {
-                let member_type = self.get_validated_member_type(member, property_name)?;
+                let member_type =
+                    self.resolve_validated_namespace_member(sym_id, member, property_name)?;
                 return Some(self.apply_module_augmentations(
                     &module_specifier,
                     property_name,

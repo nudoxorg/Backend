@@ -75,6 +75,7 @@ impl<'a> CheckerState<'a> {
         sym_id: tsz_binder::SymbolId,
         visited_aliases: &mut AliasCycleTracker,
     ) -> Option<tsz_binder::SymbolId> {
+        self.ctx.types.execution_checkpoint(1).ok()?;
         // Prevent stack overflow from long alias chains
         const MAX_ALIAS_RESOLUTION_DEPTH: usize = 128;
         if visited_aliases.len() >= MAX_ALIAS_RESOLUTION_DEPTH {
@@ -108,15 +109,12 @@ impl<'a> CheckerState<'a> {
                 request.mode,
                 request.kind,
             ) {
-                Some(crate::context::ResolvedModuleRequestOutcome::File(target)) => {
+                Some(crate::context::ResolvedModuleRequestOutcome::File(_)) => {
                     configured_file_alias = true;
                     if let Some(export_name) = symbol.import_name().filter(|name| *name != "*") {
-                        let mut visited = rustc_hash::FxHashSet::default();
-                        let selected = self.ctx.resolve_export_in_target_file(
-                            *target,
-                            export_name,
-                            &mut visited,
-                        )?;
+                        let request = self.ctx.select_module_request(request)?;
+                        let selected =
+                            self.resolve_member_for_selected_request(request, export_name)?;
                         return self.resolve_alias_symbol(selected, visited_aliases);
                     }
                 }
