@@ -1170,7 +1170,10 @@ fn retained_add_path_enter_cannot_submit_after_an_unpainted_cover_return(cx: &mu
             assert_eq!(window.a11y_frame_number(), frame);
             (form, work, frame, focus)
         });
-        assert_eq!(presses.get(), u64::from(emitted_before_cover), "the event oracle distinguishes a queued PressEnter from a denied retained key");
+        // GPUI dispatches the InputState's bound Enter action before raw
+        // capture_key_down. Both orders emit one notification; submission is
+        // admitted by the parent action's captured visit, not by that event.
+        assert_eq!(presses.get(), 1, "the input notification carries no submission authority");
         assert_eq!(state.0.read_with(rig.cx, |form, _| form.work_state()), state.1,
             "deferred InputState PressEnter cannot start a retired admission");
         assert_eq!(root.read_with(rig.cx, |root, _| root.reduced()), before + 2);
@@ -1179,7 +1182,7 @@ fn retained_add_path_enter_cannot_submit_after_an_unpainted_cover_return(cx: &mu
         rig.settle();
         assert!(snapshot(&mut rig).workspace().projects.is_empty());
         rig.keys("enter");
-        assert_eq!(presses.get(), u64::from(emitted_before_cover) + 1, "current native input emits one actual PressEnter");
+        assert_eq!(presses.get(), 2, "current native input emits its own actual PressEnter");
         assert_eq!(snapshot(&mut rig).workspace().projects.len(), 1, "fresh mounted input still admits the real folder");
         assert_eq!(snapshot(&mut rig).workspace().projects[0].id, crate::core::LocalProjectId::from_path(&folder).expect("project"));
         std::fs::remove_dir_all(parent).expect("remove owned fixture");
