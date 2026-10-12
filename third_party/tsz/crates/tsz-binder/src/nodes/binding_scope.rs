@@ -55,6 +55,40 @@ impl BinderState {
         self.enter_persistent_scope_with_capacity(kind, node, capacity);
     }
 
+    /// Borrow a module scope's public rows using the binder's export rules.
+    /// The scope and syntax arena must belong to this binder. Persistent scopes
+    /// retain their own remapped rows even when program export maps are merged.
+    pub fn module_scope_exports<'s>(
+        &'s self,
+        arena: &'s NodeArena,
+        scope: &'s crate::Scope,
+    ) -> impl Iterator<Item = (&'s String, &'s SymbolId)> + 's {
+        let export_all = self.in_global_augmentation
+            || arena
+                .get(scope.container_node)
+                .and_then(|node| arena.get_module(node))
+                .is_some_and(|module| {
+                    let is_external = arena.get(module.name).is_some_and(|name_node| {
+                        name_node.kind == SyntaxKind::StringLiteral as u16
+                            || name_node.kind == SyntaxKind::NoSubstitutionTemplateLiteral as u16
+                    });
+                    let is_ambient = arena.has_modifier_ref(
+                        module.modifiers.as_ref(),
+                        SyntaxKind::DeclareKeyword,
+                    ) || is_external;
+                    is_ambient
+                        && !Self::ambient_module_body_disables_export_context(arena, module.body)
+                });
+        scope.table.iter().filter(move |(_, child_id)| {
+            scope.kind == ContainerKind::Module
+                && self.symbols.get(**child_id).is_some_and(|child| {
+                    export_all
+                        || child.is_exported
+                        || (child.flags & symbol_flags::EXPORT_VALUE) != 0
+                })
+        })
+    }
+
     pub(crate) fn exit_scope(&mut self, arena: &NodeArena) {
         // Capture exports before popping if this is a module/namespace.
         // Copy the scope identity out of the persistent arena first so the
@@ -67,51 +101,16 @@ impl BinderState {
                 ContainerKind::Module => {
                     // Find the symbol for this module/namespace
                     if let Some(sym_id) = self.node_symbols.get(&container_node.0) {
-                        let export_all = self.in_global_augmentation
-                            || arena
-                                .get(container_node)
-                                .and_then(|node| arena.get_module(node))
-                                .is_some_and(|module| {
-                                    let is_external =
-                                        arena.get(module.name).is_some_and(|name_node| {
-                                            name_node.kind == SyntaxKind::StringLiteral as u16
-                                                || name_node.kind
-                                                    == SyntaxKind::NoSubstitutionTemplateLiteral
-                                                        as u16
-                                        });
-                                    let is_ambient = arena.has_modifier_ref(
-                                        module.modifiers.as_ref(),
-                                        SyntaxKind::DeclareKeyword,
-                                    ) || is_external;
-                                    // Implicit export only applies while the ambient body
-                                    // is still an export context (no explicit export
-                                    // declaration/assignment); see the helper for the rule.
-                                    is_ambient
-                                        && !Self::ambient_module_body_disables_export_context(
-                                            arena,
-                                            module.body,
-                                        )
-                                });
-
-                        // Filter exports: only include symbols with is_exported = true or EXPORT_VALUE flag.
-                        // Snapshot which child SymbolIds pass the export filter
-                        // first so the `self.symbols` borrow drops before the
-                        // scope-table copy and the mutable `self.symbols` access
-                        // below. The set is keyed by SymbolId, so the copy below
-                        // preserves the source scope's atom side-index.
+                        // Use the same borrowed visibility view exposed to
+                        // reconstructed binders; only the final filtered table
+                        // is copied when persisting this module's exports.
                         let exported_children: FxHashSet<crate::SymbolId> = self
-                            .current_scope()
-                            .iter()
+                            .module_scope_exports(
+                                arena,
+                                self.current_persistent_scope()
+                                    .expect("current module scope is present"),
+                            )
                             .map(|(_, &child_id)| child_id)
-                            .filter(|&child_id| {
-                                self.symbols.get(child_id).is_some_and(|child| {
-                                    // Check explicit export flag OR if it's an
-                                    // EXPORT_VALUE (from export {}).
-                                    export_all
-                                        || child.is_exported
-                                        || (child.flags & symbol_flags::EXPORT_VALUE) != 0
-                                })
-                            })
                             .collect();
                         // Copy retained entries from the live scope table,
                         // preserving both name keys and same-arena atom keys.
