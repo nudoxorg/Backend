@@ -1713,19 +1713,20 @@ fn fit_tool_preview(mut value: Value, transport: ResponseTransport) -> Value {
     }
     let mut lower = 0;
     let mut upper = prefix.len();
+    let mut best_end = 0;
     while lower < upper {
         let midpoint = lower + (upper - lower).div_ceil(2);
-        let mut end = midpoint;
-        while !prefix.is_char_boundary(end) {
-            end -= 1;
-        }
+        let end = readable_prefix_end(&prefix, midpoint);
         let mut candidate = value.clone();
         candidate["result"]["content"][0]["text"] =
             Value::String(format!("{}{PREVIEW_MARKER}", &prefix[..end]));
         candidate = attach_wire_budget(candidate, transport);
         if transport_serialized_bytes(&candidate, transport) <= budget {
             lower = midpoint;
-            best = candidate;
+            if end >= best_end {
+                best_end = end;
+                best = candidate;
+            }
         } else {
             upper = midpoint - 1;
         }
@@ -1856,25 +1857,23 @@ fn tool_result(text: &str, structured: Value, is_error: bool) -> Value {
     if serialized_bytes(&candidate) <= budget {
         let mut lower = 0;
         let mut upper = text.len();
+        let mut best_end = 0;
         while lower < upper {
             let midpoint = lower + (upper - lower).div_ceil(2);
-            let mut end = midpoint;
-            while !text.is_char_boundary(end) {
-                end -= 1;
-            }
-            candidate["content"][0]["text"] =
+            let end = readable_prefix_end(text, midpoint);
+            let mut trial = candidate.clone();
+            trial["content"][0]["text"] =
                 Value::String(format!("{}{PREVIEW_MARKER}", &text[..end]));
-            if serialized_bytes(&candidate) <= budget {
+            if serialized_bytes(&trial) <= budget {
                 lower = midpoint;
+                if end >= best_end {
+                    best_end = end;
+                    candidate = trial;
+                }
             } else {
                 upper = midpoint - 1;
             }
         }
-        while !text.is_char_boundary(lower) {
-            lower -= 1;
-        }
-        candidate["content"][0]["text"] =
-            Value::String(format!("{}{PREVIEW_MARKER}", &text[..lower]));
         return candidate;
     }
     let fault = oversized_fault(BudgetExceeded {
@@ -1895,6 +1894,91 @@ fn tool_result(text: &str, structured: Value, is_error: bool) -> Value {
             "isError": true
         })
     }
+}
+
+/// Returns a UTF-8 boundary no later than `limit`, backing up to the start of
+/// a rendered summary row if the candidate would leave only its label or a
+/// partial coordinate. Both result-level and final-envelope budgeting use
+/// this so an exact native operand is never cut after the page was rendered.
+fn readable_prefix_end(text: &str, limit: usize) -> usize {
+    let mut end = limit.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    if !text.starts_with("• ") && !text.contains("\n• ") {
+        return end;
+    }
+
+    let mut line_start = 0;
+    while line_start < text.len() {
+        let line_end = text[line_start..]
+            .find('\n')
+            .map_or(text.len(), |offset| line_start + offset);
+        let line = &text[line_start..line_end];
+        if line.starts_with("• ") {
+            let label_code_end = code_span_end(line, "• ".len());
+            let coordinate_start = line_end.saturating_add(1);
+            if let (Some(label_code_end), Some(coordinate_line_end)) = (
+                label_code_end,
+                (coordinate_start < text.len()).then(|| {
+                    text[coordinate_start..]
+                        .find('\n')
+                        .map_or(text.len(), |offset| coordinate_start + offset)
+                }),
+            ) && line[label_code_end..].starts_with(" · ")
+            {
+                let coordinate_line = &text[coordinate_start..coordinate_line_end];
+                let coordinate_code_end = code_span_end(coordinate_line, 2);
+                if coordinate_line.starts_with("  ")
+                    && coordinate_code_end == Some(coordinate_line.len())
+                {
+                    let row_end =
+                        coordinate_line_end.saturating_add(if coordinate_line_end < text.len() {
+                            1
+                        } else {
+                            0
+                        });
+                    if line_start < end && end < row_end {
+                        return line_start;
+                    }
+                }
+            }
+        }
+        if line_end == text.len() {
+            break;
+        }
+        line_start = line_end + 1;
+    }
+    end
+}
+
+/// Finds the close of an inline code span beginning at `start` in one line.
+/// The returned offset is after the closing delimiter.
+fn code_span_end(line: &str, start: usize) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let mut delimiter = 0;
+    while bytes.get(start.saturating_add(delimiter)) == Some(&b'`') {
+        delimiter += 1;
+    }
+    if delimiter == 0 {
+        return None;
+    }
+
+    let mut position = start + delimiter;
+    while position < bytes.len() {
+        if bytes[position] != b'`' {
+            position += 1;
+            continue;
+        }
+        let run_start = position;
+        while bytes.get(position) == Some(&b'`') {
+            position += 1;
+        }
+        if position - run_start == delimiter {
+            return Some(position);
+        }
+    }
+    None
 }
 
 fn graph_page_text(page: &GraphQueryPage, cursor: Option<&str>) -> String {
