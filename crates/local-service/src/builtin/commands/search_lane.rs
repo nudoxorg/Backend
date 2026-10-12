@@ -3,6 +3,9 @@
 //! A different selection is refused until the active worker retires;
 //! it never queues another corpus or starts another native writer.
 
+#[cfg(any(test, feature = "cluster-process-journey-hooks"))]
+mod diagnostic;
+
 use super::super::query::SearchSnapshotOwner;
 use backend_engine::{CoverageCapability, ViewRoot, WorkspaceRoot};
 use backend_extension_trustfall::SemanticQueryCorpus;
@@ -146,6 +149,8 @@ impl SearchLane {
         let cancelled = Arc::new(AtomicBool::new(false));
         let control = Arc::clone(&cancelled);
         let (sender, completed) = mpsc::sync_channel(1);
+        #[cfg(feature = "cluster-process-journey-hooks")]
+        let mut diagnostic = diagnostic::Diagnostic::from_environment(&capture, &projection);
         #[cfg(test)]
         let gate = self.next_gate.take();
         let worker = thread::Builder::new()
@@ -166,11 +171,29 @@ impl SearchLane {
                     let coverage = super::super::admitted_coverage().map_err(Failure::Capture)?;
                     let mut generations = capture.generations;
                     let mut image_rows = super::super::view_build::ImageRowResidence::default();
-                    let corpus = projection
-                        .admit_corpus(
-                            snapshot.root(),
-                            || super::super::read_indexed_sources(&snapshot),
-                            |sources| {
+                    #[cfg(feature = "cluster-process-journey-hooks")]
+                    let (source_phase, corpus_phase) = match diagnostic.as_mut() {
+                        Some(observation) => (
+                            Some(&mut observation.phases.indexed_sources),
+                            Some(&mut observation.phases.semantic_corpus),
+                        ),
+                        None => (None, None),
+                    };
+                    let corpus = projection.admit_corpus(
+                        snapshot.root(),
+                        || {
+                            let read = || super::super::read_indexed_sources(&snapshot);
+                            #[cfg(feature = "cluster-process-journey-hooks")]
+                            {
+                                diagnostic::measure(source_phase, read)
+                            }
+                            #[cfg(not(feature = "cluster-process-journey-hooks"))]
+                            {
+                                read()
+                            }
+                        },
+                        |sources| {
+                            let admit = || {
                                 super::super::view_build::semantic_query_corpus(
                                     &snapshot,
                                     &capture.compiler,
@@ -178,9 +201,25 @@ impl SearchLane {
                                     &mut generations,
                                     &mut image_rows,
                                 )
-                            },
-                        )
-                        .map_err(Failure::Capture)?;
+                            };
+                            #[cfg(feature = "cluster-process-journey-hooks")]
+                            {
+                                diagnostic::measure(corpus_phase, admit)
+                            }
+                            #[cfg(not(feature = "cluster-process-journey-hooks"))]
+                            {
+                                let mut admit = admit;
+                                admit()
+                            }
+                        },
+                    );
+                    #[cfg(feature = "cluster-process-journey-hooks")]
+                    if let Some(observation) = diagnostic.as_mut() {
+                        observation.generation_after =
+                            Some(diagnostic::Generations::capture(&generations));
+                        observation.corpus = corpus.as_ref().ok().map(diagnostic::Corpus::capture);
+                    }
+                    let corpus = corpus.map_err(Failure::Capture)?;
                     if control.load(Ordering::Acquire) {
                         return Err(Failure::Cancelled);
                     }
@@ -191,16 +230,42 @@ impl SearchLane {
                         coverage,
                         corpus,
                     };
-                    let prepared = projection
-                        .select_controlled(
-                            selection.workspace,
-                            selection.view,
-                            selection.capability,
-                            selection.coverage,
-                            selection.corpus,
-                            Some(&control),
-                        )
-                        .map(|_| ());
+                    let prepare = || {
+                        projection
+                            .select_controlled(
+                                selection.workspace,
+                                selection.view,
+                                selection.capability,
+                                selection.coverage,
+                                selection.corpus,
+                                Some(&control),
+                            )
+                            .map(|selected| {
+                                #[cfg(feature = "cluster-process-journey-hooks")]
+                                {
+                                    selected.preparation_diagnostic_binding()
+                                }
+                                #[cfg(not(feature = "cluster-process-journey-hooks"))]
+                                {
+                                    let _ = selected;
+                                }
+                            })
+                    };
+                    #[cfg(feature = "cluster-process-journey-hooks")]
+                    let prepared = diagnostic::measure(
+                        diagnostic
+                            .as_mut()
+                            .map(|observation| &mut observation.phases.lexical_projection),
+                        prepare,
+                    )
+                    .map(|binding| {
+                        if let Some(observation) = diagnostic.as_mut() {
+                            observation.lexical_binding =
+                                Some(diagnostic::LexicalBinding::capture(binding));
+                        }
+                    });
+                    #[cfg(not(feature = "cluster-process-journey-hooks"))]
+                    let prepared = prepare();
                     if control.load(Ordering::Acquire) {
                         return Err(Failure::Cancelled);
                     }
@@ -208,6 +273,10 @@ impl SearchLane {
                     Ok(())
                 }))
                 .unwrap_or_else(|_| Err(Failure::Panicked));
+                #[cfg(feature = "cluster-process-journey-hooks")]
+                if let Some(observation) = diagnostic.as_ref() {
+                    observation.emit(&projection, &result);
+                }
                 // At most one completion, containing the same exclusive owner.
                 let _ = sender.send((projection, result));
             })
