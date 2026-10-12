@@ -60,3 +60,19 @@ The same run measured indexing at 46.22 s, owner CPU at 41.81 s and owner peak R
 at 788,808 KiB; individual queries were 0.02–0.69 s. The advisory step including
 compiler-shell setup took 67 s. These are the initial provisional baselines;
 they do not establish worker-independent performance tolerances.
+
+### MCP preview review after canonical update
+
+Concourse 459597, source `2ac2f0a1f`, verified the artifact-backed case after
+canonical `fd856a290`. The only golden differences are the two MCP search text
+previews and their wire budgets. Canonical now prints the returned declaration's
+name/kind/language and exact actionable coordinate in bounded human-readable
+text, rather than only saying a row exists. ferris and Gopher are the authored
+fixture declarations; both structured answers and every CLI/outline/package
+answer remain byte-for-byte equal to the reviewed contract. The text reports one
+row shown and zero omitted. Actual wire sizes grow to 1,731/1,732 bytes (433
+estimated tokens each), safely within the unchanged 49,152-byte limit.
+
+Accept those visible preview changes; no fields are normalized away, fixture
+expectations weakened, or performance baselines widened. A fresh consumer run
+must match this revised golden before merge.
