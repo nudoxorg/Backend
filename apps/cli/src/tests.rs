@@ -228,14 +228,28 @@ mod endpoint {
     #[cfg(not(target_os = "macos"))]
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-    /// A path no other test in this process, and no earlier process, is using.
+    /// A unique socket path within the portable local-endpoint byte budget.
     #[cfg(not(target_os = "macos"))]
     pub(super) fn scratch(label: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
+        let name = format!(
             "bcli-{label}-{}-{}.sock",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ))
+        );
+        // TMPDIR is suitable for ordinary temporary files but may be too deep
+        // for a named socket; prefer short conventional Unix roots first.
+        let mut roots = Vec::new();
+        #[cfg(unix)]
+        roots.extend([PathBuf::from("/tmp"), PathBuf::from("/var/tmp")]);
+        roots.push(std::env::temp_dir());
+        roots
+            .into_iter()
+            .map(|root| root.join(&name))
+            .find(|path| {
+                path.parent().is_some_and(std::path::Path::is_dir)
+                    && path.as_os_str().as_encoded_bytes().len() <= crate::MAX_ENDPOINT_PATH
+            })
+            .unwrap_or_else(|| panic!("no temporary directory can hold a portable local endpoint"))
     }
 
     /// Binds an endpoint whose permissions satisfy peer authentication: the
@@ -676,9 +690,13 @@ fn owner_index_job_commands_accept_exact_cli_ticket_operands() {
     }
 
     let help = invoke::help_for(grammar_for("index_progress").expect("progress grammar"));
-    assert!(help.contains("<TICKET>"));
+    assert!(
+        help.contains("[TICKET]"),
+        "ticket is optional when using --operation-key"
+    );
     assert!(help.contains("quote it as one shell argument"));
     assert!(help.contains("--after-sequence SEQUENCE"));
+    assert!(help.contains("--operation-key TEXT"));
 }
 
 #[test]
@@ -1173,6 +1191,7 @@ fn admitted_durable_partial_matches_ticket_fault_and_cli_exit_without_inventing_
         },
     ] {
         let command = SurfaceCommand::IndexOperationStatus { operation_key: key };
+        let reports_failure = matches!(&state, IndexOperationState::Failed { .. });
         let reply = SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(
             IndexOperationStatus::new(
                 key,
@@ -1181,12 +1200,24 @@ fn admitted_durable_partial_matches_ticket_fault_and_cli_exit_without_inventing_
                 state,
             ),
         ));
-        backend_library::admit_surface_reply(&command, &reply).expect("admitted nonfault state");
+        backend_library::admit_surface_reply(&command, &reply)
+            .expect("a terminal operation state is still an admitted observation");
         let answer = Answer::Product(Box::new(backend_present::product_view_for_command(
             &command, &reply,
         )));
-        assert!(answer.fault().is_none());
-        assert_eq!(render::answer_exit_code(&answer), ExitCode::SUCCESS);
+        if reports_failure {
+            assert_eq!(
+                answer.fault().expect("terminal failure is surfaced").slug(),
+                FaultSlug::Rejected
+            );
+            assert_eq!(
+                render::answer_exit_code(&answer),
+                ExitCode::from(render::EXIT_REFUSED)
+            );
+        } else {
+            assert!(answer.fault().is_none());
+            assert_eq!(render::answer_exit_code(&answer), ExitCode::SUCCESS);
+        }
     }
 }
 
@@ -1551,7 +1582,7 @@ fn cli_exports_plain_graph_continuation_without_leaking_the_wire_proof() {
     let token = payload["nextCursor"]
         .as_str()
         .expect("portable graph cursor");
-    assert!(token.starts_with("pc3-"));
+    assert!(token.starts_with("pc4-"));
     assert!(payload.get("certificate").is_none());
     assert!(payload.get("query_proof").is_none());
     for format in ["human", "markdown"] {

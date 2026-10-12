@@ -340,14 +340,28 @@ mod endpoint {
     #[cfg(not(target_os = "macos"))]
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-    /// A path no other test in this process, and no earlier process, is using.
+    /// A unique socket path within the portable local-endpoint byte budget.
     #[cfg(not(target_os = "macos"))]
     pub(super) fn scratch(label: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
+        let name = format!(
             "bmcp-{label}-{}-{}.sock",
             std::process::id(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ))
+        );
+        // TMPDIR is suitable for ordinary temporary files but may be too deep
+        // for a named socket; prefer short conventional Unix roots first.
+        let mut roots = Vec::new();
+        #[cfg(unix)]
+        roots.extend([PathBuf::from("/tmp"), PathBuf::from("/var/tmp")]);
+        roots.push(std::env::temp_dir());
+        roots
+            .into_iter()
+            .map(|root| root.join(&name))
+            .find(|path| {
+                path.parent().is_some_and(std::path::Path::is_dir)
+                    && path.as_os_str().as_encoded_bytes().len() <= crate::MAX_ENDPOINT_PATH
+            })
+            .unwrap_or_else(|| panic!("no temporary directory can hold a portable local endpoint"))
     }
 
     /// Binds an endpoint whose permissions satisfy peer authentication: the

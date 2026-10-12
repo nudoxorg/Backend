@@ -379,7 +379,12 @@ mod help_tests {
         ] {
             let arguments = arguments.into_iter().map(str::to_owned).collect::<Vec<_>>();
             let help = help_output(&arguments).expect("help requested");
-            assert!(help.starts_with(&format!("backend {command} ")), "{help}");
+            let prefix = format!("backend {command}");
+            assert!(help.starts_with(&prefix), "{help}");
+            assert!(
+                matches!(help.as_bytes().get(prefix.len()), Some(b' ' | b'\n')),
+                "{help}"
+            );
             assert!(!help.contains("quick start"), "expected command help");
         }
     }
