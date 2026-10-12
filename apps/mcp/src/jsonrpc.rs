@@ -27,11 +27,13 @@ use backend_library::{
     PageTerminal, ProductText, ReplyDto, SurfaceCommand, SurfaceReply, TreeOpener, ViewStateRoot,
     encode_id,
 };
+#[cfg(test)]
+use backend_present::cl100k_tokens;
 use backend_present::{
     Answer, BudgetExceeded, CL100K_POLICY, CL100K_VOCABULARY_SHA256, ContinuationCursor,
     ContinuationTarget, CursorTarget, DEFAULT_RESPONSE_BUDGET_BYTES, Detail,
     ESTIMATED_BYTES_PER_TOKEN, Engine, Fault, Invocation, Probe, Request, answer_paged,
-    bounded_text, cl100k_tokens, encode_answer, encode_serializable, estimate_tokens, fault_value,
+    bounded_text, encode_answer, encode_serializable, estimate_tokens, fault_value,
     lower_with_opener, markdown, oversized_fault, record_list,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};

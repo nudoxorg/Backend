@@ -31,7 +31,11 @@ impl MeasuredEnvelope {
         } else {
             usize::MAX
         };
-        let tokens = if encoded {
+        let tokens = if !encoded {
+            Err(Cl100kError::InvalidEncoding)
+        } else if frame_bytes > transport.limit_bytes() {
+            Err(Cl100kError::InputTooLarge)
+        } else {
             capture
                 .json
                 .as_deref()
@@ -40,8 +44,6 @@ impl MeasuredEnvelope {
                         .map_err(|_| Cl100kError::InvalidEncoding)
                         .and_then(count)
                 })
-        } else {
-            Err(Cl100kError::InvalidEncoding)
         };
         Self {
             value,
@@ -156,6 +158,26 @@ mod tests {
         assert!(proof.bytes() > 100_000);
         assert_eq!(calls.get(), 0);
         assert!(proof.json.is_none());
+        assert!(proof.into_frame().is_err());
+    }
+
+    #[test]
+    fn framing_overflow_refuses_before_tokenizing_the_retained_json() {
+        let transport = ResponseTransport::StdioLine;
+        let value = Value::String(" ".repeat(transport.limit_bytes() - 2));
+        let calls = std::cell::Cell::new(0);
+        let proof = MeasuredEnvelope::measure(value, transport, |_| {
+            calls.set(calls.get() + 1);
+            Ok(0)
+        });
+        assert_eq!(proof.bytes(), transport.limit_bytes() + 1);
+        assert!(
+            proof.json.is_some(),
+            "JSON itself fits; its newline does not"
+        );
+        assert_eq!(calls.get(), 0, "a refused frame performs no BPE work");
+        assert_eq!(proof.tokens(), Err(Cl100kError::InputTooLarge));
+        assert!(!proof.fits());
         assert!(proof.into_frame().is_err());
     }
 }
