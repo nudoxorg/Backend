@@ -30,6 +30,12 @@ def main []: nothing -> nothing {
         $env.CARGO_TARGET_DIR = ($cache | path join "t1-target")
         $env.CARGO_HOME = ($cache | path join "cargo-home")
         mkdir $env.CARGO_HOME
+        # The mtime manifest trusts git blobs. On a developer's dirty tree
+        # restoring those times could hide changed source from Cargo.
+        let clean = (^git diff --quiet HEAD | complete)
+        if $clean.exit_code != 0 {
+            error make {msg: "cached T1 needs a clean tracked checkout; unset CI_FAST_CACHE_ROOT for local edits"}
+        }
         # A fresh checkout stamps every file with "now", which would make
         # Cargo rebuild the whole workspace. Restore the mtimes of unchanged
         # files so the incremental state above stays valid.
