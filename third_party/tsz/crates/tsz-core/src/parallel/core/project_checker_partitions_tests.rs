@@ -2079,6 +2079,87 @@ fn selected_file_namespace_default_keeps_node_cjs_interop_against_competing_kind
 }
 
 #[test]
+fn selected_file_class_namespace_import_is_refused_with_and_without_interop() {
+    use crate::checker::context::ResolutionModeOverride;
+    for interop in [false, true] {
+        // SDK TS5.9.3 reports TS2497 for this exact illegal class namespace
+        // import under both options. Its additional property diagnostic is
+        // not an assertion of complete TSZ diagnostic parity in this control.
+        let mut program = compile_files_with_libs(
+            vec![
+                ("src/main.mts".to_owned(),
+                    "import * as observed from './cjs'; export function read(): number { return observed.default.value; }".to_owned()),
+                ("src/cjs.cts".to_owned(),
+                    "declare class api { static value: number; static default: string; } export = api;".to_owned()),
+                ("src/wrong.mts".to_owned(), "export default 'wrong';".to_owned()),
+            ], &[],
+        );
+        program.file_is_esm_map = Arc::new(
+            [
+                ("src/main.mts".to_owned(), true),
+                ("src/cjs.cts".to_owned(), false),
+                ("src/wrong.mts".to_owned(), true),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let resolutions = [
+            ProjectModuleResolution {
+                importer_path: "src/main.mts".to_owned(),
+                specifier: "./cjs".to_owned(),
+                request_kind: ProjectModuleRequestKind::EsmImport,
+                resolution_mode: Some(ResolutionModeOverride::Import),
+                target: ProjectModuleResolutionTarget::File {
+                    path: "src/cjs.cts".to_owned(),
+                },
+            },
+            ProjectModuleResolution {
+                importer_path: "src/main.mts".to_owned(),
+                specifier: "./cjs".to_owned(),
+                request_kind: ProjectModuleRequestKind::EsmReExport,
+                resolution_mode: Some(ResolutionModeOverride::Import),
+                target: ProjectModuleResolutionTarget::File {
+                    path: "src/wrong.mts".to_owned(),
+                },
+            },
+        ];
+        let options = CheckerOptions {
+            module: tsz_common::common::ModuleKind::NodeNext,
+            es_module_interop: interop,
+            allow_synthetic_default_imports: interop,
+            ..CheckerOptions::default()
+        };
+        let plan = ParallelCheckPlan::build(
+            &program,
+            &options,
+            &[],
+            ProjectSemanticOptions::declaration_scoped(),
+            Some(Arc::new(
+                build_project_module_resolution_outcomes(&program, &resolutions).unwrap(),
+            )),
+            None,
+        )
+        .unwrap();
+        let checked = plan.check_file_partition(0, &program.files[..1]).unwrap();
+        let codes = checked[0]
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>();
+        assert!(
+            codes.contains(&2497),
+            "exact selected CJS class namespace is refused, interop={interop}: {:?}",
+            checked[0].diagnostics
+        );
+        assert!(
+            !codes.contains(&2307),
+            "refusal is the admitted CJS shape, not missing module resolution: {:?}",
+            checked[0].diagnostics
+        );
+    }
+}
+
+#[test]
 fn nested_ambient_reexport_owner_cannot_borrow_foreign_owner_edge() {
     use crate::checker::context::ResolutionModeOverride;
     for wildcard in [false, true] {
