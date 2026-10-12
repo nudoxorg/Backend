@@ -226,32 +226,59 @@ fn committed_tour_controls_cannot_adopt_a_new_visit_stop_or_scene(cx: &mut TestA
     let covered_focus = cx.update(|window, cx| (window.focused(cx), window.focus_epoch()));
     cx.simulate_mouse_up(at, gpui::MouseButton::Left, gpui::Modifiers::none());
     tour_ax_click(cx, start);
-    cx.simulate_keystrokes("enter");
+    tour_key_click(cx, "enter");
     assert_eq!(graph.read_with(cx, |graph, _| graph.tour_stop()), None);
     assert_eq!(cx.update(|window, cx| (window.focused(cx), window.focus_epoch())), covered_focus,
         "denied release, keyboard and AX cannot establish a new focus intent");
     allowed.set(true);
-    cx.update(|window, cx| window.focus(&graph.focus_handle(cx), cx));
-    cx.simulate_keystrokes("t"); // New navigation generation, same immutable scene, no redraw.
-    let current_generation = graph.read_with(cx, |graph, _| graph.state.generation);
-    tour_ax_click(cx, start);
-    assert_eq!(graph.read_with(cx, |graph, _| graph.state.generation), current_generation,
-        "old start capability cannot restart the new tour even at its first stop");
-    assert_eq!(graph.read_with(cx, |graph, _| graph.tour_stop()), Some(expected.stops[0].node));
+    cx.update(|window, cx| {
+        let frame = window.a11y_frame_number();
+        // Publish the real navigation transition without dispatching a key:
+        // key dispatch draws a dirty window, so its old numeric AX ID would
+        // otherwise refer to a newly painted current control.
+        assert!(graph.update(cx, |graph, cx| graph.start_tour(1, 0, cx)));
+        let current_generation = graph.read(cx).state.generation;
+        window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+            action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT,
+            target_node: start, data: None,
+        }, cx);
+        assert_eq!(graph.read(cx).state.generation, current_generation,
+            "old start capability cannot restart the new tour even at its first stop");
+        assert_eq!(graph.read(cx).tour_stop(), Some(expected.stops[0].node));
+        assert_eq!(window.a11y_frame_number(), frame, "the AX action still addresses the original committed control");
+    });
     settle(cx);
     let label = format!("Tour stop 1: {}", scene.world.name_of(expected.stops[0].node));
     let (first, _) = tour_button(cx, ("graph-tour-stop", 0usize).into(), &label);
-    cx.update(|window, cx| window.focus(&graph.focus_handle(cx), cx));
-    cx.simulate_keystrokes("right"); // Same generation, changed exact tour stop, still old native tree.
-    tour_ax_click(cx, first);
-    assert_eq!(graph.read_with(cx, |graph, _| graph.tour_stop()), Some(expected.stops[1].node));
+    cx.update(|window, cx| {
+        let frame = window.a11y_frame_number();
+        graph.update(cx, |graph, cx| graph.go_stop(1, cx));
+        window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+            action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT,
+            target_node: first, data: None,
+        }, cx);
+        assert_eq!(graph.read(cx).tour_stop(), Some(expected.stops[1].node), "the old exact-stop callback is retired");
+        assert_eq!(window.a11y_frame_number(), frame, "no current stop listener has replaced the old AX action");
+    });
     settle(cx);
     let (first, _) = tour_button(cx, ("graph-tour-stop", 0usize).into(), &label);
-    graph.update(cx, |graph, _| graph.scene = Some(Arc::new(Scene::new(scene.world.clone(), scene.layout.clone()))));
-    tour_ax_click(cx, first); // Same world and reading state, different immutable scene, no redraw.
-    assert_eq!(graph.read_with(cx, |graph, _| graph.tour_stop()), Some(expected.stops[1].node));
+    cx.update(|window, cx| {
+        let frame = window.a11y_frame_number();
+        graph.update(cx, |graph, _| graph.scene = Some(Arc::new(Scene::new(scene.world.clone(), scene.layout.clone()))));
+        window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+            action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT,
+            target_node: first, data: None,
+        }, cx);
+        assert_eq!(graph.read(cx).tour_stop(), Some(expected.stops[1].node), "the old scene callback is retired");
+        assert_eq!(window.a11y_frame_number(), frame, "the replaced scene has not been painted into the old control");
+        graph.update(cx, |_, cx| cx.notify());
+    });
+    settle(cx);
+    let (fresh, _) = tour_button(cx, ("graph-tour-stop", 0usize).into(), &label);
+    tour_ax_click(cx, fresh);
+    assert_eq!(graph.read_with(cx, |graph, _| graph.tour_stop()), Some(expected.stops[0].node),
+        "a freshly queried current-scene AX control remains usable");
 }
-
 #[gpui::test]
 fn stale_tour_focus_cannot_lend_local_enter_to_a_new_find_owner(cx: &mut TestAppContext) {
     use std::rc::Rc;
