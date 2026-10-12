@@ -167,8 +167,9 @@ def drew_a_frame(trace: Path) -> bool:
 
 def smoke_gui(bin_dir: Path, home: Path, budget: float) -> int:
     xvfb = shutil.which("Xvfb")
-    if xvfb is None:
-        return fail("Xvfb is not on PATH (run inside the `.#smoke` shell)")
+    xdotool = shutil.which("xdotool")
+    if xvfb is None or xdotool is None:
+        return fail("Xvfb/xdotool are not on PATH (run inside the `.#smoke` shell)")
     # Xvfb selects a free display atomically. A PID-derived number collides
     # when several shards start at once, or can find someone else's socket.
     read_fd, write_fd = os.pipe()
@@ -207,7 +208,27 @@ def smoke_gui(bin_dir: Path, home: Path, budget: float) -> int:
         )
         while time.monotonic() - started < budget:
             if drew_a_frame(trace):
-                print(f"gui: first frame drawn after {time.monotonic() - started:.1f}s")
+                first_frame = time.monotonic() - started
+                windows = subprocess.run(
+                    [xdotool, "search", "--onlyvisible", "--pid", str(app.pid)],
+                    env=env, capture_output=True, text=True, timeout=5,
+                )
+                if windows.returncode != 0 or not windows.stdout.strip():
+                    return fail("desktop drew a frame but mapped no visible X11 window")
+                window = windows.stdout.splitlines()[0]
+                # Exercise the app's public Quit shortcut. Signals below are
+                # failure cleanup of this task's children, never the proof.
+                subprocess.run(
+                    [xdotool, "windowfocus", "--sync", window, "key", "--clearmodifiers", "super+q"],
+                    env=env, check=True, capture_output=True, timeout=5,
+                )
+                try:
+                    code = app.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    return fail("desktop did not shut down within 10s after Quit")
+                if code != 0:
+                    return fail(f"desktop quit with exit {code}")
+                print(f"gui: visible window and first frame after {first_frame:.1f}s; clean Quit")
                 return 0
             if app.poll() is not None:
                 break
@@ -243,5 +264,5 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except (OSError, subprocess.TimeoutExpired, ValueError, TypeError) as error:
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError) as error:
         sys.exit(fail(str(error)))

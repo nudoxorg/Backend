@@ -1,5 +1,6 @@
 # T1 smoke prototype: "it builds, and every surface comes alive". The
-# warm-cache budget is under a minute; this runner records timings first. Invoked as `nu .config/ci/t1.nu` inside the lean
+# warm-cache budget is under a minute; this runner records timings first.
+# Invoked as `nu .config/ci/t1.nu` inside the lean
 # `.#smoke` dev shell; run the same command locally to get the same verdict.
 #
 # It builds only the three product binaries (CLI, MCP, desktop) for the host
