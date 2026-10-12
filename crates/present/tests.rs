@@ -452,7 +452,7 @@ fn a_fault_names_its_operand_its_cause_and_its_next_step() {
     let rendered = fault.render(fault.affordance().shell().as_deref());
     assert!(rendered.starts_with("✗ not-found /abs/polyglot::src/lib.rs:2::ferris"));
     assert!(rendered.contains("no record is published at that identity"));
-    assert!(rendered.ends_with("→ backend search ferris"));
+    assert!(rendered.ends_with("→ nudox search ferris"));
 
     let call = fault
         .affordance()

@@ -984,8 +984,7 @@ pub(crate) fn build_native_inputs(
         };
         let text = std::str::from_utf8(&admitted.bytes)
             .map_err(|_| bridge_error("a compiler program source is not UTF-8"))?;
-        let without_bom = text.strip_prefix('\u{feff}').unwrap_or(text);
-        if sha256_hex(without_bom.as_bytes()) != file.sha256 {
+        if compiler_api_utf8_text_sha256(&admitted.bytes)? != file.sha256 {
             return Err(bridge_error(&format!(
                 "the compiler API source bytes changed at {:?}",
                 file.path
@@ -1560,7 +1559,7 @@ fn replay_observations(
                     )));
                 }
                 if let (Some(source), Some(expected)) = (source, access.sha256.as_deref())
-                    && sha256_hex(&source.bytes) != expected
+                    && compiler_api_utf8_text_sha256(&source.bytes)? != expected
                 {
                     return Err(closure_mismatch(&format!(
                         "compiler filesystem bytes changed at {:?}",
@@ -2142,6 +2141,18 @@ fn normalize_path(path: &Path) -> PathBuf {
     normalized
 }
 
+/// The selected Compiler API hashes `sys.readFile` text, whereas the resolver
+/// retains and content-addresses the exact raw file. Its UTF-8 read removes one
+/// leading BOM. Keep that text receipt separate from the raw source identity;
+/// unsupported encodings and malformed UTF-8 remain inadmissible.
+fn compiler_api_utf8_text_sha256(bytes: &[u8]) -> Result<String, TypeScriptProjectHostError> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| bridge_error("a compiler filesystem source is not UTF-8"))?;
+    Ok(sha256_hex(
+        text.strip_prefix('\u{feff}').unwrap_or(text).as_bytes(),
+    ))
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     hex_digest(&Sha256::digest(bytes))
 }
@@ -2154,6 +2165,31 @@ mod tests {
         matcher_path_list_digest, normalize_compiler_api_lib_names, validate_matcher_transcript,
     };
     use serde_json::json;
+
+    #[test]
+    fn compiler_text_receipts_remove_only_one_utf8_bom_and_refuse_other_encodings() {
+        let text = b"export const value = 1;\n";
+        let mut raw = b"\xef\xbb\xbf".to_vec();
+        raw.extend_from_slice(text);
+        assert_eq!(
+            super::compiler_api_utf8_text_sha256(&raw).unwrap(),
+            super::sha256_hex(text)
+        );
+        let mut two_boms = b"\xef\xbb\xbf".to_vec();
+        two_boms.extend_from_slice(&raw);
+        assert_eq!(
+            super::compiler_api_utf8_text_sha256(&two_boms).unwrap(),
+            super::sha256_hex(&raw),
+            "the second BOM remains compiler text"
+        );
+        for unsupported in [
+            b"\xff\xfev\0".as_slice(),
+            b"\xfe\xff\0v".as_slice(),
+            b"export const value = '\xff';".as_slice(),
+        ] {
+            assert!(super::compiler_api_utf8_text_sha256(unsupported).is_err());
+        }
+    }
 
     struct TemporaryProgramRoot(std::path::PathBuf);
 

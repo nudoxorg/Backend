@@ -386,7 +386,7 @@ mod help_tests {
         ] {
             let arguments = arguments.into_iter().map(str::to_owned).collect::<Vec<_>>();
             let help = help_output(&arguments).expect("help requested");
-            let prefix = format!("backend {command}");
+            let prefix = format!("nudox {command}");
             assert!(help.starts_with(&prefix), "{help}");
             assert!(
                 matches!(help.as_bytes().get(prefix.len()), Some(b' ' | b'\n')),

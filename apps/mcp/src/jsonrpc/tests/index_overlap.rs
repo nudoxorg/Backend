@@ -1,0 +1,273 @@
+//! Normal stdio and SessionProduct/caller-journal routing. The transport seam
+//! supplies admitted typed owner observations; real owner capture, refusal,
+//! replacement and cold-root controls live in local-service index admission.
+use super::*;
+use backend_client::CommandTransport;
+use backend_library::{
+    Command, CommandDto, IndexOperationKey, IndexOperationObservation, IndexOperationState,
+    IndexOperationStatus, ProductText,
+};
+use std::io::Write as _;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+#[derive(Default)]
+struct OwnerState {
+    starts: Vec<IndexOperationKey>,
+    active: Option<IndexOperationStatus>,
+    terminal: Option<IndexOperationStatus>,
+    commands: Vec<SurfaceCommand>,
+}
+
+struct Owner(Arc<Mutex<OwnerState>>);
+impl CommandTransport for Owner {
+    fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+        let Command::Surface(command) = request.command else {
+            panic!("index routing must not probe unrelated owner lanes");
+        };
+        let mut state = self.0.lock().expect("fixture owner state");
+        state.commands.push(command.clone());
+        let reply = match command {
+            SurfaceCommand::IndexOperationStart {
+                operation_key,
+                package,
+                execution_intent,
+            } => {
+                assert!(
+                    state.active.is_none(),
+                    "a terminal claim must be reconciled before replacement"
+                );
+                assert!(!state.starts.contains(&operation_key));
+                state.starts.push(operation_key);
+                let ticket = IndexJobTicket::new(
+                    std::num::NonZeroU64::new(state.starts.len() as u64).expect("owner ticket"),
+                    [0xa1; 16],
+                    package.clone(),
+                );
+                let status = IndexOperationStatus::new(
+                    operation_key,
+                    package,
+                    execution_intent,
+                    IndexOperationState::Active {
+                        ticket,
+                        stage: IndexJobStage::Compiling,
+                    },
+                );
+                state.active = Some(status.clone());
+                SurfaceReply::IndexOperationStarted(IndexOperationObservation::Known(status))
+            }
+            SurfaceCommand::IndexStart {
+                package,
+                execution_intent,
+            } => {
+                let active = state
+                    .active
+                    .as_ref()
+                    .expect("original actual routed request is active");
+                assert_eq!(&active.package, &package);
+                assert_eq!(active.execution_intent, execution_intent);
+                let IndexOperationState::Active { ticket, stage } = &active.state else {
+                    panic!("only an active owner-issued ticket may be joined");
+                };
+                SurfaceReply::IndexStarted(IndexStartResult::Started {
+                    ticket: ticket.clone(),
+                    stage: *stage,
+                })
+            }
+            SurfaceCommand::IndexOperationStatus { operation_key } => {
+                let status = state
+                    .active
+                    .as_ref()
+                    .or(state.terminal.as_ref())
+                    .expect("retained operation");
+                assert_eq!(status.operation_key, operation_key);
+                SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(status.clone()))
+            }
+            other => panic!("unexpected owner command: {other:?}"),
+        };
+        Ok(ReplyDto::new(
+            request.request_id,
+            CommandReply::Surface(reply),
+        ))
+    }
+}
+
+fn receive(reader: &mut impl std::io::BufRead, id: u64) -> Value {
+    let mut line = String::new();
+    assert!(reader.read_line(&mut line).expect("bounded stdio reply") > 0);
+    let wire = assert_stdio_line_accounting(&line);
+    assert_eq!(wire["id"], id);
+    assert!(wire.get("error").is_none(), "{wire}");
+    wire["result"].clone()
+}
+
+fn call_line(writer: &mut impl std::io::Write, id: u64, params: Value) {
+    writeln!(
+        writer,
+        "{}",
+        json!({"jsonrpc":"2.0", "id":id, "method":"tools/call", "params":params})
+    )
+    .expect("normal tools/call line");
+}
+
+#[test]
+fn stdio_index_then_index_start_keeps_exact_ticket_poll_and_durable_retry_identity() {
+    let fixture = LazyAuthorityFixture::new();
+    fixture
+        .paths
+        .initialize()
+        .expect("real private caller journal attachment");
+    let package =
+        PackageReference::parse(fixture.project.to_str().expect("project UTF-8")).expect("project");
+    let state = Arc::new(Mutex::new(OwnerState::default()));
+    let session = Session::from_transport(fixture.paths.endpoint(), Owner(Arc::clone(&state)));
+    let server = Server::with_authority(
+        SessionProduct::new(session, fixture.paths.clone()),
+        fixture.project.to_str().expect("project").to_owned(),
+        [7; 32],
+    );
+    let (mut input, server_input) = std::os::unix::net::UnixStream::pair().expect("stdin pipe");
+    let (output, mut server_output) = std::os::unix::net::UnixStream::pair().expect("stdout pipe");
+    output
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("bounded fixture read");
+    let mut output = std::io::BufReader::new(output);
+    let serving = std::thread::spawn(move || {
+        serve_stdio_server(
+            server,
+            std::io::BufReader::new(server_input),
+            &mut server_output,
+        )
+    });
+    writeln!(input, "{}", json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"index-overlap-law","version":"1"}}})).expect("initialize");
+    writeln!(
+        input,
+        "{}",
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+    )
+    .expect("initialized");
+    // Both requests are on ordinary stdin before either operation reply is
+    // read; the first command has returned an active owner job, not a terminal.
+    call_line(
+        &mut input,
+        2,
+        json!({"name":"backend.index", "arguments":{"path":package.as_str(),"detail":"full"}}),
+    );
+    call_line(
+        &mut input,
+        3,
+        json!({"name":INDEX_START_TOOL, "arguments":{"package":package.as_str(),"detail":"full"}}),
+    );
+    let initialized = receive(&mut output, 1);
+    assert!(initialized["serverInfo"].is_object());
+    let first = receive(&mut output, 2);
+    assert_eq!(first["isError"], false);
+    let poll = first["structuredContent"]["index_poll"]["call"].clone();
+    assert_eq!(poll["name"], INDEX_PROGRESS_TOOL);
+    let initial = state
+        .lock()
+        .expect("state")
+        .active
+        .clone()
+        .expect("routed durable start");
+    let IndexOperationState::Active { ticket, .. } = &initial.state else {
+        panic!("live job");
+    };
+    assert_eq!(
+        poll["arguments"],
+        json!({"operation_key":initial.operation_key})
+    );
+    let joined = receive(&mut output, 3);
+    assert_eq!(joined["isError"], false);
+    assert_eq!(
+        joined["structuredContent"]["surface"]["data"]["data"]["ticket"],
+        serde_json::to_value(ticket).expect("exact ticket")
+    );
+    {
+        let mut owner = state.lock().expect("state");
+        assert_eq!(owner.starts, [initial.operation_key]);
+        assert_eq!(
+            owner.commands.len(),
+            2,
+            "no extra index, status, revision or probe"
+        );
+        owner.active = None;
+        owner.terminal = Some(IndexOperationStatus::new(
+            initial.operation_key,
+            package.clone(),
+            initial.execution_intent,
+            IndexOperationState::Failed {
+                reason: backend_library::IndexOperationFailureReason::Refused,
+                detail: ProductText::from_static(
+                    "closed fixture compiler refused the exact admitted request",
+                ),
+                compiler_failure: None,
+            },
+        ));
+    }
+    call_line(&mut input, 4, poll);
+    let failed = receive(&mut output, 4);
+    assert_eq!(
+        failed["isError"], true,
+        "terminal refusal must remain visible"
+    );
+    let fault = &failed["structuredContent"]["fault"];
+    assert_eq!(fault["slug"], "rejected");
+    assert_eq!(fault["cause"], "refused");
+    assert_eq!(fault["operand"], initial.operation_key.to_hex());
+    assert_eq!(
+        fault["detail"],
+        "closed fixture compiler refused the exact admitted request"
+    );
+    assert!(failed["structuredContent"].get("index_poll").is_none());
+    assert_eq!(
+        failed["structuredContent"]["surface"]["data"]["detail"],
+        serde_json::to_value(
+            state
+                .lock()
+                .expect("state")
+                .terminal
+                .as_ref()
+                .expect("terminal")
+        )
+        .expect("unchanged exact failure")
+    );
+    let claims = fixture.paths.data().join("client-index-operations-v1");
+    assert!(
+        !claims
+            .join(format!(
+                "{}.json",
+                blake3::Hash::from(initial.request_digest).to_hex()
+            ))
+            .exists(),
+        "exact terminal observation acknowledges only its default claim"
+    );
+    call_line(
+        &mut input,
+        5,
+        json!({"name":"backend.index","arguments":{"path":package.as_str(),"detail":"full"}}),
+    );
+    input
+        .shutdown(std::net::Shutdown::Write)
+        .expect("EOF is a read half-close");
+    let retry = receive(&mut output, 5);
+    assert_eq!(retry["isError"], false);
+    let owner = state.lock().expect("state");
+    assert_eq!(owner.starts.len(), 2);
+    assert_ne!(owner.starts[0], owner.starts[1]);
+    let fresh = owner
+        .active
+        .as_ref()
+        .expect("fresh request remains admitted");
+    assert_eq!(fresh.request_digest, initial.request_digest);
+    assert_eq!(fresh.package, initial.package);
+    assert_eq!(
+        retry["structuredContent"]["index_poll"]["call"]["arguments"],
+        json!({"operation_key":fresh.operation_key})
+    );
+    drop(owner);
+    serving
+        .join()
+        .expect("stdio actor joined")
+        .expect("finite stdio drain");
+}

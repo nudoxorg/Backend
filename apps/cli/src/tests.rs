@@ -1244,7 +1244,60 @@ fn a_rendered_fault_carries_the_operand_and_the_next_command() {
     .with_affordance(backend_present::Affordance::search("nothing"));
     let rendered = render::fault(&fault, &plain());
     assert!(rendered.starts_with("✗ not-found /abs/p::src/lib.rs:999::nothing"));
-    assert!(rendered.ends_with("→ backend search nothing"));
+    assert!(rendered.ends_with("→ nudox search nothing"));
+}
+
+#[cfg(unix)]
+#[test]
+fn installed_fault_actions_round_trip_through_real_shell_argv_and_shared_cli_lowering() {
+    use backend_present::{Affordance, Request, lower};
+    let query = "error 'quoted' $(printf BAD)\nnext";
+    for action in [
+        Affordance::WaitForReadiness,
+        Affordance::InspectOwner,
+        Affordance::UseCommand {
+            name: "status",
+            args: Box::new([]),
+        },
+        Affordance::search(query),
+    ] {
+        let command = action.shell().expect("installed action");
+        // Parse argv only; never execute nudox or start an owner.
+        let parsed = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("set -- {command}; printf '%s\\000' \"$@\""))
+            .output()
+            .expect("shell argv control");
+        assert!(parsed.status.success(), "{command}");
+        assert!(parsed.stderr.is_empty());
+        let words = parsed
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|word| !word.is_empty())
+            .map(|word| String::from_utf8(word.to_vec()).expect("UTF-8 argv"))
+            .collect::<Vec<_>>();
+        assert_eq!(words[0], "nudox");
+        let invocation = invoke::parse(&words[1..], None).expect("actual CLI grammar");
+        let request = lower(&invocation, "/original/project").expect("typed lowering");
+        match action {
+            Affordance::UseCommand { name: "search", .. } => {
+                assert!(matches!(request, Request::Search { text, .. } if text == query));
+            }
+            _ => assert!(matches!(request, Request::Status)),
+        }
+    }
+    let missing = invoke::parse(&["search".to_owned()], None).expect_err("missing query");
+    assert!(
+        missing
+            .cause()
+            .sentence()
+            .starts_with("usage: nudox search")
+    );
+    assert!(invoke::help().starts_with("nudox —"));
+    assert!(
+        invoke::help_for(grammar_for("search").expect("search grammar"))
+            .starts_with("nudox search")
+    );
 }
 
 #[test]

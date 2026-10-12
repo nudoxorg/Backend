@@ -5,7 +5,7 @@
 //! ```text
 //! ✗ not-found /abs/project::src/lib.rs:999::nothing
 //!   no declaration is published at that coordinate in this revision
-//!   → backend search nothing
+//!   → nudox search nothing
 //! ```
 //!
 //! * the **slug** — a closed, greppable identity for the failure class;
@@ -268,6 +268,21 @@ impl OwnerContext {
             crate::shell::quote_argument(&self.endpoint),
         )
     }
+
+    /// Starts or reuses the ordinary Add request in this exact attachment.
+    /// This instruction does not imply owner activation or publication.
+    #[must_use]
+    pub fn reindex_shell(&self) -> Option<String> {
+        let grammar = crate::grammar_for("add")?;
+        Some(format!(
+            "nudox --project {} --workspace {} --endpoint {} {} {}",
+            crate::shell::quote_argument(&self.project),
+            crate::shell::quote_argument(&self.workspace),
+            crate::shell::quote_argument(&self.endpoint),
+            grammar.name(),
+            crate::shell::quote_argument(&self.project),
+        ))
+    }
 }
 
 /// The next step a reader can take, typed so each surface renders its idiom.
@@ -372,7 +387,7 @@ impl Affordance {
     pub fn shell(&self) -> Option<String> {
         match self {
             Self::Retry => Some("re-run the same command".to_owned()),
-            Self::InspectOwner => Some("nudox health".to_owned()),
+            Self::InspectOwner => crate::shell::command("health", &[]),
             Self::RecoverOwner { context } => Some(context.recovery_shell()),
             Self::RetrySearch { text, limit } => Some(format!(
                 "nudox search {} --limit {limit}",
@@ -392,17 +407,8 @@ impl Affordance {
             Self::OpenFolder { path } => {
                 Some(format!("open {}", crate::shell::quote_argument(path)))
             }
-            Self::UseCommand { name, args } => {
-                let mut line = format!("backend {name}");
-                for argument in args {
-                    line.push(' ');
-                    line.push_str(&crate::shell::quote_argument(argument));
-                }
-                Some(line)
-            }
-            Self::WaitForReadiness => {
-                Some("backend health  (wait for ~lanes to read ready)".to_owned())
-            }
+            Self::UseCommand { name, args } => crate::shell::command(name, args),
+            Self::WaitForReadiness => crate::shell::command("health", &[]),
             Self::PollIndex {
                 ticket,
                 after_sequence,
@@ -465,10 +471,13 @@ impl Affordance {
                 "name": "backend.packages",
                 "arguments": { "path": path }
             })),
-            Self::UseCommand { name, args } => Some(serde_json::json!({
-                "name": format!("backend.{}", name.replace('-', "_")),
-                "arguments": tool_arguments(name, args)
-            })),
+            Self::UseCommand { name, args } => {
+                let grammar = crate::grammar_for(name)?;
+                Some(serde_json::json!({
+                    "name": grammar.tool(),
+                    "arguments": tool_arguments(grammar.name(), args)
+                }))
+            }
             Self::WaitForReadiness => Some(serde_json::json!({
                 "name": "backend.status",
                 "arguments": {}

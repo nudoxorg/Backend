@@ -105,6 +105,20 @@ impl StoredOperation {
     pub(super) fn source_package(&self) -> &PackageReference {
         self.producer_package.as_ref().unwrap_or(&self.package)
     }
+
+    /// Only an unfinished capture may require selected-marker reconciliation.
+    /// A decoded terminal receipt owns its original request/source evidence;
+    /// replacement work must not reinterpret it through a newer selection.
+    pub(super) fn pending_source_capture(&self) -> Option<&IndexOperationSourceCaptureReceipt> {
+        self.source_capture.as_ref().filter(|capture| {
+            capture.profiles().iter().any(|profile| {
+                matches!(
+                    profile.state,
+                    backend_library::IndexOperationSemanticProfileState::Pending { .. }
+                )
+            })
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
@@ -1082,14 +1096,7 @@ impl IndexOperationJournal {
                             }
                         }
                         StoredOperationState::Failed { .. }
-                            if entry.source_capture.as_ref().is_some_and(|capture| {
-                                capture.profiles().iter().any(|profile| {
-                                    matches!(
-                                        profile.state,
-                                        backend_library::IndexOperationSemanticProfileState::Pending { .. }
-                                    )
-                                })
-                            }) => IndexOperationState::Unresolved {
+                            if entry.pending_source_capture().is_some() => IndexOperationState::Unresolved {
                                 reason: backend_library::IndexOperationUnresolvedReason::SemanticWorkInterruptedAfterCapture,
                                 detail: ProductText::from_static(
                                     "the original failure is durable, but its source capture still requires explicit recovery",

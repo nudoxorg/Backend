@@ -6,7 +6,7 @@ use backend_local_service::builtin::query::{
     PinnedCandleSetupRequest, PreparedCandleSetup, admit_candle_setup_authority,
     download_candle_artifacts, inspect_candle_helper,
 };
-use backend_present::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand};
+use backend_present::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand, OwnerContext};
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
@@ -27,7 +27,7 @@ pub(super) const fn help_text() -> &'static str {
        nudox [--project PATH] [--workspace PATH] embedding-setup download --program /absolute/backend-embedding-candle --helper-identity HEX --limits /absolute/limits.json [--dependency /absolute/file] [--required]\n\n\
      Use the helper identity from a reviewed build/package receipt; inspect only observes bytes and does not attest their semantics. The source-pinned model is sentence-transformers/all-MiniLM-L6-v2 revision1110a243fdf4706b3f48f1d95db1a4f5529b4d41. Ordinary setup and advanced download perform network acquisition, with exact artifact byte lengths/BLAKE3 verification and private staging. No executable probes are performed. The mandatory OS memory ceiling is currently supported on Linux only; other platforms refuse before acquisition.\n\n\
      limits.json must supply every field: stdout_bytes, stderr_bytes, output_bytes, input_bytes, wall_time_ms, workspace_bytes, process_count, memory_bytes, cpu_time_ms, resident_credit_bytes. memory_bytes must be a nonzero explicit child ceiling; cpu_time_ms may be null. Limits and shared credits are admitted by the existing runtime policy. There is no implicit resource increase.\n\n\
-     Successful installation is not activation or semantic availability. Reopen the local owner, run nudox add . to publish embeddings under the installed recipe, then search; the configured lane remains unavailable until actual complete inference succeeds. Existing required policy cannot be downgraded. Explicit remote configuration remains authoritative.\n"
+     For a fresh workspace, run setup before the first nudox add . or search: those commands start the local owner automatically. Installation saves the recipe for the next owner startup; an already-running owner keeps its admitted recipe. This command does not reactivate it, and there is currently no CLI reload command. Poll the Add receipt before trusting indexing, then search; semantic availability requires actual complete inference under the installed recipe. Existing required policy cannot be downgraded. Explicit remote configuration remains authoritative.\n"
 }
 
 struct Arguments {
@@ -144,7 +144,7 @@ pub(super) fn run(words: &[String], options: &Options) -> Result<String, Fault> 
                 .map_err(|error| refusal(error.to_string()))?;
             render(
                 options,
-                SetupState::InstalledNotActivated,
+                SetupState::installed(&workspace)?,
                 &hex(spec.recipe_identity()),
             )
         }
@@ -189,31 +189,42 @@ fn download_install(
         .map_err(|error| refusal(error.to_string()))?;
     render(
         options,
-        SetupState::InstalledNotActivated,
+        SetupState::installed(&workspace)?,
         &hex(spec.recipe_identity()),
     )
 }
-#[derive(serde::Serialize)]
-#[serde(rename_all = "kebab-case")]
 enum SetupState {
     ObservedHelper,
-    InstalledNotActivated,
+    InstalledNotActivated(OwnerContext),
 }
 impl SetupState {
-    const fn action(&self) -> &'static str {
+    fn installed(workspace: &backend_runtime::WorkspacePaths) -> Result<Self, Fault> {
+        let text = |path: &Path| {
+            path.to_str().map(str::to_owned).ok_or_else(|| refusal(
+                "Artifacts were saved but not activated. A selected attachment path is not UTF-8, so no safe copyable command can be provided.".to_owned(),
+            ))
+        };
+        Ok(Self::InstalledNotActivated(OwnerContext::new(
+            text(workspace.project())?,
+            text(workspace.data())?,
+            text(workspace.endpoint())?,
+        )))
+    }
+    fn action(&self) -> Result<String, Fault> {
         match self {
             Self::ObservedHelper => {
-                "No execution or semantic attestation; compare this identity with a trusted matched build receipt."
+                Ok("No execution or semantic attestation; compare this identity with a trusted matched build receipt.".to_owned())
             }
-            Self::InstalledNotActivated => {
-                "Reopen the local owner to activate these exact artifacts, then run nudox add .; semantic availability requires completed inference under the installed recipe."
+            Self::InstalledNotActivated(context) => {
+                let command = context.reindex_shell().ok_or_else(|| Fault::usage("add", "the Add command is not registered"))?;
+                Ok(format!("Saved for the next local owner startup. If no owner is running, `{command}` starts it with these artifacts; poll the Add receipt, then search. An already-running owner keeps its admitted recipe: this command does not reactivate it and there is currently no CLI reload command. Semantic availability requires completed inference under the installed recipe. Explicit remote configuration remains authoritative."))
             }
         }
     }
     const fn name(&self) -> &'static str {
         match self {
             Self::ObservedHelper => "observed-helper",
-            Self::InstalledNotActivated => "installed-not-activated",
+            Self::InstalledNotActivated(_) => "installed-not-activated",
         }
     }
 }
@@ -221,16 +232,17 @@ fn render(options: &Options, state: SetupState, identity: &str) -> Result<String
     #[derive(serde::Serialize)]
     struct Observation<'a> {
         kind: &'static str,
-        state: &'a SetupState,
+        state: &'static str,
         identity: &'a str,
-        action: &'static str,
+        action: &'a str,
     }
+    let action = state.action()?;
     if options.format() == Format::Json {
         serde_json::to_string(&Observation {
             kind: "local-embedding-setup",
-            state: &state,
+            state: state.name(),
             identity,
-            action: state.action(),
+            action: &action,
         })
         .map(|text| text + "\n")
         .map_err(|error| refusal(error.to_string()))
@@ -238,7 +250,7 @@ fn render(options: &Options, state: SetupState, identity: &str) -> Result<String
         Ok(format!(
             "local embedding {}: {identity}\n{}\n",
             state.name(),
-            state.action()
+            action
         ))
     }
 }
@@ -489,7 +501,11 @@ mod tests {
     fn setup_json_observations_never_claim_activation_or_available() {
         for state in [
             SetupState::ObservedHelper,
-            SetupState::InstalledNotActivated,
+            SetupState::InstalledNotActivated(OwnerContext::new(
+                "/original/project".into(),
+                "/original/state".into(),
+                "/original/socket".into(),
+            )),
         ] {
             let output = render(
                 &Options::plain(Format::Json),
@@ -508,6 +524,91 @@ mod tests {
                     .contains("semantic")
             );
         }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn installed_setup_guidance_copies_the_discovered_attachment_without_rebinding_or_activation() {
+        let workspace = backend_runtime::WorkspacePaths::discover(
+            Some("/original/project 'quoted'".into()),
+            Some("/original/state with spaces".into()),
+            Some("/original/short socket".into()),
+        )
+        .expect("explicit fixture attachment; no owner startup or installation");
+        let state = SetupState::installed(&workspace).expect("UTF-8 scope");
+        let action = state.action().expect("registered Add command");
+        let command = action.split('`').nth(1).expect("exact copyable command");
+        let parsed = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("set -- {command}; printf '%s\\000' \"$@\""))
+            .output()
+            .expect("argv only; no nudox execution");
+        assert!(parsed.status.success());
+        assert!(parsed.stderr.is_empty());
+        let words = parsed
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|word| !word.is_empty())
+            .map(|word| String::from_utf8(word.to_vec()).expect("UTF-8 argv"))
+            .collect::<Vec<_>>();
+        assert_eq!(words[0], "nudox");
+        let (options, command) = crate::options::split(&words[1..]).expect("actual global grammar");
+        assert_eq!(
+            options.project().map(PathBuf::as_path),
+            Some(workspace.project())
+        );
+        assert_eq!(
+            options.workspace().map(PathBuf::as_path),
+            Some(workspace.data())
+        );
+        assert_eq!(
+            options.endpoint().map(PathBuf::as_path),
+            Some(workspace.endpoint())
+        );
+        let invocation = crate::invoke::parse(&command, None).expect("actual Add grammar");
+        let request =
+            backend_present::lower(&invocation, "/different/caller/directory").expect("typed Add");
+        assert!(
+            matches!(request, backend_present::Request::Index(path) if Path::new(&path) == workspace.project())
+        );
+        for format in [Format::Human, Format::Markdown, Format::Json] {
+            let output = render(
+                &Options::plain(format),
+                SetupState::installed(&workspace).expect("UTF-8 scope"),
+                "fixture-recipe",
+            )
+            .expect("bounded setup projection only");
+            if format == Format::Json {
+                let value: serde_json::Value = serde_json::from_str(&output).expect("JSON");
+                assert_eq!(value["state"], "installed-not-activated");
+                assert_eq!(value["action"], action);
+                assert!(value.get("activated").is_none());
+                assert!(value.get("available").is_none());
+            } else {
+                assert!(output.contains("installed-not-activated"));
+                assert!(output.contains(&action));
+            }
+        }
+        assert!(action.contains("already-running owner keeps its admitted recipe"));
+        assert!(action.contains("does not reactivate it"));
+        assert!(!action.contains("Reopen"));
+        let help = crate::invoke::help();
+        assert!(
+            help.find("nudox embedding-setup").expect("setup")
+                < help.find("nudox add .").expect("add")
+        );
+        use std::os::unix::ffi::OsStringExt as _;
+        let invalid = backend_runtime::WorkspacePaths::discover(
+            Some(std::ffi::OsString::from_vec(b"/original/non-utf8-\xff".to_vec()).into()),
+            Some("/original/state".into()),
+            Some("/original/socket".into()),
+        )
+        .expect("path projection fixture only");
+        let fault = SetupState::installed(&invalid)
+            .err()
+            .expect("never replace path bytes with a different operand");
+        assert_eq!(fault.slug(), FaultSlug::Rejected);
+        assert!(fault.cause().sentence().contains("not UTF-8"));
+        assert_eq!(fault.affordance(), &Affordance::None);
     }
     #[test]
     fn setup_resource_policy_requires_explicit_optional_fields_and_rejects_duplicates() {

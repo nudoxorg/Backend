@@ -24,6 +24,9 @@ use backend_present::{domain_name, grammar_for};
 
 #[path = "tests/surface_fidelity.rs"]
 mod surface_fidelity;
+#[cfg(unix)]
+#[path = "tests/index_overlap.rs"]
+mod index_overlap;
 
 const PROJECT: &str = "/abs/polyglot";
 const MODULE: &str = "/abs/polyglot::src/lib.rs";

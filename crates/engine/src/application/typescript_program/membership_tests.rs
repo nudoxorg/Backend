@@ -342,6 +342,146 @@ fn configured_membership_matches_independent_compiler_api_without_adding_configs
 
 #[test]
 #[ignore = "requires pinned Node and TypeScript API paths in TSZ_PROGRAM_TEST_NODE and TSZ_PROGRAM_TEST_TYPESCRIPT_API"]
+fn configured_paths_and_bom_dependency_reads_keep_exact_raw_source_authority() {
+    const MAIN_ALIAS: &str = "import { answer } from '@/lib';\nexport function run(): number { return answer({value: 42}); }\n";
+    const LIB_PACKAGE: &str = "import type { Token } from 'dependency-token';\nexport function answer(token: Token): number { return token.value; }\n";
+    const DECLARATION: &str = "\u{feff}export interface Token { value: number; }\ndeclare const config: readonly unknown[];\nexport default config;\n";
+    const ESLINT_PACKAGE: &str =
+        "import dependencyConfig from 'dependency-token';\nexport default dependencyConfig;\n";
+    let fixture = Fixture::new();
+    let dependency = fixture.root.join("node_modules/dependency-token");
+    fs::create_dir_all(&dependency).unwrap();
+    fs::write(
+        dependency.join("package.json"),
+        r#"{"name":"dependency-token","version":"1.0.0","type":"module","types":"index.d.ts","main":"index.js"}"#,
+    )
+    .unwrap();
+    fs::write(dependency.join("index.d.ts"), DECLARATION).unwrap();
+    fs::write(dependency.join("index.js"), "export default [];\n").unwrap();
+    for (path, text) in [
+        ("src/main.ts", MAIN_ALIAS),
+        ("src/lib.ts", LIB_PACKAGE),
+        ("eslint.config.mjs", ESLINT_PACKAGE),
+    ] {
+        fs::write(fixture.root.join(path), text).unwrap();
+    }
+    fs::write(
+        fixture.root.join("tsconfig.json"),
+        r#"{"compilerOptions":{"strict":true,"target":"ES2020","module":"ESNext","moduleResolution":"Bundler","allowJs":true,"baseUrl":".","paths":{"@/*":["src/*"]}},"include":["src/**/*.ts"]}"#,
+    )
+    .unwrap();
+    let sources = [
+        PackageSource::new("src/main.ts", MAIN_ALIAS).unwrap(),
+        PackageSource::new("src/lib.ts", LIB_PACKAGE).unwrap(),
+        PackageSource::new("eslint.config.mjs", ESLINT_PACKAGE).unwrap(),
+    ];
+    let admitted = fixture.host().admit(&fixture.root).unwrap().unwrap();
+    let inputs = admitted.inputs();
+    let native = build_native_inputs(
+        &inputs,
+        &mut inputs.resolver(),
+        &sources,
+        Instant::now() + Duration::from_secs(90),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(
+        selected(&native),
+        BTreeSet::from(["src/lib.ts", "src/main.ts"])
+    );
+    assert_eq!(
+        native.package_membership["eslint.config.mjs"],
+        TypeScriptPackageSourceMembership::ExcludedFromConfiguredProgram
+    );
+    let declaration = native
+        .sources
+        .iter()
+        .find(|source| source.path == "node_modules/dependency-token/index.d.ts")
+        .unwrap();
+    assert_eq!(
+        declaration.source, DECLARATION,
+        "TSZ retains exact raw source text"
+    );
+    let oracle = fixture.oracle();
+    assert_eq!(oracle["errors"], serde_json::json!([]));
+    assert_eq!(oracle["calls"][0]["result"], "number");
+    assert_eq!(
+        oracle["calls"][0]["declaration"],
+        serde_json::json!(fixture.root.join("src/lib.ts"))
+    );
+    let mut authority = backend_frontend_typescript::TszProjectAuthority::new();
+    authority
+        .update(
+            native.sources.clone(),
+            native.options.clone(),
+            &native.libraries,
+        )
+        .unwrap();
+    let project = authority.project().unwrap();
+    for (importer, specifier, expected) in [
+        ("src/main.ts", "@/lib", "src/lib.ts"),
+        (
+            "src/lib.ts",
+            "dependency-token",
+            "node_modules/dependency-token/index.d.ts",
+        ),
+    ] {
+        let index = project
+            .program()
+            .files
+            .iter()
+            .position(|file| file.file_name == importer)
+            .unwrap();
+        project
+            .with_file_checker_and_types(index, |checker, _, _, _| {
+                let target = checker
+                    .ctx
+                    .resolve_import_target_from_file_with_mode(index, specifier, None)
+                    .unwrap();
+                assert_eq!(project.program().files[target].file_name, expected);
+            })
+            .unwrap();
+    }
+    let dependency_path = dependency.join("index.d.ts");
+    let mut forged = native.closure_witness.compiler_accesses.to_vec();
+    let read = forged
+        .iter_mut()
+        .find(|access| {
+            access.kind == super::ProgramAccessKind::File
+                && Path::new(&access.path) == dependency_path
+        })
+        .unwrap();
+    assert_eq!(
+        read.sha256.as_deref(),
+        Some(super::sha256_hex(DECLARATION.trim_start_matches('\u{feff}').as_bytes()).as_str())
+    );
+    read.sha256 = Some(super::sha256_hex(DECLARATION.as_bytes()));
+    assert!(matches!(
+        super::replay_observations(&mut inputs.resolver(), &forged, &native.closure_witness.directory_views, native.closure_witness.metrics),
+        Err(crate::application::typescript_host::TypeScriptProjectHostError::CompilerIoClosureMismatch { .. })
+    ), "a raw-byte hash cannot impersonate the compiler's decoded text receipt");
+    native
+        .closure_witness
+        .validate_current(admitted.witness.as_ref())
+        .unwrap();
+    fs::write(
+        &dependency_path,
+        DECLARATION.strip_prefix('\u{feff}').unwrap(),
+    )
+    .unwrap();
+    assert!(
+        native
+            .closure_witness
+            .validate_current(admitted.witness.as_ref())
+            .is_err(),
+        "removing only the BOM still changes the raw source proof"
+    );
+    let refreshed = fixture.native(&sources);
+    assert_ne!(native.options.environment, refreshed.options.environment);
+}
+
+#[test]
+#[ignore = "requires pinned Node and TypeScript API paths in TSZ_PROGRAM_TEST_NODE and TSZ_PROGRAM_TEST_TYPESCRIPT_API"]
 fn configured_empty_and_all_excluded_frontiers_do_not_gain_program_members() {
     let fixture = Fixture::new();
     let sources = Fixture::sources();
