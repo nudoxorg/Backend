@@ -34,3 +34,26 @@ The initial ratios and noise floors in `surface.py` are provisional and need
 repeated measurements before this becomes a required performance gate. Compiler
 shell acquisition is infrastructure setup, outside those operation measurements.
 T2 remains advisory in the producer until its separate job is available.
+
+## Initial snapshot review
+
+Codex reviewed the first successful output from Concourse **457894**, source
+`adabb13b4`, on 2026-10-12. Indexing exits zero. Each search returns exactly one
+ready declaration at its authored location: ferris (Rust, src/lib.rs:2), monty
+(Python, src/main.py:1), turing (TypeScript, src/main.ts:2), Gopher (Go,
+go/main.go:4), Duke (Java, src/Duke.java:1), Anders (C#, src/Main.cs:1), and
+Bjarne (C++, src/main.cpp:3). The published API groups classes under `struct`.
+The complete outline contains those seven declarations plus their members,
+implicit nodes and the included C++ namespace (19 declarations total). Packages
+reports the indexed t2-polyglot project ready. MCP structured search answers for
+ferris/Gopher and the outline equal the corresponding CLI JSON exactly.
+
+The embedding-based semantic search lane remains explicitly unconfigured; this
+fixture exercises native language indexing and name queries, and preserves that
+diagnostic rather than pretending embedding coverage exists. Actionable public
+coordinates and native operands remain in the golden for review.
+
+The same run measured indexing at 46.22 s, owner CPU at 41.81 s and owner peak RSS
+at 788,808 KiB; individual queries were 0.02–0.69 s. The advisory step including
+compiler-shell setup took 67 s. These are the initial provisional baselines;
+they do not establish worker-independent performance tolerances.

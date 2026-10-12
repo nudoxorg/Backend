@@ -1,0 +1,1315 @@
+{
+  "answers": {
+    "cli add": {
+      "exit": 0
+    },
+    "cli outline": {
+      "exit": 0,
+      "json": {
+        "answer": "outline",
+        "budget": {
+          "bytes": 4081,
+          "bytesPerToken": 4,
+          "estimatedTokens": 1021
+        },
+        "declarations": 19,
+        "detail": "summary",
+        "extent": "complete",
+        "package": {
+          "coordinate": "/tmp/nudox-surface/polyglot/project",
+          "key": "de05d092",
+          "name": "project",
+          "project": "/tmp/nudox-surface/polyglot/project",
+          "segments": [],
+          "shape": "package",
+          "trail": "project"
+        },
+        "roots": [
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::f218d50b09b36a0348632bc1e4fe6e3ec60fec02d07fab42f32e18d466daeafc::java.lang.String",
+                    "key": "86b3a1cd",
+                    "kind": "variable",
+                    "name": "java.lang.String"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::6e8790ddc2dd39caf6365bc29f0ad1f1d01d6469f926d32592768321a7b34980::language",
+                "key": "f71a2950",
+                "kind": "function",
+                "name": "language"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::7c477c80b27a745b2b757f73d6002f045337f69e8da027b97d0663a19de55565::<init>",
+                "key": "36995985",
+                "kind": "function",
+                "name": "<init>"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::14df8e6d1fd4b1c5d6d2eb7562af648797e58489b4264de96595fcdf97ef2ab7::Duke",
+            "key": "c0c37545",
+            "kind": "struct",
+            "name": "Duke"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::78eb7eb2e97460b2df61a482670fec9c9650e8ddbc168f82fb8a742146f95646::string",
+                    "key": "39d7fc56",
+                    "kind": "variable",
+                    "name": "string"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::537c4870565c4938eaa2c7d92fd0f14328f2f9b213259d4064e735270864b274::Language",
+                "key": "ce3210be",
+                "kind": "function",
+                "name": "Language"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::9353b5e09e4c927e31ad6d6f0210e16c5dc0055e332bcddbd7c1f84974197d02::Anders",
+            "key": "d5d356dd",
+            "kind": "struct",
+            "name": "Anders"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::648281f6edf9643f51aee2934716454117c85fde0b657fcb74283e59bdf4934b::language",
+                    "key": "bc8e5613",
+                    "kind": "variable",
+                    "name": "language"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::39ee5dde14bfc4ee7d64692b95c404eef0e21e7a6fa75125d3223dd74e29e75e::language",
+                "key": "6832c672",
+                "kind": "function",
+                "name": "language"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::6810d146dca47541fd405bff629354dd67646b8cce1912abaef0052dbf6433f5::Bjarne",
+            "key": "6b232e6a",
+            "kind": "struct",
+            "name": "Bjarne"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::0353c8546b7dcc9eb61f7437daf8e171fb9b85b48bd2b6938f08b6364d666d69::_",
+                "key": "10b05a1a",
+                "kind": "variable",
+                "name": "_"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::9eee4f803fd11b29079f40c668c96ca0fa48dc32b53ad946b94d3ec159c74445::Gopher",
+            "key": "2b29681e",
+            "kind": "function",
+            "name": "Gopher"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::4c6611a46a2a8e7fee449668c24f600efa89ab1d4d68c85cae005527c783bb4c::ferris",
+                "key": "bf0b54f4",
+                "kind": "variable",
+                "name": "ferris"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::ef50602bb73121801eebfb4a0bdf09fb05c9af6f8f13ef9eb04d0be5012fcabf::ferris",
+            "key": "6aa95e91",
+            "kind": "function",
+            "name": "ferris"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::88e50d81b3304c02d18ca73922c1b5e5ac067f0ee9079dfdc60baa58175bd961::monty",
+                "key": "1f65ca58",
+                "kind": "variable",
+                "name": "monty"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::71b7a4f4aa3a7687c9a98a206360c8a7414a3ddb8a438bf15d225110ea63525f::monty",
+            "key": "3a2f153c",
+            "kind": "function",
+            "name": "monty"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::5e8bf980bc2fcf2a3f6de632cf633729a274bd4d66c3571983ad1f5cf2548fdf::turing",
+                "key": "9a8352ec",
+                "kind": "variable",
+                "name": "turing"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::cf56b7632af29977342a6b4a3d3430a52a203fea468161eb2861a8f800a99a0e::turing",
+            "key": "43f36291",
+            "kind": "function",
+            "name": "turing"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::983eeae49997d5dec76877a35a6153223e3355dca14774d437584687bceff42b::string_view",
+            "key": "d112b5a2",
+            "kind": "module",
+            "name": "string_view"
+          }
+        ],
+        "unnamed": 0
+      }
+    },
+    "cli packages": {
+      "exit": 0,
+      "json": {
+        "answer": "shelf",
+        "budget": {
+          "bytes": 376,
+          "bytesPerToken": 4,
+          "estimatedTokens": 94
+        },
+        "detail": "summary",
+        "projects": [
+          {
+            "declarations": null,
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/polyglot/project",
+              "key": "de05d092",
+              "name": "t2-polyglot",
+              "project": "/tmp/nudox-surface/polyglot/project",
+              "segments": [],
+              "shape": "package",
+              "trail": "project"
+            },
+            "readiness": "ready"
+          }
+        ],
+        "revision": "dd43357f"
+      }
+    },
+    "cli search Anders": {
+      "exit": 0,
+      "json": {
+        "answer": "records",
+        "budget": {
+          "bytes": 950,
+          "bytesPerToken": 4,
+          "estimatedTokens": 238
+        },
+        "coverage": [
+          {
+            "lane": "exact",
+            "state": "complete"
+          },
+          {
+            "lane": "names",
+            "state": "complete"
+          },
+          {
+            "lane": "graph",
+            "state": "complete"
+          },
+          {
+            "lane": "semantic",
+            "reason": "unconfigured",
+            "state": "unavailable"
+          }
+        ],
+        "detail": "summary",
+        "more": false,
+        "query": "Anders",
+        "readiness": "ready",
+        "records": [
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::9353b5e09e4c927e31ad6d6f0210e16c5dc0055e332bcddbd7c1f84974197d02::Anders",
+              "line": 1,
+              "name": "Anders",
+              "path": "src/Main.cs",
+              "segments": [
+                "Anders"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  213,
+                  211,
+                  86,
+                  221,
+                  49,
+                  149,
+                  181,
+                  197,
+                  127,
+                  110,
+                  192,
+                  109,
+                  155,
+                  159,
+                  101,
+                  106,
+                  21,
+                  213,
+                  195,
+                  69,
+                  116,
+                  243,
+                  158,
+                  26,
+                  155,
+                  112,
+                  65,
+                  187,
+                  39,
+                  116,
+                  154,
+                  122
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › src/Main.cs:1 › Anders"
+            },
+            "kind": "struct",
+            "language": "csharp",
+            "score": 4294967295,
+            "state": "ready"
+          }
+        ],
+        "semantic_search": {
+          "reason": "unconfigured",
+          "status": "unavailable"
+        }
+      }
+    },
+    "cli search Bjarne": {
+      "exit": 0,
+      "json": {
+        "answer": "records",
+        "budget": {
+          "bytes": 944,
+          "bytesPerToken": 4,
+          "estimatedTokens": 236
+        },
+        "coverage": [
+          {
+            "lane": "exact",
+            "state": "complete"
+          },
+          {
+            "lane": "names",
+            "state": "complete"
+          },
+          {
+            "lane": "graph",
+            "state": "complete"
+          },
+          {
+            "lane": "semantic",
+            "reason": "unconfigured",
+            "state": "unavailable"
+          }
+        ],
+        "detail": "summary",
+        "more": false,
+        "query": "Bjarne",
+        "readiness": "ready",
+        "records": [
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::6810d146dca47541fd405bff629354dd67646b8cce1912abaef0052dbf6433f5::Bjarne",
+              "line": 3,
+              "name": "Bjarne",
+              "path": "src/main.cpp",
+              "segments": [
+                "Bjarne"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  107,
+                  35,
+                  46,
+                  106,
+                  146,
+                  238,
+                  100,
+                  47,
+                  255,
+                  176,
+                  23,
+                  249,
+                  162,
+                  135,
+                  206,
+                  28,
+                  205,
+                  58,
+                  213,
+                  136,
+                  65,
+                  107,
+                  11,
+                  218,
+                  121,
+                  150,
+                  15,
+                  157,
+                  38,
+                  169,
+                  69,
+                  11
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › src/main.cpp:3 › Bjarne"
+            },
+            "kind": "struct",
+            "language": "cpp",
+            "score": 4294967295,
+            "state": "ready"
+          }
+        ],
+        "semantic_search": {
+          "reason": "unconfigured",
+          "status": "unavailable"
+        }
+      }
+    },
+    "cli search Duke": {
+      "exit": 0,
+      "json": {
+        "answer": "records",
+        "budget": {
+          "bytes": 935,
+          "bytesPerToken": 4,
+          "estimatedTokens": 234
+        },
+        "coverage": [
+          {
+            "lane": "exact",
+            "state": "complete"
+          },
+          {
+            "lane": "names",
+            "state": "complete"
+          },
+          {
+            "lane": "graph",
+            "state": "complete"
+          },
+          {
+            "lane": "semantic",
+            "reason": "unconfigured",
+            "state": "unavailable"
+          }
+        ],
+        "detail": "summary",
+        "more": false,
+        "query": "Duke",
+        "readiness": "ready",
+        "records": [
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::14df8e6d1fd4b1c5d6d2eb7562af648797e58489b4264de96595fcdf97ef2ab7::Duke",
+              "line": 1,
+              "name": "Duke",
+              "path": "src/Duke.java",
+              "segments": [
+                "Duke"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  192,
+                  195,
+                  117,
+                  69,
+                  22,
+                  146,
+                  177,
+                  205,
+                  135,
+                  135,
+                  21,
+                  13,
+                  216,
+                  229,
+                  79,
+                  72,
+                  82,
+                  162,
+                  95,
+                  126,
+                  238,
+                  68,
+                  200,
+                  97,
+                  31,
+                  63,
+                  21,
+                  186,
+                  39,
+                  168,
+                  124,
+                  141
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › src/Duke.java:1 › Duke"
+            },
+            "kind": "struct",
+            "language": "java",
+            "score": 4294967295,
+            "state": "ready"
+          }
+        ],
+        "semantic_search": {
+          "reason": "unconfigured",
+          "status": "unavailable"
+        }
+      }
+    },
+    "cli search Gopher": {
+      "exit": 0,
+      "json": {
+        "answer": "records",
+        "budget": {
+          "bytes": 985,
+          "bytesPerToken": 4,
+          "estimatedTokens": 247
+        },
+        "coverage": [
+          {
+            "lane": "exact",
+            "state": "complete"
+          },
+          {
+            "lane": "names",
+            "state": "complete"
+          },
+          {
+            "lane": "graph",
+            "state": "complete"
+          },
+          {
+            "lane": "semantic",
+            "reason": "unconfigured",
+            "state": "unavailable"
+          }
+        ],
+        "detail": "summary",
+        "more": false,
+        "query": "Gopher",
+        "readiness": "ready",
+        "records": [
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::9eee4f803fd11b29079f40c668c96ca0fa48dc32b53ad946b94d3ec159c74445::Gopher",
+              "line": 4,
+              "name": "Gopher",
+              "path": "go/main.go",
+              "segments": [
+                "Gopher"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  43,
+                  41,
+                  104,
+                  30,
+                  97,
+                  16,
+                  37,
+                  252,
+                  15,
+                  219,
+                  153,
+                  255,
+                  28,
+                  168,
+                  192,
+                  236,
+                  3,
+                  229,
+                  40,
+                  184,
+                  119,
+                  44,
+                  44,
+                  233,
+                  109,
+                  236,
+                  14,
+                  225,
+                  182,
+                  130,
+                  145,
+                  45
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › go/main.go:4 › Gopher"
+            },
+            "kind": "function",
+            "language": "go",
+            "score": 4294967295,
+            "state": "ready",
+            "summary": "Gopher returns the Go lane marker."
+          }
+        ],
+        "semantic_search": {
+          "reason": "unconfigured",
+          "status": "unavailable"
+        }
+      }
+    },
+    "cli search ferris": {
+      "exit": 0,
+      "json": {
+        "answer": "records",
+        "budget": {
+          "bytes": 982,
+          "bytesPerToken": 4,
+          "estimatedTokens": 246
+        },
+        "coverage": [
+          {
+            "lane": "exact",
+            "state": "complete"
+          },
+          {
+            "lane": "names",
+            "state": "complete"
+          },
+          {
+            "lane": "graph",
+            "state": "complete"
+          },
+          {
+            "lane": "semantic",
+            "reason": "unconfigured",
+            "state": "unavailable"
+          }
+        ],
+        "detail": "summary",
+        "more": false,
+        "query": "ferris",
+        "readiness": "ready",
+        "records": [
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::ef50602bb73121801eebfb4a0bdf09fb05c9af6f8f13ef9eb04d0be5012fcabf::ferris",
+              "line": 2,
+              "name": "ferris",
+              "path": "src/lib.rs",
+              "segments": [
+                "ferris"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  106,
+                  169,
+                  94,
+                  145,
+                  29,
+                  227,
+                  132,
+                  22,
+                  176,
+                  237,
+                  94,
+                  28,
+                  238,
+                  106,
+                  9,
+                  223,
+                  127,
+                  72,
+                  118,
+                  43,
+                  211,
+                  97,
+                  167,
+                  46,
+                  250,
+                  110,
+                  67,
+                  102,
+                  84,
+                  9,
+                  158,
+                  154
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › src/lib.rs:2 › ferris"
+            },
+            "kind": "function",
+            "language": "rust",
+            "score": 4294967295,
+            "state": "ready",
+            "summary": "Returns the Rust lane marker."
+          }
+        ],
+        "semantic_search": {
+          "reason": "unconfigured",
+          "status": "unavailable"
+        }
+      }
+    },
+    "cli search monty": {
+      "exit": 0,
+      "json": {
+        "answer": "records",
+        "budget": {
+          "bytes": 982,
+          "bytesPerToken": 4,
+          "estimatedTokens": 246
+        },
+        "coverage": [
+          {
+            "lane": "exact",
+            "state": "complete"
+          },
+          {
+            "lane": "names",
+            "state": "complete"
+          },
+          {
+            "lane": "graph",
+            "state": "complete"
+          },
+          {
+            "lane": "semantic",
+            "reason": "unconfigured",
+            "state": "unavailable"
+          }
+        ],
+        "detail": "summary",
+        "more": false,
+        "query": "monty",
+        "readiness": "ready",
+        "records": [
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::71b7a4f4aa3a7687c9a98a206360c8a7414a3ddb8a438bf15d225110ea63525f::monty",
+              "line": 1,
+              "name": "monty",
+              "path": "src/main.py",
+              "segments": [
+                "monty"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  58,
+                  47,
+                  21,
+                  60,
+                  166,
+                  123,
+                  159,
+                  235,
+                  226,
+                  87,
+                  129,
+                  129,
+                  243,
+                  132,
+                  105,
+                  147,
+                  68,
+                  194,
+                  7,
+                  166,
+                  29,
+                  166,
+                  10,
+                  165,
+                  28,
+                  32,
+                  30,
+                  61,
+                  5,
+                  170,
+                  236,
+                  211
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › src/main.py:1 › monty"
+            },
+            "kind": "function",
+            "language": "python",
+            "score": 4294967295,
+            "state": "ready",
+            "summary": "Returns the Python lane marker."
+          }
+        ],
+        "semantic_search": {
+          "reason": "unconfigured",
+          "status": "unavailable"
+        }
+      }
+    },
+    "cli search turing": {
+      "exit": 0,
+      "json": {
+        "answer": "records",
+        "budget": {
+          "bytes": 994,
+          "bytesPerToken": 4,
+          "estimatedTokens": 249
+        },
+        "coverage": [
+          {
+            "lane": "exact",
+            "state": "complete"
+          },
+          {
+            "lane": "names",
+            "state": "complete"
+          },
+          {
+            "lane": "graph",
+            "state": "complete"
+          },
+          {
+            "lane": "semantic",
+            "reason": "unconfigured",
+            "state": "unavailable"
+          }
+        ],
+        "detail": "summary",
+        "more": false,
+        "query": "turing",
+        "readiness": "ready",
+        "records": [
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::cf56b7632af29977342a6b4a3d3430a52a203fea468161eb2861a8f800a99a0e::turing",
+              "line": 2,
+              "name": "turing",
+              "path": "src/main.ts",
+              "segments": [
+                "turing"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  67,
+                  243,
+                  98,
+                  145,
+                  93,
+                  78,
+                  88,
+                  133,
+                  223,
+                  13,
+                  185,
+                  53,
+                  121,
+                  145,
+                  103,
+                  43,
+                  170,
+                  121,
+                  88,
+                  107,
+                  53,
+                  147,
+                  98,
+                  169,
+                  97,
+                  207,
+                  92,
+                  77,
+                  120,
+                  32,
+                  167,
+                  5
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › src/main.ts:2 › turing"
+            },
+            "kind": "function",
+            "language": "typescript",
+            "score": 4294967295,
+            "state": "ready",
+            "summary": "Returns the TypeScript lane marker."
+          }
+        ],
+        "semantic_search": {
+          "reason": "unconfigured",
+          "status": "unavailable"
+        }
+      }
+    },
+    "mcp": {
+      "calls": [
+        {
+          "call": {
+            "arguments": {
+              "query": "ferris"
+            },
+            "tool": "backend.search"
+          },
+          "reply": {
+            "_meta": {
+              "backend/wireBudget": {
+                "bytes": 1532,
+                "bytesPerToken": 4,
+                "estimatedTokens": 383,
+                "limitBytes": 49152,
+                "scope": "complete_jsonrpc_line"
+              }
+            },
+            "content": [
+              {
+                "text": "~lanes exact✓1 names✓1 graph✓1 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n1 row(s); complete records and native operands are in `structuredContent.records`.\n",
+                "type": "text"
+              }
+            ],
+            "isError": false,
+            "structuredContent": {
+              "answer": "records",
+              "budget": {
+                "bytes": 982,
+                "bytesPerToken": 4,
+                "estimatedTokens": 246
+              },
+              "coverage": [
+                {
+                  "lane": "exact",
+                  "state": "complete"
+                },
+                {
+                  "lane": "names",
+                  "state": "complete"
+                },
+                {
+                  "lane": "graph",
+                  "state": "complete"
+                },
+                {
+                  "lane": "semantic",
+                  "reason": "unconfigured",
+                  "state": "unavailable"
+                }
+              ],
+              "detail": "summary",
+              "more": false,
+              "query": "ferris",
+              "readiness": "ready",
+              "records": [
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::ef50602bb73121801eebfb4a0bdf09fb05c9af6f8f13ef9eb04d0be5012fcabf::ferris",
+                    "line": 2,
+                    "name": "ferris",
+                    "path": "src/lib.rs",
+                    "segments": [
+                      "ferris"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        106,
+                        169,
+                        94,
+                        145,
+                        29,
+                        227,
+                        132,
+                        22,
+                        176,
+                        237,
+                        94,
+                        28,
+                        238,
+                        106,
+                        9,
+                        223,
+                        127,
+                        72,
+                        118,
+                        43,
+                        211,
+                        97,
+                        167,
+                        46,
+                        250,
+                        110,
+                        67,
+                        102,
+                        84,
+                        9,
+                        158,
+                        154
+                      ]
+                    },
+                    "shape": "semantic",
+                    "trail": "project › src/lib.rs:2 › ferris"
+                  },
+                  "kind": "function",
+                  "language": "rust",
+                  "score": 4294967295,
+                  "state": "ready",
+                  "summary": "Returns the Rust lane marker."
+                }
+              ],
+              "semantic_search": {
+                "reason": "unconfigured",
+                "status": "unavailable"
+              }
+            }
+          }
+        },
+        {
+          "call": {
+            "arguments": {
+              "query": "Gopher"
+            },
+            "tool": "backend.search"
+          },
+          "reply": {
+            "_meta": {
+              "backend/wireBudget": {
+                "bytes": 1535,
+                "bytesPerToken": 4,
+                "estimatedTokens": 384,
+                "limitBytes": 49152,
+                "scope": "complete_jsonrpc_line"
+              }
+            },
+            "content": [
+              {
+                "text": "~lanes exact✓1 names✓1 graph✓1 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n1 row(s); complete records and native operands are in `structuredContent.records`.\n",
+                "type": "text"
+              }
+            ],
+            "isError": false,
+            "structuredContent": {
+              "answer": "records",
+              "budget": {
+                "bytes": 985,
+                "bytesPerToken": 4,
+                "estimatedTokens": 247
+              },
+              "coverage": [
+                {
+                  "lane": "exact",
+                  "state": "complete"
+                },
+                {
+                  "lane": "names",
+                  "state": "complete"
+                },
+                {
+                  "lane": "graph",
+                  "state": "complete"
+                },
+                {
+                  "lane": "semantic",
+                  "reason": "unconfigured",
+                  "state": "unavailable"
+                }
+              ],
+              "detail": "summary",
+              "more": false,
+              "query": "Gopher",
+              "readiness": "ready",
+              "records": [
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::9eee4f803fd11b29079f40c668c96ca0fa48dc32b53ad946b94d3ec159c74445::Gopher",
+                    "line": 4,
+                    "name": "Gopher",
+                    "path": "go/main.go",
+                    "segments": [
+                      "Gopher"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        43,
+                        41,
+                        104,
+                        30,
+                        97,
+                        16,
+                        37,
+                        252,
+                        15,
+                        219,
+                        153,
+                        255,
+                        28,
+                        168,
+                        192,
+                        236,
+                        3,
+                        229,
+                        40,
+                        184,
+                        119,
+                        44,
+                        44,
+                        233,
+                        109,
+                        236,
+                        14,
+                        225,
+                        182,
+                        130,
+                        145,
+                        45
+                      ]
+                    },
+                    "shape": "semantic",
+                    "trail": "project › go/main.go:4 › Gopher"
+                  },
+                  "kind": "function",
+                  "language": "go",
+                  "score": 4294967295,
+                  "state": "ready",
+                  "summary": "Gopher returns the Go lane marker."
+                }
+              ],
+              "semantic_search": {
+                "reason": "unconfigured",
+                "status": "unavailable"
+              }
+            }
+          }
+        },
+        {
+          "call": {
+            "arguments": {},
+            "tool": "backend.outline"
+          },
+          "reply": {
+            "_meta": {
+              "backend/wireBudget": {
+                "bytes": 5063,
+                "bytesPerToken": 4,
+                "estimatedTokens": 1266,
+                "limitBytes": 49152,
+                "scope": "complete_jsonrpc_line"
+              }
+            },
+            "content": [
+              {
+                "text": "# project\n`/tmp/nudox-surface/polyglot/project`\n\n▣ Duke  `src/Duke.java:1 › Duke`\n  ƒ language  `src/Duke.java:2 › language`\n    ▫ java.lang.String  `java.lang.String`\n  ƒ <init>  `<init>`\n▣ Anders  `src/Main.cs:1 › Anders`\n  ƒ Language  `src/Main.cs:2 › Language`\n    ▫ string  `string`\n▣ Bjarne  `src/main.cpp:3 › Bjarne`\n  ƒ language  `src/main.cpp:4 › language`\n    ▫ language  `language`\nƒ Gopher  `go/main.go:4 › Gopher`\n  ▫ _  `_`\nƒ ferris  `src/lib.rs:2 › ferris`\n  ▫ ferris  `ferris`\nƒ monty  `src/main.py:1 › monty`\n  ▫ monty  `monty`\nƒ turing  `src/main.ts:2 › turing`\n  ▫ turing  `turing`\n▦ string_view  `string_view`\n19 declaration(s) · complete\n",
+                "type": "text"
+              }
+            ],
+            "isError": false,
+            "structuredContent": {
+              "answer": "outline",
+              "budget": {
+                "bytes": 4081,
+                "bytesPerToken": 4,
+                "estimatedTokens": 1021
+              },
+              "declarations": 19,
+              "detail": "summary",
+              "extent": "complete",
+              "package": {
+                "coordinate": "/tmp/nudox-surface/polyglot/project",
+                "key": "de05d092",
+                "name": "project",
+                "project": "/tmp/nudox-surface/polyglot/project",
+                "segments": [],
+                "shape": "package",
+                "trail": "project"
+              },
+              "roots": [
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::f218d50b09b36a0348632bc1e4fe6e3ec60fec02d07fab42f32e18d466daeafc::java.lang.String",
+                          "key": "86b3a1cd",
+                          "kind": "variable",
+                          "name": "java.lang.String"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::6e8790ddc2dd39caf6365bc29f0ad1f1d01d6469f926d32592768321a7b34980::language",
+                      "key": "f71a2950",
+                      "kind": "function",
+                      "name": "language"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::7c477c80b27a745b2b757f73d6002f045337f69e8da027b97d0663a19de55565::<init>",
+                      "key": "36995985",
+                      "kind": "function",
+                      "name": "<init>"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::14df8e6d1fd4b1c5d6d2eb7562af648797e58489b4264de96595fcdf97ef2ab7::Duke",
+                  "key": "c0c37545",
+                  "kind": "struct",
+                  "name": "Duke"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::78eb7eb2e97460b2df61a482670fec9c9650e8ddbc168f82fb8a742146f95646::string",
+                          "key": "39d7fc56",
+                          "kind": "variable",
+                          "name": "string"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::537c4870565c4938eaa2c7d92fd0f14328f2f9b213259d4064e735270864b274::Language",
+                      "key": "ce3210be",
+                      "kind": "function",
+                      "name": "Language"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::9353b5e09e4c927e31ad6d6f0210e16c5dc0055e332bcddbd7c1f84974197d02::Anders",
+                  "key": "d5d356dd",
+                  "kind": "struct",
+                  "name": "Anders"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::648281f6edf9643f51aee2934716454117c85fde0b657fcb74283e59bdf4934b::language",
+                          "key": "bc8e5613",
+                          "kind": "variable",
+                          "name": "language"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::39ee5dde14bfc4ee7d64692b95c404eef0e21e7a6fa75125d3223dd74e29e75e::language",
+                      "key": "6832c672",
+                      "kind": "function",
+                      "name": "language"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::6810d146dca47541fd405bff629354dd67646b8cce1912abaef0052dbf6433f5::Bjarne",
+                  "key": "6b232e6a",
+                  "kind": "struct",
+                  "name": "Bjarne"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::0353c8546b7dcc9eb61f7437daf8e171fb9b85b48bd2b6938f08b6364d666d69::_",
+                      "key": "10b05a1a",
+                      "kind": "variable",
+                      "name": "_"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::9eee4f803fd11b29079f40c668c96ca0fa48dc32b53ad946b94d3ec159c74445::Gopher",
+                  "key": "2b29681e",
+                  "kind": "function",
+                  "name": "Gopher"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::4c6611a46a2a8e7fee449668c24f600efa89ab1d4d68c85cae005527c783bb4c::ferris",
+                      "key": "bf0b54f4",
+                      "kind": "variable",
+                      "name": "ferris"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::ef50602bb73121801eebfb4a0bdf09fb05c9af6f8f13ef9eb04d0be5012fcabf::ferris",
+                  "key": "6aa95e91",
+                  "kind": "function",
+                  "name": "ferris"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::88e50d81b3304c02d18ca73922c1b5e5ac067f0ee9079dfdc60baa58175bd961::monty",
+                      "key": "1f65ca58",
+                      "kind": "variable",
+                      "name": "monty"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::71b7a4f4aa3a7687c9a98a206360c8a7414a3ddb8a438bf15d225110ea63525f::monty",
+                  "key": "3a2f153c",
+                  "kind": "function",
+                  "name": "monty"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::5e8bf980bc2fcf2a3f6de632cf633729a274bd4d66c3571983ad1f5cf2548fdf::turing",
+                      "key": "9a8352ec",
+                      "kind": "variable",
+                      "name": "turing"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::cf56b7632af29977342a6b4a3d3430a52a203fea468161eb2861a8f800a99a0e::turing",
+                  "key": "43f36291",
+                  "kind": "function",
+                  "name": "turing"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::983eeae49997d5dec76877a35a6153223e3355dca14774d437584687bceff42b::string_view",
+                  "key": "d112b5a2",
+                  "kind": "module",
+                  "name": "string_view"
+                }
+              ],
+              "unnamed": 0
+            }
+          }
+        }
+      ],
+      "exit": 0,
+      "tools": [
+        "backend.document",
+        "backend.graph",
+        "backend.index",
+        "backend.index_cancel",
+        "backend.index_progress",
+        "backend.index_search",
+        "backend.index_start",
+        "backend.outline",
+        "backend.package",
+        "backend.packages",
+        "backend.read",
+        "backend.references",
+        "backend.remove",
+        "backend.resolve",
+        "backend.search",
+        "backend.source",
+        "backend.status"
+      ]
+    }
+  },
+  "performance": {
+    "cpu_seconds": 41.81,
+    "peak_rss_kib": 788808,
+    "seconds": {
+      "cli add": 46.22,
+      "cli outline": 0.07,
+      "cli packages": 0.02,
+      "cli search Anders": 0.04,
+      "cli search Bjarne": 0.03,
+      "cli search Duke": 0.02,
+      "cli search Gopher": 0.04,
+      "cli search ferris": 0.69,
+      "cli search monty": 0.05,
+      "cli search turing": 0.04,
+      "mcp": 0.13
+    }
+  }
+}
