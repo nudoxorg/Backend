@@ -220,13 +220,14 @@ pub(crate) struct Ask {
 impl Ask {
     pub(crate) fn new(links: Links, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Find a name, or ask"));
-        let typed = cx.subscribe_in(&input, window, |ask: &mut Self, input, event: &InputEvent, window, cx| match event {
+        let typed = cx.subscribe_in(&input, window, |ask: &mut Self, input, event: &InputEvent, _, cx| match event {
             InputEvent::Change => {
                 let text = input.read(cx).value().to_string();
                 ask.typed(text, cx);
             }
-            InputEvent::PressEnter { secondary: true, shift: false } => ask.choose_all(cx),
-            InputEvent::PressEnter { .. } => ask.choose(window, cx),
+            // The propagated native Enter action captures its painted visit.
+            // A queued notification must not adopt a later Ask render.
+            InputEvent::PressEnter { .. } => {},
             InputEvent::Focus | InputEvent::Blur => {}
         });
         let store = links.store.clone();
@@ -335,6 +336,35 @@ impl Ask {
     fn current_editor(&self, cx: &App) -> bool {
         self.links.snapshot(cx).overlay() == Some(Overlay::CommandPalette)
             && self.draft.query().is_none_or(|query| current_input_query(&self.input, query, cx))
+    }
+
+    /// The field lives in Titlebar, whose propagated action owns the exact
+    /// painted visit. Capture draft identity before deferring outside either
+    /// region's borrow; notification subscribers cannot recover that origin.
+    pub(crate) fn submit_editor_enter(&mut self, visit: u64, secondary: bool, shift: bool,
+        window: &mut Window, cx: &mut Context<Self>) {
+        if !self.editor_visit_current(visit, cx)
+            || !self.input.read(cx).focus_handle(cx).is_focused(window) { return; }
+        let revision = self.revision.get();
+        let text = self.input.read(cx).value().to_string();
+        let ask = cx.weak_entity();
+        window.defer(cx, move |window, cx| {
+            let _ = ask.update(cx, |ask, cx| {
+                if ask.revision.get() != revision || !ask.editor_visit_current(visit, cx)
+                    || ask.input.read(cx).value().to_string() != text
+                    || !ask.input.read(cx).focus_handle(cx).is_focused(window) { return; }
+                if secondary && !shift { ask.choose_all(cx); }
+                else { ask.choose(window, cx); }
+            });
+        });
+    }
+
+    fn editor_visit_current(&self, visit: u64, cx: &App) -> bool {
+        self.links.root.upgrade().is_some_and(|root| {
+            let root = root.read(cx);
+            root.graph_view_generation() == visit
+                && root.snapshot().overlay() == Some(Overlay::CommandPalette)
+        }) && self.current_editor(cx)
     }
 
     /// Moves the selection and shows the row's place in the reader.
@@ -1126,6 +1156,59 @@ mod tests {
         }
         let long_name = format!("{}ß", "İ".repeat(4096));
         assert_eq!(matched_range(&long_name, "ß"), Some(8192..8194));
+    }
+
+    #[gpui::test]
+    fn queued_editor_enter_keeps_its_emitting_ask_visit_across_a_replacement_paint(cx: &mut TestAppContext) {
+        for activation in ["enter", "secondary-enter"] {
+            let mut rig = rig_with_reads(cx, Some(page_route("RelationDirection")), 1440.0, 900.0,
+                ReadPool::start(2, |_| Fixture).expect("fixture pool"));
+            rig.go(crate::navigation::Intent::SetMotion(crate::model::MotionPreference::Reduced));
+            rig.keys("secondary-k");
+            let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+            let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
+            rig.cx.update(|window, cx| input.update(cx, |input, cx|
+                input.replace_all("RelationLabel", window, cx)));
+            rig.frame(120);
+            rig.settle();
+            let original = rig.route();
+            let root = rig.graph.root.clone();
+            let (revision, destination, all_destination) = ask.read_with(rig.cx, |ask, cx| (
+                ask.revision.get(), ask.choices(cx)[0].route.clone().expect("current result"),
+                ask.all_results(cx).expect("current all-results page"),
+            ));
+            assert_ne!(destination, original, "the native submission would navigate");
+            rig.cx.update(|window, cx| {
+                assert!(input.read(cx).focus_handle(cx).is_focused(window));
+                let visit = root.read(cx).graph_view_generation();
+                let key = gpui::Keystroke::parse(activation).expect("native Enter");
+                window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                    keystroke: key.clone(), is_held: false, prefer_character_input: false,
+                }), cx);
+                assert_eq!(root.read(cx).snapshot().route(), &original, "submission effects are still queued");
+                root.update(cx, |root, cx| {
+                    root.dispatch(crate::navigation::Intent::OpenSettings(crate::navigation::SettingsPage::Appearance), cx);
+                    root.dispatch(crate::navigation::Intent::DismissOverlay, cx);
+                });
+                assert_eq!(root.read(cx).snapshot().overlay(), Some(crate::navigation::Overlay::CommandPalette));
+                assert!(root.read(cx).graph_view_generation() > visit, "coalesced covers retire the emitting visit synchronously");
+                assert_eq!(ask.read(cx).revision.get(), revision, "the coalesced return does not replace the query draft");
+                let frame = window.a11y_frame_number();
+                window.resize(gpui::size(px(1000.0), px(900.0)));
+                window.bounds_changed(cx);
+                window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke: key }), cx);
+                assert!(window.a11y_frame_number() > frame, "the replacement Ask visit really painted before event delivery");
+                assert_eq!(root.read(cx).snapshot().route(), &original);
+            });
+            assert_eq!(rig.route(), original, "the old queued Enter cannot adopt the newly painted Ask visit");
+            rig.settle();
+            assert_eq!(rig.route(), original);
+            assert_eq!(ask.read_with(rig.cx, |ask, _| ask.revision.get()), revision);
+            assert!(rig.cx.update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window)));
+            rig.keys(activation);
+            assert_eq!(rig.route(), if activation == "enter" { destination } else { all_destination },
+                "a fresh current native Enter opens its exact destination");
+        }
     }
 
     #[gpui::test]
