@@ -313,7 +313,7 @@ fn local_semantic_missing_setup_preserves_cause_and_explicit_remote_choice() -> 
     assert!(
         cause
             .setup_instruction()
-            .contains("compiler/embedding.config")
+            .contains("nudox embedding-setup")
     );
     let explicit = crate::builtin::query::RemoteSemantic::select_owner(
         &provision,
