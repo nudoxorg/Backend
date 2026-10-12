@@ -43,12 +43,14 @@ class EmbeddingPackageControls(unittest.TestCase):
                 path.write_bytes(raw)
                 path.chmod(0o755)
                 return {'path':relative,'bytes':len(raw),'sha256':hashlib.sha256(raw).hexdigest()}
-            source = {'commit':'a'*40,'tree':'b'*40,'cargo_lock_sha256':'c'*64}
+            source_lock = record('share/nudox/embedding/Cargo.lock',b'fixture Cargo.lock')
+            build_receipt = record('share/nudox/embedding/build-receipt.json',b'fixture build receipt')
+            source = {'commit':'a'*40,'tree':'b'*40,'cargo_lock_sha256':source_lock['sha256']}
             receipt = {'schema':'nudox.local-embedding-setup.v1','preset':'candle-minilm-cpu-v1','source':source,
                        'cli':record('bin/backend-cli',b'fixture CLI'),
                        'helper':record('share/nudox/embedding/bin/backend-embedding-candle',b'fixture helper'),
                        'dependencies':[record('lib/dependency.so',b'fixture dependency')],
-                       'build_receipt_sha256':'d'*64,'helper_identity':'e'*64}
+                       'build_receipt_sha256':build_receipt['sha256'],'build_receipt':build_receipt,'source_lock':source_lock,'helper_identity':'e'*64}
             path = root / 'share/nudox/embedding/setup.json'
             path.write_text(json.dumps(receipt))
             metadata = {'source':source,'embedding_setup':{'path':'share/nudox/embedding/setup.json','sha256':hashlib.sha256(path.read_bytes()).hexdigest()}}

@@ -239,7 +239,17 @@ impl LocalSemantic {
         let runtime = provision
             .runtime()
             .ok_or(LocalSemanticError::RuntimeUnavailable(provision.status()))?;
-        let descriptor = read_descriptor(path)?;
+        let addressed = super::local_recipe::recipe_descriptor_path(
+            path.parent()
+                .ok_or(LocalSemanticError::RecipeNotConfigured)?,
+            runtime.execution_identity().recipe(),
+        );
+        let selected = match std::fs::symlink_metadata(&addressed) {
+            Ok(_) => addressed.as_path(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => path,
+            Err(error) => return Err(LocalSemanticError::DescriptorIo(error)),
+        };
+        let descriptor = read_descriptor(selected)?;
         let admitted = descriptor
             .admit(runtime)
             .map_err(LocalSemanticError::Recipe)?;

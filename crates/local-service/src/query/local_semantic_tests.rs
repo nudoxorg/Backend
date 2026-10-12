@@ -634,6 +634,37 @@ fn local_semantic_descriptor_absence_mismatch_and_symlink_never_activate_a_secon
 
 #[cfg(unix)]
 #[test]
+fn recipe_addressed_descriptor_selects_exact_runtime_and_never_falls_back_on_corruption()
+-> TestResult {
+    let fixture = fixture(4096)?;
+    let runtime = fixture
+        .provision
+        .runtime()
+        .ok_or("activated protocol fixture")?;
+    let before = std::fs::read_to_string(&fixture.log)?;
+    let correct = std::fs::read(&fixture.descriptor)?;
+    let selected = super::super::local_recipe::recipe_descriptor_path(
+        fixture.descriptor.parent().ok_or("parent")?,
+        runtime.execution_identity().recipe(),
+    );
+    backend_platform::durable::write_private_atomic(&selected, &correct)?;
+    backend_platform::durable::write_private_atomic(&fixture.descriptor, &[0; 214])?;
+    let owner = LocalSemantic::open(&fixture.provision, &fixture.descriptor)?;
+    assert!(Arc::ptr_eq(owner.admitted_runtime(), &runtime));
+    backend_platform::durable::write_private_atomic(&fixture.descriptor, &correct)?;
+    backend_platform::durable::write_private_atomic(&selected, &[0; 214])?;
+    assert!(matches!(
+        LocalSemantic::open(&fixture.provision, &fixture.descriptor),
+        Err(LocalSemanticError::Recipe(
+            LocalQueryRecipeError::DescriptorFormat
+        ))
+    ));
+    assert_eq!(std::fs::read_to_string(&fixture.log)?, before);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn local_semantic_gated_worker_serves_complete_lexical_pages_and_retires_actual_selection()
 -> TestResult {
     let fixture = fixture_with_mode(4096, "gate-second")?;

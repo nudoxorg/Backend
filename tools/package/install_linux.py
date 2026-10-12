@@ -530,6 +530,14 @@ def verify_embedding_setup(root: Path, package: dict) -> None:
         raise InstallError("local embedding receipt has no source identity")
     if source.get("commit") != package.get("source", {}).get("commit") or source.get("tree") != package.get("source", {}).get("tree"):
         raise InstallError("local embedding helper belongs to another product source")
+    for key, relative, digest in [("build_receipt", "share/nudox/embedding/build-receipt.json", receipt.get("build_receipt_sha256")),
+                                  ("source_lock", "share/nudox/embedding/Cargo.lock", source.get("cargo_lock_sha256"))]:
+        record = receipt.get(key)
+        if not isinstance(record, dict) or record.get("path") != relative or record.get("sha256") != digest or type(record.get("bytes")) is not int or not 0 < record["bytes"] <= 16*1024*1024:
+            raise InstallError("embedding source/build receipt binding is incomplete")
+        artifact = _verified_package_path(root, relative)
+        if artifact.stat().st_size != record["bytes"] or _file_sha256(artifact) != digest:
+            raise InstallError("included embedding build receipt or Cargo.lock bytes differ")
     if not isinstance(receipt.get("dependencies"), list) or len(receipt["dependencies"]) > 64:
         raise InstallError("local embedding dependency closure exceeds its member bound")
     records = [receipt.get("cli"), receipt.get("helper"), *receipt["dependencies"]]

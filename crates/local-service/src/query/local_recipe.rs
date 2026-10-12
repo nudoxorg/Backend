@@ -17,6 +17,15 @@ use std::sync::Arc;
 const DESCRIPTOR_MAGIC: &[u8; 5] = b"BLQR\x01";
 const CONTRACT_BYTES: usize = 5 + 32;
 
+/// The selected runtime pointer chooses its exact immutable descriptor object.
+pub(super) fn recipe_descriptor_path(
+    parent: &std::path::Path,
+    recipe: [u8; 32],
+) -> std::path::PathBuf {
+    let hex: String = recipe.iter().map(|byte| format!("{byte:02x}")).collect();
+    parent.join(format!("embedding-query-{hex}.config"))
+}
+
 /// Text handling declared by the local owner before passing a purpose-tagged request.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

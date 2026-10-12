@@ -558,12 +558,22 @@ def main() -> int:
         def setup_record(relative: str) -> dict:
             path = root / relative
             return {"path": relative, "sha256": sha256(path), "bytes": path.stat().st_size}
+        helper_build_bytes = read_regular_bytes(args.embedding_helper_receipt, 65536, "embedding build receipt")
+        if hashlib.sha256(helper_build_bytes).hexdigest() != embedding_receipt_digest:
+            fail("embedding build receipt changed before package publication")
+        lock_bytes = subprocess.check_output(["git", "-C", str(args.source), "show", f"{revision}:Cargo.lock"])
+        if hashlib.sha256(lock_bytes).hexdigest() != lock_sha:
+            fail("selected Cargo.lock changed before embedding receipt publication")
+        (root / "share/nudox/embedding/build-receipt.json").write_bytes(helper_build_bytes)
+        (root / "share/nudox/embedding/Cargo.lock").write_bytes(lock_bytes)
         setup = {"schema": "nudox.local-embedding-setup.v1", "preset": "candle-minilm-cpu-v1",
                  "source": {"commit": revision, "tree": tree, "cargo_lock_sha256": lock_sha},
                  "cli": setup_record("bin/backend-cli"),
                  "helper": setup_record("share/nudox/embedding/bin/backend-embedding-candle"),
                  "dependencies": [setup_record(record["packaged_path"]) for _, record in sorted(libraries.items())],
-                 "build_receipt_sha256": embedding_receipt_digest}
+                 "build_receipt_sha256": embedding_receipt_digest,
+                 "build_receipt": setup_record("share/nudox/embedding/build-receipt.json"),
+                 "source_lock": setup_record("share/nudox/embedding/Cargo.lock")}
         # The already source-receipted CLI observes the typed closure identity; this is not
         # semantic attestation. Successful source/helper build custody above is its authority.
         command = [str(root / "bin/backend-cli"), "--json", "embedding-setup", "inspect", "--program", str(root / setup["helper"]["path"])]

@@ -71,6 +71,16 @@ pub struct EmbeddingRuntimeLimits {
 }
 
 impl EmbeddingRuntimeLimits {
+    /// Refuses unsupported OS limits using the supervisor's existing platform policy.
+    pub fn validate_platform(self) -> Result<(), EmbeddingRuntimeError> {
+        self.process_limits()?
+            .unsupported_limit()
+            .map_or(Ok(()), |limit| {
+                Err(EmbeddingRuntimeError::Process(
+                    backend_compile::ProcessError::UnsupportedLimit(limit),
+                ))
+            })
+    }
     /// Validates the same process and shared-credit envelope used by installation and activation.
     pub fn validate(
         self,

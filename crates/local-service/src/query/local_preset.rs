@@ -198,9 +198,14 @@ impl PreparedCandleSetup {
         })
     }
 
-    /// Publishes runtime and matching descriptor under a private install lock. This never activates
-    /// inference; a crash between pointers is fail-closed and requires another explicit setup.
+    /// Publishes an immutable recipe descriptor before the sole runtime config pointer.
+    /// Descriptor failure preserves the previous config; interruption can leave an unreferenced
+    /// descriptor, while the previous runtime still selects its own exact descriptor.
     pub fn install(self, compiler: &Path) -> Result<EmbeddingRuntimeSpecV1, CandleSetupError> {
+        self.request
+            .limits
+            .validate_platform()
+            .map_err(CandleSetupError::Runtime)?;
         backend_platform::durable::ensure_private_directory(compiler)
             .map_err(CandleSetupError::Io)?;
         let directory = DirectoryCapability::open(compiler).map_err(CandleSetupError::Io)?;
@@ -224,19 +229,30 @@ impl PreparedCandleSetup {
         self.helper
             .verify_path(&self.request.program)
             .map_err(CandleSetupError::Process)?;
+        let model_hash = *blake3::hash(&self.request.model_bytes).as_bytes();
+        let expected_spec = EmbeddingRuntimeSpecV1::new(
+            model_hash,
+            model_hash,
+            *blake3::hash(&self.request.tokenizer_bytes).as_bytes(),
+            self.helper.identity().to_bytes(),
+            self.request.dimension,
+            self.request.normalization,
+            self.request.maximum_text_bytes,
+            self.request.options_digest,
+        );
+        let descriptor = LocalQueryRecipeDescriptor::new(expected_spec, self.contract)
+            .map_err(CandleSetupError::Recipe)?;
+        backend_platform::durable::write_private_atomic(
+            &super::local_recipe::recipe_descriptor_path(compiler, expected_spec.recipe_identity()),
+            &descriptor.canonical_bytes(),
+        )
+        .map_err(CandleSetupError::Io)?;
         let spec = install_embedding_runtime_with_identity(
             &config,
             self.request,
             self.helper.identity().to_bytes(),
         )
         .map_err(CandleSetupError::Runtime)?;
-        let descriptor = LocalQueryRecipeDescriptor::new(spec, self.contract)
-            .map_err(CandleSetupError::Recipe)?;
-        backend_platform::durable::write_private_atomic(
-            &compiler.join("embedding-query.config"),
-            &descriptor.canonical_bytes(),
-        )
-        .map_err(CandleSetupError::Io)?;
         Ok(spec)
     }
 }
@@ -249,6 +265,9 @@ pub fn admit_candle_setup_authority(
     expected_toolchain: [u8; 32],
     limits: EmbeddingRuntimeLimits,
 ) -> Result<(), CandleSetupError> {
+    limits
+        .validate_platform()
+        .map_err(CandleSetupError::Runtime)?;
     if !limits.memory_bytes.is_some_and(|bytes| bytes > 0) {
         return Err(CandleSetupError::ResourcePolicy);
     }
@@ -336,6 +355,7 @@ mod tests {
         std::fs::write(&program, b"unit identity bytes; never execute as Candle")?;
         Ok(program)
     }
+    #[cfg(target_os = "linux")]
     #[test]
     fn pinned_setup_refuses_untrusted_helper_and_resources_before_model_read() -> TestResult {
         let directory = tempfile::tempdir()?;
@@ -459,6 +479,7 @@ mod tests {
             contract,
         })
     }
+    #[cfg(target_os = "linux")]
     #[test]
     fn setup_publication_preserves_required_policy_and_matching_descriptor_without_activation()
     -> TestResult {
@@ -471,7 +492,11 @@ mod tests {
             .ok_or("persisted spec")?;
         assert_eq!(summary.spec, installed);
         assert_eq!(summary.requirement, EmbeddingRequirement::Required);
-        let bytes = std::fs::read(compiler.join("embedding-query.config"))?;
+        let descriptor_path = super::super::local_recipe::recipe_descriptor_path(
+            &compiler,
+            installed.recipe_identity(),
+        );
+        let bytes = std::fs::read(&descriptor_path)?;
         let declared = LocalQueryRecipeDescriptor::decode(&bytes)?;
         assert_eq!(declared.canonical_bytes(), bytes);
         let before = std::fs::read(compiler.join("embedding.config"))?;
@@ -482,21 +507,23 @@ mod tests {
             Err(CandleSetupError::RequiredDowngrade)
         ));
         assert_eq!(std::fs::read(compiler.join("embedding.config"))?, before);
-        assert_eq!(
-            std::fs::read(compiler.join("embedding-query.config"))?,
-            bytes
-        );
+        assert_eq!(std::fs::read(&descriptor_path)?, bytes);
         Ok(())
     }
+    #[cfg(target_os = "linux")]
     #[test]
     fn changed_prepared_dependency_never_publishes_runtime_or_descriptor() -> TestResult {
         let directory = tempfile::tempdir()?;
         let compiler = directory.path().join("compiler");
         let installed =
             prepared_publication_fixture(directory.path(), EmbeddingRequirement::Optional)?;
-        installed.install(&compiler)?;
+        let old_spec = installed.install(&compiler)?;
         let before_config = std::fs::read(compiler.join("embedding.config"))?;
-        let before_descriptor = std::fs::read(compiler.join("embedding-query.config"))?;
+        let old_descriptor = super::super::local_recipe::recipe_descriptor_path(
+            &compiler,
+            old_spec.recipe_identity(),
+        );
+        let before_descriptor = std::fs::read(&old_descriptor)?;
         let mut prepared =
             prepared_publication_fixture(directory.path(), EmbeddingRequirement::Optional)?;
         let dependency = directory.path().join("dependency");
@@ -514,12 +541,69 @@ mod tests {
             std::fs::read(compiler.join("embedding.config"))?,
             before_config
         );
+        assert_eq!(std::fs::read(&old_descriptor)?, before_descriptor);
+        Ok(())
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn immutable_descriptor_write_failure_preserves_previous_runtime_selection() -> TestResult {
+        let directory = tempfile::tempdir()?;
+        let compiler = directory.path().join("compiler");
+        let old = prepared_publication_fixture(directory.path(), EmbeddingRequirement::Optional)?
+            .install(&compiler)?;
+        let old_descriptor =
+            super::super::local_recipe::recipe_descriptor_path(&compiler, old.recipe_identity());
+        let config_before = std::fs::read(compiler.join("embedding.config"))?;
+        let descriptor_before = std::fs::read(&old_descriptor)?;
+        let mut new =
+            prepared_publication_fixture(directory.path(), EmbeddingRequirement::Optional)?;
+        new.request.model_bytes.push(1);
+        let hash = *blake3::hash(&new.request.model_bytes).as_bytes();
+        let spec = EmbeddingRuntimeSpecV1::new(
+            hash,
+            hash,
+            *blake3::hash(&new.request.tokenizer_bytes).as_bytes(),
+            new.helper.identity().to_bytes(),
+            new.request.dimension,
+            new.request.normalization,
+            new.request.maximum_text_bytes,
+            new.request.options_digest,
+        );
+        let refused_path =
+            super::super::local_recipe::recipe_descriptor_path(&compiler, spec.recipe_identity());
+        std::fs::create_dir(&refused_path)?;
+        assert!(matches!(
+            new.install(&compiler),
+            Err(CandleSetupError::Io(_))
+        ));
         assert_eq!(
-            std::fs::read(compiler.join("embedding-query.config"))?,
-            before_descriptor
+            std::fs::read(compiler.join("embedding.config"))?,
+            config_before
+        );
+        assert_eq!(std::fs::read(&old_descriptor)?, descriptor_before);
+        assert_eq!(
+            inspect_embedding_runtime(compiler.join("embedding.config"))?
+                .ok_or("old configuration")?
+                .spec,
+            old
         );
         Ok(())
     }
+    #[test]
+    fn unsupported_preset_platform_refuses_before_artifact_acquisition() {
+        let result = limits().validate_platform();
+        if cfg!(target_os = "linux") {
+            assert!(result.is_ok());
+        } else {
+            assert!(matches!(
+                result,
+                Err(EmbeddingRuntimeError::Process(
+                    ProcessError::UnsupportedLimit(_)
+                ))
+            ));
+        }
+    }
+    #[cfg(target_os = "linux")]
     #[test]
     fn setup_install_lock_refuses_concurrent_publication() -> TestResult {
         let directory = tempfile::tempdir()?;

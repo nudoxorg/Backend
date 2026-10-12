@@ -17,9 +17,9 @@ A matched Linux package may carry this helper and its source-bound build receipt
 nudox embedding-setup
 ```
 
-The command verifies the installed CLI, helper and dependency closure against the package receipt before fetching either artifact. It streams the two pinned files into private staging, checks their exact lengths and BLAKE3 hashes, then atomically publishes the runtime configuration and matching local query descriptor. It reports installation separately from activation: reopen the owner and run `nudox add .` to reindex. Query inference uses the already activated owner runtime and does not download a model. Search continues to return its complete lexical result while the exact selected semantic projection is being prepared.
+The command verifies the installed CLI, helper and dependency closure against the package receipt before fetching either artifact. It streams the two pinned files into private staging, checks their exact lengths and BLAKE3 hashes, then publishes its immutable recipe-addressed query descriptor before atomically committing the runtime configuration pointer. It reports installation separately from activation: reopen the owner and run `nudox add .` to reindex. Query inference uses the already activated owner runtime and does not download a model. Search continues to return its complete lexical result while the exact selected semantic projection is being prepared.
 
-The fixed CPU preset reserves 2 GiB of shared owner credits, a 1 GiB supervised child memory ceiling and a 120-second operation deadline. `--limits /absolute/limits.json` is an explicit override using the existing runtime admission rules. Packages without a successfully built, matched helper refuse setup before downloading; a byte inspection alone does not attest model semantics. Native helper execution and model quality require separate real inference evidence.
+The fixed Linux CPU preset reserves 2 GiB of shared owner credits, a 1 GiB supervised child memory ceiling and a 120-second operation deadline. Other platforms refuse before acquisition until their supervisor can enforce the mandatory memory ceiling. `--limits /absolute/limits.json` is an explicit override using the existing runtime admission rules. Packages without a successfully built, matched helper refuse setup before downloading; a byte inspection alone does not attest model semantics. Native helper execution and model quality require separate real inference evidence.
 
 The Linux packager accepts `--embedding-helper` and `--embedding-helper-receipt` together. The `nudox.embedding-helper-build-receipt.v1` must attest successful integer exit zero, unchanged clean source before/after, unchanged toolchain, the same product commit/tree/Cargo.lock hash, and exact helper SHA-256/byte length. Its literal CPU build argv is:
 
@@ -27,7 +27,7 @@ The Linux packager accepts `--embedding-helper` and `--embedding-helper-receipt`
 cargo build --release --locked --no-default-features --features cpu -p backend-embedding-candle
 ```
 
-The packager relocates the helper through its existing ELF closure, records the post-relocation bytes and typed closure identity, and binds the setup receipt into immutable package metadata. Optional helper packaging is not runtime or inference acceptance.
+The packager relocates the helper through its existing ELF closure, records the post-relocation bytes and typed closure identity, and includes the actual source Cargo.lock and helper build receipt bytes, and binds the setup receipt into immutable package metadata. Optional helper packaging is not runtime or inference acceptance.
 
 Advanced external-producer configuration remains available. Download only those two files from the pinned revision, then build the helper for the current host:
 

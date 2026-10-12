@@ -17,6 +17,8 @@ struct Receipt {
     helper: FileRecord,
     dependencies: Vec<FileRecord>,
     build_receipt_sha256: String,
+    build_receipt: FileRecord,
+    source_lock: FileRecord,
     helper_identity: String,
 }
 #[derive(Deserialize)]
@@ -181,6 +183,19 @@ fn discover_at(root: &Path, executable: &Path) -> Result<BundledHelper, String> 
             "local helper receipt is not bound to this product package/source",
         ));
     }
+    if receipt.build_receipt.path != "share/nudox/embedding/build-receipt.json"
+        || receipt.source_lock.path != "share/nudox/embedding/Cargo.lock"
+        || receipt.build_receipt.sha256 != receipt.build_receipt_sha256
+        || receipt.source_lock.sha256 != receipt.source.cargo_lock_sha256
+        || receipt.build_receipt.bytes > 65536
+        || receipt.source_lock.bytes > 16 * 1024 * 1024
+    {
+        return Err(refuse(
+            "embedding source/build receipt is not bound to included bytes",
+        ));
+    }
+    verify(root, &receipt.build_receipt)?;
+    verify(root, &receipt.source_lock)?;
     if receipt.cli.path != "bin/backend-cli"
         || receipt.helper.path != "share/nudox/embedding/bin/backend-embedding-candle"
         || verify(root, &receipt.cli)? != executable
@@ -282,8 +297,13 @@ mod tests {
             &root.join("share/nudox/embedding/bin/backend-embedding-candle"),
             &[root.join("lib/dependency.so")],
         )?;
-        let source = serde_json::json!({"commit":"a".repeat(40),"tree":"b".repeat(40),"cargo_lock_sha256":"c".repeat(64)});
-        let receipt = serde_json::json!({"schema":"nudox.local-embedding-setup.v1","preset":"candle-minilm-cpu-v1","source":source,"cli":cli,"helper":helper,"dependencies":[dependency],"helper_identity":hex(&identity),"build_receipt_sha256":"d".repeat(64)});
+        let source_lock = record("share/nudox/embedding/Cargo.lock", b"fixture Cargo.lock")?;
+        let build_receipt = record(
+            "share/nudox/embedding/build-receipt.json",
+            b"fixture build receipt",
+        )?;
+        let source = serde_json::json!({"commit":"a".repeat(40),"tree":"b".repeat(40),"cargo_lock_sha256":source_lock["sha256"]});
+        let receipt = serde_json::json!({"schema":"nudox.local-embedding-setup.v1","preset":"candle-minilm-cpu-v1","source":source,"cli":cli,"helper":helper,"dependencies":[dependency],"helper_identity":hex(&identity),"build_receipt_sha256":build_receipt["sha256"],"build_receipt":build_receipt,"source_lock":source_lock});
         let bytes = serde_json::to_vec(&receipt)?;
         std::fs::write(root.join("share/nudox/embedding/setup.json"), &bytes)?;
         let package = serde_json::json!({"source":source,"embedding_setup":{"path":"share/nudox/embedding/setup.json","sha256":hex(&Sha256::digest(&bytes))}});
