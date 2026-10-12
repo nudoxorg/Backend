@@ -33,6 +33,112 @@ const SOURCE_BYTES: &[u8] = b"emission-seam-source";
 const OUTPUT_CAPACITY: usize = 1_024;
 
 #[test]
+fn merged_declaration_parts_keep_primary_exact_and_refuse_gap_occurrences_transactionally()
+-> Result<(), TestError> {
+    let plan = super::ResourcePlan::for_source(
+        LanguageProfile::Rust(RustEdition::Rust2024),
+        SOURCE_BYTES.len(),
+    );
+    let source_len = u32::try_from(SOURCE_BYTES.len())?;
+    let mut facts = FactSet::with_primary_source(plan, source_len);
+    for name in [b"merged".as_slice(), b"other"] {
+        facts
+            .push(SemanticFact::new(
+                EntityKind::Trait,
+                name,
+                SemanticProductConstructor::PRODUCT,
+            ))
+            .map_err(rejected)?;
+    }
+    let primary = SourceSpanFact { start: 2, end: 5 };
+    let later = SourceSpanFact { start: 10, end: 14 };
+    for owner in [0, 1] {
+        facts
+            .attach_source_span(owner, primary)
+            .map_err(lane_fault)?;
+    }
+    let range = RelSpan::new(8, 10).map_err(|_| TestError::Tail)?;
+    assert!(matches!(
+        super::occurrence_source_span(&facts, None, 0, range),
+        Err(BuildError::InvalidOccurrenceSpan {
+            start: 10,
+            end: 12,
+            ..
+        })
+    ));
+    facts
+        .capture_declaration_parts(0, source_len, vec![primary, later].into_boxed_slice())
+        .map_err(lane_fault)?;
+    // Identical proof is idempotent, but primary excerpt provenance is untouched.
+    facts
+        .capture_declaration_parts(0, source_len, vec![primary, later].into_boxed_slice())
+        .map_err(lane_fault)?;
+    assert_eq!(facts.provenance.source_spans()[0], Some(primary));
+    let site = super::occurrence_source_span(
+        &facts,
+        Some(backend_semantic::ir::AtomId::new(0)),
+        0,
+        range,
+    )?
+    .ok_or(TestError::Tail)?;
+    assert_eq!((site.start(), site.end()), (10, 12));
+    assert!(
+        super::occurrence_source_span(&facts, None, 1, range).is_err(),
+        "another entity cannot borrow the merged owner's proof"
+    );
+    for (start, end) in [(3, 7), (2, 9), (8, 13)] {
+        assert!(
+            super::occurrence_source_span(
+                &facts,
+                None,
+                0,
+                RelSpan::new(start, end).map_err(|_| TestError::Tail)?,
+            )
+            .is_err(),
+            "gap/cross-part/outside ranges remain invalid"
+        );
+    }
+    let before = transaction_state(&facts);
+    for parts in [
+        vec![primary],
+        vec![SourceSpanFact { start: 1, end: 5 }, later],
+        vec![primary, SourceSpanFact { start: 4, end: 7 }],
+        vec![
+            primary,
+            SourceSpanFact {
+                start: 10,
+                end: source_len + 1,
+            },
+        ],
+        vec![primary, SourceSpanFact { start: 11, end: 14 }],
+        vec![primary, later, SourceSpanFact { start: 16, end: 19 }],
+    ] {
+        assert!(
+            facts
+                .capture_declaration_parts(0, source_len, parts.into_boxed_slice())
+                .is_err()
+        );
+        assert_eq!(facts.provenance.source_spans()[0], Some(primary));
+        assert!(!facts.provenance.contains_source_span(0, 5, 10));
+        assert!(facts.provenance.contains_source_span(0, 10, 14));
+        assert!(!facts.provenance.contains_source_span(0, 16, 19));
+        assert_eq!(transaction_state(&facts), before,
+            "every invalid claim retains the entire admitted state, including exact part lists");
+    }
+    assert!(
+        facts
+            .capture_declaration_parts(0, source_len + 1, vec![primary, later].into_boxed_slice())
+            .is_err()
+    );
+    assert!(
+        facts.attach_source_span(0, later).is_err(),
+        "the original immutable single-span contract is unchanged"
+    );
+    assert_eq!(transaction_state(&facts), before);
+    Ok(())
+}
+
+#[test]
 fn declared_member_inventory_excludes_other_children_and_rejects_conflicts() -> Result<(), TestError>
 {
     let mut facts = FactSet::new();
@@ -214,6 +320,7 @@ struct FactTransactionState<'source> {
     documentation_captured: Vec<bool>,
     parentage: Vec<ParentageState>,
     source_spans: Vec<Option<SourceSpanFact>>,
+    declaration_parts: Vec<Option<Vec<SourceSpanFact>>>,
     members_captured: Vec<bool>,
     type_parameter_ranges: Vec<Option<super::StagedTypeParameterRange>>,
     anonymous_records: Vec<SemanticTypeRecord<'source>>,
@@ -274,6 +381,9 @@ fn transaction_state<'source>(facts: &FactSet<'source>) -> FactTransactionState<
         // no-mutation comparison depend on irrelevant future slots.
         parentage: facts.provenance.parentage()[..facts.len].to_vec(),
         source_spans: facts.provenance.source_spans()[..facts.len].to_vec(),
+        declaration_parts: (0..facts.len).map(|entity| {
+            facts.provenance.declaration_parts(entity as u32).map(<[_]>::to_vec)
+        }).collect(),
         members_captured: facts
             .provenance
             .member_sets()

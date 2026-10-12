@@ -7,6 +7,8 @@
 //! are used only as a non-mutation control in this slice; durable provenance
 //! serialization remains deliberately out of scope.
 
+use std::collections::BTreeMap;
+
 use backend_semantic::ir::EntityId;
 
 use crate::driver::types::{FactFault, ParentageState, SourceSpanFact};
@@ -29,6 +31,9 @@ pub(super) enum MemberSetCapture {
 pub(super) struct Provenance {
     parentage: Box<[ParentageState]>,
     source_spans: Box<[Option<SourceSpanFact>]>,
+    /// Exact parsed parts of merged declarations. The primary span remains
+    /// one declaration, so excerpts never acquire the gaps between parts.
+    declaration_parts: BTreeMap<u32, Box<[SourceSpanFact]>>,
     member_sets: Box<[MemberSetCapture]>,
     declared_members: Box<[Option<Box<[u32]>>]>,
 }
@@ -39,6 +44,7 @@ impl Provenance {
         Self {
             parentage: vec![ParentageState::Unavailable; facts].into_boxed_slice(),
             source_spans: vec![None; facts].into_boxed_slice(),
+            declaration_parts: BTreeMap::new(),
             member_sets: vec![MemberSetCapture::Unavailable; facts].into_boxed_slice(),
             declared_members: vec![None; facts].into_boxed_slice(),
         }
@@ -50,7 +56,8 @@ impl Provenance {
         &self.parentage
     }
 
-    /// Primary-source facts aligned to the fact lane.
+    /// Primary-source facts aligned to the fact lane. A merged declaration's
+    /// primary is its first exact part; occurrence parts never widen excerpts.
     pub(super) fn source_spans(&self) -> &[Option<SourceSpanFact>] {
         &self.source_spans
     }
@@ -191,6 +198,94 @@ impl Provenance {
                 requested: span,
             }),
         }
+    }
+
+    /// Captures the complete exact source parts of one producer-proven merged
+    /// declaration. Validation precedes installation: nonempty disjoint parts
+    /// are source-bounded, ordered, and begin at the immutable primary span.
+    /// No family envelope is installed. The parser's same-name/kind/lexical-
+    /// owner proof is supplied by the TypeScript producer, not inferred here.
+    pub(super) fn capture_declaration_parts(
+        &mut self,
+        fact_count: usize,
+        source_len: u32,
+        entity: u32,
+        parts: Box<[SourceSpanFact]>,
+    ) -> Result<(), FactFault> {
+        if entity as usize >= fact_count {
+            return Err(FactFault::RefTarget {
+                lane: backend_semantic::vocabulary::ProjectionFactLane::EntitySourceSpans,
+                raw: entity,
+                fact_count,
+            });
+        }
+        let primary = self.source_spans[entity as usize];
+        let requested = parts
+            .first()
+            .copied()
+            .unwrap_or(SourceSpanFact { start: 0, end: 0 });
+        let conflict = |requested| FactFault::ConflictingSourceSpan {
+            entity: EntityId::new(entity),
+            existing: primary.unwrap_or(SourceSpanFact { start: 0, end: 0 }),
+            requested,
+        };
+        if parts.len() < 2 || primary != Some(requested) {
+            return Err(conflict(requested));
+        }
+        let mut previous_end = 0;
+        for part in parts.iter() {
+            if part.start >= part.end || part.start < previous_end {
+                return Err(conflict(*part));
+            }
+            if part.end > source_len {
+                return Err(FactFault::SourceSpan {
+                    entity,
+                    start: part.start,
+                    end: part.end,
+                    source_len,
+                });
+            }
+            previous_end = part.end;
+        }
+        if let Some(existing) = self.declaration_parts.get(&entity) {
+            if existing == &parts {
+                return Ok(());
+            }
+            let requested = existing
+                .iter()
+                .zip(parts.iter())
+                .find_map(|(left, right)| (left != right).then_some(*right))
+                .or_else(|| parts.last().copied())
+                .unwrap_or(requested);
+            return Err(conflict(requested));
+        }
+        self.declaration_parts.insert(entity, parts);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn declaration_parts(&self, entity: u32) -> Option<&[SourceSpanFact]> {
+        self.declaration_parts.get(&entity).map(Box::as_ref)
+    }
+
+    /// Exact occurrence containment, with logarithmic lookup for a merged
+    /// owner. An occurrence crossing even one gap remains invalid.
+    pub(super) fn contains_source_span(&self, entity: u32, start: u32, end: u32) -> bool {
+        if start > end {
+            return false;
+        }
+        if let Some(parts) = self.declaration_parts.get(&entity) {
+            let index = parts.partition_point(|part| part.start <= start);
+            return index
+                .checked_sub(1)
+                .and_then(|index| parts.get(index))
+                .is_some_and(|part| end <= part.end);
+        }
+        self.source_spans
+            .get(entity as usize)
+            .copied()
+            .flatten()
+            .is_some_and(|span| span.start <= start && end <= span.end)
     }
 
     /// Records a proven empty declared inventory. This compatibility entry
