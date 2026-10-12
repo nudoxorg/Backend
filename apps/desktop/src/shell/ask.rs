@@ -330,8 +330,16 @@ impl Ask {
             || self.all_focus.is_focused(window)
     }
 
+    /// The component's Change event can still be queued while its actual
+    /// text has moved. Do not lend that old draft's result list native input.
+    fn current_editor(&self, cx: &App) -> bool {
+        self.links.snapshot(cx).overlay() == Some(Overlay::CommandPalette)
+            && self.draft.query().is_none_or(|query| current_input_query(&self.input, query, cx))
+    }
+
     /// Moves the selection and shows the row's place in the reader.
     pub(crate) fn step(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.current_editor(cx) { return; }
         let choices = self.choices(cx);
         let focused = self.row_focus.iter().find(|(_, _, handle)| handle.is_focused(window))
             .map(|(route, occurrence, _)| (route.clone(), *occurrence));
@@ -371,6 +379,7 @@ impl Ask {
     /// Tab walks only Ask's editor and its currently mounted destinations.
     /// The veiled shelf is never an intermediate keyboard stop.
     pub(crate) fn focus_next(&mut self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.current_editor(cx) { return; }
         let choices = self.choices(cx);
         let all_mounted = !choices.is_empty() && self.all_results(cx).is_some();
         if self.sync_row_focus(&choices, all_mounted, window, cx) {
@@ -466,10 +475,7 @@ impl Ask {
     /// A refused destination stays in this query and explains why it cannot
     /// navigate; only a verified destination commits the current visit.
     pub(crate) fn choose(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.links.snapshot(cx).overlay() != Some(Overlay::CommandPalette)
-            || self.draft.query().is_some_and(|query| !current_input_query(&self.input, query, cx)) {
-            return;
-        }
+        if !self.current_editor(cx) { return; }
         let choices = self.choices(cx);
         let outcome = match choices.get(self.selected) {
             None => self.empty_submission(cx),
@@ -507,7 +513,7 @@ impl Ask {
 
     /// ⌘↵ opens Find only while this exact query has a current served page.
     fn choose_all(&mut self, cx: &mut Context<Self>) {
-        if self.links.snapshot(cx).overlay() != Some(Overlay::CommandPalette) { return; }
+        if !self.current_editor(cx) { return; }
         let outcome = match (self.draft.query(), self.all_results(cx)) {
             (Some(query), Some(route)) if !self.choices(cx).is_empty() =>
                 follow_all(&self.links, &self.input, query, &route, self.revision.get(), &self.revision, cx),
@@ -1914,6 +1920,53 @@ mod tests {
         assert!(ask.read_with(rig.cx, |ask, _| ask.scroll.offset().y < gpui::px(0.0)), "actual mounted results overflow and scroll");
         for _ in 0..15 { rig.keys("up"); }
         assert_native_result_visible(&mut rig, "Result 1:");
+    }
+
+    #[gpui::test]
+    fn native_query_tab_and_arrows_do_not_adopt_results_before_input_change_is_observed(cx: &mut TestAppContext) {
+        let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0,
+            ReadPool::start(1, |_| GroupedSearch).expect("grouped search reader"));
+        native_ask(&mut rig);
+        rig.cx.simulate_input("many");
+        rig.settle();
+        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+        let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
+        assert_eq!(ask.read_with(rig.cx, |ask, cx| ask.choices(cx).len()), 16);
+        let store = rig.graph.store.clone();
+        let route = rig.route();
+        let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+        let focus = rig.cx.update(|window, cx| {
+            let editor = input.read(cx).focus_handle(cx);
+            assert!(editor.is_focused(window));
+            input.update(cx, |input, cx| input.replace_all("short", window, cx));
+            assert_eq!(input.read(cx).value().to_string(), "short");
+            assert_eq!(ask.read(cx).draft.query().expect("retained draft").text.as_ref(), "many",
+                "the original native input tree and old draft precede Change delivery");
+            for key in ["tab", "shift-tab", "down", "up"] {
+                let keystroke = gpui::Keystroke::parse(key).expect("query walk key");
+                window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                    keystroke: keystroke.clone(), is_held: false, prefer_character_input: false,
+                }), cx);
+                window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
+                assert!(editor.is_focused(window), "old query rows cannot take native Tab focus");
+                assert_eq!(store.read(cx).snapshot().route(), &route, "arrows cannot preview the old query");
+                assert!(!ask.read(cx).walked);
+                assert_eq!(window.a11y_frame_number(), frame);
+            }
+            window.focused(cx)
+        });
+        assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focus);
+        assert_eq!(rig.cx.update(|window, _| window.a11y_frame_number()), frame);
+        assert_eq!(rig.route(), route, "queued preview cannot land after this input batch");
+        rig.settle();
+        assert_eq!(ask.read_with(rig.cx, |ask, cx| ask.choices(cx).len()), 1);
+        rig.native_press("tab");
+        assert!(!rig.cx.update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window)),
+            "ordinary Change and read landing make the new result a native focus stop");
+        rig.native_press("down");
+        rig.settle();
+        assert_ne!(rig.route(), route, "fresh query arrows still preview the actual current row");
+        assert_eq!(ask.read_with(rig.cx, |ask, _| ask.draft.query().expect("current draft").text.to_string()), "short");
     }
 
     #[gpui::test]
