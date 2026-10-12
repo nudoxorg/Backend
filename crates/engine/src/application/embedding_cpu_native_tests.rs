@@ -347,12 +347,7 @@ fn installed_linux_cpu_runtime_activates_and_infers_exact_1_16_256() -> NativeRe
                     .values()
                     .iter()
                     .map(|value| value.to_bits())
-                    .collect::<Vec<_>>()
-                    != expected
-                        .values()
-                        .iter()
-                        .map(|value| value.to_bits())
-                        .collect::<Vec<_>>()
+                    .ne(expected.values().iter().map(|value| value.to_bits()))
                 {
                     return Err("300 and 256 known words did not reduce to identical pinned 256-token production vectors".into());
                 }
