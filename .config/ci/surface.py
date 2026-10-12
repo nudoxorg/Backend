@@ -229,7 +229,10 @@ def run_case(case: dict, bin_dir: Path) -> dict:
     try:
         answer, seconds = run_cli(owner, project, ["add", str(project), "--wait"], timeout)
         require_cli_success("cli add", answer)
-        record["answers"]["cli add"] = answer
+        # Indexing is setup: require success above, then snapshot the verdict.
+        # The caller journal embeds fresh random operation/receipt identities;
+        # search/outline/packages below snapshot the published product state.
+        record["answers"]["cli add"] = {"exit": answer["exit"]}
         record["performance"]["seconds"]["cli add"] = round(seconds, 2)
         for args in case.get("cli", []):
             key = "cli " + " ".join(args)
