@@ -2,6 +2,24 @@
 
 This checkpoint follows the [previous readiness report](runtime-readiness-20261011-evening.md). It separates actual native execution from source-reviewed changes. Public installers still select historical binaries; no new production-readiness or public-release claim is made.
 
+## 10:10 GMT production build and reviewed follow-through
+
+Root merged [PR #169](https://dev.nudox.org/git/Nudox/Backend/pulls/169) and [PR #170](https://dev.nudox.org/git/Nudox/Backend/pulls/170); canonical is `44a06937eacaae1842896bf4bd31da608f79eefa`. All 30 quarantined semantic laws are restored in source. A subsequent actual compile of the older frozen `cb57` cohort exposed one additional obsolete `admitted_runtime()` call; the reviewed one-line successor uses `owner.admitted().runtime()` and preserves the exact `Arc::ptr_eq` invariant. None of the replacement laws is claimed compiled or passed yet.
+
+The normal Linux CLI/MCP/local-daemon trio **built successfully** on ILO, exit 0 in **317.845 seconds**, on exact source `cb57fd82308af791812b5a09a6badfac2d62d836`, tree `ad309041fb1d716a8edd65ad9c3b1c2f342fb4e1`. Both lockfiles, 18,188 tracked source entries and tool identities stayed unchanged. Root read the mirrored manifest and receipt `aaab4884f65ab9df82b2a39ccb016c807c566a5c54eec21dced8fca8f68d8fae`; these are normal opt0/debug0 executables, not test images or release-profile performance evidence. The broker separately copied and rehashed their original 827,790,720 bytes. Packaging with the matched CPU helper is now running under its own acquired permit and resource envelope; installation, model activation and fresh-project acceptance are not yet established.
+
+| Normal executable | Bytes | SHA-256 |
+| --- | ---: | --- |
+| CLI | 187,177,664 | `c42cbf57f462da8d52cb56851ce568aed445de9ab6435684c3fcf7da247e39c4` |
+| MCP | 137,427,024 | `dfce896b37d6afdc05a9f75e802a97b313f23f925307407d511a52470f1293f1` |
+| Local daemon | 503,186,032 | `9447bb306c5dcccb2edd7593ee8eb14852b0e800cf8290944489b8e3e31c9792` |
+
+The independent focused native results remain mixed. The broker reports 39 host controls and six program controls passed, with two program controls ignored. Three template controls and the primitive control each passed, but the full 766,861-byte PocketBase fixture failed with `InvalidOccurrenceSpan { owner: Id(85), start: 89418, end: 89426 }`; it is assigned for compiler diagnosis. The older `cb57` local-service test image failed compilation on 34 obsolete API uses, and its MCP image failed the `surface_fidelity` module path. Current canonical restores the APIs and retains the coworker's explicit module path; that replacement native cohort is still required. The outer controls attempt returned 124 after detecting surviving owned descendants, reaped two adopted children and released its permit; successful normal build evidence is independent of that controls outcome. The raw controls mirror is still being transferred, so Root has not independently rehashed these new suite summaries.
+
+The next source checkpoint adds three reviewed changes, with new Rust execution still **UNRUN**: explicit `nudox add . --wait` keeps one exact durable operation and original observation deadline, returns nonzero on eventual failure and retains a literal resume command on interruption; embedding activation owns its input closure and affine memory lease while borrowing the original cancellation/deadline; native Add Enter captures the painted visit before deferred submission and rechecks it after a replacement paint. The real acquisition-worker fixture now permits its existing OS worker to wake the test executor. Activation controls are a prerequisite only: hot owner refresh, genuine model inference and semantic reindex are not implemented by that atom.
+
+Independent review found two hot-refresh design gaps in unmerged owner/compiler prerequisites: captured configuration needs final persisted-byte revalidation, and a cancellation after runtime install must not conceal a committed transition. Those atoms are held for correction. GUI road/Find refinements and TypeScript exact-owner repairs are separately under review; the earlier six TSZ failures and 22 GUI failures remain open until new native execution proves their corrections. No current GUI pixels, resize or motion capture is claimed.
+
 ## 09:00 GMT follow-through and Linux report 18
 
 PR #169 is merged into canonical `f111215d5d` and the primary checkout is fast-forwarded with the user's Nix edit intact. The next independently reviewed test-only atom restores all 30 quarantined Linux semantic laws using the current query/view APIs and a fixture-only owner selector; original assertions remain. Its Rust compilation and execution are still unrun. The frozen `cb57` controls/trio attempt02 is actually compiling on ILO with a warm pooled build slot; it is not silently retargeted to the later canonical or test-only source.
