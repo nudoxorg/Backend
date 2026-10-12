@@ -6354,6 +6354,10 @@ mod tests {
     #[path = "public_coordinate_alias.rs"]
     mod public_coordinate_alias_tests;
 
+    #[cfg(unix)]
+    #[path = "local_semantic_transport.rs"]
+    mod local_semantic_transport_tests;
+
     #[path = "selected_read.rs"]
     mod selected_read_tests;
 
