@@ -1,0 +1,280 @@
+{
+  "source": "18ed5c7de1db5a84f5db88d8e8b481cd202b398f",
+  "custody_sha256": "267c0ddd7ffa9fa58cd80376a8e873d26046bf17b42504046bee1097f12eb8bf",
+  "driver_receipt_sha256": "7ca568cc269cab2ba9467d93ecdb23e92f9ae6fc7fe1c92a0e321a8ef789a00e",
+  "raw_files_verified": 114,
+  "test_streams": 24,
+  "totals": {
+    "passed": 67,
+    "failed": 25,
+    "ignored": 0,
+    "measured": 0
+  },
+  "summaries": [
+    {
+      "raw": "test-06.stdout.log",
+      "sha256": "378e287888ee01844131f5e27dab8e3e8d5a2c6e608021844c7404d0b8bce14b",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 284,
+      "seconds": 0.0
+    },
+    {
+      "raw": "test-09.stdout.log",
+      "sha256": "0908c52317923f514bb992e5329ef3d6867a383f0192558f928b1d4a99835618",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 1347,
+      "seconds": 0.71
+    },
+    {
+      "raw": "test-10.stdout.log",
+      "sha256": "7bfba58353812832e8cba3da165c8020ac613465da23305ea9232679096c1c99",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 1347,
+      "seconds": 5.04
+    },
+    {
+      "raw": "test-11.stdout.log",
+      "sha256": "282c0849c90c51769dcfa8f77aa99966eb10cd93de429bf13aedb750819583f1",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 1347,
+      "seconds": 0.72
+    },
+    {
+      "raw": "test-12.stdout.log",
+      "sha256": "ad15fa30e00a0067bd14f209081d4d181f140baecd8407ab26d91e153d392a5c",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 1347,
+      "seconds": 2.49
+    },
+    {
+      "raw": "test-13.stdout.log",
+      "sha256": "4251c4b8d2770082015cd5c5495c534bba3f495229a2afb433f48ace2aff3284",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 1347,
+      "seconds": 0.89
+    },
+    {
+      "raw": "test-14.stdout.log",
+      "sha256": "797d436cb7a1ac7815384cd8c60b4d7e597aae677bcb17188a4a708e10502ae8",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 1347,
+      "seconds": 3.86
+    },
+    {
+      "raw": "test-15.stdout.log",
+      "sha256": "2f180074d048f7739ecc7bd0f3e50978560e2eb2b6aa4cddad59272967373703",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 1347,
+      "seconds": 21.78
+    },
+    {
+      "raw": "test-16.stdout.log",
+      "sha256": "ec79eec997b64792f3a1c9c25bedaf9e1c6b9c5195294dfc36ed38afaba50b9e",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 1347,
+      "seconds": 3.19
+    },
+    {
+      "raw": "test-17.stdout.log",
+      "sha256": "38dbd47fa8c2d577de5a0a0824dde0a0a88692105782c624da4ad57dfce53d0a",
+      "status": "ok",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 1345,
+      "seconds": 0.13
+    },
+    {
+      "raw": "test-18.stdout.log",
+      "sha256": "755b1e7b7a686fa9b44b373e1c6a6f592e6f4f88177fac55f3cd8e81c91c784c",
+      "status": "ok",
+      "passed": 20,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 147,
+      "seconds": 1.51
+    },
+    {
+      "raw": "test-19.stdout.log",
+      "sha256": "50900ab483ce2b04f13f4251756fead8855116e02c8386b6692a3e87a78f57ed",
+      "status": "ok",
+      "passed": 11,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 156,
+      "seconds": 0.06
+    },
+    {
+      "raw": "test-24.stdout.log",
+      "sha256": "44eee8d659ebfd811c920256ebafd7f880fbe029c638513fb6a3932703735ed6",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 1347,
+      "seconds": 0.8
+    },
+    {
+      "raw": "test-25.stdout.log",
+      "sha256": "dee9ad2a25f5602e8b1ebb85d8a97211334656b25d00376b3b5a556040c00239",
+      "status": "FAILED",
+      "passed": 0,
+      "failed": 1,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 1347,
+      "seconds": 306.62
+    },
+    {
+      "raw": "test-26.stdout.log",
+      "sha256": "9364bc72ac889aa95f5490dbd0add129032d34fee0adc214bf2458c17e7c5da6",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 139,
+      "seconds": 0.0
+    },
+    {
+      "raw": "test-27.stdout.log",
+      "sha256": "89eb1a28a90108d4aa6b9407e055167178c117b10e242ea0846a143b1ff99b0a",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 139,
+      "seconds": 0.0
+    },
+    {
+      "raw": "test-28.stdout.log",
+      "sha256": "73f38857013de25bb47c884eda2bdef807d853444703c44fe43027937912ae66",
+      "status": "FAILED",
+      "passed": 3,
+      "failed": 1,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 1344,
+      "seconds": 0.0
+    },
+    {
+      "raw": "test-29.stdout.log",
+      "sha256": "eaf30b1f28673dd39e114a030001c11dc74894a0ca1a26f0d74cffdf78f994d5",
+      "status": "ok",
+      "passed": 8,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 1340,
+      "seconds": 0.24
+    },
+    {
+      "raw": "test-30.stdout.log",
+      "sha256": "2132d41c12954f72be5eb83a8febba54c63cfd58a980b57f0607306ddd18d107",
+      "status": "ok",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 165,
+      "seconds": 1.45
+    },
+    {
+      "raw": "test-31.stdout.log",
+      "sha256": "1eea79e2eb3325c978def0fe926646c01e2ee409af2ddb931bf45e36b0fe2f19",
+      "status": "ok",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 164,
+      "seconds": 2.86
+    },
+    {
+      "raw": "test-32.stdout.log",
+      "sha256": "02ce629e7b5c1f7d05cb5c24c6386015cf3f923ac999616640b60d31c2653d7c",
+      "status": "ok",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 166,
+      "seconds": 0.18
+    },
+    {
+      "raw": "test-34.stdout.log",
+      "sha256": "5450d6392582116d9d9f034fefc024072a7cffdd8129d9a254b5c558c4ad6be8",
+      "status": "FAILED",
+      "passed": 4,
+      "failed": 18,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 1326,
+      "seconds": 0.23
+    },
+    {
+      "raw": "test-35.stdout.log",
+      "sha256": "0098a9335ed53364c0d207c314da6f676c7c5c1a9185ea3e1fc8b34d664dd1b0",
+      "status": "FAILED",
+      "passed": 0,
+      "failed": 1,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 1347,
+      "seconds": 0.0
+    },
+    {
+      "raw": "test-36.stdout.log",
+      "sha256": "ca63042b5f885c217765b4df6096789c35cb845b39c9752ae42f999291962009",
+      "status": "FAILED",
+      "passed": 0,
+      "failed": 4,
+      "ignored": 0,
+      "measured": 0,
+      "filtered": 1344,
+      "seconds": 0.0
+    }
+  ],
+  "scope": "Actual 18ed stdout/err and summary custody; no later source, model inference or GUI proof."
+}

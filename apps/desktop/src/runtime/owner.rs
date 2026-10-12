@@ -344,6 +344,12 @@ impl OwnerGate {
         Arc::ptr_eq(&self.0, &other.0)
     }
 
+    /// Process-local identity behind `same_gate`. A captured attachment keeps
+    /// this allocation alive; it is never a durable owner address.
+    pub(crate) fn gate_identity(&self) -> usize {
+        Arc::as_ptr(&self.0) as usize
+    }
+
     pub(crate) fn mutation_generation(&self, expected: Option<Epoch>) -> Option<(MutationGeneration, super::actor::CancellationToken)> {
         let inner = self.lock();
         (!inner.closed && !inner.observation_suspended && Some(inner.attachment) == expected

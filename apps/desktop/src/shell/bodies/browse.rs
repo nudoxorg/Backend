@@ -76,9 +76,11 @@ pub(super) fn body(
             )
         } else { find_admission(&reading) };
         let source = FindActionSource::new(route, ctx, cx);
+        let mut retry_activation_id = gpui::ElementId::Name("find-retry:unadmitted".into());
         let mut actions = find_actions(ctx, cx, &source);
         if matches!(resource.terminal(), ResourceTerminal::Fault(_)) {
             let expected = ctx.links.store.read(cx).capture_page_retry(&PageKey::Browse(source.key.clone()));
+            if let Some(receipt) = &expected { retry_activation_id = gpui::ElementId::Name(receipt.activation_name("find-retry")); }
             let receipt = expected.clone();
             let guard_source = source.clone();
             let local = ctx.native_local_guard(cx);
@@ -90,6 +92,7 @@ pub(super) fn body(
         }
         let leaves = vec![Leaf::new(
             facet::browse::find::find("find", model, actions, &ctx.measure)
+                .retry_activation_id(retry_activation_id)
                 .retained(ctx.find_state.clone())
                 .admission(admission)
                 .local_activation(ctx.native_local_activation_scope(cx))
