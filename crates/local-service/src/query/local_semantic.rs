@@ -67,7 +67,7 @@ pub enum LocalSemanticError {
 /// Closed failures of the one local semantic execution owner.
 #[derive(Debug)]
 pub enum LocalSemanticWorkerError {
-    /// Thread creation refused; the projection owner was dropped.
+    /// Thread creation refused before the retained projection owner was handed off.
     Spawn(io::Error),
     /// The worker panicked and returned no complete projection.
     Panicked,
@@ -308,7 +308,8 @@ impl LocalSemantic {
     pub(super) fn record_query_failure(&mut self, error: LocalSemanticError) {
         let keep = matches!(
             &error,
-            LocalSemanticError::Memory(_)
+            LocalSemanticError::Worker(LocalSemanticWorkerError::Spawn(_))
+                | LocalSemanticError::Memory(_)
                 | LocalSemanticError::Allocation(_)
                 | LocalSemanticError::Inference(EmbeddingExecutableError::Memory(_))
                 | LocalSemanticError::Inference(EmbeddingExecutableError::TextLimit { .. })

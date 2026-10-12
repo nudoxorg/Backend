@@ -279,6 +279,178 @@ fn local_semantic_transient_query_failure_is_one_shot_and_preserves_selected_pro
 
 #[cfg(unix)]
 #[test]
+fn local_semantic_owner_spawn_refusal_preserves_projection_selection_and_warm_answers() -> TestResult
+{
+    let (coordinator, library, view) = selected_many(30, false)?;
+    let fixture = fixture(4096)?;
+    let runtime = fixture.provision.runtime().ok_or("activated runtime")?;
+    let mut provider = crate::builtin::query::RemoteSemantic::select_owner(
+        &fixture.provision,
+        &fixture.descriptor,
+        crate::builtin::query::RemoteSemantic::Unconfigured,
+    );
+    let flag = Arc::new(AtomicBool::new(false));
+    let coverage = crate::builtin::admitted_coverage()?;
+    let warm = backend_engine::Query::new(
+        "warm intent",
+        view.root(),
+        backend_engine::QueryLimit::new(3)?,
+    );
+    let (warm_page, status) =
+        settle_page(&coordinator, &library, &mut provider, &warm, flag.clone())?;
+    assert_eq!(status, SemanticSearchStatus::Available);
+    let before_calls = std::fs::read_to_string(&fixture.log)?;
+    let before_credits = runtime.memory_budget().used();
+    let crate::builtin::query::RemoteSemantic::Local(owner) = &mut provider else {
+        return Err("local owner".into());
+    };
+    let retained = owner.core().ok_or("warm core")?;
+    let before_binding = retained
+        .active
+        .as_ref()
+        .ok_or("complete projection")?
+        .index
+        .binding();
+    let before_admitted = retained.admitted();
+    let before_cache = owner.cached_completions();
+    owner.refuse_next_worker_spawn();
+    let retry = backend_engine::Query::new(
+        "retry intent",
+        view.root(),
+        backend_engine::QueryLimit::new(3)?,
+    );
+    let expected_lexical = super::super::search_page_with_cancellation(
+        &coordinator,
+        &library,
+        &mut crate::builtin::query::RemoteSemantic::Unconfigured,
+        coverage,
+        &retry,
+        flag.clone(),
+    )
+    .map_err(|error| error.to_string())?
+    .0;
+    let (page, status) = super::super::search_page_with_cancellation(
+        &coordinator,
+        &library,
+        &mut provider,
+        coverage,
+        &retry,
+        flag.clone(),
+    )
+    .map_err(|error| error.to_string())?;
+    assert_eq!(
+        page, expected_lexical,
+        "spawn refusal returns the exact lexical page"
+    );
+    assert_eq!(
+        status,
+        SemanticSearchStatus::Unavailable {
+            reason: SemanticSearchReason::ProviderUnavailable,
+        }
+    );
+    assert!(
+        provider.local_preparation().is_none(),
+        "no phantom worker wait"
+    );
+    let crate::builtin::query::RemoteSemantic::Local(owner) = &provider else {
+        return Err("local owner".into());
+    };
+    let retained = owner.core().ok_or("reclaimed original core")?;
+    assert!(matches!(
+        retained.failure(),
+        Some(LocalSemanticError::Worker(LocalSemanticWorkerError::Spawn(
+            _
+        )))
+    ));
+    assert_eq!(
+        retained
+            .active
+            .as_ref()
+            .ok_or("retained projection")?
+            .index
+            .binding(),
+        before_binding
+    );
+    assert!(
+        Arc::ptr_eq(&retained.admitted(), &before_admitted),
+        "same admitted runtime owner"
+    );
+    assert_eq!(owner.cached_completions(), before_cache);
+    assert_eq!(
+        runtime.memory_budget().used(),
+        before_credits,
+        "unstarted seed/key leases released"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&fixture.log)?,
+        before_calls,
+        "no producer on spawn refusal"
+    );
+    let (page, status) = super::super::search_page_with_cancellation(
+        &coordinator,
+        &library,
+        &mut provider,
+        coverage,
+        &warm,
+        flag.clone(),
+    )
+    .map_err(|error| error.to_string())?;
+    assert_eq!(
+        status,
+        SemanticSearchStatus::Available,
+        "original selection admits warm answer"
+    );
+    assert_eq!(page.rows(), warm_page.rows());
+    assert_eq!(std::fs::read_to_string(&fixture.log)?, before_calls);
+    assert_eq!(
+        settle_page(&coordinator, &library, &mut provider, &retry, flag.clone(),)?.1,
+        SemanticSearchStatus::Available,
+        "same refused key can retry normally"
+    );
+    let after_calls = std::fs::read_to_string(&fixture.log)?;
+    let purposes = |log: &str| -> Result<Vec<u64>, Box<dyn std::error::Error>> {
+        log.lines()
+            .map(|line| {
+                let row: serde_json::Value = serde_json::from_str(line)?;
+                row["purpose"]
+                    .as_u64()
+                    .ok_or_else(|| "protocol purpose".into())
+            })
+            .collect()
+    };
+    let before = purposes(&before_calls)?;
+    let after = purposes(&after_calls)?;
+    assert_eq!(
+        after.iter().filter(|&&purpose| purpose == 2).count(),
+        before.iter().filter(|&&purpose| purpose == 2).count(),
+        "complete document projection never rebuilds"
+    );
+    assert_eq!(
+        after.iter().filter(|&&purpose| purpose == 1).count(),
+        before.iter().filter(|&&purpose| purpose == 1).count() + 1,
+        "only successful retry invokes query producer"
+    );
+    assert_eq!(
+        settle_page(&coordinator, &library, &mut provider, &retry, flag.clone(),)?.1,
+        SemanticSearchStatus::Available
+    );
+    assert_eq!(std::fs::read_to_string(&fixture.log)?, after_calls);
+    flag.store(true, Ordering::Release);
+    provider.poll_local(coordinator.workspace_root(), view.root());
+    let crate::builtin::query::RemoteSemantic::Local(owner) = &provider else {
+        return Err("local owner".into());
+    };
+    assert!(
+        !owner.core().ok_or("retired core")?.has_projection(),
+        "real cancellation still retires the reclaimed selected core"
+    );
+    assert_eq!(owner.cached_completions(), 0);
+    assert!(runtime.memory_budget().used() < before_credits);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn local_semantic_first_completion_is_owed_not_optional_before_actual_delivery() -> TestResult {
     let (coordinator, library, view) = selected_many(30, false)?;
     let fixture = fixture(4096)?;

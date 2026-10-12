@@ -198,6 +198,8 @@ pub struct LocalSemanticOwner {
     execution: Execution,
     completion_policy: QueryCompletionPolicy,
     cache: Arc<CompletionCache>,
+    #[cfg(test)]
+    refuse_next_spawn: bool,
 }
 impl LocalSemanticOwner {
     pub(super) fn open(
@@ -222,6 +224,8 @@ impl LocalSemanticOwner {
                 owed_completion: None,
             },
             cache,
+            #[cfg(test)]
+            refuse_next_spawn: false,
         })
     }
     pub(super) fn recipe(&self) -> backend_extension_qdrant::EmbeddingRecipe {
@@ -502,47 +506,59 @@ impl LocalSemanticOwner {
             coverage,
             cancelled: Arc::clone(&cancelled),
         };
-        let Execution::Ready { mut core, .. } =
-            std::mem::replace(&mut self.execution, Execution::Closed)
+        let Execution::Ready {
+            core,
+            selection: prior_selection,
+            ..
+        } = std::mem::replace(&mut self.execution, Execution::Closed)
         else {
             return SemanticAnswer::lexical(local, SemanticSearchReason::NoActiveProjection);
         };
         let (sender, completed) = mpsc::sync_channel(1);
         let worker_coordinator = coordinator.clone();
         let worker_key = Arc::clone(&key);
-        let worker = thread::Builder::new()
-            .name("locald-semantic-query".to_owned())
-            .spawn(move || {
-                let result = core.execute_query(
-                    &worker_coordinator,
-                    coverage,
-                    seed,
-                    &worker_key.text,
-                    &cancelled,
-                    deadline,
-                );
-                let completed = match result {
-                    Ok((result, memory)) => Some(Completed {
-                        key: worker_key,
-                        answer: Some(SemanticAnswer {
-                            result,
-                            status: SemanticSearchStatus::Available,
-                            _memory: Some(memory),
-                        }),
-                        failure: SemanticSearchReason::ProviderUnavailable,
+        // The closure owns only a handoff reference until an actual thread starts.
+        // Builder::spawn drops its closure on OS refusal; the caller still owns the
+        // original complete core and can reclaim it without rebuilding its projection.
+        // No inference, allocation admission or callback runs while this lock is held.
+        let handoff = Arc::new(Mutex::new(Some(core)));
+        let worker_handoff = Arc::clone(&handoff);
+        let worker = self.spawn_worker(move || {
+            let mut core = worker_handoff
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .take()
+                .expect("one admitted semantic worker handoff");
+            let result = core.execute_query(
+                &worker_coordinator,
+                coverage,
+                seed,
+                &worker_key.text,
+                &cancelled,
+                deadline,
+            );
+            let completed = match result {
+                Ok((result, memory)) => Some(Completed {
+                    key: worker_key,
+                    answer: Some(SemanticAnswer {
+                        result,
+                        status: SemanticSearchStatus::Available,
+                        _memory: Some(memory),
                     }),
-                    Err(error) => {
-                        let failure = error.reason();
-                        core.record_query_failure(error);
-                        Some(Completed {
-                            key: worker_key,
-                            answer: None,
-                            failure,
-                        })
-                    }
-                };
-                let _ = sender.send((core, completed));
-            });
+                    failure: SemanticSearchReason::ProviderUnavailable,
+                }),
+                Err(error) => {
+                    let failure = error.reason();
+                    core.record_query_failure(error);
+                    Some(Completed {
+                        key: worker_key,
+                        answer: None,
+                        failure,
+                    })
+                }
+            };
+            let _ = sender.send((core, completed));
+        });
         match worker {
             Ok(worker) => {
                 self.execution = Execution::Working(Worker {
@@ -552,14 +568,20 @@ impl LocalSemanticOwner {
                 })
             }
             Err(error) => {
-                self.cache.clear();
-                let mut core = LocalSemantic::from_admitted(Arc::clone(&self.admitted));
-                core.refuse(LocalSemanticError::Worker(LocalSemanticWorkerError::Spawn(
-                    error,
-                )));
+                let mut core = handoff
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .take()
+                    .expect("spawn refusal retains the unstarted semantic core");
+                core.record_query_failure(LocalSemanticError::Worker(
+                    LocalSemanticWorkerError::Spawn(error),
+                ));
+                if !core.has_projection() {
+                    self.cache.clear();
+                }
                 self.execution = Execution::Ready {
                     core,
-                    selection: None,
+                    selection: prior_selection,
                     owed_completion: None,
                 };
             }
@@ -585,6 +607,26 @@ impl LocalSemanticOwner {
                 },
             ),
         }
+    }
+
+    fn spawn_worker(
+        &mut self,
+        task: impl FnOnce() + Send + 'static,
+    ) -> std::io::Result<JoinHandle<()>> {
+        #[cfg(test)]
+        if std::mem::take(&mut self.refuse_next_spawn) {
+            return Err(std::io::Error::other(
+                "injected owner thread admission refusal",
+            ));
+        }
+        thread::Builder::new()
+            .name("locald-semantic-query".to_owned())
+            .spawn(task)
+    }
+
+    #[cfg(test)]
+    pub(super) fn refuse_next_worker_spawn(&mut self) {
+        self.refuse_next_spawn = true;
     }
 
     #[cfg(test)]
