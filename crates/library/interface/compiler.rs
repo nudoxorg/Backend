@@ -657,6 +657,21 @@ pub enum CompilerTerminal {
         /// Exact tool requirement and bounded admission failure.
         issue: CompilerToolIssue,
     },
+    /// A concrete authority admission failed before a canonical recipe existed.
+    AuthorityAdmission {
+        /// Identity and byte length of the source attributed to package admission.
+        source: SourceAuthority,
+        /// Requested closed language family.
+        language: Language,
+        /// Requested closed compiler stage.
+        stage: Stage,
+        /// Exact authority admission phase that failed.
+        phase: AuthorityPhase,
+        /// Exact diagnostic class retained from the admission error.
+        class: AuthorityDiagnosticClass,
+        /// Bounded concrete admission diagnostic, when one was retained.
+        diagnostic: Option<CompilerDiagnostic>,
+    },
     /// Cancellation won before an IR fragment could become visible.
     Cancelled {
         /// Exact source and canonical recipe identity under evaluation.

@@ -128,6 +128,20 @@ pub(crate) enum CompilerTerminalWire {
         stage: Stage,
         issue: CompilerToolIssue,
     },
+    AuthorityAdmission {
+        #[serde(with = "SourceAuthorityWire")]
+        source: SourceAuthority,
+        #[serde(with = "LanguageWire")]
+        language: Language,
+        #[serde(with = "StageWire")]
+        stage: Stage,
+        #[serde(with = "AuthorityPhaseWire")]
+        phase: AuthorityPhase,
+        #[serde(with = "AuthorityDiagnosticClassWire")]
+        class: AuthorityDiagnosticClass,
+        #[serde(serialize_with = "serialize_diagnostic_option")]
+        diagnostic: Option<CompilerDiagnostic>,
+    },
     Cancelled {
         #[serde(with = "CompilerAttemptWire")]
         attempted: CompilerAttempt,

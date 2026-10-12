@@ -74,6 +74,14 @@ pub(crate) enum GoldenCompilerTerminal {
         stage: super::authority::GoldenStage,
         issue: GoldenCompilerToolIssue,
     },
+    AuthorityAdmission {
+        source: GoldenSourceAuthority,
+        language: super::authority::GoldenLanguage,
+        stage: super::authority::GoldenStage,
+        phase: GoldenAuthorityPhase,
+        class: GoldenAuthorityDiagnosticClass,
+        diagnostic: Option<GoldenCompilerDiagnostic>,
+    },
     Cancelled {
         attempted: GoldenCompilerAttempt,
         diagnostic: Option<GoldenCompilerDiagnostic>,
@@ -436,6 +444,56 @@ impl From<CompilerTerminal> for GoldenCompilerTerminal {
                     requirement: golden_tool_requirement(issue.requirement).to_owned(),
                     failure: golden_tool_failure(issue.failure).to_owned(),
                 },
+            },
+            CompilerTerminal::AuthorityAdmission {
+                source,
+                language,
+                stage,
+                phase,
+                class,
+                diagnostic,
+            } => Self::AuthorityAdmission {
+                source: source.into(),
+                language: language.into(),
+                stage: stage.into(),
+                phase: match phase {
+                    backend_semantic::vocabulary::AuthorityPhase::Open => {
+                        GoldenAuthorityPhase::Open
+                    }
+                    backend_semantic::vocabulary::AuthorityPhase::Parse => {
+                        GoldenAuthorityPhase::Parse
+                    }
+                    backend_semantic::vocabulary::AuthorityPhase::Resolve => {
+                        GoldenAuthorityPhase::Resolve
+                    }
+                    backend_semantic::vocabulary::AuthorityPhase::TypeCheck => {
+                        GoldenAuthorityPhase::TypeCheck
+                    }
+                    backend_semantic::vocabulary::AuthorityPhase::Project => {
+                        GoldenAuthorityPhase::Project
+                    }
+                },
+                class: match class {
+                    backend_semantic::vocabulary::AuthorityDiagnosticClass::Syntax => {
+                        GoldenAuthorityDiagnosticClass::Syntax
+                    }
+                    backend_semantic::vocabulary::AuthorityDiagnosticClass::Binding => {
+                        GoldenAuthorityDiagnosticClass::Binding
+                    }
+                    backend_semantic::vocabulary::AuthorityDiagnosticClass::SourceScope => {
+                        GoldenAuthorityDiagnosticClass::SourceScope
+                    }
+                    backend_semantic::vocabulary::AuthorityDiagnosticClass::Type => {
+                        GoldenAuthorityDiagnosticClass::Type
+                    }
+                    backend_semantic::vocabulary::AuthorityDiagnosticClass::Authority => {
+                        GoldenAuthorityDiagnosticClass::Authority
+                    }
+                    backend_semantic::vocabulary::AuthorityDiagnosticClass::Projection => {
+                        GoldenAuthorityDiagnosticClass::Projection
+                    }
+                },
+                diagnostic: diagnostic.map(Into::into),
             },
             CompilerTerminal::Cancelled {
                 attempted,

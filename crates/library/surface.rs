@@ -1364,6 +1364,10 @@ fn admit_terminal_profile_partition(
             if let PackageCompilerFailureCause::Authority {
                 diagnostic: Some(facts),
                 ..
+            }
+            | PackageCompilerFailureCause::AuthorityAdmission {
+                diagnostic: Some(facts),
+                ..
             } = failure.cause()
             {
                 let language = profile.profile.profile()?.language();
@@ -1391,6 +1395,9 @@ fn admit_terminal_profile_partition(
                 language, stage, ..
             }
             | PackageCompilerFailureCause::RequiredTool {
+                language, stage, ..
+            }
+            | PackageCompilerFailureCause::AuthorityAdmission {
                 language, stage, ..
             } = failure.cause()
                 && (*language != CompilerLanguageFact::from(profile.profile.profile()?.language())
@@ -1933,7 +1940,8 @@ impl PackageCompilerFailure {
         let source = match terminal {
             crate::interface::CompilerTerminal::Toolchain { source, .. }
             | crate::interface::CompilerTerminal::ToolingUnavailable { source, .. }
-            | crate::interface::CompilerTerminal::RequiredTool { source, .. } => *source,
+            | crate::interface::CompilerTerminal::RequiredTool { source, .. }
+            | crate::interface::CompilerTerminal::AuthorityAdmission { source, .. } => *source,
             crate::interface::CompilerTerminal::Compile { attempted, .. } => attempted.source,
             _ => return Ok(None),
         };
@@ -1946,6 +1954,10 @@ impl PackageCompilerFailure {
                         diagnostic: Some(diagnostic),
                         ..
                     },
+                ..
+            }
+            | crate::interface::CompilerTerminal::AuthorityAdmission {
+                diagnostic: Some(diagnostic),
                 ..
             } => Some(Box::<[u8]>::from(
                 diagnostic.retained_bytes_for_local_debug(),
@@ -2120,6 +2132,7 @@ impl PackageCompilerFailure {
                     PackageCompilerFailureCause::Toolchain { .. }
                         | PackageCompilerFailureCause::ToolingUnavailable { .. }
                         | PackageCompilerFailureCause::RequiredTool { .. }
+                        | PackageCompilerFailureCause::AuthorityAdmission { .. }
                 ))
         {
             return Err(ProductAdmissionError::PackageCompilerFailureShape);
@@ -2472,10 +2485,22 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
     if let PackageCompilerFailureCause::Authority {
         diagnostic: Some(CompilerAuthorityDiagnosticFacts { go_failure: Some(failure), .. }),
         ..
+    }
+    | PackageCompilerFailureCause::AuthorityAdmission {
+        diagnostic: Some(CompilerAuthorityDiagnosticFacts { go_failure: Some(failure), .. }),
+        ..
     } = cause {
         return sanitize_package_compiler_detail(failure.detail(), false);
     }
     if let PackageCompilerFailureCause::Authority {
+        diagnostic:
+            Some(CompilerAuthorityDiagnosticFacts {
+                python_failure: Some(failure),
+                ..
+            }),
+        ..
+    }
+    | PackageCompilerFailureCause::AuthorityAdmission {
         diagnostic:
             Some(CompilerAuthorityDiagnosticFacts {
                 python_failure: Some(failure),
@@ -2487,6 +2512,14 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
         return sanitize_package_compiler_detail(failure.detail(), false);
     }
     if let PackageCompilerFailureCause::Authority {
+        diagnostic:
+            Some(CompilerAuthorityDiagnosticFacts {
+                typescript_failure: Some(failure),
+                ..
+            }),
+        ..
+    }
+    | PackageCompilerFailureCause::AuthorityAdmission {
         diagnostic:
             Some(CompilerAuthorityDiagnosticFacts {
                 typescript_failure: Some(failure),
@@ -2562,7 +2595,8 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
             return sanitize_package_compiler_detail(&text, false);
         }
         PackageCompilerFailureCause::Lowering(_) => "lowering fault",
-        PackageCompilerFailureCause::Authority { phase, .. } => match phase {
+        PackageCompilerFailureCause::Authority { phase, .. }
+        | PackageCompilerFailureCause::AuthorityAdmission { phase, .. } => match phase {
             AuthorityPhaseFact::Open => "open authority fault",
             AuthorityPhaseFact::Parse => "parse authority fault",
             AuthorityPhaseFact::Resolve => "resolve authority fault",
@@ -2588,27 +2622,45 @@ fn package_cause_is_valid(cause: &PackageCompilerFailureCause) -> bool {
         PackageCompilerFailureCause::ToolingUnavailable { .. }
         | PackageCompilerFailureCause::RequiredTool { .. }
         | PackageCompilerFailureCause::Lowering(_) => true,
-        PackageCompilerFailureCause::Authority {
+        PackageCompilerFailureCause::AuthorityAdmission {
+            language,
             diagnostic: Some(facts),
             ..
         } => {
-            [
-                facts.python_failure.is_some(),
-                facts.typescript_failure.is_some(),
-                facts.go_failure.is_some(),
-            ]
-            .into_iter()
-            .filter(|present| *present)
-            .count()
-                <= 1
-                && (facts.python_failure
-                    == Some(crate::interface::PythonAuthorityFailureKind::ConfigurationRefused))
-                    == facts.python_configuration.is_some()
+            authority_diagnostic_facts_are_valid(facts)
+                && (facts.python_failure.is_none()
+                    || *language == CompilerLanguageFact::Python)
+                && (facts.typescript_failure.is_none()
+                    || *language == CompilerLanguageFact::TypeScript)
+                && (facts.go_failure.is_none()
+                    || *language == CompilerLanguageFact::Go)
         }
         PackageCompilerFailureCause::Authority {
+            diagnostic: Some(facts),
+            ..
+        } => authority_diagnostic_facts_are_valid(facts),
+        PackageCompilerFailureCause::Authority {
+            diagnostic: None, ..
+        }
+        | PackageCompilerFailureCause::AuthorityAdmission {
             diagnostic: None, ..
         } => true,
     }
+}
+
+fn authority_diagnostic_facts_are_valid(facts: &CompilerAuthorityDiagnosticFacts) -> bool {
+    [
+        facts.python_failure.is_some(),
+        facts.typescript_failure.is_some(),
+        facts.go_failure.is_some(),
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count()
+        <= 1
+        && (facts.python_failure
+            == Some(crate::interface::PythonAuthorityFailureKind::ConfigurationRefused))
+            == facts.python_configuration.is_some()
 }
 
 fn is_canonical_package_relative_source_path(value: &str) -> bool {
@@ -2698,6 +2750,7 @@ impl<'de> Deserialize<'de> for PackageCompilerFailure {
                 PackageCompilerFailureCause::Toolchain { .. }
                     | PackageCompilerFailureCause::ToolingUnavailable { .. }
                     | PackageCompilerFailureCause::RequiredTool { .. }
+                    | PackageCompilerFailureCause::AuthorityAdmission { .. }
             )
         {
             return Err(D::Error::custom(
@@ -6189,6 +6242,47 @@ mod tests {
             "mapped"
         );
         assert_eq!(zod_json["cause"]["fault"]["cause"]["cause"]["cell"], "text");
+    }
+
+    #[test]
+    fn authority_admission_codec_rejects_recipe_and_foreign_language() {
+        use crate::interface::{
+            AuthorityDiagnosticClass, AuthorityPhase, CompilerDiagnostic, CompilerTerminal,
+            SourceAuthority, TypeScriptAuthorityFailureKind,
+        };
+        use backend_semantic::vocabulary::{Language, Stage};
+
+        let terminal = CompilerTerminal::AuthorityAdmission {
+            source: SourceAuthority {
+                identity: ContentId::<SourceFactDomain>::from_canonical_bytes(b"admission source"),
+                byte_len: 16,
+            },
+            language: Language::TypeScript,
+            stage: Stage::LowerIr,
+            phase: AuthorityPhase::TypeCheck,
+            class: AuthorityDiagnosticClass::Authority,
+            diagnostic: Some(CompilerDiagnostic::from_native(b"PRIVATE-ADMISSION-CAUSE", 23, false)
+                .unwrap().with_typescript_failure(TypeScriptAuthorityFailureKind::HostCompilerApiBridge)),
+        };
+        let failure = PackageCompilerFailure::from_package_terminal(".lintstagedrc.js", &terminal)
+            .unwrap().unwrap();
+        assert_eq!(failure.recipe_identity(), None);
+        assert_eq!(failure.phase(), PackageCompilerFailurePhase::Setup);
+        assert_eq!(failure.kind_tag(), "typescript_host_compiler_api_bridge");
+        assert_eq!(failure.retained_diagnostic_for_local_debug(), Some(b"PRIVATE-ADMISSION-CAUSE".as_slice()));
+        let encoded = failure.encode_bounded_json().unwrap();
+        assert!(!String::from_utf8_lossy(&encoded).contains("PRIVATE-ADMISSION-CAUSE"));
+        let reopened = PackageCompilerFailure::decode_bounded_json(&encoded).unwrap();
+        assert_eq!(reopened, failure);
+        assert!(reopened.retained_diagnostic_for_local_debug().is_none());
+        let mut forged: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        forged["recipe_identity"] = serde_json::json!(
+            ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"never admitted recipe").to_string()
+        );
+        assert!(PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&forged).unwrap()).is_err());
+        let mut foreign: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+        foreign["cause"]["fault"]["language"] = serde_json::json!("python");
+        assert!(PackageCompilerFailure::decode_bounded_json(&serde_json::to_vec(&foreign).unwrap()).is_err());
     }
 
     #[test]

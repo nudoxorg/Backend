@@ -4551,6 +4551,13 @@ fn package_authority_terminal(
             )
         }
         cause => {
+            let pre_recipe_typescript_admission = matches!(
+                &cause,
+                PackageAuthorityError::TypeScriptProjectHost(_)
+            ) && request.profile.language() == backend_semantic::vocabulary::Language::TypeScript
+                && matches!(toolchain, ToolchainSelection::ExplicitlyUnavailable {
+                    tool: NativeTool::TypeScriptCompiler,
+                });
             let (phase, class) = package_authority_projection(&cause);
             let typescript_failure = super::compiler_typescript_failure::failure_kind(&cause);
             let go_failure = match &cause {
@@ -4604,16 +4611,27 @@ fn package_authority_terminal(
                     },
                 },
             });
-            compiler_attempt_terminal(
-                request,
-                source,
-                toolchain,
-                CompilerCause::Authority {
+            if pre_recipe_typescript_admission {
+                CompilerTerminal::AuthorityAdmission {
+                    source,
+                    language: request.profile.language(),
+                    stage: request.stage,
                     phase,
                     class,
                     diagnostic,
-                },
-            )
+                }
+            } else {
+                compiler_attempt_terminal(
+                    request,
+                    source,
+                    toolchain,
+                    CompilerCause::Authority {
+                        phase,
+                        class,
+                        diagnostic,
+                    },
+                )
+            }
         }
     }
 }
@@ -5142,6 +5160,69 @@ mod tests {
         let encoded = serde_json::to_string(&failure).unwrap();
         assert!(encoded.contains("dependency_package_load"));
         assert!(!encoded.contains("/toolchain"));
+    }
+
+    #[test]
+    fn project_typescript_admission_fault_is_not_missing_global_tsc() {
+        use backend_semantic::vocabulary::{Language, TypeScriptSource};
+
+        let request = super::ApplicationCompilerRequest {
+            profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+            stage: Stage::LowerIr,
+            source: "module.exports = {};",
+        };
+        let source = request_source(request).expect("exact original source");
+        let target = backend_version::ContentId::from_canonical_bytes(b"project admission target");
+        let unavailable = ToolchainSelection::ExplicitlyUnavailable {
+            tool: NativeTool::TypeScriptCompiler,
+        };
+        let terminal = package_authority_terminal(
+            target,
+            request,
+            source,
+            unavailable,
+            PackageAuthorityError::TypeScriptProjectHost(
+                crate::application::TypeScriptProjectHostError::CompilerApiBridge {
+                    message: "private original admission evidence".into(),
+                },
+            ),
+        );
+        let CompilerTerminal::AuthorityAdmission {
+            source: retained_source,
+            language: Language::TypeScript,
+            stage: Stage::LowerIr,
+            diagnostic: Some(diagnostic),
+            ..
+        } = &terminal
+        else {
+            panic!("the concrete host error must survive without a global tsc recipe");
+        };
+        assert_eq!(*retained_source, source);
+        assert!(std::str::from_utf8(diagnostic.retained_bytes_for_local_debug())
+            .unwrap().contains("private original admission evidence"));
+        let failure = backend_library::PackageCompilerFailure::from_package_terminal(
+            ".lintstagedrc.js", &terminal,
+        ).unwrap().unwrap();
+        assert_eq!(failure.recipe_identity(), None);
+        assert_eq!(failure.kind_tag(), "typescript_host_compiler_api_bridge");
+        assert!(!failure.cause().requires_tool_configuration());
+        let encoded = failure.encode_bounded_json().unwrap();
+        assert!(!String::from_utf8_lossy(&encoded).contains("private original"));
+        let reopened = backend_library::PackageCompilerFailure::decode_bounded_json(&encoded)
+            .unwrap();
+        assert_eq!(reopened, failure);
+        assert_eq!(reopened.recipe_identity(), None);
+
+        let missing = package_authority_terminal(
+            target, request, source, unavailable,
+            PackageAuthorityError::ToolchainUnavailable {
+                profile: request.profile,
+                tool: NativeTool::TypeScriptCompiler,
+            },
+        );
+        assert!(matches!(missing, CompilerTerminal::Toolchain {
+            selected: NativeTool::TypeScriptCompiler, configured: None, ..
+        }));
     }
 
     #[test]
