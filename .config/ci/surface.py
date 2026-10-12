@@ -68,7 +68,10 @@ class Owner:
         self.workspace = case_root / "workspace"
         self.endpoint = case_root / "locald.sock"
         self.env = isolated_env(self.home, bin_dir)
-        authority = case_root / "authority.secret"
+        self.workspace.mkdir(parents=True)
+        authority = self.workspace / "authority.secret"
+        self.env["BACKEND_LOCALD_WORKSPACE"] = str(self.workspace)
+        self.env["BACKEND_LOCALD_AUTHORITY_SECRET_FILE"] = str(authority)
         authority.write_bytes(bytes([0x5A]) * 32)
         authority.chmod(0o600)
         self.log = open(case_root / "locald.log", "w")
@@ -82,6 +85,10 @@ class Owner:
                 "--max-frame", "1048576",
                 "--timeout-ms", "180000",
                 "--registry-offline",
+                "--registry-discovery-offline",
+                "--advisory-offline",
+                "--forge-offline",
+                "--idle-timeout-ms", "5000",
             ],
             env=self.env,
             cwd=case_root,
@@ -112,13 +119,15 @@ class Owner:
 
     def stop(self) -> None:
         if self.process.poll() is None:
-            os.killpg(self.process.pid, signal.SIGTERM)
             try:
                 self.process.wait(timeout=20)
             except subprocess.TimeoutExpired:
                 os.killpg(self.process.pid, signal.SIGKILL)
                 self.process.wait()
+                raise RuntimeError("backend-locald failed to retire through its idle timeout")
         self.log.close()
+        if self.process.returncode != 0:
+            raise RuntimeError(f"backend-locald exited {self.process.returncode}")
 
 
 def isolated_env(home: Path, bin_dir: Path) -> dict[str, str]:
@@ -201,6 +210,11 @@ def run_mcp(owner: Owner, project: Path, calls: list[dict], timeout: float) -> t
     return {"tools": tools, "calls": answers, "exit": result.returncode}, seconds
 
 
+def require_cli_success(name: str, answer: dict) -> None:
+    if answer["exit"] != 0 or not isinstance(answer["json"], dict) or answer["json"].get("answer") == "fault":
+        raise RuntimeError(f"{name} failed: {answer}")
+
+
 def run_case(case: dict, bin_dir: Path) -> dict:
     case_root = SCRATCH / case["name"]
     if case_root.exists():
@@ -213,15 +227,27 @@ def run_case(case: dict, bin_dir: Path) -> dict:
     record = {"answers": {}, "performance": {"seconds": {}}}
     try:
         answer, seconds = run_cli(owner, project, ["add", str(project), "--wait"], timeout)
+        require_cli_success("cli add", answer)
         record["answers"]["cli add"] = answer
         record["performance"]["seconds"]["cli add"] = round(seconds, 2)
         for args in case.get("cli", []):
             key = "cli " + " ".join(args)
             answer, seconds = run_cli(owner, project, args, timeout)
+            require_cli_success(key, answer)
+            if args[0] == "search" and not answer["json"].get("records"):
+                raise RuntimeError(f"{key}: expected fixture symbol, got no records")
             record["answers"][key] = answer
             record["performance"]["seconds"][key] = round(seconds, 2)
         if case.get("mcp"):
             answer, seconds = run_mcp(owner, project, case["mcp"], timeout)
+            if answer["exit"] != 0 or not answer["tools"]:
+                raise RuntimeError(f"MCP session failed: {answer}")
+            for result in answer["calls"]:
+                reply = result["reply"]
+                if not isinstance(reply, dict) or reply.get("isError", False) or "code" in reply:
+                    raise RuntimeError(f"MCP call failed: {result}")
+                if result["call"]["tool"] == "backend.search" and not reply.get("structuredContent", {}).get("records"):
+                    raise RuntimeError(f"MCP search returned no fixture symbols: {result}")
             record["answers"]["mcp"] = answer
             record["performance"]["seconds"]["mcp"] = round(seconds, 2)
         record["performance"].update(owner.usage())
