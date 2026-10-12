@@ -29,6 +29,7 @@ mod cluster;
 mod error;
 mod embedding_setup;
 mod embedding_package;
+mod index_wait;
 pub mod invoke;
 pub mod options;
 mod process;

@@ -282,6 +282,28 @@ impl CommandGrammar {
         self.options
     }
 
+    /// Caller-lifetime CLI options, excluded from product/MCP arguments.
+    /// They use the same generic parser and help grammar as product options.
+    #[must_use]
+    pub fn cli_options(self) -> &'static [ArgumentSpec] {
+        if self.name == "add" {
+            &[
+                ArgumentSpec::optional(
+                    "wait",
+                    ArgumentKind::Flag,
+                    "Wait for this exact durable operation's terminal receipt; failures return nonzero. Without this flag Add returns acceptance immediately.",
+                ),
+                ArgumentSpec::optional(
+                    "wait-timeout",
+                    ArgumentKind::Sequence,
+                    "With --wait, bound observation to 0–900 seconds after acceptance (default 900). Timeout retains the operation; resume with the returned index_progress command.",
+                ),
+            ]
+        } else {
+            &[]
+        }
+    }
+
     /// Returns the sentence that says *when* to reach for this command.
     #[must_use]
     pub const fn when(self) -> &'static str {
@@ -396,6 +418,16 @@ impl CommandGrammar {
     /// Returns the CLI usage line, without the leading program name.
     #[must_use]
     pub fn usage(self) -> String {
+        self.usage_with_options(false)
+    }
+
+    /// CLI usage including caller-lifetime options that are not MCP inputs.
+    #[must_use]
+    pub fn cli_usage(self) -> String {
+        self.usage_with_options(true)
+    }
+
+    fn usage_with_options(self, cli: bool) -> String {
         let mut line = self.name.to_owned();
         for argument in self.positional {
             let metavar = argument.kind.metavar();
@@ -406,7 +438,11 @@ impl CommandGrammar {
                 (false, false) => write!(line, "[{metavar}]"),
             };
         }
-        for option in self.options {
+        for option in self
+            .options
+            .iter()
+            .chain(if cli { self.cli_options() } else { &[] })
+        {
             line.push(' ');
             let metavar = option.kind.metavar();
             let _ = if option.kind == ArgumentKind::Flag {
@@ -421,7 +457,7 @@ impl CommandGrammar {
     /// Returns a usage line for the installed public command.
     #[must_use]
     pub fn installed_usage(self) -> String {
-        format!("nudox {}", self.usage())
+        format!("nudox {}", self.cli_usage())
     }
 }
 

@@ -1045,7 +1045,7 @@ impl Fault {
                 CauseSlug::Unreachable,
                 format!(
                     "the local endpoint closed this connection ({kind}); \
-                     a fresh connection was opened, so retry the command"
+                     reconnect before retrying a read. An in-flight mutation may already be accepted; reconcile its saved identity before deciding whether to start another"
                 ),
                 Affordance::Retry,
             ),
