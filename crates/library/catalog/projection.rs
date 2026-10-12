@@ -250,6 +250,7 @@ impl Library {
                         .row_ref(id)
                         .is_some_and(|row| self.row_matches_address(row, address))
                 },
+                |id, text| self.row_matches_relative_name(id, text),
                 &self.work,
             )
         };
@@ -283,6 +284,45 @@ impl Library {
             },
             Some(start.saturating_add(limit)),
         )
+    }
+
+    /// Resolves relative member names only through admitted immediate parents
+    /// in this exact view and package. The optional boolean preserves exact
+    /// versus substring leaf ranking without rewriting any native coordinate.
+    fn row_matches_relative_name(&self, id: RowId, text: &str) -> Option<bool> {
+        let (mut owners, leaf) = crate::command::relative_name_tail(text)?;
+        let mut row = self.view.row_ref(id)?;
+        let name = row.label.rsplit("::").next()?;
+        let normalized_name = name.to_lowercase();
+        let normalized_leaf = leaf.to_lowercase();
+        if !normalized_name.contains(&normalized_leaf) {
+            return None;
+        }
+        let exact = normalized_name == normalized_leaf;
+        let package = row.package;
+        let mut seen = BTreeSet::from([row.id]);
+        loop {
+            let (remaining, owner) = crate::command::relative_name_tail(owners)
+                .map_or((None, owners), |(remaining, owner)| {
+                    (Some(remaining), owner)
+                });
+            // A trailing/missing segment is not an owner name. Do not repair
+            // malformed syntax by skipping empty requested ancestors.
+            if owner.is_empty() || owner.ends_with('.') || owner.ends_with("::") {
+                return None;
+            }
+            row = self.view.row_ref(RowId::Symbol(row.parent?))?;
+            if row.package != package
+                || !seen.insert(row.id)
+                || row.label.rsplit("::").next()?.to_lowercase() != owner.to_lowercase()
+            {
+                return None;
+            }
+            let Some(remaining) = remaining else {
+                return Some(exact);
+            };
+            owners = remaining;
+        }
     }
 
     /// Matches only producer-admitted address evidence. A readable source

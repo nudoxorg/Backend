@@ -186,8 +186,7 @@ fn exact_source_declarations_precede_inferred_aliases_fields_and_imports() {
                 let row = Row::new(id, basis, label).with_kind(kind);
                 if sourced {
                     row.with_source(
-                        SourceLocation::new("captured.py", 1)
-                            .expect("fixture captured site"),
+                        SourceLocation::new("captured.py", 1).expect("fixture captured site"),
                     )
                 } else {
                     row
@@ -219,4 +218,141 @@ fn exact_source_declarations_precede_inferred_aliases_fields_and_imports() {
     assert_eq!(alias.kind, Some(DeclarationKind::Type));
     assert!(alias.source.captured().is_none());
     assert_eq!(library.work_counters().scan_rows, 0);
+}
+
+#[test]
+fn relative_member_lookup_uses_retained_parents_and_keeps_cold_cursor_proofs() {
+    let (root, object) = source();
+    let basis = Basis::new(root, object);
+    let package = package_key("/gymbro");
+    let foreign = package_key("/foreign");
+    let auth = symbol_key("native-auth-owner");
+    let other = symbol_key("native-other-owner");
+    let wrong_package = symbol_key("native-foreign-owner");
+    let member = symbol_key("native-current-user");
+    let partial = symbol_key("native-current-user-detail");
+    let unrelated = symbol_key("native-unrelated-current-user");
+    let cross_package = symbol_key("native-cross-package-parent");
+    let cycle = symbol_key("native-cycle-member");
+    let coordinate = |tag: &str, name: &str| format!("/gymbro::semantic::{tag}::{name}");
+    let original = projection(vec![
+        Row::new(RowId::Package(package), basis, "/gymbro"),
+        Row::new(RowId::Package(foreign), basis, "/foreign"),
+        Row::in_package(
+            RowId::Symbol(auth),
+            basis,
+            package,
+            coordinate("owner", "AuthService"),
+        )
+        .with_kind(DeclarationKind::Class),
+        Row::in_package(
+            RowId::Symbol(other),
+            basis,
+            package,
+            coordinate("other", "OtherService"),
+        )
+        .with_kind(DeclarationKind::Class),
+        Row::in_package(
+            RowId::Symbol(wrong_package),
+            basis,
+            foreign,
+            "/foreign::semantic::owner::AuthService",
+        )
+        .with_kind(DeclarationKind::Class),
+        Row::in_package(
+            RowId::Symbol(member),
+            basis,
+            package,
+            coordinate("member", "currentUser"),
+        )
+        .with_kind(DeclarationKind::Property)
+        .with_parent(auth),
+        Row::in_package(
+            RowId::Symbol(partial),
+            basis,
+            package,
+            coordinate("partial", "currentUserDetails"),
+        )
+        .with_kind(DeclarationKind::Property)
+        .with_parent(auth),
+        Row::in_package(
+            RowId::Symbol(unrelated),
+            basis,
+            package,
+            coordinate("unrelated", "currentUser"),
+        )
+        .with_parent(other),
+        Row::in_package(
+            RowId::Symbol(cross_package),
+            basis,
+            package,
+            coordinate("foreign", "currentUser"),
+        )
+        .with_parent(wrong_package),
+        Row::in_package(
+            RowId::Symbol(cycle),
+            basis,
+            package,
+            coordinate("cycle", "AuthService"),
+        )
+        .with_parent(cycle),
+    ]);
+    for spelling in [
+        "AuthService.currentUser",
+        "AuthService::currentUser",
+        "aUTHsERVICE.cURRENTuSER",
+    ] {
+        let query = NameQuery::new(
+            spelling,
+            original.revision_root(),
+            QueryLimit::new(1).expect("limit"),
+        );
+        let first = original.names(&query).expect("typed owner/member page");
+        assert_eq!(ordered_ids(&first), [RowId::Symbol(member)]);
+        assert_eq!(
+            first.root.rows()[0].label,
+            coordinate("member", "currentUser")
+        );
+        let next = first.next.expect("partial member remains discoverable");
+        let cold =
+            Library::from_view(original.view().clone(), original.cursor()).expect("cold owner");
+        let second = cold
+            .names(&query.with_cursor(next))
+            .expect("same query resumes");
+        assert_eq!(ordered_ids(&second), [RowId::Symbol(partial)]);
+        assert!(second.next.is_none());
+        let wrong = NameQuery::new(
+            "OtherService.currentUser",
+            original.revision_root(),
+            QueryLimit::new(1).expect("limit"),
+        );
+        assert!(matches!(
+            cold.names(&wrong.with_cursor(next)),
+            Err(LibraryError::CursorMismatch)
+        ));
+    }
+    for spelling in [
+        "Absent.currentUser",
+        "AuthService..currentUser",
+        ".AuthService.currentUser",
+        "AuthService.AuthService",
+        "AuthService::currentUser.",
+    ] {
+        let page = original
+            .names(&NameQuery::new(
+                spelling,
+                original.revision_root(),
+                QueryLimit::default(),
+            ))
+            .expect("bounded query");
+        assert!(page.root.rows().is_empty(), "{spelling}");
+    }
+    let unqualified = original
+        .names(&NameQuery::new(
+            "currentUser",
+            original.revision_root(),
+            QueryLimit::default(),
+        ))
+        .expect("all named facts remain discoverable");
+    assert_eq!(unqualified.root.row_count(), 4);
 }

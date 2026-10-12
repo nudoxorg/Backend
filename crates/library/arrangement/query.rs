@@ -18,20 +18,21 @@ struct NameRanked {
 }
 
 impl NameRanked {
-    fn new(row: &Row, text: Option<&str>) -> Option<Self> {
+    fn new(row: &Row, text: Option<&str>, qualified: Option<bool>) -> Option<Self> {
         let normalized_label = row.label.to_lowercase();
-        if text.is_some_and(|text| !normalized_label.contains(text)) {
+        if qualified.is_none() && text.is_some_and(|text| !normalized_label.contains(text)) {
             return None;
         }
         // Coordinates carry an opaque identity before the declaration name.
         // Compare a complete name segment (including relative qualification),
         // never a suffix within a name such as `MockEnvironment`.
-        let exact = text.is_some_and(|text| {
-            normalized_label == text
-                || normalized_label
-                    .strip_suffix(text)
-                    .is_some_and(|prefix| prefix.ends_with("::"))
-        });
+        let exact = qualified == Some(true)
+            || text.is_some_and(|text| {
+                normalized_label == text
+                    || normalized_label
+                        .strip_suffix(text)
+                        .is_some_and(|prefix| prefix.ends_with("::"))
+            });
         Some(Self {
             id: row.id,
             normalized_label,
@@ -205,6 +206,7 @@ impl ProjectionArrangement {
         limit: usize,
         row_for_id: F,
         address_matches: A,
+        relative_matches: impl Fn(RowId, &str) -> Option<bool>,
         work: &WorkCounters,
     ) -> ArrangementPage
     where
@@ -241,6 +243,7 @@ impl ProjectionArrangement {
             self.name_postings.as_ref(),
             row_for_id,
             address_matches,
+            relative_matches,
             work,
         )
     }
@@ -370,6 +373,7 @@ fn select_name_matches_page<'view>(
     postings: Option<&NamePostingTree>,
     row_for_id: impl Fn(RowId) -> Option<&'view Row>,
     address_matches: impl Fn(RowId, AddressSelection<'_>) -> bool,
+    relative_matches: impl Fn(RowId, &str) -> Option<bool>,
     work: &WorkCounters,
 ) -> ArrangementPage {
     let normalized = selection.posting_text().to_lowercase();
@@ -405,7 +409,13 @@ fn select_name_matches_page<'view>(
                 NameSelection::Address(address) => address_matches(id, address),
             })
             .filter_map(row_for_id)
-            .filter_map(|row| NameRanked::new(row, name_text.as_deref())),
+            .filter_map(|row| {
+                let qualified = match selection {
+                    NameSelection::Name { text, .. } => relative_matches(row.id, text),
+                    NameSelection::Address(_) => None,
+                };
+                NameRanked::new(row, name_text.as_deref(), qualified)
+            }),
         capacity,
     );
     work.record_sort(rows.len());
@@ -508,8 +518,9 @@ mod ordering_laws {
             )]);
         changed.score = Some(987);
         assert_ne!(original, changed);
-        let original = NameRanked::new(&original, Some("environment")).expect("name candidate");
-        let changed = NameRanked::new(&changed, Some("environment")).expect("name candidate");
+        let original =
+            NameRanked::new(&original, Some("environment"), None).expect("name candidate");
+        let changed = NameRanked::new(&changed, Some("environment"), None).expect("name candidate");
         assert!(original == changed);
         assert_eq!(original.cmp(&changed), Ordering::Equal);
 
@@ -521,7 +532,7 @@ mod ordering_laws {
             fixture("a::MockEnvironment", DeclarationKind::Class, true),
         ]
         .into_iter()
-        .map(|row| NameRanked::new(&row, Some("environment")).expect("name candidate"))
+        .map(|row| NameRanked::new(&row, Some("environment"), None).expect("name candidate"))
         .collect::<Vec<_>>();
         for (at, left) in tiers.iter().enumerate() {
             for (other_at, right) in tiers.iter().enumerate() {
