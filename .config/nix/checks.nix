@@ -63,6 +63,9 @@ in
         cp ${../ci/t1_artifacts.py} t1_artifacts.py
         cp ${../ci/test_t1_artifacts.py} test_t1_artifacts.py
         python3 test_t1_artifacts.py
+        cp ${../ci/test_layout.py} test_layout.py
+        cp ${../ci/test_test_layout.py} test_test_layout.py
+        python3 test_test_layout.py
         touch "$out"
       '';
 
