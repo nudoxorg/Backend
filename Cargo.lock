@@ -1643,6 +1643,8 @@ dependencies = [
  "backend-advisory",
  "backend-client",
  "backend-library",
+ "backend-replication",
+ "backend-runtime",
  "backend-semantic",
  "backend-version",
  "serde",
