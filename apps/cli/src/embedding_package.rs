@@ -242,4 +242,62 @@ mod tests {
         assert!(canonical_hex(&"a".repeat(64), 32));
         assert!(!canonical_hex(&"A".repeat(64), 32));
     }
+    #[test]
+    fn packaged_receipt_binds_cli_source_and_exact_dependency_identity_without_execution()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = std::env::temp_dir().join(format!(
+            "nudox-helper-receipt-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root)?;
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        for directory in ["bin", "lib", "share/nudox/embedding/bin"] {
+            std::fs::create_dir_all(root.join(directory))?;
+        }
+        let record = |path: &str, bytes: &[u8]| -> Result<serde_json::Value, std::io::Error> {
+            std::fs::write(root.join(path), bytes)?;
+            Ok(
+                serde_json::json!({"path":path,"bytes":bytes.len(),"sha256":hex(&Sha256::digest(bytes))}),
+            )
+        };
+        let cli = record(
+            "bin/backend-cli",
+            b"fixture CLI bytes, not a product executable",
+        )?;
+        let helper = record(
+            "share/nudox/embedding/bin/backend-embedding-candle",
+            b"fixture helper metadata, never executed",
+        )?;
+        let dependency = record("lib/dependency.so", b"fixture dependency")?;
+        let identity = backend_local_service::builtin::query::inspect_candle_helper(
+            &root.join("share/nudox/embedding/bin/backend-embedding-candle"),
+            &[root.join("lib/dependency.so")],
+        )?;
+        let source = serde_json::json!({"commit":"a".repeat(40),"tree":"b".repeat(40),"cargo_lock_sha256":"c".repeat(64)});
+        let receipt = serde_json::json!({"schema":"nudox.local-embedding-setup.v1","preset":"candle-minilm-cpu-v1","source":source,"cli":cli,"helper":helper,"dependencies":[dependency],"helper_identity":hex(&identity),"build_receipt_sha256":"d".repeat(64)});
+        let bytes = serde_json::to_vec(&receipt)?;
+        std::fs::write(root.join("share/nudox/embedding/setup.json"), &bytes)?;
+        let package = serde_json::json!({"source":source,"embedding_setup":{"path":"share/nudox/embedding/setup.json","sha256":hex(&Sha256::digest(&bytes))}});
+        std::fs::write(
+            root.join("packaging-manifest.json"),
+            serde_json::to_vec(&package)?,
+        )?;
+        let admitted = discover_at(&root, &root.join("bin/backend-cli"))?;
+        assert_eq!(admitted.identity, identity);
+        assert_eq!(admitted.dependencies, vec![root.join("lib/dependency.so")]);
+        assert!(discover_at(&root, &root.join("bin/another-cli")).is_err());
+        std::fs::write(root.join("lib/dependency.so"), b"changed dependency")?;
+        assert!(discover_at(&root, &root.join("bin/backend-cli")).is_err());
+        assert!(contained(&root, "../outside").is_err());
+        Ok(())
+    }
 }
