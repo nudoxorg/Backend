@@ -91,10 +91,10 @@ impl LocalSemanticError {
     pub const fn setup_instruction(&self) -> &'static str {
         match self {
             Self::RuntimeUnavailable(_) => {
-                "Install a trusted local embedding executable, model and tokenizer in compiler/embedding.config with an explicit local query recipe; reopen the owner to activate them."
+                "Run nudox embedding-setup with a matched helper package, reopen the local owner, then run nudox add . to reindex under the installed recipe."
             }
             Self::RecipeNotConfigured | Self::Recipe(_) | Self::DescriptorIo(_) => {
-                "Install a matching owner-private compiler/embedding-query.config descriptor that declares the runtime's actual pooling and text treatments; reopen the owner."
+                "Run nudox embedding-setup to install matching runtime and query recipe artifacts, reopen the local owner, then run nudox add .; inspect the retained setup refusal if installation fails."
             }
             Self::CorpusEnvelope => {
                 "Reduce the selected corpus to the admitted document and payload envelope; a partial or sampled projection cannot answer exact search."
