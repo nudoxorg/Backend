@@ -2820,6 +2820,90 @@ fn graph_titlebar_rejects_a_captured_view_action_after_selection_changes(cx: &mu
     assert_eq!(rig.route(), page_route("RelationLabel"), "the current selected A still opens its own Page");
 }
 
+/// A fresh Page/Code action opens the selected B; an unfinished native
+/// press from A must not become that fresh action merely because B paints.
+#[gpui::test]
+fn held_graph_header_press_cannot_transfer_to_a_new_selected_symbol_after_repaint(cx: &mut TestAppContext) {
+    for (id, view) in [("view-page", View::Page), ("view-code", View::Code)] {
+        for input in ["enter", "space", "pointer"] {
+            let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
+            rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+            rig.cx.update(|window, _| window.set_a11y_forced(true));
+            rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(0, cx));
+            rig.settle();
+            let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_targets(cx));
+            let focus = rig.cx.update(|window, cx| {
+                rig.shell.update(cx, |shell, cx| shell.take_zone(super::focus::Zone::Titlebar, window, cx));
+                let focus = targets.native_handle(&id.into(), cx);
+                focus.focus(window, cx);
+                focus
+            });
+            rig.settle();
+            let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+            let at = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds(id, cx))
+                .expect("A's mounted view receiver").center();
+            let (armed, epoch) = rig.cx.update(|window, cx| {
+                assert!(focus.is_focused(window) && window.is_focus_handle_mounted(&focus));
+                match input {
+                    "pointer" => { window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                        position: at, modifiers: Modifiers::none(), button: gpui::MouseButton::Left,
+                        click_count: 1, first_mouse: false,
+                    }), cx); }
+                    key => { window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                        keystroke: gpui::Keystroke::parse(key).expect("held header key"),
+                        is_held: false, prefer_character_input: false,
+                    }), cx); }
+                }
+                let frame = window.a11y_frame_number();
+                let epoch = window.focus_epoch();
+                rig.shell.update(cx, |shell, cx| shell.focus_graph_node(1, cx));
+                assert_eq!(window.a11y_frame_number(), frame, "selection publication alone did not paint a new receiver");
+                (frame, epoch)
+            });
+            rig.settle();
+            let replacement = rig.cx.update(|window, cx| {
+                let current = rig.shell.read(cx).titlebar_targets(cx);
+                assert_eq!(current.native_handle(&id.into(), cx), focus);
+                assert!(focus.is_focused(window) && window.is_focus_handle_mounted(&focus));
+                assert_eq!(window.focus_epoch(), epoch, "focus loss cannot mask an inherited press");
+                assert!(window.a11y_frame_number() > armed, "B's new native header callback actually committed");
+                let store = rig.graph.store.read(cx);
+                assert_eq!(store.snapshot().route(), before.route());
+                assert_eq!(store.snapshot().session().reading.current.id, before.session().reading.current.id);
+                assert!(store.snapshot().key().same_authority(before.key()));
+                assert_eq!(store.graph_focus().and_then(|focus| focus.indexed.as_ref()).map(|(_, symbol)| symbol.as_str()),
+                    Some(coordinate("RelationDirection").as_str()), "the replacement is exact selected B");
+                window.a11y_frame_number()
+            });
+            let release_at = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds(id, cx))
+                .expect("B's current receiver").center();
+            assert_eq!(release_at, at, "pointer geometry cannot cancel this held press for the law");
+            rig.cx.update(|window, cx| {
+                match input {
+                    "pointer" => { window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                        position: release_at, modifiers: Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1,
+                    }), cx); }
+                    key => { window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
+                        keystroke: gpui::Keystroke::parse(key).expect("old header release"),
+                    }), cx); }
+                }
+                assert_eq!(window.a11y_frame_number(), replacement);
+            });
+            rig.settle();
+            assert_eq!(rig.route(), *before.route(), "B's listener must not inherit A's unfinished {input}");
+            rig.graph.store.read_with(rig.cx, |store, _| {
+                assert_eq!(store.snapshot().session().back, before.session().back);
+                assert_eq!(store.snapshot().session().forward, before.session().forward);
+            });
+            if input == "pointer" { rig.cx.simulate_click(release_at, Modifiers::none()); }
+            else { rig.native_press(input); }
+            rig.settle();
+            assert!(matches!(rig.route(), Route::Symbol(route) if route.id.as_str() == coordinate("RelationDirection") && route.view == view),
+                "fresh {input} still opens exact selected B's {view:?}");
+        }
+    }
+}
+
 #[gpui::test]
 fn graph_titlebar_unindexed_b_and_unfocused_world_stay_honest(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
