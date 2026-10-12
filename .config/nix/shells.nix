@@ -287,6 +287,9 @@ let
         pkgs.zlib
       ];
       CARGO_PROFILE_DEV_DEBUG = "0";
+      # Reuse the existing host slot and per-worktree target lease. T1 keeps
+      # its low-concurrency bound in the lane command itself.
+      BACKEND_PARALLEL_CARGO = "${tools.parallelCargo}/bin/cargo";
       # The built binaries get no Nix RPATH fixup; resolve GUI libraries and
       # Mesa's software drivers at run time, as the desktop journeys do.
       LD_LIBRARY_PATH = tools.linuxDesktopRuntimePath;

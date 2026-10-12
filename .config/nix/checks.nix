@@ -56,7 +56,10 @@ in
       ''
         cp ${../ci/smoke.py} smoke.py
         cp ${../ci/test_smoke.py} test_smoke.py
+        cp ${../ci/t1_capacity.py} t1_capacity.py
+        cp ${../ci/test_t1_capacity.py} test_t1_capacity.py
         python3 test_smoke.py
+        python3 test_t1_capacity.py
         touch "$out"
       '';
 
