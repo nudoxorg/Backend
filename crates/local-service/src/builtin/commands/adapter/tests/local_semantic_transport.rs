@@ -114,11 +114,8 @@ fn local_semantic_unix_default_first_reply_waits_and_cancelled_waiter_reuses_wor
         crate::builtin::query::local_semantic::tests::fixture_with_mode(4096, "gate-query")
             .expect("actual supervised protocol producer");
     let mut fixture = AdapterFixture::new();
-    fixture.parts().0.remote_semantic = crate::builtin::query::RemoteSemantic::select_owner(
-        &producer.provision,
-        &producer.descriptor,
-        crate::builtin::query::RemoteSemantic::Unconfigured,
-    );
+    fixture.parts().0.remote_semantic =
+        crate::builtin::query::local_semantic::tests::fixture_owner(&producer);
     let directory = tempfile::Builder::new()
         .prefix("nsem-")
         .tempdir_in("/tmp")
