@@ -1256,43 +1256,19 @@ fn run_program_bridge(
 fn select_config<'a>(
     inputs: &'a TypeScriptProjectInputs<'_>,
 ) -> Result<Option<&'a super::typescript_host::TypeScriptConfigInput>, TypeScriptProjectHostError> {
-    let selected = inputs
-        .config_candidates
-        .iter()
-        .filter(|candidate| candidate.selected_build_config)
-        .collect::<Vec<_>>();
-    if selected.len() == 1 {
-        return Ok(Some(selected[0]));
-    }
-    if selected.len() > 1 {
+    let selected = super::typescript_host::select_project_config(
+        inputs.package_root,
+        inputs.config_candidates,
+    )?;
+    if selected.is_some_and(|config| {
+        config.dependency_authority
+            != super::typescript_host::TypeScriptConfigDependencyAuthority::Program
+    }) {
         return Err(bridge_error(
-            "the host admitted more than one selected TypeScript build config",
+            "the selected TypeScript project config has no admitted dependency closure",
         ));
     }
-    let mut candidates = inputs
-        .config_candidates
-        .iter()
-        .filter(|candidate| candidate.project_candidate)
-        .filter(|candidate| {
-            inputs
-                .package_root
-                .starts_with(candidate.path.parent().unwrap_or(Path::new("/")))
-        })
-        .collect::<Vec<_>>();
-    candidates
-        .sort_unstable_by_key(|candidate| std::cmp::Reverse(candidate.path.components().count()));
-    match candidates.as_slice() {
-        [only] => Ok(Some(*only)),
-        [first, second, ..]
-            if first.path.components().count() == second.path.components().count() =>
-        {
-            Err(bridge_error(
-                "the nearest TypeScript project config is ambiguous",
-            ))
-        }
-        [first, ..] => Ok(Some(*first)),
-        [] => Ok(None),
-    }
+    Ok(selected)
 }
 
 fn compiler_api_checker_options(
