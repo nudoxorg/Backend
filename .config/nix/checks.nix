@@ -69,9 +69,10 @@ in
         cp ${../ci/t1_artifacts.py} t1_artifacts.py
         cp ${../ci/test_t1_artifacts.py} test_t1_artifacts.py
         python3 test_t1_artifacts.py
-        cp ${../ci/surface.py} surface.py
-        cp ${../ci/test_surface.py} test_surface.py
-        python3 test_surface.py
+        mkdir -p .config/ci
+        cp ${../ci/surface.py} .config/ci/surface.py
+        cp ${../ci/test_surface.py} .config/ci/test_surface.py
+        python3 .config/ci/test_surface.py
         cp ${../ci/test_layout.py} test_layout.py
         cp ${../ci/test_test_layout.py} test_test_layout.py
         python3 test_test_layout.py
