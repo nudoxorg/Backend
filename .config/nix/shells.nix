@@ -263,6 +263,42 @@ let
     '';
   };
   cross = pkgs.mkShell crossAttrs;
+  # T1 smoke tier (`.config/ci/t1.nu`): build the three product surfaces for
+  # the host, then start each one headless. Lean on purpose: no corpus or
+  # native-compiler authorities, so entering it costs seconds, not the
+  # minutes the `compiler` closure does. Incremental stays on: T1 reuses one
+  # persistent target dir, which is the whole point of its warm build.
+  smoke = pkgs.mkShell (
+    tools.linuxGraphicsEnvironment
+    // {
+      hardeningDisable = crossAttrs.hardeningDisable;
+      packages = [
+        toolchains.stable
+        pkgs.nushell
+        pkgs.python3
+        pkgs.pkg-config
+        pkgs.git
+        pkgs.coreutils
+        pkgs.cmake
+        gui.toolsBundle
+      ];
+      buildInputs = tools.linuxDesktopLibraries ++ [
+        pkgs.openssl
+        pkgs.zlib
+      ];
+      CARGO_PROFILE_DEV_DEBUG = "0";
+      # Reuse the existing host slot and per-worktree target lease. T1 keeps
+      # its low-concurrency bound in the lane command itself.
+      BACKEND_PARALLEL_CARGO = "${tools.parallelCargo}/bin/cargo";
+      # The built binaries get no Nix RPATH fixup; resolve GUI libraries and
+      # Mesa's software drivers at run time, as the desktop journeys do.
+      LD_LIBRARY_PATH = tools.linuxDesktopRuntimePath;
+      FONTCONFIG_FILE = gui.fontConfig;
+      shellHook = ''
+        export CARGO_TARGET_DIR="''${CARGO_TARGET_DIR:-$PWD/.local/target}"
+      '';
+    }
+  );
   # Emulated test lanes: the `cross` shell plus what running a test needs that
   # a compile check does not. Each target gets a real linker and C library
   # (zig compiles the C sources; the target's GCC links), and a runner Cargo
@@ -334,6 +370,7 @@ in
     development
     observability
     services
+    smoke
     verification
     ;
 }

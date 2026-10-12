@@ -803,6 +803,7 @@ in
     compilers
     dylintLink
     goOracle
+    linuxDesktopLibraries
     linuxDesktopRuntimePath
     linuxGraphicsEnvironment
     nativeCompilers

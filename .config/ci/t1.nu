@@ -1,0 +1,90 @@
+# T1 smoke prototype: "it builds, and every surface comes alive". The
+# warm-cache budget is under a minute; this runner records timings first.
+# Invoked as `nu .config/ci/t1.nu` inside the lean
+# `.#smoke` dev shell; run the same command locally to get the same verdict.
+#
+# It builds only the three product binaries (CLI, MCP, desktop) for the host
+# target: no --all-targets, so none of the ~330 test binaries are linked, and
+# no foreign targets. Then .config/ci/smoke.py starts each one: CLI --help,
+# MCP initialize + tools/list on stdio, and the desktop drawing a first frame
+# under Xvfb with Mesa's software Vulkan. Correctness is T2's job.
+#
+# Speed comes from one persistent incremental target dir (CI_T1_CACHE_ROOT,
+# on the CI disk) plus restored source mtimes, so only changed crates and
+# their dependents rebuild. It has a separate root from the fast-lane cache.
+# The managed Cargo wrapper leases the workspace build slot and target graph.
+
+use lib.nu *
+
+const SURFACES = [
+    {package: "backend-cli", bin: "backend-cli"}
+    {package: "backend-mcp", bin: "backend-mcp"}
+    {package: "backend-desktop", bin: "backend-desktop"}
+]
+
+def main []: nothing -> nothing {
+    let started = (date now)
+    let cache = $env.CI_T1_CACHE_ROOT? | default ""
+    let target_dir = if ($cache | is-not-empty) {
+        $cache | path join "t1-target"
+    } else {
+        $env.CARGO_TARGET_DIR? | default ($env.PWD | path join ".local/target")
+    }
+    let fast_cache = $env.CI_FAST_CACHE_ROOT? | default ""
+    if ($fast_cache | is-not-empty) {
+        # Check before creating or touching any T1 cache paths: the fast lane
+        # may evict only its own subtree while T1 runs.
+        run-bounded 5sec "python3" ($env.FILE_PWD | path join "t1_capacity.py") $target_dir "--fast-cache-root" $fast_cache "--t1-cache-root" $cache "--separation-only"
+    }
+    if ($cache | is-not-empty) {
+        mkdir $cache
+        $env.CARGO_TARGET_DIR = $target_dir
+        $env.CARGO_HOME = ($cache | path join "cargo-home")
+        mkdir $env.CARGO_HOME
+        # The mtime manifest trusts git blobs. On a dirty tree restoring
+        # those times could hide changed source from Cargo.
+        let clean = (^git diff --quiet HEAD | complete)
+        if $clean.exit_code != 0 {
+            error make {msg: "cached T1 needs a clean tracked checkout; unset CI_T1_CACHE_ROOT for local edits"}
+        }
+        # A fresh checkout stamps every file with "now", which would make
+        # Cargo rebuild the whole workspace. Restore the mtimes of unchanged
+        # files so the incremental state above stays valid.
+        ^python3 ($env.FILE_PWD | path join "restore-mtimes.py") ($cache | path join "t1-source-mtimes.json")
+        if $env.LAST_EXIT_CODE != 0 { error make {msg: "source mtime restoration failed"} }
+    }
+    if ($cache | is-empty) { $env.CARGO_TARGET_DIR = $target_dir }
+    let bin_dir = $target_dir | path join "debug"
+    let cargo = $env.BACKEND_PARALLEL_CARGO? | default "cargo"
+
+    let capacity = ci-step "t1" "disk and memory preflight" {||
+        run-bounded 10sec "python3" ($env.FILE_PWD | path join "t1_capacity.py") $target_dir "--fast-cache-root" $fast_cache "--t1-cache-root" $cache
+    }
+
+    let build_args = $SURFACES | each {|surface| ["--package" $surface.package "--bin" $surface.bin] } | flatten
+    let built = if $capacity {
+        ci-step "t1" "build cli, mcp, desktop" {||
+            # Keep this lane conservative regardless of ambient shell settings.
+            with-env {CARGO_BUILD_JOBS: "2"} {
+                run-bounded 30min $cargo "build" "--locked" "--jobs" "2" ...$build_args
+            }
+        }
+    } else { false }
+    let smoke = if $built {
+        ["cli" "mcp" "gui"] | each {|surface|
+            ci-step "t1" $"smoke ($surface)" {||
+                run-bounded 3min "python3" ($env.FILE_PWD | path join "smoke.py") $surface "--bin-dir" $bin_dir
+            }
+        }
+    } else {
+        print "== t1: build was not admitted or failed; skipping smoke checks =="
+        []
+    }
+    if ($cache | is-not-empty) {
+        print $"CI-CACHE t1: (^du -sh $target_dir | str trim)"
+    }
+    let elapsed = (date now) - $started
+    print $"CI-TIMING lane=t1 step=total seconds=($elapsed / 1sec | math round)"
+    let results = if $capacity { [$capacity $built] | append $smoke } else { [$capacity] }
+    finish-lane "t1" $results
+}
