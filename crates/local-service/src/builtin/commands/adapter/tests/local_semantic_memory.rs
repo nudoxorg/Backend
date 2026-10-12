@@ -306,3 +306,57 @@ fn local_semantic_exact_live_duplicate_protects_first_completion_until_last_tick
     assert_eq!(wire["request_id"], 4702);
     assert_eq!(wire["semantic_search"]["status"], "available");
 }
+
+#[test]
+fn local_semantic_reattached_ticket_reclaims_owed_interest_before_nontransport_worker_poll() {
+    let producer =
+        crate::builtin::query::local_semantic::tests::fixture_with_mode(4096, "gate-query")
+            .expect("actual protocol activation");
+    let runtime = producer.provision.runtime().expect("runtime");
+    let queries_before = calls(&producer.log, 1);
+    let mut fixture = AdapterFixture::new();
+    let (adapter, daemon) = fixture.parts();
+    adapter.remote_semantic = crate::builtin::query::RemoteSemantic::select_owner(
+        &producer.provision,
+        &producer.descriptor,
+        crate::builtin::query::RemoteSemantic::Unconfigured,
+    );
+    let body = search_body(daemon, 4800, "reattached held intent");
+    assert!(matches!(
+        adapter.execute_or_defer(daemon, &body, 5800),
+        Ok(Executed::Deferred)
+    ));
+    enter_held_query(adapter, daemon, &producer.entered);
+    adapter.abandon_reply(5800);
+    let body = search_body(daemon, 4801, "reattached held intent");
+    assert!(matches!(
+        adapter.execute_or_defer(daemon, &body, 5801),
+        Ok(Executed::Deferred)
+    ));
+    fs::write(&producer.release, b"finish after reattachment").expect("release");
+    // Publication/preparation may observe finished work before the transport tail
+    // next runs. Admission itself must already have restored exact live interest.
+    drain_worker_without_reply_dispatch(adapter, daemon);
+    let crate::builtin::query::RemoteSemantic::Local(owner) = &adapter.remote_semantic else {
+        panic!("local owner")
+    };
+    assert!(owner.owes_completion());
+    assert_eq!(owner.cached_completions(), 0);
+    let pressure = runtime
+        .memory_budget()
+        .reserve(runtime.memory_budget().capacity() - runtime.memory_budget().used())
+        .expect("every free credit held");
+    assert!(
+        runtime.memory_budget().reserve(1).is_err(),
+        "reattached live reply remains protected before any transport poll"
+    );
+    drop(pressure);
+    let wire = owed_reply(adapter, daemon, 5801);
+    assert_eq!(wire["request_id"], 4801);
+    assert_eq!(wire["semantic_search"]["status"], "available");
+    assert_eq!(
+        calls(&producer.log, 1),
+        queries_before + 1,
+        "only one shared query after the actual activation probes"
+    );
+}

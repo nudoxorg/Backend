@@ -1094,6 +1094,7 @@ impl CommandAdapter {
                     deadline,
                     _memory: memory,
                 });
+            self.retain_live_semantic_completion();
             return Ok(Executed::Deferred);
         }
         self.execute(daemon, body).map(Executed::Reply)
