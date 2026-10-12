@@ -347,6 +347,146 @@ fn find_retry_native(rig: &mut Rig) -> (gpui::accesskit::NodeId, gpui::Bounds<gp
     })
 }
 
+fn status_retry_native(rig: &mut Rig) -> (gpui::accesskit::NodeId, gpui::Bounds<gpui::Pixels>) {
+    rig.cx.update(|window, _| {
+        let tree: serde_json::Value = serde_json::from_str(&window.debug_a11y_tree_json().expect("status AX")).expect("native tree");
+        let nodes: Vec<_> = tree["nodes"].as_object().expect("native nodes").values().filter(|node|
+            node["element_id"].as_str().is_some_and(|id| id.starts_with("Name(\"status-retry"))
+                && node["aria"]["role"] == "Button" && node["aria"]["label"] == "Try again"
+                && node["aria"]["on_action"].as_array().is_some_and(|actions| actions.iter().any(|action| action == "Click"))
+        ).collect();
+        assert_eq!(nodes.len(), 1, "one exact native Status retry receiver");
+        let native = gpui::accesskit::NodeId(nodes[0]["accesskit_id"].as_str().expect("native ID").parse().expect("node ID"));
+        (native, window.a11y_node_bounds(native).expect("native Status retry bounds"))
+    })
+}
+
+/// Keep the control's actual implicit Touch focus while a second identical
+/// failure lands through the pool before Pending can paint. A new callback
+/// must not inherit the previous receipt's pending native key press.
+#[gpui::test]
+fn coalesced_find_and_status_failures_cannot_inherit_held_retry_keys(cx: &mut TestAppContext) {
+    for find in [true, false] {
+        for key_name in ["enter", "space"] {
+            let reads = Arc::new(AtomicUsize::new(0));
+            let client = Arc::clone(&reads);
+            let (route, key, pool) = if find {
+                let query = SearchQuery::new("RelationLabel", 200).expect("exact query");
+                (Route::Orbit(crate::navigation::OrbitRoute::Browse(crate::navigation::BrowseRoute::Find(query.clone()))),
+                    PageKey::Browse(crate::model::browse::BrowseKey::Find(query)),
+                    ReadPool::start(1, move |_| FindRecoveryReads(Arc::clone(&client))).expect("Find pool"))
+            } else {
+                (super::page_route("RelationLabel"), PageKey::Symbol(super::symbol("RelationLabel")),
+                    ReadPool::start(1, move |_| RecoveryReads(Arc::clone(&client))).expect("symbol pool"))
+            };
+            let mut rig = rig_with_reads(cx, Some(route.clone()), 1440.0, 900.0, pool);
+            let shell = rig.shell.clone();
+            rig.cx.update(|window, cx| {
+                window.replace_root(cx, |window, cx| gpui_component::Root::new(shell, window, cx).bordered(false));
+                window.set_a11y_forced(true);
+            });
+            rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+            if !find {
+                rig.graph.store.update(rig.cx, |store, cx| {
+                    let snapshot = store.snapshot();
+                    store.set_notice(Some(crate::runtime::graph_focus::Notice {
+                        visit: snapshot.route().clone(), root: snapshot.key(),
+                        message: "The represented symbol read failed.".into(), retry: Some(key.clone()),
+                    }), cx);
+                });
+                rig.settle();
+            }
+            assert_eq!(reads.load(Ordering::SeqCst), 1);
+            let (native, _) = if find { find_retry_native(&mut rig) } else { status_retry_native(&mut rig) };
+            // Use the real native node's focus mapping, not a supplied test
+            // handle that could hide a replacement of implicit Touch state.
+            let focus = rig.cx.update(|window, cx| {
+                window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+                    action: gpui::AccessibleAction::Focus, target_tree: gpui::accesskit::TreeId::ROOT,
+                    target_node: native, data: None,
+                }, cx);
+                window.focused(cx).expect("actual native recovery focus")
+            });
+            rig.settle();
+            rig.cx.update(|window, _| {
+                let tree: serde_json::Value = serde_json::from_str(&window.debug_a11y_tree_json().expect("focused recovery AX")).expect("native tree");
+                let focused = tree["accesskit_focus"].as_str().expect("native focus node");
+                let receiver = &tree["nodes"][focused];
+                assert_eq!(receiver["aria"]["role"], "Button", "native focus belongs to recovery, not the query field");
+                assert_eq!(receiver["aria"]["label"], if find { "Retry current Find query" } else { "Try again" });
+                if !find {
+                    assert!(receiver["element_id"].as_str().is_some_and(|id| id.starts_with("Name(\"status-retry")),
+                        "native Status recovery, not the duplicate body retry, owns this key");
+                }
+            });
+            let before = rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted);
+            let notice = rig.graph.store.read_with(rig.cx, |store, _| store.notice().cloned());
+            let scope = rig.shell.read_with(rig.cx, |shell, _| shell.local_activation_scope());
+            let (armed, epoch, stamp) = rig.cx.update(|window, cx| {
+                assert!(focus.is_focused(window) && window.is_focus_handle_mounted(&focus));
+                window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                    keystroke: gpui::Keystroke::parse(key_name).expect("held retry key"),
+                    is_held: false, prefer_character_input: false,
+                }), cx);
+                let frame = window.a11y_frame_number();
+                let stamp = rig.graph.store.read(cx).stamp(&key);
+                rig.graph.store.update(cx, |store, cx| store.retry(key.clone(), cx));
+                crate::runtime::wait::until("the replacement recovery fault is ready", ||
+                    rig.graph.store.read(cx).pool_activity().undelivered > 0);
+                assert_eq!(rig.graph.store.update(cx, |store, cx| store.drain(cx)), 1);
+                assert_eq!(reads.load(Ordering::SeqCst), 2);
+                assert_ne!(rig.graph.store.read(cx).stamp(&key), stamp);
+                assert_eq!(window.a11y_frame_number(), frame, "neither Pending nor the new failure painted inside this effect");
+                (frame, window.focus_epoch(), stamp)
+            });
+            rig.settle();
+            let (fresh_native, _) = if find { find_retry_native(&mut rig) } else { status_retry_native(&mut rig) };
+            let frame = rig.cx.update(|window, cx| {
+                assert_eq!(window.focused(cx), Some(focus.clone()), "the replacement retains the exact implicit Touch focus handle");
+                assert!(window.is_focus_handle_mounted(&focus));
+                assert_eq!(window.focus_epoch(), epoch);
+                assert_eq!(rig.shell.read(cx).local_activation_scope(), scope, "resource-only movement does not retire the host scope");
+                assert_ne!(rig.graph.store.read(cx).stamp(&key), stamp);
+                assert_eq!(rig.graph.store.read(cx).notice().cloned(), notice);
+                // Keyboard activation follows the persistent focus handle and
+                // focus epoch. The ordinary pressed motion may change bounds.
+                let tree: serde_json::Value = serde_json::from_str(&window.debug_a11y_tree_json().expect("replacement recovery AX")).expect("native tree");
+                let native_focus = gpui::accesskit::NodeId(tree["accesskit_focus"].as_str().expect("replacement focus node").parse().expect("native focus ID"));
+                assert_eq!(native_focus, fresh_native, "the replacement recovery receiver still owns native focus");
+                assert!(window.a11y_frame_number() > armed, "the new receipt's control really committed while the key was held");
+                window.a11y_frame_number()
+            });
+            rig.cx.update(|window, cx| {
+                window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
+                    keystroke: gpui::Keystroke::parse(key_name).expect("old release"),
+                }), cx);
+                assert_eq!(window.a11y_frame_number(), frame);
+                assert_eq!(window.focus_epoch(), epoch);
+                assert_eq!(rig.graph.store.read(cx).stats().submitted, before + 1,
+                    "new Find/Status recovery cannot adopt the earlier receipt's held {key_name}");
+            });
+            rig.cx.run_until_parked();
+            assert_eq!(reads.load(Ordering::SeqCst), 2);
+            assert_eq!(rig.route(), route);
+            rig.cx.update(|window, cx| {
+                let key = gpui::Keystroke::parse(key_name).expect("fresh retry");
+                window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                    keystroke: key.clone(), is_held: false, prefer_character_input: false,
+                }), cx);
+                window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke: key }), cx);
+            });
+            rig.settle();
+            assert_eq!(reads.load(Ordering::SeqCst), 3, "fresh native recovery reaches the actual worker");
+            assert_eq!(rig.route(), route);
+            assert!(match &key {
+                PageKey::Browse(key) => rig.graph.store.read_with(rig.cx, |store, _| store.pages().browse(key).loaded_value().is_some()),
+                PageKey::Symbol(symbol) => rig.graph.store.read_with(rig.cx, |store, _| store.symbol(symbol).is_loaded()),
+                _ => unreachable!("only the exact represented recovery pages"),
+            });
+        }
+    }
+}
+
 #[gpui::test]
 fn retained_native_find_retry_cannot_adopt_a_later_same_query_read_and_fresh_failure_recovers(cx: &mut TestAppContext) {
     let reads = Arc::new(AtomicUsize::new(0));

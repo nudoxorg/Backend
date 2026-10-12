@@ -166,7 +166,11 @@ mod tests {
             Some(Overlay::AddProject));
         rig.keys("escape");
 
-        let retry = native_bounds_id(&mut rig, "status-retry", "Button", "Try again", true)
+        let retry_name = rig.graph.store.read_with(rig.cx, |store, _| {
+            let key = store.notice().and_then(|notice| notice.retry.as_ref()).expect("represented menu recovery page");
+            store.capture_page_retry(key).map(|receipt| receipt.activation_name("status-retry")).unwrap_or_else(|| "status-retry:unadmitted".into())
+        });
+        let retry = native_bounds_id(&mut rig, &retry_name, "Button", "Try again", true)
             .expect("failed owner's native retry");
         rig.cx.simulate_click(retry.center(), gpui::Modifiers::none());
         rig.draw();

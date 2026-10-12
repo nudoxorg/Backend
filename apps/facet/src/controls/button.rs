@@ -59,6 +59,7 @@ pub(crate) type Handler = Rc<dyn Fn(&mut Window, &mut App)>;
 #[derive(IntoElement)]
 pub struct Button {
     id: ElementId,
+    activation_id: Option<ElementId>,
     label: Option<SharedString>,
     accessibility_label: SharedString,
     intent: Intent,
@@ -82,6 +83,7 @@ pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, measure:
     let label = label.into();
     Button {
         id: id.into(),
+        activation_id: None,
         accessibility_label: label.clone(),
         label: Some(label),
         intent: Intent::Default,
@@ -101,6 +103,14 @@ pub fn button(id: impl Into<ElementId>, label: impl Into<SharedString>, measure:
 }
 
 impl Button {
+    /// Replaces only the authored native receiver when a painted action's
+    /// receipt changes. Logical Touch, focus and motion identity stay stable.
+    #[must_use]
+    pub fn activation_id(mut self, id: ElementId) -> Self {
+        self.activation_id = Some(id);
+        self
+    }
+
     /// Human name for a symbolic or context-dependent face; visual text is unchanged.
     #[must_use]
     pub fn aria_label(mut self, label: impl Into<SharedString>) -> Self {
@@ -651,7 +661,7 @@ impl RenderOnce for Button {
         }
 
         let plate = plate
-            .id(id)
+            .id(self.activation_id.unwrap_or(id))
             .role(gpui::Role::Button)
             .aria_label(self.accessibility_label)
             .aria_disabled(self.disabled || self.busy)

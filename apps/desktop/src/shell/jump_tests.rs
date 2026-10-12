@@ -156,7 +156,11 @@ fn world_header_renews_after_coalesced_same_root_owner_replacement(cx: &mut Test
 fn passive_retry_bounds(rig: &mut Rig, gate: &crate::runtime::owner::OwnerGate, enabled: bool) -> gpui::Bounds<gpui::Pixels> {
     let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("committed Retry tree");
     let tree: serde_json::Value = serde_json::from_str(&json).expect("native Retry JSON");
-    let id = format!("{:?}", gpui::ElementId::Name("status-retry".into()));
+    let name = rig.graph.store.read_with(rig.cx, |store, _| {
+        let key = store.notice().and_then(|notice| notice.retry.as_ref()).expect("represented passive recovery page");
+        super::status::retry_activation_name(store.capture_page_retry(key).as_ref())
+    });
+    let id = format!("{:?}", gpui::ElementId::Name(name));
     let node = tree["nodes"].as_object().expect("native nodes").values().find(|node|
         node["element_id"].as_str() == Some(id.as_str())
             && node["aria"]["role"].as_str() == Some("Button")

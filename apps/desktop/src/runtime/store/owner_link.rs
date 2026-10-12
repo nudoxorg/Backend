@@ -80,6 +80,18 @@ impl PartialEq for PageRetryOwner {
 }
 impl Eq for PageRetryOwner {}
 
+impl PageRetryOwner {
+    /// Use only the gate and publication captured in this receipt. Reading
+    /// the gate's live diagnostic state would silently change an old ID.
+    pub(super) fn activation_key(&self) -> String {
+        match self {
+            Self::Serving(owner) => format!("serving:{:?}:{:?}", owner.gate.as_ref().map(OwnerGate::gate_identity), owner.epoch),
+            Self::Failed(owner) => format!("failed:{}:{:?}", owner.gate.gate_identity(), owner.generation),
+            Self::Starting { gate, epoch } => format!("starting:{}:{epoch:?}", gate.gate_identity()),
+        }
+    }
+}
+
 /// One Ready publication captured before the store revokes previous reads.
 pub(super) struct OwnerAnswer {
     epoch: Option<Epoch>,
@@ -381,6 +393,34 @@ mod tests {
         assert!(matches!(link.phase(), OwnerPhase::Starting));
         assert!(!link.retry_at(&current, PageKey::Health), "one failure capability starts at most once");
         assert!(!link.can_retry_current());
+    }
+
+    #[test]
+    fn retry_receiver_identity_keeps_the_captured_page_gate_and_publication() {
+        use super::super::PageRetryReceipt;
+        let pages = crate::model::pages::PageStore::default();
+        let first = OwnerGate::starting();
+        let second = OwnerGate::starting();
+        for gate in [&first, &second] { gate.publish(OwnerState::Failed("same failure".into())); }
+        let receipt = |gate: &OwnerGate, key: PageKey| PageRetryReceipt {
+            stamp: pages.stamp(&key), key,
+            owner: OwnerLink::behind(gate.clone()).page_retry_owner().expect("captured failure"),
+        };
+        let old = receipt(&first, PageKey::Orbit);
+        let old_name = old.activation_name("status-retry");
+        assert_eq!(old, receipt(&first, PageKey::Orbit));
+        assert_eq!(old_name, receipt(&first, PageKey::Orbit).activation_name("status-retry"));
+        assert_eq!(old.stamp, pages.stamp(&PageKey::Health), "two unseen slots have equal stamps");
+        assert_ne!(old_name, receipt(&first, PageKey::Health).activation_name("status-retry"));
+        assert_ne!(old_name, receipt(&second, PageKey::Orbit).activation_name("status-retry"),
+            "distinct gates at equal retry generation cannot share an authored receiver");
+        first.publish(OwnerState::Starting);
+        first.publish(OwnerState::Failed("same failure".into()));
+        let later = receipt(&first, PageKey::Orbit);
+        assert_eq!(old.stamp, later.stamp, "no page read or stamp mutation took place");
+        assert_ne!(old_name, later.activation_name("status-retry"));
+        assert_eq!(old_name, old.activation_name("status-retry"),
+            "an old captured identity never reads the gate's mutable diagnostic state");
     }
 
 }

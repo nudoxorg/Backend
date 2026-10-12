@@ -384,11 +384,11 @@ fn action_notice(reason: &str, window: &mut Window, cx: &mut App) {
 /// Compose a native Find folio.
 #[must_use]
 pub fn find(id: impl Into<ElementId>, model: Arc<Model>, actions: Actions, measure: &Measure) -> Find {
-    Find { id: id.into(), model, actions, admission: None, active: true, local_activation: None, measure: *measure, retained: None, #[cfg(test)] test_state: None }
+    Find { id: id.into(), model, actions, admission: None, active: true, local_activation: None, retry_activation_id: None, measure: *measure, retained: None, #[cfg(test)] test_state: None }
 }
 
 #[derive(IntoElement)]
-pub struct Find { admission: Option<ReadAdmission>, active: bool, local_activation: Option<gpui::NativeActivationScope>, id: ElementId, model: Arc<Model>, actions: Actions, measure: Measure, retained: Option<FindState>, #[cfg(test)] test_state: Option<Entity<State>> }
+pub struct Find { admission: Option<ReadAdmission>, active: bool, local_activation: Option<gpui::NativeActivationScope>, retry_activation_id: Option<ElementId>, id: ElementId, model: Arc<Model>, actions: Actions, measure: Measure, retained: Option<FindState>, #[cfg(test)] test_state: Option<Entity<State>> }
 
 /// The host retains one editing engine for an exact reading visit. A local
 /// Settings page may unmount Find without replacing its input or unsent draft.
@@ -415,6 +415,11 @@ impl FindState {
 }
 
 impl Find {
+    /// The host's exact painted recovery identity, independent of Find's
+    /// retained editing state and its recovery control's logical Touch ID.
+    #[must_use]
+    pub fn retry_activation_id(mut self, id: ElementId) -> Self { self.retry_activation_id = Some(id); self }
+
     #[must_use]
     pub fn retained(mut self, state: FindState) -> Self { self.retained = Some(state); self }
     /// Existing structural input receipt for the independent local query field.
@@ -541,9 +546,11 @@ impl RenderOnce for Find {
         }
         if matches!(admission, Admission::Failed(_)) && let Some(retry) = &self.actions.retry {
             let retry = retry.clone();
-            page = page.child(button(child(&self.id, "retry"), "Retry current Find query", &m).primary().disabled(!self.active)
+            let mut retry = button(child(&self.id, "retry"), "Retry current Find query", &m).primary().disabled(!self.active)
                 .on_click(move |window, cx| retry(window, cx))
-                .when_current(self.actions.retry_admit.clone()));
+                .when_current(self.actions.retry_admit.clone());
+            if let Some(id) = self.retry_activation_id { retry = retry.activation_id(id); }
+            page = page.child(retry);
         }
         if !state.read(cx).held.packages().is_empty() {
             page = page.child(held_tray(&child(&self.id, "held-tray"), &state, &self.actions, admission.allows_actions(), &m, cx));

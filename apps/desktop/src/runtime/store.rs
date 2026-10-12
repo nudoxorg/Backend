@@ -235,6 +235,14 @@ pub(crate) struct PageRetryReceipt {
     owner: owner_link::PageRetryOwner,
 }
 
+impl PageRetryReceipt {
+    /// The authored native receiver for this exact captured recovery. The
+    /// host retains its logical focus ID separately from this press identity.
+    pub(crate) fn activation_name(&self, face: &str) -> gpui::SharedString {
+        format!("{face}:{:?}:{:?}:{}", self.key, self.stamp, self.owner.activation_key()).into()
+    }
+}
+
 /// The data plane entity.
 pub struct DataStore {
     snapshot: Arc<AppSnapshot>,
