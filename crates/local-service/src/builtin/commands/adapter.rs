@@ -885,6 +885,14 @@ impl CommandAdapter {
                 })?;
             return Self::encode_index_operation(daemon, request.request_id, observation, true);
         }
+        if let Command::Surface(backend_library::SurfaceCommand::IndexStart {
+            package,
+            execution_intent,
+        }) = &request.command
+            && let Some(result) = self.join_active_index_start(package, *execution_intent)
+        {
+            return Self::encode_index_start(daemon, request.request_id, result);
+        }
         let must_wait = if answers_while_indexing(&request.command) {
             false
         } else if matches!(origin, DeferredCommandOrigin::Incoming) && !self.waiting.is_empty() {
@@ -1727,7 +1735,7 @@ impl CommandAdapter {
                 // the receipt refresh was interrupted. Still-Pending markers
                 // remain truthful until an explicit retry/remove proves the
                 // absence of local and remote work and closes them.
-                if let Some(original) = entry.source_capture.as_ref() {
+                if let Some(original) = entry.pending_source_capture() {
                     if let Err(error) = self.refresh_index_operation_source_capture(
                         daemon,
                         operation_key,
@@ -1916,6 +1924,9 @@ impl CommandAdapter {
         execution_intent: CompileExecutionIntent,
         request_id: u64,
     ) -> Result<Executed, BuiltinModelError> {
+        if let Some(result) = self.join_active_index_start(&package, execution_intent) {
+            return Self::encode_index_start(daemon, request_id, result);
+        }
         let owner_ticket = self.issue_index_ticket(package.clone())?;
         let package_key = backend_engine::package_key(package.as_str());
         let certificate = WireCertificate::new().with_claim(WireClaim::Key {
@@ -1974,6 +1985,39 @@ impl CommandAdapter {
                 backend_library::IndexStartResult::Terminal(terminal)
             }
         };
+        Self::encode_index_start(daemon, request_id, result)
+    }
+
+    /// An unkeyed start joins only this exact live request. It neither allocates
+    /// a second ticket nor queues a replacement capture behind its own work.
+    /// An earlier queued mutation is a barrier: a later start must observe its
+    /// ordered effect instead of lending the ticket from before that mutation.
+    /// Distinct durable keys, package spellings and execution intents retain
+    /// their independent admission and response identities.
+    fn join_active_index_start(
+        &self,
+        package: &backend_library::PackageReference,
+        execution_intent: CompileExecutionIntent,
+    ) -> Option<backend_library::IndexStartResult> {
+        if !self.waiting.is_empty() {
+            return None;
+        }
+        self.indexing.as_ref().and_then(|job| {
+            (job.owner_ticket.package() == package && job.execution_intent == execution_intent)
+                .then(|| backend_library::IndexStartResult::Started {
+                    ticket: job.owner_ticket.clone(),
+                    stage: job
+                        .progress_stage
+                        .unwrap_or(backend_library::IndexJobStage::Scanning),
+                })
+        })
+    }
+
+    fn encode_index_start(
+        daemon: &ProductDaemon,
+        request_id: u64,
+        result: backend_library::IndexStartResult,
+    ) -> Result<Executed, BuiltinModelError> {
         Self::encode(
             daemon,
             request_id,
@@ -6396,6 +6440,8 @@ mod tests {
     mod index_profile_worker_tests;
     #[path = "index_publication_worker.rs"]
     mod index_publication_worker_tests;
+    #[path = "index_request_admission.rs"]
+    mod index_request_admission_tests;
 
     #[test]
     fn owned_intent_preparation_moves_facts_and_preserves_bound_canonical_identity() {

@@ -23,6 +23,8 @@ use backend_library::{
 use backend_present::{domain_name, grammar_for};
 
 mod surface_fidelity;
+#[cfg(unix)]
+mod index_overlap;
 
 const PROJECT: &str = "/abs/polyglot";
 const MODULE: &str = "/abs/polyglot::src/lib.rs";

@@ -576,6 +576,74 @@ mod tests {
     }
 
     #[test]
+    fn held_request_reconciliation_does_not_lock_an_unrelated_project() {
+        let fixture = Fixture::new();
+        let other_path = fixture.root.join("independent-project");
+        std::fs::create_dir(&other_path).expect("independent actual project");
+        let other = PackageReference::parse(other_path.to_str().expect("UTF-8 project"))
+            .expect("different canonical package");
+        let mut first_key = None;
+        let mut other_key = None;
+        fixture
+            .index(|command| {
+                let SurfaceCommand::IndexOperationStart { operation_key, .. } = command else {
+                    panic!("first invocation starts one saved request");
+                };
+                first_key = Some(operation_key);
+                // The first digest's real file lock is still held inside this
+                // transport call. Another project in the same attachment must
+                // reach its own typed start, not acquire a global caller lock.
+                index_with_journal(
+                    &fixture.paths,
+                    other.clone(),
+                    CompileExecutionIntent::Interactive,
+                    |command| {
+                        let SurfaceCommand::IndexOperationStart {
+                            operation_key,
+                            package,
+                            execution_intent,
+                        } = command
+                        else {
+                            panic!("independent invocation starts its own request");
+                        };
+                        assert_eq!(package, other);
+                        assert_ne!(Some(operation_key), first_key);
+                        other_key = Some(operation_key);
+                        Ok(SurfaceReply::IndexOperationStarted(
+                            IndexOperationObservation::Known(IndexOperationStatus::new(
+                                operation_key,
+                                package,
+                                execution_intent,
+                                IndexOperationState::Accepted,
+                            )),
+                        ))
+                    },
+                )
+                .expect("no unrelated request serialization");
+                let claim = fixture
+                    .claims()
+                    .into_iter()
+                    .find(|claim| claim.operation_key == operation_key)
+                    .expect("original exact saved claim");
+                Ok(SurfaceReply::IndexOperationStarted(known(
+                    &claim,
+                    IndexOperationState::Accepted,
+                )))
+            })
+            .expect("original request retains its admission");
+        let claims = fixture.claims();
+        assert_eq!(claims.len(), 2);
+        assert!(claims.iter().any(
+            |claim| Some(claim.operation_key) == first_key && claim.package == fixture.package
+        ));
+        assert!(
+            claims
+                .iter()
+                .any(|claim| Some(claim.operation_key) == other_key && claim.package == other)
+        );
+    }
+
+    #[test]
     fn saved_claim_precedes_first_send_and_lost_ack_reconciles_without_new_start() {
         let fixture = Fixture::new();
         let mut original = None;
