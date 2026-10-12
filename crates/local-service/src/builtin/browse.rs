@@ -8874,6 +8874,7 @@ mod tests {
         ))));
     }
 
+    #[cfg(unix)]
     #[test]
     fn generated_cargo_launcher_refuses_a_missing_source_without_using_embedded_bytes() {
         const SOURCE: &[u8] =
