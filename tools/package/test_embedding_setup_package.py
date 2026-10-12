@@ -11,7 +11,7 @@ import install_linux as installer
 class EmbeddingPackageControls(unittest.TestCase):
     def test_helper_receipt_requires_successful_same_source_cpu_build_and_exact_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             helper = root / 'helper'
             helper.write_bytes(b'non-executable metadata fixture')
             receipt = {'schema':'nudox.embedding-helper-build-receipt.v1','preset':'candle-minilm-cpu-v1',
@@ -36,7 +36,7 @@ class EmbeddingPackageControls(unittest.TestCase):
 
     def test_installed_optional_receipt_refuses_hash_or_dependency_change_without_launch(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             def record(relative, raw):
                 path = root / relative
                 path.parent.mkdir(parents=True,exist_ok=True)
