@@ -1142,7 +1142,7 @@ fn retained_add_path_enter_cannot_submit_after_an_unpainted_cover_return(cx: &mu
         let state = rig.cx.update(|window, cx| {
             let form = super::form(window, cx).expect("mounted Add");
             let input = form.read(cx).input().clone();
-            assert!(input.read(cx).focus_handle().is_focused(window), "the actual path field owns Enter");
+            assert!(input.read(cx).focus_handle(cx).is_focused(window), "the actual path field owns Enter");
             let work = form.read(cx).work_state();
             let frame = window.a11y_frame_number();
             let focus = window.focused(cx);
