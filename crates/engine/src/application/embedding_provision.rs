@@ -71,7 +71,8 @@ pub struct EmbeddingRuntimeLimits {
 }
 
 impl EmbeddingRuntimeLimits {
-    fn validate(
+    /// Validates the same process and shared-credit envelope used by installation and activation.
+    pub fn validate(
         self,
         model_bytes: u64,
         tokenizer_bytes: u64,
@@ -368,6 +369,24 @@ pub fn install_embedding_runtime(
     config_path: impl AsRef<Path>,
     request: EmbeddingRuntimeInstall,
 ) -> Result<EmbeddingRuntimeSpecV1, EmbeddingRuntimeError> {
+    install_embedding_runtime_inner(config_path.as_ref(), request, None)
+}
+
+/// Installs only the exact executable/dependency closure admitted by the caller.
+/// The installer compares its own canonical observation before publishing any artifact or pointer.
+pub fn install_embedding_runtime_with_identity(
+    config_path: impl AsRef<Path>,
+    request: EmbeddingRuntimeInstall,
+    expected_toolchain: [u8; 32],
+) -> Result<EmbeddingRuntimeSpecV1, EmbeddingRuntimeError> {
+    install_embedding_runtime_inner(config_path.as_ref(), request, Some(expected_toolchain))
+}
+
+fn install_embedding_runtime_inner(
+    config_path: &Path,
+    request: EmbeddingRuntimeInstall,
+    expected_toolchain: Option<[u8; 32]>,
+) -> Result<EmbeddingRuntimeSpecV1, EmbeddingRuntimeError> {
     let config_path = config_path.as_ref();
     validate_config_path(config_path)?;
     if let Some(parent) = config_path.parent() {
@@ -385,6 +404,9 @@ pub fn install_embedding_runtime(
     let program = canonical_regular_file(&request.program)?;
     let (dependencies, dependency_ids) = canonical_dependencies(&program, &request.dependencies)?;
     let executable = ToolchainArtifact::from_path(&program, dependency_ids)?;
+    if expected_toolchain.is_some_and(|expected| executable.identity().to_bytes() != expected) {
+        return Err(EmbeddingRuntimeError::ExecutableIdentityMismatch);
+    }
     let model_hash = *blake3::hash(&request.model_bytes).as_bytes();
     let tokenizer_hash = *blake3::hash(&request.tokenizer_bytes).as_bytes();
     let spec = EmbeddingRuntimeSpecV1::new(
@@ -475,6 +497,9 @@ pub fn remove_embedding_runtime(
 /// Failure while provisioning, cold-opening, or activating embedding state.
 #[derive(Debug, Error)]
 pub enum EmbeddingRuntimeError {
+    /// The observed executable/dependency closure differs from the admitted build receipt.
+    #[error("embedding helper/dependency identity differs from the admitted build receipt")]
+    ExecutableIdentityMismatch,
     /// A path, bound, canonical encoding, or persisted claim was invalid.
     #[error("embedding runtime configuration is invalid")]
     InvalidConfig,

@@ -44,6 +44,12 @@ pub fn main_entry() -> ExitCode {
         Ok(split) => split,
         Err(fault) => return report(&fault, &Options::fallback()),
     };
+    if words.first().is_some_and(|word| word == "embedding-setup") {
+        return match crate::embedding_setup::run(&words[1..], &options) {
+            Ok(output) => emit(&output),
+            Err(fault) => report(&fault, &options),
+        };
+    }
     if words.first().is_some_and(|word| word == "cluster") {
         return match crate::cluster::run(&words[1..], &options) {
             Ok(output) => emit(&output),
@@ -103,6 +109,7 @@ fn help_output(args: &[String]) -> Option<String> {
     Some(match command.as_deref() {
         Some("cluster") => crate::cluster::help_text().to_owned(),
         Some("semantic-hydrate") => crate::semantic_hydrate::help_text().to_owned(),
+        Some("embedding-setup") => crate::embedding_setup::help_text().to_owned(),
         command => command
             .and_then(grammar_for)
             .map_or_else(invoke::help, invoke::help_for),

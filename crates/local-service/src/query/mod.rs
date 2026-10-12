@@ -5,8 +5,10 @@
 //! may contribute only locally resolved canonical IDs under a bounded policy,
 //! so provider availability and recall never become coverage authority.
 
+mod candle_acquisition;
 mod embedding_cache;
 mod local;
+mod local_preset;
 mod local_recipe;
 mod projection_state;
 mod remote;
@@ -20,6 +22,11 @@ pub use local::{
 pub use local_recipe::{
     AdmittedLocalQueryRecipe, LocalEmbeddingTreatment, LocalQueryRecipeContract,
     LocalQueryRecipeDescriptor, LocalQueryRecipeError,
+};
+pub use candle_acquisition::{DownloadedCandleArtifacts, download_candle_artifacts};
+pub use local_preset::{
+    CandleArtifact, CandleSetupError, PinnedCandleSetupRequest, PreparedCandleSetup,
+    admit_candle_setup_authority, inspect_candle_helper,
 };
 pub use remote::{
     ActiveQdrant, ConfiguredQdrant, EMBEDDING_DEVICE_ENV, EMBEDDING_DIMENSIONS_ENV,

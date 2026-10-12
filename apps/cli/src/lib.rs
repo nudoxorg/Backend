@@ -27,6 +27,8 @@ pub const ENDPOINT_ENV: &str = "BACKEND_LOCALD_ENDPOINT";
 mod client;
 mod cluster;
 mod error;
+mod embedding_setup;
+mod embedding_package;
 pub mod invoke;
 pub mod options;
 mod process;
