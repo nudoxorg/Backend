@@ -3,7 +3,7 @@
 # Invoked as `nu .config/ci/t1.nu` inside the lean
 # `.#smoke` dev shell; run the same command locally to get the same verdict.
 #
-# It builds only the three product binaries (CLI, MCP, desktop) for the host
+# It builds the product binaries (CLI, MCP, desktop and their locald owner) for the host
 # target: no --all-targets, so none of the ~330 test binaries are linked, and
 # no foreign targets. Then .config/ci/smoke.py starts each one: CLI --help,
 # MCP initialize + tools/list on stdio, and the desktop drawing a first frame
@@ -21,6 +21,9 @@ const SURFACES = [
     {package: "backend-cli", bin: "backend-cli"}
     {package: "backend-mcp", bin: "backend-mcp"}
     {package: "backend-desktop", bin: "backend-desktop"}
+    # Not smoked here; published so T2 (.config/ci/surface.py) drives the
+    # exact owner the CLI and MCP find beside them.
+    {package: "backend-locald", bin: "backend-locald"}
 ]
 
 def main []: nothing -> nothing {
@@ -65,7 +68,7 @@ def main []: nothing -> nothing {
 
     let build_args = $SURFACES | each {|surface| ["--package" $surface.package "--bin" $surface.bin] } | flatten
     let built = if $capacity {
-        ci-step "t1" "build cli, mcp, desktop" {||
+        ci-step "t1" "build cli, mcp, desktop, locald" {||
             # Keep this lane conservative regardless of ambient shell settings.
             with-env {CARGO_BUILD_JOBS: "2"} {
                 run-bounded 30min $cargo "build" "--locked" "--jobs" "2" ...$build_args
@@ -89,6 +92,15 @@ def main []: nothing -> nothing {
             run-bounded 10min "python3" ($env.FILE_PWD | path join "t1_artifacts.py") "publish" "--bin-dir" $bin_dir "--output" ($artifact_root | path join $sha)
         }
     } else { true }
+    # T2 surface prototype (W2.3): real product operations against the
+    # binaries just built, snapshotted. Advisory: its verdict is reported but
+    # never fails T1. It moves to its own parallel job once its cases are
+    # reviewed (see tests/surface/cases.json and .config/ci/surface.py).
+    if $built and ("tests/surface/cases.json" | path exists) {
+        ci-step "t2" "surface cases (advisory)" {||
+            run-bounded 15min "nix" "develop" ".#surface" "--command" "python3" ($env.FILE_PWD | path join "surface.py") "--bin-dir" $bin_dir "--print-missing"
+        } | ignore
+    }
     if ($cache | is-not-empty) {
         print $"CI-CACHE t1: (^du -sh $target_dir | str trim)"
     }

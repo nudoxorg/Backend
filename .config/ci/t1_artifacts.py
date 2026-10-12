@@ -12,7 +12,7 @@ import shutil
 import subprocess
 import tempfile
 
-BINARIES = ("backend-cli", "backend-mcp", "backend-desktop")
+BINARIES = ("backend-cli", "backend-mcp", "backend-desktop", "backend-locald")
 RUNTIME_ENV = (
     "LD_LIBRARY_PATH", "FONTCONFIG_FILE", "__EGL_VENDOR_LIBRARY_DIRS",
     "LIBGL_DRIVERS_PATH", "VK_DRIVER_FILES", "VK_ICD_FILENAMES",

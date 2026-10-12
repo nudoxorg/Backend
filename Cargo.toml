@@ -16,6 +16,8 @@ members = [
 exclude = [
     ".config/dylint",
     "tests/__pycache__",
+    # T2 surface corpus and reviewed snapshots (data, not a crate).
+    "tests/surface",
     "third_party/tsz",
     "tools/package",
 ]
