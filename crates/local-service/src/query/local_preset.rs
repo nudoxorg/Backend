@@ -265,9 +265,6 @@ pub fn admit_candle_setup_authority(
     expected_toolchain: [u8; 32],
     limits: EmbeddingRuntimeLimits,
 ) -> Result<(), CandleSetupError> {
-    limits
-        .validate_platform()
-        .map_err(CandleSetupError::Runtime)?;
     if !limits.memory_bytes.is_some_and(|bytes| bytes > 0) {
         return Err(CandleSetupError::ResourcePolicy);
     }
@@ -278,6 +275,9 @@ pub fn admit_candle_setup_authority(
             NonZeroU16::new(384).ok_or(CandleSetupError::ResourcePolicy)?,
             NonZeroU32::new(64 * 1024).ok_or(CandleSetupError::ResourcePolicy)?,
         )
+        .map_err(CandleSetupError::Runtime)?;
+    limits
+        .validate_platform()
         .map_err(CandleSetupError::Runtime)?;
     if helper(program, dependencies)?.identity().to_bytes() != expected_toolchain {
         return Err(CandleSetupError::HelperIdentity);
