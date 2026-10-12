@@ -692,7 +692,7 @@ mod tests {
             }, cx);
             assert_eq!(rig.graph.store.read(cx).stats().submitted, submitted + 1, "unchanged notice and owner cannot admit an old page generation");
             assert_eq!(window.focused(cx), focused);
-            original.focus(window);
+            original.focus(window, cx);
             window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
                 position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left,
                 click_count: 1, first_mouse: false,

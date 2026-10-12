@@ -40,3 +40,25 @@ Markdown outside that explicit list does not automatically skip CI.
 
 The full T1/T2 pipeline replacement is still being built. Existing fast and legacy
 platform jobs remain in effect during rollout; the smoke command is available now.
+
+T1 can publish its successful build for a later task by setting
+`CI_T1_ARTIFACT_ROOT` to an output directory outside the checkout. The runner
+creates `<output>/<full-source-sha>/` only after all three smoke checks pass.
+The Linux artifact contains those three binaries, the smoke driver, a Nix
+runtime export and a manifest recording the source SHA, host target, Rust
+version, payload sizes and SHA-256 hashes. It contains no nextest archive:
+T1 does not compile the old test binaries.
+
+A consumer can verify the identity and bytes without executing anything:
+
+```sh
+python3 .config/ci/t1_artifacts.py verify /path/to/artifact \
+  --source-sha FULL_COMMIT_SHA --target x86_64-unknown-linux-gnu
+```
+
+Add `--smoke` in an isolated Linux Nix task to import the bundled runtime and
+run CLI/MCP/GUI checks against the published binaries, with no Cargo invocation.
+Only explicit runtime paths are retained; credentials and workspace settings
+are excluded. The artifact budget is 8 GiB. Publication refuses an existing
+destination, a dirty tracked checkout or unresolved libraries. Pipeline wiring
+and measurement across task boundaries are still being implemented (W3.2).
