@@ -62,13 +62,14 @@ pub use contract::{
     typed_of,
 };
 pub use embedding::{
-    EmbeddingArtifact, EmbeddingArtifactId, EmbeddingBatchProtocol, EmbeddingCoordinates,
-    EmbeddingExecutable, EmbeddingExecutableError, EmbeddingExecutionIdentity,
-    EmbeddingInputIdentity, EmbeddingInvocation, EmbeddingMemoryAdmission, EmbeddingNormalization,
-    EmbeddingPayloadError, EmbeddingPurpose, EmbeddingRuntimeSpecError, EmbeddingRuntimeSpecV1,
-    MAX_EMBEDDING_BATCH_COORDINATE_BYTES, MAX_EMBEDDING_BATCH_INPUT_BYTES,
-    MAX_EMBEDDING_BATCH_INPUTS, MAX_EMBEDDING_BATCH_ITEMS, MAX_EMBEDDING_BATCH_METADATA_BYTES,
-    MAX_EMBEDDING_CACHE_COORDINATE_BYTES, MAX_EMBEDDING_MODEL_BYTES, MAX_EMBEDDING_TOKENIZER_BYTES,
+    EmbeddingActivationControl, EmbeddingActivationInput, EmbeddingArtifact, EmbeddingArtifactId,
+    EmbeddingBatchProtocol, EmbeddingCoordinates, EmbeddingExecutable, EmbeddingExecutableError,
+    EmbeddingExecutionIdentity, EmbeddingInputIdentity, EmbeddingInvocation,
+    EmbeddingMemoryAdmission, EmbeddingNormalization, EmbeddingPayloadError, EmbeddingPurpose,
+    EmbeddingRuntimeSpecError, EmbeddingRuntimeSpecV1, MAX_EMBEDDING_BATCH_COORDINATE_BYTES,
+    MAX_EMBEDDING_BATCH_INPUT_BYTES, MAX_EMBEDDING_BATCH_INPUTS, MAX_EMBEDDING_BATCH_ITEMS,
+    MAX_EMBEDDING_BATCH_METADATA_BYTES, MAX_EMBEDDING_CACHE_COORDINATE_BYTES,
+    MAX_EMBEDDING_MODEL_BYTES, MAX_EMBEDDING_TOKENIZER_BYTES,
 };
 pub use embedding_cache::EmbeddingCacheSession;
 pub use embedding_memory::{
