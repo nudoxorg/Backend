@@ -144,6 +144,11 @@ pub struct WorkspacePaths {
     authority_secret: PathBuf,
 }
 
+#[cfg(unix)]
+mod startup_recovery;
+#[cfg(unix)]
+pub use startup_recovery::{StartupRecoverySelection, StartupWorkspaceSelection};
+
 impl WorkspacePaths {
     /// Discovers a project session from explicit values, environment, and the
     /// current directory, in that order.
