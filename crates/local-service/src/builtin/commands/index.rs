@@ -6669,6 +6669,7 @@ pub(super) fn semantic_versions(
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
 ) -> Result<Box<[backend_engine::SemanticVersionRecord]>, BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
+    semantic_authority.drain_native_history_completions()?;
     semantic_versions_from_snapshot(
         &snapshot,
         daemon.engine().daemon().library().view(),
@@ -6687,7 +6688,13 @@ pub(super) fn semantic_versions_page(
     limit: u16,
     cursor: Option<&backend_library::SemanticVersionsCursor>,
 ) -> Result<backend_library::SemanticVersionsPage, BuiltinModelError> {
+    if limit == 0 || limit > backend_library::MAX_SEMANTIC_HISTORY_PAGE_ITEMS {
+        return Err(BuiltinModelError(
+            backend_library::SemanticHistoryPageError::InvalidLimit.to_string(),
+        ));
+    }
     let snapshot = daemon.engine().daemon().owner().snapshot();
+    semantic_authority.drain_native_history_completions()?;
     let semantic_root = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map(|relation| *relation.root().as_bytes())
@@ -6696,6 +6703,16 @@ pub(super) fn semantic_versions_page(
         .relation::<BuiltinWorkspaceRelation>()
         .map(|relation| *relation.root().as_bytes())
         .map_err(|error| BuiltinModelError(format!("open semantic source page: {error}")))?;
+    if let Some(catalog) = semantic_authority.cached_semantic_versions_catalog(
+        snapshot.root(),
+        &package,
+        semantic_root,
+        source_root,
+    ) {
+        return catalog
+            .page(limit, cursor)
+            .map_err(|error| BuiltinModelError(error.to_string()));
+    }
     let versions = semantic_versions_from_snapshot(
         &snapshot,
         daemon.engine().daemon().library().view(),
@@ -6703,15 +6720,17 @@ pub(super) fn semantic_versions_page(
         workspace,
         semantic_authority,
     )?;
-    backend_library::SemanticVersionsPage::from_versions(
+    let catalog = backend_library::SemanticVersionsCatalog::new(
         package,
         semantic_root,
         source_root,
-        &versions,
-        limit,
-        cursor,
+        versions,
     )
-    .map_err(|error| BuiltinModelError(error.to_string()))
+    .map_err(|error| BuiltinModelError(error.to_string()))?;
+    let catalog = semantic_authority.remember_semantic_versions_catalog(snapshot.root(), catalog);
+    catalog
+        .page(limit, cursor)
+        .map_err(|error| BuiltinModelError(error.to_string()))
 }
 fn semantic_versions_from_snapshot(
     snapshot: &WorkspaceSnapshot,
@@ -6846,7 +6865,7 @@ fn semantic_versions_from_snapshot(
         if record.selected {
             record.selected_source_frontier = selected_source_frontier.clone();
             record.history_status =
-                semantic_authority.native_history_status(history_key, *claim)?;
+                semantic_authority.native_history_status_captured(history_key, *claim)?;
         }
     }
     if selected.iter().any(|(selected_target, identity)| {

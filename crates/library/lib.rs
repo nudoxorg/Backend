@@ -67,8 +67,9 @@ pub use arrangement::{QueryWork, declaration_name_priority};
 pub use semantic_history_page::{
     DEFAULT_SEMANTIC_HISTORY_PAGE_ITEMS, MAX_SEMANTIC_HISTORY_PAGE_BYTES,
     MAX_SEMANTIC_HISTORY_PAGE_ITEMS, SemanticHistoryCatalog, SemanticHistoryPageError,
-    SemanticVersionPageEntry,
-    SemanticVersionsBasis, SemanticVersionsCursor, SemanticVersionsPage, SemanticVersionsPageState,
+    SemanticHistoryReadWork, SemanticVersionPageEntry, SemanticVersionsBasis,
+    SemanticVersionsCatalog, SemanticVersionsCursor, SemanticVersionsPage,
+    SemanticVersionsPageState,
 };
 
 pub use backend_advisory::{

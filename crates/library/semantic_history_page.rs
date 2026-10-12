@@ -306,10 +306,21 @@ pub struct SemanticVersionsPage {
     pub next_cursor: Option<SemanticVersionsCursor>,
 }
 
-struct HashWriter(blake3::Hasher);
+struct HashWriter {
+    hash: blake3::Hasher,
+    bytes: u64,
+}
+impl HashWriter {
+    fn new(domain: &[u8]) -> Self {
+        let mut hash = blake3::Hasher::new();
+        hash.update(domain);
+        Self { hash, bytes: 0 }
+    }
+}
 impl Write for HashWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0.update(bytes);
+        self.hash.update(bytes);
+        self.bytes = self.bytes.saturating_add(bytes.len() as u64);
         Ok(bytes.len())
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -340,30 +351,56 @@ fn with_history(
     }
 }
 
-impl SemanticVersionsPage {
-    /// Pages already owner-admitted immutable versions without changing any retained fact.
-    /// The roots must come from the answering owner snapshot, never from caller input.
+/// Structural work accounted while preparing a catalog or emitting one page.
+/// These are operation counts/bytes, not elapsed-time or compiler-performance claims.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SemanticHistoryReadWork {
+    /// Complete version records admitted when constructing the immutable catalog.
+    pub admitted_versions: u64,
+    /// Complete image proofs admitted through those version records.
+    pub admitted_images: u64,
+    /// Full version and metadata bytes sent to the catalog commitment hashers.
+    pub catalog_hashed_bytes: u64,
+    /// Whole image proofs copied into bounded page candidates, including retries.
+    pub copied_images: u64,
+    /// Complete bounded page candidates measured before egress admission.
+    pub measured_page_bytes: u64,
+}
+
+/// Immutable, strictly admitted owner observation reused by an exact page chain.
+/// Construction consumes the full records once. Paging touches only metadata
+/// headers, requested images, their preceding edge and the next position.
+pub struct SemanticVersionsCatalog {
+    package: PackageReference,
+    package_identity: [u8; 32],
+    basis: SemanticVersionsBasis,
+    versions: Box<[SemanticVersionRecord]>,
+    page_versions: Box<[SemanticVersionRecord]>,
+    reconstructing: bool,
+    work: SemanticHistoryReadWork,
+}
+
+impl SemanticVersionsCatalog {
+    /// Admits and commits one immutable owner observation. Roots come from its
+    /// captured workspace, never from a caller continuation.
     ///
     /// # Errors
-    /// Distinguishes invalid bounds/cursors/catalogs, changed saved bases, and a whole
-    /// retained item that cannot fit without losing fields.
-    pub fn from_versions(
+    /// Refuses inconsistent full records, package/source roots, or catalog-only inputs.
+    pub fn new(
         package: PackageReference,
         semantic_relation_root: [u8; 32],
         source_relation_root: [u8; 32],
-        versions: &[SemanticVersionRecord],
-        limit: u16,
-        cursor: Option<&SemanticVersionsCursor>,
+        versions: Box<[SemanticVersionRecord]>,
     ) -> Result<Self, SemanticHistoryPageError> {
-        if limit == 0 || limit > MAX_SEMANTIC_HISTORY_PAGE_ITEMS {
-            return Err(SemanticHistoryPageError::InvalidLimit);
-        }
         if versions.len() > crate::MAX_PRODUCT_ROWS {
             return Err(SemanticHistoryPageError::InvalidCatalog);
         }
-        for version in versions {
+        for version in versions.iter() {
             version.admit()?;
-            if version.package != package
+            if matches!(
+                version.history_status,
+                SemanticHistoryPublicationStatus::PublishedCatalog { .. }
+            ) || version.package != package
                 || version
                     .selected_source_frontier
                     .as_ref()
@@ -372,15 +409,11 @@ impl SemanticVersionsPage {
                 return Err(SemanticHistoryPageError::InvalidCatalog);
             }
         }
-        let mut hash = HashWriter(blake3::Hasher::new());
-        hash.0.update(b"backend.semantic-versions-page.v1\0");
-        serde_json::to_writer(&mut hash, versions)
+        let mut hash = HashWriter::new(b"backend.semantic-versions-page.v1\0");
+        serde_json::to_writer(&mut hash, &versions)
             .map_err(|_| ProductAdmissionError::SemanticVersionShape)?;
-        let mut metadata_hash = HashWriter(blake3::Hasher::new());
-        metadata_hash
-            .0
-            .update(b"backend.semantic-versions-metadata.v1\0");
-        for version in versions {
+        let mut metadata_hash = HashWriter::new(b"backend.semantic-versions-metadata.v1\0");
+        for version in versions.iter() {
             serde_json::to_writer(
                 &mut metadata_hash,
                 &with_history(version, SemanticHistoryPublicationStatus::NotSelected),
@@ -390,10 +423,123 @@ impl SemanticVersionsPage {
         let basis = SemanticVersionsBasis {
             semantic_relation_root,
             source_relation_root,
-            versions_metadata_identity: *metadata_hash.0.finalize().as_bytes(),
-            versions_identity: *hash.0.finalize().as_bytes(),
+            versions_metadata_identity: *metadata_hash.hash.finalize().as_bytes(),
+            versions_identity: *hash.hash.finalize().as_bytes(),
         };
         let package_identity = *blake3::hash(package.as_str().as_bytes()).as_bytes();
+        let page_versions = versions
+            .iter()
+            .map(|version| {
+                let status = match &version.history_status {
+                    SemanticHistoryPublicationStatus::Published {
+                        selection_id,
+                        commit,
+                        reference,
+                        proof,
+                    } => SemanticHistoryPublicationStatus::PublishedCatalog {
+                        selection_id: *selection_id,
+                        commit: *commit,
+                        reference: reference.clone(),
+                        catalog: SemanticHistoryCatalog::from_proof(proof)?,
+                    },
+                    other => other.clone(),
+                };
+                Ok(with_history(version, status))
+            })
+            .collect::<Result<Vec<_>, SemanticHistoryPageError>>()?
+            .into_boxed_slice();
+        let reconstructing = versions.iter().any(|version| {
+            version.selected
+                && matches!(
+                    &version.history_status,
+                    SemanticHistoryPublicationStatus::Pending { .. }
+                        | SemanticHistoryPublicationStatus::NotRequested { .. }
+                        | SemanticHistoryPublicationStatus::Deferred { .. }
+                )
+        });
+        let work = SemanticHistoryReadWork {
+            admitted_versions: versions.len() as u64,
+            admitted_images: versions
+                .iter()
+                .map(|version| match &version.history_status {
+                    SemanticHistoryPublicationStatus::Published { proof, .. } => {
+                        proof.images.len() as u64
+                    }
+                    _ => 0,
+                })
+                .sum(),
+            catalog_hashed_bytes: hash.bytes.saturating_add(metadata_hash.bytes),
+            ..SemanticHistoryReadWork::default()
+        };
+        Ok(Self {
+            package,
+            package_identity,
+            basis,
+            versions,
+            page_versions,
+            reconstructing,
+            work,
+        })
+    }
+
+    /// Exact requested package held by this observation.
+    #[must_use]
+    pub fn package(&self) -> &PackageReference {
+        &self.package
+    }
+
+    /// Exact semantic/source and full-metadata/history commitments of this observation.
+    #[must_use]
+    pub fn basis(&self) -> &SemanticVersionsBasis {
+        &self.basis
+    }
+
+    /// One-time complete catalog work. Repeated pages never repeat these counts.
+    #[must_use]
+    pub fn preparation_work(&self) -> SemanticHistoryReadWork {
+        self.work
+    }
+
+    /// Emits a bounded page without re-admitting or rehashing the complete catalog.
+    ///
+    /// # Errors
+    /// Refuses invalid bounds/cursors, stale saved bases, or an unrenderable whole item.
+    pub fn page(
+        &self,
+        limit: u16,
+        cursor: Option<&SemanticVersionsCursor>,
+    ) -> Result<SemanticVersionsPage, SemanticHistoryPageError> {
+        self.page_with_work(limit, cursor).0
+    }
+
+    /// Emits a page and retains structural counts even for refused requests.
+    #[must_use]
+    pub fn page_with_work(
+        &self,
+        limit: u16,
+        cursor: Option<&SemanticVersionsCursor>,
+    ) -> (
+        Result<SemanticVersionsPage, SemanticHistoryPageError>,
+        SemanticHistoryReadWork,
+    ) {
+        let mut work = SemanticHistoryReadWork::default();
+        let result = self.page_inner(limit, cursor, &mut work);
+        (result, work)
+    }
+
+    fn page_inner(
+        &self,
+        limit: u16,
+        cursor: Option<&SemanticVersionsCursor>,
+        work: &mut SemanticHistoryReadWork,
+    ) -> Result<SemanticVersionsPage, SemanticHistoryPageError> {
+        if limit == 0 || limit > MAX_SEMANTIC_HISTORY_PAGE_ITEMS {
+            return Err(SemanticHistoryPageError::InvalidLimit);
+        }
+        let versions = &self.versions;
+        let basis = &self.basis;
+        let package = self.package.clone();
+        let package_identity = self.package_identity;
         let mut position = match cursor {
             Some(cursor) => cursor
                 .decode()
@@ -426,17 +572,10 @@ impl SemanticVersionsPage {
             return Err(SemanticHistoryPageError::InvalidCursor);
         }
         if position.basis.versions_identity != basis.versions_identity {
-            let reconstructing = versions.iter().any(|version| {
-                version.selected
-                    && matches!(
-                        &version.history_status,
-                        SemanticHistoryPublicationStatus::Pending { .. }
-                            | SemanticHistoryPublicationStatus::NotRequested { .. }
-                            | SemanticHistoryPublicationStatus::Deferred { .. }
-                    )
-            });
-            if reconstructing && let Some(cursor) = cursor {
-                let page = Self {
+            if self.reconstructing
+                && let Some(cursor) = cursor
+            {
+                let page = SemanticVersionsPage {
                     state: SemanticVersionsPageState::Preparing,
                     package,
                     basis: position.basis.clone(),
@@ -450,10 +589,10 @@ impl SemanticVersionsPage {
             }
             return Err(SemanticHistoryPageError::StaleBasis);
         }
-        let mut page = Self {
+        let mut page = SemanticVersionsPage {
             state: SemanticVersionsPageState::Ready,
             package,
-            basis,
+            basis: basis.clone(),
             limit,
             entries: Box::new([]),
             version_count: versions.len() as u16,
@@ -465,16 +604,9 @@ impl SemanticVersionsPage {
             if used >= usize::from(limit) {
                 break;
             }
-            let (catalog, images) = match &original.history_status {
-                SemanticHistoryPublicationStatus::Published { proof, .. } => (
-                    Some(SemanticHistoryCatalog::from_proof(proof)?),
-                    proof.images.as_ref(),
-                ),
-                // Only complete owner records can be used to build the public page.
-                SemanticHistoryPublicationStatus::PublishedCatalog { .. } => {
-                    return Err(SemanticHistoryPageError::InvalidCatalog);
-                }
-                _ => (None, &[][..]),
+            let images = match &original.history_status {
+                SemanticHistoryPublicationStatus::Published { proof, .. } => proof.images.as_ref(),
+                _ => &[][..],
             };
             let start = position.image as usize;
             if (images.is_empty() && start != 0) || (!images.is_empty() && start >= images.len()) {
@@ -486,26 +618,8 @@ impl SemanticVersionsPage {
                 (usize::from(limit) - used).min(images.len() - start)
             };
             loop {
-                let status = if let (
-                    Some(catalog),
-                    SemanticHistoryPublicationStatus::Published {
-                        selection_id,
-                        commit,
-                        reference,
-                        ..
-                    },
-                ) = (catalog.as_ref(), &original.history_status)
-                {
-                    SemanticHistoryPublicationStatus::PublishedCatalog {
-                        selection_id: *selection_id,
-                        commit: *commit,
-                        reference: reference.clone(),
-                        catalog: catalog.clone(),
-                    }
-                } else {
-                    original.history_status.clone()
-                };
-                let version = with_history(original, status);
+                let version = self.page_versions[position.version as usize].clone();
+                work.copied_images = work.copied_images.saturating_add(count as u64);
                 let entry = SemanticVersionPageEntry {
                     version,
                     version_ordinal: position.version,
@@ -525,13 +639,21 @@ impl SemanticVersionsPage {
                     image: if finished { 0 } else { (start + count) as u32 },
                 };
                 entries.push(entry);
+                work.copied_images = work.copied_images.saturating_add(
+                    entries
+                        .iter()
+                        .map(|entry| entry.images.len() as u64)
+                        .sum::<u64>(),
+                );
                 page.entries = entries.clone().into_boxed_slice();
                 page.next_cursor = if next.version as usize == versions.len() {
                     None
                 } else {
                     Some(next.encode()?)
                 };
-                if crate::surface::serialized_json_size(&page) <= MAX_SEMANTIC_HISTORY_PAGE_BYTES {
+                let bytes = crate::surface::serialized_json_size(&page);
+                work.measured_page_bytes = work.measured_page_bytes.saturating_add(bytes as u64);
+                if bytes <= MAX_SEMANTIC_HISTORY_PAGE_BYTES {
                     position = next;
                     used += count.max(1);
                     break;
@@ -552,6 +674,37 @@ impl SemanticVersionsPage {
         }
         page.admit()?;
         Ok(page)
+    }
+}
+
+impl SemanticVersionsPage {
+    /// Compatibility constructor for callers without a retained catalog. This
+    /// performs complete admission/hashing once for this call. Owner page routes
+    /// should keep a `SemanticVersionsCatalog` for their exact immutable snapshot.
+    ///
+    /// # Errors
+    /// Refuses bounds, inconsistent records, stale cursors or unrenderable whole items.
+    pub fn from_versions(
+        package: PackageReference,
+        semantic_relation_root: [u8; 32],
+        source_relation_root: [u8; 32],
+        versions: &[SemanticVersionRecord],
+        limit: u16,
+        cursor: Option<&SemanticVersionsCursor>,
+    ) -> Result<Self, SemanticHistoryPageError> {
+        if limit == 0 || limit > MAX_SEMANTIC_HISTORY_PAGE_ITEMS {
+            return Err(SemanticHistoryPageError::InvalidLimit);
+        }
+        if versions.len() > crate::MAX_PRODUCT_ROWS {
+            return Err(SemanticHistoryPageError::InvalidCatalog);
+        }
+        SemanticVersionsCatalog::new(
+            package,
+            semantic_relation_root,
+            source_relation_root,
+            versions.to_vec().into_boxed_slice(),
+        )?
+        .page(limit, cursor)
     }
 
     /// Checks page framing, exact version/catalog binding, ordinals, parent edges and byte budget.
@@ -916,6 +1069,113 @@ mod tests {
         assert!(
             header.assemble(images.into_boxed_slice()).is_err(),
             "a missing image cannot become a complete proof"
+        );
+    }
+
+    #[test]
+    fn immutable_catalog_walk_admits_and_hashes_16384_images_once() {
+        // This is the maintained selected-image bound, scaled from the real
+        // public schema; it proves algorithmic work, not genuine inference.
+        let record = retained_fixture(crate::MAX_PROJECT_MEMBERS as u32);
+        let package = record.package.clone();
+        let SemanticHistoryPublicationStatus::Published { proof, .. } = &record.history_status
+        else {
+            panic!("full original proof");
+        };
+        let proof = proof.clone();
+        let catalog = SemanticVersionsCatalog::new(
+            package.clone(),
+            [17; 32],
+            CAPTURED_SOURCE_ROOT,
+            vec![record].into_boxed_slice(),
+        )
+        .expect("one exact observation");
+        let construction = catalog.preparation_work();
+        assert_eq!(construction.admitted_versions, 1);
+        assert_eq!(construction.admitted_images, 16_384);
+        assert!(construction.catalog_hashed_bytes > 49_152);
+        let mut cursor = None;
+        let mut collected = Vec::new();
+        let mut pages = 0;
+        let mut copied = 0;
+        let mut measured = 0;
+        let mut header = None;
+        loop {
+            let (page, work) = catalog.page_with_work(8, cursor.as_ref());
+            let page = page.expect("bounded indexed page");
+            assert!(page.admits_request(&package, 8, cursor.as_ref()));
+            assert_eq!(work.admitted_versions, 0);
+            assert_eq!(work.admitted_images, 0);
+            assert_eq!(
+                work.catalog_hashed_bytes, 0,
+                "no complete-catalog rehash on a page"
+            );
+            for entry in &page.entries {
+                assert_eq!(entry.start_ordinal as usize, collected.len());
+                let SemanticHistoryPublicationStatus::PublishedCatalog { catalog, .. } =
+                    &entry.version.history_status
+                else {
+                    panic!("header");
+                };
+                if let Some(prior) = &header {
+                    assert_eq!(prior, catalog);
+                }
+                header = Some(catalog.clone());
+                collected.extend_from_slice(&entry.images);
+            }
+            copied += work.copied_images;
+            measured += work.measured_page_bytes;
+            pages += 1;
+            assert!(pages <= 16_384, "every Ready page advances");
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert!(pages >= 2048);
+        assert_eq!(collected.as_slice(), proof.images.as_ref());
+        assert_eq!(
+            header
+                .expect("catalog")
+                .assemble(collected.into_boxed_slice())
+                .expect("whole proof"),
+            proof
+        );
+        assert!(
+            copied <= pages * 8 * 9 * 2,
+            "candidate copies are bounded by page limit, not catalog length"
+        );
+        assert!(
+            measured <= pages * 8 * (MAX_SEMANTIC_HISTORY_PAGE_BYTES as u64 + 16_384),
+            "only bounded page candidates are measured"
+        );
+        assert_eq!(catalog.preparation_work(), construction);
+        let (bad, refused_work) = catalog.page_with_work(0, None);
+        assert_eq!(bad, Err(SemanticHistoryPageError::InvalidLimit));
+        assert_eq!(refused_work, SemanticHistoryReadWork::default());
+        let cold_records =
+            serde_json::to_vec(&catalog.versions).expect("unchanged retained observation");
+        let cold = SemanticVersionsCatalog::new(
+            package,
+            [17; 32],
+            CAPTURED_SOURCE_ROOT,
+            serde_json::from_slice(&cold_records).expect("new stateless catalog"),
+        )
+        .expect("cold rebuild");
+        let saved = catalog
+            .page(8, None)
+            .expect("first")
+            .next_cursor
+            .expect("continuation");
+        assert_eq!(
+            cold.page(8, Some(&saved)),
+            catalog.page(8, Some(&saved)),
+            "cold rebuild retains exact basis and next position"
+        );
+        assert_eq!(
+            cold.preparation_work(),
+            construction,
+            "one complete cold rebuild, never per page"
         );
     }
 

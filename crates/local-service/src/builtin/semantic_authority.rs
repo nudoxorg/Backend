@@ -388,14 +388,14 @@ pub(super) struct SelectedClosureSnapshot {
 struct NativeHistoryStatusEntry {
     key: ProductSemanticPublicationKey,
     stamp: backend_replication::SelectedGenerationStamp,
-    status: backend_engine::SemanticHistoryPublicationStatus,
+    status: Arc<backend_engine::SemanticHistoryPublicationStatus>,
     retry_attempts: u8,
     retry_at: Option<Instant>,
 }
 
 #[derive(Clone, Default)]
 struct NativeHistoryOwnerState {
-    statuses: VecDeque<NativeHistoryStatusEntry>,
+    statuses: Arc<VecDeque<NativeHistoryStatusEntry>>,
     in_flight: HashSet<[u8; 32]>,
     retry_after: Option<ProductSemanticPublicationKey>,
 }
@@ -1514,6 +1514,25 @@ impl DetachedSemanticAuthority {
     }
 }
 
+#[derive(Clone)]
+struct SemanticVersionsCatalogSnapshot {
+    workspace: backend_version::WorkspaceRoot,
+    statuses: Arc<VecDeque<NativeHistoryStatusEntry>>,
+    history: Arc<BTreeMap<HistoryKey, HistoryFact>>,
+    retained_generations: Arc<BTreeMap<HistoryKey, u64>>,
+    committed_observations: Arc<BTreeMap<ProductSemanticPublicationKey, SourceObservationReceipt>>,
+    catalog: Arc<backend_library::SemanticVersionsCatalog>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct SemanticVersionsCatalogWork {
+    pub builds: u64,
+    pub hits: u64,
+    pub admitted_images: u64,
+    pub hashed_bytes: u64,
+}
+
 pub(crate) struct SemanticAuthority {
     authority: SemanticAuthorityRole,
     owner_identity: Arc<()>,
@@ -1531,6 +1550,9 @@ pub(crate) struct SemanticAuthority {
     /// selected generation, never the latest captured input used by freshness.
     committed_observations: Arc<BTreeMap<ProductSemanticPublicationKey, SourceObservationReceipt>>,
     native_history_state: NativeHistoryOwnerState,
+    semantic_versions_catalog: Option<SemanticVersionsCatalogSnapshot>,
+    #[cfg(test)]
+    semantic_versions_catalog_work: SemanticVersionsCatalogWork,
     native_history_sender: SyncSender<NativeHistoryPublicationWork>,
     native_history_completions: Option<mpsc::Receiver<NativeHistoryCompletion>>,
 }
@@ -1613,6 +1635,9 @@ impl SemanticAuthority {
             retained_generations: Arc::new(BTreeMap::new()),
             committed_observations: Arc::new(BTreeMap::new()),
             native_history_state,
+            semantic_versions_catalog: None,
+            #[cfg(test)]
+            semantic_versions_catalog_work: SemanticVersionsCatalogWork::default(),
             native_history_sender,
             native_history_completions: Some(native_history_completions),
         })
@@ -1683,6 +1708,9 @@ impl SemanticAuthority {
             retained_generations: Arc::clone(&self.retained_generations),
             committed_observations: Arc::clone(&self.committed_observations),
             native_history_state: self.native_history_state.clone(),
+            semantic_versions_catalog: self.semantic_versions_catalog.clone(),
+            #[cfg(test)]
+            semantic_versions_catalog_work: self.semantic_versions_catalog_work,
             native_history_sender: self.native_history_sender.clone(),
             native_history_completions: None,
         };
@@ -1814,6 +1842,64 @@ impl SemanticAuthority {
         Arc::clone(&self.image_loader)
     }
 
+    /// Returns an immutable catalog only while all exact owner inputs remain
+    /// the captured ones. This one-slot projection is bounded; alternating
+    /// packages may rebuild but cannot retain an unbounded catalog collection.
+    pub(super) fn cached_semantic_versions_catalog(
+        &mut self,
+        workspace: backend_version::WorkspaceRoot,
+        package: &backend_library::PackageReference,
+        semantic_relation_root: [u8; 32],
+        source_relation_root: [u8; 32],
+    ) -> Option<Arc<backend_library::SemanticVersionsCatalog>> {
+        let entry = self.semantic_versions_catalog.as_ref()?;
+        if entry.workspace != workspace
+            || entry.catalog.package() != package
+            || entry.catalog.basis().semantic_relation_root != semantic_relation_root
+            || entry.catalog.basis().source_relation_root != source_relation_root
+            || !Arc::ptr_eq(&entry.statuses, &self.native_history_state.statuses)
+            || !Arc::ptr_eq(&entry.history, &self.history)
+            || !Arc::ptr_eq(&entry.retained_generations, &self.retained_generations)
+            || !Arc::ptr_eq(&entry.committed_observations, &self.committed_observations)
+        {
+            return None;
+        }
+        #[cfg(test)]
+        {
+            self.semantic_versions_catalog_work.hits += 1;
+        }
+        Some(Arc::clone(&entry.catalog))
+    }
+
+    pub(super) fn remember_semantic_versions_catalog(
+        &mut self,
+        workspace: backend_version::WorkspaceRoot,
+        catalog: backend_library::SemanticVersionsCatalog,
+    ) -> Arc<backend_library::SemanticVersionsCatalog> {
+        #[cfg(test)]
+        {
+            let work = catalog.preparation_work();
+            self.semantic_versions_catalog_work.builds += 1;
+            self.semantic_versions_catalog_work.admitted_images += work.admitted_images;
+            self.semantic_versions_catalog_work.hashed_bytes += work.catalog_hashed_bytes;
+        }
+        let catalog = Arc::new(catalog);
+        self.semantic_versions_catalog = Some(SemanticVersionsCatalogSnapshot {
+            workspace,
+            statuses: Arc::clone(&self.native_history_state.statuses),
+            history: Arc::clone(&self.history),
+            retained_generations: Arc::clone(&self.retained_generations),
+            committed_observations: Arc::clone(&self.committed_observations),
+            catalog: Arc::clone(&catalog),
+        });
+        catalog
+    }
+
+    #[cfg(test)]
+    pub(super) fn semantic_versions_catalog_work(&self) -> SemanticVersionsCatalogWork {
+        self.semantic_versions_catalog_work
+    }
+
     /// Returns the sidecar status only for the exact generation still named
     /// by the committed product marker.
     pub(crate) fn native_history_status(
@@ -1822,6 +1908,16 @@ impl SemanticAuthority {
         claim: SemanticPublicationClaim,
     ) -> Result<backend_engine::SemanticHistoryPublicationStatus, BuiltinModelError> {
         self.drain_native_history_completions()?;
+        self.native_history_status_captured(key, claim)
+    }
+
+    /// Projects the already-drained owner status inventory. One catalog build
+    /// must not consume new completions between its selected version records.
+    pub(crate) fn native_history_status_captured(
+        &mut self,
+        key: &ProductSemanticPublicationKey,
+        claim: SemanticPublicationClaim,
+    ) -> Result<backend_engine::SemanticHistoryPublicationStatus, BuiltinModelError> {
         let (selected_claim, selected) = self.read_selected_pair(key)?;
         if selected_claim != claim {
             return Ok(backend_engine::SemanticHistoryPublicationStatus::NotSelected);
@@ -1845,6 +1941,7 @@ impl SemanticAuthority {
         }
         Ok(self
             .native_history_status_for_stamp(key, stamp)
+            .cloned()
             .unwrap_or_else(|| {
                 let selection_id =
                     super::versioned_planes::native_history_selection_id(key, stamp, None);
@@ -1860,13 +1957,13 @@ impl SemanticAuthority {
         &self,
         key: &ProductSemanticPublicationKey,
         stamp: backend_replication::SelectedGenerationStamp,
-    ) -> Option<backend_engine::SemanticHistoryPublicationStatus> {
+    ) -> Option<&backend_engine::SemanticHistoryPublicationStatus> {
         self.native_history_state
             .statuses
             .iter()
             .rev()
             .find(|entry| entry.key == *key && entry.stamp == stamp)
-            .map(|entry| entry.status.clone())
+            .map(|entry| entry.status.as_ref())
     }
 
     fn native_history_retry_ready(
@@ -1894,18 +1991,16 @@ impl SemanticAuthority {
         stamp: backend_replication::SelectedGenerationStamp,
         status: backend_engine::SemanticHistoryPublicationStatus,
     ) {
-        let state = &mut self.native_history_state;
-        let previous_retry_attempts = state
-            .statuses
+        let statuses = Arc::make_mut(&mut self.native_history_state.statuses);
+        let previous_retry_attempts = statuses
             .iter()
             .find(|entry| entry.key == key && entry.stamp == stamp)
             .map_or(0, |entry| entry.retry_attempts);
-        if let Some(position) = state
-            .statuses
+        if let Some(position) = statuses
             .iter()
             .position(|entry| entry.key == key && entry.stamp == stamp)
         {
-            state.statuses.remove(position);
+            statuses.remove(position);
         }
         let (retry_attempts, retry_at) = if matches!(
             &status,
@@ -1923,15 +2018,15 @@ impl SemanticAuthority {
         } else {
             (0, None)
         };
-        state.statuses.push_back(NativeHistoryStatusEntry {
+        statuses.push_back(NativeHistoryStatusEntry {
             key,
             stamp,
-            status,
+            status: Arc::new(status),
             retry_attempts,
             retry_at,
         });
-        while state.statuses.len() > MAX_NATIVE_HISTORY_STATUS_ROWS {
-            state.statuses.pop_front();
+        while statuses.len() > MAX_NATIVE_HISTORY_STATUS_ROWS {
+            statuses.pop_front();
         }
     }
 
@@ -4612,6 +4707,120 @@ mod tests {
             LanguageProfile::Rust(RustEdition::Rust2021),
         )
         .expect("admitted key")
+    }
+
+    #[test]
+    fn immutable_history_catalog_invalidates_on_status_snapshot_and_survives_writer_detach() {
+        let workspace = ScratchWorkspace::new();
+        let mut authority = SemanticAuthority::open(&workspace.0).expect("actual owner authority");
+        let root = super::super::genesis()
+            .expect("checked workspace root")
+            .root();
+        let package =
+            backend_library::PackageReference::parse("/catalog-project").expect("package");
+        let foreign =
+            backend_library::PackageReference::parse("/different-project").expect("foreign");
+        // Empty catalog admission tests projection ownership only; this does
+        // not manufacture a native Published record or a selection capability.
+        let catalog = backend_library::SemanticVersionsCatalog::new(
+            package.clone(),
+            [1; 32],
+            [2; 32],
+            Box::new([]),
+        )
+        .expect("exact empty observation");
+        let retained = authority.remember_semantic_versions_catalog(root, catalog);
+        assert!(Arc::ptr_eq(
+            &retained,
+            &authority
+                .cached_semantic_versions_catalog(root, &package, [1; 32], [2; 32])
+                .expect("same owner")
+        ));
+        assert!(
+            authority
+                .cached_semantic_versions_catalog(root, &foreign, [1; 32], [2; 32])
+                .is_none()
+        );
+        assert!(
+            authority
+                .cached_semantic_versions_catalog(root, &package, [9; 32], [2; 32])
+                .is_none()
+        );
+        assert!(
+            authority
+                .cached_semantic_versions_catalog(root, &package, [1; 32], [9; 32])
+                .is_none()
+        );
+        let mut writer = authority
+            .detach_index_writer(root)
+            .expect("unique writer handoff");
+        assert!(Arc::ptr_eq(
+            &retained,
+            &authority
+                .cached_semantic_versions_catalog(root, &package, [1; 32], [2; 32])
+                .expect("captured immutable read")
+        ));
+        let stamp = backend_replication::SelectedGenerationStamp::checked(
+            [1; 16],
+            worker_test_key().profile(),
+            [2; 32],
+            1,
+            [3; 32],
+            [4; 32],
+            backend_semantic::ir::SemanticPlaneCatalogRoot::from_wire_claim([5; 32]),
+        )
+        .expect("stamp shape only");
+        writer.authority_mut().record_native_history_status(
+            worker_test_key(),
+            stamp,
+            backend_engine::SemanticHistoryPublicationStatus::Pending {
+                selection_id: [6; 32],
+            },
+        );
+        assert!(
+            writer
+                .authority_mut()
+                .cached_semantic_versions_catalog(root, &package, [1; 32], [2; 32])
+                .is_none(),
+            "new status inventory cannot reuse an old catalog"
+        );
+        assert!(Arc::ptr_eq(
+            &retained,
+            &authority
+                .cached_semantic_versions_catalog(root, &package, [1; 32], [2; 32])
+                .expect("old captured inventory remains immutable")
+        ));
+        authority
+            .restore_index_writer(root, writer)
+            .unwrap_or_else(|(_, error)| panic!("same writer return: {error}"));
+        assert!(
+            authority
+                .cached_semantic_versions_catalog(root, &package, [1; 32], [2; 32])
+                .is_none(),
+            "returned writer must rebuild against its changed status inventory"
+        );
+        retained
+            .page(8, None)
+            .expect("already admitted immutable observation remains readable");
+        let replacement = backend_library::SemanticVersionsCatalog::new(
+            foreign.clone(),
+            [1; 32],
+            [2; 32],
+            Box::new([]),
+        )
+        .expect("independent package observation");
+        authority.remember_semantic_versions_catalog(root, replacement);
+        assert!(
+            authority
+                .cached_semantic_versions_catalog(root, &package, [1; 32], [2; 32])
+                .is_none()
+        );
+        assert!(
+            authority
+                .cached_semantic_versions_catalog(root, &foreign, [1; 32], [2; 32])
+                .is_some(),
+            "one bounded slot replaces, rather than accumulating, catalogs"
+        );
     }
 
     #[test]

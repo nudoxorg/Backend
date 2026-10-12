@@ -168,11 +168,51 @@ fn native_large_history_pages_resume_exact_saved_cursor_after_owner_reopen() {
         .next_cursor
         .clone()
         .expect("large catalog must continue");
+    let hot_work = fixture
+        .parts()
+        .0
+        .semantic_authority
+        .semantic_versions_catalog_work();
+    let repeated = page(&mut fixture, &package, Some(saved.clone()));
+    assert_eq!(repeated.entries[0].start_ordinal, 8);
+    let reused_work = fixture
+        .parts()
+        .0
+        .semantic_authority
+        .semantic_versions_catalog_work();
+    assert_eq!(reused_work.builds, hot_work.builds);
+    assert_eq!(reused_work.admitted_images, hot_work.admitted_images);
+    assert_eq!(reused_work.hashed_bytes, hot_work.hashed_bytes);
+    assert_eq!(
+        reused_work.hits,
+        hot_work.hits + 1,
+        "real owner route reuses the exact observation"
+    );
     fixture = fixture.reopen();
     let mut cursor = Some(saved);
     let mut pages = 1;
+    let mut cold_ready_work: Option<
+        crate::builtin::semantic_authority::SemanticVersionsCatalogWork,
+    > = None;
     loop {
         let page = published_page(&mut fixture, &package, cursor.clone());
+        let current_work = fixture
+            .parts()
+            .0
+            .semantic_authority
+            .semantic_versions_catalog_work();
+        if let Some(first_ready) = cold_ready_work {
+            assert_eq!(current_work.builds, first_ready.builds);
+            assert_eq!(current_work.admitted_images, first_ready.admitted_images);
+            assert_eq!(current_work.hashed_bytes, first_ready.hashed_bytes);
+        } else {
+            assert_eq!(
+                current_work.admitted_images, 133,
+                "cold admitted catalog is built once"
+            );
+            assert!(current_work.hashed_bytes > 49_152);
+            cold_ready_work = Some(current_work);
+        }
         assert_eq!(
             page.basis, basis,
             "cold root/catalog identity remains exact"
