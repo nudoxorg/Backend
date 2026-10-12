@@ -95,6 +95,19 @@ fn tour_ax_click(cx: &mut VisualTestContext, target: gpui::accesskit::NodeId) {
     }, cx));
 }
 
+// A native button activates on the matching release. GPUI's text-oriented
+// simulate_keystrokes helper emits KeyDown only, so it cannot click a button.
+fn tour_key_click(cx: &mut VisualTestContext, key: &str) {
+    let keystroke = gpui::Keystroke::parse(key).expect("native tour button key");
+    cx.update(|window, cx| {
+        window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(), is_held: false, prefer_character_input: false,
+        }), cx);
+        window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
+    });
+    cx.run_until_parked();
+}
+
 #[gpui::test]
 fn retained_tour_buttons_share_native_pointer_keyboard_and_accessibility_without_open_authority(cx: &mut TestAppContext) {
     use std::{cell::Cell, rc::Rc};
@@ -127,7 +140,7 @@ fn retained_tour_buttons_share_native_pointer_keyboard_and_accessibility_without
                     assert!(window.is_focus_handle_mounted(&stop));
                     stop.focus(window, cx);
                 });
-                cx.simulate_keystrokes("enter");
+                tour_key_click(cx, "enter");
             }
             _ => tour_ax_click(cx, start),
         }
@@ -152,14 +165,14 @@ fn retained_tour_buttons_share_native_pointer_keyboard_and_accessibility_without
             }
             "keyboard" => {
                 cx.update(|window, cx| graph.read(cx).tour_focus[2].clone().focus(window, cx));
-                cx.simulate_keystrokes("space");
+                tour_key_click(cx, "space");
             }
             _ => tour_ax_click(cx, second),
         }
         settle(cx);
         assert_eq!(graph.read_with(cx, |graph, _| graph.tour_stop()), Some(expected.stops[1].node), "{transport}");
         cx.update(|window, cx| window.focus(&graph.focus_handle(cx), cx));
-        cx.simulate_keystrokes("enter");
+        tour_key_click(cx, "enter");
         assert_eq!(opened.get(), 0, "retained tour navigation grants no declaration-open capability");
         assert_eq!(graph.read_with(cx, |graph, _| graph.focused()), None);
     }
