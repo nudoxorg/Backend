@@ -6708,11 +6708,12 @@ pub(super) fn semantic_versions_page(
         &package,
         semantic_root,
         source_root,
-    ) {
+    )? {
         return catalog
             .page(limit, cursor)
             .map_err(|error| BuiltinModelError(error.to_string()));
     }
+    let selections = semantic_authority.history_catalog_selections()?;
     let versions = semantic_versions_from_snapshot(
         &snapshot,
         daemon.engine().daemon().library().view(),
@@ -6727,7 +6728,11 @@ pub(super) fn semantic_versions_page(
         versions,
     )
     .map_err(|error| BuiltinModelError(error.to_string()))?;
-    let catalog = semantic_authority.remember_semantic_versions_catalog(snapshot.root(), catalog);
+    let catalog = semantic_authority.remember_semantic_versions_catalog(
+        snapshot.root(),
+        catalog,
+        selections,
+    )?;
     catalog
         .page(limit, cursor)
         .map_err(|error| BuiltinModelError(error.to_string()))

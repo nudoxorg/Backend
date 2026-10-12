@@ -1517,6 +1517,7 @@ impl DetachedSemanticAuthority {
 #[derive(Clone)]
 struct SemanticVersionsCatalogSnapshot {
     workspace: backend_version::WorkspaceRoot,
+    selections: SelectedClosureSnapshot,
     statuses: Arc<VecDeque<NativeHistoryStatusEntry>>,
     history: Arc<BTreeMap<HistoryKey, HistoryFact>>,
     retained_generations: Arc<BTreeMap<HistoryKey, u64>>,
@@ -1842,6 +1843,26 @@ impl SemanticAuthority {
         Arc::clone(&self.image_loader)
     }
 
+    /// Owns the exact serving-selector inventory used by history projection.
+    /// Captured reads never enter the mutable writer/native-history fence.
+    pub(super) fn history_catalog_selections(
+        &self,
+    ) -> Result<SelectedClosureSnapshot, BuiltinModelError> {
+        match &self.authority {
+            SemanticAuthorityRole::CapturedRead { selections, .. } => {
+                Ok(selections.as_ref().clone())
+            }
+            SemanticAuthorityRole::Writer(_) => self
+                .image_loader
+                .selections
+                .read()
+                .map(|selections| selections.clone())
+                .map_err(|_| {
+                    BuiltinModelError("semantic history selector snapshot is poisoned".to_owned())
+                }),
+        }
+    }
+
     /// Returns an immutable catalog only while all exact owner inputs remain
     /// the captured ones. This one-slot projection is bounded; alternating
     /// packages may rebuild but cannot retain an unbounded catalog collection.
@@ -1851,31 +1872,43 @@ impl SemanticAuthority {
         package: &backend_library::PackageReference,
         semantic_relation_root: [u8; 32],
         source_relation_root: [u8; 32],
-    ) -> Option<Arc<backend_library::SemanticVersionsCatalog>> {
-        let entry = self.semantic_versions_catalog.as_ref()?;
+    ) -> Result<Option<Arc<backend_library::SemanticVersionsCatalog>>, BuiltinModelError> {
+        let Some(entry) = self.semantic_versions_catalog.as_ref() else {
+            return Ok(None);
+        };
+        let selections = self.history_catalog_selections()?;
         if entry.workspace != workspace
             || entry.catalog.package() != package
             || entry.catalog.basis().semantic_relation_root != semantic_relation_root
             || entry.catalog.basis().source_relation_root != source_relation_root
+            || !Arc::ptr_eq(&entry.selections.by_product, &selections.by_product)
+            || !Arc::ptr_eq(&entry.selections.by_binding, &selections.by_binding)
             || !Arc::ptr_eq(&entry.statuses, &self.native_history_state.statuses)
             || !Arc::ptr_eq(&entry.history, &self.history)
             || !Arc::ptr_eq(&entry.retained_generations, &self.retained_generations)
             || !Arc::ptr_eq(&entry.committed_observations, &self.committed_observations)
         {
-            return None;
+            return Ok(None);
         }
         #[cfg(test)]
         {
             self.semantic_versions_catalog_work.hits += 1;
         }
-        Some(Arc::clone(&entry.catalog))
+        Ok(Some(Arc::clone(&entry.catalog)))
     }
 
     pub(super) fn remember_semantic_versions_catalog(
         &mut self,
         workspace: backend_version::WorkspaceRoot,
         catalog: backend_library::SemanticVersionsCatalog,
-    ) -> Arc<backend_library::SemanticVersionsCatalog> {
+        selections: SelectedClosureSnapshot,
+    ) -> Result<Arc<backend_library::SemanticVersionsCatalog>, BuiltinModelError> {
+        let current = self.history_catalog_selections()?;
+        if !Arc::ptr_eq(&selections.by_product, &current.by_product)
+            || !Arc::ptr_eq(&selections.by_binding, &current.by_binding)
+        {
+            return Err(BuiltinModelError("semantic history selector changed during catalog preparation; retry the unchanged read".to_owned()));
+        }
         #[cfg(test)]
         {
             let work = catalog.preparation_work();
@@ -1886,13 +1919,14 @@ impl SemanticAuthority {
         let catalog = Arc::new(catalog);
         self.semantic_versions_catalog = Some(SemanticVersionsCatalogSnapshot {
             workspace,
+            selections,
             statuses: Arc::clone(&self.native_history_state.statuses),
             history: Arc::clone(&self.history),
             retained_generations: Arc::clone(&self.retained_generations),
             committed_observations: Arc::clone(&self.committed_observations),
             catalog: Arc::clone(&catalog),
         });
-        catalog
+        Ok(catalog)
     }
 
     #[cfg(test)]
@@ -4729,28 +4763,84 @@ mod tests {
             Box::new([]),
         )
         .expect("exact empty observation");
-        let retained = authority.remember_semantic_versions_catalog(root, catalog);
+        let observed = authority
+            .history_catalog_selections()
+            .expect("actual selector inventory");
+        let retained = authority
+            .remember_semantic_versions_catalog(root, catalog, observed)
+            .expect("unchanged inventory");
         assert!(Arc::ptr_eq(
             &retained,
             &authority
                 .cached_semantic_versions_catalog(root, &package, [1; 32], [2; 32])
+                .expect("exact selector observation")
                 .expect("same owner")
         ));
         assert!(
             authority
                 .cached_semantic_versions_catalog(root, &foreign, [1; 32], [2; 32])
+                .expect("exact selector observation")
                 .is_none()
         );
         assert!(
             authority
                 .cached_semantic_versions_catalog(root, &package, [9; 32], [2; 32])
+                .expect("exact selector observation")
                 .is_none()
         );
         assert!(
             authority
                 .cached_semantic_versions_catalog(root, &package, [1; 32], [9; 32])
+                .expect("exact selector observation")
                 .is_none()
         );
+        let before_mutation = authority
+            .history_catalog_selections()
+            .expect("retained inventory guard");
+        {
+            let mut selected = authority
+                .image_loader
+                .selections
+                .write()
+                .expect("owner selector");
+            Arc::make_mut(&mut selected.by_product).clear();
+        }
+        let after_mutation = authority
+            .history_catalog_selections()
+            .expect("new immutable inventory");
+        assert!(
+            !Arc::ptr_eq(&before_mutation.by_product, &after_mutation.by_product),
+            "owned guards force copy-on-write even for same-root selector reconciliation"
+        );
+        assert!(
+            authority
+                .cached_semantic_versions_catalog(root, &package, [1; 32], [2; 32])
+                .expect("selector read")
+                .is_none()
+        );
+        let stale = backend_library::SemanticVersionsCatalog::new(
+            package.clone(),
+            [1; 32],
+            [2; 32],
+            Box::new([]),
+        )
+        .expect("empty shape");
+        assert!(
+            authority
+                .remember_semantic_versions_catalog(root, stale, before_mutation)
+                .is_err(),
+            "a projection cannot install a catalog across a selector change"
+        );
+        let exact = backend_library::SemanticVersionsCatalog::new(
+            package.clone(),
+            [1; 32],
+            [2; 32],
+            Box::new([]),
+        )
+        .expect("empty observation");
+        let retained = authority
+            .remember_semantic_versions_catalog(root, exact, after_mutation)
+            .expect("fresh exact selector inventory");
         let mut writer = authority
             .detach_index_writer(root)
             .expect("unique writer handoff");
@@ -4758,6 +4848,7 @@ mod tests {
             &retained,
             &authority
                 .cached_semantic_versions_catalog(root, &package, [1; 32], [2; 32])
+                .expect("exact selector observation")
                 .expect("captured immutable read")
         ));
         let stamp = backend_replication::SelectedGenerationStamp::checked(
@@ -4781,6 +4872,7 @@ mod tests {
             writer
                 .authority_mut()
                 .cached_semantic_versions_catalog(root, &package, [1; 32], [2; 32])
+                .expect("exact selector observation")
                 .is_none(),
             "new status inventory cannot reuse an old catalog"
         );
@@ -4788,6 +4880,7 @@ mod tests {
             &retained,
             &authority
                 .cached_semantic_versions_catalog(root, &package, [1; 32], [2; 32])
+                .expect("exact selector observation")
                 .expect("old captured inventory remains immutable")
         ));
         authority
@@ -4796,6 +4889,7 @@ mod tests {
         assert!(
             authority
                 .cached_semantic_versions_catalog(root, &package, [1; 32], [2; 32])
+                .expect("exact selector observation")
                 .is_none(),
             "returned writer must rebuild against its changed status inventory"
         );
@@ -4809,15 +4903,22 @@ mod tests {
             Box::new([]),
         )
         .expect("independent package observation");
-        authority.remember_semantic_versions_catalog(root, replacement);
+        let observed = authority
+            .history_catalog_selections()
+            .expect("returned selector inventory");
+        authority
+            .remember_semantic_versions_catalog(root, replacement, observed)
+            .expect("exact replacement observation");
         assert!(
             authority
                 .cached_semantic_versions_catalog(root, &package, [1; 32], [2; 32])
+                .expect("exact selector observation")
                 .is_none()
         );
         assert!(
             authority
                 .cached_semantic_versions_catalog(root, &foreign, [1; 32], [2; 32])
+                .expect("exact selector observation")
                 .is_some(),
             "one bounded slot replaces, rather than accumulating, catalogs"
         );
