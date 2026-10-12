@@ -260,7 +260,7 @@ fn inline_code_delimiter(value: &str) -> Option<usize> {
         return None;
     }
 
-    let mut longest = 0;
+    let mut longest: usize = 0;
     let mut run = 0;
     for character in value.chars() {
         if character == '`' {
