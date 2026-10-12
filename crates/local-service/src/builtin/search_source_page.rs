@@ -6,14 +6,12 @@
 
 use super::{BuiltinModelError, IndexedSources, ProductSourceRecord};
 use backend_engine::WorkspaceSnapshot;
-use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(super) struct StoredSnapshot {
     snapshot: WorkspaceSnapshot,
     head: backend_engine::WorkspaceHead,
-    directory: PathBuf,
+    _directory: tempfile::TempDir,
 }
 
 impl StoredSnapshot {
@@ -22,18 +20,12 @@ impl StoredSnapshot {
             .with_relation::<backend_engine::ProductSourceRelation>()
             .map_err(|error| BuiltinModelError(format!("register source relation: {error:?}")))?;
         let store = backend_engine::FileStore::open_with_registry(
-            &self.directory,
+            self._directory.path(),
             16 * 1024 * 1024,
             registry,
         )
         .map_err(|error| BuiltinModelError(format!("reopen source store: {error:?}")))?;
         Ok(self.head.snapshot_in(Arc::new(store)))
-    }
-}
-
-impl Drop for StoredSnapshot {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.directory);
     }
 }
 
@@ -144,17 +136,13 @@ pub(super) fn measure_package_source_lookup() -> (u128, u128) {
             super::admitted_coverage().expect("coverage"),
         )
         .expect("relation");
-    let directory = std::env::temp_dir().join(format!(
-        "nudox-package-source-lookup-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&directory);
-    std::fs::create_dir_all(&directory).expect("store directory");
+    let directory =
+        crate::private_temp::create("package").expect("private package source fixture directory");
     let registry = backend_engine::RelationAdmissionRegistry::new()
         .with_relation::<backend_engine::ProductSourceRelation>()
         .expect("register");
     let store =
-        backend_engine::FileStore::open_with_registry(&directory, 64 * 1024 * 1024, registry)
+        backend_engine::FileStore::open_with_registry(directory.path(), 64 * 1024 * 1024, registry)
             .expect("store");
     store
         .write_relation_state(&relation)
@@ -289,7 +277,7 @@ pub(super) fn measure_package_source_lookup() -> (u128, u128) {
         "package_source_lookup_admitted projects=8 files=64 target_files=8 declarations={DECLARATIONS_PER_FILE} page_median_ns={admitted_page_median} page_p95_ns={admitted_page_p95} lookup_median_ns={admitted_lookup_median} lookup_p95_ns={admitted_lookup_p95}"
     );
     drop(store);
-    let _ = std::fs::remove_dir_all(&directory);
+    drop(directory);
     (page_median, lookup_median)
 }
 
@@ -315,23 +303,14 @@ fn store_relation(
     relation: backend_engine::RelationState<backend_engine::ProductSourceRelation>,
     label: String,
 ) -> Result<StoredSnapshot, BuiltinModelError> {
-    static NEXT_STORE: AtomicU64 = AtomicU64::new(0);
-    let generation = NEXT_STORE.fetch_add(1, Ordering::Relaxed);
-    let directory = std::env::temp_dir().join(format!(
-        "nudox-source-page-{}-{generation}-{label}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&directory);
-    std::fs::create_dir_all(&directory)
-        .map_err(|error| BuiltinModelError(format!("create source store directory: {error}")))?;
-    #[cfg(test)]
-    crate::test_support::make_private(&directory)
-        .map_err(|error| BuiltinModelError(format!("make source-store fixture private: {error}")))?;
+    let directory = crate::private_temp::create(&label).map_err(|error| {
+        BuiltinModelError(format!("create private source store directory: {error}"))
+    })?;
     let registry = backend_engine::RelationAdmissionRegistry::new()
         .with_relation::<backend_engine::ProductSourceRelation>()
         .map_err(|error| BuiltinModelError(format!("register source relation: {error:?}")))?;
     let store =
-        backend_engine::FileStore::open_with_registry(&directory, 16 * 1024 * 1024, registry)
+        backend_engine::FileStore::open_with_registry(directory.path(), 16 * 1024 * 1024, registry)
             .map_err(|error| BuiltinModelError(format!("open source store: {error:?}")))?;
     store
         .write_relation_state(&relation)
@@ -340,7 +319,7 @@ fn store_relation(
     Ok(StoredSnapshot {
         snapshot: head.snapshot_in(Arc::new(store)),
         head,
-        directory,
+        _directory: directory,
     })
 }
 

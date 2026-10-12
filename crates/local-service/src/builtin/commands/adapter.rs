@@ -6065,7 +6065,7 @@ mod tests {
     }
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use super::{Command, WireCertificate, WireClaim};
@@ -6330,14 +6330,9 @@ mod tests {
 
     impl TempTree {
         fn new() -> Self {
-            static NEXT: AtomicU64 = AtomicU64::new(0);
-            let path = std::env::temp_dir().join(format!(
-                "nudox-add-guard-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            let _ = fs::remove_dir_all(&path);
-            fs::create_dir_all(&path).expect("temp tree");
+            let path = crate::test_support::private_temp_dir("add-guard")
+                .expect("private temp tree")
+                .keep();
             Self(path)
         }
     }

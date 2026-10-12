@@ -3,6 +3,15 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+/// A short, private temporary directory for fixtures that are admitted as
+/// durable state or contain a local Unix endpoint.
+///
+/// Uses the same owner-only directory factory as product code. Unix socket
+/// fixtures get a short root that leaves room for their endpoint names.
+pub(crate) fn private_temp_dir(label: &str) -> io::Result<tempfile::TempDir> {
+    crate::private_temp::create_for_socket(label)
+}
+
 /// Makes `path` private to the current user the way the platform's durable
 /// state requires: mode 0700 on Unix, a protected owner-only DACL on Windows.
 ///
