@@ -10933,8 +10933,38 @@ mod tests {
         );
         let owner = daemon.engine().daemon().library().cursor();
         let source = daemon.engine().daemon().library().view().basis().object;
+        let capability = daemon
+            .engine()
+            .daemon()
+            .library()
+            .view()
+            .capability()
+            .expect("actual selected producer coverage");
+        let workspace = daemon.engine().daemon().owner().snapshot();
+        assert_eq!(
+            capability,
+            crate::builtin::builtin_view_capability_for_workspace(&workspace)
+                .expect("actual workspace producer admission"),
+            "the selected view must retain this workspace's admitted observation"
+        );
         let cancelled = query.cancelled();
         let body = owner_query_body(daemon, 803, Command::GraphQuery(cancelled.clone()));
+        let request_wire: serde_json::Value = serde_json::from_slice(&body).expect("request");
+        let certificate: WireCertificate =
+            serde_json::from_value(request_wire["certificate"].clone())
+                .expect("actual owner request certificate");
+        assert!(
+            certificate.claims.iter().any(|claim| matches!(
+                claim,
+                WireClaim::Coverage { scope, observed, producer, context, evidence }
+                    if scope == &backend_engine::encode_id(source.as_bytes())
+                        && observed == scope
+                        && producer == &backend_engine::encode_id(&capability.producer_identity())
+                        && context == &backend_engine::encode_id(&capability.context())
+                        && evidence.as_ref() == capability.evidence()
+            )),
+            "an empty row projection still carries the exact producer coverage claim"
+        );
         let Executed::Reply(bytes) = adapter
             .execute_or_defer(daemon, &body, 1803)
             .expect("immediate cancel")
@@ -10943,7 +10973,12 @@ mod tests {
         };
         let wire: serde_json::Value = serde_json::from_slice(&bytes).expect("cancel reply");
         assert_eq!(wire["reply"]["kind"], "graph_query_page");
-        let reply = backend_engine::decode_reply_dto(&bytes).expect("strict cancelled page");
+        assert!(
+            backend_engine::decode_reply_dto(&bytes).is_err(),
+            "an unauthenticated decoder cannot admit the producer's graph page"
+        );
+        let reply = backend_library::ReplyDto::decode_with_certificate(&bytes, Some(capability))
+            .expect("strict cancelled page with actual selected producer coverage");
         assert_eq!(reply.request_id, 803);
         let backend_library::CommandReply::GraphQueryPage(page) = reply.reply else {
             panic!("cancellation must return its typed page");
