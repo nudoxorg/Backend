@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Mapping
 from pathlib import Path
 
 
@@ -34,8 +35,42 @@ def fail(message: str) -> int:
     return 1
 
 
-def isolated_env(home: Path) -> dict[str, str]:
-    env = dict(os.environ)
+_RUNTIME_PATH_ENV = (
+    "PATH",
+    "LD_LIBRARY_PATH",
+    "FONTCONFIG_FILE",
+    "__EGL_VENDOR_LIBRARY_DIRS",
+    "LIBGL_DRIVERS_PATH",
+    "VK_DRIVER_FILES",
+    "VK_ICD_FILENAMES",
+)
+_LOCALE_ENV = (
+    "LANG",
+    "LANGUAGE",
+    "LC_ALL",
+    "LC_COLLATE",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "LC_MONETARY",
+    "LC_NUMERIC",
+    "LC_TIME",
+    "LC_ADDRESS",
+    "LC_IDENTIFICATION",
+    "LC_MEASUREMENT",
+    "LC_NAME",
+    "LC_PAPER",
+    "LC_TELEPHONE",
+)
+
+
+def isolated_env(home: Path, source: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Build a child environment from runtime paths/locales, never ambient secrets."""
+    source = os.environ if source is None else source
+    env = {
+        name: source[name]
+        for name in (*_RUNTIME_PATH_ENV, *_LOCALE_ENV)
+        if name in source
+    }
     for name, sub in (
         ("HOME", ""),
         ("XDG_CONFIG_HOME", ".config"),
@@ -43,17 +78,11 @@ def isolated_env(home: Path) -> dict[str, str]:
         ("XDG_STATE_HOME", ".local/state"),
         ("XDG_CACHE_HOME", ".cache"),
         ("XDG_RUNTIME_DIR", "run"),
+        ("TMPDIR", "tmp"),
     ):
         path = home / sub
         path.mkdir(parents=True, exist_ok=True, mode=0o700)
         env[name] = str(path)
-    # Never inherit an endpoint, project, credential, or harness from the
-    # developer shell. Every surface runs from an empty temporary project.
-    for name in list(env):
-        if name.startswith(("BACKEND_", "NUDOX_")):
-            del env[name]
-    env.pop("WAYLAND_DISPLAY", None)
-    env.pop("DISPLAY", None)
     return env
 
 
@@ -179,6 +208,7 @@ def smoke_gui(bin_dir: Path, home: Path, budget: float) -> int:
     log = open(home / "desktop.log", "w")
     server = subprocess.Popen(
         [xvfb, "-displayfd", str(write_fd), "-screen", "0", "1600x1000x24", "-nolisten", "tcp"],
+        env=env,
         pass_fds=(write_fd,),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

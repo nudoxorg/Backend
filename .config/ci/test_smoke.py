@@ -77,7 +77,17 @@ class SmokeContract(unittest.TestCase):
             path.write_text(f"#!{os.sys.executable}\n" + code)
             path.chmod(0o700)
 
-        executable("Xvfb", "import os, sys, time\nos.write(int(sys.argv[2]), b'91\\n')\ntime.sleep(30)\n")
+        executable("Xvfb", "import os, sys, time\n"
+                   "assert 'GENERIC_CREDENTIAL_SENTINEL' not in os.environ\n"
+                   "assert os.environ.get('LANG') == 'C.UTF-8'\n"
+                   "assert os.environ.get('LC_ALL') == 'en_US.UTF-8'\n"
+                   "assert os.environ.get('LD_LIBRARY_PATH') == '/nix/runtime/lib'\n"
+                   "assert os.environ.get('__EGL_VENDOR_LIBRARY_DIRS') == '/nix/mesa/egl'\n"
+                   "assert os.environ.get('LIBGL_DRIVERS_PATH') == '/nix/mesa/dri'\n"
+                   "assert os.environ.get('VK_DRIVER_FILES') == '/nix/mesa/lvp.json'\n"
+                   "assert os.environ.get('VK_ICD_FILENAMES') == '/nix/mesa/lvp.json'\n"
+                   "assert os.environ.get('FONTCONFIG_FILE') == '/nix/fonts/fonts.conf'\n"
+                   "os.write(int(sys.argv[2]), b'91\\n')\ntime.sleep(30)\n")
         executable("xdotool", "import os, sys\nfrom pathlib import Path\n"
                    f"visible = {visible!r}\n"
                    "if sys.argv[1] == 'search':\n"
@@ -85,13 +95,33 @@ class SmokeContract(unittest.TestCase):
                    "    sys.exit(0 if visible else 1)\n"
                    "Path(os.environ['HOME'], 'quit').touch()\n")
         executable("backend-desktop", "import os, sys, time\nfrom pathlib import Path\n"
+                   "assert 'GENERIC_CREDENTIAL_SENTINEL' not in os.environ\n"
+                   "assert os.environ.get('LANG') == 'C.UTF-8'\n"
+                   "assert os.environ.get('LC_ALL') == 'en_US.UTF-8'\n"
+                   "assert os.environ.get('LD_LIBRARY_PATH') == '/nix/runtime/lib'\n"
+                   "assert os.environ.get('__EGL_VENDOR_LIBRARY_DIRS') == '/nix/mesa/egl'\n"
+                   "assert os.environ.get('LIBGL_DRIVERS_PATH') == '/nix/mesa/dri'\n"
+                   "assert os.environ.get('VK_DRIVER_FILES') == '/nix/mesa/lvp.json'\n"
+                   "assert os.environ.get('VK_ICD_FILENAMES') == '/nix/mesa/lvp.json'\n"
+                   "assert os.environ.get('FONTCONFIG_FILE') == '/nix/fonts/fonts.conf'\n"
                    "Path(os.environ['NUDOX_TRACE']).write_text('{\"name\":\"frame\"}\\n')\n"
                    "deadline = time.monotonic() + 3\n"
                    "while not Path(os.environ['HOME'], 'quit').exists():\n"
                    "    if time.monotonic() > deadline: sys.exit(9)\n"
                    "    time.sleep(0.01)\n"
                    f"sys.exit({quit_code})\n")
-        with patch.dict(os.environ, {"PATH": str(self.bin_dir)}), \
+        with patch.dict(os.environ, {
+            "PATH": str(self.bin_dir),
+            "GENERIC_CREDENTIAL_SENTINEL": "must-not-cross-boundary",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "en_US.UTF-8",
+            "LD_LIBRARY_PATH": "/nix/runtime/lib",
+            "__EGL_VENDOR_LIBRARY_DIRS": "/nix/mesa/egl",
+            "LIBGL_DRIVERS_PATH": "/nix/mesa/dri",
+            "VK_DRIVER_FILES": "/nix/mesa/lvp.json",
+            "VK_ICD_FILENAMES": "/nix/mesa/lvp.json",
+            "FONTCONFIG_FILE": "/nix/fonts/fonts.conf",
+        }), \
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             return smoke.smoke_gui(self.bin_dir, self.home, 5)
 
@@ -114,6 +144,46 @@ class SmokeContract(unittest.TestCase):
         self.assertNotIn("DISPLAY", env)
         self.assertNotIn("WAYLAND_DISPLAY", env)
         self.assertEqual(env["HOME"], str(self.home))
+
+    def test_environment_drops_generic_credentials_and_keeps_runtime_locale(self):
+        source = {
+            "PATH": "/nix/toolchain/bin",
+            "LD_LIBRARY_PATH": "/nix/gui/lib",
+            "__EGL_VENDOR_LIBRARY_DIRS": "/nix/mesa/egl",
+            "LIBGL_DRIVERS_PATH": "/nix/mesa/dri",
+            "VK_DRIVER_FILES": "/nix/mesa/lvp.json",
+            "VK_ICD_FILENAMES": "/nix/mesa/lvp.json",
+            "FONTCONFIG_FILE": "/nix/fonts/fonts.conf",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "en_US.UTF-8",
+            "GENERIC_CREDENTIAL_SENTINEL": "must-not-cross-boundary",
+            "OPENAI_API_KEY": "also-secret",
+            "AWS_SECRET_ACCESS_KEY": "also-secret",
+            "GITHUB_TOKEN": "also-secret",
+            "HOME": "/real/home",
+            "CARGO_HOME": "/real/cargo-home",
+        }
+        env = smoke.isolated_env(self.home, source)
+
+        self.assertEqual(env["PATH"], "/nix/toolchain/bin")
+        self.assertEqual(env["LD_LIBRARY_PATH"], "/nix/gui/lib")
+        self.assertEqual(env["__EGL_VENDOR_LIBRARY_DIRS"], "/nix/mesa/egl")
+        self.assertEqual(env["LIBGL_DRIVERS_PATH"], "/nix/mesa/dri")
+        self.assertEqual(env["VK_DRIVER_FILES"], "/nix/mesa/lvp.json")
+        self.assertEqual(env["VK_ICD_FILENAMES"], "/nix/mesa/lvp.json")
+        self.assertEqual(env["FONTCONFIG_FILE"], "/nix/fonts/fonts.conf")
+        self.assertEqual(env["LANG"], "C.UTF-8")
+        self.assertEqual(env["LC_ALL"], "en_US.UTF-8")
+        self.assertEqual(env["HOME"], str(self.home))
+        self.assertEqual(env["TMPDIR"], str(self.home / "tmp"))
+        for name in (
+            "GENERIC_CREDENTIAL_SENTINEL",
+            "OPENAI_API_KEY",
+            "AWS_SECRET_ACCESS_KEY",
+            "GITHUB_TOKEN",
+            "CARGO_HOME",
+        ):
+            self.assertNotIn(name, env)
 
 
 if __name__ == "__main__":
