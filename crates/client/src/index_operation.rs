@@ -39,6 +39,53 @@ struct Claim {
     attachment: Attachment,
 }
 
+/// Authorization to replace only an exactly reconciled failed caller claim.
+struct FailedOperation<'a>(&'a Claim);
+
+enum ClaimPublication<'a> {
+    New,
+    AfterFailure(FailedOperation<'a>),
+}
+
+enum SavedOperationAction {
+    Observe,
+    ReplaySameKey,
+}
+
+fn saved_operation_action(observation: &IndexOperationObservation) -> SavedOperationAction {
+    match observation {
+        IndexOperationObservation::Unknown { .. } => SavedOperationAction::ReplaySameKey,
+        IndexOperationObservation::Known(status) => match &status.state {
+            // The owner's same-key start performs exact orphan recovery; this
+            // observation alone never authorizes a replacement operation.
+            IndexOperationState::Unresolved {
+                reason:
+                    backend_library::IndexOperationUnresolvedReason::SemanticWorkInterruptedAfterCapture,
+                ..
+            } => SavedOperationAction::ReplaySameKey,
+            IndexOperationState::Accepted
+            | IndexOperationState::Active { .. }
+            | IndexOperationState::Published(_)
+            | IndexOperationState::PartiallyPublished { .. }
+            | IndexOperationState::Failed { .. }
+            | IndexOperationState::Unresolved { .. } => SavedOperationAction::Observe,
+        },
+        IndexOperationObservation::OutsideReceiptWindow { .. } => SavedOperationAction::Observe,
+    }
+}
+
+fn failed_operation<'a>(
+    claim: &'a Claim,
+    observation: &IndexOperationObservation,
+) -> Result<Option<FailedOperation<'a>>, ClientError> {
+    admit_observation(claim, observation)?;
+    Ok(
+        matches!(observation, IndexOperationObservation::Known(status)
+        if matches!(status.state, IndexOperationState::Failed { .. }))
+        .then_some(FailedOperation(claim)),
+    )
+}
+
 fn io_error(error: impl std::fmt::Display) -> ClientError {
     ClientError::Io(format!(
         "the saved index operation could not be admitted: {error}"
@@ -99,7 +146,19 @@ fn save_claim(
     directory: &DirectoryCapability,
     name: &str,
     claim: &Claim,
+    publication: ClaimPublication<'_>,
 ) -> Result<(), ClientError> {
+    let replace = match publication {
+        ClaimPublication::New => false,
+        ClaimPublication::AfterFailure(FailedOperation(previous)) => {
+            if read_claim(directory, name)?.as_ref() != Some(previous) {
+                return Err(io_error(
+                    "the failed caller claim changed before replacement",
+                ));
+            }
+            true
+        }
+    };
     let bytes = serde_json::to_vec(claim).map_err(io_error)?;
     if bytes.len() as u64 > MAX_CLAIM_BYTES {
         return Err(io_error("the request exceeds the saved claim byte bound"));
@@ -114,7 +173,47 @@ fn save_claim(
     drop(file);
     // The held request lock serializes our namespace. A post-rename flush
     // failure retains the canonical claim and never permits a transport send.
-    directory.rename(&stage, name, false).map_err(io_error)
+    directory.rename(&stage, name, replace).map_err(io_error)
+}
+
+fn verify_attachment(
+    paths: &WorkspacePaths,
+    root: &DirectoryCapability,
+    directory: &DirectoryCapability,
+    claim: &Claim,
+) -> Result<(), ClientError> {
+    root.verify_path(paths.data()).map_err(io_error)?;
+    directory
+        .verify_path(&paths.data().join(JOURNAL_DIRECTORY))
+        .map_err(io_error)?;
+    if attachment(paths)? != claim.attachment {
+        return Err(io_error("the workspace authority changed before dispatch"));
+    }
+    Ok(())
+}
+
+fn start_claim(
+    transport: &mut impl FnMut(SurfaceCommand) -> Result<SurfaceReply, ClientError>,
+    claim: &Claim,
+) -> Result<SurfaceReply, ClientError> {
+    exchange(
+        transport,
+        SurfaceCommand::IndexOperationStart {
+            operation_key: claim.operation_key,
+            package: claim.package.clone(),
+            execution_intent: claim.execution_intent,
+        },
+    )
+}
+
+fn reply_observation(reply: &SurfaceReply) -> Result<&IndexOperationObservation, ClientError> {
+    match reply {
+        SurfaceReply::IndexOperationStarted(observation)
+        | SurfaceReply::IndexOperationStatus(observation) => Ok(observation),
+        _ => Err(ClientError::Protocol(
+            "durable index reply changed shape".to_owned(),
+        )),
+    }
 }
 
 fn admit_observation(
@@ -248,9 +347,14 @@ pub fn surface_with_index_journal(
 /// The supplied transport executes existing typed surface commands. It never
 /// receives a start before the exact payload and attachment are durable.
 /// Interrupted delivery retains the claim; a retry first reads its status,
-/// replaying only that same key when the owner explicitly returns Unknown.
-/// A proven terminal result clears the claim, so a later explicit refresh
-/// allocates a new random operation. Owner restart alone cannot clear it.
+/// replaying that same key when it is unknown or its interrupted source
+/// capture needs the owner's existing recovery path.
+/// A repeated add reconciles an interrupted capture under the same key. Only
+/// an exact failed receipt authorizes one fresh, durably saved retry within
+/// that invocation. A new attempt is never automatically retried again.
+/// Successful terminal results retain the existing acknowledgment behavior.
+/// Owner restart, unknown delivery and unresolved publication cannot authorize
+/// a replacement operation.
 ///
 /// # Errors
 /// Returns journal, attachment, entropy, transport or exact-receipt admission
@@ -298,7 +402,7 @@ pub fn index_with_journal(
     directory.sync_all().map_err(io_error)?;
     root.verify_path(paths.data()).map_err(io_error)?;
     let saved = read_claim(&directory, &name)?;
-    let claim = match saved.as_ref() {
+    let mut claim = match saved.as_ref() {
         Some(claim)
             if claim.version == 1
                 && claim.package == package
@@ -320,17 +424,11 @@ pub fn index_with_journal(
                 execution_intent,
                 attachment: bound_attachment,
             };
-            save_claim(&directory, &name, &claim)?;
+            save_claim(&directory, &name, &claim, ClaimPublication::New)?;
             claim
         }
     };
-    root.verify_path(paths.data()).map_err(io_error)?;
-    directory
-        .verify_path(&paths.data().join(JOURNAL_DIRECTORY))
-        .map_err(io_error)?;
-    if attachment(paths)? != claim.attachment {
-        return Err(io_error("the workspace authority changed before dispatch"));
-    }
+    verify_attachment(paths, &root, &directory, &claim)?;
     let observation = if saved.is_some() {
         let reply = exchange(
             &mut transport,
@@ -348,28 +446,38 @@ pub fn index_with_journal(
     } else {
         None
     };
-    let reply = match observation {
-        Some(observation) if !matches!(observation, IndexOperationObservation::Unknown { .. }) => {
-            SurfaceReply::IndexOperationStatus(observation)
-        }
-        _ => exchange(
-            &mut transport,
-            SurfaceCommand::IndexOperationStart {
-                operation_key: claim.operation_key,
-                package: claim.package.clone(),
-                execution_intent,
-            },
-        )?,
+    let mut reply = match observation {
+        Some(observation) => match saved_operation_action(&observation) {
+            SavedOperationAction::Observe => SurfaceReply::IndexOperationStatus(observation),
+            SavedOperationAction::ReplaySameKey => {
+                verify_attachment(paths, &root, &directory, &claim)?;
+                start_claim(&mut transport, &claim)?
+            }
+        },
+        None => start_claim(&mut transport, &claim)?,
     };
-    let observation = match &reply {
-        SurfaceReply::IndexOperationStarted(observation)
-        | SurfaceReply::IndexOperationStatus(observation) => observation,
-        _ => {
-            return Err(ClientError::Protocol(
-                "durable index reply changed shape".to_owned(),
-            ));
+    let observation = reply_observation(&reply)?;
+    admit_observation(&claim, observation)?;
+    if saved.is_some() {
+        if let Some(failed) = failed_operation(&claim, observation)? {
+            verify_attachment(paths, &root, &directory, &claim)?;
+            let mut next = claim.clone();
+            next.operation_key = fresh_key()?;
+            if next.operation_key == claim.operation_key {
+                return Err(io_error("fresh retry identity equals the failed operation"));
+            }
+            save_claim(
+                &directory,
+                &name,
+                &next,
+                ClaimPublication::AfterFailure(failed),
+            )?;
+            claim = next;
+            verify_attachment(paths, &root, &directory, &claim)?;
+            reply = start_claim(&mut transport, &claim)?;
         }
-    };
+    }
+    let observation = reply_observation(&reply)?;
     admit_observation(&claim, observation)?;
     if terminal(observation) {
         root.verify_path(paths.data()).map_err(io_error)?;
@@ -557,10 +665,27 @@ mod tests {
                 request_digest: index_operation_request_digest(&claim.package, claim.execution_intent),
             },
         ] {
+            let mut calls = 0;
             fixture.index(|command| {
-                assert!(matches!(command, SurfaceCommand::IndexOperationStatus { operation_key } if operation_key == claim.operation_key));
-                Ok(SurfaceReply::IndexOperationStatus(observation.clone()))
+                calls += 1;
+                match command {
+                    SurfaceCommand::IndexOperationStatus { operation_key } => {
+                        assert_eq!(operation_key, claim.operation_key);
+                        Ok(SurfaceReply::IndexOperationStatus(observation.clone()))
+                    }
+                    SurfaceCommand::IndexOperationStart { operation_key, package, execution_intent } => {
+                        assert_eq!(operation_key, claim.operation_key);
+                        assert_eq!(package, claim.package);
+                        assert_eq!(execution_intent, claim.execution_intent);
+                        assert!(matches!(observation, IndexOperationObservation::Known(ref status)
+                            if matches!(status.state, IndexOperationState::Unresolved {
+                                reason: backend_library::IndexOperationUnresolvedReason::SemanticWorkInterruptedAfterCapture, .. })));
+                        Ok(SurfaceReply::IndexOperationStarted(observation.clone()))
+                    }
+                    _ => panic!("only exact reconciliation is allowed"),
+                }
             }).expect("truthful retained observation");
+            assert_eq!(calls, if matches!(observation, IndexOperationObservation::Known(_)) { 2 } else { 1 });
             assert_eq!(fixture.claims(), [claim.clone()]);
         }
     }
@@ -811,5 +936,538 @@ mod tests {
             })
             .expect("first operation accepted");
         assert_eq!(fixture.claims().len(), 1);
+    }
+
+    mod retry_laws {
+        use super::*;
+        use backend_library::IndexOperationUnresolvedReason as U;
+
+        fn saved(fixture: &Fixture) -> Claim {
+            fixture
+                .index(|_| {
+                    let claim = fixture.claims().pop().expect("durable before send");
+                    Ok(SurfaceReply::IndexOperationStarted(known(
+                        &claim,
+                        IndexOperationState::Accepted,
+                    )))
+                })
+                .expect("saved accepted operation");
+            fixture.claims().pop().expect("accepted claim retained")
+        }
+
+        fn failed(claim: &Claim, reason: IndexOperationFailureReason) -> IndexOperationObservation {
+            known(
+                claim,
+                IndexOperationState::Failed {
+                    reason,
+                    detail: ProductText::from_static(
+                        "the exact operation ended without publication",
+                    ),
+                    compiler_failure: None,
+                },
+            )
+        }
+
+        fn interrupted(claim: &Claim) -> IndexOperationObservation {
+            known(
+                claim,
+                IndexOperationState::Unresolved {
+                    reason: U::SemanticWorkInterruptedAfterCapture,
+                    detail: ProductText::from_static(
+                        "source capture committed but no semantic terminal is proven",
+                    ),
+                },
+            )
+        }
+
+        #[test]
+        fn repeated_add_retries_each_saved_failed_operation_once_with_a_durable_fresh_key() {
+            for reason in [
+                IndexOperationFailureReason::Cancelled,
+                IndexOperationFailureReason::Refused,
+                IndexOperationFailureReason::WorkerFailed,
+                IndexOperationFailureReason::LedgerFull,
+            ] {
+                let fixture = Fixture::new();
+                let original = saved(&fixture);
+                let terminal = failed(&original, reason);
+                let mut commands = Vec::new();
+                let mut replacement = None;
+                let reply = fixture
+                    .index(|command| {
+                        commands.push(command.clone());
+                        match command {
+                            SurfaceCommand::IndexOperationStatus { operation_key } => {
+                                assert_eq!(operation_key, original.operation_key);
+                                Ok(SurfaceReply::IndexOperationStatus(terminal.clone()))
+                            }
+                            SurfaceCommand::IndexOperationStart {
+                                operation_key,
+                                package,
+                                execution_intent,
+                            } => {
+                                let next = fixture
+                                    .claims()
+                                    .pop()
+                                    .expect("replacement is durable before send");
+                                assert_ne!(operation_key, original.operation_key);
+                                assert_eq!(operation_key, next.operation_key);
+                                assert_eq!(package, original.package);
+                                assert_eq!(execution_intent, original.execution_intent);
+                                assert_eq!(next.attachment, original.attachment);
+                                replacement = Some(next.clone());
+                                Ok(SurfaceReply::IndexOperationStarted(known(
+                                    &next,
+                                    IndexOperationState::Accepted,
+                                )))
+                            }
+                            _ => panic!("unexpected command"),
+                        }
+                    })
+                    .expect("one ordinary repeat performs deliberate retry");
+                let next = replacement.expect("fresh mutation sent");
+                assert_eq!(commands.len(), 2);
+                assert_eq!(
+                    reply,
+                    SurfaceReply::IndexOperationStarted(known(
+                        &next,
+                        IndexOperationState::Accepted
+                    ))
+                );
+                assert_eq!(fixture.claims(), [next]);
+            }
+        }
+
+        #[test]
+        fn interrupted_capture_recovery_uses_original_key_then_stops_after_one_fresh_failure() {
+            let fixture = Fixture::new();
+            let original = saved(&fixture);
+            let mut commands = Vec::new();
+            let mut fresh = None;
+            let reply = fixture
+                .index(|command| {
+                    commands.push(command.clone());
+                    match command {
+                        SurfaceCommand::IndexOperationStatus { operation_key } => {
+                            assert_eq!(operation_key, original.operation_key);
+                            Ok(SurfaceReply::IndexOperationStatus(interrupted(&original)))
+                        }
+                        SurfaceCommand::IndexOperationStart { operation_key, .. }
+                            if operation_key == original.operation_key =>
+                        {
+                            assert_eq!(fixture.claims(), [original.clone()]);
+                            Ok(SurfaceReply::IndexOperationStarted(failed(
+                                &original,
+                                IndexOperationFailureReason::WorkerFailed,
+                            )))
+                        }
+                        SurfaceCommand::IndexOperationStart { operation_key, .. } => {
+                            let next = fixture
+                                .claims()
+                                .pop()
+                                .expect("fresh claim before new attempt");
+                            assert_eq!(operation_key, next.operation_key);
+                            assert_ne!(operation_key, original.operation_key);
+                            fresh = Some(next.clone());
+                            Ok(SurfaceReply::IndexOperationStarted(failed(
+                                &next,
+                                IndexOperationFailureReason::Cancelled,
+                            )))
+                        }
+                        _ => panic!("unexpected command"),
+                    }
+                })
+                .expect("bounded recovery and one retry");
+            assert_eq!(
+                commands.len(),
+                3,
+                "new terminal failure cannot start a retry loop"
+            );
+            assert_eq!(
+                reply,
+                SurfaceReply::IndexOperationStarted(failed(
+                    &fresh.expect("one fresh attempt"),
+                    IndexOperationFailureReason::Cancelled
+                ))
+            );
+            assert!(
+                fixture.claims().is_empty(),
+                "terminal fresh receipt is acknowledged"
+            );
+        }
+
+        #[test]
+        fn unknown_delivery_replays_saved_key_before_a_proven_failure_allows_fresh_retry() {
+            let fixture = Fixture::new();
+            let original = saved(&fixture);
+            let mut calls = 0;
+            fixture
+                .index(|command| {
+                    calls += 1;
+                    match command {
+                        SurfaceCommand::IndexOperationStatus { operation_key } => {
+                            Ok(SurfaceReply::IndexOperationStatus(
+                                IndexOperationObservation::Unknown { operation_key },
+                            ))
+                        }
+                        SurfaceCommand::IndexOperationStart { operation_key, .. }
+                            if operation_key == original.operation_key =>
+                        {
+                            assert_eq!(fixture.claims(), [original.clone()]);
+                            Ok(SurfaceReply::IndexOperationStarted(failed(
+                                &original,
+                                IndexOperationFailureReason::WorkerFailed,
+                            )))
+                        }
+                        SurfaceCommand::IndexOperationStart { operation_key, .. } => {
+                            let next = fixture.claims().pop().expect("durable fresh retry");
+                            assert_eq!(operation_key, next.operation_key);
+                            Ok(SurfaceReply::IndexOperationStarted(known(
+                                &next,
+                                IndexOperationState::Accepted,
+                            )))
+                        }
+                        _ => panic!("unexpected command"),
+                    }
+                })
+                .expect("only admitted same-key failure permits replacement");
+            assert_eq!(calls, 3);
+            assert_ne!(fixture.claims()[0].operation_key, original.operation_key);
+        }
+
+        #[test]
+        fn other_unresolved_publication_reasons_never_replay_or_replace() {
+            for reason in [
+                U::RestartedDuringPublication,
+                U::WorkspaceEvidenceMismatch,
+                U::ViewEvidenceMismatch,
+                U::ReceiptPersistenceFailed,
+            ] {
+                let fixture = Fixture::new();
+                let original = saved(&fixture);
+                let observation = known(
+                    &original,
+                    IndexOperationState::Unresolved {
+                        reason,
+                        detail: ProductText::from_static("publication remains unproven"),
+                    },
+                );
+                let mut calls = 0;
+                assert_eq!(
+                    fixture
+                        .index(|command| {
+                            calls += 1;
+                            assert_eq!(
+                                command,
+                                SurfaceCommand::IndexOperationStatus {
+                                    operation_key: original.operation_key
+                                }
+                            );
+                            Ok(SurfaceReply::IndexOperationStatus(observation.clone()))
+                        })
+                        .expect("retained uncertainty"),
+                    SurfaceReply::IndexOperationStatus(observation)
+                );
+                assert_eq!(calls, 1);
+                assert_eq!(fixture.claims(), [original]);
+            }
+        }
+
+        fn publication() -> backend_library::IndexOperationPublicationReceipt {
+            let root = backend_library::view_state_root(&[]);
+            let basis = backend_library::Basis::new(
+                root,
+                backend_library::object_version(b"retry-success-fixture"),
+            );
+            let frontier = backend_library::canonical::Frontier::new(
+                backend_library::branch_key("main"),
+                backend_library::log_key("library"),
+                backend_library::CURSOR_SCHEMA,
+                root,
+                0,
+            );
+            let view = backend_library::ViewRoot::new_incomplete(
+                backend_library::view_key(b"retry-success-view"),
+                basis,
+                frontier,
+                Vec::new(),
+                Vec::new(),
+            )
+            .expect("actual typed view");
+            backend_library::IndexOperationPublicationReceipt::from_published_view(
+                Some([1; 32]),
+                [2; 32],
+                [3; 32],
+                2,
+                &view,
+                backend_library::Cursor::for_view_root(&view),
+            )
+            .expect("bound publication")
+        }
+
+        #[test]
+        fn accepted_active_and_published_saved_operations_are_only_observed() {
+            let publication = publication();
+            for state in [
+                IndexOperationState::Accepted,
+                IndexOperationState::Active {
+                    ticket: backend_library::IndexJobTicket::new(
+                        std::num::NonZeroU64::new(7).expect("ticket"),
+                        [1; 16],
+                        PackageReference::parse("/fixture/placeholder").expect("package"),
+                    ),
+                    stage: backend_library::IndexJobStage::Scanning,
+                },
+                IndexOperationState::Published(publication),
+            ] {
+                let fixture = Fixture::new();
+                let original = saved(&fixture);
+                let state = match state {
+                    IndexOperationState::Active { stage, .. } => IndexOperationState::Active {
+                        ticket: backend_library::IndexJobTicket::new(
+                            std::num::NonZeroU64::new(7).expect("ticket"),
+                            [1; 16],
+                            original.package.clone(),
+                        ),
+                        stage,
+                    },
+                    state => state,
+                };
+                let terminal = matches!(state, IndexOperationState::Published(_));
+                let observation = known(&original, state);
+                let mut calls = 0;
+                assert_eq!(
+                    fixture
+                        .index(|command| {
+                            calls += 1;
+                            assert_eq!(
+                                command,
+                                SurfaceCommand::IndexOperationStatus {
+                                    operation_key: original.operation_key
+                                }
+                            );
+                            Ok(SurfaceReply::IndexOperationStatus(observation.clone()))
+                        })
+                        .expect("safe original operation replay"),
+                    SurfaceReply::IndexOperationStatus(observation)
+                );
+                assert_eq!(calls, 1, "no second mutation for live or successful work");
+                assert_eq!(fixture.claims().is_empty(), terminal);
+                if !terminal {
+                    assert_eq!(fixture.claims(), [original]);
+                }
+            }
+        }
+
+        #[test]
+        fn partial_publication_retains_its_exact_refusals_without_a_replacement_start() {
+            use backend_library::{
+                IndexOperationSemanticProfileState as S,
+                IndexOperationSemanticUnavailableReason as R,
+            };
+            let fixture = Fixture::new();
+            let original = saved(&fixture);
+            let published_profile =
+                backend_library::SemanticLanguageProfile::from_name("typescript")
+                    .expect("closed TypeScript profile");
+            let refused_profile = backend_library::SemanticLanguageProfile::from_name("go")
+                .expect("closed Go profile");
+            let capture = backend_library::IndexOperationSourceCaptureReceipt::from_checked_parts(
+                original.operation_key,
+                [7; 32],
+                [8; 32],
+                1,
+                Box::new([
+                    backend_library::IndexOperationSourceProfile {
+                        profile: published_profile,
+                        source_version: [4; 32],
+                        input_digest: [5; 32],
+                        observation_sequence: 1,
+                        source_count: 1,
+                        state: S::Published {
+                            generation: [6; 32],
+                            coverage: backend_library::IndexOperationSemanticCoverage::Complete,
+                        },
+                    },
+                    backend_library::IndexOperationSourceProfile {
+                        profile: refused_profile,
+                        source_version: [4; 32],
+                        input_digest: [9; 32],
+                        observation_sequence: 1,
+                        source_count: 1,
+                        state: S::Unavailable {
+                            reason: R::Toolchain,
+                        },
+                    },
+                ]),
+            )
+            .expect("admitted source profile partition");
+            let observation = IndexOperationObservation::Known(
+                IndexOperationStatus::new(
+                    original.operation_key,
+                    original.package.clone(),
+                    original.execution_intent,
+                    IndexOperationState::PartiallyPublished {
+                        receipt: publication(),
+                        refused_profiles: Box::new([
+                            backend_library::IndexOperationProfileRefusal {
+                                profile: refused_profile,
+                                reason: R::Toolchain,
+                                compiler_failure: None,
+                            },
+                        ]),
+                    },
+                )
+                .with_source_capture(Some(capture)),
+            );
+            let mut calls = 0;
+            assert_eq!(
+                fixture
+                    .index(|command| {
+                        calls += 1;
+                        assert_eq!(
+                            command,
+                            SurfaceCommand::IndexOperationStatus {
+                                operation_key: original.operation_key
+                            }
+                        );
+                        Ok(SurfaceReply::IndexOperationStatus(observation.clone()))
+                    })
+                    .expect("partial is observed as its own terminal receipt"),
+                SurfaceReply::IndexOperationStatus(observation)
+            );
+            assert_eq!(
+                calls, 1,
+                "partial publication is never mistaken for failed work"
+            );
+            assert!(
+                fixture.claims().is_empty(),
+                "existing terminal acknowledgment retained"
+            );
+        }
+
+        #[test]
+        fn lost_fresh_retry_delivery_reconciles_fresh_identity_instead_of_allocating_another() {
+            let fixture = Fixture::new();
+            let original = saved(&fixture);
+            assert!(
+                fixture
+                    .index(|command| match command {
+                        SurfaceCommand::IndexOperationStatus { .. } =>
+                            Ok(SurfaceReply::IndexOperationStatus(failed(
+                                &original,
+                                IndexOperationFailureReason::WorkerFailed
+                            ))),
+                        SurfaceCommand::IndexOperationStart { .. } => Err(
+                            ClientError::MutationOutcomeUnknown(io::ErrorKind::ConnectionReset)
+                        ),
+                        _ => panic!("unexpected command"),
+                    })
+                    .is_err()
+            );
+            let next = fixture
+                .claims()
+                .pop()
+                .expect("fresh delivery ambiguity remains durable");
+            assert_ne!(next.operation_key, original.operation_key);
+            let mut calls = 0;
+            fixture
+                .index(|command| {
+                    calls += 1;
+                    assert_eq!(
+                        command,
+                        SurfaceCommand::IndexOperationStatus {
+                            operation_key: next.operation_key
+                        }
+                    );
+                    Ok(SurfaceReply::IndexOperationStatus(known(
+                        &next,
+                        IndexOperationState::Accepted,
+                    )))
+                })
+                .expect("reconcile ambiguous fresh delivery");
+            assert_eq!(calls, 1);
+            assert_eq!(fixture.claims(), [next]);
+        }
+
+        #[test]
+        fn foreign_failed_receipt_and_changed_authority_cannot_replace_claim() {
+            for foreign in [true, false] {
+                let fixture = Fixture::new();
+                let original = saved(&fixture);
+                let mut calls = 0;
+                let result = fixture.index(|command| {
+                    calls += 1;
+                    assert_eq!(
+                        command,
+                        SurfaceCommand::IndexOperationStatus {
+                            operation_key: original.operation_key
+                        }
+                    );
+                    let mut claim = original.clone();
+                    if foreign {
+                        claim.operation_key = fresh_key().expect("foreign key");
+                    } else {
+                        backend_platform::durable::write_private_atomic(
+                            fixture.paths.authority_secret(),
+                            &[9; 32],
+                        )
+                        .expect("replace owner authority");
+                    }
+                    Ok(SurfaceReply::IndexOperationStatus(failed(
+                        &claim,
+                        IndexOperationFailureReason::WorkerFailed,
+                    )))
+                });
+                assert!(result.is_err());
+                assert_eq!(calls, 1, "no replacement mutation is sent");
+                assert_eq!(fixture.claims(), [original]);
+            }
+        }
+
+        #[test]
+        fn concurrent_caller_cannot_dispatch_during_failed_claim_replacement() {
+            let fixture = Fixture::new();
+            let original = saved(&fixture);
+            let mut calls = 0;
+            fixture
+                .index(|command| {
+                    calls += 1;
+                    let mut conflicting_send = false;
+                    assert!(
+                        fixture
+                            .index(|_| {
+                                conflicting_send = true;
+                                Err(ClientError::Io("must not send".into()))
+                            })
+                            .is_err()
+                    );
+                    assert!(!conflicting_send);
+                    match command {
+                        SurfaceCommand::IndexOperationStatus { .. } => {
+                            Ok(SurfaceReply::IndexOperationStatus(failed(
+                                &original,
+                                IndexOperationFailureReason::Cancelled,
+                            )))
+                        }
+                        SurfaceCommand::IndexOperationStart { operation_key, .. } => {
+                            let next = fixture
+                                .claims()
+                                .pop()
+                                .expect("new claim under same held lock");
+                            assert_eq!(operation_key, next.operation_key);
+                            assert_ne!(operation_key, original.operation_key);
+                            Ok(SurfaceReply::IndexOperationStarted(known(
+                                &next,
+                                IndexOperationState::Accepted,
+                            )))
+                        }
+                        _ => panic!("unexpected command"),
+                    }
+                })
+                .expect("one owning caller");
+            assert_eq!(calls, 2);
+            assert_eq!(fixture.claims().len(), 1);
+        }
     }
 }
