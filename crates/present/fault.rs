@@ -971,6 +971,15 @@ impl Fault {
     #[must_use]
     pub fn from_client_error(error: &ClientError, operand: Operand) -> Self {
         let (slug, cause, sentence, affordance) = match error {
+            ClientError::IndexOperationDeliveryUnknown { operation_key, cause } => {
+                let mut fault = Self::from_client_error(cause, Operand::Key(KeyTag::from_key(operation_key.as_bytes())));
+                fault.cause.sentence = format!("the saved index operation {operation_key} has no admitted outcome; delivery/replacement observation: {}", fault.cause.sentence);
+                fault.affordance = Affordance::PollIndexOperation { operation_key: *operation_key };
+                // Replacement readiness cannot authorize replay of the
+                // original already-sent mutation's command line.
+                fault.startup_recovery = None;
+                return fault;
+            }
             ClientError::CommandFailed(failure) => {
                 return Self::from_command_failure(failure, operand);
             }

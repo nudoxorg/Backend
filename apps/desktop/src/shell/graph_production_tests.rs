@@ -494,48 +494,83 @@ fn exercise_header_controls(fixture: &OwnerFixture) {
         assert_eq!(rig.route(), Route::World, "the existing Back shortcut keeps the same history semantics");
     }
 
-    // The original frame remains committed throughout this complete native
-    // input batch. Owner replacement precedes its watcher and cannot grant
-    // old controls pointer focus, Tab focus, or key/accessibility activation.
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_targets(cx));
-    rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx|
-        shell.take_zone(super::super::focus::Zone::Titlebar, window, cx)));
-    header_tab_to(&mut rig, &targets, "view-code");
-    let bounds = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("view-page", cx)).expect("old painted Page");
-    let native = header_node(&mut rig, "Show Page view");
-    gate.publish(OwnerState::Starting);
-    gate.publish(OwnerState::Ready { key: fixture.root, mode: ServiceMode::Attached });
-    let (original_focus, original_frame) = rig.cx.update(|window, cx| {
-        let before = window.focused(cx);
-        assert_eq!(targets.native_focused(window).as_deref(), Some("view-code"));
-        let frame = window.a11y_frame_number();
-        window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
-            position: bounds.center(), modifiers: Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1, first_mouse: false,
-        }), cx);
-        assert_eq!(window.focused(cx), before, "stale pointer capture rejects before native focus");
-        window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
-            position: bounds.center(), modifiers: Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1,
-        }), cx);
-        for key in ["shift-tab", "enter", "space"] {
-            let keystroke = gpui::Keystroke::parse(key).expect("native key");
-            window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent { keystroke: keystroke.clone(), is_held: false, prefer_character_input: false }), cx);
-            window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
-        }
-        window.simulate_a11y_action(gpui::accesskit::ActionRequest {
-            action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: native, data: None,
-        }, cx);
-        assert_eq!(window.focused(cx), before, "stale native input does not transfer keyboard ownership");
-        assert_eq!(window.a11y_frame_number(), frame, "no forced redraw conceals the retained control");
-        assert_eq!(rig.graph.store.read(cx).snapshot().route(), &Route::World, "stale controls cannot navigate before the watcher");
-        (before, frame)
-    });
-    // Window.defer runs after the held Shell/Reader borrows return. Observe
-    // that real delayed focus phase before allowing an owner watcher/redraw.
-    rig.cx.update(|window, cx| {
-        assert_eq!(window.focused(cx), original_focus, "retired deferred Tab cannot steal native focus after routing returns");
-        assert_eq!(window.a11y_frame_number(), original_frame, "the same original native frame still owns this observation");
-        assert_eq!(rig.graph.store.read(cx).snapshot().route(), &Route::World);
-    });
-    rig.cx.run_until_parked();
-    assert_eq!(rig.route(), Route::World);
+    // Pointer/old AX and deferred Tab are retained-frame input. Keyboard
+    // release is a different phase: arm the actual native press before the
+    // owner retires, then observe a replacement paint before releasing it.
+    for input in ["pointer", "accessibility", "shift-tab", "enter", "space"] {
+        rig.settle();
+        rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(node, cx));
+        rig.settle();
+        assert!(rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_attachment().is_some()),
+            "the old header really belongs to an admitted owner");
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_targets(cx));
+        rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx|
+            shell.take_zone(super::super::focus::Zone::Titlebar, window, cx)));
+        header_tab_to(&mut rig, &targets, "view-code");
+        let bounds = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("view-page", cx)).expect("old painted Page");
+        let native = header_node(&mut rig, "Show Page view");
+        let (original_focus, observed_frame, retained_frame) = rig.cx.update(|window, cx| {
+            let before = window.focused(cx);
+            assert_eq!(targets.native_focused(window).as_deref(), Some("view-code"));
+            let armed_frame = window.a11y_frame_number();
+            let held = matches!(input, "enter" | "space").then(|| gpui::Keystroke::parse(input).expect("native key"));
+            let retained = held.is_none();
+            if let Some(key) = &held {
+                window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                    keystroke: key.clone(), is_held: false, prefer_character_input: false,
+                }), cx);
+                assert_eq!(window.focused(cx), before);
+                assert_eq!(window.a11y_frame_number(), armed_frame, "the press is armed on the current committed control");
+            }
+            gate.publish(OwnerState::Starting);
+            gate.publish(OwnerState::Ready { key: fixture.root, mode: ServiceMode::Attached });
+            match input {
+                "pointer" => {
+                    window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                        position: bounds.center(), modifiers: Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1, first_mouse: false,
+                    }), cx);
+                    assert_eq!(window.focused(cx), before, "stale pointer capture rejects before native focus");
+                    window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                        position: bounds.center(), modifiers: Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1,
+                    }), cx);
+                }
+                "accessibility" => window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+                    action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: native, data: None,
+                }, cx),
+                "shift-tab" => {
+                    // The bound Tab action defers focus. Its Down runs against
+                    // this tree; no later key is allowed to paint over it.
+                    window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                        keystroke: gpui::Keystroke::parse(input).expect("native Tab"),
+                        is_held: false, prefer_character_input: false,
+                    }), cx);
+                }
+                _ => {
+                    // A real bounds event makes the replacement observable;
+                    // ordinary key dispatch paints it, not Window.draw.
+                    let width = if input == "enter" { 1100.0 } else { 1200.0 };
+                    window.resize(gpui::size(px(width), px(900.0)));
+                    window.bounds_changed(cx);
+                    window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
+                        keystroke: held.expect("actual held keyboard press"),
+                    }), cx);
+                    assert!(window.a11y_frame_number() > armed_frame,
+                        "a genuinely newer native tree receives the old key release");
+                }
+            }
+            if retained { assert_eq!(window.a11y_frame_number(), armed_frame, "retained input must not paint a new AX capability"); }
+            assert_eq!(window.focused(cx), before, "retired input does not transfer keyboard ownership");
+            assert_eq!(rig.graph.store.read(cx).snapshot().route(), &Route::World, "old controls cannot navigate");
+            (before, window.a11y_frame_number(), retained)
+        });
+        // Observe the real deferred Tab/activation phase after region borrows
+        // return, before pumping the owner watcher or a later native event.
+        rig.cx.update(|window, cx| {
+            assert_eq!(window.focused(cx), original_focus, "retired deferred input cannot steal native focus");
+            if retained_frame { assert_eq!(window.a11y_frame_number(), observed_frame); }
+            assert_eq!(rig.graph.store.read(cx).snapshot().route(), &Route::World);
+        });
+        rig.cx.run_until_parked();
+        assert_eq!(rig.route(), Route::World);
+    }
 }

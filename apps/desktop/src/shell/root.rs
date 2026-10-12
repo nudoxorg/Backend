@@ -259,7 +259,7 @@ impl Shell {
         let ask = cx.new(|cx| Ask::new(ask_links, window, cx));
         // The titlebar draws the query in the bar's place while Ask is open.
         let ask_field = ask.read(cx).input().clone();
-        titlebar.update(cx, |titlebar, _| titlebar.set_ask_input(ask_field));
+        titlebar.update(cx, |titlebar, _| titlebar.set_ask_input(ask_field, ask.downgrade()));
         reader.update(cx, |reader, _| {
             reader.targets.set_active(true);
         });

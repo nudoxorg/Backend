@@ -52,6 +52,16 @@ pub(crate) fn finish(
     answer: Answer,
     policy: IndexWaitPolicy,
 ) -> Result<(Answer, Option<u8>), Fault> {
+    finish_with_recovery(session, paths, answer, policy, None)
+}
+
+pub(crate) fn finish_with_recovery(
+    session: &mut Session,
+    paths: &backend_runtime::WorkspacePaths,
+    answer: Answer,
+    policy: IndexWaitPolicy,
+    mut recovery: Option<&mut crate::owner_recovery::OwnerRecovery>,
+) -> Result<(Answer, Option<u8>), Fault> {
     let Answer::Product(product) = &answer else {
         return Err(Fault::usage(
             "--wait",
@@ -75,8 +85,11 @@ pub(crate) fn finish(
             initial,
             &context,
             |command| {
-                backend_client::surface_with_index_journal(paths, command, |command| {
-                    session.surface(command)
+                backend_client::surface_with_index_journal(paths, command, |command| match recovery
+                    .as_deref_mut()
+                {
+                    Some(recovery) => recovery.surface(session, command, Some(&context)),
+                    None => session.surface(command),
                 })
             },
             |observation| {
@@ -142,7 +155,7 @@ fn progress_line(observation: &IndexOperationObservation) -> String {
     format!("index operation {key}: {state}; resume: nudox index_progress --operation-key {key}")
 }
 
-fn progress_sink() -> Option<std::sync::mpsc::SyncSender<String>> {
+pub(crate) fn progress_sink() -> Option<std::sync::mpsc::SyncSender<String>> {
     let (sender, receiver) = std::sync::mpsc::sync_channel::<String>(4);
     // One bounded best-effort reporter cannot block the operation's deadline
     // on redirected stderr. It never writes protocol/machine stdout.

@@ -121,15 +121,36 @@ fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), 
     let workspace = workspace(options)?;
     let project = workspace.project().to_string_lossy().into_owned();
     let plan = plan(words, options, &project)?;
+    let startup_scope = backend_client::RequestContext::new();
+    startup_scope
+        .read_deadline(backend_runtime::COMMAND_STARTUP_TIMEOUT)
+        .map_err(|error| {
+            Fault::from_client_error(&error, Operand::Text("local startup".to_owned()))
+        })?;
+    let mut recovery = crate::owner_recovery::OwnerRecovery::new(
+        &workspace,
+        options.passive(),
+        startup_scope.clone(),
+    );
     let endpoint_result = if options.passive() {
         backend_runtime::connect_existing_locald(&workspace)
     } else {
         #[cfg(unix)]
         {
-            match backend_runtime::start_locald(
+            let progress = recovery.progress_sender();
+            match backend_runtime::start_locald_cancellable(
                 &workspace,
-                STARTUP_COMMAND_BUDGET,
-                startup_progress,
+                startup_scope
+                    .remaining_read_budget()
+                    .map_err(|error| {
+                        Fault::from_client_error(&error, Operand::Text("local startup".to_owned()))
+                    })?
+                    .unwrap_or(STARTUP_COMMAND_BUDGET)
+                    .min(STARTUP_COMMAND_BUDGET),
+                |phase| {
+                    if let Some(progress) = &progress { let _ = progress.try_send(format!("local startup: {}", phase.as_str())); }
+                },
+                || startup_scope.check().is_ok(),
             ) {
                 Ok(backend_runtime::LocaldStartup::Ready(endpoint)) => Ok(endpoint),
                 Ok(backend_runtime::LocaldStartup::Pending(pending)) => {
@@ -179,30 +200,17 @@ fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), 
             },
         )
     })?;
-    let mut session = Session::connect(&endpoint).map_err(|error| {
+    let mut session = recovery.connect_initial(&endpoint).map_err(|error| {
         Fault::from_client_error(
             &error,
             Operand::Path(endpoint.to_string_lossy().into_owned()),
         )
     })?;
-    session.observe_query_preparation(|progress| {
-        let mut stderr = std::io::stderr().lock();
-        let _ = writeln!(stderr, "search preparation: {}", progress.state.as_str())
-            .and_then(|()| stderr.flush());
-        true
-    });
-    // Startup is a single bounded wait; the planned command is submitted once,
-    // only after an endpoint connection succeeded.
-    let (answer, outcome) = execute_plan(&mut session, &plan, &workspace)?;
+    // Only an authenticated replacement can reconcile a saved start or repeat
+    // an unpinned read. No outer Add invocation is replayed after disconnect.
+    let (answer, outcome) =
+        execute_plan_with_recovery(&mut session, &plan, &workspace, Some(&mut recovery))?;
     render_admitted_answer(&session, &answer, options).map(|output| (output, outcome))
-}
-
-#[cfg(unix)]
-fn startup_progress(phase: backend_runtime::StartupPhase) {
-    // Separate stderr progress preserves machine stdout and is flushed before
-    // waiting on the child's durable setup. It never describes indexing.
-    let mut stderr = std::io::stderr().lock();
-    let _ = writeln!(stderr, "local startup: {}", phase.as_str()).and_then(|()| stderr.flush());
 }
 
 fn startup_error_action(error: &backend_runtime::RuntimeError) -> Affordance {
@@ -281,14 +289,41 @@ struct Plan {
 #[path = "tests/index_wait.rs"]
 mod index_wait_tests;
 
+#[cfg(all(test, unix))]
 fn execute_plan(
     session: &mut Session,
     plan: &Plan,
     workspace: &backend_runtime::WorkspacePaths,
 ) -> Result<(Answer, ExitCode), Fault> {
-    let answer = run::execute_in_workspace(session, &plan.request, workspace)?;
+    execute_plan_with_recovery(session, plan, workspace, None)
+}
+
+fn execute_plan_with_recovery(
+    session: &mut Session,
+    plan: &Plan,
+    workspace: &backend_runtime::WorkspacePaths,
+    mut recovery: Option<&mut crate::owner_recovery::OwnerRecovery>,
+) -> Result<(Answer, ExitCode), Fault> {
+    let answer = match recovery.as_deref_mut() {
+        Some(recovery) => run::execute_with_recovery(session, &plan.request, workspace, recovery)?,
+        None => run::execute_in_workspace(session, &plan.request, workspace)?,
+    };
+    if let Some(recovery) = recovery.as_deref() {
+        recovery.detach(session).map_err(|error| {
+            Fault::from_client_error(&error, Operand::Text("owner replacement".to_owned()))
+        })?;
+    }
     let (answer, override_exit) = match plan.wait {
-        Some(policy) => crate::index_wait::finish(session, workspace, answer, policy)?,
+        Some(policy) => match recovery.as_deref_mut() {
+            Some(recovery) => crate::index_wait::finish_with_recovery(
+                session,
+                workspace,
+                answer,
+                policy,
+                Some(recovery),
+            )?,
+            None => crate::index_wait::finish(session, workspace, answer, policy)?,
+        },
         None => (answer, None),
     };
     let exit = override_exit.map_or_else(|| render::answer_exit_code(&answer), ExitCode::from);

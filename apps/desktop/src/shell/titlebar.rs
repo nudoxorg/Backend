@@ -204,7 +204,7 @@ pub(crate) struct Titlebar {
     /// The bar's mode changes: what arrives fades in.
     motion: Motion,
     /// Ask's field (`Ask::input`): drawn in the bar's place while Ask is open.
-    ask_input: Option<gpui::Entity<InputState>>,
+    ask_input: Option<(gpui::Entity<InputState>, gpui::WeakEntity<super::ask::Ask>)>,
 }
 
 impl Titlebar {
@@ -231,8 +231,8 @@ impl Titlebar {
     }
 
     /// Hands the bar Ask's field, which it draws while Ask is open.
-    pub(crate) fn set_ask_input(&mut self, input: gpui::Entity<InputState>) {
-        self.ask_input = Some(input);
+    pub(crate) fn set_ask_input(&mut self, input: gpui::Entity<InputState>, ask: gpui::WeakEntity<super::ask::Ask>) {
+        self.ask_input = Some((input, ask));
     }
 }
 
@@ -311,8 +311,9 @@ impl Render for Titlebar {
         }
 
         let asking = snapshot.overlay() == Some(Overlay::CommandPalette);
-        let center = if let (true, Some(input)) = (asking, self.ask_input.clone()) {
-            Self::ask_typing(&input, &measure, palette)
+        let center = if let (true, Some((input, ask))) = (asking, self.ask_input.clone()) {
+            let visit = self.links.root.upgrade().map(|root| root.read(cx).graph_view_generation());
+            Self::ask_typing(&input, ask, visit, &measure, palette)
         } else if orbit {
             self.ask_field(&measure, palette, keys, cx)
         } else {
@@ -749,16 +750,20 @@ impl Titlebar {
 
     /// The bar while Ask is open: the query, live, on the plate the field
     /// rests on (the results are the plate over the shelf's column).
-    fn ask_typing(input: &gpui::Entity<InputState>, measure: &Measure, palette: &Palette) -> AnyElement {
+    fn ask_typing(input: &gpui::Entity<InputState>, ask: gpui::WeakEntity<super::ask::Ask>, visit: Option<u64>,
+        measure: &Measure, palette: &Palette) -> AnyElement {
         let height = px(32.0 * measure.scale());
         div()
             .id("ask-typing")
-            // The input emits PressEnter for Ask, then propagates its action.
-            // Own that submission here so Enter cannot also reach text input
-            // and emit a second Change event for the unchanged query.
-            .on_action(|_: &gpui_component::input::Enter, window, cx| {
+            // InputState propagates after its editing/menu handling. Bind the
+            // submission here, before queued notifications or another paint.
+            .on_action(move |enter: &gpui_component::input::Enter, window, cx| {
                 window.prevent_default();
                 cx.stop_propagation();
+                if let Some(visit) = visit {
+                    let _ = ask.update(cx, |ask, cx|
+                        ask.submit_editor_enter(visit, enter.secondary, enter.shift, window, cx));
+                }
             })
             .relative()
             .min_w(px(0.0))
