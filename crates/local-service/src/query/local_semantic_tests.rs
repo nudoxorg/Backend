@@ -159,9 +159,13 @@ fn local_semantic_alternating_warm_queries_retain_exact_answers_and_credits() ->
     .map_err(|error| error.to_string())?;
     assert_eq!(
         status,
-        SemanticSearchStatus::Unavailable {
-            reason: SemanticSearchReason::ProviderUnavailable
-        }
+        SemanticSearchStatus::Available,
+        "optional copy/cache leases yield to the exact owed answer under pressure"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&fixture.log)?,
+        log,
+        "credit pressure does not rescore an already complete answer"
     );
     drop(pressure);
     if let crate::builtin::query::RemoteSemantic::Local(owner) = &mut provider {
@@ -192,6 +196,246 @@ fn local_semantic_alternating_warm_queries_retain_exact_answers_and_credits() ->
         std::fs::read_to_string(&fixture.log)?,
         log,
         "retirement never reruns inference"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn local_semantic_transient_query_failure_is_one_shot_and_preserves_selected_projection()
+-> TestResult {
+    let (coordinator, library, view) = selected_many(30, false)?;
+    let fixture = fixture_with_mode(4096, "fail-query-once")?;
+    let mut provider = crate::builtin::query::RemoteSemantic::select_owner(
+        &fixture.provision,
+        &fixture.descriptor,
+        crate::builtin::query::RemoteSemantic::Unconfigured,
+    );
+    let flag = Arc::new(AtomicBool::new(false));
+    let warm = backend_engine::Query::new(
+        "warm intent",
+        view.root(),
+        backend_engine::QueryLimit::new(3)?,
+    );
+    assert_eq!(
+        settle_page(&coordinator, &library, &mut provider, &warm, flag.clone())?.1,
+        SemanticSearchStatus::Available
+    );
+    let calls_before = std::fs::read_to_string(&fixture.log)?;
+    std::fs::write(&fixture.release, b"fail next query once")?;
+    let retry = backend_engine::Query::new(
+        "retry intent",
+        view.root(),
+        backend_engine::QueryLimit::new(3)?,
+    );
+    assert_eq!(
+        settle_page(&coordinator, &library, &mut provider, &retry, flag.clone())?.1,
+        SemanticSearchStatus::Unavailable {
+            reason: SemanticSearchReason::ProviderUnavailable
+        }
+    );
+    let crate::builtin::query::RemoteSemantic::Local(owner) = &provider else {
+        return Err("local owner".into());
+    };
+    assert!(
+        owner.core().ok_or("finished failure")?.has_projection(),
+        "query terminal does not destroy complete document relation"
+    );
+    assert_eq!(
+        settle_page(&coordinator, &library, &mut provider, &retry, flag.clone())?.1,
+        SemanticSearchStatus::Available,
+        "same exact key retries after its one owed failure"
+    );
+    let calls_after = std::fs::read_to_string(&fixture.log)?;
+    let purpose_count = |log: &str, purpose: u64| -> Result<usize, Box<dyn std::error::Error>> {
+        let mut count = 0;
+        for line in log.lines() {
+            let row: serde_json::Value = serde_json::from_str(line)?;
+            count += usize::from(row["purpose"].as_u64() == Some(purpose));
+        }
+        Ok(count)
+    };
+    assert_eq!(
+        purpose_count(&calls_after, 2)?,
+        purpose_count(&calls_before, 2)?,
+        "document projection is reused"
+    );
+    assert_eq!(
+        purpose_count(&calls_after, 1)?,
+        purpose_count(&calls_before, 1)? + 2,
+        "one actual failed process then successful process"
+    );
+    assert_eq!(
+        settle_page(&coordinator, &library, &mut provider, &retry, flag)?.1,
+        SemanticSearchStatus::Available
+    );
+    assert_eq!(
+        std::fs::read_to_string(&fixture.log)?,
+        calls_after,
+        "successful repeated key stays warm"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn local_semantic_shared_admission_reclaims_at_seed_query_and_owned_output() -> TestResult {
+    let (coordinator, library, view) = selected_many(30, false)?;
+    let fixture = fixture(4096)?;
+    let runtime = fixture.provision.runtime().ok_or("runtime")?;
+    let mut provider = crate::builtin::query::RemoteSemantic::select_owner(
+        &fixture.provision,
+        &fixture.descriptor,
+        crate::builtin::query::RemoteSemantic::Unconfigured,
+    );
+    let flag = Arc::new(AtomicBool::new(false));
+    for at in 0..12 {
+        let request = backend_engine::Query::new(
+            format!("warm intent {at}"),
+            view.root(),
+            backend_engine::QueryLimit::new(3)?,
+        );
+        assert_eq!(
+            settle_page(
+                &coordinator,
+                &library,
+                &mut provider,
+                &request,
+                flag.clone()
+            )?
+            .1,
+            SemanticSearchStatus::Available
+        );
+    }
+    let before = std::fs::read_to_string(&fixture.log)?;
+    let pressure = runtime
+        .memory_budget()
+        .reserve(runtime.memory_budget().capacity() - runtime.memory_budget().used())?;
+    let crate::builtin::query::RemoteSemantic::Local(owner) = &mut provider else {
+        return Err("local owner".into());
+    };
+    let cached = owner.cached_completions();
+    let mut local = coordinator.search_local(LocalQuery::prefix("fixture", 3)?)?;
+    let seed = local.take_lexical_seed(runtime.memory_budget(), &mut || Ok(()))?;
+    assert!(
+        owner.cached_completions() < cached,
+        "seed's actual reserve releases optional cache"
+    );
+    drop(seed);
+    let cached = owner.cached_completions();
+    let core = owner.core_mut().ok_or("ready projection")?;
+    let (_, query_memory, _) = core.prepare_and_query(
+        &coordinator,
+        crate::builtin::admitted_coverage()?,
+        "new pressured intent",
+        &flag,
+        3,
+        runtime.inference_deadline()?,
+    )?;
+    assert!(
+        owner.cached_completions() < cached,
+        "query scratch/inference reserve follows same reclamation law"
+    );
+    drop(query_memory);
+    assert!(owner.core().ok_or("ready projection")?.has_projection());
+    drop(pressure);
+    let after = std::fs::read_to_string(&fixture.log)?;
+    let documents = |log: &str| {
+        log.lines()
+            .filter(|line| line.contains("\"purpose\": 2"))
+            .count()
+    };
+    assert_eq!(
+        documents(&before),
+        documents(&after),
+        "seed/query credit pressure does not rebuild document projection"
+    );
+
+    // Retain exactly one completion. An owed hit still succeeds when no duplicate
+    // output lease fits, by moving the original result and lease to the projector.
+    owner.set_completion_policy(super::super::QueryCompletionPolicy { maximum_bytes: 1 });
+    let request = backend_engine::Query::new(
+        "single owed intent",
+        view.root(),
+        backend_engine::QueryLimit::new(3)?,
+    );
+    let (expected, status) = settle_page(
+        &coordinator,
+        &library,
+        &mut provider,
+        &request,
+        flag.clone(),
+    )?;
+    assert_eq!(status, SemanticSearchStatus::Available);
+    let before_output = std::fs::read_to_string(&fixture.log)?;
+    let pressure = runtime
+        .memory_budget()
+        .reserve(runtime.memory_budget().capacity() - runtime.memory_budget().used())?;
+    let (owed, status) = super::super::search_page_with_cancellation(
+        &coordinator,
+        &library,
+        &mut provider,
+        crate::builtin::admitted_coverage()?,
+        &request,
+        flag.clone(),
+    )
+    .map_err(|error| error.to_string())?;
+    assert_eq!(status, SemanticSearchStatus::Available);
+    assert_eq!(owed.rows(), expected.rows());
+    assert_eq!(
+        std::fs::read_to_string(&fixture.log)?,
+        before_output,
+        "owned-output transfer invokes no producer"
+    );
+    let crate::builtin::query::RemoteSemantic::Local(owner) = &provider else {
+        return Err("local owner".into());
+    };
+    assert_eq!(
+        owner.cached_completions(),
+        0,
+        "original cache allocation moved, no uncharged retained copy"
+    );
+    assert!(owner.core().ok_or("ready projection")?.has_projection());
+    let required_pressure = runtime
+        .memory_budget()
+        .reserve(runtime.memory_budget().capacity() - runtime.memory_budget().used())?;
+    let (_, refused) = super::super::search_page_with_cancellation(
+        &coordinator,
+        &library,
+        &mut provider,
+        crate::builtin::admitted_coverage()?,
+        &request,
+        flag.clone(),
+    )
+    .map_err(|error| error.to_string())?;
+    assert_eq!(
+        refused,
+        SemanticSearchStatus::Unavailable {
+            reason: SemanticSearchReason::ProviderUnavailable
+        },
+        "mandatory occupied credits still refuse truthfully after all optional storage is gone"
+    );
+    let crate::builtin::query::RemoteSemantic::Local(owner) = &provider else {
+        return Err("local owner".into());
+    };
+    assert!(
+        owner.core().ok_or("ready projection")?.has_projection(),
+        "transient query-key refusal preserves exact selected projection"
+    );
+    assert!(matches!(
+        provider.local_failure(),
+        Some(LocalSemanticError::Memory(_))
+    ));
+    drop(required_pressure);
+    drop(pressure);
+    assert_eq!(
+        settle_page(&coordinator, &library, &mut provider, &request, flag)?.1,
+        SemanticSearchStatus::Available
+    );
+    assert_eq!(
+        std::fs::read_to_string(&fixture.log)?,
+        before_output,
+        "warm input coordinates and relation survive pressure recovery"
     );
     Ok(())
 }
@@ -395,6 +639,9 @@ with open(os.environ['FIXTURE_LOG'], 'a') as log:
 with open(os.environ['FIXTURE_LOG']) as log:
     documents = sum(json.loads(line)['purpose'] == 2 for line in log)
 mode = os.environ['FIXTURE_MODE']
+if purpose == 1 and mode == 'fail-query-once' and os.path.exists(os.environ['FIXTURE_RELEASE']):
+    os.unlink(os.environ['FIXTURE_RELEASE'])
+    sys.exit(9)
 if purpose == 1 and mode == 'gate-query':
     with open(os.environ['FIXTURE_ENTERED'], 'w') as marker: marker.write('query entered')
     while not os.path.exists(os.environ['FIXTURE_RELEASE']): time.sleep(0.005)

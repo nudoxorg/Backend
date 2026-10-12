@@ -14,7 +14,7 @@ use std::{
     collections::VecDeque,
     path::Path,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -91,37 +91,102 @@ impl Completed {
                 .map_or(0, EmbeddingMemoryReservation::bytes),
         )
     }
-    fn answer(&self, local: LocalAnswer, admitted: &AdmittedLocalQueryRecipe) -> SemanticAnswer {
+    fn answer(
+        mut self,
+        local: LocalAnswer,
+        admitted: &AdmittedLocalQueryRecipe,
+    ) -> (SemanticAnswer, Option<Self>) {
         let Some(answer) = &self.answer else {
-            return SemanticAnswer::lexical(local, self.failure);
+            // A failed owned attempt is delivered once, never a negative cache hit forever.
+            return (SemanticAnswer::lexical(local, self.failure), None);
         };
-        // The cached allocation keeps its affine lease. A separate reservation precedes
-        // the deep canonical-row copy returned to the page projector.
         let bytes = answer
             ._memory
             .as_ref()
             .map_or(0, EmbeddingMemoryReservation::bytes);
         match admitted.runtime().memory_budget().reserve(bytes) {
-            Ok(memory) => SemanticAnswer {
-                result: answer.result.clone(),
-                status: answer.status,
-                _memory: Some(memory),
-            },
-            Err(_) => SemanticAnswer::lexical(local, SemanticSearchReason::ProviderUnavailable),
+            Ok(memory) => (
+                SemanticAnswer {
+                    result: answer.result.clone(),
+                    status: answer.status,
+                    _memory: Some(memory),
+                },
+                Some(self),
+            ),
+            // Cache retention/copy is optional. Transfer the exact owed allocation and
+            // its original affine lease rather than require two simultaneous answers.
+            Err(_) => (self.answer.take().expect("present answer"), None),
         }
     }
 }
+
+#[derive(Default)]
+struct CompletionCache(Mutex<VecDeque<Completed>>);
+impl std::fmt::Debug for CompletionCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompletionCache").finish_non_exhaustive()
+    }
+}
+impl CompletionCache {
+    fn take(&self, text: &str, query: &LocalQuery) -> Option<Completed> {
+        let mut entries = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        let at = entries
+            .iter()
+            .position(|done| done.key.text == text && &done.key.query == query)?;
+        entries.remove(at)
+    }
+    fn insert(&self, completed: Completed, policy: QueryCompletionPolicy) {
+        let mut entries = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        entries.push_back(completed);
+        trim_completed(&mut entries, policy);
+    }
+    fn clear(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clear();
+    }
+    fn trim(&self, policy: QueryCompletionPolicy) {
+        trim_completed(
+            &mut self.0.lock().unwrap_or_else(|poison| poison.into_inner()),
+            policy,
+        );
+    }
+}
+impl backend_compile::EmbeddingMemoryReclaimer for CompletionCache {
+    fn reclaim(&self, shortage: u64) -> bool {
+        let mut dropped = false;
+        let mut released = 0u64;
+        while released < shortage {
+            let oldest = {
+                let Ok(mut entries) = self.0.try_lock() else {
+                    break;
+                };
+                entries.pop_front()
+            };
+            let Some(oldest) = oldest else {
+                break;
+            };
+            released = released.saturating_add(oldest.retained_bytes());
+            // Destruction and credit release run outside the cache lock. The serving
+            // owner cannot wait for a worker to destroy canonical result allocations.
+            drop(oldest);
+            dropped = true;
+        }
+        dropped
+    }
+}
+
 struct Worker {
     selection: Selection,
     completed: mpsc::Receiver<(LocalSemantic, Option<Completed>)>,
     worker: JoinHandle<()>,
-    cached: VecDeque<Completed>,
 }
 enum Execution {
     Ready {
         core: LocalSemantic,
         selection: Option<Selection>,
-        completed: VecDeque<Completed>,
+        owed_failure: Option<Completed>,
     },
     Working(Worker),
     Closed,
@@ -132,6 +197,7 @@ pub struct LocalSemanticOwner {
     admitted: Arc<AdmittedLocalQueryRecipe>,
     execution: Execution,
     completion_policy: QueryCompletionPolicy,
+    cache: Arc<CompletionCache>,
 }
 impl LocalSemanticOwner {
     pub(super) fn open(
@@ -139,6 +205,12 @@ impl LocalSemanticOwner {
         path: &Path,
     ) -> Result<Self, LocalSemanticError> {
         let core = LocalSemantic::open(provision, path)?;
+        let cache = Arc::new(CompletionCache::default());
+        let reclaimer: Arc<dyn backend_compile::EmbeddingMemoryReclaimer> = cache.clone();
+        core.admitted()
+            .runtime()
+            .memory_budget()
+            .register_optional(&reclaimer)?;
         Ok(Self {
             admitted: core.admitted(),
             completion_policy: QueryCompletionPolicy {
@@ -147,8 +219,9 @@ impl LocalSemanticOwner {
             execution: Execution::Ready {
                 core,
                 selection: None,
-                completed: VecDeque::new(),
+                owed_failure: None,
             },
+            cache,
         })
     }
     pub(super) fn recipe(&self) -> backend_extension_qdrant::EmbeddingRecipe {
@@ -164,12 +237,7 @@ impl LocalSemanticOwner {
                 .maximum_bytes
                 .min(self.admitted.runtime().memory_budget().capacity()),
         };
-        let cached = match &mut self.execution {
-            Execution::Ready { completed, .. } => completed,
-            Execution::Working(worker) => &mut worker.cached,
-            Execution::Closed => return,
-        };
-        trim_completed(cached, self.completion_policy);
+        self.cache.trim(self.completion_policy);
     }
     pub(super) fn admit_reply(
         &self,
@@ -231,7 +299,7 @@ impl LocalSemanticOwner {
             Execution::Ready {
                 core,
                 selection,
-                completed,
+                owed_failure,
             } => {
                 if selection
                     .as_ref()
@@ -242,7 +310,8 @@ impl LocalSemanticOwner {
                     }
                     core.refuse(cancelled_failure());
                     *selection = None;
-                    completed.clear();
+                    *owed_failure = None;
+                    self.cache.clear();
                 }
                 return;
             }
@@ -266,24 +335,26 @@ impl LocalSemanticOwner {
                 (core, None)
             }
         };
-        let mut completed = worker.cached;
-        if joined.is_err() {
-            completed.clear();
+        if joined.is_err() || !core.has_projection() {
+            self.cache.clear();
         }
-        if let Some(completion) = completion {
-            completed.push_back(completion);
-            trim_completed(&mut completed, self.completion_policy);
-        }
+        let owed_failure = match completion {
+            Some(completion) if completion.answer.is_some() => {
+                self.cache.insert(completion, self.completion_policy);
+                None
+            }
+            failure => failure,
+        };
         // Recheck after joining, including cancellation after computation but before drain.
         let current = worker.selection.current(workspace, view);
         if !current {
             core.refuse(cancelled_failure());
-            completed.clear();
+            self.cache.clear();
         }
         self.execution = Execution::Ready {
             core,
             selection: current.then_some(worker.selection),
-            completed,
+            owed_failure: if current { owed_failure } else { None },
         };
     }
 
@@ -300,6 +371,7 @@ impl LocalSemanticOwner {
             if let Execution::Ready { core, .. } = &mut self.execution {
                 core.refuse(cancelled_failure());
             }
+            self.cache.clear();
             return SemanticAnswer::with_status(
                 local,
                 if matches!(self.execution, Execution::Working(_) | Execution::Closed) {
@@ -316,20 +388,16 @@ impl LocalSemanticOwner {
         match &mut self.execution {
             Execution::Working(worker) => {
                 if worker.selection.matches(coordinator, coverage, &cancelled) {
-                    if let Some(at) = worker
-                        .cached
-                        .iter()
-                        .position(|done| done.key.text == text && done.key.query == local.query)
-                    {
-                        if let Some(done) = worker.cached.remove(at) {
-                            let answer = done.answer(local, &self.admitted);
-                            worker.cached.push_back(done);
-                            return answer;
+                    if let Some(done) = self.cache.take(text, &local.query) {
+                        let (answer, retained) = done.answer(local, &self.admitted);
+                        if let Some(retained) = retained {
+                            self.cache.insert(retained, self.completion_policy);
                         }
+                        return answer;
                     }
                 } else {
                     worker.selection.cancelled.store(true, Ordering::Release);
-                    worker.cached.clear();
+                    self.cache.clear();
                 }
                 return SemanticAnswer::lexical(local, SemanticSearchReason::NoActiveProjection);
             }
@@ -338,26 +406,33 @@ impl LocalSemanticOwner {
             }
             Execution::Ready {
                 selection,
-                completed,
+                owed_failure,
                 ..
             } => {
                 if selection
                     .as_ref()
                     .is_some_and(|selected| selected.matches(coordinator, coverage, &cancelled))
                 {
-                    if let Some(at) = completed
-                        .iter()
-                        .position(|done| done.key.text == text && done.key.query == local.query)
+                    if owed_failure
+                        .as_ref()
+                        .is_some_and(|done| done.key.text == text && done.key.query == local.query)
                     {
-                        if let Some(done) = completed.remove(at) {
-                            let answer = done.answer(local, &self.admitted);
-                            completed.push_back(done);
-                            return answer;
+                        let done = owed_failure.take().expect("matched owed failure");
+                        return done.answer(local, &self.admitted).0;
+                    }
+                    if let Some(done) = self.cache.take(text, &local.query) {
+                        let (answer, retained) = done.answer(local, &self.admitted);
+                        if let Some(retained) = retained {
+                            self.cache.insert(retained, self.completion_policy);
                         }
+                        return answer;
                     }
                 } else {
-                    completed.clear();
+                    self.cache.clear();
                 }
+                // A direct caller changing its query abandons the prior failed receipt;
+                // adapter waiters are serialized and deliver that receipt before advancing.
+                *owed_failure = None;
             }
         }
         let maximum = self.admitted.runtime().maximum_text_bytes();
@@ -377,22 +452,7 @@ impl LocalSemanticOwner {
                 .ok_or(LocalSemanticError::CorpusEnvelope)?;
             let budget = self.admitted.runtime().memory_budget().clone();
             let bytes = u64::try_from(bytes).map_err(|_| LocalSemanticError::CorpusEnvelope)?;
-            let memory = loop {
-                match budget.reserve(bytes) {
-                    Ok(memory) => break memory,
-                    Err(error) => {
-                        // Cached results are an optimization. Evict oldest completions before
-                        // refusing a new query against the configured shared credit envelope.
-                        let evicted = match &mut self.execution {
-                            Execution::Ready { completed, .. } => completed.pop_front().is_some(),
-                            _ => false,
-                        };
-                        if !evicted {
-                            return Err(LocalSemanticError::Memory(error));
-                        }
-                    }
-                }
-            };
+            let memory = budget.reserve(bytes).map_err(LocalSemanticError::Memory)?;
             let deadline = self
                 .admitted
                 .runtime()
@@ -405,7 +465,10 @@ impl LocalSemanticOwner {
             Err(error) => {
                 let reason = error.reason();
                 if let Execution::Ready { core, .. } = &mut self.execution {
-                    core.refuse(error);
+                    core.record_query_failure(error);
+                    if !core.has_projection() {
+                        self.cache.clear();
+                    }
                 }
                 return SemanticAnswer::lexical(local, reason);
             }
@@ -418,7 +481,10 @@ impl LocalSemanticOwner {
             Err(error) => {
                 let reason = error.reason();
                 if let Execution::Ready { core, .. } = &mut self.execution {
-                    core.refuse(error);
+                    core.record_query_failure(error);
+                    if !core.has_projection() {
+                        self.cache.clear();
+                    }
                 }
                 return SemanticAnswer::lexical(local, reason);
             }
@@ -433,11 +499,8 @@ impl LocalSemanticOwner {
             coverage,
             cancelled: Arc::clone(&cancelled),
         };
-        let Execution::Ready {
-            mut core,
-            completed: cached,
-            ..
-        } = std::mem::replace(&mut self.execution, Execution::Closed)
+        let Execution::Ready { mut core, .. } =
+            std::mem::replace(&mut self.execution, Execution::Closed)
         else {
             return SemanticAnswer::lexical(local, SemanticSearchReason::NoActiveProjection);
         };
@@ -467,7 +530,7 @@ impl LocalSemanticOwner {
                     }),
                     Err(error) => {
                         let failure = error.reason();
-                        core.refuse(error);
+                        core.record_query_failure(error);
                         Some(Completed {
                             key: worker_key,
                             answer: None,
@@ -483,10 +546,10 @@ impl LocalSemanticOwner {
                     selection,
                     completed,
                     worker,
-                    cached,
                 })
             }
             Err(error) => {
+                self.cache.clear();
                 let mut core = LocalSemantic::from_admitted(Arc::clone(&self.admitted));
                 core.refuse(LocalSemanticError::Worker(LocalSemanticWorkerError::Spawn(
                     error,
@@ -494,7 +557,7 @@ impl LocalSemanticOwner {
                 self.execution = Execution::Ready {
                     core,
                     selection: None,
-                    completed: cached,
+                    owed_failure: None,
                 };
             }
         }
@@ -519,6 +582,15 @@ impl LocalSemanticOwner {
                 },
             ),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn cached_completions(&self) -> usize {
+        self.cache
+            .0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .len()
     }
 
     #[cfg(test)]
@@ -550,6 +622,7 @@ impl LocalSemanticOwner {
             drop(worker.completed);
             let _ = worker.worker.join(); // Owned shutdown retirement; no active serving turn.
         }
+        self.cache.clear();
     }
 }
 impl Drop for LocalSemanticOwner {

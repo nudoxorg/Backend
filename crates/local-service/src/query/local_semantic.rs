@@ -303,6 +303,32 @@ impl LocalSemantic {
         self.failure = Some(error);
     }
 
+    /// Query-only resource/producer failures do not invalidate a complete selected relation.
+    /// Cancellation/stale selection and structural failures still retire it.
+    pub(super) fn record_query_failure(&mut self, error: LocalSemanticError) {
+        let keep = matches!(
+            &error,
+            LocalSemanticError::Memory(_)
+                | LocalSemanticError::Allocation(_)
+                | LocalSemanticError::Inference(EmbeddingExecutableError::Memory(_))
+                | LocalSemanticError::Inference(EmbeddingExecutableError::TextLimit { .. })
+                | LocalSemanticError::Inference(EmbeddingExecutableError::Terminal(_))
+                | LocalSemanticError::Inference(
+                    EmbeddingExecutableError::InferenceAdmissionTimeout
+                )
+                | LocalSemanticError::Inference(EmbeddingExecutableError::Process(
+                    backend_compile::ProcessError::Deadline
+                        | backend_compile::ProcessError::SpawnFailure
+                        | backend_compile::ProcessError::Io
+                        | backend_compile::ProcessError::SupervisorCapacity
+                ))
+        );
+        if !keep {
+            self.active = None;
+        }
+        self.failure = Some(error);
+    }
+
     /// Called only by the bounded owner worker. The output retains its query allocation lease.
     pub(super) fn execute_query(
         &mut self,
@@ -347,7 +373,7 @@ impl LocalSemantic {
         self.failure.as_ref()
     }
     pub(super) fn has_projection(&self) -> bool {
-        self.active.is_some() && self.failure.is_none()
+        self.active.is_some()
     }
 
     pub(super) fn inventory_status(&self) -> backend_engine::CapabilityStatus {
@@ -360,7 +386,7 @@ impl LocalSemantic {
         let family = backend_engine::CapabilityFamily::Embedding {
             recipe: Some(recipe.identity()),
         };
-        if self.failure.is_some() {
+        if self.failure.is_some() && self.active.is_none() {
             return backend_engine::CapabilityStatus::unavailable(
                 id,
                 family,
