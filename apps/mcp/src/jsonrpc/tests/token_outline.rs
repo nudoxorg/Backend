@@ -190,3 +190,33 @@ fn whole_envelope_counts_unicode_punctuation_id_and_escaping_and_preserves_small
         );
     }
 }
+
+#[test]
+fn original_byte_legal_dense_payload_is_honestly_refused_without_losing_request_identity() {
+    let id = format!("request-{}", "אב🙂".repeat(2_000));
+    let structured = json!({"answer":"records", "rows":"s".repeat(31_000),
+        "more":true, "nextCursor":"opaque-owner-cursor-page-two"});
+    let reply = success(
+        json!(id.clone()),
+        tool_result(&"λ אב🙂\n".repeat(6_000), structured, false),
+    );
+    let minimum = fit_tool_preview(
+        attach_wire_budget(reply.clone(), ResponseTransport::StdioLine),
+        ResponseTransport::StdioLine,
+    );
+    assert!(
+        transport_serialized_bytes(&minimum, ResponseTransport::StdioLine)
+            <= MCP_RESULT_BUDGET_BYTES
+    );
+    assert!(wire_tokens(&minimum).expect("exact density") > MCP_CL100K_TOKEN_LIMIT);
+    let bounded = bound_rpc_reply(reply, ResponseTransport::StdioLine);
+    assert!(bounded.get("error").is_some());
+    assert_eq!(bounded["id"], id);
+    assert!(wire_fits(&bounded, ResponseTransport::StdioLine));
+    assert!(
+        bounded["error"]["data"]["detail"]
+            .as_str()
+            .expect("bounded cause")
+            .contains(CL100K_POLICY)
+    );
+}

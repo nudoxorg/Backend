@@ -5346,7 +5346,9 @@ fn wire_budget_metadata_counts_the_complete_escaped_jsonrpc_line() {
     let large_id = format!("request-{}", "אב🙂".repeat(2_000));
     let large_structured = json!({
         "answer":"records",
-        "rows":"s".repeat(31_000),
+        // Same byte pressure, but legal under the named token bound too.
+        // The original dense `s` payload remains a refusal control below.
+        "rows":" ".repeat(31_000),
         "more":true,
         "nextCursor":"opaque-owner-cursor-page-two"
     });
