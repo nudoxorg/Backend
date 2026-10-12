@@ -46,8 +46,10 @@ use std::io::{self, BufRead, Write};
 mod codec;
 mod cursor_authority;
 mod index_progress;
+mod wire_admission;
 pub(super) use codec::{ResponseTransport, encode_response, finalize_response};
 pub(super) use cursor_authority::CursorAuthority;
+use wire_admission::MeasuredEnvelope;
 mod reconnect;
 pub(crate) mod requests;
 mod resources;
@@ -967,26 +969,38 @@ impl<P: Product> Server<P> {
             // Select against a complete provisional envelope; final encoding
             // independently measures the actual caller ID and transport. A
             // large ID can still receive an honest final admission fault.
-            let candidate = attach_wire_budget(
-                codec::success(Value::Null, result.clone()),
+            let candidate = MeasuredEnvelope::new(
+                attach_wire_budget(
+                    codec::success(Value::Null, result),
+                    ResponseTransport::StdioLine,
+                ),
                 ResponseTransport::StdioLine,
             );
-            let fitted = if wire_fits(&candidate, ResponseTransport::StdioLine) {
+            let fitted = if candidate.fits() {
                 candidate
             } else {
-                fit_tool_preview(candidate, ResponseTransport::StdioLine)
+                fit_measured_preview(candidate, ResponseTransport::StdioLine)
             };
-            let admitted = wire_fits(&fitted, ResponseTransport::StdioLine);
-            if admitted
-                && !result
-                    .get("isError")
+            if fitted.fits()
+                && !fitted
+                    .value()
+                    .get("result")
+                    .and_then(|result| result.get("isError"))
                     .and_then(Value::as_bool)
                     .unwrap_or(false)
             {
-                return Ok(fitted["result"].clone());
+                let mut frame = fitted.into_value();
+                return Ok(frame
+                    .as_object_mut()
+                    .and_then(|frame| frame.remove("result"))
+                    .unwrap_or(Value::Null));
             }
             if continuation.is_some() || effective == 1 {
-                return Ok(result);
+                let mut frame = fitted.into_value();
+                return Ok(frame
+                    .as_object_mut()
+                    .and_then(|frame| frame.remove("result"))
+                    .unwrap_or(Value::Null));
             }
             effective = effective.div_ceil(2);
             page_arguments.insert("limit".to_owned(), json!(effective));
@@ -1770,46 +1784,47 @@ fn bound_route_value(value: Value) -> Result<Value, RpcError> {
 /// Named ordinary-token contract; other encodings may have different counts.
 const MCP_CL100K_TOKEN_LIMIT: usize = 12_000;
 
+#[cfg(test)]
 fn wire_tokens(value: &Value) -> Result<usize, backend_present::Cl100kError> {
-    // Count the actual escaped JSON envelope, including text, typed data, ID,
-    // errors and metadata. Transport newline is framing, not agent content.
-    let text =
-        serde_json::to_string(value).map_err(|_| backend_present::Cl100kError::InvalidEncoding)?;
-    cl100k_tokens(&text)
+    MeasuredEnvelope::new(value.clone(), ResponseTransport::HttpBody).tokens()
 }
-
+#[cfg(test)]
 fn wire_fits(value: &Value, transport: ResponseTransport) -> bool {
-    transport_serialized_bytes(value, transport) <= transport.limit_bytes()
-        && wire_tokens(value).is_ok_and(|tokens| tokens <= MCP_CL100K_TOKEN_LIMIT)
+    MeasuredEnvelope::new(value.clone(), transport).fits()
 }
 
+#[cfg(any(test, feature = "token-budget"))]
 fn bound_rpc_reply(value: Value, transport: ResponseTransport) -> Value {
+    bound_rpc_envelope(value, transport).into_value()
+}
+
+fn bound_rpc_envelope(value: Value, transport: ResponseTransport) -> MeasuredEnvelope {
     let budget = transport.limit_bytes();
-    let value = attach_wire_budget(value, transport);
-    let value = if !wire_fits(&value, transport) {
-        fit_tool_preview(value, transport)
+    let measured = MeasuredEnvelope::new(attach_wire_budget(value, transport), transport);
+    let measured = if measured.fits() {
+        measured
     } else {
-        value
+        fit_measured_preview(measured, transport)
     };
-    let bytes = transport_serialized_bytes(&value, transport);
-    if wire_fits(&value, transport) {
-        return value;
+    if measured.fits() {
+        return measured;
     }
+    let bytes = measured.bytes();
+    let value = measured.value();
     let id = value.get("id").cloned().unwrap_or(Value::Null);
-    // Retain an error's diagnosis when only its caller identity is too large.
-    // HTTP authentication failures enter this same encoding boundary.
     if value.get("error").is_some() {
         let mut uncorrelated = value.clone();
         uncorrelated["id"] = Value::Null;
-        let uncorrelated = attach_wire_budget(uncorrelated, transport);
-        if wire_fits(&uncorrelated, transport) {
+        let uncorrelated =
+            MeasuredEnvelope::new(attach_wire_budget(uncorrelated, transport), transport);
+        if uncorrelated.fits() {
             return uncorrelated;
         }
     }
     let fault = if bytes > budget {
         oversized_fault(BudgetExceeded { bytes, budget })
     } else {
-        let detail = match wire_tokens(&value) {
+        let detail = match measured.tokens() {
             Ok(tokens) => format!(
                 "complete MCP JSON envelope has {tokens} {CL100K_POLICY} tokens, above the {MCP_CL100K_TOKEN_LIMIT} token budget; use the returned paging limit or request a narrower page"
             ),
@@ -1822,30 +1837,32 @@ fn bound_rpc_reply(value: Value, transport: ResponseTransport) -> Value {
             backend_present::Affordance::None,
         )
     };
-    let fallback = attach_wire_budget(
-        error_reply(
-            id.clone(),
-            -32000,
-            "MCP response exceeds the bounded context budget",
-            Some(json!({
-                "kind": fault.slug().as_str(),
-                "detail": bounded_text(&markdown::fault(&fault)),
-                "structuredContent": fault_value(&fault),
-            })),
+    let fallback = MeasuredEnvelope::new(
+        attach_wire_budget(
+            error_reply(
+                id,
+                -32000,
+                "MCP response exceeds the bounded context budget",
+                Some(
+                    json!({"kind":fault.slug().as_str(),"detail":bounded_text(&markdown::fault(&fault)),"structuredContent":fault_value(&fault)}),
+                ),
+            ),
+            transport,
         ),
         transport,
     );
-    if wire_fits(&fallback, transport) {
+    if fallback.fits() {
         fallback
     } else {
-        attach_wire_budget(
-            error_reply(
-                // A request ID is normally a scalar, but preserve the hard cap
-                // even if a caller supplied a very large valid JSON string.
-                Value::Null,
-                -32000,
-                "MCP response exceeds the bounded context budget",
-                None,
+        MeasuredEnvelope::new(
+            attach_wire_budget(
+                error_reply(
+                    Value::Null,
+                    -32000,
+                    "MCP response exceeds the bounded context budget",
+                    None,
+                ),
+                transport,
             ),
             transport,
         )
@@ -1855,8 +1872,16 @@ fn bound_rpc_reply(value: Value, transport: ResponseTransport) -> Value {
 /// Reclaims only duplicate human-readable text when a large request ID makes
 /// the caller-specific JSON-RPC envelope exceed the budget. Structured rows,
 /// terminal state, and owner cursors stay byte-for-byte intact.
-fn fit_tool_preview(mut value: Value, transport: ResponseTransport) -> Value {
-    let Some(current_text) = value
+#[cfg(test)]
+fn fit_tool_preview(value: Value, transport: ResponseTransport) -> Value {
+    fit_measured_preview(MeasuredEnvelope::new(value, transport), transport).into_value()
+}
+fn fit_measured_preview(
+    measured: MeasuredEnvelope,
+    transport: ResponseTransport,
+) -> MeasuredEnvelope {
+    let Some(current_text) = measured
+        .value()
         .get("result")
         .and_then(|result| result.get("content"))
         .and_then(Value::as_array)
@@ -1865,15 +1890,15 @@ fn fit_tool_preview(mut value: Value, transport: ResponseTransport) -> Value {
         .and_then(Value::as_str)
         .map(str::to_owned)
     else {
-        return value;
+        return measured;
     };
     let prefix = current_text
         .strip_suffix(PREVIEW_MARKER)
-        .unwrap_or(&current_text)
-        .to_owned();
+        .unwrap_or(&current_text);
+    let mut value = measured.into_value();
     value["result"]["content"][0]["text"] = Value::String(PREVIEW_MARKER.to_owned());
-    let mut best = attach_wire_budget(value.clone(), transport);
-    if !wire_fits(&best, transport) {
+    let mut best = MeasuredEnvelope::new(attach_wire_budget(value.clone(), transport), transport);
+    if !best.fits() {
         return best;
     }
     let mut lower = 0;
@@ -1881,12 +1906,12 @@ fn fit_tool_preview(mut value: Value, transport: ResponseTransport) -> Value {
     let mut best_end = 0;
     while lower < upper {
         let midpoint = lower + (upper - lower).div_ceil(2);
-        let end = readable_prefix_end(&prefix, midpoint);
+        let end = readable_prefix_end(prefix, midpoint);
         let mut candidate = value.clone();
         candidate["result"]["content"][0]["text"] =
             Value::String(format!("{}{PREVIEW_MARKER}", &prefix[..end]));
-        candidate = attach_wire_budget(candidate, transport);
-        if wire_fits(&candidate, transport) {
+        let candidate = MeasuredEnvelope::new(attach_wire_budget(candidate, transport), transport);
+        if candidate.fits() {
             lower = midpoint;
             if end >= best_end {
                 best_end = end;

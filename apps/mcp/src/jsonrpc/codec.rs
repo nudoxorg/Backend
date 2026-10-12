@@ -305,17 +305,8 @@ pub(crate) fn finalize_response(
     value: Value,
     transport: ResponseTransport,
 ) -> io::Result<EncodedResponse> {
-    let value = super::bound_rpc_reply(value, transport);
-    let is_result = value.get("result").is_some();
-    let mut body = BoundedBuffer::new(transport.limit_bytes());
-    serde_json::to_writer(&mut body, &value).map_err(io::Error::other)?;
-    if transport == ResponseTransport::StdioLine {
-        body.write_all(b"\n")?;
-    }
-    Ok(EncodedResponse {
-        bytes: body.bytes,
-        is_result,
-    })
+    let (bytes, is_result) = super::bound_rpc_envelope(value, transport).into_frame()?;
+    Ok(EncodedResponse { bytes, is_result })
 }
 
 pub(crate) fn encode_response(value: Value, transport: ResponseTransport) -> io::Result<Vec<u8>> {
@@ -355,11 +346,13 @@ impl Write for ResponseByteCounter {
     }
 }
 
+#[cfg(test)]
 struct BoundedBuffer {
     bytes: Vec<u8>,
     limit: usize,
 }
 
+#[cfg(test)]
 impl BoundedBuffer {
     fn new(limit: usize) -> Self {
         Self {
@@ -369,6 +362,7 @@ impl BoundedBuffer {
     }
 }
 
+#[cfg(test)]
 impl Write for BoundedBuffer {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if self
