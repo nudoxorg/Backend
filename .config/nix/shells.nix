@@ -266,8 +266,8 @@ let
   # T1 smoke tier (`.config/ci/t1.nu`): build the three product surfaces for
   # the host, then start each one headless. Lean on purpose: no corpus or
   # native-compiler authorities, so entering it costs seconds, not the
-  # minutes the `compiler` closure does. Incremental stays on: T1 reuses one
-  # persistent target dir, which is the whole point of its warm build.
+  # minutes the `compiler` closure does. T1 reuses a persistent build graph
+  # and target dir; the managed wrapper selects compiler-cache defaults.
   smoke = pkgs.mkShell (
     tools.linuxGraphicsEnvironment
     // {

@@ -9,10 +9,11 @@
 # MCP initialize + tools/list on stdio, and the desktop drawing a first frame
 # under Xvfb with Mesa's software Vulkan. Correctness is T2's job.
 #
-# Speed comes from one persistent incremental target dir (CI_T1_CACHE_ROOT,
+# Speed comes from a persistent build graph and target dir (CI_T1_CACHE_ROOT,
 # on the CI disk) plus restored source mtimes, so only changed crates and
 # their dependents rebuild. It has a separate root from the fast-lane cache.
-# The managed Cargo wrapper leases the workspace build slot and target graph.
+# The managed Cargo wrapper leases the workspace build slot and target graph
+# and selects incremental/compiler-cache defaults.
 
 use lib.nu *
 
@@ -54,6 +55,7 @@ def main []: nothing -> nothing {
         if $env.LAST_EXIT_CODE != 0 { error make {msg: "source mtime restoration failed"} }
     }
     if ($cache | is-empty) { $env.CARGO_TARGET_DIR = $target_dir }
+    print $"CI-TIMING lane=t1 step=cache-preparation seconds=(((date now) - $started) / 1sec | math round)"
     let bin_dir = $target_dir | path join "debug"
     let cargo = $env.BACKEND_PARALLEL_CARGO? | default "cargo"
 
