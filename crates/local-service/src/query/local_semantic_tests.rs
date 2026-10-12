@@ -855,7 +855,7 @@ fn local_semantic_protocol_fixture_binds_actual_interpreter_and_script_dependenc
     let executable = backend_compile::ExecutableIdentity::from_path(&interpreter)?;
     let dependency = backend_compile::ExecutableIdentity::from_path(&script)?;
     let closure = backend_compile::ToolchainArtifact::new(executable, vec![dependency.digest()]);
-    let config = fixture._directory.path().join("embedding.config");
+    let config = fixture.descriptor.with_file_name("embedding.config");
     let inspected = backend_engine::application::inspect_embedding_runtime(&config)?
         .ok_or("installed protocol fixture configuration is missing")?;
     assert_eq!(inspected.spec.executable(), closure.identity().to_bytes());
@@ -1054,6 +1054,7 @@ fn wait_for_fixture_marker(path: &std::path::Path) -> Result<(), Box<dyn std::er
 #[test]
 fn local_semantic_missing_setup_preserves_cause_and_explicit_remote_choice() -> TestResult {
     let directory = tempfile::tempdir()?;
+    crate::test_support::make_private(directory.path())?;
     let provision = EmbeddingRuntimeProvision::open(directory.path().join("embedding.config"))?;
     let path = directory.path().join("embedding-query.config");
     let missing = crate::builtin::query::RemoteSemantic::select_owner(
