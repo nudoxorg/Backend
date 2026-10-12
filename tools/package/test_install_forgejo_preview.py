@@ -16,6 +16,7 @@ import urllib.request
 
 ROOT = Path(__file__).parent
 PUBLISHED_MAC_LIBRARY_FIXTURE = ROOT / "fixtures/install-macos-arm64-r2-pinned.py"
+PUBLISHED_LINUX_LIBRARY_FIXTURE = ROOT / "fixtures/install-linux-x64-r2-pinned.py"
 PUBLISHED_BOOTSTRAP_FIXTURE = ROOT / "fixtures/install-forgejo-bootstrap-r2-pinned.py"
 spec = importlib.util.spec_from_file_location("mirror", PUBLISHED_BOOTSTRAP_FIXTURE)
 boot = importlib.util.module_from_spec(spec)
@@ -44,6 +45,14 @@ def published_bootstrap_bytes():
     expected = channel()["bootstrap"]
     if (hashlib.sha256(body).hexdigest(), len(body)) != (expected["sha256"], expected["bytes"]):
         raise AssertionError("historical bootstrap source does not match the immutable R2 pin")
+    return body
+
+
+def published_linux_library_bytes():
+    """Retain the exact R2 bytes independently of the changing template."""
+    body = PUBLISHED_LINUX_LIBRARY_FIXTURE.read_bytes()
+    if (hashlib.sha256(body).hexdigest(), len(body)) != boot.LIBRARIES["linux-x64"][:2]:
+        raise AssertionError("historical Linux source does not match the immutable R2 pin")
     return body
 
 
@@ -160,9 +169,7 @@ class Tests(unittest.TestCase):
         boot.admit_libraries(channel())
         mac = published_mac_library_bytes()
         candidate_mac = (ROOT / "install_macos_preview.py").read_bytes()
-        linux = (ROOT / "install_linux.py").read_text().replace('PINNED_RELEASE_TAG = ""',
-                'PINNED_RELEASE_TAG = "checkpoint-20261008-c0016d4f4f-linux-x64"').replace('PINNED_MANIFEST_SHA256 = ""',
-                'PINNED_MANIFEST_SHA256 = "384ab3802efd256752f39fd8e3d79ace7af9e3ccf72797c71577327cb2535b24"').encode()
+        linux = published_linux_library_bytes()
         self.assertEqual((hashlib.sha256(mac).hexdigest(), len(mac)), boot.LIBRARIES["macos-arm64"][:2])
         self.assertNotEqual((hashlib.sha256(candidate_mac).hexdigest(), len(candidate_mac)),
                             boot.LIBRARIES["macos-arm64"][:2])
@@ -421,9 +428,7 @@ class Tests(unittest.TestCase):
     def test_linux_original_pin_refuses_changed_mirror_manifest_before_install(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            body = (ROOT / "install_linux.py").read_text().replace('PINNED_RELEASE_TAG = ""',
-                'PINNED_RELEASE_TAG = "checkpoint-20261008-c0016d4f4f-linux-x64"').replace('PINNED_MANIFEST_SHA256 = ""',
-                'PINNED_MANIFEST_SHA256 = "384ab3802efd256752f39fd8e3d79ace7af9e3ccf72797c71577327cb2535b24"')
+            body = published_linux_library_bytes().decode()
             library = root / "platform.py"; library.write_text(body)
             manifest = root / "manifest.json"; manifest.write_bytes(b"changed")
             entry = channel()["platforms"]["linux-x64"]
@@ -434,9 +439,7 @@ class Tests(unittest.TestCase):
     def test_original_linux_manifest_parses_without_rewriting_provenance(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            body = (ROOT / "install_linux.py").read_text().replace('PINNED_RELEASE_TAG = ""',
-                'PINNED_RELEASE_TAG = "checkpoint-20261008-c0016d4f4f-linux-x64"').replace('PINNED_MANIFEST_SHA256 = ""',
-                'PINNED_MANIFEST_SHA256 = "384ab3802efd256752f39fd8e3d79ace7af9e3ccf72797c71577327cb2535b24"')
+            body = published_linux_library_bytes().decode()
             library = root / "platform.py"; library.write_text(body)
             module = boot.load_library(library, "linux-x64")
             raw = (ROOT / "fixtures/diagnostic-c001-release-manifest.json").read_bytes()

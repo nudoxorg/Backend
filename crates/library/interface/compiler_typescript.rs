@@ -431,7 +431,7 @@ impl TypeScriptAuthorityFailureKind {
                 "TypeScript project uses an unsupported Yarn Plug and Play layout"
             }
             Self::HostNodeUnavailable => {
-                "TypeScript project has a compiler installation but no admitted Node executable"
+                "TypeScript project has no admitted Node executable. Install Node.js or configure NUDOX_TYPESCRIPT_NODE, then restart locald"
             }
             Self::HostNodeProbe => "TypeScript admitted Node executable failed its version probe",
             Self::HostNodePath => "TypeScript admitted Node executable path could not be resolved",

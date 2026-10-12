@@ -45,6 +45,88 @@ fn compiler_fault(failure: &PackageCompilerFailure) -> Fault {
 }
 
 #[test]
+fn typescript_missing_node_has_host_guidance_without_a_false_tsc_requirement() {
+    use backend_library::interface::{
+        AuthorityDiagnosticClass, AuthorityPhase, CompilerDiagnostic,
+        TypeScriptAuthorityFailureKind as T,
+    };
+    for kind in [T::HostNodeUnavailable, T::HostNodeProbe, T::HostNodePath] {
+        let private = b"private /home/user/node-path native stderr";
+        let failure = PackageCompilerFailure::from_package_terminal(
+            "src/main.ts",
+            &CompilerTerminal::AuthorityAdmission {
+                source: source(),
+                language: Language::TypeScript,
+                stage: Stage::LowerIr,
+                phase: AuthorityPhase::Resolve,
+                class: AuthorityDiagnosticClass::Authority,
+                diagnostic: CompilerDiagnostic::from_native(private, private.len(), false)
+                    .map(|value| value.with_typescript_failure(kind)),
+            },
+        )
+        .expect("typed source terminal")
+        .expect("host refusal projection");
+        let fault = compiler_fault(&failure);
+        assert_eq!(fault.slug(), FaultSlug::CompilerRefused);
+        assert_eq!(fault.compiler_failure(), Some(&failure));
+        assert_eq!(fault.affordance(), &Affordance::None);
+        let dto = FaultDto::new(&fault);
+        assert_eq!(dto.compiler_tool_requirement, None);
+        assert_eq!(dto.compiler_failure, Some(failure.clone()));
+        for rendered in [text::fault(&fault, Theme::plain()), markdown::fault(&fault)] {
+            assert!(rendered.contains(kind.kind_tag()));
+            assert!(!rendered.contains("/home/user"));
+            assert!(!rendered.contains("NUDOX_TSC"));
+            assert!(!rendered.contains("RAW SOURCE DIAGNOSTIC"));
+            assert_eq!(
+                rendered.contains("Install Node.js"),
+                kind == T::HostNodeUnavailable
+            );
+            assert_eq!(
+                rendered.contains("NUDOX_TYPESCRIPT_NODE"),
+                kind == T::HostNodeUnavailable
+            );
+            assert_eq!(
+                rendered.contains("restart locald"),
+                kind == T::HostNodeUnavailable
+            );
+        }
+        for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+            let encoded = encode_serializable(
+                "fault",
+                detail,
+                None,
+                dto.clone(),
+                DEFAULT_RESPONSE_BUDGET_BYTES,
+            )
+            .expect("bounded shared fault DTO");
+            assert!(encoded.bytes.len() <= DEFAULT_RESPONSE_BUDGET_BYTES);
+            let value: serde_json::Value =
+                serde_json::from_slice(&encoded.bytes).expect("actual JSON");
+            assert_eq!(
+                value["compiler_failure"],
+                serde_json::to_value(&failure).expect("typed failure")
+            );
+            assert_eq!(value["detail"], fault.cause().sentence());
+            assert_eq!(
+                value["compiler_failure"]["recipe_identity"],
+                serde_json::Value::Null
+            );
+            assert_eq!(
+                value["detail"]
+                    .as_str()
+                    .expect("diagnostic")
+                    .contains("NUDOX_TYPESCRIPT_NODE"),
+                kind == T::HostNodeUnavailable
+            );
+            assert!(value.get("compiler_tool_requirement").is_none());
+            assert!(value.get("shell").is_none());
+            assert!(value.get("call").is_none());
+        }
+    }
+}
+
+#[test]
 fn go_dependency_refusals_keep_exact_cli_mcp_facts_and_safe_details() {
     use backend_library::interface::{AuthorityDiagnosticClass, AuthorityPhase, CompilerCause,
         CompilerDiagnostic, GoAuthorityFailureKind as G};

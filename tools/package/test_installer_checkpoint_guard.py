@@ -23,6 +23,24 @@ def marker(platform, date="20261009", source="a" * 40):
 
 
 class GuardTests(unittest.TestCase):
+    def test_same_day_selected_revision_updates_without_lexical_hash_ordering(self):
+        for module in (mac, linux):
+            with self.subTest(platform=module.PLATFORM), tempfile.TemporaryDirectory() as temporary:
+                active = Path(temporary).resolve()
+                installed = marker(module.PLATFORM, source="e" * 40)
+                path = active / ".installed-release.json"
+                path.write_text(json.dumps(installed))
+                incoming = marker(module.PLATFORM, source="2" * 40)
+                module.check_checkpoint_update(active, incoming)
+                self.assertEqual(json.loads(path.read_text()), installed)
+                # Same day never relaxes exact tag/content admission, even with
+                # the explicit older-checkpoint override.
+                for override in (False, True):
+                    with self.assertRaisesRegex(module.InstallError, "different bytes"):
+                        module.check_checkpoint_update(active, {**installed, "sha256": "d" * 64}, override)
+                with self.assertRaisesRegex(module.InstallError, "older"):
+                    module.check_checkpoint_update(active, marker(module.PLATFORM, "20261008", "2" * 40))
+
     def test_existing_shared_install_parents_are_rejected_without_chmod(self):
         for module in (mac, linux):
             for relative in ("", "lib", "lib/nudox"):

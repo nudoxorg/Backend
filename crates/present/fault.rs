@@ -913,54 +913,50 @@ impl Fault {
     /// Lowers one shared-client transport or admission failure into a fault.
     #[must_use]
     pub fn from_client_error(error: &ClientError, operand: Operand) -> Self {
-        match error {
-            ClientError::CommandFailed(failure) => Self::from_command_failure(failure, operand),
-            ClientError::Protocol(_) => Self::from_simple_client_error(error, operand),
-            ClientError::BasisMismatch { expected, observed } => Self::new(
-                FaultSlug::WrongBasis,
-                Operand::Basis {
-                    expected: KeyTag::from_key(expected.as_bytes()),
-                    observed: KeyTag::from_key(observed.as_bytes()),
-                },
-                Cause::new(
-                    CauseSlug::Moved,
-                    "the reply is based on a different materialized revision",
-                ),
-                Affordance::Retry,
-            ),
-            ClientError::RequestMismatch { expected, observed } => Self::new(
-                FaultSlug::RequestMismatch,
-                Operand::Text(format!("request {observed} answered request {expected}")),
-                Cause::new(
-                    CauseSlug::Unproven,
-                    "the daemon answered a request this session did not send",
-                ),
-                Affordance::Retry,
-            ),
-            ClientError::StaleCursor => Self::new(
-                FaultSlug::CursorMismatch,
-                operand,
-                Cause::new(
-                    CauseSlug::Moved,
-                    "the continuation belongs to an older immutable revision; restart the query",
-                ),
-                Affordance::Retry,
-            ),
-            ClientError::StaleSelection => Self::new(
-                FaultSlug::WrongBasis,
-                operand,
-                Cause::new(
-                    CauseSlug::Moved,
-                    "the selected semantic generation changed; restart hydration against the current selection",
-                ),
-                Affordance::Retry,
-            ),
-            other => Self::from_simple_client_error(other, operand),
-        }
-    }
-
-    fn from_simple_client_error(error: &ClientError, operand: Operand) -> Self {
         let (slug, cause, sentence, affordance) = match error {
+            ClientError::CommandFailed(failure) => {
+                return Self::from_command_failure(failure, operand);
+            }
+            ClientError::BasisMismatch { expected, observed } => {
+                return Self::new(
+                    FaultSlug::WrongBasis,
+                    Operand::Basis {
+                        expected: KeyTag::from_key(expected.as_bytes()),
+                        observed: KeyTag::from_key(observed.as_bytes()),
+                    },
+                    Cause::new(
+                        CauseSlug::Moved,
+                        "the reply is based on a different materialized revision",
+                    ),
+                    Affordance::Retry,
+                );
+            }
+            ClientError::RequestMismatch { expected, observed } => {
+                return Self::new(
+                    FaultSlug::RequestMismatch,
+                    Operand::Text(format!("request {observed} answered request {expected}")),
+                    Cause::new(
+                        CauseSlug::Unproven,
+                        "the daemon answered a request this session did not send",
+                    ),
+                    Affordance::Retry,
+                );
+            }
+            ClientError::StaleRemoteRoot { expected, observed } => {
+                return Self::new(
+                    FaultSlug::WrongBasis,
+                    Operand::Text(format!(
+                        "grant root {} differs from current root {}",
+                        backend_library::encode_id(expected),
+                        backend_library::encode_id(observed),
+                    )),
+                    Cause::new(
+                        CauseSlug::Moved,
+                        "the remote grant names a different selected view root; obtain a grant for the current root before retrying this read",
+                    ),
+                    Affordance::None,
+                );
+            }
             ClientError::Startup(failure) => (
                 FaultSlug::Endpoint,
                 CauseSlug::Unreachable,
@@ -1036,7 +1032,31 @@ impl Fault {
                     .to_owned(),
                 Affordance::Retry,
             ),
-            _ => (
+            ClientError::StaleSelection => (
+                FaultSlug::WrongBasis,
+                CauseSlug::Moved,
+                "the selected semantic generation changed; restart hydration against the current selection".to_owned(),
+                Affordance::Retry,
+            ),
+            ClientError::RemoteDeadlineExceeded => (
+                FaultSlug::Endpoint,
+                CauseSlug::Unreachable,
+                "the owner connection or read-only request exceeded its bounded client deadline; check endpoint availability, then retry this read as a new bounded request".to_owned(),
+                Affordance::Retry,
+            ),
+            ClientError::StaleRemoteCapability => (
+                FaultSlug::Endpoint,
+                CauseSlug::Refused,
+                "the remote grant expired or was replaced; obtain a current grant before retrying this read".to_owned(),
+                Affordance::None,
+            ),
+            ClientError::RemoteCapabilityRevoked => (
+                FaultSlug::Endpoint,
+                CauseSlug::Refused,
+                "the owner revoked this remote grant; obtain new authorization before submitting another read".to_owned(),
+                Affordance::None,
+            ),
+            ClientError::CursorMismatch => (
                 FaultSlug::CursorMismatch,
                 CauseSlug::Moved,
                 "the daemon returned a continuation that does not identify its root".to_owned(),

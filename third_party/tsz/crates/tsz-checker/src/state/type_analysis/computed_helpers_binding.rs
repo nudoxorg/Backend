@@ -1324,6 +1324,13 @@ impl<'a> CheckerState<'a> {
         let Some(symbol) = symbol else {
             return false;
         };
+        if self.ctx.project_module_resolution_outcomes.is_some()
+            && symbol.has_any_flags(symbol_flags::ALIAS)
+        {
+            // Captured namespace objects use this same export policy as direct
+            // property reads; the outer wrapper may hide an inner export type.
+            return self.alias_resolves_to_type_only(sym_id);
+        }
         if !symbol.is_type_only {
             return false;
         }

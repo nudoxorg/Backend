@@ -503,14 +503,14 @@ impl<'a> CheckerContext<'a> {
 
     /// Match the owning named alias, including the original imported name.
     /// Its stable declaration supplies the exact ExportDecl request attributes.
-    pub(crate) fn bound_named_reexport_request(
+    pub(crate) fn bound_named_reexport(
         &self,
         importer: usize,
         owner: &str,
         specifier: &str,
         exported_name: &str,
         original_name: &str,
-    ) -> Option<BoundModuleRequest<'_>> {
+    ) -> Option<(tsz_binder::SymbolId, BoundModuleRequest<'_>)> {
         if self.reexport_owner_is_ambiguous(importer, owner)? {
             return None;
         }
@@ -553,7 +553,7 @@ impl<'a> CheckerContext<'a> {
                 return None;
             }
         }
-        Some(request)
+        Some((alias, request))
     }
 
     /// Admit the exact bound edge; table ordering is never source provenance.
@@ -615,7 +615,7 @@ impl<'a> CheckerContext<'a> {
         original_name: &str,
     ) -> Option<usize> {
         if self.project_module_resolution_outcomes.is_some() {
-            let request = self.bound_named_reexport_request(
+            let (_, request) = self.bound_named_reexport(
                 importer,
                 owner,
                 specifier,

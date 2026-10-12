@@ -365,10 +365,15 @@ impl<'a> CheckerState<'a> {
         name: &str,
     ) -> Option<tsz_binder::SymbolId> {
         if let Some(target) = selected.file_target() {
-            let mut visited = rustc_hash::FxHashSet::default();
-            return self
-                .ctx
-                .resolve_export_in_target_file(target, name, &mut visited);
+            // Use the same syntax-owned public member walker as an ambient
+            // owner's selected File edge, including export= member/default
+            // semantics. A raw export-table alias is not a terminal declaration.
+            return self.resolve_owner_edge_file_member(
+                target,
+                name,
+                &mut rustc_hash::FxHashSet::default(),
+                &mut rustc_hash::FxHashSet::default(),
+            );
         }
         selected.external_identity()?;
         let mut visited = rustc_hash::FxHashSet::default();
@@ -616,7 +621,28 @@ impl<'a> CheckerState<'a> {
             .and_then(|rows| rows.get(name))
         {
             let original = original.as_deref().unwrap_or(name);
-            if let Some(target) = self.ctx.resolve_named_reexport_target_from_file(
+            if self.ctx.project_module_resolution_outcomes.is_some() {
+                if let Some((alias, request)) = self.ctx.bound_named_reexport(
+                    owner, owner_key, source, name, original,
+                ) {
+                    match self.ctx.project_module_outcome_for_request(
+                        request.importer, request.specifier, request.mode, request.kind,
+                    ) {
+                        Some(crate::context::ResolvedModuleRequestOutcome::File(_)
+                            | crate::context::ResolvedModuleRequestOutcome::External { .. }
+                            | crate::context::ResolvedModuleRequestOutcome::Unresolved) => {
+                            // The exact source declaration publishes this name.
+                            // Retain its real ALIAS instead of stripping the wrapper:
+                            // the shared alias walker follows this same bound request
+                            // with its cycle guard, and sees every type-only edge.
+                            // An unresolved named alias remains present; a wildcard
+                            // or absent/malformed owner cannot invent the name.
+                            return Some(alias);
+                        }
+                        _ => {}
+                    }
+                }
+            } else if let Some(target) = self.ctx.resolve_named_reexport_target_from_file(
                 owner, owner_key, source, name, original,
             ) && let Some(symbol) =
                 self.resolve_owner_edge_file_member(target, original, visited, ambient_guard)
@@ -721,9 +747,29 @@ impl<'a> CheckerState<'a> {
                 }
                 let original = original.as_deref().unwrap_or(name);
                 let mut edge_visited = rustc_hash::FxHashSet::default();
-                if let Some(target) = self.ctx.resolve_named_reexport_target_from_file(
-                    owner, owner_key, source, name, original,
-                ) && let Some(symbol) = self.resolve_owner_edge_file_member(
+                let target = if self.ctx.project_module_resolution_outcomes.is_some() {
+                    let Some((alias, request)) = self.ctx.bound_named_reexport(
+                        owner, owner_key, source, name, original,
+                    ) else {
+                        continue;
+                    };
+                    // Prove the exact admitted chain through the shared runtime
+                    // validator, retaining every source alias and its type-only
+                    // flag. Its selected resolver supports both File and External
+                    // targets; no specifier-only or file-local fallback is used.
+                    if self.ctx.select_module_request(request).is_some()
+                        && self.runtime_namespace_alias_target(alias).is_some()
+                    {
+                        result.set(name.clone(), alias);
+                    }
+                    continue;
+                } else {
+                    self.ctx.resolve_named_reexport_target_from_file(
+                        owner, owner_key, source, name, original,
+                    )
+                };
+                if let Some(target) = target
+                    && let Some(symbol) = self.resolve_owner_edge_file_member(
                     target,
                     original,
                     &mut edge_visited,
@@ -759,12 +805,6 @@ impl<'a> CheckerState<'a> {
         &self,
         selected: crate::context::SelectedModuleRequest<'_>,
     ) -> Option<tsz_binder::SymbolTable> {
-        if let Some(target) = selected.file_target() {
-            return Some(
-                self.resolve_cross_file_namespace_exports_for_file(target, None)
-                    .unwrap_or_default(),
-            );
-        }
         self.resolve_exports_for_selected_request_with_ambient_guard(
             selected,
             &mut rustc_hash::FxHashSet::default(),

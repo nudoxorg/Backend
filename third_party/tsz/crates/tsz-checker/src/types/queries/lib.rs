@@ -542,6 +542,12 @@ impl<'a> CheckerState<'a> {
         member_id: SymbolId,
         property_name: &str,
     ) -> Option<TypeId> {
+        if self.ctx.project_module_resolution_outcomes.is_some() {
+            // The selected walker already records the actual owner. Do not
+            // overwrite it with the importer or consult unrelated binders.
+            let member = self.runtime_namespace_alias_target(member_id)?;
+            return self.get_validated_member_type(member, property_name);
+        }
         let parent_name = self
             .get_cross_file_symbol(parent_sym_id)
             .or_else(|| self.ctx.binder.get_symbol(parent_sym_id))
@@ -604,36 +610,7 @@ impl<'a> CheckerState<'a> {
             return Some(namespace_type);
         }
 
-        let resolved_member_id = if let Some(member_symbol) = self.get_cross_file_symbol(member_id)
-            && member_symbol.has_any_flags(symbol_flags::ALIAS)
-        {
-            let mut visited_aliases = AliasCycleTracker::new();
-            let resolved = self
-                .resolve_alias_symbol(member_id, &mut visited_aliases)
-                .unwrap_or(member_id);
-
-            // Check if any intermediate alias in the chain is type-only.
-            // This catches transitive type-only through import chains, e.g.:
-            //   b.ts: import A from './a';  (not explicitly type-only)
-            //   a.ts: export type { A as default };  (type-only export specifier)
-            // The export specifier in a.ts has is_type_only = true, so A
-            // should not be resolvable as a value member of b's namespace.
-            let lib_binders = self.get_lib_binders();
-            for alias_sym_id in &visited_aliases {
-                if let Some(alias_sym) = self
-                    .ctx
-                    .binder
-                    .get_symbol_with_libs(alias_sym_id, &lib_binders)
-                    && alias_sym.is_type_only
-                {
-                    return None;
-                }
-            }
-
-            resolved
-        } else {
-            member_id
-        };
+        let resolved_member_id = self.runtime_namespace_alias_target(member_id)?;
 
         self.get_validated_member_type(resolved_member_id, property_name)
             .or_else(|| {
@@ -646,6 +623,37 @@ impl<'a> CheckerState<'a> {
                 self.propagate_cross_file_target(parent_sym_id, alt_member_id);
                 self.get_validated_member_type(alt_member_id, property_name)
             })
+    }
+
+    /// Validate every actual alias wrapper before exposing a namespace value.
+    /// Selected requests never substitute another binder or unresolved alias.
+    pub(crate) fn runtime_namespace_alias_target(&self, member: SymbolId) -> Option<SymbolId> {
+        let lib_binders = self.get_lib_binders();
+        let symbol = self.ctx.binder.get_symbol_with_libs(member, &lib_binders)?;
+        if symbol.is_type_only {
+            return None;
+        }
+        if !symbol.has_any_flags(symbol_flags::ALIAS) {
+            return Some(member);
+        }
+        let mut visited = AliasCycleTracker::new();
+        let resolved = self.resolve_alias_symbol(member, &mut visited);
+        for alias in &visited {
+            if self
+                .ctx
+                .binder
+                .get_symbol_with_libs(alias, &lib_binders)
+                .is_some_and(|symbol| symbol.is_type_only)
+            {
+                return None;
+            }
+        }
+        resolved.or_else(|| {
+            self.ctx
+                .project_module_resolution_outcomes
+                .is_none()
+                .then_some(member)
+        })
     }
 
     fn namespace_has_umd_augmentation_member(
@@ -688,6 +696,11 @@ impl<'a> CheckerState<'a> {
         resolved_member_id: SymbolId,
         property_name: &str,
     ) -> Option<TypeId> {
+        let resolved_member_id = if self.ctx.project_module_resolution_outcomes.is_some() {
+            self.runtime_namespace_alias_target(resolved_member_id)?
+        } else {
+            resolved_member_id
+        };
         if self.symbol_member_is_type_only(resolved_member_id, Some(property_name)) {
             return None;
         }
@@ -1694,6 +1707,59 @@ impl<'a> CheckerState<'a> {
         sym_id: SymbolId,
         property_name: &str,
     ) -> Option<TypeId> {
+        if self.ctx.project_module_resolution_outcomes.is_some()
+            && self
+                .get_cross_file_symbol(sym_id)
+                .or_else(|| self.ctx.binder.get_symbol(sym_id))
+                .is_some_and(|symbol| {
+                    symbol.has_any_flags(symbol_flags::ALIAS)
+                        && symbol.import_module().is_some()
+                        && symbol.import_name().is_none_or(|name| name == "*")
+                })
+        {
+            // The value-property shortcut must use the same selected namespace
+            // as the alias's type builder. Its escaped name/specifier alone is
+            // not authority to borrow another request's exports or file.
+            let request = self.ctx.bound_module_request_for_alias(sym_id)?;
+            let selected = self.ctx.select_module_request(request)?;
+            let exports = self.resolve_exports_for_selected_request(selected)?;
+            let target = selected.file_target();
+            let module_specifier = request.specifier.to_owned();
+            // Preserve Node ESM->CJS namespace-default interop, using the
+            // selected file's source format rather than a specifier-only lookup.
+            if property_name == "default"
+                && self.ctx.compiler_options.module.is_node_module()
+                && self.ctx.file_is_esm == Some(true)
+                && let Some(target) = target
+                && !self.source_file_is_esm(target)
+            {
+                let arena = self.ctx.get_arena_for_file(target as u32);
+                let file_name = &arena.source_files.first()?.file_name;
+                let synthetic = exports.has("export=")
+                    || file_name.ends_with(".cjs")
+                    || file_name.ends_with(".cts")
+                    || self.lookup_file_is_esm(file_name) == Some(false)
+                    || self.resolve_js_export_surface(target).has_commonjs_exports;
+                if synthetic {
+                    let namespace_type = self.get_type_of_symbol(sym_id);
+                    if namespace_type != TypeId::ERROR && namespace_type != TypeId::UNKNOWN {
+                        return Some(namespace_type);
+                    }
+                }
+            }
+            if let Some(member) = exports.get(property_name) {
+                let member_type =
+                    self.resolve_validated_namespace_member(sym_id, member, property_name)?;
+                return Some(self.apply_module_augmentations(
+                    &module_specifier,
+                    property_name,
+                    member_type,
+                ));
+            }
+            return self
+                .module_augmentation_introduces_member(&module_specifier, property_name)
+                .then_some(TypeId::ANY);
+        }
         let (
             sym_flags,
             sym_name,

@@ -1231,6 +1231,9 @@ impl<'a> CheckerState<'a> {
         }
 
         if symbol.has_any_flags(symbol_flags::ALIAS) {
+            if self.ctx.project_module_resolution_outcomes.is_some() {
+                return self.alias_resolves_to_type_only(sym_id);
+            }
             let mut visited = AliasCycleTracker::new();
             if let Some(resolved) = self.resolve_alias_symbol(sym_id, &mut visited) {
                 return self.symbol_member_is_type_only(resolved, None);

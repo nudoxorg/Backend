@@ -56,6 +56,8 @@ mod browse_tests;
 mod budget;
 mod call;
 #[cfg(test)]
+mod client_fault_tests;
+#[cfg(test)]
 mod compiler_fault_tests;
 #[cfg(test)]
 mod readiness_tests;

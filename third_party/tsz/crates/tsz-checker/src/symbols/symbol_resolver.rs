@@ -1557,6 +1557,15 @@ impl<'a> CheckerState<'a> {
             let expected_name = alias_symbol
                 .import_name()
                 .unwrap_or(alias_symbol.escaped_name.as_str());
+            if self.ctx.project_module_resolution_outcomes.is_some() {
+                // The source alias retains the request kind, mode, and lexical
+                // owner. A generic specifier lookup below can choose another
+                // request's File or bypass a refused re-export owner.
+                let request = self.ctx.bound_module_request_for_alias(sym_id)?;
+                let selected = self.ctx.select_module_request(request)?;
+                let target = self.resolve_member_for_selected_request(selected, expected_name)?;
+                return Some(classify_target_resolution(target));
+            }
             let source_file_idx = self
                 .ctx
                 .resolve_symbol_file_index(sym_id)

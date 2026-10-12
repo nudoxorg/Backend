@@ -1098,6 +1098,38 @@ impl<'a> CheckerState<'a> {
         None
     }
 
+    // A syntactically ordinary import is not proof of a runtime binding:
+    // its exact target can contain a transitive export-type wrapper.
+    fn selected_import_binding_has_runtime_value(&self, binding: NodeIndex) -> bool {
+        let Some(alias) = self.resolve_identifier_symbol_without_tracking(binding) else {
+            return false;
+        };
+        if self.alias_resolves_to_type_only(alias) {
+            return false;
+        }
+        let lib_binders = self.get_lib_binders();
+        let Some(symbol) = self.ctx.binder.get_symbol_with_libs(alias, &lib_binders) else {
+            return false;
+        };
+        if symbol.import_module().is_some() && symbol.import_name().is_none_or(|name| name == "*") {
+            // A namespace needs successful request admission, even with no
+            // exported members. A negative bool probe cannot prove admission.
+            return self
+                .ctx
+                .bound_module_request_for_alias(alias)
+                .and_then(|request| self.ctx.select_module_request(request))
+                .is_some();
+        }
+        let Some(target) = self.runtime_namespace_alias_target(alias) else {
+            return false; // unresolved, refused, cyclic or type-only chain
+        };
+        self.ctx
+            .binder
+            .get_symbol_with_libs(target, &lib_binders)
+            .is_some_and(|symbol| symbol.has_any_flags(symbol_flags::VALUE))
+            && !self.export_symbol_has_no_value(target)
+    }
+
     pub(crate) fn source_file_has_value_import_binding_named(
         &self,
         idx: NodeIndex,
@@ -1191,6 +1223,12 @@ impl<'a> CheckerState<'a> {
             if clause.name.is_some()
                 && self.ctx.arena.get_identifier_text(clause.name) == Some(name)
             {
+                if self.ctx.project_module_resolution_outcomes.is_some() {
+                    if self.selected_import_binding_has_runtime_value(clause.name) {
+                        return true;
+                    }
+                    continue;
+                }
                 // Also check cross-file type-only chain for default imports.
                 if let Some(module_specifier) = self.get_import_module_specifier(import_decl) {
                     if self.is_export_type_only_across_binders(&module_specifier, "default")
@@ -1218,6 +1256,12 @@ impl<'a> CheckerState<'a> {
                     if named_imports.name.is_some()
                         && self.ctx.arena.get_identifier_text(named_imports.name) == Some(name)
                     {
+                        if self.ctx.project_module_resolution_outcomes.is_some() {
+                            if self.selected_import_binding_has_runtime_value(named_imports.name) {
+                                return true;
+                            }
+                            continue;
+                        }
                         if let Some(module_specifier) =
                             self.get_import_module_specifier(import_decl)
                         {
@@ -1249,6 +1293,12 @@ impl<'a> CheckerState<'a> {
                             continue;
                         }
                         if self.ctx.arena.get_identifier_text(local_name) == Some(name) {
+                            if self.ctx.project_module_resolution_outcomes.is_some() {
+                                if self.selected_import_binding_has_runtime_value(local_name) {
+                                    return true;
+                                }
+                                continue;
+                            }
                             // Also check whether this import's target is type-only through
                             // the export chain (e.g., `import { A } from './b'` where b.ts
                             // has `export type * from './a'`). If the target export is
