@@ -811,7 +811,10 @@ impl Engine for Fake {
                             .into_boxed_slice(),
                         },
                     )
-                    .with_extent(OutlineExtent::Complete),
+                    .with_extent(OutlineExtent::Complete)
+                    .with_source_basis(
+                        snapshot(vec![module_row(), declaration_row()]).root.basis(),
+                    ),
                 )
             }
             Probe::OutlinePage { .. } => CommandReply::ProjectionPage(ProjectionPage {
