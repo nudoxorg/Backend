@@ -85,6 +85,8 @@ def main []: nothing -> nothing {
     }
     let elapsed = (date now) - $started
     print $"CI-TIMING lane=t1 step=total seconds=($elapsed / 1sec | math round)"
-    let results = if $capacity { [$capacity $built] | append $smoke } else { [$capacity] }
+    let results = if $capacity {
+        [$capacity $built] | append $smoke
+    } else { [$capacity] }
     finish-lane "t1" $results
 }
