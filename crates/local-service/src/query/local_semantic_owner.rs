@@ -186,7 +186,7 @@ enum Execution {
     Ready {
         core: LocalSemantic,
         selection: Option<Selection>,
-        owed_failure: Option<Completed>,
+        owed_completion: Option<Completed>,
     },
     Working(Worker),
     Closed,
@@ -219,7 +219,7 @@ impl LocalSemanticOwner {
             execution: Execution::Ready {
                 core,
                 selection: None,
-                owed_failure: None,
+                owed_completion: None,
             },
             cache,
         })
@@ -299,7 +299,7 @@ impl LocalSemanticOwner {
             Execution::Ready {
                 core,
                 selection,
-                owed_failure,
+                owed_completion,
             } => {
                 if selection
                     .as_ref()
@@ -310,7 +310,7 @@ impl LocalSemanticOwner {
                     }
                     core.refuse(cancelled_failure());
                     *selection = None;
-                    *owed_failure = None;
+                    *owed_completion = None;
                     self.cache.clear();
                 }
                 return;
@@ -338,13 +338,9 @@ impl LocalSemanticOwner {
         if joined.is_err() || !core.has_projection() {
             self.cache.clear();
         }
-        let owed_failure = match completion {
-            Some(completion) if completion.answer.is_some() => {
-                self.cache.insert(completion, self.completion_policy);
-                None
-            }
-            failure => failure,
-        };
+        // The first completion belongs to the owed attempt, not optional retention.
+        // Required compiler/query work cannot reclaim it before the reply projects it.
+        let owed_completion = completion;
         // Recheck after joining, including cancellation after computation but before drain.
         let current = worker.selection.current(workspace, view);
         if !current {
@@ -354,7 +350,7 @@ impl LocalSemanticOwner {
         self.execution = Execution::Ready {
             core,
             selection: current.then_some(worker.selection),
-            owed_failure: if current { owed_failure } else { None },
+            owed_completion: if current { owed_completion } else { None },
         };
     }
 
@@ -406,20 +402,27 @@ impl LocalSemanticOwner {
             }
             Execution::Ready {
                 selection,
-                owed_failure,
+                owed_completion,
                 ..
             } => {
                 if selection
                     .as_ref()
                     .is_some_and(|selected| selected.matches(coordinator, coverage, &cancelled))
                 {
-                    if owed_failure
+                    if owed_completion
                         .as_ref()
                         .is_some_and(|done| done.key.text == text && done.key.query == local.query)
                     {
-                        let done = owed_failure.take().expect("matched owed failure");
-                        return done.answer(local, &self.admitted).0;
+                        let done = owed_completion.take().expect("matched owed completion");
+                        let (answer, retained) = done.answer(local, &self.admitted);
+                        if let Some(retained) = retained {
+                            self.cache.insert(retained, self.completion_policy);
+                        }
+                        return answer;
                     }
+                    // Changing query abandons the prior direct caller's receipt.
+                    // The adapter serializes waiters and consumes it before advancing.
+                    *owed_completion = None;
                     if let Some(done) = self.cache.take(text, &local.query) {
                         let (answer, retained) = done.answer(local, &self.admitted);
                         if let Some(retained) = retained {
@@ -430,9 +433,9 @@ impl LocalSemanticOwner {
                 } else {
                     self.cache.clear();
                 }
-                // A direct caller changing its query abandons the prior failed receipt;
+                // A direct caller changing its query abandons the prior receipt;
                 // adapter waiters are serialized and deliver that receipt before advancing.
-                *owed_failure = None;
+                *owed_completion = None;
             }
         }
         let maximum = self.admitted.runtime().maximum_text_bytes();
@@ -557,7 +560,7 @@ impl LocalSemanticOwner {
                 self.execution = Execution::Ready {
                     core,
                     selection: None,
-                    owed_failure: None,
+                    owed_completion: None,
                 };
             }
         }
@@ -582,6 +585,17 @@ impl LocalSemanticOwner {
                 },
             ),
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn owes_completion(&self) -> bool {
+        matches!(
+            &self.execution,
+            Execution::Ready {
+                owed_completion: Some(_),
+                ..
+            }
+        )
     }
 
     #[cfg(test)]

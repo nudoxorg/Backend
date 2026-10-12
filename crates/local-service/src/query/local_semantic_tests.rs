@@ -279,6 +279,104 @@ fn local_semantic_transient_query_failure_is_one_shot_and_preserves_selected_pro
 
 #[cfg(unix)]
 #[test]
+fn local_semantic_first_completion_is_owed_not_optional_before_actual_delivery() -> TestResult {
+    let (coordinator, library, view) = selected_many(30, false)?;
+    let fixture = fixture(4096)?;
+    let runtime = fixture.provision.runtime().ok_or("runtime")?;
+    let mut provider = crate::builtin::query::RemoteSemantic::select_owner(
+        &fixture.provision,
+        &fixture.descriptor,
+        crate::builtin::query::RemoteSemantic::Unconfigured,
+    );
+    let flag = Arc::new(AtomicBool::new(false));
+    let request = backend_engine::Query::new(
+        "first owed intent",
+        view.root(),
+        backend_engine::QueryLimit::new(3)?,
+    );
+    let (_, pending) = super::super::search_page_with_cancellation(
+        &coordinator,
+        &library,
+        &mut provider,
+        crate::builtin::admitted_coverage()?,
+        &request,
+        flag.clone(),
+    )
+    .map_err(|error| error.to_string())?;
+    assert_eq!(
+        pending,
+        SemanticSearchStatus::Unavailable {
+            reason: SemanticSearchReason::NoActiveProjection
+        }
+    );
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while provider.local_preparation().is_some() {
+        provider.poll_local(coordinator.workspace_root(), view.root());
+        assert!(
+            Instant::now() < deadline,
+            "actual first completion did not arrive"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let crate::builtin::query::RemoteSemantic::Local(owner) = &provider else {
+        return Err("local owner".into());
+    };
+    assert!(
+        owner.owes_completion(),
+        "first result retained for owed delivery"
+    );
+    assert_eq!(
+        owner.cached_completions(),
+        0,
+        "undelivered result is not optional cache"
+    );
+    let calls = std::fs::read_to_string(&fixture.log)?;
+    let pressure = runtime
+        .memory_budget()
+        .reserve(runtime.memory_budget().capacity() - runtime.memory_budget().used())?;
+    assert_eq!(
+        runtime.memory_budget().reserve(1).err(),
+        Some(EmbeddingMemoryError {
+            requested: 1,
+            available: 0
+        }),
+        "mandatory pressure cannot discard an undelivered first completion"
+    );
+    let (page, status) = super::super::search_page_with_cancellation(
+        &coordinator,
+        &library,
+        &mut provider,
+        crate::builtin::admitted_coverage()?,
+        &request,
+        flag,
+    )
+    .map_err(|error| error.to_string())?;
+    assert_eq!(
+        status,
+        SemanticSearchStatus::Available,
+        "owed original moves when no copy fits"
+    );
+    assert!(!page.rows().is_empty());
+    let crate::builtin::query::RemoteSemantic::Local(owner) = &provider else {
+        return Err("local owner".into());
+    };
+    assert!(!owner.owes_completion());
+    assert_eq!(
+        owner.cached_completions(),
+        0,
+        "no uncharged retained copy after transfer"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&fixture.log)?,
+        calls,
+        "first delivery never recomputes completed work"
+    );
+    drop(pressure);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn local_semantic_shared_admission_reclaims_at_seed_query_and_owned_output() -> TestResult {
     let (coordinator, library, view) = selected_many(30, false)?;
     let fixture = fixture(4096)?;
