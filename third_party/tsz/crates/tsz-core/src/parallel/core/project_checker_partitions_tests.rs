@@ -1984,69 +1984,97 @@ fn selected_external_namespace_keeps_only_its_own_augmentation_members() {
 #[test]
 fn selected_file_namespace_default_keeps_node_cjs_interop_against_competing_kind() {
     use crate::checker::context::ResolutionModeOverride;
-    for (result_type, codes) in [("number", vec![]), ("string", vec![2322])] {
-        let mut program = compile_files_with_libs(vec![
-            ("src/main.mts".to_owned(), format!("import * as observed from './cjs'; export function read(): {result_type} {{ return observed.default.value; }}")),
-            ("src/cjs.cts".to_owned(), "declare class api { static value: number; static default: string; } export = api;".to_owned()),
-            ("src/wrong.mts".to_owned(), "export default 'wrong';".to_owned()),
-        ], &[]);
-        // Explicit extensions supply these producer format facts; there is no
-        // package-format inference for a plain .ts file in this control.
-        program.file_is_esm_map = Arc::new(
-            [
-                ("src/main.mts".to_owned(), true),
-                ("src/cjs.cts".to_owned(), false),
-                ("src/wrong.mts".to_owned(), true),
-            ]
-            .into_iter()
-            .collect(),
-        );
-        let resolutions = [
-            ProjectModuleResolution {
-                importer_path: "src/main.mts".to_owned(),
-                specifier: "./cjs".to_owned(),
-                request_kind: ProjectModuleRequestKind::EsmImport,
-                resolution_mode: Some(ResolutionModeOverride::Import),
-                target: ProjectModuleResolutionTarget::File {
-                    path: "src/cjs.cts".to_owned(),
+    for namespace in [false, true] {
+        for (result_type, codes) in [("number", vec![]), ("string", vec![2322])] {
+            // Genuine TS5.9.3 refuses a namespace import of an export= class
+            // (TS2497), even with interop. Keep its legal default import and a
+            // legal object namespace import as distinct exact-request consumers.
+            let import = if namespace {
+                "* as observed"
+            } else {
+                "observed"
+            };
+            let cjs = if namespace {
+                "declare const api: { value: number; default: string; }; export = api;"
+            } else {
+                "declare class api { static value: number; static default: string; } export = api;"
+            };
+            let mut program = compile_files_with_libs(
+                vec![
+                    (
+                        "src/main.mts".to_owned(),
+                        format!(
+                            "import {import} from './cjs'; export function read(): {result_type} {{ return observed.value; }}"
+                        ),
+                    ),
+                    ("src/cjs.cts".to_owned(), cjs.to_owned()),
+                    (
+                        "src/wrong.mts".to_owned(),
+                        "export default 'wrong';".to_owned(),
+                    ),
+                ],
+                &[],
+            );
+            // Explicit extensions supply these producer format facts; there is no
+            // package-format inference for a plain .ts file in this control.
+            program.file_is_esm_map = Arc::new(
+                [
+                    ("src/main.mts".to_owned(), true),
+                    ("src/cjs.cts".to_owned(), false),
+                    ("src/wrong.mts".to_owned(), true),
+                ]
+                .into_iter()
+                .collect(),
+            );
+            let resolutions = [
+                ProjectModuleResolution {
+                    importer_path: "src/main.mts".to_owned(),
+                    specifier: "./cjs".to_owned(),
+                    request_kind: ProjectModuleRequestKind::EsmImport,
+                    resolution_mode: Some(ResolutionModeOverride::Import),
+                    target: ProjectModuleResolutionTarget::File {
+                        path: "src/cjs.cts".to_owned(),
+                    },
                 },
-            },
-            ProjectModuleResolution {
-                importer_path: "src/main.mts".to_owned(),
-                specifier: "./cjs".to_owned(),
-                request_kind: ProjectModuleRequestKind::EsmReExport,
-                resolution_mode: Some(ResolutionModeOverride::Import),
-                target: ProjectModuleResolutionTarget::File {
-                    path: "src/wrong.mts".to_owned(),
+                ProjectModuleResolution {
+                    importer_path: "src/main.mts".to_owned(),
+                    specifier: "./cjs".to_owned(),
+                    request_kind: ProjectModuleRequestKind::EsmReExport,
+                    resolution_mode: Some(ResolutionModeOverride::Import),
+                    target: ProjectModuleResolutionTarget::File {
+                        path: "src/wrong.mts".to_owned(),
+                    },
                 },
-            },
-        ];
-        let options = CheckerOptions {
-            module: tsz_common::common::ModuleKind::NodeNext,
-            ..CheckerOptions::default()
-        };
-        let plan = ParallelCheckPlan::build(
-            &program,
-            &options,
-            &[],
-            ProjectSemanticOptions::declaration_scoped(),
-            Some(Arc::new(
-                build_project_module_resolution_outcomes(&program, &resolutions).unwrap(),
-            )),
-            None,
-        )
-        .unwrap();
-        let result = plan.check_file_partition(0, &program.files[..1]).unwrap();
-        assert_eq!(
-            result[0]
-                .diagnostics
-                .iter()
-                .map(|diagnostic| diagnostic.code)
-                .collect::<Vec<_>>(),
-            codes,
-            "result={result_type}: {:?}",
-            result[0].diagnostics,
-        );
+            ];
+            let options = CheckerOptions {
+                module: tsz_common::common::ModuleKind::NodeNext,
+                es_module_interop: true,
+                allow_synthetic_default_imports: true,
+                ..CheckerOptions::default()
+            };
+            let plan = ParallelCheckPlan::build(
+                &program,
+                &options,
+                &[],
+                ProjectSemanticOptions::declaration_scoped(),
+                Some(Arc::new(
+                    build_project_module_resolution_outcomes(&program, &resolutions).unwrap(),
+                )),
+                None,
+            )
+            .unwrap();
+            let result = plan.check_file_partition(0, &program.files[..1]).unwrap();
+            assert_eq!(
+                result[0]
+                    .diagnostics
+                    .iter()
+                    .map(|diagnostic| diagnostic.code)
+                    .collect::<Vec<_>>(),
+                codes,
+                "namespace={namespace} result={result_type}: {:?}",
+                result[0].diagnostics,
+            );
+        }
     }
 }
 
