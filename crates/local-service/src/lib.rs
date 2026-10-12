@@ -14,6 +14,7 @@ pub mod compiler_trust;
 mod discovery;
 mod embedded;
 pub mod listener;
+mod private_temp;
 pub mod process;
 pub mod protocol;
 /// Helpers for tests that exercise owner-controlled private state.

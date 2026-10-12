@@ -11,6 +11,7 @@ use crate::runtime::store::{Branch, DataStore};
 use facet::tokens::{TypeRole, ty};
 use facet::{ActiveFacet as _, Measure, Space, Typeset as _};
 use std::time::{Duration, Instant};
+use std::rc::Rc;
 use gpui::{App, AppContext as _, Context, ElementId, InteractiveElement, IntoElement, ParentElement, Pixels, Render, SharedString, StatefulInteractiveElement, Styled, Window, div, px};
 
 /// The foot keeps a readable sample; its native status and disclosure retain
@@ -104,6 +105,28 @@ fn feedback_message(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph
         || focus.filter(|focus| focus.active(snapshot)).map_or_else(|| jump::address_parts(snapshot).full(), |focus| focus.status()),
         |notice| notice.message.to_string(),
     )
+}
+
+/// Disclosure belongs to the represented local message and reading visit;
+/// it does not need a serving index owner or start another page read.
+fn message_admission(links: &Links, snapshot: &AppSnapshot, message: String, cx: &App) -> facet::controls::button::ActivationAdmission {
+    let links = links.clone();
+    let route = snapshot.route().clone();
+    let authority = snapshot.key().authority();
+    let visit = snapshot.session().reading.current.id;
+    let scope = links.shell.upgrade().map(|shell| shell.read(cx).local_activation_scope());
+    std::rc::Rc::new(move |cx| {
+        let store = links.store.read(cx);
+        let current = store.snapshot();
+        current.route() == &route && current.key().authority() == authority
+            && current.session().reading.current.id == visit && current.overlay().is_none()
+            && feedback_message(&current, store.graph_focus(), store.notice()) == message
+            && links.shell.upgrade().is_some_and(|shell| {
+                let shell = shell.read(cx);
+                shell.transients() == (false, false, false)
+                    && scope.is_some_and(|scope| shell.admits_local_activation_scope(scope, cx))
+            })
+    })
 }
 
 fn button_room(label: &str, measure: &Measure, window: &Window) -> Pixels {
@@ -211,8 +234,10 @@ fn whisper_left(since: Instant, now: Instant) -> Option<Duration> {
 
 impl Status {
     pub(crate) fn new(links: Links, store: &DataStore) -> Self {
+        let mut core = RegionCore::new(store, &[Branch::Route, Branch::Overlay, Branch::GraphFocus, Branch::Hand]);
+        core.watch_reading_visit(store);
         Self {
-            core: RegionCore::new(store, &[Branch::Route, Branch::Overlay, Branch::GraphFocus, Branch::Hand]),
+            core,
             links,
             reader_left: px(0.0),
             whisper: None,
@@ -268,6 +293,9 @@ impl Render for Status {
         let measure = self.core.measure(cx);
         let palette = cx.facet().palette();
         let store = self.links.store.read(cx);
+        // Only a represented recovery page supplies a stamp dependency. This
+        // watch renews its handlers without asking for another page read.
+        self.core.watch_keys(store, store.notice().and_then(|notice| notice.retry.clone()));
         let snapshot = store.snapshot();
         let foot = div().relative().size_full().flex().flex_col().justify_center().border_t_1().border_color(palette.line1.hsla());
         if let Some(opening) = &self.opening {
@@ -348,30 +376,26 @@ impl Status {
         let details_focus = window.use_keyed_state("status-details-focus", cx, |_, cx| cx.focus_handle().tab_stop(true)).read(cx).clone();
         let close_focus = window.use_keyed_state("status-details-close-focus", cx, |_, cx| cx.focus_handle().tab_stop(true)).read(cx).clone();
         let retry = retry_button(notice, snapshot, &self.links, measure, cx);
+        let disclosure = message_admission(&self.links, snapshot, feedback.message.clone(), cx);
         let mut message = div().id("status-message").role(gpui::Role::Status).aria_label(feedback.message.clone())
             .min_w_0().flex().flex_col().overflow_hidden()
             .children(said_lines(feedback.lines, feedback.role, palette.ink3.hsla()));
         message = if feedback.controls == Controls::Inline { message.flex_1() } else { message.w_full() };
         let details = if feedback.clipped {
             let message = feedback.message.clone();
-            let route = snapshot.route().clone();
-            let authority = snapshot.key().authority();
+            let admit = std::rc::Rc::clone(&disclosure);
             let owner = cx.entity().downgrade();
             let open_focus = close_focus.clone();
             Some(facet::controls::button("status-details", "Details", measure)
                 .aria_label("Show status details").focus_handle(details_focus.clone())
-                .size(facet::Control::Small).ghost().on_click(move |window, cx| {
+                .size(facet::Control::Small).ghost().when_current(std::rc::Rc::clone(&admit))
+                .on_click(move |window, cx| {
+                    if !admit(cx) { return; }
                     if let Some(status) = owner.upgrade() {
                         status.update(cx, |status, cx| {
-                            let current = status.links.snapshot(cx);
-                            let store = status.links.store.read(cx);
-                            let same_message = feedback_message(&current, store.graph_focus(), store.notice()) == message;
-                            let background = status.links.shell.upgrade().is_some_and(|shell| shell.read(cx).transients() == (false, false, false));
-                            if background && same_message && current.route() == &route && current.key().authority() == authority && current.overlay().is_none() {
-                                status.details = Some(message.clone());
-                                open_focus.focus(window, cx);
-                                cx.notify();
-                            }
+                            status.details = Some(message.clone());
+                            open_focus.focus(window, cx);
+                            cx.notify();
                         });
                     }
                 }).into_any_element())
@@ -391,9 +415,12 @@ impl Status {
         if self.details.is_some() {
             let owner = cx.entity().downgrade();
             let return_focus = details_focus.clone();
+            let close_admit = std::rc::Rc::clone(&disclosure);
             let close = facet::controls::button("status-details-close", "Close details", measure)
                 .focus_handle(close_focus).size(facet::Control::Small).ghost()
+                .when_current(std::rc::Rc::clone(&close_admit))
                 .on_click(move |window, cx| {
+                    if !close_admit(cx) { return; }
                     if let Some(status) = owner.upgrade() { status.update(cx, |status, cx| {
                         status.details = None;
                         return_focus.focus(window, cx);
@@ -406,6 +433,7 @@ impl Status {
                 .flex().flex_col().gap(measure.space(Space::Base)).p(measure.space(Space::Roomy))
                 .bg(palette.plate2).border_1().border_color(palette.line2.hsla())
                 .on_action(cx.listener(move |status, _: &super::keys::Escape, window, cx| {
+                    if !disclosure(cx) { return; }
                     status.details = None; return_focus.focus(window, cx); cx.notify(); cx.stop_propagation();
                 }))
                 .child(div().id("status-details-scroll").max_h(window.viewport_size().height * 0.4).overflow_y_scroll()
@@ -430,23 +458,35 @@ fn retry_button(
     let key = notice.retry.clone()?;
     let captured = notice.clone();
     let store = links.store.read(cx);
-    let owner_retry = store.current_owner_retry();
-    let serving = store.current_owner_attachment();
-    let enabled = owner_retry.is_some() || serving.is_some();
+    let enabled = store.current_owner_retry().is_some() || store.current_owner_attachment().is_some();
+    let expected = store.capture_page_retry(&key);
+    let visit = snapshot.session().reading.current.id;
+    let scope = links.shell.upgrade().map(|shell| shell.read(cx).local_activation_scope());
+    let guarded_links = links.clone();
+    let guarded_receipt = expected.clone();
+    let admit: facet::controls::button::ActivationAdmission = Rc::new(move |cx| {
+        if !enabled || !guarded_links.shell.upgrade().is_some_and(|shell| {
+            let shell = shell.read(cx);
+            shell.transients() == (false, false, false)
+                && scope.is_some_and(|scope| shell.admits_local_activation_scope(scope, cx))
+        }) { return false; }
+        let store = guarded_links.store.read(cx);
+        store.snapshot().session().reading.current.id == visit
+            && store.notice().is_some_and(|current| current == &captured && current.active(&store.snapshot()))
+            && guarded_receipt.as_ref().is_some_and(|expected| store.admits_page_retry(expected))
+    });
     let links = links.clone();
+    let action_admit = Rc::clone(&admit);
     Some(
         facet::controls::button("status-retry", "Try again", measure)
             .size(facet::Control::Small)
             .ghost()
             .disabled(!enabled)
             .on_click(move |_, cx| {
-                if !links.shell.upgrade().is_some_and(|shell| shell.read(cx).transients() == (false, false, false)) { return; }
-                links.store.update(cx, |store, cx| {
-                    if !store.notice().is_some_and(|current| current == &captured && current.active(&store.snapshot())) { return; }
-                    if let Some(token) = &owner_retry { let _ = store.retry_owner_at(token, key.clone(), cx); }
-                    else if serving.as_ref().is_some_and(|attachment| store.admits_owner_attachment(attachment)) { store.retry(key.clone(), cx); }
-                });
+                if !action_admit(cx) { return; }
+                if let Some(expected) = &expected { links.retry_at(expected, cx); }
             })
+            .when_current(admit)
             .into_any_element(),
     )
 }
@@ -604,6 +644,224 @@ mod tests {
         let retry = crate::shell::tests::native_bounds_id(&mut rig, "status-retry", "Button", "Try again", false).expect("visible disabled retry");
         rig.cx.simulate_click(retry.center(), gpui::Modifiers::default());
         assert!(matches!(gate.state(), OwnerState::Failed(_)), "disabled native retry cannot invent a start");
+    }
+
+    #[gpui::test]
+    fn retained_status_retry_cannot_replace_a_new_read_under_an_unchanged_notice(cx: &mut TestAppContext) {
+        let (mut rig, _gate) = gated_rig(cx, 663.0);
+        rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+        // The existing native notice fixture publishes the represented page
+        // key through DataStore. The replacement below uses the actual pool.
+        long_notice(&mut rig);
+        native_tree(&mut rig);
+        let (native, bounds) = rig.cx.update(|window, _| {
+            let native = window.a11y_tree().expect("status AX").nodes.iter()
+                .find(|(_, node)| node.role() == gpui::Role::Button && node.label() == Some("Try again")
+                    && node.supports_action(gpui::AccessibleAction::Click)).map(|(id, _)| *id).expect("native status Retry");
+            (native, window.a11y_node_bounds(native).expect("native status bounds"))
+        });
+        let key = crate::model::pages::PageKey::Orbit;
+        let (notice, attachment, stamp, submitted, landed) = rig.graph.store.read_with(rig.cx, |store, _| (
+            store.notice().cloned(), store.current_owner_attachment(), store.stamp(&key), store.stats().submitted, store.stats().landed,
+        ));
+        let renders = rig.counts().status;
+        let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+        let focused = rig.cx.update(|window, cx| {
+            let original = window.focused(cx).expect("existing native focus");
+            window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left,
+                click_count: 1, first_mouse: false,
+            }), cx);
+            let focused = window.focused(cx);
+            rig.graph.store.update(cx, |store, cx| store.retry(key.clone(), cx));
+            assert_eq!(rig.graph.store.read(cx).notice().cloned(), notice);
+            assert_eq!(rig.graph.store.read(cx).current_owner_attachment(), attachment);
+            assert_ne!(rig.graph.store.read(cx).stamp(&key), stamp);
+            window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1,
+            }), cx);
+            for key in ["enter", "space"] {
+                let keystroke = gpui::Keystroke::parse(key).expect("status Retry key");
+                window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                    keystroke: keystroke.clone(), is_held: false, prefer_character_input: false,
+                }), cx);
+                window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
+            }
+            window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+                action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: native, data: None,
+            }, cx);
+            assert_eq!(rig.graph.store.read(cx).stats().submitted, submitted + 1, "unchanged notice and owner cannot admit an old page generation");
+            assert_eq!(window.focused(cx), focused);
+            original.focus(window);
+            window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left,
+                click_count: 1, first_mouse: false,
+            }), cx);
+            window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1,
+            }), cx);
+            assert_eq!(window.focused(cx), Some(original), "a stale new press cannot take focus before it is rejected");
+            assert_eq!(window.a11y_frame_number(), frame);
+            window.focused(cx)
+        });
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted), submitted + 1);
+        assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused);
+        assert_eq!(rig.cx.update(|window, _| window.a11y_frame_number()), frame);
+        rig.settle();
+        assert!(rig.graph.store.read_with(rig.cx, |store, _| store.stats().landed > landed), "the replacement must actually land from its pool worker");
+        assert!(rig.counts().status > renders, "the watched page stamp renews status without Back or a forced repaint");
+        let (native, bounds) = rig.cx.update(|window, _| {
+            let native = window.a11y_tree().expect("renewed status AX").nodes.iter()
+                .find(|(_, node)| node.role() == gpui::Role::Button && node.label() == Some("Try again")
+                    && node.supports_action(gpui::AccessibleAction::Click)).map(|(id, _)| *id).expect("passively renewed status Retry");
+            (native, window.a11y_node_bounds(native).expect("renewed status bounds"))
+        });
+        assert!(rig.cx.update(|window, _| window.a11y_node_bounds(native).is_some()));
+        let submitted = rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted);
+        rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted), submitted + 1, "fresh current recovery remains available");
+        rig.settle();
+    }
+
+    #[gpui::test]
+    fn coalesced_same_route_return_retires_native_status_retry_before_redraw(cx: &mut TestAppContext) {
+        let (mut rig, _gate) = gated_rig(cx, 663.0);
+        rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+        long_notice(&mut rig);
+        native_tree(&mut rig);
+        let (native, bounds) = rig.cx.update(|window, _| {
+            let native = window.a11y_tree().expect("status AX").nodes.iter()
+                .find(|(_, node)| node.role() == gpui::Role::Button && node.label() == Some("Try again")
+                    && node.supports_action(gpui::AccessibleAction::Click)).map(|(id, _)| *id).expect("native status Retry");
+            (native, window.a11y_node_bounds(native).expect("native status bounds"))
+        });
+        let original = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+        let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+        let focused = rig.cx.update(|window, cx| {
+            let focused = window.focused(cx);
+            rig.graph.root.update(cx, |root, cx| {
+                root.dispatch(Intent::Navigate(Route::World), cx);
+                root.dispatch(Intent::Navigate(original.route().clone()), cx);
+            });
+            let latest = rig.graph.store.read(cx).snapshot();
+            assert_eq!(latest.route(), original.route());
+            assert!(latest.key().same_authority(original.key()));
+            assert_ne!(latest.session().reading.current.id, original.session().reading.current.id);
+            let submitted = rig.graph.store.read(cx).stats().submitted;
+            window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left,
+                click_count: 1, first_mouse: false,
+            }), cx);
+            window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1,
+            }), cx);
+            for key in ["enter", "space"] {
+                let keystroke = gpui::Keystroke::parse(key).expect("retired status key");
+                window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                    keystroke: keystroke.clone(), is_held: false, prefer_character_input: false,
+                }), cx);
+                window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
+            }
+            window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+                action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: native, data: None,
+            }, cx);
+            assert_eq!(rig.graph.store.read(cx).stats().submitted, submitted);
+            assert_eq!(window.focused(cx), focused);
+            assert_eq!(window.a11y_frame_number(), frame);
+            focused
+        });
+        assert_eq!(rig.route(), *original.route());
+        assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused);
+        assert_eq!(rig.cx.update(|window, _| window.a11y_frame_number()), frame);
+        rig.settle();
+    }
+
+    #[gpui::test]
+    fn retained_native_status_disclosure_cannot_focus_or_close_after_message_or_visit_moves(cx: &mut TestAppContext) {
+        for open in [false, true] {
+            for movement in [0_u8, 1, 2] {
+                let (mut rig, _gate) = gated_rig(cx, 663.0);
+                long_notice(&mut rig);
+                native_tree(&mut rig);
+                if open {
+                    let details = crate::shell::tests::native_bounds_id(&mut rig, "status-details", "Button", "Show status details", true).expect("Details");
+                    rig.cx.simulate_click(details.center(), gpui::Modifiers::none());
+                    rig.settle();
+                }
+                let label = if open { "Close details" } else { "Show status details" };
+                let id = if open { "status-details-close" } else { "status-details" };
+                let bounds = crate::shell::tests::native_bounds_id(&mut rig, id, "Button", label, true).expect("current native disclosure");
+                let node = rig.cx.update(|window, _| window.a11y_tree().expect("committed disclosure tree").nodes.iter()
+                    .find(|(_, node)| node.role() == gpui::Role::Button && node.label() == Some(label)
+                        && node.supports_action(gpui::AccessibleAction::Click)).map(|(id, _)| *id).expect("disclosure Click"));
+                let store = rig.graph.store.clone();
+                let root = rig.graph.root.clone();
+                let original = store.read_with(rig.cx, |store, _| store.snapshot());
+                let notice = store.read_with(rig.cx, |store, _| store.notice().cloned().expect("represented notice"));
+                let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+                let focus = rig.cx.update(|window, cx| {
+                    let previous = window.focused(cx).expect("mounted focus");
+                    window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                        position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left,
+                        click_count: 1, first_mouse: false,
+                    }), cx);
+                    let held = window.focused(cx);
+                    match movement {
+                        0 => store.update(cx, |store, cx| {
+                            let mut next = notice.clone(); next.message = "A newer status replaced the represented message.".into();
+                            store.set_notice(Some(next), cx);
+                        }),
+                        1 => root.update(cx, |root, cx| root.dispatch(Intent::OpenSettings(crate::navigation::SettingsPage::Appearance), cx)),
+                        _ => {
+                            root.update(cx, |root, cx| {
+                                root.dispatch(Intent::Navigate(Route::World), cx);
+                                root.dispatch(Intent::Navigate(original.route().clone()), cx);
+                            });
+                            store.update(cx, |store, cx| store.set_notice(Some(notice.clone()), cx));
+                            assert_eq!(store.read(cx).snapshot().route(), original.route());
+                            assert_eq!(store.read(cx).notice(), Some(&notice));
+                            assert_ne!(store.read(cx).snapshot().session().reading.current.id, original.session().reading.current.id);
+                        }
+                    }
+                    window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                        position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1,
+                    }), cx);
+                    for key in ["enter", "space"] {
+                        let keystroke = gpui::Keystroke::parse(key).expect("disclosure key");
+                        window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                            keystroke: keystroke.clone(), is_held: false, prefer_character_input: false,
+                        }), cx);
+                        window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
+                    }
+                    window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+                        action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: node, data: None,
+                    }, cx);
+                    assert_eq!(window.focused(cx), held, "old disclosure cannot return focus or open the later message");
+                    previous.focus(window, cx);
+                    window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                        position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left,
+                        click_count: 1, first_mouse: false,
+                    }), cx);
+                    window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                        position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1,
+                    }), cx);
+                    assert_eq!(window.focused(cx), Some(previous), "rejected native pointer input cannot take focus first");
+                    assert_eq!(window.a11y_frame_number(), frame);
+                    window.focused(cx)
+                });
+                assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focus);
+                assert_eq!(rig.cx.update(|window, _| window.a11y_frame_number()), frame, "post-effect assertion still precedes the watcher redraw");
+                rig.settle();
+                if movement == 1 { rig.go(Intent::DismissOverlay); }
+                long_notice(&mut rig);
+                let fresh = crate::shell::tests::native_bounds_id(&mut rig, "status-details", "Button", "Show status details", true).expect("renewed disclosure");
+                rig.cx.simulate_click(fresh.center(), gpui::Modifiers::none());
+                rig.settle();
+                assert!(crate::shell::tests::native_bounds(&mut rig, "Dialog", "Status details", false).is_some(), "fresh local disclosure remains usable");
+                rig.keys("escape");
+                assert!(crate::shell::tests::native_bounds(&mut rig, "Dialog", "Status details", false).is_none());
+            }
+        }
     }
 
     /// A whisper has its 2.4 s and no more; whether it is over is decided by

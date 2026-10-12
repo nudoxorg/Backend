@@ -143,7 +143,7 @@ fn local_recipe_admission_reuses_the_actual_activated_arc_without_probing() -> T
     };
     use std::os::unix::fs::PermissionsExt;
 
-    let directory = tempfile::tempdir()?;
+    let directory = crate::test_support::private_temp_dir("local-recipe")?;
     let program = directory.path().join("protocol-fixture.py");
     let counter = directory.path().join("calls");
     std::fs::write(

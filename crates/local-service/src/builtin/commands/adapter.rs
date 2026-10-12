@@ -6065,7 +6065,7 @@ mod tests {
     }
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use super::{Command, WireCertificate, WireClaim};
@@ -6330,14 +6330,9 @@ mod tests {
 
     impl TempTree {
         fn new() -> Self {
-            static NEXT: AtomicU64 = AtomicU64::new(0);
-            let path = std::env::temp_dir().join(format!(
-                "nudox-add-guard-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            let _ = fs::remove_dir_all(&path);
-            fs::create_dir_all(&path).expect("temp tree");
+            let path = crate::test_support::private_temp_dir("add-guard")
+                .expect("private temp tree")
+                .keep();
             Self(path)
         }
     }
@@ -6900,8 +6895,10 @@ mod tests {
                     Command::Document(query)
                 };
                 let id = 0x6e00 + index as u64 * 2 + u64::from(source_read);
-                // Use the same owner proof and exact coordinate key claim that
-                // Session::document/source emit after reading the revision.
+                // Retain the same owner proof and exact coordinate key claim
+                // as Session::document/source. This fixture also requests an
+                // explicit full source basis, so prove its root with the actual
+                // selected relation bytes rather than only a commitment.
                 let certificate = crate::builtin::projection::certificate_for_snapshot_page(
                     daemon.engine().daemon().library().view(),
                     daemon.engine().daemon().library().cursor(),
@@ -6910,6 +6907,18 @@ mod tests {
                     None,
                 )
                 .expect("actual current owner proof")
+                .with_claim(WireClaim::Root {
+                    schema: backend_engine::WireSchema::ViewRelation,
+                    id: backend_engine::encode_id(root.as_bytes()),
+                    canonical: daemon
+                        .engine()
+                        .daemon()
+                        .library()
+                        .view()
+                        .canonical_relation_bytes()
+                        .expect("actual selected relation proof")
+                        .into_boxed_slice(),
+                })
                 .with_claim(WireClaim::Key {
                     schema: backend_engine::WireSchema::Symbol,
                     id: backend_engine::encode_id(
@@ -6957,7 +6966,7 @@ mod tests {
                 );
                 assert_eq!(document.facts, row.facts);
                 assert!(document.signature.is_none());
-                assert!(document.fragments.is_empty());
+                assert_eq!(document.fragments, row.document);
             }
             for coordinate in [
                 "HTTPieArgumentParser".to_owned(),
@@ -7394,16 +7403,48 @@ mod tests {
             backend_engine::application::LocalCompilerCapabilityState::Unavailable,
             "closed fixture must retain an actual absent TypeScript SDK",
         );
+        let python = capabilities.for_profile(
+            backend_semantic::vocabulary::LanguageProfile::Python(
+                backend_semantic::vocabulary::PythonVersion::Python314,
+            ),
+        );
+        assert_eq!(
+            python.state(),
+            backend_engine::application::LocalCompilerCapabilityState::Deferred,
+            "opening the owner must leave native image admission to the first actual request",
+        );
+        assert!(python.toolchain_identity().is_none());
+        assert!(python.local_authority_fingerprint().is_none());
+        assert!(python.manifest().is_none());
+        assert!(python.session_lineage().is_none());
+        fixture.adapter.as_mut().expect("adapter").compiler = compiler;
+    }
+
+    fn assert_mixed_native_compiler_admitted(compiler: &LocalCompilerClient) {
+        let capabilities = compiler.capabilities();
+        let python = capabilities.for_profile(
+            backend_semantic::vocabulary::LanguageProfile::Python(
+                backend_semantic::vocabulary::PythonVersion::Python314,
+            ),
+        );
+        assert_eq!(
+            python.state(),
+            backend_engine::application::LocalCompilerCapabilityState::Ready,
+            "the real Python package compile must admit its executing image",
+        );
+        assert!(python.toolchain_identity().is_some());
+        assert!(python.local_authority_fingerprint().is_some());
+        assert!(python.manifest().is_some());
+        assert!(python.session_lineage().is_some());
         assert_eq!(
             capabilities
-                .for_profile(backend_semantic::vocabulary::LanguageProfile::Python(
-                    backend_semantic::vocabulary::PythonVersion::Python314,
+                .for_profile(backend_semantic::vocabulary::LanguageProfile::TypeScript(
+                    backend_semantic::vocabulary::TypeScriptSource::TypeScript,
                 ))
                 .state(),
-            backend_engine::application::LocalCompilerCapabilityState::Ready,
-            "compiled native Python authority must be admitted by the actual owner",
+            backend_engine::application::LocalCompilerCapabilityState::Unavailable,
+            "native Python admission cannot configure the absent TypeScript SDK",
         );
-        fixture.adapter.as_mut().expect("adapter").compiler = compiler;
     }
 
     fn run_mixed_native_operation(
@@ -7445,6 +7486,7 @@ mod tests {
         let backend_library::IndexOperationObservation::Known(status) = observation else {
             panic!("known operation")
         };
+        assert_mixed_native_compiler_admitted(&adapter.compiler);
         eprintln!(
             "mixed native operation {} completed in {:.3}s: {:?}",
             seed,
@@ -7554,6 +7596,7 @@ mod tests {
                             )
                     )
             );
+            assert_mixed_native_compiler_admitted(&adapter.compiler);
             assert_eq!(
                 partial.receipt.workspace_root(),
                 daemon.engine().daemon().owner().head().root().as_bytes()
@@ -9610,6 +9653,20 @@ mod tests {
             view.root(),
             backend_engine::QueryLimit::default(),
         );
+        let committed_workspace = snapshot.root();
+        let committed_view = view.root();
+        // Publication and search preparation have independent terminals.
+        // Drain the actual selected worker without changing the query basis.
+        adapter.warm_queries(daemon);
+        finish_search_lane(adapter, daemon);
+        assert_eq!(
+            daemon.engine().daemon().owner().snapshot().root(),
+            committed_workspace,
+        );
+        assert_eq!(
+            daemon.engine().daemon().library().view().root(),
+            committed_view,
+        );
         let (reply, _) = adapter
             .search(daemon, &query, None)
             .expect("owner query reply");
@@ -10476,7 +10533,10 @@ mod tests {
             "preparing",
             daemon,
         );
-        let body = owner_query_body(daemon, 803, Command::GraphQuery(query.cancelled()));
+        let owner = daemon.engine().daemon().library().cursor();
+        let source = daemon.engine().daemon().library().view().basis().object;
+        let cancelled = query.cancelled();
+        let body = owner_query_body(daemon, 803, Command::GraphQuery(cancelled.clone()));
         let Executed::Reply(bytes) = adapter
             .execute_or_defer(daemon, &body, 1803)
             .expect("immediate cancel")
@@ -10484,7 +10544,21 @@ mod tests {
             panic!("cancel must not wait")
         };
         let wire: serde_json::Value = serde_json::from_slice(&bytes).expect("cancel reply");
-        assert_eq!(wire["reply"]["kind"], "graph_query");
+        assert_eq!(wire["reply"]["kind"], "graph_query_page");
+        let reply = backend_engine::decode_reply_dto(&bytes).expect("strict cancelled page");
+        assert_eq!(reply.request_id, 803);
+        let CommandReply::GraphQueryPage(page) = reply.reply else {
+            panic!("cancellation must return its typed page");
+        };
+        cancelled
+            .admit_page_against(&page, owner)
+            .expect("cancelled page belongs to the exact selected owner");
+        assert_eq!(page.revision, cancelled.page().basis());
+        assert_eq!(page.source, source);
+        assert!(page.rows.is_empty());
+        assert_eq!(page.terminal, backend_engine::PageTerminal::Cancelled);
+        assert!(adapter.search_lane.active(), "shared worker remains held");
+        assert_eq!(adapter.search_snapshots.projection_builds(), 0);
         release.send(()).expect("retire worker");
         finish_search_lane(adapter, daemon);
         assert_eq!(adapter.search_snapshots.projection_builds(), 1);

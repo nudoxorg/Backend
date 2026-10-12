@@ -1,0 +1,67 @@
+{
+  "scope": "Root independent rehash of mirrored actual native99 receipt, streams and compiler artifact JSON; artifact file hashes remain producer-reported",
+  "source": {
+    "commit": "2ca559046742f583238e0abb425ab3d1390f5562",
+    "tree": "aeda9889bc817ad86acf058b61772dd843bad7f8",
+    "clean": true
+  },
+  "receipt_sha256": "faa2885eb5fec474f5155c44f7c6e97b008f26ef202481fcdfa424a3ebe19a04",
+  "build_manifest_sha256": "3c3e6884428d0a908b27a0d3cba80a3573251dca6ea79f476d086fc8b2c20a20",
+  "stdout_sha256": "7cb3f16777551ecdc57d631f0ffeada797109cc9faa78f274e91332598622293",
+  "stderr_sha256": "26d002c284416e89c3e8abc17ffd9c5ae298f8085453baa7a01efc6e45af12f8",
+  "exit": 0,
+  "seconds": 344.3765090529341,
+  "finished_utc": "2026-10-12T02:53:56.782778+00:00",
+  "owned_group_drained": true,
+  "toolchain_unchanged": true,
+  "normal_non_test_artifacts": {
+    "backend-mcp": {
+      "path": "/root/codex-worktrees/sol61-resident-fixture-20261011/.local/target/debug/backend-mcp",
+      "sha256": "359a67436533250afdd0324d52b9f44a8eec1eeaa61f812aae5b5eb24be241d0",
+      "bytes": 136581552,
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 0,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": false
+      },
+      "features": [
+        "default"
+      ],
+      "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/apps/mcp/Cargo.toml"
+    },
+    "backend-cli": {
+      "path": "/root/codex-worktrees/sol61-resident-fixture-20261011/.local/target/debug/backend-cli",
+      "sha256": "fc17756417a895311ee9b05cdc1b868c244ef1c0f1f1f413c865a7ae90a269ac",
+      "bytes": 184835744,
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 0,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": false
+      },
+      "features": [],
+      "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/apps/cli/Cargo.toml"
+    },
+    "backend-locald": {
+      "path": "/root/codex-worktrees/sol61-resident-fixture-20261011/.local/target/debug/backend-locald",
+      "sha256": "8475828331b517490cd0c0aba0079112dde525bba4c606e31bcc4ededc5845e8",
+      "bytes": 502857704,
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 0,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": false
+      },
+      "features": [],
+      "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/apps/locald/Cargo.toml"
+    }
+  },
+  "tests_run": 0,
+  "packaging_and_project_acceptance": "pending separately; this successful normal build does not discharge native96 or native97 regressions",
+  "public_installer_current99": false,
+  "production_ready": false
+}

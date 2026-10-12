@@ -33,12 +33,15 @@ impl EpochAnchor {
         Ok(Self { epoch, interval_ns: [before, after], namespace: identity, _namespace: namespace })
     }
 
+    /// Returns the `Instant` captured between the two native clock reads.
     #[must_use]
     pub const fn epoch(&self) -> Instant { self.epoch }
 
+    /// Returns the lower and upper native nanosecond bounds around `epoch`.
     #[must_use]
     pub const fn interval_ns(&self) -> [u64; 2] { self.interval_ns }
 
+    /// Returns the identity of the time namespace held for this anchor.
     #[must_use]
     pub const fn namespace(&self) -> FileIdentity { self.namespace }
 }

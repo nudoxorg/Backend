@@ -116,8 +116,14 @@ pub(crate) struct GraphViewRequest {
     pub sequence: u64,
 }
 
+/// A local Add dialog visit, captured from the existing route/overlay sequence.
+/// It deliberately does not require a serving index owner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AddProjectVisit { owner: gpui::EntityId, sequence: u64 }
+
 enum QueuedIntent {
     Plain(Intent),
+    AddProject { intent: Intent, visit: AddProjectVisit },
     Retry { intent: Intent, expected: crate::model::WorkspaceProject },
     Acquire { intent: Intent, composition: crate::host::registry::Composition, attachment: OwnerAttachment, owner: super::acquire::OwnerRequest },
     Index { intent: Intent, attachment: super::actor::IndexMutationLease },
@@ -126,7 +132,7 @@ enum QueuedIntent {
 }
 
 impl QueuedIntent {
-    fn intent(&self) -> &Intent { match self { Self::Plain(intent) | Self::Retry { intent, .. } | Self::Acquire { intent, .. } | Self::Index { intent, .. } | Self::IndexStatus { intent, .. } | Self::Read { intent, .. } => intent } }
+    fn intent(&self) -> &Intent { match self { Self::Plain(intent) | Self::AddProject { intent, .. } | Self::Retry { intent, .. } | Self::Acquire { intent, .. } | Self::Index { intent, .. } | Self::IndexStatus { intent, .. } | Self::Read { intent, .. } => intent } }
 }
 
 enum IndexPreflightSave { Writing, Saved }
@@ -365,6 +371,8 @@ impl UiRootEntity {
         for queued in pending {
             match queued {
                 QueuedIntent::Plain(intent) => self.dispatch(intent, cx),
+                QueuedIntent::AddProject { intent, visit } if self.admits_add_project_visit(visit, cx.entity_id(), cx) => self.dispatch(intent, cx),
+                QueuedIntent::AddProject { .. } => {},
                 QueuedIntent::Retry { intent, expected }
                     if self.snapshot().workspace().projects.iter().any(|row| row.same_index_attempt(&expected)) =>
                 {
@@ -783,6 +791,28 @@ impl UiRootEntity {
             || !snapshot.key().same_authority(store.snapshot().key()) { return; }
         let Some(lease) = RouteReadLease::capture(store, dependency) else { return; };
         self.pending.push(QueuedIntent::Read { intent, lease, sequence: self.graph_view_generation });
+        self.schedule_flush(cx);
+    }
+
+    /// Local dialog actions keep their exact visit across the queued handoff.
+    pub(crate) fn add_project_visit(&self, owner: gpui::EntityId, cx: &App) -> Option<AddProjectVisit> {
+        let snapshot = self.snapshot();
+        let store = self.store.as_ref()?.read(cx);
+        let observed = store.snapshot();
+        (snapshot.overlay() == Some(crate::navigation::Overlay::AddProject)
+            && observed.overlay() == snapshot.overlay() && observed.route() == snapshot.route()
+            && observed.key().same_authority(snapshot.key()))
+            .then_some(AddProjectVisit { owner, sequence: self.graph_view_generation })
+    }
+
+    pub(crate) fn admits_add_project_visit(&self, visit: AddProjectVisit, owner: gpui::EntityId, cx: &App) -> bool {
+        !self.quitting && self.add_project_visit(owner, cx) == Some(visit)
+    }
+
+    pub(crate) fn queue_add_project(&mut self, intent: Intent, visit: AddProjectVisit, cx: &mut Context<Self>) {
+        if !matches!(intent, Intent::DismissOverlay | Intent::OpenFolderPicker)
+            || !self.admits_add_project_visit(visit, cx.entity_id(), cx) { return; }
+        self.pending.push(QueuedIntent::AddProject { intent, visit });
         self.schedule_flush(cx);
     }
 

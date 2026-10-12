@@ -9,7 +9,7 @@
 use super::{Ctx, Leaf};
 use crate::core::{ErrorValue, FaultCode, Resource, ResourceAdmission, ResourceTerminal, UnavailableReason, VersionedRoot, admit_resource};
 use crate::model::pages::PageKey;
-use crate::shell::focus::{Act, Target};
+use crate::shell::focus::{Act, Target, TargetAction};
 use crate::shell::kit::{pending, quiet, text};
 use crate::shell::reader::Reader;
 use facet::paint::{Bevel, Chamfer, cut};
@@ -168,15 +168,23 @@ pub(crate) fn not_ready<T>(
             let message = ctx.say(error.message().to_owned());
             let code = ctx.say(fault_code(error.code()));
             let links = ctx.links.clone();
-            let retry_key = key.clone();
             let id: SharedString = format!("retry-{key:?}").into();
-            let act: Act = Rc::new(move |_, cx| links.retry(retry_key.clone(), cx));
-            let target_action = ctx.target_local_action(act, cx);
+            let store = ctx.links.store.read(cx);
+            let expected = store.capture_page_retry(key);
+            let receipt = expected.clone();
+            let act: Act = Rc::new(move |_, cx| { if let Some(receipt) = &receipt { links.retry_at(receipt, cx); } });
+            let local = ctx.native_local_guard(cx);
+            let store = ctx.links.store.clone();
+            let payload = expected.clone();
+            let target_action = TargetAction::new(Rc::new(move |cx| {
+                local(cx) && expected.as_ref().is_some_and(|expected| store.read(cx).admits_page_retry(expected))
+            }), act).with_payload(payload);
             let act = target_action.callback();
             ctx.targets.push(Target { id: id.clone(), label: "Try again".into(), action: target_action.clone(), peek: None, source: None });
             let focus = ctx.native_handle(&id, cx);
             let mut control = facet::controls::button(id.clone(), "Try again", &measure)
-                .primary().on_click(move |window, cx| act(window, cx));
+                .primary().on_click(move |window, cx| act(window, cx))
+                .when_current(Rc::new(move |cx| target_action.admits(cx)));
             if let Some(focus) = focus { control = control.focus_handle(focus); }
             let plate = cut()
                 .chamfer(Chamfer::Md)

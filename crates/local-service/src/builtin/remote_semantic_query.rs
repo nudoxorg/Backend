@@ -1341,20 +1341,10 @@ mod tests {
     };
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
     fn scratch(label: &str) -> PathBuf {
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("wall clock")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "backend-remote-index-usage-{label}-{}-{stamp}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).expect("scratch directory");
-        crate::test_support::make_private(&path).expect("private scratch directory");
-        path
+        crate::test_support::private_temp_dir(label)
+            .expect("create private remote-index fixture directory")
+            .keep()
     }
 
     fn capability(request_budget: u32, byte_budget: u64) -> RemoteIndexCapability {
@@ -1433,14 +1423,9 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         use std::time::Instant;
 
-        let endpoint = std::env::temp_dir().join(format!(
-            "ri-{}-{}.sock",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("wall clock")
-                .as_nanos()
-        ));
+        let endpoint_directory = crate::test_support::private_temp_dir("ri")
+            .expect("create private endpoint fixture directory");
+        let endpoint = endpoint_directory.path().join("owner.sock");
         let listener =
             backend_replication::LocalListener::bind(&endpoint).expect("bind withheld test owner");
         fs::set_permissions(&endpoint, fs::Permissions::from_mode(0o600))

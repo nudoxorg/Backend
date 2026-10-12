@@ -7,7 +7,7 @@ use crate::core::{
     ReadHoldReason, ResourceAdmission, ResourceTerminal, UnavailableReason, VersionedRoot,
     admit_resource,
 };
-use crate::runtime::store::{DataStore, RouteDependencies};
+use crate::runtime::store::{DataStore, PageRetryReceipt, RouteDependencies};
 use crate::model::browse::{
     BrowseKey, BrowseValue, CompareModel, FindModel, TreeDestination, TreeInventoryLink, TreeModel, TreeRoleLinks,
 };
@@ -78,13 +78,15 @@ pub(super) fn body(
         let source = FindActionSource::new(route, ctx, cx);
         let mut actions = find_actions(ctx, cx, &source);
         if matches!(resource.terminal(), ResourceTerminal::Fault(_)) {
-            actions.retry = Some(Rc::new(move |window, cx| {
-                if let Err(reason) = source.failed_retry(cx) {
-                    find_action_notice(reason, window, cx);
-                    return;
-                }
-                source.links.retry(PageKey::Browse(source.key.clone()), cx);
-            }));
+            let expected = ctx.links.store.read(cx).capture_page_retry(&PageKey::Browse(source.key.clone()));
+            let receipt = expected.clone();
+            let guard_source = source.clone();
+            let local = ctx.native_local_guard(cx);
+            actions.retry_admit = Rc::new(move |cx| {
+                local(cx) && guard_source.failed_retry(cx).is_ok()
+                    && receipt.as_ref().is_some_and(|receipt| guard_source.links.store.read(cx).admits_page_retry(receipt))
+            });
+            actions.retry = Some(find_retry_action(source, expected));
         }
         let leaves = vec![Leaf::new(
             facet::browse::find::find("find", model, actions, &ctx.measure)
@@ -331,6 +333,16 @@ impl FindActionSource {
             Err("That Find failure is no longer current. Retry the failure now shown.")
         }
     }
+}
+
+fn find_retry_action(source: FindActionSource, expected: Option<PageRetryReceipt>) -> Rc<dyn Fn(&mut Window, &mut App)> {
+    Rc::new(move |window, cx| {
+        if let Err(reason) = source.failed_retry(cx) {
+            find_action_notice(reason, window, cx);
+            return;
+        }
+        if let Some(expected) = &expected { source.links.retry_at(expected, cx); }
+    })
 }
 
 fn find_action_notice(reason: &str, window: &mut Window, cx: &mut App) {
@@ -599,6 +611,7 @@ fn find_actions(
     facet::browse::find::Actions {
         acquire,
         retry: None,
+        retry_admit: Rc::new(|_| false),
         scroll: ctx.reader_scroll.clone(),
         initial_held: ctx.find_held.clone(),
         persist_held: Rc::new(move |held, cx| {

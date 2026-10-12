@@ -694,6 +694,41 @@ fn fragment_validate_fault_has_a_distinct_stable_tag() -> Result<(), TestError> 
 }
 
 #[test]
+fn authority_admission_terminal_keeps_source_without_an_attempted_recipe() -> Result<(), TestError> {
+    let source = generated_artifact().source;
+    let terminal = CompilerTerminal::AuthorityAdmission {
+        source,
+        language: Language::TypeScript,
+        stage: Stage::LowerIr,
+        phase: AuthorityPhase::TypeCheck,
+        class: AuthorityDiagnosticClass::Authority,
+        diagnostic: CompilerDiagnostic::from_native(b"admission", 9, false),
+    };
+    let reply = ApplicationReply {
+        correlation: CorrelationId(407),
+        outcome: ApplicationOutcome::Failed {
+            diagnostic: Diagnostic {
+                code: DiagnosticCode::CompilerTerminal,
+                detail: DiagnosticDetail::Compiler(terminal),
+            },
+        },
+    };
+    let cli: Value = serde_json::from_slice(&encode_cli_reply(reply)?)?;
+    let terminal = &cli["diagnostic"]["detail"]["terminal"];
+    expect_projection("admission kind", &terminal["kind"], Value::from("authority_admission"))?;
+    expect_projection("admission source", &terminal["source"]["identity"], Value::from(source.identity.to_string()))?;
+    expect_projection("admission phase", &terminal["phase"], Value::from("type_check"))?;
+    expect_projection("admission diagnostic", &terminal["diagnostic"]["bytes"], serde_json::json!(b"admission".to_vec()))?;
+    if terminal.get("attempted").is_some() || terminal.get("recipe").is_some() {
+        return Err(TestError::Projection {
+            channel: "unestablished admission recipe",
+            observed: terminal.clone(),
+        });
+    }
+    Ok(())
+}
+
+#[test]
 fn authority_terminal_keeps_class_count_and_primary_bytes() -> Result<(), TestError> {
     let reply = authority_failure_reply()?;
     let cli: Value = serde_json::from_slice(&encode_cli_reply(reply)?)?;

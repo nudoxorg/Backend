@@ -5,7 +5,7 @@ use crate::model::AppSnapshot;
 use crate::model::pages::PageKey;
 use crate::navigation::{Intent, View};
 use crate::runtime::UiRootEntity;
-use crate::runtime::store::{Branch, DataStore, StoreEvent, Watch};
+use crate::runtime::store::{Branch, DataStore, PageRetryReceipt, StoreEvent, Watch};
 use facet::fluid::Modes;
 use facet::{ActiveFacet as _, Measure};
 use gpui::{
@@ -460,6 +460,21 @@ impl Links {
         }
     }
 
+    pub(crate) fn add_project_visit(&self, cx: &App) -> Option<crate::runtime::ui_graph::AddProjectVisit> {
+        let root = self.root.upgrade()?;
+        root.read(cx).add_project_visit(root.entity_id(), cx)
+    }
+
+    pub(crate) fn admits_add_project_visit(&self, visit: crate::runtime::ui_graph::AddProjectVisit, cx: &App) -> bool {
+        self.root.upgrade().is_some_and(|root| root.read(cx).admits_add_project_visit(visit, root.entity_id(), cx))
+    }
+
+    pub(crate) fn dispatch_add_project(&self, intent: Intent, visit: crate::runtime::ui_graph::AddProjectVisit, cx: &mut App) {
+        if let Some(root) = self.root.upgrade() {
+            root.update(cx, |root, cx| root.queue_add_project(intent, visit, cx));
+        }
+    }
+
     /// Hover intent reached a link: warm its page through the read pool.
     pub(crate) fn prefetch(&self, key: PageKey, cx: &mut App) {
         self.store.update(cx, |store, cx| store.prefetch(key, cx));
@@ -471,9 +486,11 @@ impl Links {
             .update(cx, |store, cx| store.cancel_prefetch(key, cx));
     }
 
-    /// Asks for a page again after a fault.
-    pub(crate) fn retry(&self, key: PageKey, cx: &mut App) {
-        self.store.update(cx, |store, cx| store.retry(key, cx));
+    /// Retry the page/owner receipt retained by a painted recovery control.
+    pub(crate) fn retry_at(&self, expected: &PageRetryReceipt, cx: &mut App) {
+        self.store.update(cx, |store, cx| {
+            store.retry_page_at(expected, cx);
+        });
     }
 }
 

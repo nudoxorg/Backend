@@ -144,6 +144,14 @@ pub enum PackageCompilerFailureCause {
     },
     /// Syntax was accepted but the exact closed lowering recipe was unavailable.
     Lowering(PackageLoweringFaultFacts),
+    /// A concrete authority admission failed before a compiler recipe existed.
+    AuthorityAdmission {
+        language: CompilerLanguageFact,
+        stage: CompilerStageFact,
+        phase: AuthorityPhaseFact,
+        class: AuthorityClassFact,
+        diagnostic: Option<CompilerAuthorityDiagnosticFacts>,
+    },
     /// Existing compiler authority rejected the source or its semantic projection.
     Authority {
         phase: AuthorityPhaseFact,
@@ -164,7 +172,8 @@ impl PackageCompilerFailureCause {
             },
             Self::Toolchain { .. }
             | Self::ToolingUnavailable { .. }
-            | Self::RequiredTool { .. } => PackageCompilerFailurePhase::Setup,
+            | Self::RequiredTool { .. }
+            | Self::AuthorityAdmission { .. } => PackageCompilerFailurePhase::Setup,
             Self::Lowering(_) => PackageCompilerFailurePhase::Lowering,
             Self::Authority { .. } => PackageCompilerFailurePhase::Authority,
         }
@@ -202,8 +211,25 @@ impl PackageCompilerFailureCause {
                         ..
                     }),
                 ..
+            }
+            | Self::AuthorityAdmission {
+                class: _,
+                diagnostic:
+                    Some(CompilerAuthorityDiagnosticFacts {
+                        python_failure: Some(failure),
+                        ..
+                    }),
+                ..
             } => failure.kind_tag(),
             Self::Authority {
+                diagnostic:
+                    Some(CompilerAuthorityDiagnosticFacts {
+                        typescript_failure: Some(failure),
+                        ..
+                    }),
+                ..
+            }
+            | Self::AuthorityAdmission {
                 diagnostic:
                     Some(CompilerAuthorityDiagnosticFacts {
                         typescript_failure: Some(failure),
@@ -214,8 +240,13 @@ impl PackageCompilerFailureCause {
             Self::Authority {
                 diagnostic: Some(CompilerAuthorityDiagnosticFacts { go_failure: Some(failure), .. }),
                 ..
+            }
+            | Self::AuthorityAdmission {
+                diagnostic: Some(CompilerAuthorityDiagnosticFacts { go_failure: Some(failure), .. }),
+                ..
             } => failure.kind_tag(),
-            Self::Authority { class, .. } => match class {
+            Self::Authority { class, .. }
+            | Self::AuthorityAdmission { class, .. } => match class {
                 AuthorityClassFact::Syntax => "authority_syntax",
                 AuthorityClassFact::Binding => "authority_binding",
                 AuthorityClassFact::SourceScope => "authority_source_scope",
@@ -1749,6 +1780,33 @@ pub(crate) fn package_failure_from_terminal(
                 language: (*language).into(),
                 stage: (*stage).into(),
                 issue: *issue,
+            },
+        )),
+        CompilerTerminal::AuthorityAdmission {
+            language,
+            stage,
+            phase,
+            class,
+            diagnostic,
+            ..
+        } => Some((
+            None,
+            PackageCompilerFailureCause::AuthorityAdmission {
+                language: (*language).into(),
+                stage: (*stage).into(),
+                phase: (*phase).into(),
+                class: (*class).into(),
+                diagnostic: diagnostic.as_ref().map(|diagnostic| {
+                    CompilerAuthorityDiagnosticFacts {
+                        retained_bytes: u32::try_from(diagnostic.byte_len).unwrap_or(u32::MAX),
+                        observed_bytes: u64::try_from(diagnostic.observed).unwrap_or(u64::MAX),
+                        truncated: diagnostic.truncated,
+                        python_failure: diagnostic.python_failure,
+                        python_configuration: diagnostic.python_configuration,
+                        typescript_failure: diagnostic.typescript_failure,
+                        go_failure: diagnostic.go_failure,
+                    }
+                }),
             },
         )),
         CompilerTerminal::Compile {

@@ -1,0 +1,202 @@
+{
+  "scope": "Root independent raw stdout/phase/receipt rehash; no replacement-source native pass inferred",
+  "source": {
+    "commit": "b40d6736722cef016e4a2695f4ea6877d0ef7766",
+    "tree": "618603479073307002768024aac5c7fee01c7566",
+    "clean": true,
+    "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+    "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350",
+    "clean_before": true,
+    "clean_after": true
+  },
+  "receipt_hashes": {
+    "native96": "531d41ce5ca7d7de2f6129d81c6561f8f6b2c87d48e6d3a957a731c9c87bec5c",
+    "native97": "008419de5e839b180b8a98b149fe8a39aaa1e5cbb725743f1e6bfb050d830fa7",
+    "native98": "9214fcd52eebec27a1e9ac797c86e5c6803d72440954f05dedba5f2628abe5ec"
+  },
+  "native96": {
+    "exit": 101,
+    "actual_summaries": [
+      {
+        "status": "FAILED",
+        "passed": 47,
+        "failed": 5,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 32,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "ok",
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "status": "FAILED",
+        "passed": 1245,
+        "failed": 28,
+        "ignored": 17
+      },
+      {
+        "status": "FAILED",
+        "passed": 177,
+        "failed": 1,
+        "ignored": 0
+      },
+      {
+        "status": "FAILED",
+        "passed": 142,
+        "failed": 1,
+        "ignored": 0
+      }
+    ],
+    "named_failed_executions": [
+      "process::help_tests::command_help_skips_global_option_values",
+      "tests::admitted_durable_partial_matches_ticket_fault_and_cli_exit_without_inventing_source_facts",
+      "tests::cli_exports_plain_graph_continuation_without_leaking_the_wire_proof",
+      "tests::owner_index_job_commands_accept_exact_cli_ticket_operands",
+      "tests::unix_transport_executes_one_correlated_request",
+      "builtin::browse::cargo_metadata::tests::lockless_metadata_uses_a_private_lock_and_preserves_the_requested_tree",
+      "builtin::browse::tests::owner_follows_readme_links_only_from_the_current_metadata_admitted_release",
+      "builtin::browse::tests::project_tree_binds_submitted_alias_but_keeps_cargo_pinned_during_retarget",
+      "builtin::browse::tests::project_tree_cache_budget_keeps_display_and_revokes_evicted_source_and_readme",
+      "builtin::browse::tests::submitted_alias_roundtrips_exactly_and_retarget_revokes_source_inventory_and_readme",
+      "builtin::browse::tests::replacing_a_member_manifest_revokes_its_old_workspace_binding",
+      "builtin::browse::tests::two_real_workspaces_keep_exact_context_authority_with_bounded_lru",
+      "builtin::browse::tests::warm_lockless_workspace_refreshes_members_custom_targets_and_local_patches",
+      "builtin::commands::adapter::tests::copied_retained_external_documents_dispatch_and_certify_the_actual_native_rows",
+      "builtin::commands::adapter::tests::index_profile_worker_tests::existing_index_worker_shutdown_preserves_selected_current_and_retires_queue",
+      "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_failed_capture_cold_retry_preserves_original_terminal",
+      "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_native_dispatch_preserves_old_graph_through_receipt",
+      "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_native_grant_unwind_preserves_selector_for_next_publication",
+      "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_native_partial_dispatch_preserves_old_graph_through_receipt",
+      "builtin::commands::adapter::tests::index_publication_worker_tests::index_publication_worker_panicking_payload_drop_preserves_exact_selector_and_next_commit",
+      "builtin::commands::adapter::tests::index_publication_worker_tests::legacy_finish_add_removes_native_selection_after_staging_before_queue_compaction",
+      "builtin::commands::adapter::tests::index_publication_worker_tests::publication_worker_removes_native_selection_after_staging",
+      "builtin::commands::adapter::tests::legacy_add_and_cold_retry_expose_exact_native_partial_publication",
+      "builtin::commands::adapter::tests::native_python_publication_survives_missing_typescript_sdk_and_cold_refusal_retry",
+      "builtin::commands::adapter::tests::owned_intent_preparation_moves_facts_and_preserves_bound_canonical_identity",
+      "builtin::commands::adapter::tests::preparation_structured_query_shares_worker_and_cancel_is_immediate",
+      "builtin::commands::adapter::tests::refused_capture_reconciles_resident_view_before_terminal_reply",
+      "builtin::query::local_recipe::tests::local_recipe_admission_reuses_the_actual_activated_arc_without_probing",
+      "builtin::registry::tests::cold_local_health_keeps_registry_receipts_unopened_and_graph_unavailable",
+      "builtin::registry::tests::first_catalog_command_and_cold_reopen_publish_all_configured_source_facts",
+      "builtin::registry::tests::unavailable_catalog_does_not_block_local_health_or_publish_empty_facts_and_can_recover",
+      "builtin::remote_semantic_query::tests::withheld_local_owner_response_hits_the_configured_socket_deadline",
+      "builtin::search_source_page::tests::one_package_lookup_matches_its_rows_in_the_full_page",
+      "tests::unix_transport_executes_one_correlated_request",
+      "projection_tests::retained_external_document_page_keeps_actual_identity_and_explicit_source_refusal"
+    ],
+    "unique_unqualified_names": 34,
+    "original_package_attribution_verified": false,
+    "attribution_caveat": "Local-service children interleave one-test/zero-test subprocess summaries; the original collector false flag is preserved."
+  },
+  "native97": {
+    "exit": 1,
+    "phases": [
+      {
+        "name": "original33",
+        "summaries": [
+          {
+            "status": "FAILED",
+            "passed": 27,
+            "failed": 6,
+            "ignored": 0
+          }
+        ],
+        "named_count": 33,
+        "failures": [
+          "parallel::core::project_checker_partitions_tests::captured_file_and_ambient_owner_key_collision_refuses_reexport_rows",
+          "parallel::core::project_checker_partitions_tests::exact_external_aliases_keep_ambient_string_against_competing_file_number",
+          "parallel::core::project_checker_partitions_tests::external_wildcard_owner_cannot_lend_same_spelling_program_file_members",
+          "parallel::core::project_checker_partitions_tests::external_export_equals_hydrates_only_the_exact_nested_import_type",
+          "parallel::core::project_checker_partitions_tests::nested_ambient_reexport_owner_cannot_borrow_foreign_owner_edge",
+          "parallel::core::project_checker_partitions_tests::two_worker_cold_consumer_finishes_before_interface_owner_starts"
+        ],
+        "original_collector_profile_verified": false,
+        "original_collector_count_verified": false
+      },
+      {
+        "name": "original5",
+        "summaries": [
+          {
+            "status": "ok",
+            "passed": 5,
+            "failed": 0,
+            "ignored": 0
+          }
+        ],
+        "named_count": 5,
+        "failures": [],
+        "original_collector_profile_verified": false,
+        "original_collector_count_verified": false
+      },
+      {
+        "name": "ambient5",
+        "summaries": [
+          {
+            "status": "FAILED",
+            "passed": 4,
+            "failed": 1,
+            "ignored": 0
+          }
+        ],
+        "named_count": 5,
+        "failures": [
+          "parallel::core::selected_ambient_exports_tests::selected_ambient_named_edge_precedes_another_declarations_wildcard_but_not_direct_export"
+        ],
+        "original_collector_profile_verified": false,
+        "original_collector_count_verified": false
+      },
+      {
+        "name": "defaults2",
+        "summaries": [
+          {
+            "status": "ok",
+            "passed": 0,
+            "failed": 0,
+            "ignored": 0
+          }
+        ],
+        "named_count": 0,
+        "failures": [],
+        "original_collector_profile_verified": false,
+        "original_collector_count_verified": false
+      }
+    ],
+    "product_failures": 7,
+    "infrastructure_defects": [
+      "defaults filter used public state reexport rather than private state_domain test module; zero selected",
+      "original collector expected core lib instead of actual rlib target and checker empty instead of actual default feature"
+    ],
+    "replacement_source_pass": false
+  },
+  "native98": {
+    "exit": 0,
+    "named_tests": [
+      [
+        "state_domain::type_resolution::module::namespace_exports::selected_file_default_tests::exact_edge_esm_default_keeps_a_real_default_without_export_equals_borrowing",
+        "ok"
+      ],
+      [
+        "state_domain::type_resolution::module::namespace_exports::selected_file_default_tests::exact_edge_default_preserves_export_equals_precedence_and_esm_refusal",
+        "ok"
+      ]
+    ],
+    "exact_count": 2,
+    "same_original97_checker_sha256": "5e498f94c144d40f20562f432c486640771114be55cfd813a98c1db6a7c34bb3",
+    "source_unchanged": true
+  },
+  "source_repair_status": "Native96 repairs and TypeScript diagnostic repair integrated into frozen Root2ca; actual replacement native run pending. Seven compiler failures assigned to separate source repairs.",
+  "production_ready": false
+}

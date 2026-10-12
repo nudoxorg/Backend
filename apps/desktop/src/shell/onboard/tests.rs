@@ -1028,3 +1028,189 @@ fn captured_new_index_control_cannot_cross_same_root_owner_replacement(cx: &mut 
     assert_eq!(starts.lock().expect("starts").len(), 1, "old owner attachment cannot start distinct work under replacement");
     assert_eq!(phases(&mut rig), [ProjectPhase::Unconfirmed]);
 }
+
+#[gpui::test]
+fn retained_native_add_controls_cannot_act_on_a_cover_or_same_dialog_return(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton};
+    for (id, label) in [("add-folder-cancel", "Cancel"), ("add-folder-choose", "Choose folder…"), ("add-folder-add", "Add")] {
+        for returned in [false, true] {
+            let (parent, folder) = project("retained-local-dialog");
+            let mut rig = first_run(cx, 1440.0);
+            let shell = rig.shell.clone();
+            rig.cx.update(|window, cx| {
+                window.replace_root(cx, |window, cx| gpui_component::Root::new(shell, window, cx).bordered(false));
+                window.set_a11y_forced(true);
+            });
+            rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+            rig.go(Intent::OpenAddProject);
+            type_in(&mut rig, folder.to_str().expect("folder"));
+            let bounds = crate::shell::tests::native_bounds_id(&mut rig, id, "Button", label, true).expect("mounted Add control");
+            let node = rig.cx.update(|window, _| window.a11y_tree().expect("native dialog tree").nodes.iter()
+                .find(|(_, node)| node.role() == gpui::Role::Button && node.label() == Some(label)
+                    && node.supports_action(gpui::AccessibleAction::Click))
+                .map(|(id, _)| *id).expect("native dialog Click"));
+            let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+            let root = rig.graph.root.clone();
+            let reduced = root.read_with(rig.cx, |root, _| root.reduced());
+            let held = rig.cx.update(|window, cx| {
+                let form = super::form(window, cx).expect("mounted form");
+                let work = form.read(cx).work_state();
+                let input = window.focused(cx).expect("path input focus");
+                window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                    position: bounds.center(), modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1, first_mouse: false,
+                }), cx);
+                let held = window.focused(cx);
+                assert_ne!(held, Some(input.clone()), "the admitted native button really took pointer focus");
+                root.update(cx, |root, cx| {
+                    root.dispatch(Intent::OpenSettings(crate::navigation::SettingsPage::Appearance), cx);
+                    if returned { root.dispatch(Intent::DismissOverlay, cx); }
+                });
+                let expected = if returned { Overlay::AddProject } else { Overlay::Settings(crate::navigation::SettingsPage::Appearance) };
+                assert_eq!(root.read(cx).snapshot().overlay(), Some(expected));
+                window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                    position: bounds.center(), modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1,
+                }), cx);
+                for key in ["enter", "space"] {
+                    let keystroke = gpui::Keystroke::parse(key).expect("native dialog key");
+                    window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                        keystroke: keystroke.clone(), is_held: false, prefer_character_input: false,
+                    }), cx);
+                    window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
+                }
+                window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+                    action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: node, data: None,
+                }, cx);
+                assert_eq!(window.focused(cx), held);
+                input.focus(window, cx);
+                window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                    position: bounds.center(), modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1, first_mouse: false,
+                }), cx);
+                window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                    position: bounds.center(), modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1,
+                }), cx);
+                assert_eq!(window.focused(cx), Some(input.clone()), "a new stale press cannot steal focus");
+                assert_eq!(form.read(cx).work_state(), work, "old Add cannot start another filesystem admission");
+                assert_eq!(window.a11y_frame_number(), frame, "the entire input batch precedes the watcher and replacement paint");
+                Some(input)
+            });
+            assert!(!rig.cx.cx.did_prompt_for_paths(), "old Choose cannot open a native picker");
+            assert_eq!(root.read_with(rig.cx, |root, _| root.reduced()), reduced + if returned { 2 } else { 1 },
+                "no old Cancel or Choose intent survives the queued handoff");
+            assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), held, "post-effect input did not focus the retired control");
+            assert_eq!(rig.cx.update(|window, _| window.a11y_frame_number()), frame);
+            rig.settle();
+            if !returned { rig.go(Intent::DismissOverlay); }
+            assert_eq!(overlay(&mut rig), Some(Overlay::AddProject));
+            if id == "add-folder-choose" {
+                let fresh = crate::shell::tests::native_bounds_id(&mut rig, id, "Button", label, true).expect("renewed native Choose");
+                rig.cx.simulate_click(fresh.center(), Modifiers::none());
+                rig.cx.run_until_parked();
+                assert!(rig.cx.cx.did_prompt_for_paths(), "fresh Choose calls the actual GPUI platform prompt");
+                rig.cx.cx.simulate_path_prompt_response(|options| {
+                    assert!(!options.files && options.directories && options.multiple);
+                    None
+                });
+                rig.settle();
+                assert_eq!(overlay(&mut rig), Some(Overlay::AddProject), "cancelling the panel preserves the editing dialog");
+            }
+            let fresh = crate::shell::tests::native_bounds_id(&mut rig, "add-folder-cancel", "Button", "Cancel", true).expect("renewed native Cancel");
+            rig.cx.simulate_click(fresh.center(), Modifiers::none());
+            rig.settle();
+            assert_eq!(overlay(&mut rig), None, "the current local dialog remains usable without Back");
+            assert!(snapshot(&mut rig).workspace().projects.is_empty());
+            std::fs::remove_dir_all(parent).expect("remove owned project fixture");
+        }
+    }
+}
+
+#[gpui::test]
+fn retained_add_path_enter_cannot_submit_after_an_unpainted_cover_return(cx: &mut TestAppContext) {
+    for emitted_before_cover in [false, true] {
+        let (parent, folder) = project("retained-input-enter");
+        let mut rig = first_run(cx, 1440.0);
+        rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+        rig.go(Intent::OpenAddProject);
+        type_in(&mut rig, folder.to_str().expect("folder"));
+        let input = rig.cx.update(|window, cx| super::form(window, cx).expect("mounted Add").read(cx).input().clone());
+        let presses = std::rc::Rc::new(std::cell::Cell::new(0_u64));
+        let heard = presses.clone();
+        let _events = rig.cx.update(|_, cx| cx.subscribe(&input, move |_, event: &gpui_component::input::InputEvent, _| {
+            if matches!(event, gpui_component::input::InputEvent::PressEnter { .. }) { heard.set(heard.get() + 1); }
+        }));
+        let root = rig.graph.root.clone();
+        let before = root.read_with(rig.cx, |root, _| root.reduced());
+        let state = rig.cx.update(|window, cx| {
+            let form = super::form(window, cx).expect("mounted Add");
+            let input = form.read(cx).input().clone();
+            assert!(input.read(cx).focus_handle().is_focused(window), "the actual path field owns Enter");
+            let work = form.read(cx).work_state();
+            let frame = window.a11y_frame_number();
+            let focus = window.focused(cx);
+            let keystroke = gpui::Keystroke::parse("enter").expect("path Enter");
+            if emitted_before_cover {
+                // The real InputState emits PressEnter now; its subscriber
+                // runs after the synchronous overlay publications below.
+                window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                    keystroke: keystroke.clone(), is_held: false, prefer_character_input: false,
+                }), cx);
+            }
+            root.update(cx, |root, cx| {
+                root.dispatch(Intent::OpenSettings(crate::navigation::SettingsPage::Appearance), cx);
+                root.dispatch(Intent::DismissOverlay, cx);
+            });
+            assert_eq!(root.read(cx).snapshot().overlay(), Some(Overlay::AddProject));
+            if !emitted_before_cover {
+                window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                    keystroke: keystroke.clone(), is_held: false, prefer_character_input: false,
+                }), cx);
+            }
+            window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
+            assert_eq!(form.read(cx).work_state(), work);
+            assert_eq!(window.focused(cx), focus);
+            assert_eq!(window.a11y_frame_number(), frame);
+            (form, work, frame, focus)
+        });
+        assert_eq!(presses.get(), u64::from(emitted_before_cover), "the event oracle distinguishes a queued PressEnter from a denied retained key");
+        assert_eq!(state.0.read_with(rig.cx, |form, _| form.work_state()), state.1,
+            "deferred InputState PressEnter cannot start a retired admission");
+        assert_eq!(root.read_with(rig.cx, |root, _| root.reduced()), before + 2);
+        assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), state.3);
+        assert_eq!(rig.cx.update(|window, _| window.a11y_frame_number()), state.2);
+        rig.settle();
+        assert!(snapshot(&mut rig).workspace().projects.is_empty());
+        rig.keys("enter");
+        assert_eq!(presses.get(), u64::from(emitted_before_cover) + 1, "current native input emits one actual PressEnter");
+        assert_eq!(snapshot(&mut rig).workspace().projects.len(), 1, "fresh mounted input still admits the real folder");
+        assert_eq!(snapshot(&mut rig).workspace().projects[0].id, crate::core::LocalProjectId::from_path(&folder).expect("project"));
+        std::fs::remove_dir_all(parent).expect("remove owned fixture");
+    }
+}
+
+#[gpui::test]
+fn released_folder_answer_keeps_its_original_visit_through_a_coalesced_return(cx: &mut TestAppContext) {
+    let (parent, folder) = project("released-answer-visit");
+    let mut rig = first_run(cx, 1440.0);
+    rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+    rig.go(Intent::OpenAddProject);
+    type_in(&mut rig, folder.to_str().expect("folder"));
+    let release = held_admission(&mut rig, &folder);
+    let root = rig.graph.root.clone();
+    // Return the physical answer without pumping either the task completion
+    // or the ordinary overlay watchers between these actual publications.
+    rig.cx.update(|window, cx| {
+        let frame = window.a11y_frame_number();
+        release.try_send(()).expect("release physical answer");
+        root.update(cx, |root, cx| {
+            root.dispatch(Intent::OpenSettings(crate::navigation::SettingsPage::Appearance), cx);
+            root.dispatch(Intent::DismissOverlay, cx);
+        });
+        assert_eq!(root.read(cx).snapshot().overlay(), Some(Overlay::AddProject));
+        assert_eq!(window.a11y_frame_number(), frame);
+    });
+    rig.settle();
+    assert!(snapshot(&mut rig).workspace().projects.is_empty(), "the old physical admission cannot adopt a later Add visit");
+    assert_eq!(overlay(&mut rig), Some(Overlay::AddProject));
+    rig.keys("enter");
+    assert_eq!(snapshot(&mut rig).workspace().projects.len(), 1, "a fresh current submission remains available");
+    std::fs::remove_dir_all(parent).expect("remove owned fixture");
+}

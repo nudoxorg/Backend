@@ -11,6 +11,14 @@ enum OwnerReexportPhase {
     Both,
 }
 
+// The key is used only during one admitted External lookup. Borrowed symbol
+// storage and the retained table/row addresses remain live for that invocation.
+type SelectedAmbientExportTableKey<'a> = (
+    *const tsz_binder::SymbolTable,
+    tsz_binder::symbols::SymbolArenaStorageKey<'a>,
+    Option<*const tsz_binder::FileReexports>,
+);
+
 impl<'a> CheckerState<'a> {
     /// Resolve a namespace import (import * as ns) from another file using cross-file resolution.
     ///
@@ -329,6 +337,26 @@ impl<'a> CheckerState<'a> {
         self.resolve_effective_module_exports_with_mode(module_specifier, resolution_mode)
     }
 
+    fn first_selected_ambient_export_table<'b>(
+        &self,
+        binder: &'b tsz_binder::BinderState,
+        ambient_key: &str,
+        exports: &'b tsz_binder::SymbolTable,
+        seen: &mut rustc_hash::FxHashSet<SelectedAmbientExportTableKey<'b>>,
+    ) -> bool {
+        // Legacy binders can resolve the same numeric ID through different lib
+        // fallbacks. Retain their original per-binder processing.
+        if !binder.lib_symbols_are_merged() {
+            return true;
+        }
+        seen.insert((
+            exports as *const _,
+            binder.get_symbols().storage_key(),
+            self.ctx.reexports_for_file(binder, ambient_key)
+                .map(|rows| rows as *const _),
+        ))
+    }
+
     /// Type and value member lookup preserves the selected request and owner.
     /// Runtime namespace collection separately filters type-only wildcard edges.
     pub(crate) fn resolve_member_for_selected_request(
@@ -348,6 +376,8 @@ impl<'a> CheckerState<'a> {
         let mut owners = rustc_hash::FxHashSet::default();
         let mut ambient_guard = rustc_hash::FxHashSet::default();
         let mut merged_direct = None;
+        let mut tables = Vec::new();
+        let mut seen_tables = rustc_hash::FxHashSet::default();
         for (file_idx, binder) in self.ctx.all_binders.as_ref()?.iter().enumerate() {
             let Some((ambient_key, exports)) = self
                 .ctx
@@ -372,6 +402,16 @@ impl<'a> CheckerState<'a> {
                     return Some(symbol);
                 }
             }
+            if self.first_selected_ambient_export_table(
+                binder, ambient_key, exports, &mut seen_tables,
+            ) {
+                tables.push((binder.as_ref(), exports));
+            }
+        }
+        let ambient_key = admitted_key?;
+        // Every admitted declaration scope precedes merged/export= work. A
+        // shared merged table must not hide a later owner's direct member.
+        for (binder, exports) in tables {
             if merged_direct.is_none()
                 && let Some(symbol) = self.resolve_export_from_table(binder, exports, name)
                 && !self.is_owner_named_reexport_alias(binder, ambient_key, name, symbol)
@@ -398,7 +438,6 @@ impl<'a> CheckerState<'a> {
                 }
             }
         }
-        let ambient_key = admitted_key?;
         if let Some(symbol) = merged_direct {
             return Some(symbol);
         }
@@ -749,6 +788,8 @@ impl<'a> CheckerState<'a> {
         let mut combined = tsz_binder::SymbolTable::new();
         let mut merged_direct = tsz_binder::SymbolTable::new();
         let mut owners = rustc_hash::FxHashSet::default();
+        let mut tables = Vec::new();
+        let mut seen_tables = rustc_hash::FxHashSet::default();
         for (file_idx, binder) in self.ctx.all_binders.as_ref()?.iter().enumerate() {
             let Some((ambient_key, exports)) = self
                 .ctx
@@ -771,6 +812,16 @@ impl<'a> CheckerState<'a> {
                     }
                 }
             }
+            if self.first_selected_ambient_export_table(
+                binder, ambient_key, exports, &mut seen_tables,
+            ) {
+                tables.push((binder.as_ref(), exports));
+            }
+        }
+        let ambient_key = admitted_key?;
+        // Keep all per-file direct rows, then hydrate each borrowed immutable
+        // merged export context once before the existing named/wildcard phases.
+        for (binder, exports) in tables {
             let mut declaration = exports.clone();
             self.merge_export_equals_members(binder, exports, &mut declaration);
             if let Some(symbol) = exports.get("export=").and_then(|id| binder.get_symbol(id)) {
@@ -796,7 +847,6 @@ impl<'a> CheckerState<'a> {
                 }
             }
         }
-        let ambient_key = admitted_key?;
         for (name, &symbol) in merged_direct.iter() {
             if !combined.has(name) {
                 combined.set(name.clone(), symbol);

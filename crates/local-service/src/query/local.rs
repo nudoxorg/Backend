@@ -1623,6 +1623,12 @@ impl QueryCoordinator {
         self.corpus.selected.document_order.len()
     }
 
+    /// Exact existing lexical binding for an opt-in worker observation.
+    #[cfg(feature = "cluster-process-journey-hooks")]
+    pub(crate) fn preparation_diagnostic_binding(&self) -> lexical::Binding {
+        self.corpus.lexical_binding
+    }
+
     /// Returns the typed workspace identity selected by this coordinator.
     #[must_use]
     pub(crate) fn workspace_root(&self) -> WorkspaceRoot {

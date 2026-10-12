@@ -3915,7 +3915,13 @@ fn recognized_nix_parallel_cargo(
         return None;
     }
     let source = body.get(path_end + PATH_SUFFIX.len()..)?;
-    let substitutions = match_nix_path_template(template, source)?;
+    // writeShellApplication appends one newline after its text. Compare the
+    // complete allowlisted body, permitting only that exact generator framing;
+    // never trim whitespace or ignore a trailing shell statement. The direct
+    // form remains supported for previously admitted unframed launchers.
+    let substitutions = match_nix_path_template(template, source).or_else(|| {
+        match_nix_path_template(template, source.strip_suffix(b"\n")?)
+    })?;
     let cargo = substitutions.get("cargo")?.clone();
     let git = substitutions.get("git")?.clone();
     let sccache = substitutions.get("sccache")?;
@@ -8698,6 +8704,12 @@ mod tests {
         assert_eq!(parsed.cargo, PathBuf::from(replacements[0].1));
         assert_eq!(parsed.git, PathBuf::from(replacements[1].1));
         assert_eq!(parsed.wrapper_source, PathBuf::from(replacements[6].1));
+        let generated = format!("{script}\n");
+        let generated_parsed = recognized_nix_parallel_cargo(generated.as_bytes(), TEMPLATE)
+            .expect("current writeShellApplication generator framing");
+        assert_eq!(generated_parsed.cargo, parsed.cargo);
+        assert_eq!(generated_parsed.runtime_path, parsed.runtime_path);
+        assert_eq!(generated_parsed.wrapper_source, parsed.wrapper_source);
 
         for altered in [
             script.replace(
@@ -8727,6 +8739,82 @@ mod tests {
             )
             .is_none(),
             "repeated placeholders must resolve to the same path"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn captured_generated_nix_cargo_retains_exact_template_and_single_newline_framing() {
+        const SOURCE: &[u8] =
+            include_bytes!("browse/cargo_metadata/fixtures/nix-cargo-source-legacy.sh");
+        const GENERATED: &[u8] =
+            include_bytes!("browse/cargo_metadata/fixtures/nix-cargo-generated-legacy.sh");
+        assert_eq!(SOURCE.len(), 33_336);
+        assert_eq!(
+            lower_hex(&sha2::Sha256::digest(SOURCE)),
+            "8d3eeafe6078a3d468181c2da26d4a75a0f2005fca5d180eeb3cdc572c7b93c5"
+        );
+        assert_eq!(GENERATED.len(), 35_117);
+        assert_eq!(
+            lower_hex(&sha2::Sha256::digest(GENERATED)),
+            "b7569d29ccc696062ba0aa96ce93e2042770da6a4ec1b25aeaec6234ebbfe1d1"
+        );
+        assert!(is_supported_nix_cargo_source_template(SOURCE));
+        let parsed = recognized_nix_parallel_cargo(GENERATED, SOURCE)
+            .expect("actual immutable writeShellApplication form");
+        assert_eq!(
+            parsed.cargo,
+            Path::new(
+                "/nix/store/lynmg3kdpdz41r84nafwzi2n5nss50pq-rust-1.97.1-with-components-2026-07-16/bin/cargo"
+            )
+        );
+        assert_eq!(
+            parsed.git,
+            Path::new("/nix/store/1k2lblqlj39azh6wn1sffa2869vrg3mr-git-2.54.0/bin/git")
+        );
+        assert_eq!(
+            parsed.wrapper_source,
+            Path::new("/nix/store/yafcfw231y68f25akncyfr50g5lyw7xf-cargo-shared-cache.sh")
+        );
+        let text = std::str::from_utf8(GENERATED).expect("retained script UTF-8");
+        // Preserve the old exact body contract as well as the generated form.
+        assert!(
+            recognized_nix_parallel_cargo(
+                GENERATED.strip_suffix(b"\n").expect("generator LF"),
+                SOURCE
+            )
+            .is_some()
+        );
+        for altered in [
+            format!("{text}\n"),
+            format!("{text} "),
+            format!("{text}touch /tmp/untracked-effect\n"),
+            text.replace(
+                "set -o nounset\n",
+                "set -o nounset\nsource /tmp/untrusted.sh\n",
+            ),
+            text.replacen(
+                "workspace_root=",
+                "touch /tmp/untracked-effect\nworkspace_root=",
+                1,
+            ),
+            text.replacen("/bin/git rev-parse", "/bin/other-git rev-parse", 1),
+            text.replacen(":$PATH", ":/tmp/untrusted/bin:$PATH", 1),
+        ] {
+            assert!(
+                recognized_nix_parallel_cargo(altered.as_bytes(), SOURCE).is_none(),
+                "generator framing cannot admit additional shell effects"
+            );
+        }
+        let mut unsupported_source = SOURCE.to_vec();
+        unsupported_source.push(b'\n');
+        assert!(
+            !is_supported_nix_cargo_source_template(&unsupported_source),
+            "source allowlisting remains byte-exact; only generated framing varies"
+        );
+        assert!(
+            match_nix_path_template(b"fixed\n", b"fixed\n\n").is_none(),
+            "the generic substitution matcher remains strict"
         );
     }
 

@@ -3590,10 +3590,7 @@ mod tests {
     use flate2::{Compression, write::GzEncoder};
     use std::io::{Read as IoRead, Write as IoWrite};
     use std::net::TcpListener;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::thread;
-
-    static NEXT: AtomicU64 = AtomicU64::new(0);
 
     struct ScratchDirectory(PathBuf);
 
@@ -3604,23 +3601,9 @@ mod tests {
     }
 
     fn scratch() -> PathBuf {
-        for _ in 0..64 {
-            let id = NEXT.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "backend-registry-stage-{}-{id}",
-                std::process::id()
-            ));
-            match fs::create_dir(&path) {
-                Ok(()) => {
-                    crate::test_support::make_private(&path)
-                        .expect("make the registry fixture directory private");
-                    return path;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => panic!("create isolated registry fixture directory: {error}"),
-            }
-        }
-        panic!("registry fixture directory capacity exhausted")
+        crate::test_support::private_temp_dir("registry")
+            .expect("create private registry fixture directory")
+            .keep()
     }
 
     #[test]

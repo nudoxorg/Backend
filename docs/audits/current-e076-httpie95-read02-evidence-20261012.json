@@ -1,0 +1,51 @@
+{
+  "scope": "Root independent mirrored-record audit; executable identity is observer measured, not direct Root ELF measurement",
+  "source": {
+    "clean": true,
+    "commit": "e0767e71b7077f9bbd1604cbf7bb097090fbbba3",
+    "tree": "519dcf63c5b558a509f254998131f768c3f3c14e"
+  },
+  "packet_archive_sha256": "0cf376e638db58ac39be297e1f2ae79ba37e171b31e3eb69854187308ea51d56",
+  "packet_files_rehashed": 159,
+  "raw_replies_rehashed_and_protocol_checked": 51,
+  "passed_observer_checks": 37,
+  "pagination_independently_checked": {
+    "caller-graph": {
+      "pages": 5,
+      "unique_coordinates": 5
+    },
+    "selected-mcp-graph": {
+      "pages": 1,
+      "unique_coordinates": 1
+    },
+    "mcp-search": {
+      "pages": 4,
+      "unique_coordinates": 4
+    },
+    "mcp-resolve": {
+      "pages": 3,
+      "unique_coordinates": 9
+    }
+  },
+  "caller_plain_paged_coordinate_union_equal": true,
+  "max_response_bytes": 31809,
+  "max_recorded_cl100k_tokens": 11152,
+  "cold_published_status_seconds": 7.255417166044936,
+  "first_selected_search_seconds": 6.021715753013268,
+  "semantic_coverage": {
+    "lane": "semantic",
+    "state": "unavailable",
+    "reason": "unconfigured"
+  },
+  "overall_acceptance": "INCOMPLETE: host capacity admission refused the next malformed mutation check; actual product replies above passed",
+  "historical_first_flow_external_document_failures_preserved": true,
+  "unrun": [
+    "remaining 11 malformed tool calls",
+    "CLI selected reads and help",
+    "offline cold cursor replay",
+    "positive index/remove/active-cancel lifecycle",
+    "b40 native regression tests"
+  ],
+  "outer_exit": 1,
+  "scope_drained_and_permit_released": true
+}

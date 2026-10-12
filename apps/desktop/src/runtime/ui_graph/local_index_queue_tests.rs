@@ -319,3 +319,31 @@ fn absent_persistence_fails_closed_without_allocating_a_sent_claim(cx: &mut Test
         assert!(row.error.as_deref().expect("actionable reason").contains("cannot be saved"));
     }));
 }
+
+#[gpui::test]
+fn queued_add_dialog_actions_keep_their_visit_while_the_owner_is_unavailable(cx: &mut TestAppContext) {
+    let schedule = Schedule::new(cx, OwnerGate::starting());
+    for intent in [Intent::DismissOverlay, Intent::OpenFolderPicker] {
+        cx.update(|cx| {
+            schedule.root.update(cx, |root, cx| {
+                root.dispatch(Intent::OpenAddProject, cx);
+                let visit = root.add_project_visit(cx.entity_id(), cx).expect("local Add does not need a serving owner");
+                root.queue_add_project(intent, visit, cx);
+                assert!(matches!(root.pending.as_slice(), [QueuedIntent::AddProject { .. }]));
+                root.dispatch(Intent::OpenSettings(crate::navigation::SettingsPage::Appearance), cx);
+                root.dispatch(Intent::DismissOverlay, cx);
+                assert_eq!(root.snapshot().overlay(), Some(crate::navigation::Overlay::AddProject));
+                assert!(!root.admits_add_project_visit(visit, cx.entity_id(), cx), "same overlay does not restore its retired visit");
+                let reduced = root.reduced();
+                root.flush_pending(cx);
+                assert_eq!(root.reduced(), reduced, "the queued old action cannot adopt this Add return");
+                assert!(root.folder_picker_task.is_none());
+                let current = root.add_project_visit(cx.entity_id(), cx).expect("renewed local visit");
+                root.queue_add_project(Intent::DismissOverlay, current, cx);
+                root.flush_pending(cx);
+                assert_eq!(root.snapshot().overlay(), None, "fresh Cancel works while Starting");
+            });
+        });
+    }
+    assert!(!cx.did_prompt_for_paths(), "the rejected queued Choose never called the native picker");
+}

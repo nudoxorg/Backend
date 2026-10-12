@@ -338,7 +338,7 @@ fn retained_external_document_page_keeps_actual_identity_and_explicit_source_ref
         .expect("actual row and exact basis");
     let page = crate::assemble::page_from_document(&coordinate, &document, &[], &[], Vec::new());
     assert_eq!(page.identity().key(), IdentityKey::Symbol(native));
-    assert!(page.prose().is_empty());
+    assert_eq!(page.prose(), &[Prose::Text(coordinate.clone())]);
     assert!(page.signature().is_none());
     assert!(page.source().site().is_none());
     let answer = Answer::Page(Box::new(page));
