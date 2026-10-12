@@ -39,6 +39,21 @@ const VERIFIED_SEGMENT_CACHE_BYTES: usize = 32 * 1024 * 1024;
 const VERIFIED_SEGMENT_CACHE_ENTRIES: usize = 4_096;
 const OBJECT_READ_CHUNK_BYTES: usize = 16 * 1024;
 
+#[cfg(test)]
+#[path = "versioned_planes/row_segments_tests.rs"]
+mod row_segments_tests;
+
+// A target controls canonical cuts, not whether an intact typed row can be
+// represented. The existing hash-ramp writer admits a target-oversize row and
+// cuts before the next row; the manifest and cold verifier retain the canonical
+// hard ceiling. In particular, Types rows cannot be split into arbitrary bytes.
+fn native_history_boundary_policy()
+-> Result<SemanticPlaneSegmentBoundaryPolicy, backend_semantic::ir::SemanticPlaneRecordError> {
+    let maximum = u32::try_from(backend_semantic::ir::MAX_SEMANTIC_SEGMENT_BYTES)
+        .map_err(|_| backend_semantic::ir::SemanticPlaneRecordError::BoundaryPolicyRange)?;
+    SemanticPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(2 * 1024, 4 * 1024, maximum)
+}
+
 /// A worker-safe view of one selected-closure image range route. It retains
 /// only immutable storage handles and the existing bounded reader caches; the
 /// mutable Turso authority remains on the owner thread.
@@ -1076,7 +1091,7 @@ fn publish_native_history_commit(
         .into_vec()
     };
 
-    let policy = SemanticPlaneSegmentBoundaryPolicy::stable_key_hash_ramp(512, 1024, 4096)
+    let policy = native_history_boundary_policy()
         .map_err(|error| NativeHistoryPublicationError::Refused(error.to_string()))?;
     let policies = backend_replication::SemanticTypedPlaneBoundaryPoliciesV3::new(
         policy, policy, policy, policy, policy, policy, policy,
@@ -2399,7 +2414,9 @@ mod tests {
         )
         .expect("valid product selection key");
         let authority = SemanticAuthority::open(&directory).expect("open semantic authority");
-        let mut source = authority.owned_history_selection_source(key).expect("native history writer capability");
+        let mut source = authority
+            .owned_history_selection_source(key)
+            .expect("native history writer capability");
 
         let error = source
             .current_selected_generation()
