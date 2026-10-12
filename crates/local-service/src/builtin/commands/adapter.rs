@@ -10547,7 +10547,7 @@ mod tests {
         assert_eq!(wire["reply"]["kind"], "graph_query_page");
         let reply = backend_engine::decode_reply_dto(&bytes).expect("strict cancelled page");
         assert_eq!(reply.request_id, 803);
-        let CommandReply::GraphQueryPage(page) = reply.reply else {
+        let backend_library::CommandReply::GraphQueryPage(page) = reply.reply else {
             panic!("cancellation must return its typed page");
         };
         cancelled
