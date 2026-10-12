@@ -6425,14 +6425,11 @@ mod tests {
     #[path = "public_coordinate_alias.rs"]
     mod public_coordinate_alias_tests;
 
-    // QUARANTINE (W1.1 rules): forward-ported in a95ee8d40 against pre-2026-09 APIs
-    // (QueryLimit::new -> Option, ViewSnapshot rows, private select_owner, ...); never
-    // compiled on canonical. Owner: philocalyst. Expires 2026-10-19: port or delete.
-    #[cfg(any())]
+    #[cfg(unix)]
     #[path = "local_semantic_transport.rs"]
     mod local_semantic_transport_tests;
 
-    #[cfg(any())]
+    #[cfg(unix)]
     #[path = "local_semantic_memory.rs"]
     mod local_semantic_memory_tests;
 
@@ -10448,10 +10445,7 @@ mod tests {
         );
     }
 
-    // QUARANTINE (W1.1 rules): forward-ported in a95ee8d40 against pre-2026-09 APIs
-    // (QueryLimit::new -> Option, ViewSnapshot rows, private select_owner, ...); never
-    // compiled on canonical. Owner: philocalyst. Expires 2026-10-19: port or delete.
-    #[cfg(any())]
+    #[cfg(unix)]
     #[test]
     fn local_semantic_first_reply_awaits_worker_and_alternating_queries_reuse_exact_cache() {
         // This is an executed BEM2 protocol fixture, never a genuine model claim.
@@ -10461,11 +10455,8 @@ mod tests {
         let runtime = producer.provision.runtime().expect("shared runtime");
         let mut fixture = AdapterFixture::new();
         let (adapter, daemon) = fixture.parts();
-        adapter.remote_semantic = crate::builtin::query::RemoteSemantic::select_owner(
-            &producer.provision,
-            &producer.descriptor,
-            crate::builtin::query::RemoteSemantic::Unconfigured,
-        );
+        adapter.remote_semantic =
+            crate::builtin::query::local_semantic::tests::fixture_owner(&producer);
         let baseline = runtime.memory_budget().used();
         for (id, text) in [
             (1601, "first intent"),
@@ -10573,10 +10564,7 @@ mod tests {
         );
     }
 
-    // QUARANTINE (W1.1 rules): forward-ported in a95ee8d40 against pre-2026-09 APIs
-    // (QueryLimit::new -> Option, ViewSnapshot rows, private select_owner, ...); never
-    // compiled on canonical. Owner: philocalyst. Expires 2026-10-19: port or delete.
-    #[cfg(any())]
+    #[cfg(unix)]
     #[test]
     fn local_semantic_deferred_reply_refuses_stale_generation_deadline_and_credit_pressure() {
         let producer =
@@ -10586,11 +10574,8 @@ mod tests {
         let mut fixture = AdapterFixture::new();
         let (changed_package, changed_label) = fixture.add_target();
         let (adapter, daemon) = fixture.parts();
-        adapter.remote_semantic = crate::builtin::query::RemoteSemantic::select_owner(
-            &producer.provision,
-            &producer.descriptor,
-            crate::builtin::query::RemoteSemantic::Unconfigured,
-        );
+        adapter.remote_semantic =
+            crate::builtin::query::local_semantic::tests::fixture_owner(&producer);
         let baseline = runtime.memory_budget().used();
         let body = search_body(daemon, 1901, "intent");
         let pressure = runtime

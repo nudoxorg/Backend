@@ -48,11 +48,8 @@ fn local_semantic_deferred_shared_pressure_yields_optional_cache_before_reply_an
     let runtime = producer.provision.runtime().expect("activated runtime");
     let mut fixture = AdapterFixture::new();
     let (adapter, daemon) = fixture.parts();
-    adapter.remote_semantic = crate::builtin::query::RemoteSemantic::select_owner(
-        &producer.provision,
-        &producer.descriptor,
-        crate::builtin::query::RemoteSemantic::Unconfigured,
-    );
+    adapter.remote_semantic =
+        crate::builtin::query::local_semantic::tests::fixture_owner(&producer);
     for at in 0..12 {
         let id = 4000 + at;
         let body = search_body(daemon, id, &format!("warm intent {at}"));
@@ -157,11 +154,8 @@ fn local_semantic_sole_ticket_abandon_or_deadline_demotes_completion_without_can
         let runtime = producer.provision.runtime().expect("activated runtime");
         let mut fixture = AdapterFixture::new();
         let (adapter, daemon) = fixture.parts();
-        adapter.remote_semantic = crate::builtin::query::RemoteSemantic::select_owner(
-            &producer.provision,
-            &producer.descriptor,
-            crate::builtin::query::RemoteSemantic::Unconfigured,
-        );
+        adapter.remote_semantic =
+            crate::builtin::query::local_semantic::tests::fixture_owner(&producer);
         let body = search_body(daemon, 4600, "sole held intent");
         assert!(matches!(
             adapter.execute_or_defer(daemon, &body, 5600),
@@ -247,11 +241,8 @@ fn local_semantic_exact_live_duplicate_protects_first_completion_until_last_tick
     let runtime = producer.provision.runtime().expect("runtime");
     let mut fixture = AdapterFixture::new();
     let (adapter, daemon) = fixture.parts();
-    adapter.remote_semantic = crate::builtin::query::RemoteSemantic::select_owner(
-        &producer.provision,
-        &producer.descriptor,
-        crate::builtin::query::RemoteSemantic::Unconfigured,
-    );
+    adapter.remote_semantic =
+        crate::builtin::query::local_semantic::tests::fixture_owner(&producer);
     for (id, ticket) in [(4700, 5700), (4701, 5701)] {
         let body = search_body(daemon, id, "same held intent");
         assert!(matches!(
@@ -316,11 +307,8 @@ fn local_semantic_reattached_ticket_reclaims_owed_interest_before_nontransport_w
     let queries_before = calls(&producer.log, 1);
     let mut fixture = AdapterFixture::new();
     let (adapter, daemon) = fixture.parts();
-    adapter.remote_semantic = crate::builtin::query::RemoteSemantic::select_owner(
-        &producer.provision,
-        &producer.descriptor,
-        crate::builtin::query::RemoteSemantic::Unconfigured,
-    );
+    adapter.remote_semantic =
+        crate::builtin::query::local_semantic::tests::fixture_owner(&producer);
     let body = search_body(daemon, 4800, "reattached held intent");
     assert!(matches!(
         adapter.execute_or_defer(daemon, &body, 5800),

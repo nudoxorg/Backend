@@ -76,12 +76,12 @@ fn local_semantic_alternating_warm_queries_retain_exact_answers_and_credits() ->
     let first = backend_engine::Query::new(
         "first intent",
         view.root(),
-        backend_engine::QueryLimit::new(3)?,
+        backend_engine::QueryLimit::new(3).expect("positive fixture query limit"),
     );
     let second = backend_engine::Query::new(
         "second intent",
         view.root(),
-        backend_engine::QueryLimit::new(3)?,
+        backend_engine::QueryLimit::new(3).expect("positive fixture query limit"),
     );
     let (first_page, first_status) = settle_page(
         &coordinator,
@@ -100,8 +100,11 @@ fn local_semantic_alternating_warm_queries_retain_exact_answers_and_credits() ->
     assert_eq!(first_status, SemanticSearchStatus::Available);
     assert_eq!(second_status, SemanticSearchStatus::Available);
     for text in ["third intent", "fourth intent", "fifth intent"] {
-        let request =
-            backend_engine::Query::new(text, view.root(), backend_engine::QueryLimit::new(3)?);
+        let request = backend_engine::Query::new(
+            text,
+            view.root(),
+            backend_engine::QueryLimit::new(3).expect("positive fixture query limit"),
+        );
         assert_eq!(
             settle_page(
                 &coordinator,
@@ -136,7 +139,7 @@ fn local_semantic_alternating_warm_queries_retain_exact_answers_and_credits() ->
         } else {
             &second_page
         };
-        assert_eq!(page.rows(), expected.rows());
+        assert_eq!(page.root.rows(), expected.root.rows());
         assert!(provider.local_preparation().is_none());
         assert_eq!(
             runtime.memory_budget().used(),
@@ -215,7 +218,7 @@ fn local_semantic_transient_query_failure_is_one_shot_and_preserves_selected_pro
     let warm = backend_engine::Query::new(
         "warm intent",
         view.root(),
-        backend_engine::QueryLimit::new(3)?,
+        backend_engine::QueryLimit::new(3).expect("positive fixture query limit"),
     );
     assert_eq!(
         settle_page(&coordinator, &library, &mut provider, &warm, flag.clone())?.1,
@@ -226,7 +229,7 @@ fn local_semantic_transient_query_failure_is_one_shot_and_preserves_selected_pro
     let retry = backend_engine::Query::new(
         "retry intent",
         view.root(),
-        backend_engine::QueryLimit::new(3)?,
+        backend_engine::QueryLimit::new(3).expect("positive fixture query limit"),
     );
     assert_eq!(
         settle_page(&coordinator, &library, &mut provider, &retry, flag.clone())?.1,
@@ -294,7 +297,7 @@ fn local_semantic_owner_spawn_refusal_preserves_projection_selection_and_warm_an
     let warm = backend_engine::Query::new(
         "warm intent",
         view.root(),
-        backend_engine::QueryLimit::new(3)?,
+        backend_engine::QueryLimit::new(3).expect("positive fixture query limit"),
     );
     let (warm_page, status) =
         settle_page(&coordinator, &library, &mut provider, &warm, flag.clone())?;
@@ -317,7 +320,7 @@ fn local_semantic_owner_spawn_refusal_preserves_projection_selection_and_warm_an
     let retry = backend_engine::Query::new(
         "retry intent",
         view.root(),
-        backend_engine::QueryLimit::new(3)?,
+        backend_engine::QueryLimit::new(3).expect("positive fixture query limit"),
     );
     let expected_lexical = super::super::search_page_with_cancellation(
         &coordinator,
@@ -400,7 +403,7 @@ fn local_semantic_owner_spawn_refusal_preserves_projection_selection_and_warm_an
         SemanticSearchStatus::Available,
         "original selection admits warm answer"
     );
-    assert_eq!(page.rows(), warm_page.rows());
+    assert_eq!(page.root.rows(), warm_page.root.rows());
     assert_eq!(std::fs::read_to_string(&fixture.log)?, before_calls);
     assert_eq!(
         settle_page(&coordinator, &library, &mut provider, &retry, flag.clone(),)?.1,
@@ -464,7 +467,7 @@ fn local_semantic_first_completion_is_owed_not_optional_before_actual_delivery()
     let request = backend_engine::Query::new(
         "first owed intent",
         view.root(),
-        backend_engine::QueryLimit::new(3)?,
+        backend_engine::QueryLimit::new(3).expect("positive fixture query limit"),
     );
     let (_, pending) = super::super::search_page_with_cancellation(
         &coordinator,
@@ -528,7 +531,7 @@ fn local_semantic_first_completion_is_owed_not_optional_before_actual_delivery()
         SemanticSearchStatus::Available,
         "owed original moves when no copy fits"
     );
-    assert!(!page.rows().is_empty());
+    assert!(!page.root.rows().is_empty());
     let crate::builtin::query::RemoteSemantic::Local(owner) = &provider else {
         return Err("local owner".into());
     };
@@ -563,7 +566,7 @@ fn local_semantic_shared_admission_reclaims_at_seed_query_and_owned_output() -> 
         let request = backend_engine::Query::new(
             format!("warm intent {at}"),
             view.root(),
-            backend_engine::QueryLimit::new(3)?,
+            backend_engine::QueryLimit::new(3).expect("positive fixture query limit"),
         );
         assert_eq!(
             settle_page(
@@ -627,7 +630,7 @@ fn local_semantic_shared_admission_reclaims_at_seed_query_and_owned_output() -> 
     let request = backend_engine::Query::new(
         "single owed intent",
         view.root(),
-        backend_engine::QueryLimit::new(3)?,
+        backend_engine::QueryLimit::new(3).expect("positive fixture query limit"),
     );
     let (expected, status) = settle_page(
         &coordinator,
@@ -651,7 +654,7 @@ fn local_semantic_shared_admission_reclaims_at_seed_query_and_owned_output() -> 
     )
     .map_err(|error| error.to_string())?;
     assert_eq!(status, SemanticSearchStatus::Available);
-    assert_eq!(owed.rows(), expected.rows());
+    assert_eq!(owed.root.rows(), expected.root.rows());
     assert_eq!(
         std::fs::read_to_string(&fixture.log)?,
         before_output,
@@ -783,7 +786,8 @@ fn selected_many(
         rows,
         vec![backend_engine::ViewCoverage::Complete],
         capability,
-    )?;
+    )
+    .map_err(|error| format!("fixture view admission refused: {error:?}"))?;
     let evidence = super::super::tests::semantic_evidence(head.root(), &view);
     let coordinator = QueryCoordinator::new(
         head.root(),
@@ -807,6 +811,15 @@ pub(crate) struct ProtocolFixture {
     pub(crate) log: std::path::PathBuf,
     pub(crate) entered: std::path::PathBuf,
     pub(crate) release: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+pub(crate) fn fixture_owner(fixture: &ProtocolFixture) -> crate::builtin::query::RemoteSemantic {
+    crate::builtin::query::RemoteSemantic::select_owner(
+        &fixture.provision,
+        &fixture.descriptor,
+        crate::builtin::query::RemoteSemantic::Unconfigured,
+    )
 }
 
 #[cfg(unix)]
@@ -1136,8 +1149,11 @@ fn local_semantic_real_protocol_fixture_contributes_exact_canonical_rows_and_sha
         return Err("local recipe admission".into());
     }
     let baseline = runtime.memory_budget().used();
-    let request =
-        backend_engine::Query::new("intent", view.root(), backend_engine::QueryLimit::new(3)?);
+    let request = backend_engine::Query::new(
+        "intent",
+        view.root(),
+        backend_engine::QueryLimit::new(3).expect("positive fixture query limit"),
+    );
     let flag = Arc::new(AtomicBool::new(false)); // Actual fixture selection lifetime; no transport claim.
     let before = std::fs::read_to_string(&fixture.log)?.lines().count();
     let (page, status) = super::super::search_page_with_cancellation(
@@ -1155,7 +1171,7 @@ fn local_semantic_real_protocol_fixture_contributes_exact_canonical_rows_and_sha
             reason: SemanticSearchReason::NoActiveProjection
         }
     );
-    assert!(page.rows().is_empty());
+    assert!(page.root.rows().is_empty());
     let (page, status) = settle_page(
         &coordinator,
         &library,
@@ -1164,7 +1180,7 @@ fn local_semantic_real_protocol_fixture_contributes_exact_canonical_rows_and_sha
         Arc::clone(&flag),
     )?;
     assert_eq!(status, SemanticSearchStatus::Available);
-    assert!(page.rows().iter().any(|row| row.id == winner_row));
+    assert!(page.root.rows().iter().any(|row| row.id == winner_row));
     let log = std::fs::read_to_string(&fixture.log)?;
     let invocations = log
         .lines()
@@ -1434,8 +1450,11 @@ fn local_semantic_gated_worker_serves_complete_lexical_pages_and_retires_actual_
     );
     let runtime = fixture.provision.runtime().ok_or("runtime")?;
     let baseline = runtime.memory_budget().used();
-    let request =
-        backend_engine::Query::new("fixture", view.root(), backend_engine::QueryLimit::new(3)?);
+    let request = backend_engine::Query::new(
+        "fixture",
+        view.root(),
+        backend_engine::QueryLimit::new(3).expect("positive fixture query limit"),
+    );
     let expected = super::super::search_page(
         &coordinator,
         &library,
@@ -1546,8 +1565,11 @@ fn local_semantic_later_page_failure_discards_entire_projection_and_never_runs_q
         &fixture.descriptor,
         crate::builtin::query::RemoteSemantic::Unconfigured,
     );
-    let request =
-        backend_engine::Query::new("fixture", view.root(), backend_engine::QueryLimit::new(3)?);
+    let request = backend_engine::Query::new(
+        "fixture",
+        view.root(),
+        backend_engine::QueryLimit::new(3).expect("positive fixture query limit"),
+    );
     let before = std::fs::read_to_string(&fixture.log)?.lines().count();
     let flag = Arc::new(AtomicBool::new(false));
     let (page, status) = settle_page(&coordinator, &library, &mut provider, &request, flag)?;
@@ -1630,8 +1652,11 @@ fn local_semantic_whole_operation_deadline_discards_gated_projection_and_retains
         &fixture.descriptor,
         crate::builtin::query::RemoteSemantic::Unconfigured,
     );
-    let request =
-        backend_engine::Query::new("fixture", view.root(), backend_engine::QueryLimit::new(3)?);
+    let request = backend_engine::Query::new(
+        "fixture",
+        view.root(),
+        backend_engine::QueryLimit::new(3).expect("positive fixture query limit"),
+    );
     let (page, status) = settle_page(
         &coordinator,
         &library,
@@ -1938,8 +1963,11 @@ fn exclusive_worker_stops_in_relation_cpu_phase_then_poll_joins_and_releases() -
     }
     let flag = Arc::new(AtomicBool::new(false));
     let coverage = crate::builtin::admitted_coverage()?;
-    let request =
-        backend_engine::Query::new("fixture", view.root(), backend_engine::QueryLimit::new(3)?);
+    let request = backend_engine::Query::new(
+        "fixture",
+        view.root(),
+        backend_engine::QueryLimit::new(3).expect("positive fixture query limit"),
+    );
     let expected = super::super::search_page(
         &coordinator,
         &library,
@@ -2138,8 +2166,11 @@ fn actual_exclusive_worker_consumes_initial_seed_without_a_second_rank_scan() ->
         crate::builtin::query::RemoteSemantic::Unconfigured,
     );
     let flag = Arc::new(AtomicBool::new(false));
-    let request =
-        backend_engine::Query::new("fixture", view.root(), backend_engine::QueryLimit::new(3)?);
+    let request = backend_engine::Query::new(
+        "fixture",
+        view.root(),
+        backend_engine::QueryLimit::new(3).expect("positive fixture query limit"),
+    );
     let before = coordinator.corpus.lexical.rank_evaluations();
     let first = super::super::search_page_with_cancellation(
         &coordinator,
