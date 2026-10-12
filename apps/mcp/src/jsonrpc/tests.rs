@@ -3165,6 +3165,125 @@ fn a_document_call_returns_the_markdown_page_and_the_typed_answer() {
 }
 
 #[test]
+fn routed_batch_reads_keep_wire_extent_exact_text_and_signature_fallback_within_whole_line_budget()
+{
+    use backend_library::{DeclarationReadExtent, DeclarationRecord};
+    let coordinates = [
+        format!("{PROJECT}::src/weight.ts:1::WeightBurndownComponent"),
+        format!("{PROJECT}::src/week.ts:1::WeekService"),
+        format!("{PROJECT}::src/auth.ts:1::AuthService"),
+        format!("{PROJECT}::src/missing.ts:1::MissingService"),
+    ];
+    let original = format!(
+        "class WeightBurndownComponent {{ /* {} */ }}",
+        "λ".repeat(4096)
+    );
+    let excerpt = SourceExcerpt::capture_bounded(&original);
+    let retained = excerpt.text().expect("captured bounded prefix");
+    assert_eq!(excerpt.extent(), Some(SourceExcerptExtent::Truncated));
+    assert!(original.starts_with(retained));
+    assert!(retained.len() <= SourceExcerpt::MAX_BYTES);
+    assert!(retained.len() < original.len());
+    let surface = SurfaceReply::Read(Box::new([
+        DeclarationRecord {
+            label: ProductText::new(&coordinates[0]).expect("requested coordinate"),
+            stable_id: Some([0x11; 32]),
+            signature: Some(ProductText::new(retained).expect("retained source")),
+            extent: Some(DeclarationReadExtent::Truncated),
+        },
+        DeclarationRecord {
+            label: ProductText::new(&coordinates[1]).expect("requested coordinate"),
+            stable_id: Some([0x22; 32]),
+            signature: Some(ProductText::new("class WeekService {}").expect("complete source")),
+            extent: Some(DeclarationReadExtent::Complete),
+        },
+        DeclarationRecord {
+            label: ProductText::new(&coordinates[2]).expect("requested coordinate"),
+            stable_id: Some([0x33; 32]),
+            signature: Some(ProductText::new("class AuthService").expect("signature fallback")),
+            extent: None,
+        },
+        DeclarationRecord {
+            label: ProductText::new(&coordinates[3]).expect("requested coordinate"),
+            stable_id: None,
+            signature: None,
+            extent: None,
+        },
+    ]));
+    surface
+        .admit(backend_library::CommandId::Read)
+        .expect("current read shape");
+    let wire = serde_json::to_vec(&ReplyDto::new(41, CommandReply::Surface(surface.clone())))
+        .expect("owner wire read");
+    let decoded = backend_library::decode_reply_body(&wire).expect("strict current wire admission");
+    let CommandReply::Surface(decoded) = decoded.reply else {
+        panic!("read reply")
+    };
+    assert_eq!(
+        decoded, surface,
+        "wire must retain source completeness and fallback distinctions"
+    );
+    for detail in ["summary", "standard", "full"] {
+        let mut server = ready(Fake {
+            surface_reply: Some(decoded.clone()),
+            ..Fake::default()
+        });
+        let reply = request(
+            &mut server,
+            "tools/call",
+            &json!({
+                "name":"backend.read", "arguments":{"coordinate":coordinates, "detail":detail}
+            }),
+        );
+        let mut encoded = Vec::new();
+        write_message(&mut encoded, &reply).expect("complete routed read line");
+        let line = String::from_utf8(encoded).expect("UTF-8 source remains valid");
+        let emitted = assert_stdio_line_accounting(&line);
+        assert_eq!(emitted["id"], 9, "exact caller request id");
+        assert!(emitted.get("error").is_none());
+        assert_eq!(emitted["result"]["isError"], false);
+        let result = &emitted["result"];
+        let records = result["structuredContent"]["records"]
+            .as_array()
+            .expect("batch records");
+        assert_eq!(records.len(), coordinates.len());
+        for (record, coordinate) in records.iter().zip(&coordinates) {
+            assert_eq!(record["operand"], *coordinate, "exact caller correlation");
+        }
+        assert_eq!(records[0]["extent"], "truncated");
+        assert_eq!(records[0]["title"], retained);
+        assert_eq!(records[1]["extent"], "complete");
+        assert_eq!(records[1]["title"], "class WeekService {}");
+        assert_eq!(records[2]["title"], "class AuthService");
+        assert!(
+            records[2].get("extent").is_none(),
+            "a signature never claims a complete body"
+        );
+        assert!(
+            records[3].get("extent").is_none(),
+            "a missing row never claims source"
+        );
+        assert!(
+            records[3]["tags"]
+                .as_array()
+                .expect("missing row tags")
+                .contains(&json!("not found"))
+        );
+        let text = text_of(result);
+        assert!(text.contains("extent: truncated"));
+        assert!(text.contains("extent: complete"));
+        assert!(text.contains(retained));
+        assert!(matches!(server.product.surface_commands.as_slice(),
+            [SurfaceCommand::Read { locators }] if locators.iter().map(ProductText::as_str)
+                .eq(coordinates.iter().map(String::as_str))));
+        assert_eq!(
+            server.product.probe_calls, 0,
+            "batch projection issues no extra owner read"
+        );
+    }
+}
+
+#[test]
 fn page_projection_mcp_summary_omits_captured_body_and_preserves_exact_identity() {
     // The adapter fixture controls an admitted display reply. This is a
     // response-projection measurement, not native compiler/index evidence.
