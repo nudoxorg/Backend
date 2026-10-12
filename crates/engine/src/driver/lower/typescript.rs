@@ -12786,7 +12786,7 @@ describe('suite', () => {\n\
         );
         let expected_start = u32::try_from(second_start + "interface File extends ".len())?;
         assert!(
-            ir.link_occurrences_from(file.id()).any(|site| site
+            ir.link_occurrences_from(file.id()).any(|(_, site)| site
                 .source
                 .is_some_and(
                     |span| span.start() == expected_start && span.end() == expected_start + 4
@@ -12794,7 +12794,7 @@ describe('suite', () => {\n\
             "later merge part keeps its exact extends Base occurrence"
         );
         assert!(
-            ir.link_occurrences_from(file.id()).all(|site| site
+            ir.link_occurrences_from(file.id()).all(|(_, site)| site
                 .source
                 .is_none_or(|span| span.end()
                     <= u32::try_from(source.find("declare const gap").unwrap()).unwrap()
@@ -12855,7 +12855,7 @@ describe('suite', () => {\n\
             .ok_or(LaneError::Missing("later merged enum variant"))?;
         let valid_start = u32::try_from(source.rfind("Last").unwrap())?;
         assert!(
-            ir.link_occurrences().any(|site| site
+            ir.link_occurrences().any(|(_, site)| site
                 .source
                 .is_some_and(|span| span.start() == valid_start && span.end() == valid_start + 4,)
                 && ir.link(site.link).is_some_and(|link| matches!(link.target,
@@ -12869,7 +12869,7 @@ describe('suite', () => {\n\
         let missing_start = u32::try_from(source.rfind("OnlyGap").unwrap())?;
         assert!(
             !ir.link_occurrences()
-                .any(|site| site.source.is_some_and(
+                .any(|(_, site)| site.source.is_some_and(
                     |span| span.start() == missing_start && span.end() == missing_start + 7,
                 ) && ir.link(site.link).is_some_and(|link| matches!(link.target,
             backend_semantic::ir::LinkTarget::Local(id) if id == gap.id()))),
@@ -12907,7 +12907,7 @@ describe('suite', () => {\n\
         );
         assert_eq!(&source.as_bytes()[89_418..89_426], b"_swPlPkc");
         assert!(
-            ir.link_occurrences().any(|site| {
+            ir.link_occurrences().any(|(_, site)| {
                 site.source
                     .is_some_and(|span| span.start() == 89_418 && span.end() == 89_426)
                     && ir.link(site.link).is_some_and(|link| {
