@@ -83,6 +83,12 @@ def main []: nothing -> nothing {
         with-plain-tmp {|| run-bounded 20min "python3" ($env.FILE_PWD | path join "structural-checks.py") ...$installables }
     }
     stop-if-superseded "fast"
+    # Seconds, and names the file: a unit-test module that Cargo also builds as
+    # a standalone test fails every --all-targets compile below with hundreds
+    # of follow-on errors (canonical broke this way three times).
+    let layout = ci-step "fast" "test module layout" {||
+        run-bounded 2min "python3" ($env.FILE_PWD | path join "test_layout.py") $env.PWD
+    }
     # Native first: a plain compile error shows up before the foreign targets
     # spend their minutes on it.
     let targets = ["x86_64-unknown-linux-gnu"] | append (
@@ -108,5 +114,5 @@ def main []: nothing -> nothing {
             print $"fast cache: evicted ($used) GiB after build; limit ($limit) GiB"
         }
     } else { reclaim-build-output }
-    finish-lane "fast" [$checks $compiles]
+    finish-lane "fast" [$checks $layout $compiles]
 }

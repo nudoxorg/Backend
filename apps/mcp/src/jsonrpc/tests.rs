@@ -22,6 +22,7 @@ use backend_library::{
 };
 use backend_present::{domain_name, grammar_for};
 
+#[path = "tests/surface_fidelity.rs"]
 mod surface_fidelity;
 #[cfg(unix)]
 mod index_overlap;

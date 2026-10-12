@@ -134,7 +134,9 @@ fn local_recipe_vector_model_revision_includes_real_spec_and_launch_configuratio
     Ok(())
 }
 
-#[cfg(unix)]
+// QUARANTINE (W1.1 rules): needs local_semantic::tests::protocol_fixture_python, which is
+// quarantined with the a95ee8d40 forward port. Owner: philocalyst. Expires 2026-10-19.
+#[cfg(any())]
 #[test]
 fn local_recipe_admission_reuses_the_actual_activated_arc_without_probing() -> TestResult {
     use backend_engine::application::{

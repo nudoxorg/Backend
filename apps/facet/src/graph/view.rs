@@ -3193,7 +3193,7 @@ mod tests {
     use crate::graph::prism::Prism;
     use crate::graph::scene::Scene;
     use crate::theme::{Facet, set_facet};
-    use gpui::{Focusable, Modifiers, TestAppContext, VisualTestContext, point, px};
+    use gpui::{Focusable, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
     use std::sync::Arc;
     use std::time::Duration;
 
