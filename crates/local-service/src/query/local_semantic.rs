@@ -812,4 +812,4 @@ fn read_descriptor(path: &Path) -> Result<LocalQueryRecipeDescriptor, LocalSeman
 
 #[cfg(test)]
 #[path = "local_semantic_tests.rs"]
-mod tests;
+pub(crate) mod tests;

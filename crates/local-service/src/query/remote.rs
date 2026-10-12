@@ -188,6 +188,26 @@ impl RemoteSemantic {
         matches!(self, Self::Local(_) | Self::LocalUnavailable(_))
     }
 
+    pub(crate) fn admits_local_reply(&self) -> bool {
+        matches!(self, Self::Local(_))
+    }
+
+    pub(crate) fn admit_local_reply(
+        &self,
+        bytes: u64,
+    ) -> Result<
+        (
+            backend_compile::EmbeddingMemoryReservation,
+            std::time::Instant,
+        ),
+        LocalSemanticError,
+    > {
+        match self {
+            Self::Local(owner) => owner.admit_reply(bytes),
+            _ => Err(LocalSemanticError::CorpusEnvelope),
+        }
+    }
+
     pub(super) fn search_local_with_cancellation(
         &mut self,
         coordinator: &QueryCoordinator,

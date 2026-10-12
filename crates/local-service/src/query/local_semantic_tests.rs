@@ -17,6 +17,144 @@ use std::time::{Duration, Instant};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[cfg(unix)]
+#[test]
+fn local_semantic_alternating_warm_queries_retain_exact_answers_and_credits() -> TestResult {
+    let (coordinator, library, view) = selected_many(30, false)?;
+    let fixture = fixture_with_mode(4096, "plain")?;
+    let runtime = fixture
+        .provision
+        .runtime()
+        .ok_or("activated protocol fixture")?;
+    let mut provider = crate::builtin::query::RemoteSemantic::select_owner(
+        &fixture.provision,
+        &fixture.descriptor,
+        crate::builtin::query::RemoteSemantic::Unconfigured,
+    );
+    let flag = Arc::new(AtomicBool::new(false));
+    let first = backend_engine::Query::new(
+        "first intent",
+        view.root(),
+        backend_engine::QueryLimit::new(3)?,
+    );
+    let second = backend_engine::Query::new(
+        "second intent",
+        view.root(),
+        backend_engine::QueryLimit::new(3)?,
+    );
+    let (first_page, first_status) = settle_page(
+        &coordinator,
+        &library,
+        &mut provider,
+        &first,
+        Arc::clone(&flag),
+    )?;
+    let (second_page, second_status) = settle_page(
+        &coordinator,
+        &library,
+        &mut provider,
+        &second,
+        Arc::clone(&flag),
+    )?;
+    assert_eq!(first_status, SemanticSearchStatus::Available);
+    assert_eq!(second_status, SemanticSearchStatus::Available);
+    for text in ["third intent", "fourth intent", "fifth intent"] {
+        let request =
+            backend_engine::Query::new(text, view.root(), backend_engine::QueryLimit::new(3)?);
+        assert_eq!(
+            settle_page(
+                &coordinator,
+                &library,
+                &mut provider,
+                &request,
+                Arc::clone(&flag)
+            )?
+            .1,
+            SemanticSearchStatus::Available
+        );
+    }
+    let log = std::fs::read_to_string(&fixture.log)?;
+    let held = runtime.memory_budget().used();
+    for request in [&first, &second, &first, &second] {
+        let (page, status) = super::super::search_page_with_cancellation(
+            &coordinator,
+            &library,
+            &mut provider,
+            crate::builtin::admitted_coverage()?,
+            request,
+            Arc::clone(&flag),
+        )
+        .map_err(|error| error.to_string())?;
+        assert_eq!(
+            status,
+            SemanticSearchStatus::Available,
+            "warm alternating query never starts another producer wait"
+        );
+        let expected = if request.text() == first.text() {
+            &first_page
+        } else {
+            &second_page
+        };
+        assert_eq!(page.rows(), expected.rows());
+        assert!(provider.local_preparation().is_none());
+        assert_eq!(
+            runtime.memory_budget().used(),
+            held,
+            "temporary output copy charge is released after projection"
+        );
+    }
+    assert_eq!(std::fs::read_to_string(&fixture.log)?, log);
+    let pressure = runtime
+        .memory_budget()
+        .reserve(runtime.memory_budget().capacity() - held)?;
+    let (_, status) = super::super::search_page_with_cancellation(
+        &coordinator,
+        &library,
+        &mut provider,
+        crate::builtin::admitted_coverage()?,
+        &first,
+        Arc::clone(&flag),
+    )
+    .map_err(|error| error.to_string())?;
+    assert_eq!(
+        status,
+        SemanticSearchStatus::Unavailable {
+            reason: SemanticSearchReason::ProviderUnavailable
+        }
+    );
+    drop(pressure);
+    if let crate::builtin::query::RemoteSemantic::Local(owner) = &mut provider {
+        owner.set_completion_policy(super::super::QueryCompletionPolicy { maximum_bytes: 1 });
+    }
+    assert!(
+        runtime.memory_budget().used() < held,
+        "evicted completion releases its query/output leases"
+    );
+    let (_, status) = super::super::search_page_with_cancellation(
+        &coordinator,
+        &library,
+        &mut provider,
+        crate::builtin::admitted_coverage()?,
+        &first,
+        Arc::clone(&flag),
+    )
+    .map_err(|error| error.to_string())?;
+    assert_eq!(
+        status,
+        SemanticSearchStatus::Available,
+        "most recently used exact answer survived byte-target eviction"
+    );
+    flag.store(true, Ordering::Release);
+    provider.poll_local(coordinator.workspace_root(), view.root());
+    assert!(provider.local_preparation().is_none());
+    assert_eq!(
+        std::fs::read_to_string(&fixture.log)?,
+        log,
+        "retirement never reruns inference"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
 fn selected() -> Result<
     (
         QueryCoordinator,
@@ -106,13 +244,13 @@ fn selected_many(
 }
 
 #[cfg(unix)]
-struct ProtocolFixture {
+pub(crate) struct ProtocolFixture {
     _directory: tempfile::TempDir,
-    provision: EmbeddingRuntimeProvision,
-    descriptor: std::path::PathBuf,
-    log: std::path::PathBuf,
-    entered: std::path::PathBuf,
-    release: std::path::PathBuf,
+    pub(crate) provision: EmbeddingRuntimeProvision,
+    pub(crate) descriptor: std::path::PathBuf,
+    pub(crate) log: std::path::PathBuf,
+    pub(crate) entered: std::path::PathBuf,
+    pub(crate) release: std::path::PathBuf,
 }
 
 #[cfg(unix)]
@@ -121,7 +259,7 @@ fn fixture(maximum_text: u32) -> Result<ProtocolFixture, Box<dyn std::error::Err
 }
 
 #[cfg(unix)]
-fn fixture_with_mode(
+pub(crate) fn fixture_with_mode(
     maximum_text: u32,
     mode: &str,
 ) -> Result<ProtocolFixture, Box<dyn std::error::Error>> {
@@ -163,7 +301,10 @@ with open(os.environ['FIXTURE_LOG'], 'a') as log:
 with open(os.environ['FIXTURE_LOG']) as log:
     documents = sum(json.loads(line)['purpose'] == 2 for line in log)
 mode = os.environ['FIXTURE_MODE']
-if purpose == 2 and documents == 2 and mode != 'plain':
+if purpose == 1 and mode == 'gate-query':
+    with open(os.environ['FIXTURE_ENTERED'], 'w') as marker: marker.write('query entered')
+    while not os.path.exists(os.environ['FIXTURE_RELEASE']): time.sleep(0.005)
+if purpose == 2 and documents == 2 and mode in ('gate-second', 'fail-second'):
     with open(os.environ['FIXTURE_ENTERED'], 'w') as marker: marker.write('entered')
     if mode == 'fail-second': sys.exit(9)
     while not os.path.exists(os.environ['FIXTURE_RELEASE']): time.sleep(0.005)
@@ -310,11 +451,7 @@ fn local_semantic_missing_setup_preserves_cause_and_explicit_remote_choice() -> 
         )
     ));
     assert!(missing.is_unconfigured());
-    assert!(
-        cause
-            .setup_instruction()
-            .contains("nudox embedding-setup")
-    );
+    assert!(cause.setup_instruction().contains("nudox embedding-setup"));
     let explicit = crate::builtin::query::RemoteSemantic::select_owner(
         &provision,
         &path,

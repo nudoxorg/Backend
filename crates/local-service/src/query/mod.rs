@@ -11,7 +11,7 @@ mod embedding_cache;
 mod local;
 mod local_preset;
 mod local_recipe;
-mod local_semantic;
+pub(crate) mod local_semantic;
 mod local_semantic_owner;
 mod projection_state;
 mod remote;
@@ -32,7 +32,7 @@ pub use local_recipe::{
     LocalQueryRecipeDescriptor, LocalQueryRecipeError,
 };
 pub use local_semantic::{LocalSemantic, LocalSemanticError};
-pub use local_semantic_owner::LocalSemanticOwner;
+pub use local_semantic_owner::{LocalSemanticOwner, QueryCompletionPolicy};
 pub use remote::{
     ActiveQdrant, ConfiguredQdrant, EMBEDDING_DEVICE_ENV, EMBEDDING_DIMENSIONS_ENV,
     EMBEDDING_DOCUMENT_TREATMENT_ENV, EMBEDDING_MODEL_ENV, EMBEDDING_MODEL_FILE_ENV,
