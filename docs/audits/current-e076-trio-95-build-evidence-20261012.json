@@ -1,0 +1,106 @@
+{
+  "schema": "nudox.root-normal-trio-build-audit.v1",
+  "scope": "Root independently rehashed producer-reported raw streams and terminal/build receipts; no local native execution or direct binary rehash claimed",
+  "source": {
+    "commit": "e0767e71b7077f9bbd1604cbf7bb097090fbbba3",
+    "tree": "519dcf63c5b558a509f254998131f768c3f3c14e",
+    "clean": true
+  },
+  "files": {
+    "receipt.json": {
+      "sha256": "a118b891970c1c4fd85ffa1c98ceef3723aaa964dd48b8f1d09a842fc224c1e3",
+      "bytes": 55774
+    },
+    "stdout.log": {
+      "sha256": "eab534e9041b89bad2b5d89de1e174c0a570abdbee22bd17d239c80cd3be3430",
+      "bytes": 801371
+    },
+    "stderr.log": {
+      "sha256": "4cda96c7899f0cddc913e59b36d18b5c93ef88e412c6852379565b68bcb754f3",
+      "bytes": 254895
+    },
+    "build-manifest.json": {
+      "sha256": "da19b52dc6b59b2ec7b88fdcc0deaed13f351aea433beec5270df6973c262d03",
+      "bytes": 2095
+    }
+  },
+  "argv": [
+    "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+    "build",
+    "--locked",
+    "--offline",
+    "-j2",
+    "-p",
+    "backend-cli",
+    "-p",
+    "backend-mcp",
+    "-p",
+    "backend-locald",
+    "--bins",
+    "--message-format=json-render-diagnostics"
+  ],
+  "exit": 0,
+  "seconds": 372.22892138105817,
+  "finished_utc": "2026-10-12T00:23:40.521300+00:00",
+  "actual_tests_run": 0,
+  "current_installed_acceptance": "UNRUN",
+  "source_clean_after": true,
+  "tools_unchanged": true,
+  "terminal_process_group_empty": true,
+  "producer_reported_artifacts": {
+    "backend-mcp": {
+      "path": "/root/codex-worktrees/sol61-resident-fixture-20261011/.local/target/debug/backend-mcp",
+      "sha256": "b8e6982b6e67d38711dbe9bbec94359b12f63db1728d745cfd30baa4d5f1523e",
+      "bytes": 136447288,
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 0,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": false
+      },
+      "features": [
+        "default"
+      ],
+      "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/apps/mcp/Cargo.toml"
+    },
+    "backend-cli": {
+      "path": "/root/codex-worktrees/sol61-resident-fixture-20261011/.local/target/debug/backend-cli",
+      "sha256": "932e4fe594072345b4bdd86f796b01fbfc37454413ff282c54bf12e473d168ad",
+      "bytes": 184710448,
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 0,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": false
+      },
+      "features": [],
+      "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/apps/cli/Cargo.toml"
+    },
+    "backend-locald": {
+      "path": "/root/codex-worktrees/sol61-resident-fixture-20261011/.local/target/debug/backend-locald",
+      "sha256": "b55ca03e0b550a8d58c4f4dcd1ffb64d1e8769d4e27c8bab0948401b768282b7",
+      "bytes": 502642072,
+      "profile": {
+        "opt_level": "0",
+        "debuginfo": 0,
+        "debug_assertions": true,
+        "overflow_checks": true,
+        "test": false
+      },
+      "features": [],
+      "manifest_path": "/root/codex-worktrees/sol61-resident-fixture-20261011/apps/locald/Cargo.toml"
+    }
+  },
+  "latest_resources": {
+    "timestamp": "2026-10-12T00:23:39.470152+00:00",
+    "disk_available": 200183746560,
+    "memory_available": 52831813632,
+    "charged": 38139302256,
+    "growth": 13910624000,
+    "attempt_growth": 4948056,
+    "low_memory_samples": 0
+  },
+  "profile_scope": "Normal diagnostic binaries: opt0/debug0, not optimized-release benchmarks or GUI artifacts"
+}
