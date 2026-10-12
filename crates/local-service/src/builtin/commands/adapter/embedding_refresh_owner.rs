@@ -58,6 +58,37 @@ impl Owner {
     }
 }
 
+/// The bounded queue accepts the original owner before the irreversible lifetime change.
+/// A refusal restores that exact owner and drops a side-effect-free renewal. After acceptance,
+/// commit is infallible and the worker owns retirement even if operation control later stops.
+pub(super) fn handoff_original_owner(
+    worker: &mut Worker,
+    provider: &mut super::super::super::query::RemoteSemantic,
+    renewal: Option<super::super::search_lane::SelectedLifetimeRenewal<'_>>,
+) -> Result<(), Refusal> {
+    let Some(original) = provider.take_local_for_retirement() else {
+        return Err(refusal(
+            Kind::Query,
+            "Original local query owner is not available for its exact refresh handoff.",
+        ));
+    };
+    if let Err(error) = worker.handoff(original) {
+        let original = match error {
+            std::sync::mpsc::TrySendError::Full(original)
+            | std::sync::mpsc::TrySendError::Disconnected(original) => original,
+        };
+        *provider = original;
+        return Err(refusal(
+            Kind::Worker,
+            "Spawned refresh worker refused its original owner handoff; original query owner and selected lifetime retained.",
+        ));
+    }
+    if let Some(renewal) = renewal {
+        renewal.commit();
+    }
+    Ok(())
+}
+
 fn refusal(kind: Kind, detail: impl Into<String>) -> Refusal {
     // Preserve a UTF-8 prefix within the product bound, rather than replacing an actual cause.
     let detail = detail.into();
@@ -444,30 +475,41 @@ impl CommandAdapter {
                         .and_then(|()| self.refresh_quiescence());
                     let admission = admission.and_then(|()| {
                         if identity.as_bytes() != active.ticket.configuration {
-                            return Err(refusal(Kind::Configuration, "Prepared configuration differs from accepted ticket."));
+                            return Err(refusal(
+                                Kind::Configuration,
+                                "Prepared configuration differs from accepted ticket.",
+                            ));
                         }
                         active.worker.check_handoff().map_err(|error| {
-                            refusal(control_kind(&error).unwrap_or(Kind::Activation), error.to_string())
+                            refusal(
+                                control_kind(&error).unwrap_or(Kind::Activation),
+                                error.to_string(),
+                            )
                         })?;
                         let workspace = daemon.engine().daemon().owner().snapshot().root();
                         let view = daemon.engine().daemon().library().view();
-                        if self.search_snapshots.selected_for(workspace, view).is_some() {
-                            self.search_lane.renew_selected_lifetime(&self.search_snapshots, workspace, view)
-                                .map_err(|error| refusal(Kind::Query, error.to_string()))?;
-                        }
-                        let Some(original) = self.remote_semantic.take_local_for_retirement() else {
-                            return Err(refusal(Kind::Query, "Original local query owner is not available for its exact refresh handoff."));
+                        let renewal = if self
+                            .search_snapshots
+                            .selected_for(workspace, view)
+                            .is_some()
+                        {
+                            Some(
+                                self.search_lane
+                                    .prepare_selected_lifetime_renewal(
+                                        &self.search_snapshots,
+                                        workspace,
+                                        view,
+                                    )
+                                    .map_err(|error| refusal(Kind::Query, error.to_string()))?,
+                            )
+                        } else {
+                            None
                         };
-                        if let Err(error) = active.worker.handoff(original) {
-                            let original = match error {
-                                std::sync::mpsc::TrySendError::Full(original)
-                                | std::sync::mpsc::TrySendError::Disconnected(original) => original,
-                            };
-                            // The take and failed send occur in this one mutex turn. Restore the
-                            // exact returned owner, never reconstruct it from current configuration.
-                            self.remote_semantic = original;
-                            return Err(refusal(Kind::Worker, "Spawned refresh worker refused its original owner handoff; original query owner restored."));
-                        }
+                        handoff_original_owner(
+                            &mut active.worker,
+                            &mut self.remote_semantic,
+                            renewal,
+                        )?;
                         // Complete already owed requests from their current exact lexical view.
                         // No failed semantic projection or pending receipt is silently discarded.
                         while let Some(pending) = self.semantic_search_replies.pop_front() {

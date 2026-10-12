@@ -888,3 +888,179 @@ fn owner_refresh_admits_first_query_owner_from_actual_unconfigured_provider() ->
     );
     Ok(())
 }
+
+#[test]
+fn owner_refresh_receiver_stop_after_check_retains_actual_semantic_projection_and_lifetime()
+-> TestResult {
+    use crate::builtin::query::{RemoteSemantic, search_page_with_cancellation};
+    use backend_library::SemanticSearchStatus;
+    // This is a real protocol/runtime + full kernel projection fixture, not model or
+    // installed preparation proof. Both production handoff and renewal implementations run.
+    let producer = crate::builtin::query::local_semantic::tests::fixture_with_mode(4096, "plain")?;
+    let runtime = producer.provision.runtime().ok_or("actual old runtime")?;
+    let account = runtime.memory_budget().clone();
+    let actor_root = crate::test_support::private_temp_dir("refresh-late-handoff")?;
+    let compiler = compiler(actor_root.path(), Arc::clone(&runtime))?;
+    let mut provider = RemoteSemantic::select_owner(
+        &producer.provision,
+        &producer.descriptor,
+        RemoteSemantic::Unconfigured,
+    );
+    let (projection, library, view) =
+        crate::builtin::query::local_semantic::tests::selected_owner_many(30)?;
+    let workspace = crate::builtin::genesis()?.root();
+    let coordinator = projection
+        .selected_for(workspace, &view)
+        .ok_or("full selected corpus")?;
+    let original = Arc::new(AtomicBool::new(false));
+    let mut lane = super::super::super::search_lane::SearchLane::fixture_for_admitted_selection(
+        &projection,
+        workspace,
+        &view,
+        Arc::clone(&original),
+    )?;
+    let query = backend_engine::Query::new(
+        "first intent",
+        view.root(),
+        backend_engine::QueryLimit::new(3)?,
+    );
+    let warm_deadline = Instant::now() + Duration::from_secs(8);
+    let expected = loop {
+        let (page, status) = search_page_with_cancellation(
+            coordinator,
+            &library,
+            &mut provider,
+            crate::builtin::admitted_coverage()?,
+            &query,
+            Arc::clone(&original),
+        )
+        .map_err(|error| error.to_string())?;
+        if status == SemanticSearchStatus::Available {
+            break page;
+        }
+        if Instant::now() >= warm_deadline {
+            return Err(format!("original semantic fixture did not contribute: {status:?}").into());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    assert!(!expected.root.rows().is_empty());
+    let credits = account.used();
+    let counts = (
+        projection.projection_builds(),
+        projection.projection_opens(),
+        projection.corpus_builds(),
+    );
+    let log = fs::read_to_string(&producer.log)?;
+    let mut owner = AdapterFixture::new();
+    let (_, daemon) = owner.parts();
+    let lease = daemon.engine().daemon().owner().lease().clone();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let control = backend_compile::EmbeddingActivationControl::new(&cancelled, deadline);
+    let path = producer.descriptor.with_file_name("embedding.config");
+    let expected_config = PreparedEmbeddingRuntime::capture_until(&path, &control)?
+        .ok_or("actual config")?
+        .identity();
+    fn stop_real_receiver_after_check(worker: &Worker) {
+        worker.cancel();
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while !worker.finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            worker.finished(),
+            "actual receiver must exit before the real try_send"
+        );
+    }
+    let mut worker = Worker::start(Input {
+        compiler: compiler.clone(),
+        admission: compiler.admit_embedding_refresh(lease.clone())?,
+        owner: lease,
+        configuration: path,
+        descriptor: producer.descriptor.clone(),
+        expected: expected_config.as_bytes(),
+        cache_directory: None,
+        cancelled,
+        deadline,
+    })?
+    .with_handoff_boundary(stop_real_receiver_after_check);
+    assert!(
+        matches!(next(&worker, deadline)?, Event::Prepared(identity) if identity == expected_config)
+    );
+    worker.check_handoff()?;
+    let renewal = lane.prepare_selected_lifetime_renewal(&projection, workspace, &view)?;
+    assert!(
+        !original.load(Ordering::Acquire),
+        "preparation has no irreversible effect"
+    );
+    let refusal = super::super::embedding_refresh_owner::handoff_original_owner(
+        &mut worker,
+        &mut provider,
+        Some(renewal),
+    )
+    .err()
+    .ok_or("stopped receiver accepted original owner")?;
+    assert_eq!(
+        refusal.kind,
+        backend_library::EmbeddingRefreshFailureKind::Worker
+    );
+    assert!(matches!(
+        next(&worker, deadline)?,
+        Event::Terminal(Err(Failure::Control(
+            backend_compile::EmbeddingExecutableError::Process(
+                backend_compile::ProcessError::Cancelled
+            )
+        )))
+    ));
+    join(&mut worker, deadline)?;
+    assert!(!original.load(Ordering::Acquire));
+    assert!(Arc::ptr_eq(
+        &original,
+        &lane
+            .selected_cancellation(workspace, view.root())
+            .ok_or("original selection was lost")?
+    ));
+    assert!(Arc::ptr_eq(
+        &runtime,
+        provider
+            .local_refresh_runtime()
+            .ok_or("original provider lost")?
+    ));
+    // Poll is the exact boundary that retired the old projection in the former race.
+    provider.poll_local(workspace, view.root());
+    let (after, status) = search_page_with_cancellation(
+        coordinator,
+        &library,
+        &mut provider,
+        crate::builtin::admitted_coverage()?,
+        &query,
+        Arc::clone(&original),
+    )
+    .map_err(|error| error.to_string())?;
+    assert_eq!(status, SemanticSearchStatus::Available);
+    assert_eq!(
+        after, expected,
+        "same real retained semantic answer, scores and order"
+    );
+    assert_eq!(
+        account.used(),
+        credits,
+        "refusal preserves retained projection/query credits"
+    );
+    assert_eq!(
+        (
+            projection.projection_builds(),
+            projection.projection_opens(),
+            projection.corpus_builds()
+        ),
+        counts
+    );
+    assert_eq!(
+        fs::read_to_string(&producer.log)?,
+        log,
+        "retained answer needs no reinference"
+    );
+    assert!(compiler.retired_embedding_configuration().is_none());
+    assert!(compiler.embedding_generation_receipt().is_none());
+    Ok(())
+}

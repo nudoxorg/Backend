@@ -96,6 +96,19 @@ pub(super) struct SearchLane {
     next_gate: Option<Gate>,
 }
 
+/// A validated renewal borrows the exact selected lifetime until ownership handoff.
+/// Dropping it preserves the original selection; commit cannot allocate or refuse.
+pub(super) struct SelectedLifetimeRenewal<'a> {
+    selected: &'a mut Arc<AtomicBool>,
+    replacement: Arc<AtomicBool>,
+}
+impl SelectedLifetimeRenewal<'_> {
+    pub(super) fn commit(self) {
+        let retired = std::mem::replace(self.selected, self.replacement);
+        retired.store(true, Ordering::Release);
+    }
+}
+
 impl SearchLane {
     /// Borrows the actual successful preparation lifetime. A caller's
     /// disconnect cannot cancel this shared selected-owner lifetime.
@@ -113,15 +126,15 @@ impl SearchLane {
                 .then(|| Arc::clone(cancelled))
             })
     }
-    /// Retire only the semantic work lifetime while retaining the same admitted
+    /// Prepare retirement without cancelling the semantic lifetime or changing the admitted
     /// lexical projection. This is lawful only for the current successful selection,
     /// never an active/unprepared/superseded view. No corpus preparation is repeated.
-    pub(super) fn renew_selected_lifetime(
+    pub(super) fn prepare_selected_lifetime_renewal(
         &mut self,
         projection: &SearchSnapshotOwner,
         workspace: WorkspaceRoot,
         view: &ViewRoot,
-    ) -> Result<(), super::super::query::QueryError> {
+    ) -> Result<SelectedLifetimeRenewal<'_>, super::super::query::QueryError> {
         if self.closed
             || self.active.is_some()
             || projection.selected_for(workspace, view).is_none()
@@ -137,9 +150,27 @@ impl SearchLane {
         {
             return Err(super::super::query::QueryError::InvalidView);
         }
-        let prior = std::mem::replace(retired, Arc::new(AtomicBool::new(false)));
-        prior.store(true, Ordering::Release);
-        Ok(())
+        Ok(SelectedLifetimeRenewal {
+            selected: retired,
+            replacement: Arc::new(AtomicBool::new(false)),
+        })
+    }
+
+    /// Unit fixture for an already genuinely kernel-admitted selection, not owner-startup proof.
+    #[cfg(test)]
+    pub(super) fn fixture_for_admitted_selection(
+        projection: &SearchSnapshotOwner,
+        workspace: WorkspaceRoot,
+        view: &ViewRoot,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<Self, super::super::query::QueryError> {
+        if projection.selected_for(workspace, view).is_none() || cancelled.load(Ordering::Acquire) {
+            return Err(super::super::query::QueryError::InvalidView);
+        }
+        Ok(Self {
+            selected: Some((workspace, view.root(), cancelled)),
+            ..Self::default()
+        })
     }
 
     /// A request observes this one worker; it never waits on its completion.
@@ -469,7 +500,8 @@ mod refresh_tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         let builds = projection.projection_builds();
-        lane.renew_selected_lifetime(&projection, workspace, &view)?;
+        lane.prepare_selected_lifetime_renewal(&projection, workspace, &view)?
+            .commit();
         assert!(old.load(Ordering::Acquire));
         let current = lane
             .selected_cancellation(workspace, view.root())
@@ -513,7 +545,7 @@ mod refresh_tests {
         );
         let absent = SearchSnapshotOwner::default();
         assert!(
-            lane.renew_selected_lifetime(&absent, workspace, &view)
+            lane.prepare_selected_lifetime_renewal(&absent, workspace, &view)
                 .is_err()
         );
         assert!(Arc::ptr_eq(
@@ -528,7 +560,7 @@ mod refresh_tests {
         lane.invalidate(workspace, replacement.root());
         assert!(current.load(Ordering::Acquire));
         assert!(
-            lane.renew_selected_lifetime(&projection, workspace, &view)
+            lane.prepare_selected_lifetime_renewal(&projection, workspace, &view)
                 .is_err(),
             "cannot renew a superseded selection"
         );

@@ -124,6 +124,8 @@ pub(super) struct Worker {
     cancelled: Arc<AtomicBool>,
     deadline: Instant,
     thread: Option<JoinHandle<()>>,
+    #[cfg(test)]
+    before_handoff: Option<fn(&Worker)>,
 }
 impl Worker {
     /// Spawn BEFORE the adapter moves any old provider or renews its selection.
@@ -149,13 +151,25 @@ impl Worker {
             cancelled,
             deadline,
             thread: Some(thread),
+            #[cfg(test)]
+            before_handoff: None,
         })
     }
     pub(super) fn handoff(
-        &self,
+        &mut self,
         original: RemoteSemantic,
     ) -> Result<(), mpsc::TrySendError<RemoteSemantic>> {
+        #[cfg(test)]
+        if let Some(boundary) = self.before_handoff.take() {
+            boundary(self);
+        }
         self.handoff.try_send(original)
+    }
+    /// Fixtures stop the real receiver after admission, rather than fabricating a send error.
+    #[cfg(test)]
+    pub(super) fn with_handoff_boundary(mut self, boundary: fn(&Worker)) -> Self {
+        self.before_handoff = Some(boundary);
+        self
     }
     pub(super) fn cancel(&self) {
         self.cancelled.store(true, Ordering::Release);
