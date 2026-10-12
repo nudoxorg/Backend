@@ -1242,6 +1242,28 @@ impl CheckerState<'_> {
     /// type T = string;         // get_type_of_symbol(T) → string
     /// ```
     pub fn get_type_of_symbol(&mut self, sym_id: SymbolId) -> TypeId {
+        if self.ctx.project_module_resolution_outcomes.is_some() {
+            let Some(symbol) = self.ctx.project_source_symbol(sym_id) else {
+                return TypeId::UNKNOWN;
+            };
+            if symbol.has_any_flags(symbol_flags::ALIAS)
+                && symbol.import_module().is_some()
+                && !symbol.has_any_flags(symbol_flags::TYPE)
+                && !symbol.has_any_flags(
+                    symbol_flags::VARIABLE
+                        | symbol_flags::FUNCTION
+                        | symbol_flags::CLASS
+                        | symbol_flags::ENUM,
+                )
+            {
+                // Check before delegation/cache lookup: a refused source
+                // alias cannot hydrate a same-id local or cached competitor.
+                let mut visited = crate::symbols_domain::alias_cycle::AliasCycleTracker::new();
+                if self.resolve_alias_symbol(sym_id, &mut visited).is_none() {
+                    return TypeId::UNKNOWN;
+                }
+            }
+        }
         // Source-level aliases are lowered eagerly through their referenced
         // aliases, so they may never reach resolve_lazy_type's metered walk.
         // Charge this alias-resolution boundary when a project meter is

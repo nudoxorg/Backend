@@ -30,7 +30,7 @@ use crate::product::{CursorTarget, IndexJobProjection, ProductView, semantic_his
 use crate::record::{Record, RecordList};
 use crate::shelf::{Readiness, Shelf};
 use crate::status::Status;
-use crate::{Detail, PageProjection};
+use crate::{Detail, MAX_PREVIEW_TEXT_BYTES, PageProjection, bounded_text};
 
 /// Renders one `~lanes` coverage statement.
 #[must_use]
@@ -80,7 +80,7 @@ pub fn answer_with_detail(
     }
 }
 
-/// Previews a structured Summary list without duplicating its complete rows.
+/// Renders a bounded text view of a structured Summary list.
 /// Other answers retain their existing readable representation.
 #[must_use]
 pub fn summary_with_cursor(
@@ -94,26 +94,200 @@ pub fn summary_with_cursor(
     let Answer::Records(list) = value else {
         return answer_with_detail(value, Detail::Summary, cursor, target);
     };
-    let mut lines = Lines::new();
-    lines.push(coverage(list.coverage()));
     if list.is_empty() {
+        let mut lines = Lines::new();
+        lines.push(coverage(list.coverage()));
         lines.push(list.empty_explanation());
-    } else {
-        lines.push(format!(
-            "{} row(s); complete records and native operands are in `structuredContent.records`.",
-            list.records().len(),
-        ));
-    }
-    if list.has_more() && list.continuation().is_some() {
-        if let Some(cursor) = cursor {
-            lines.push(continuation_note(target, cursor));
-        } else {
-            lines.push("… more rows; this rendering does not include the continuation token");
+        if let Some(note) = summary_continuation(list, cursor, target) {
+            lines.push(note);
         }
-    } else if list.has_more() {
-        lines.push("… more rows at this revision; raise `limit` to see them");
+        return bounded_text(&lines.finish());
     }
-    lines.finish()
+
+    let coverage_line = coverage(list.coverage());
+    let total = list.records().len();
+    let mut footer = summary_continuation(list, cursor, target);
+    // Reserve the longest possible count line before adding records. Both
+    // shown and omitted are at most `total`, so the final line cannot grow
+    // beyond this reservation.
+    let count_reservation = format!(
+        "{total} row(s) on this page; showing {total} exact coordinate(s); {total} omitted from text preview. Full page: `structuredContent.records`."
+    );
+    let heading_bytes = coverage_line
+        .len()
+        .saturating_add(1)
+        .saturating_add(count_reservation.len())
+        .saturating_add(1);
+    if footer.as_ref().is_some_and(|line| {
+        line.len().saturating_add(1) > MAX_PREVIEW_TEXT_BYTES.saturating_sub(heading_bytes)
+    }) {
+        footer = if list.has_more() && list.continuation().is_some() {
+            Some("… more rows; use `structuredContent.nextCursor` to continue".to_owned())
+        } else if list.has_more() {
+            Some("… more rows at this revision; raise `limit` to see them".to_owned())
+        } else {
+            None
+        };
+    }
+    let fixed_bytes = heading_bytes.saturating_add(
+        footer
+            .as_ref()
+            .map_or(0, |line| line.len().saturating_add(1)),
+    );
+    let row_budget = MAX_PREVIEW_TEXT_BYTES.saturating_sub(fixed_bytes);
+    let mut rendered_rows = String::new();
+    let mut shown = 0;
+    for record in list.records() {
+        let Some(row) = mcp_summary_record(record) else {
+            break;
+        };
+        if rendered_rows.len().saturating_add(row.len()) > row_budget {
+            break;
+        }
+        rendered_rows.push_str(&row);
+        shown += 1;
+    }
+    let omitted = total.saturating_sub(shown);
+    let count_line = format!(
+        "{total} row(s) on this page; showing {shown} exact coordinate(s); {omitted} omitted from text preview. Full page: `structuredContent.records`."
+    );
+
+    let mut preview = String::with_capacity(fixed_bytes.saturating_add(rendered_rows.len()));
+    preview.push_str(&coverage_line);
+    preview.push('\n');
+    preview.push_str(&rendered_rows);
+    preview.push_str(&count_line);
+    preview.push('\n');
+    if let Some(footer) = footer {
+        preview.push_str(&footer);
+        preview.push('\n');
+    }
+    debug_assert!(preview.len() <= MAX_PREVIEW_TEXT_BYTES);
+    preview
+}
+
+fn summary_continuation(
+    list: &RecordList,
+    cursor: Option<&str>,
+    target: ContinuationTarget<'_>,
+) -> Option<String> {
+    if list.has_more() && list.continuation().is_some() {
+        Some(cursor.map_or_else(
+            || "… more rows; this rendering does not include the continuation token".to_owned(),
+            |cursor| continuation_note(target, cursor),
+        ))
+    } else if list.has_more() {
+        Some("… more rows at this revision; raise `limit` to see them".to_owned())
+    } else {
+        None
+    }
+}
+
+fn mcp_summary_record(record: &Record) -> Option<String> {
+    let name = record.identity().name();
+    let coordinate = record.identity().coordinate().as_str();
+    let mut tags = Vec::with_capacity(3);
+    if let Some(kind) = record.kind() {
+        tags.push(kind.name());
+    }
+    tags.push(record.language().name());
+    if record.state() != crate::record::RecordState::Ready {
+        tags.push(record.state().name());
+    }
+    // Check the raw size before allocating the rendered row. The two code
+    // spans add their delimiters and optional CommonMark padding below.
+    let raw_bytes = name
+        .len()
+        .saturating_add(coordinate.len())
+        .saturating_add(tags.iter().map(|tag| tag.len()).sum::<usize>())
+        .saturating_add(tags.len().saturating_mul(4))
+        .saturating_add(10);
+    if raw_bytes > MAX_PREVIEW_TEXT_BYTES {
+        return None;
+    }
+
+    // Refuse identities that can add visual lines or reorder what a reader
+    // sees. The typed payload still carries these exact values; this omission
+    // affects only the human-readable projection.
+    let name_ticks = inline_code_delimiter(name)?;
+    let coordinate_ticks = inline_code_delimiter(coordinate)?;
+
+    let name_padding = code_span_needs_padding(name);
+    let coordinate_padding = code_span_needs_padding(coordinate);
+    let mut row = String::with_capacity(
+        raw_bytes
+            .saturating_add(name_ticks.saturating_mul(2))
+            .saturating_add(coordinate_ticks.saturating_mul(2))
+            .saturating_add(if name_padding { 2 } else { 0 })
+            .saturating_add(if coordinate_padding { 2 } else { 0 }),
+    );
+    row.push_str("• ");
+    append_code_span(&mut row, name, name_ticks, name_padding);
+    let _ = write!(&mut row, " · {}", tags[0]);
+    for tag in tags.iter().skip(1) {
+        let _ = write!(&mut row, " · {tag}");
+    }
+    row.push('\n');
+    row.push_str("  ");
+    append_code_span(&mut row, coordinate, coordinate_ticks, coordinate_padding);
+    row.push('\n');
+    if row.len() > MAX_PREVIEW_TEXT_BYTES {
+        return None;
+    }
+    Some(row)
+}
+
+/// Returns the shortest backtick delimiter that can contain this value as a
+/// CommonMark code span. Control and bidi formatting characters are omitted
+/// from text so they cannot create forged rows or visually reorder operands.
+fn inline_code_delimiter(value: &str) -> Option<usize> {
+    if value.is_empty()
+        || value.chars().any(|character| {
+            character.is_control()
+                || matches!(
+                    character,
+                    '\u{061c}'
+                        | '\u{200e}'
+                        | '\u{200f}'
+                        | '\u{2028}'
+                        | '\u{2029}'
+                        | '\u{202a}'..='\u{202e}'
+                        | '\u{2066}'..='\u{2069}'
+                )
+        })
+    {
+        return None;
+    }
+
+    let mut longest = 0;
+    let mut run = 0;
+    for character in value.chars() {
+        if character == '`' {
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    Some(longest.saturating_add(1))
+}
+
+fn code_span_needs_padding(value: &str) -> bool {
+    let needs_padding = matches!(value.chars().next(), Some(' ' | '`'))
+        || matches!(value.chars().next_back(), Some(' ' | '`'));
+    needs_padding && value.chars().any(|character| character != ' ')
+}
+
+fn append_code_span(output: &mut String, value: &str, delimiter: usize, padding: bool) {
+    output.extend(std::iter::repeat_n('`', delimiter));
+    if padding {
+        output.push(' ');
+    }
+    output.push_str(value);
+    if padding {
+        output.push(' ');
+    }
+    output.extend(std::iter::repeat_n('`', delimiter));
 }
 
 /// Renders one fault, with its affordance as the exact next tool call.

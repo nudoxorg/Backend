@@ -22,11 +22,11 @@ use backend_library::{
 };
 use backend_present::{domain_name, grammar_for};
 
-#[path = "tests/surface_fidelity.rs"]
-mod surface_fidelity;
 #[cfg(unix)]
 #[path = "tests/index_overlap.rs"]
 mod index_overlap;
+#[path = "tests/surface_fidelity.rs"]
+mod surface_fidelity;
 
 const PROJECT: &str = "/abs/polyglot";
 const MODULE: &str = "/abs/polyglot::src/lib.rs";
@@ -616,6 +616,10 @@ struct Fake {
     catalog_cursors: BTreeMap<String, (PageContinuation, ViewStateRoot)>,
     /// Actual page bounds admitted by the catalog adapter.
     page_limits: Vec<u16>,
+    /// Exact document coordinates passed back by a text-preview consumer.
+    document_coordinates: Vec<String>,
+    /// Bind the default document fixture to the requested display coordinate.
+    document_matches_request: bool,
 }
 
 fn basis() -> Basis {
@@ -781,7 +785,20 @@ impl Engine for Fake {
             Probe::Remove(_) => {
                 CommandReply::Removed(Intent::remove_package(package_key(PROJECT)).id())
             }
-            Probe::Document(at) | Probe::Source(at) => {
+            Probe::Document(at) => {
+                self.document_coordinates.push(at.to_owned());
+                if at == MISSING {
+                    return Err(ClientError::CommandFailed(
+                        backend_library::CommandFailure::NotFound,
+                    ));
+                }
+                let mut value = self.document_override.clone().unwrap_or_else(document);
+                if self.document_matches_request && self.document_override.is_none() {
+                    value.symbol = symbol_key(at);
+                }
+                CommandReply::Document(value)
+            }
+            Probe::Source(at) => {
                 if at == MISSING {
                     return Err(ClientError::CommandFailed(
                         backend_library::CommandFailure::NotFound,
@@ -1559,6 +1576,7 @@ fn default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapsho
         }
         let mut server = ready(Fake {
             page_catalog: Some(catalog),
+            document_matches_request: tool == "backend.search",
             ..Fake::default()
         });
         let mut arguments = if tool == "backend.graph" {
@@ -1568,6 +1586,7 @@ fn default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapsho
         };
         let mut seen = Vec::new();
         let mut first_cursor = None;
+        let mut first_text_coordinate = None;
         for _ in 0..10 {
             let response = request(
                 &mut server,
@@ -1582,32 +1601,69 @@ fn default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapsho
                 .as_array()
                 .expect("complete typed rows");
             assert!(records.len() <= usize::from(backend_present::DEFAULT_LIMIT));
-            seen.extend(records.iter().map(|row| {
-                row["identity"]["coordinate"]
-                    .as_str()
-                    .expect("exact coordinate")
-                    .to_owned()
-            }));
-            let Some(cursor) = result["structuredContent"]["nextCursor"].as_str() else {
-                break;
-            };
-            assert_eq!(result["structuredContent"]["more"], true);
+            let coordinates = records
+                .iter()
+                .map(|row| {
+                    let name = row["identity"]["name"]
+                        .as_str()
+                        .expect("typed identity name");
+                    let coordinate = row["identity"]["coordinate"]
+                        .as_str()
+                        .expect("exact coordinate");
+                    (name, coordinate)
+                })
+                .collect::<Vec<_>>();
+            seen.extend(
+                coordinates
+                    .iter()
+                    .map(|(_, coordinate)| (*coordinate).to_owned()),
+            );
             let preview = text_of(result);
-            assert!(
-                preview.contains(&format!("Continue `{tool}` with the same arguments")),
-                "{tool}: {preview}"
+            let text_coordinates = summary_coordinates(&preview);
+            assert_eq!(
+                text_coordinates,
+                coordinates
+                    .iter()
+                    .take(text_coordinates.len())
+                    .map(|(_, coordinate)| (*coordinate).to_owned())
+                    .collect::<Vec<_>>(),
+                "text rows preserve the complete owner-order coordinate prefix: {tool}"
             );
-            assert!(
-                preview.contains("copy `structuredContent.nextCursor` to `arguments.cursor`"),
-                "{tool}: {preview}"
+            assert_eq!(
+                text_coordinates.len(),
+                records.len(),
+                "ordinary bounded fixture pages fit as complete text rows: {tool}"
             );
-            assert!(
-                !preview.contains(&format!("`{cursor}`")),
-                "{tool}: {preview}"
+            assert!(!text_coordinates.is_empty(), "{tool}: {preview}");
+            for (name, coordinate) in &coordinates[..text_coordinates.len()] {
+                assert!(preview.contains(name), "{tool}: {preview}");
+                assert!(
+                    preview.contains(&format!("`{coordinate}`")),
+                    "{tool}: {preview}"
+                );
+            }
+            assert!(preview.len() <= backend_present::MAX_PREVIEW_TEXT_BYTES);
+            assert_eq!(
+                estimate_tokens(preview.len()),
+                preview
+                    .len()
+                    .div_ceil(backend_present::ESTIMATED_BYTES_PER_TOKEN),
+                "stable preview cost estimate"
             );
-            assert!(!preview.contains("raise `limit`"), "{tool}: {preview}");
-            first_cursor.get_or_insert_with(|| cursor.to_owned());
-            arguments["cursor"] = json!(cursor);
+            first_text_coordinate.get_or_insert_with(|| text_coordinates[0].clone());
+            if let Some(cursor) = result["structuredContent"]["nextCursor"].as_str() {
+                assert_eq!(result["structuredContent"]["more"], true);
+                assert!(preview.contains(&format!("Continue `{tool}` with the same arguments")));
+                assert!(
+                    preview.contains("copy `structuredContent.nextCursor` to `arguments.cursor`")
+                );
+                assert!(!preview.contains(&format!("`{cursor}`")));
+                assert!(!preview.contains("raise `limit`"), "{preview}");
+                first_cursor.get_or_insert_with(|| cursor.to_owned());
+                arguments["cursor"] = json!(cursor);
+            } else {
+                break;
+            }
         }
         assert_eq!(
             seen, expected,
@@ -1618,6 +1674,34 @@ fn default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapsho
             vec![backend_present::DEFAULT_LIMIT; 3]
         );
         let first_cursor = first_cursor.expect("ordinary default continues");
+
+        if tool == "backend.search" {
+            // The caller selects from the human-readable block alone; the
+            // protocol-owned cursor remains in structuredContent as before.
+            let selected = first_text_coordinate
+                .as_deref()
+                .expect("text preview includes a selectable coordinate");
+            let opened = call(
+                &mut server,
+                "backend.document",
+                &json!({"coordinate":selected,"detail":"summary"}),
+            );
+            assert_context_bounded(&opened);
+            assert_eq!(opened["isError"], false, "{opened}");
+            assert_eq!(
+                opened["structuredContent"]["identity"]["coordinate"], selected,
+                "the selected exact coordinate is the opened document"
+            );
+            assert_eq!(
+                server
+                    .product
+                    .document_coordinates
+                    .last()
+                    .map(String::as_str),
+                Some(selected),
+                "the exact selected text operand reaches backend.document"
+            );
+        }
 
         // The same query spelling and MAC cannot make an old projection
         // current when the underlying catalog changes.
@@ -1632,6 +1716,160 @@ fn default_collection_pages_keep_owner_order_exactly_once_and_reject_new_snapsho
         assert_eq!(fault["cause"], "moved");
         assert!(text_of(&stale["result"]).contains("restart the query"));
     }
+}
+
+fn summary_coordinates(preview: &str) -> Vec<String> {
+    let lines = preview.lines().collect::<Vec<_>>();
+    let mut coordinates = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if line.starts_with("• ") {
+            let coordinate_line = lines
+                .get(index + 1)
+                .expect("every displayed summary label has its coordinate line");
+            coordinates.push(
+                test_code_span(coordinate_line, "  ")
+                    .expect("every displayed summary coordinate is one complete code span"),
+            );
+        }
+        if line.starts_with("  ") {
+            assert!(
+                index > 0 && lines[index - 1].starts_with("• "),
+                "a summary coordinate cannot appear without its label: {preview}"
+            );
+        }
+    }
+    coordinates
+}
+
+fn test_code_span(line: &str, prefix: &str) -> Option<String> {
+    let span = line.strip_prefix(prefix)?;
+    let delimiter = span.bytes().take_while(|byte| *byte == b'`').count();
+    if delimiter == 0 {
+        return None;
+    }
+    let marker = "`".repeat(delimiter);
+    let content_start = delimiter;
+    let closing_start = span[content_start..].find(&marker)? + content_start;
+    if !span[closing_start + delimiter..].is_empty() {
+        return None;
+    }
+    let mut content = &span[content_start..closing_start];
+    if content.starts_with(' ')
+        && content.ends_with(' ')
+        && content.chars().any(|character| character != ' ')
+    {
+        content = &content[1..content.len() - 1];
+    }
+    Some(content.to_owned())
+}
+
+fn summary_rows_fixture(count: usize) -> (String, Vec<String>) {
+    let mut text = String::from("~lanes exact\n");
+    let mut coordinates = Vec::with_capacity(count);
+    for index in 0..count {
+        let name = format!("symbol_{index:03}");
+        let coordinate = format!("/workspace/project::src/lib.rs:{}::{name}", index + 1);
+        text.push_str(&format!("• `{name}` · function · rust\n  `{coordinate}`\n"));
+        coordinates.push(coordinate);
+    }
+    text.push_str(&format!(
+        "{count} row(s) on this page; showing {count} exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n"
+    ));
+    (text, coordinates)
+}
+
+#[test]
+fn every_interior_byte_of_a_rendered_backtick_unicode_row_backs_up_to_its_start() {
+    let name = " `λ` ";
+    let coordinate = format!("{PROJECT}::src/lib.rs:7::{name}");
+    let row = Row::new(
+        RowId::Symbol(symbol_key(&coordinate)),
+        basis(),
+        coordinate.clone(),
+    );
+    let answer = backend_present::Answer::Records(Box::new(backend_present::RecordList::new(
+        name,
+        backend_present::CoverageLine::new(&[Coverage::Complete], Some(1)),
+        vec![backend_present::Record::from_row(&row)],
+    )));
+    let preview = backend_present::markdown::summary_with_cursor(
+        &answer,
+        None,
+        ContinuationTarget::McpTool("backend.search"),
+    );
+    let row_start = preview.find("• ").expect("actual rendered row");
+    let label_end = preview[row_start..]
+        .find('\n')
+        .map(|offset| row_start + offset)
+        .expect("label line end");
+    let coordinate_start = label_end + 1;
+    let coordinate_end = preview[coordinate_start..]
+        .find('\n')
+        .map(|offset| coordinate_start + offset)
+        .expect("coordinate line end");
+    let row_end = coordinate_end + 1;
+
+    assert!(preview.contains("• ``  `λ`  `` · rust"), "{preview}");
+    assert_eq!(summary_coordinates(&preview), vec![coordinate]);
+    assert!(preview.contains("1 row(s) on this page; showing 1 exact coordinate(s); 0 omitted"));
+    for limit in row_start + 1..row_end {
+        assert_eq!(
+            readable_prefix_end(&preview, limit),
+            row_start,
+            "byte offset {limit} must not retain a partial label or operand"
+        );
+    }
+    assert_eq!(readable_prefix_end(&preview, row_start), row_start);
+    assert_eq!(readable_prefix_end(&preview, row_end), row_end);
+}
+
+#[test]
+fn result_budget_shortening_preserves_complete_summary_coordinate_rows() {
+    let (text, coordinates) = summary_rows_fixture(100);
+    let structured = json!({
+        "records": "s".repeat(41_000),
+        "nextCursor": "owner-cursor-remains-structured"
+    });
+    let result = tool_result(&text, structured.clone(), false);
+    assert_eq!(result["structuredContent"], structured);
+    assert_eq!(result["isError"], false);
+    let preview = text_of(&result);
+    assert!(preview.ends_with(PREVIEW_MARKER));
+    let shown = summary_coordinates(&preview);
+    assert!(!shown.is_empty());
+    assert!(shown.len() < coordinates.len());
+    assert_eq!(shown, coordinates[..shown.len()]);
+    assert!(preview.contains("\n\n… readable preview shortened"));
+    assert!(!preview.contains("owner-cursor-remains-structured"));
+}
+
+#[test]
+fn final_rpc_budget_shortening_preserves_complete_summary_coordinate_rows() {
+    let (text, coordinates) = summary_rows_fixture(100);
+    let structured = json!({
+        "records": "s".repeat(34_000),
+        "nextCursor": "owner-cursor-remains-structured"
+    });
+    let result = tool_result(&text, structured.clone(), false);
+    assert_eq!(
+        text_of(&result),
+        text.as_str(),
+        "the final envelope owns this shortening"
+    );
+
+    let response = encoded_stdio_reply(success(
+        json!("request-".to_owned() + &"r".repeat(8_000)),
+        result,
+    ));
+    assert_context_bounded(&response);
+    assert_eq!(response["result"]["structuredContent"], structured);
+    let preview = text_of(&response["result"]);
+    assert!(preview.ends_with(PREVIEW_MARKER));
+    let shown = summary_coordinates(&preview);
+    assert!(!shown.is_empty());
+    assert!(shown.len() < coordinates.len());
+    assert_eq!(shown, coordinates[..shown.len()]);
+    assert!(!preview.contains("owner-cursor-remains-structured"));
 }
 
 #[test]
@@ -3635,7 +3873,7 @@ fn default_search_summary_keeps_exact_native_records_with_a_concise_coverage_pre
     assert!(preview.starts_with("~lanes exact· names· graph· semantic✗ unconfigured"));
     assert!(preview.contains("1 row(s)"));
     assert!(preview.contains("`structuredContent.records`"));
-    assert!(!preview.contains(DECLARATION));
+    assert!(preview.contains(DECLARATION));
     let structured = &result["structuredContent"];
     assert_eq!(structured["detail"], "summary");
     assert_eq!(structured["more"], false);

@@ -1312,7 +1312,7 @@ fn structured_continuation_previews_do_not_scale_with_the_opaque_token() {
 }
 
 #[test]
-fn mcp_summary_list_previews_preserve_scope_count_and_continuation_without_repeating_rows() {
+fn mcp_summary_list_previews_include_exact_rows_within_the_text_budget() {
     use backend_library::{Cursor, PageContinuation};
 
     let row = declaration_row();
@@ -1336,9 +1336,21 @@ fn mcp_summary_list_previews_preserve_scope_count_and_continuation_without_repea
     assert!(preview.contains("`structuredContent.records`"));
     assert!(preview.contains("Continue `backend.graph` with the same arguments"));
     assert!(!preview.contains(cursor));
-    assert!(!preview.contains(DECLARATION));
+    assert!(preview.contains(&format!("`{DECLARATION}`")));
+    assert!(preview.contains("`ferris` · function · rust"));
     assert!(!preview.contains("a long retained description"));
-    assert!(preview.len() < 512);
+    assert!(preview.len() <= MAX_PREVIEW_TEXT_BYTES);
+    let row = format!("• `ferris` · function · rust\n  `{DECLARATION}`\n");
+    let expected = format!(
+        "{coverage}\n{}{total} row(s) on this page; showing {total} exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.graph` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
+        row.repeat(25),
+        total = 25,
+    );
+    assert_eq!(preview, expected, "MCP preview remains typed and compact");
+    assert_eq!(preview.len(), 2113, "fixed fixture output byte cost");
+    assert_eq!(preview.len(), expected.len(), "measured UTF-8 output bytes");
+    assert_eq!(estimate_tokens(preview.len()), 529, "estimated token cost");
+    assert_eq!(estimate_tokens(preview.len()), expected.len().div_ceil(4));
     assert_eq!(
         markdown::summary_with_cursor(&answer, Some(cursor), ContinuationTarget::CliOption),
         markdown::answer_with_cursor(&answer, Some(cursor), ContinuationTarget::CliOption),
@@ -1356,6 +1368,106 @@ fn mcp_summary_list_previews_preserve_scope_count_and_continuation_without_repea
         markdown::summary_with_cursor(&empty, None, ContinuationTarget::McpTool("backend.graph"));
     assert!(preview.contains("no graph edges at this coordinate"));
     assert!(!preview.contains("Continue"));
+}
+
+#[test]
+fn mcp_summary_budget_omits_only_whole_rows_and_keeps_exact_coordinates() {
+    use backend_library::Row;
+
+    let mut expected = Vec::new();
+    let mut records = Vec::new();
+    for index in 0..40 {
+        let name = format!("symbol_{index:02}_{}", "λ".repeat(250));
+        let coordinate = format!("{PROJECT}::src/lib.rs:{}::{name}", index + 1);
+        let row = Row::new(RowId::Symbol(symbol_key(&coordinate)), basis(), coordinate);
+        let record = Record::from_row(&row);
+        expected.push(record.identity().coordinate().as_str().to_owned());
+        records.push(record);
+    }
+    let answer = Answer::Records(Box::new(RecordList::new(
+        "symbol",
+        CoverageLine::new(&[Coverage::Complete], Some(40)),
+        records,
+    )));
+    let preview =
+        markdown::summary_with_cursor(&answer, None, ContinuationTarget::McpTool("backend.search"));
+
+    assert!(preview.len() <= MAX_PREVIEW_TEXT_BYTES);
+    assert!(preview.contains("40 row(s) on this page"));
+    assert!(preview.contains("omitted from text preview"));
+    assert!(preview.contains("`structuredContent.records`"));
+    let rendered = preview
+        .lines()
+        .filter_map(|line| test_code_span(line, "  "))
+        .collect::<Vec<_>>();
+    assert!(!rendered.is_empty());
+    assert!(rendered.len() < expected.len());
+    assert_eq!(rendered, expected[..rendered.len()]);
+    assert!(
+        preview
+            .lines()
+            .filter(|line| line.starts_with("  "))
+            .all(|line| test_code_span(line, "  ").is_some())
+    );
+    assert!(estimate_tokens(preview.len()) <= MAX_PREVIEW_TEXT_BYTES.div_ceil(4));
+}
+
+fn test_code_span(line: &str, prefix: &str) -> Option<String> {
+    let span = line.strip_prefix(prefix)?;
+    let delimiter = span.bytes().take_while(|byte| *byte == b'`').count();
+    if delimiter == 0 {
+        return None;
+    }
+    let marker = "`".repeat(delimiter);
+    let content_start = delimiter;
+    let closing_start = span[content_start..].find(&marker)? + content_start;
+    if !span[closing_start + delimiter..].is_empty() {
+        return None;
+    }
+    let mut content = &span[content_start..closing_start];
+    if content.starts_with(' ')
+        && content.ends_with(' ')
+        && content.chars().any(|character| character != ' ')
+    {
+        content = &content[1..content.len() - 1];
+    }
+    Some(content.to_owned())
+}
+
+#[test]
+fn mcp_summary_code_spans_preserve_backticks_and_omit_visual_line_controls() {
+    use backend_library::Row;
+
+    let exact = format!("{PROJECT}::src/lib.rs:1::odd`name");
+    let row = Row::new(RowId::Symbol(symbol_key(&exact)), basis(), exact.clone());
+    let answer = Answer::Records(Box::new(RecordList::new(
+        "odd`name",
+        CoverageLine::new(&[Coverage::Complete], Some(1)),
+        vec![Record::from_row(&row)],
+    )));
+    let preview =
+        markdown::summary_with_cursor(&answer, None, ContinuationTarget::McpTool("backend.search"));
+    assert!(preview.contains("• ``odd`name`` · rust"));
+    assert!(preview.contains(&format!("  ``{exact}``\n")));
+    assert_eq!(
+        preview
+            .lines()
+            .filter_map(|line| test_code_span(line, "  "))
+            .collect::<Vec<_>>(),
+        vec![exact]
+    );
+
+    let injected = format!("{PROJECT}::src/lib.rs:1::first\n• `forged` row");
+    let row = Row::new(RowId::Symbol(symbol_key(&injected)), basis(), injected);
+    let answer = Answer::Records(Box::new(RecordList::new(
+        "first",
+        CoverageLine::new(&[Coverage::Complete], Some(1)),
+        vec![Record::from_row(&row)],
+    )));
+    let preview =
+        markdown::summary_with_cursor(&answer, None, ContinuationTarget::McpTool("backend.search"));
+    assert!(!preview.contains("forged"));
+    assert!(preview.contains("1 omitted from text preview"));
 }
 
 #[test]

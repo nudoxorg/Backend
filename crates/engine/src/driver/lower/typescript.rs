@@ -471,6 +471,9 @@ struct Projector<'x, 'report, 'source, 'tsz> {
     /// Declaring-node span start per pushed fact.
     decl_starts: Vec<u32>,
     decl_ends: Vec<u32>,
+    /// Exact parsed parts for merged declaration families. The first parsed
+    /// declaration remains the coordinate origin and public excerpt span.
+    merged_declaration_parts: HashMap<u32, Vec<Span>>,
     fact_kinds: Vec<EntityKind>,
     /// One row per import-binding fact: the module and imported-name spans
     /// its foreign keys are built from.
@@ -539,6 +542,7 @@ struct FactRegistry<'a, 'source> {
     source_path: Option<String>,
     decl_starts: &'a [u32],
     decl_ends: &'a [u32],
+    declaration_parts: &'a HashMap<u32, Vec<Span>>,
     name_starts: &'a [u32],
     name_ends: &'a [u32],
     fact_kinds: &'a [EntityKind],
@@ -667,10 +671,9 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
 
     /// Registers one pushed fact's declaring span, binding-name span, and
     /// kind so references and links can resolve to its ordinal, and binds
-    /// the declaring span as the fact's authority-backed provenance span:
-    /// it is the exact basis every later owner-relative occurrence span is
-    /// measured against, so the shared containment law holds by
-    /// construction.
+    /// one exact declaration range as immutable primary provenance. Legal
+    /// merged parts retain that origin and supply separate exact containment
+    /// proofs; the public excerpt never widens across intervening source.
     fn register(
         &mut self,
         fact: u32,
@@ -687,6 +690,8 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                 end: declaration.end,
             },
         )?;
+        // Keep the original exact primary source observation immutable.
+        // Additional legal merge parts receive a separate containment proof.
         self.facts.attach_source_span(fact, staged).map_err(fault)?;
         *self.name_starts.get_mut(index).ok_or_else(lane_rejection)? = name.start;
         *self.name_ends.get_mut(index).ok_or_else(lane_rejection)? = name.end;
@@ -698,6 +703,43 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         }
         self.fact_at_name.entry(name.start).or_insert(fact);
         Ok(())
+    }
+
+    /// Commits the producer's complete merge-part proof after all parsed
+    /// declarations have arrived. Primary source observations stay unchanged.
+    fn commit_merged_declaration_parts(&mut self) -> Result<(), TypeScriptCollectError> {
+        let source_len = coordinate(self.source.len())?;
+        for (&owner, parts) in &self.merged_declaration_parts {
+            let parts: Box<[_]> = parts
+                .iter()
+                .map(|part| StagedSourceSpan {
+                    start: part.start,
+                    end: part.end,
+                })
+                .collect();
+            self.facts
+                .capture_declaration_parts(owner, source_len, parts)
+                .map_err(fault)?;
+        }
+        Ok(())
+    }
+
+    /// Only exact parsed declaration parts prove lexical containment.
+    fn containing_declaration_part(&self, ordinal: u32, span: Span) -> Option<Span> {
+        if let Some(parts) = self.merged_declaration_parts.get(&ordinal) {
+            return parts
+                .iter()
+                .copied()
+                .find(|part| part.start <= span.start && span.end <= part.end);
+        }
+        let index = ordinal as usize;
+        let (&start, &end) = (self.decl_starts.get(index)?, self.decl_ends.get(index)?);
+        (start != UNSET && end != UNSET && start <= span.start && span.end <= end)
+            .then_some(Span::new(start, end))
+    }
+
+    fn declaration_contains(&self, ordinal: u32, span: Span) -> bool {
+        self.containing_declaration_part(ordinal, span).is_some()
     }
 
     /// Resolves one source position to the fact whose binding name starts
@@ -716,15 +758,11 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             if self.fact_kinds.get(index).copied() != Some(EntityKind::Function) {
                 continue;
             }
-            let start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
-            let end = self.decl_ends.get(index).copied().unwrap_or(UNSET);
-            if start != UNSET
-                && end != UNSET
-                && start <= position
-                && position < end
-                && best.is_none_or(|(known, _)| start >= known)
+            if let Some(part) = self
+                .containing_declaration_part(ordinal, Span::new(position, position.checked_add(1)?))
+                && best.is_none_or(|(known, _)| part.start >= known)
             {
-                best = Some((start, ordinal));
+                best = Some((part.start, ordinal));
             }
         }
         best.map(|(_, ordinal)| ordinal)
@@ -737,16 +775,10 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             let length = coordinate(self.facts.len()).ok()?;
             let mut best: Option<(u32, u32)> = None;
             for ordinal in 0..length {
-                let index = usize::try_from(ordinal).ok()?;
-                let start = *self.decl_starts.get(index)?;
-                let end = *self.decl_ends.get(index)?;
-                if start != UNSET
-                    && end != UNSET
-                    && start <= position
-                    && position < end
-                    && best.is_none_or(|(known, _)| start >= known)
-                {
-                    best = Some((start, ordinal));
+                if let Some(part) = self.containing_declaration_part(
+                    ordinal, Span::new(position, position.checked_add(1)?),
+                ) && best.is_none_or(|(known, _)| part.start >= known) {
+                    best = Some((part.start, ordinal));
                 }
             }
             return best.map(|(_, ordinal)| ordinal);
@@ -798,7 +830,12 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             let start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
             let end = self.decl_ends.get(index).copied().unwrap_or(UNSET);
             if start != UNSET && end != UNSET {
-                entries.push((start, end, coordinate(index).unwrap_or(UNSET)));
+                let ordinal = coordinate(index).unwrap_or(UNSET);
+                if let Some(parts) = self.merged_declaration_parts.get(&ordinal) {
+                    entries.extend(parts.iter().map(|part| (part.start, part.end, ordinal)));
+                } else {
+                    entries.push((start, end, ordinal));
+                }
             }
         }
         entries.sort_unstable_by(|left, right| left.0.cmp(&right.0).then(right.1.cmp(&left.1)));
@@ -1727,10 +1764,9 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         if matches!(
             kind,
             EntityKind::Trait | EntityKind::Module | EntityKind::Enum
-        ) && self
-            .merged_self_nominal(kind, name_bytes, declaration)
-            .is_some()
+        ) && let Some(ordinal) = self.merged_self_nominal(kind, name_bytes, declaration)
         {
+            self.fact_at_name.entry(name.start).or_insert(ordinal);
             return Ok(());
         }
         // Generic parameters own resolvable facts exactly as aliases and
@@ -1752,9 +1788,9 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
     }
 
     /// Finds one registered fact of `kind` and exact `name` bytes already
-    /// declared in the same lexical scope as `declaration`, widening its
-    /// declaration span over the merge part. `None` proves this declaration
-    /// opens a new family and must be emitted.
+    /// declared in the same lexical scope as `declaration`, retaining the
+    /// exact merge part separately from its primary source span. `None` proves
+    /// this declaration opens a new family and must be emitted.
     fn merged_self_nominal(
         &mut self,
         kind: EntityKind,
@@ -1788,12 +1824,10 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             if candidate_owner != owner {
                 continue;
             }
-            if let Some(slot) = self.decl_starts.get_mut(index) {
-                *slot = (*slot).min(declaration.start);
-            }
-            if let Some(slot) = self.decl_ends.get_mut(index) {
-                *slot = (*slot).max(declaration.end);
-            }
+            self.merged_declaration_parts
+                .entry(ordinal)
+                .or_insert_with(|| vec![Span::new(decl_start, decl_end)])
+                .push(declaration);
             return Some(ordinal);
         }
         None
@@ -1810,15 +1844,11 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             if exclude == Some(ordinal) {
                 continue;
             }
-            let start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
-            let end = self.decl_ends.get(index).copied().unwrap_or(UNSET);
-            if start != UNSET
-                && end != UNSET
-                && start <= position
-                && position < end
-                && best.is_none_or(|(known, _)| start >= known)
+            if let Some(part) = self
+                .containing_declaration_part(ordinal, Span::new(position, position.checked_add(1)?))
+                && best.is_none_or(|(known, _)| part.start >= known)
             {
-                best = Some((start, ordinal));
+                best = Some((part.start, ordinal));
             }
         }
         best.map(|(_, ordinal)| ordinal)
@@ -4081,6 +4111,7 @@ pub(crate) fn collect_with_checker<'source, 'report>(
             name_ends: Vec::new(),
             decl_starts: Vec::new(),
             decl_ends: Vec::new(),
+            merged_declaration_parts: HashMap::new(),
             fact_kinds: Vec::new(),
             import_modules: Vec::new(),
             import_module_len: 0,
@@ -4742,6 +4773,7 @@ pub(crate) fn collect_with_tsz<'source, 'session>(
                     name_ends: Vec::new(),
                     decl_starts: Vec::new(),
                     decl_ends: Vec::new(),
+                    merged_declaration_parts: HashMap::new(),
                     fact_kinds: Vec::new(),
                     import_modules: Vec::new(),
                     import_module_len: 0,
@@ -4832,6 +4864,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         self.pass_declared_member_ownership(false)?;
         self.pass_parentage()?;
         self.pass_declared_member_ownership(true)?;
+        self.commit_merged_declaration_parts()?;
         Ok(())
     }
 
@@ -4901,10 +4934,10 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             {
                 continue;
             }
-            // Legal declaration merging widens the emitted owner's span.
-            // One merge part cannot prove the whole merged inventory.
+            // One exact merge part cannot prove the whole merged inventory.
             let declaration = kind.span();
-            if self.decl_starts.get(owner as usize) != Some(&declaration.start)
+            if self.merged_declaration_parts.contains_key(&owner)
+                || self.decl_starts.get(owner as usize) != Some(&declaration.start)
                 || self.decl_ends.get(owner as usize) != Some(&declaration.end)
             {
                 continue;
@@ -5006,7 +5039,11 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
                         .unwrap_or(EntityKind::Parameter),
                 )
             {
-                events.push((decl_start, decl_end, ordinal, true));
+                if let Some(parts) = self.merged_declaration_parts.get(&ordinal) {
+                    events.extend(parts.iter().map(|part| (part.start, part.end, ordinal, true)));
+                } else {
+                    events.push((decl_start, decl_end, ordinal, true));
+                }
             }
         }
         events.sort_unstable_by(|left, right| {
@@ -5881,6 +5918,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             source_path: None,
             decl_starts: &self.decl_starts,
             decl_ends: &self.decl_ends,
+            declaration_parts: &self.merged_declaration_parts,
             name_starts: &self.name_starts,
             name_ends: &self.name_ends,
             fact_kinds: &self.fact_kinds,
@@ -6029,12 +6067,12 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             else {
                 continue;
             };
-            if start != UNSET && start < end {
-                events.push(NativeCallableScopeEvent::Named {
-                    start,
-                    end,
-                    ordinal,
-                });
+            if let Some(parts) = self.merged_declaration_parts.get(&coordinate(ordinal)?) {
+                events.extend(parts.iter().map(|part| NativeCallableScopeEvent::Named {
+                    start: part.start, end: part.end, ordinal,
+                }));
+            } else if start != UNSET && start < end {
+                events.push(NativeCallableScopeEvent::Named { start, end, ordinal });
             }
         }
         for (index, callable) in callables.iter().enumerate() {
@@ -6335,11 +6373,11 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             start: span.start,
             end: span.end,
         })?;
+        if !self.declaration_contains(owner, span) {
+            return Ok(());
+        }
         let owner_index = usize::try_from(owner).map_err(|_| lane_rejection())?;
         let Some(owner_start) = self.decl_starts.get(owner_index).copied() else {
-            return Ok(());
-        };
-        let Some(owner_end) = self.decl_ends.get(owner_index).copied() else {
             return Ok(());
         };
         let (Some(relative_start), Some(relative_end)) = (
@@ -6348,9 +6386,6 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         ) else {
             return Ok(());
         };
-        if relative_end > owner_end.saturating_sub(owner_start) {
-            return Ok(());
-        }
         let relative = RelSpan::new(relative_start, relative_end).map_err(|_| {
             TypeScriptCollectError::Span {
                 start: relative_start,
@@ -6531,6 +6566,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             source_path: Some(bound_file.file_name.clone()),
             decl_starts: &self.decl_starts,
             decl_ends: &self.decl_ends,
+            declaration_parts: &self.merged_declaration_parts,
             name_starts: &self.name_starts,
             name_ends: &self.name_ends,
             fact_kinds: &self.fact_kinds,
@@ -6614,6 +6650,7 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             source_path: None,
             decl_starts: &self.decl_starts,
             decl_ends: &self.decl_ends,
+            declaration_parts: &self.merged_declaration_parts,
             name_starts: &self.name_starts,
             name_ends: &self.name_ends,
             fact_kinds: &self.fact_kinds,
@@ -6766,9 +6803,8 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
     /// Commits one occurrence fact owned by `owner`, projecting the
     /// absolute source span onto the owner-relative wire span. A span that
     /// does not sit inside its owner is silently absent rather than
-    /// misattributed: the shared containment law rejects a relative span
-    /// that escapes its owner's provenance span at build time, so an
-    /// escaping site never enters the lane.
+    /// misattributed: image construction rechecks that the absolute range
+    /// fits one exact producer-proven declaration part, never a family gap.
     fn commit_occurrence(
         &mut self,
         owner: u32,
@@ -6777,11 +6813,11 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         target: OccurrenceTarget<'source>,
         confidence: OccurrenceConfidence,
     ) -> Result<(), TypeScriptCollectError> {
+        if !self.declaration_contains(owner, span) {
+            return Ok(());
+        }
         let owner_index = usize::try_from(owner).map_err(|_| lane_rejection())?;
         let Some(owner_start) = self.decl_starts.get(owner_index).copied() else {
-            return Ok(());
-        };
-        let Some(owner_end) = self.decl_ends.get(owner_index).copied() else {
             return Ok(());
         };
         let (Some(relative_start), Some(relative_end)) = (
@@ -6790,12 +6826,8 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
         ) else {
             return Ok(());
         };
-        // The owner-relative span must stay inside the owner's provenance
-        // span, exactly the law the image build re-checks; a site that
-        // reaches past the owner's declaring span has no honest owner.
-        if relative_end > owner_end.saturating_sub(owner_start) {
-            return Ok(());
-        }
+        // The exact declaration-part containment above is rechecked against
+        // producer provenance during image construction.
         let relative = RelSpan::new(relative_start, relative_end).map_err(|_| {
             TypeScriptCollectError::Span {
                 start: relative_start,
@@ -7286,7 +7318,9 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             if decl_start == UNSET || decl_end == UNSET {
                 continue;
             }
-            if decl_start < enum_start || decl_end > enum_end {
+            if !self.declaration_contains(enum_fact, Span::new(decl_start, decl_end))
+                || self.enclosing_registered_owner(decl_start, Some(candidate)) != Some(enum_fact)
+            {
                 continue;
             }
             if matched.is_some() {
@@ -7651,15 +7685,11 @@ impl<'x, 'report, 'source, 'tsz> Projector<'x, 'report, 'source, 'tsz> {
             if self.fact_kinds.get(index).copied() != Some(EntityKind::Record) {
                 continue;
             }
-            let start = self.decl_starts.get(index).copied().unwrap_or(UNSET);
-            let end = self.decl_ends.get(index).copied().unwrap_or(UNSET);
-            if start != UNSET
-                && end != UNSET
-                && start <= position
-                && position < end
-                && best.is_none_or(|(known, _)| start >= known)
+            if let Some(part) = self
+                .containing_declaration_part(ordinal, Span::new(position, position.checked_add(1)?))
+                && best.is_none_or(|(known, _)| part.start >= known)
             {
-                best = Some((start, ordinal));
+                best = Some((part.start, ordinal));
             }
         }
         best.map(|(_, ordinal)| ordinal)
@@ -9277,6 +9307,11 @@ impl<'a, 'source> FactRegistry<'a, 'source> {
     /// owning declaration's source text, so computed record text cells stay
     /// source-backed. `None` when the declaration never spells the name.
     fn source_spelling_owner(&self, name: &[u8], owner: u32) -> Option<&'source [u8]> {
+        if let Some(parts) = self.declaration_parts.get(&owner) {
+            return parts
+                .iter()
+                .find_map(|part| self.source_spelling_in(name, part.start, part.end));
+        }
         let owner_index = usize::try_from(owner).ok()?;
         let start = *self.decl_starts.get(owner_index)?;
         let end = *self.decl_ends.get(owner_index)?;
@@ -12689,6 +12724,161 @@ describe('suite', () => {\n\
     }
 
     #[test]
+    fn native_tsz_merged_declarations_keep_exact_primary_and_part_occurrence_provenance()
+    -> Result<(), LaneError> {
+        let source = concat!(
+            "declare namespace os {\n",
+            "type Base = { value: number };\n",
+            "interface File { first: Base; }\n",
+            "declare const gap: Base;\n",
+            "interface File extends Base { second: Base; }\n",
+            "}\n",
+            "declare namespace foreign { interface File { alien: string; } }\n",
+        );
+        let ir = owned_tsz_ir_at_path(source, "merged.d.ts")?;
+        let os = ir
+            .items()
+            .find(|item| item.name() == b"os")
+            .ok_or(LaneError::Missing("os namespace"))?;
+        let foreign = ir
+            .items()
+            .find(|item| item.name() == b"foreign")
+            .ok_or(LaneError::Missing("foreign namespace"))?;
+        let file = ir
+            .items()
+            .find(|item| item.name() == b"File" && item.parent() == Some(os.id()))
+            .ok_or(LaneError::Missing("merged os File"))?;
+        let foreign_file = ir
+            .items()
+            .find(|item| item.name() == b"File" && item.parent() == Some(foreign.id()))
+            .ok_or(LaneError::Missing("distinct foreign File"))?;
+        assert_ne!(
+            file.id(),
+            foreign_file.id(),
+            "equal names do not merge across lexical owners"
+        );
+        assert_eq!(ir.items().filter(|item| item.name() == b"File").count(), 2);
+        let first_start = u32::try_from(source.find("interface File { first").unwrap())?;
+        let second_start = source.find("interface File extends").unwrap();
+        let basis = file
+            .source()
+            .ok_or(LaneError::Missing("finalized merge source basis"))?;
+        let first_end =
+            first_start + u32::try_from(source[first_start as usize..].find('}').unwrap())? + 1;
+        assert_eq!((basis.start(), basis.end()), (first_start, first_end));
+        assert!(basis.end() < u32::try_from(second_start)?);
+        assert!(!source[basis.start() as usize..basis.end() as usize].contains("gap"));
+        for name in [b"first".as_slice(), b"second".as_slice()] {
+            let member = ir
+                .items()
+                .find(|item| item.name() == name)
+                .ok_or(LaneError::Missing("merged File member"))?;
+            assert_eq!(member.parent(), Some(file.id()));
+        }
+        let gap = ir
+            .items()
+            .find(|item| item.name() == b"gap")
+            .ok_or(LaneError::Missing("gap declaration"))?;
+        assert_eq!(
+            gap.parent(),
+            Some(os.id()),
+            "family envelope gaps are not lexical scope"
+        );
+        let expected_start = u32::try_from(second_start + "interface File extends ".len())?;
+        assert!(
+            ir.link_occurrences_from(file.id()).any(|site| site
+                .source
+                .is_some_and(
+                    |span| span.start() == expected_start && span.end() == expected_start + 4
+                )),
+            "later merge part keeps its exact extends Base occurrence"
+        );
+        assert!(
+            ir.link_occurrences_from(file.id()).all(|site| site
+                .source
+                .is_none_or(|span| span.end()
+                    <= u32::try_from(source.find("declare const gap").unwrap()).unwrap()
+                    || span.start() >= u32::try_from(second_start).unwrap())),
+            "no occurrence in the intervening gap is lent to File"
+        );
+        assert!(
+            ir.entity(file.id())
+                .is_some_and(|entity| entity.authority.members
+                    == backend_semantic::ir::FactAvailability::Unavailable),
+            "one merge part never claims the complete merged inventory"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_merged_namespace_gap_callable_keeps_its_exact_scope() -> Result<(), LaneError> {
+        let prefix = "namespace N { export interface A { first: number } }\n";
+        let gap = "type Gap = (value: number) => number;\n";
+        let control_source = format!("{prefix}{gap}");
+        let merged_source =
+            format!("{prefix}{gap}namespace N {{ export interface B {{ last: number }} }}\n");
+        let control = owned_tsz_ir(&control_source)?;
+        let merged = owned_tsz_ir(&merged_source)?;
+        let control_rows = anonymous_callable_rows(&control);
+        let merged_rows = anonymous_callable_rows(&merged);
+        assert_eq!(control_rows.len(), 1);
+        assert_eq!(merged_rows.len(), 1);
+        assert_eq!(
+            control_rows[0].1, merged_rows[0].1,
+            "a later namespace merge cannot lend its scope to the gap callable"
+        );
+        let gap_owner = merged
+            .items()
+            .find(|item| item.name() == b"Gap")
+            .ok_or(LaneError::Missing("gap type alias"))?;
+        assert_eq!(gap_owner.parent(), None);
+        let callable = merged
+            .item(merged_rows[0].0)
+            .ok_or(LaneError::Missing("gap callable"))?;
+        assert_eq!(callable.parent(), Some(gap_owner.id()));
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_merged_enum_refuses_a_same_name_variant_in_an_intervening_owner()
+    -> Result<(), LaneError> {
+        let source = concat!(
+            "enum E { First = 1 }\n",
+            "namespace Other { export enum Inner { OnlyGap = 2 } }\n",
+            "enum E { Last = 3 }\n",
+            "const missing = E.OnlyGap; const valid = E.Last;\n",
+        );
+        let ir = owned_tsz_ir(source)?;
+        let target = ir
+            .items()
+            .find(|item| item.name() == b"Last")
+            .ok_or(LaneError::Missing("later merged enum variant"))?;
+        let valid_start = u32::try_from(source.rfind("Last").unwrap())?;
+        assert!(
+            ir.link_occurrences().any(|site| site
+                .source
+                .is_some_and(|span| span.start() == valid_start && span.end() == valid_start + 4,)
+                && ir.link(site.link).is_some_and(|link| matches!(link.target,
+            backend_semantic::ir::LinkTarget::Local(id) if id == target.id()))),
+            "the later exact variant remains discoverable"
+        );
+        let gap = ir
+            .items()
+            .find(|item| item.name() == b"OnlyGap")
+            .ok_or(LaneError::Missing("foreign gap enum variant"))?;
+        let missing_start = u32::try_from(source.rfind("OnlyGap").unwrap())?;
+        assert!(
+            !ir.link_occurrences()
+                .any(|site| site.source.is_some_and(
+                    |span| span.start() == missing_start && span.end() == missing_start + 7,
+                ) && ir.link(site.link).is_some_and(|link| matches!(link.target,
+            backend_semantic::ir::LinkTarget::Local(id) if id == gap.id()))),
+            "the family envelope cannot turn a foreign variant into E's member"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn native_tsz_lowers_whole_pocketbase_generated_declaration_file() -> Result<(), LaneError> {
         use sha2::{Digest, Sha256};
         let source =
@@ -12714,6 +12904,21 @@ describe('suite', () => {\n\
         assert!(
             ir.items().count() > 100,
             "whole source lowered, not the extracted reproducer"
+        );
+        assert_eq!(&source.as_bytes()[89_418..89_426], b"_swPlPkc");
+        assert!(
+            ir.link_occurrences().any(|site| {
+                site.source
+                    .is_some_and(|span| span.start() == 89_418 && span.end() == 89_426)
+                    && ir.link(site.link).is_some_and(|link| {
+                        ir.item(link.from)
+                            .is_some_and(|owner| owner.name() == b"File"
+                                && owner.source().is_some_and(|primary| primary.end() < 89_418))
+                            && matches!(link.target, backend_semantic::ir::LinkTarget::Local(target)
+                            if ir.item(target).is_some_and(|item| item.name() == b"_swPlPkc"))
+                    })
+            }),
+            "the original failing site keeps its exact owner/target while the primary excerpt stays in the first part"
         );
         Ok(())
     }

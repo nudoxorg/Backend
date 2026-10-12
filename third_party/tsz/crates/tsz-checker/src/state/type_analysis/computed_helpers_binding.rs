@@ -1320,9 +1320,13 @@ impl<'a> CheckerState<'a> {
 
     /// Check if a symbol is a type-only export (excludable from namespace value type).
     pub(crate) fn is_type_only_export_symbol(&self, sym_id: SymbolId) -> bool {
-        let symbol = self.get_cross_file_symbol(sym_id);
+        let symbol = if self.ctx.project_module_resolution_outcomes.is_some() {
+            self.ctx.project_source_symbol(sym_id)
+        } else {
+            self.get_cross_file_symbol(sym_id)
+        };
         let Some(symbol) = symbol else {
-            return false;
+            return self.ctx.project_module_resolution_outcomes.is_some();
         };
         if self.ctx.project_module_resolution_outcomes.is_some()
             && symbol.has_any_flags(symbol_flags::ALIAS)

@@ -170,6 +170,9 @@ pub(crate) fn not_ready<T>(
             let links = ctx.links.clone();
             let id: SharedString = format!("retry-{key:?}").into();
             let store = ctx.links.store.read(cx);
+            // Keep the logical target and native focus stable, but retire
+            // GPUI's pending press when this exact page slot is replaced.
+            let native_id: SharedString = format!("{id}-{:?}", store.stamp(key)).into();
             let expected = store.capture_page_retry(key);
             let receipt = expected.clone();
             let act: Act = Rc::new(move |_, cx| { if let Some(receipt) = &receipt { links.retry_at(receipt, cx); } });
@@ -182,7 +185,7 @@ pub(crate) fn not_ready<T>(
             let act = target_action.callback();
             ctx.targets.push(Target { id: id.clone(), label: "Try again".into(), action: target_action.clone(), peek: None, source: None });
             let focus = ctx.native_handle(&id, cx);
-            let mut control = facet::controls::button(id.clone(), "Try again", &measure)
+            let mut control = facet::controls::button(native_id, "Try again", &measure)
                 .primary().on_click(move |window, cx| act(window, cx))
                 .when_current(Rc::new(move |cx| target_action.admits(cx)));
             if let Some(focus) = focus { control = control.focus_handle(focus); }

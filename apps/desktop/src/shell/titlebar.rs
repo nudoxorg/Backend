@@ -865,8 +865,13 @@ impl Titlebar {
                 View::Page | View::Code => super::keys::cap(super::keys::Command::CodePage),
             };
             let ink = if on { palette.ink0 } else if available { palette.ink3 } else { palette.ink4 };
+            // Selection changes keep logical order and native focus, but a
+            // newly painted destination cannot inherit the old node's press.
+            let native_id: SharedString = if !on && matches!(&eligibility, crate::runtime::graph_focus::GraphViewEligibility::Selected { .. }) {
+                format!("{id}-{eligibility:?}").into()
+            } else { id.clone() };
             let mut face = div()
-                .id(id.clone())
+                .id(native_id)
                 .relative()
                 .h(px(28.0 * measure.scale()))
                 .min_w(px(24.0 * measure.scale()))

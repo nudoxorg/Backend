@@ -1984,14 +1984,116 @@ fn selected_external_namespace_keeps_only_its_own_augmentation_members() {
 #[test]
 fn selected_file_namespace_default_keeps_node_cjs_interop_against_competing_kind() {
     use crate::checker::context::ResolutionModeOverride;
-    for (result_type, codes) in [("number", vec![]), ("string", vec![2322])] {
-        let mut program = compile_files_with_libs(vec![
-            ("src/main.mts".to_owned(), format!("import * as observed from './cjs'; export function read(): {result_type} {{ return observed.default.value; }}")),
-            ("src/cjs.cts".to_owned(), "declare class api { static value: number; static default: string; } export = api;".to_owned()),
-            ("src/wrong.mts".to_owned(), "export default 'wrong';".to_owned()),
-        ], &[]);
-        // Explicit extensions supply these producer format facts; there is no
-        // package-format inference for a plain .ts file in this control.
+    for namespace in [false, true] {
+        for (result_type, codes) in [("number", vec![]), ("string", vec![2322])] {
+            // Genuine TS5.9.3 refuses a namespace import of an export= class
+            // (TS2497), even with interop. Keep its legal default import and a
+            // legal object namespace import as distinct exact-request consumers.
+            let import = if namespace {
+                "* as observed"
+            } else {
+                "observed"
+            };
+            let cjs = if namespace {
+                "declare const api: { value: number; default: string; }; export = api;"
+            } else {
+                "declare class api { static value: number; static default: string; } export = api;"
+            };
+            let mut program = compile_files_with_libs(
+                vec![
+                    (
+                        "src/main.mts".to_owned(),
+                        format!(
+                            "import {import} from './cjs'; export function read(): {result_type} {{ return observed.value; }}"
+                        ),
+                    ),
+                    ("src/cjs.cts".to_owned(), cjs.to_owned()),
+                    (
+                        "src/wrong.mts".to_owned(),
+                        "export default 'wrong';".to_owned(),
+                    ),
+                ],
+                &[],
+            );
+            // Explicit extensions supply these producer format facts; there is no
+            // package-format inference for a plain .ts file in this control.
+            program.file_is_esm_map = Arc::new(
+                [
+                    ("src/main.mts".to_owned(), true),
+                    ("src/cjs.cts".to_owned(), false),
+                    ("src/wrong.mts".to_owned(), true),
+                ]
+                .into_iter()
+                .collect(),
+            );
+            let resolutions = [
+                ProjectModuleResolution {
+                    importer_path: "src/main.mts".to_owned(),
+                    specifier: "./cjs".to_owned(),
+                    request_kind: ProjectModuleRequestKind::EsmImport,
+                    resolution_mode: Some(ResolutionModeOverride::Import),
+                    target: ProjectModuleResolutionTarget::File {
+                        path: "src/cjs.cts".to_owned(),
+                    },
+                },
+                ProjectModuleResolution {
+                    importer_path: "src/main.mts".to_owned(),
+                    specifier: "./cjs".to_owned(),
+                    request_kind: ProjectModuleRequestKind::EsmReExport,
+                    resolution_mode: Some(ResolutionModeOverride::Import),
+                    target: ProjectModuleResolutionTarget::File {
+                        path: "src/wrong.mts".to_owned(),
+                    },
+                },
+            ];
+            let options = CheckerOptions {
+                module: tsz_common::common::ModuleKind::NodeNext,
+                es_module_interop: true,
+                allow_synthetic_default_imports: true,
+                ..CheckerOptions::default()
+            };
+            let plan = ParallelCheckPlan::build(
+                &program,
+                &options,
+                &[],
+                ProjectSemanticOptions::declaration_scoped(),
+                Some(Arc::new(
+                    build_project_module_resolution_outcomes(&program, &resolutions).unwrap(),
+                )),
+                None,
+            )
+            .unwrap();
+            let result = plan.check_file_partition(0, &program.files[..1]).unwrap();
+            assert_eq!(
+                result[0]
+                    .diagnostics
+                    .iter()
+                    .map(|diagnostic| diagnostic.code)
+                    .collect::<Vec<_>>(),
+                codes,
+                "namespace={namespace} result={result_type}: {:?}",
+                result[0].diagnostics,
+            );
+        }
+    }
+}
+
+#[test]
+fn selected_file_class_namespace_import_is_refused_with_and_without_interop() {
+    use crate::checker::context::ResolutionModeOverride;
+    for interop in [false, true] {
+        // SDK TS5.9.3 reports TS2497 for this exact illegal class namespace
+        // import under both options. Its additional property diagnostic is
+        // not an assertion of complete TSZ diagnostic parity in this control.
+        let mut program = compile_files_with_libs(
+            vec![
+                ("src/main.mts".to_owned(),
+                    "import * as observed from './cjs'; export function read(): number { return observed.default.value; }".to_owned()),
+                ("src/cjs.cts".to_owned(),
+                    "declare class api { static value: number; static default: string; } export = api;".to_owned()),
+                ("src/wrong.mts".to_owned(), "export default 'wrong';".to_owned()),
+            ], &[],
+        );
         program.file_is_esm_map = Arc::new(
             [
                 ("src/main.mts".to_owned(), true),
@@ -2023,6 +2125,8 @@ fn selected_file_namespace_default_keeps_node_cjs_interop_against_competing_kind
         ];
         let options = CheckerOptions {
             module: tsz_common::common::ModuleKind::NodeNext,
+            es_module_interop: interop,
+            allow_synthetic_default_imports: interop,
             ..CheckerOptions::default()
         };
         let plan = ParallelCheckPlan::build(
@@ -2036,16 +2140,21 @@ fn selected_file_namespace_default_keeps_node_cjs_interop_against_competing_kind
             None,
         )
         .unwrap();
-        let result = plan.check_file_partition(0, &program.files[..1]).unwrap();
-        assert_eq!(
-            result[0]
-                .diagnostics
-                .iter()
-                .map(|diagnostic| diagnostic.code)
-                .collect::<Vec<_>>(),
-            codes,
-            "result={result_type}: {:?}",
-            result[0].diagnostics,
+        let checked = plan.check_file_partition(0, &program.files[..1]).unwrap();
+        let codes = checked[0]
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>();
+        assert!(
+            codes.contains(&2497),
+            "exact selected CJS class namespace is refused, interop={interop}: {:?}",
+            checked[0].diagnostics
+        );
+        assert!(
+            !codes.contains(&2307),
+            "refusal is the admitted CJS shape, not missing module resolution: {:?}",
+            checked[0].diagnostics
         );
     }
 }
@@ -3401,10 +3510,21 @@ fn selected_import_equals_keeps_exact_type_only_export_assignment() {
                     selected_external("dep"),
                 ),
             ];
-            assert_cold_selected_diagnostics(
+            if !runtime {
+                // Keep the original illegal module-format case as a negative
+                // control instead of suppressing its genuine TS1202.
+                assert_cold_selected_diagnostics(files.clone(), &resolutions, &[1202]);
+            }
+            assert_cold_selected_diagnostics_with_options(
                 files,
                 &resolutions,
                 if runtime { &[1361] } else { &[] },
+                CheckerOptions {
+                    // Genuine TS5.9.3 emits TS1202 for this import-equals
+                    // syntax under ESNext, but accepts its type query in CJS.
+                    module: tsz_common::common::ModuleKind::CommonJS,
+                    ..CheckerOptions::default()
+                },
             );
         }
     }
@@ -3517,11 +3637,24 @@ fn assert_cold_selected_diagnostics(
     resolutions: &[ProjectModuleResolution],
     codes: &[u32],
 ) {
+    assert_cold_selected_diagnostics_with_options(
+        files,
+        resolutions,
+        codes,
+        CheckerOptions {
+            module: tsz_common::common::ModuleKind::ESNext,
+            ..CheckerOptions::default()
+        },
+    );
+}
+
+fn assert_cold_selected_diagnostics_with_options(
+    files: Vec<(String, String)>,
+    resolutions: &[ProjectModuleResolution],
+    codes: &[u32],
+    options: CheckerOptions,
+) {
     let program = compile_files_with_libs(files, &[]);
-    let options = CheckerOptions {
-        module: tsz_common::common::ModuleKind::ESNext,
-        ..CheckerOptions::default()
-    };
     let plan = ParallelCheckPlan::build(
         &program,
         &options,

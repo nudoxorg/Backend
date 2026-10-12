@@ -100,6 +100,96 @@ fn retained_native_read_retry_cannot_replace_a_new_read_and_fresh_failure_recove
     assert_eq!(reads.load(Ordering::SeqCst), 3, "old failure cannot replace the successful current reading");
 }
 
+/// Two ordinary pool faults can land between paints. Keeping the same native
+/// focus through their replacement must not lend the old held key to the new
+/// retry callback; no intermediate Pending paint may cancel it for this law.
+#[gpui::test]
+fn coalesced_read_failure_repaint_cannot_inherit_a_held_retry_key(cx: &mut TestAppContext) {
+    for key_name in ["enter", "space"] {
+        let reads = Arc::new(AtomicUsize::new(0));
+        let client = Arc::clone(&reads);
+        let mut rig = rig_with_reads(cx, Some(super::page_route("RelationLabel")), 1440.0, 900.0,
+            ReadPool::start(1, move |_| RecoveryReads(Arc::clone(&client))).expect("pool"));
+        let shell = rig.shell.clone();
+        rig.cx.update(|window, cx| {
+            window.replace_root(cx, |window, cx| gpui_component::Root::new(shell, window, cx).bordered(false));
+            window.set_a11y_forced(true);
+        });
+        rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+        let symbol = super::symbol("RelationLabel");
+        let key = PageKey::Symbol(symbol.clone());
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        let (target, _) = targets.placed().into_iter().find(|(target, _)| target.id.starts_with("retry-"))
+            .expect("actual first failure retry");
+        let focus = rig.cx.update(|window, cx| {
+            let focus = targets.native_handle(&target.id, cx);
+            focus.focus(window, cx);
+            focus
+        });
+        rig.settle();
+        let before = rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted);
+        let (armed_frame, focus_epoch, old_stamp) = rig.cx.update(|window, cx| {
+            assert!(focus.is_focused(window) && window.is_focus_handle_mounted(&focus));
+            window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                keystroke: gpui::Keystroke::parse(key_name).expect("held retry key"),
+                is_held: false, prefer_character_input: false,
+            }), cx);
+            let armed = window.a11y_frame_number();
+            let stamp = rig.graph.store.read(cx).stamp(&key);
+            rig.graph.store.update(cx, |store, cx| store.retry(key.clone(), cx));
+            assert!(!target.action.admits(cx));
+            // Hold the UI effect boundary while the real worker publishes its
+            // terminal. Public drain is the ordinary landing implementation;
+            // neither the Pending slot nor its missing button is painted.
+            crate::runtime::wait::until("the second real failure is ready to land", || {
+                rig.graph.store.read(cx).pool_activity().undelivered > 0
+            });
+            assert_eq!(rig.graph.store.update(cx, |store, cx| store.drain(cx)), 1);
+            assert_eq!(reads.load(Ordering::SeqCst), 2);
+            assert_ne!(rig.graph.store.read(cx).stamp(&key), stamp);
+            assert!(!rig.graph.store.read(cx).is_loading(&key));
+            assert_eq!(window.a11y_frame_number(), armed, "the worker completed without a Pending paint");
+            assert!(focus.is_focused(window));
+            (armed, window.focus_epoch(), stamp)
+        });
+        rig.settle();
+        let replacement_frame = rig.cx.update(|window, cx| {
+            let targets = rig.shell.read(cx).reader_targets(cx);
+            assert_eq!(targets.native_handle(&target.id, cx), focus, "the replacement keeps the exact native handle");
+            let (fresh, _) = targets.placed().into_iter().find(|(row, _)| row.id == target.id)
+                .expect("same represented retry after the new real fault");
+            assert!(fresh.action.admits(cx) && !target.action.admits(cx));
+            assert_ne!(rig.graph.store.read(cx).stamp(&key), old_stamp);
+            assert!(focus.is_focused(window) && window.is_focus_handle_mounted(&focus));
+            assert_eq!(window.focus_epoch(), focus_epoch, "focus loss cannot cancel this pending key");
+            assert!(window.a11y_frame_number() > armed_frame, "the new callback has actually committed");
+            window.a11y_frame_number()
+        });
+        rig.cx.update(|window, cx| {
+            window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse(key_name).expect("old retry release"),
+            }), cx);
+            assert_eq!(window.a11y_frame_number(), replacement_frame);
+            assert_eq!(window.focus_epoch(), focus_epoch);
+            assert_eq!(rig.graph.store.read(cx).stats().submitted, before + 1,
+                "the replacement failure must not inherit the old held {key_name}");
+        });
+        rig.cx.run_until_parked();
+        assert_eq!(reads.load(Ordering::SeqCst), 2);
+        rig.cx.update(|window, cx| {
+            let keystroke = gpui::Keystroke::parse(key_name).expect("fresh retry key");
+            window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                keystroke: keystroke.clone(), is_held: false, prefer_character_input: false,
+            }), cx);
+            window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
+        });
+        rig.settle();
+        assert_eq!(reads.load(Ordering::SeqCst), 3, "a fresh native retry reaches the actual worker");
+        assert!(rig.graph.store.read_with(rig.cx, |store, _| store.symbol(&symbol).is_loaded()));
+    }
+}
+
 #[gpui::test]
 fn identical_owner_failure_retires_generic_native_retry_before_watcher_and_fresh_offline_retry_works(cx: &mut TestAppContext) {
     let gate = crate::runtime::owner::OwnerGate::starting();

@@ -1858,6 +1858,28 @@ impl<'source> FactSet<'source> {
             .attach_source_span(self.len, self.primary_source_len, entity, span)
     }
 
+    /// Retains exact parsed declaration parts without widening the primary
+    /// excerpt span. Only a declaration-merging producer supplies these.
+    pub(super) fn capture_declaration_parts(
+        &mut self,
+        entity: u32,
+        source_len: u32,
+        parts: Box<[StagedSourceSpan]>,
+    ) -> Result<(), FactFault> {
+        if let Some(entered_len) = self.primary_source_len
+            && entered_len != source_len
+        {
+            return Err(FactFault::SourceSpan {
+                entity,
+                start: 0,
+                end: source_len,
+                source_len: entered_len,
+            });
+        }
+        self.provenance
+            .capture_declaration_parts(self.len, source_len, entity, parts)
+    }
+
     /// Marks an authority-complete local member-set observation for one
     /// emitted declaration, including a semantically real empty set.
     pub(super) fn mark_members_captured(&mut self, entity: u32) -> Result<(), FactFault> {
@@ -4265,7 +4287,7 @@ fn occurrence_source_span(
             end: relative.end,
         });
     };
-    if start > end || end > owner_span.end {
+    if !facts.provenance.contains_source_span(owner, start, end) {
         return Err(backend_semantic::ir::BuildError::InvalidOccurrenceSpan {
             owner: backend_semantic::ir::EntityId::new(owner),
             start,
