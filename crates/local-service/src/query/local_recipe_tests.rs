@@ -174,7 +174,9 @@ sys.stdout.buffer.write(response)
     )?;
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700))?;
     let contract = contract();
-    let config = root.join("compiler").join("embedding.config");
+    let compiler = root.join("compiler");
+    backend_platform::durable::ensure_private_directory(&compiler)?;
+    let config = compiler.join("embedding.config");
     let spec = install_embedding_runtime(
         &config,
         EmbeddingRuntimeInstall {

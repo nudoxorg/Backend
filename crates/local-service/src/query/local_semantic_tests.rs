@@ -952,6 +952,7 @@ sys.stdout.buffer.write(response)",
         provider_options: *blake3::hash(b"explicit fixture tokenizer/pool options").as_bytes(),
     };
     let compiler = root.join("compiler");
+    backend_platform::durable::ensure_private_directory(&compiler)?;
     let config = compiler.join("embedding.config");
     let spec = install_embedding_runtime(
         &config,
