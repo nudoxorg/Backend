@@ -312,3 +312,147 @@ fn captured_coordinate_preserves_qualified_names_paths_and_maximum_line_without_
         );
     }
 }
+
+#[test]
+fn retained_symbol_document_address_requires_exact_unique_membership_and_full_basis() {
+    let (basis, _, native, owner, declaration) = rows();
+    let external = symbol_key("actual-scoped-external-target");
+    let label = format!(
+        "pkg:workspace::nested::external::{}::draw",
+        RowId::Symbol(external)
+    );
+    let row = Row::new(RowId::Symbol(external), basis, &label);
+    let library = projection(vec![owner.clone(), declaration.clone(), row.clone()]);
+    let view = library.view();
+    let source = Basis {
+        root: view.root(),
+        ..view.basis()
+    };
+    let selected = resolve_selected_document_row(view, &label)
+        .expect("document address")
+        .expect("retained actual row");
+    assert!(std::ptr::eq(selected, view.row_ref(row.id).expect("row")));
+    assert_eq!(selected.id, row.id);
+    assert_eq!(selected.package, None);
+    assert!(matches!(
+        resolve_selected_view_address(view, &label),
+        SelectedViewAddress::Absent
+    ));
+    let selection = DocumentSelection::from_selected_view(view, source, &label)
+        .expect("actual retained symbol selection");
+    let document = Document::new(external, view.root(), row.document.clone())
+        .with_source_basis(source)
+        .with_location(row.source.clone())
+        .with_excerpt(row.excerpt.clone())
+        .with_selection(selection)
+        .expect("exact native identity");
+    assert_ne!(external, symbol_key(&label));
+    assert!(document.admits_query(
+        &DocumentQuery::new(symbol_key(&label), view.root()).with_source_basis(source)
+    ));
+    assert!(
+        document.admits_query(
+            &DocumentQuery::selected(external, view.root()).with_source_basis(source)
+        )
+    );
+    assert!(document.fragments.is_empty());
+    assert_eq!(document.location, SourceAvailability::NotCaptured);
+    assert_eq!(document.excerpt, SourceExcerpt::NotCaptured);
+    for coordinate in [
+        String::new(),
+        "x".repeat(MAX_ROW_IDENTITY_PREIMAGE_BYTES + 1),
+        "draw".to_owned(),
+        label.replace("draw", "other"),
+        label.replace("pkg:workspace", "pkg:foreign"),
+        format!("{label}::suffix"),
+    ] {
+        assert!(
+            resolve_selected_document_row(view, &coordinate)
+                .expect("absent address")
+                .is_none()
+        );
+        assert!(DocumentSelection::from_selected_view(view, source, &coordinate).is_none());
+    }
+    for foreign in [
+        Basis {
+            root: basis.root,
+            ..source
+        },
+        Basis {
+            object: object_version(b"foreign-object"),
+            ..source
+        },
+        Basis {
+            branch: branch_key("foreign-branch"),
+            ..source
+        },
+        Basis {
+            log: log_key("foreign-log"),
+            ..source
+        },
+        Basis {
+            schema: source.schema.wrapping_add(1),
+            ..source
+        },
+    ] {
+        assert!(DocumentSelection::from_selected_view(view, foreign, &label).is_none());
+        assert!(!document.admits_query(
+            &DocumentQuery::new(symbol_key(&label), view.root()).with_source_basis(foreign)
+        ));
+    }
+    let duplicate = Row::new(
+        RowId::Symbol(symbol_key("other-retained-target")),
+        basis,
+        &label,
+    );
+    let ambiguous = projection(vec![row.clone(), duplicate]);
+    assert!(matches!(
+        resolve_selected_document_row(ambiguous.view(), &label),
+        Err(CommandFailure::InvalidQuery(_))
+    ));
+    let collision = projection(vec![
+        row.clone(),
+        Row::new(RowId::Package(package_key(&label)), basis, &label),
+    ]);
+    assert!(matches!(
+        resolve_selected_document_row(collision.view(), &label),
+        Err(CommandFailure::InvalidQuery(_))
+    ));
+    let orphan = projection(vec![declaration.clone()]);
+    assert!(
+        resolve_selected_document_row(orphan.view(), &declaration.label)
+            .expect("missing owner")
+            .is_none()
+    );
+    let mut malformed = declaration;
+    malformed.package = Some(package_key("pkg:foreign"));
+    let malformed = projection(vec![owner, malformed.clone()]);
+    assert!(
+        resolve_selected_document_row(
+            malformed.view(),
+            &malformed
+                .view()
+                .row_ref(RowId::Symbol(native))
+                .expect("native")
+                .label
+        )
+        .expect("foreign owner")
+        .is_none()
+    );
+    let old = view.clone();
+    let (next, _) = advance(
+        library,
+        ViewDelta::Remove { id: row.id },
+        capability(basis.object),
+    );
+    assert!(
+        resolve_selected_document_row(next.view(), &label)
+            .expect("removed row")
+            .is_none()
+    );
+    assert!(
+        resolve_selected_document_row(&old, &label)
+            .expect("retained old view")
+            .is_some()
+    );
+}

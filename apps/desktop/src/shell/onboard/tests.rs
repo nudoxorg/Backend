@@ -548,6 +548,87 @@ fn a_project_that_did_not_index_says_what_stopped_and_every_way_forward_works(cx
     let _ = parent;
 }
 
+/// Actual native input against an actor-reported failure. Retire its held
+/// press and callback in the same effect batch that admits a fresh retry;
+/// ordinary actor/writer wakes, not a forced redraw, produce the next failure.
+#[gpui::test]
+fn native_retry_retires_with_its_attempt_before_redraw_and_fresh_failure_remains_usable(cx: &mut TestAppContext) {
+    use gpui::{Modifiers, MouseButton};
+    let (parent, folder) = project("retired-retry");
+    let asked = Arc::new(AtomicUsize::new(0));
+    let mut rig = rig_with_engine(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0,
+        ReadPool::start(2, |_| NothingYet).expect("pool"), Refuses(Arc::clone(&asked)));
+    let shell = rig.shell.clone();
+    rig.cx.update(|window, cx| {
+        window.replace_root(cx, |window, cx| gpui_component::Root::new(shell, window, cx).bordered(false));
+        window.set_a11y_forced(true);
+    });
+    rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+    let project = crate::core::LocalProjectId::from_path(&folder).expect("project");
+    rig.go(Intent::AddProject { project: project.clone() });
+    assert_eq!(asked.load(Ordering::SeqCst), 1);
+    assert_eq!(phases(&mut rig), [ProjectPhase::Failed]);
+    let (target, bounds) = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed()
+        .into_iter().find(|(target, _)| target.label == "Try again").expect("painted recovery target");
+    let old_attempt = snapshot(&mut rig).workspace().projects[0].clone();
+    let native = rig.cx.update(|window, _| window.a11y_tree().expect("committed native failure tree").nodes.iter()
+        .find(|(_, node)| node.role() == gpui::Role::Button && node.label() == Some("Try again")
+            && node.supports_action(gpui::AccessibleAction::Click))
+        .map(|(id, _)| *id).expect("actual Retry Click node"));
+    let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+    let before = rig.graph.root.read_with(rig.cx, |root, _| root.reduced());
+    let held_focus = rig.cx.update(|window, cx| {
+        window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+            position: bounds.center(), modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1, first_mouse: false,
+        }), cx);
+        let focused = window.focused(cx);
+        // A distinct admitted retry changes this row synchronously. The old
+        // native handlers are still the committed dispatch tree below.
+        rig.graph.root.update(cx, |root, cx| root.dispatch(Intent::RetryIndex(project.clone()), cx));
+        assert_eq!(rig.graph.store.read(cx).snapshot().workspace().projects[0].phase, ProjectPhase::Indexing);
+        assert!(!target.action.admits(cx));
+        target.action.run(window, cx);
+        window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+            position: bounds.center(), modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1,
+        }), cx);
+        for key in ["enter", "space"] {
+            let keystroke = gpui::Keystroke::parse(key).expect("native recovery key");
+            window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                keystroke: keystroke.clone(), is_held: false, prefer_character_input: false,
+            }), cx);
+            window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
+        }
+        window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+            action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: native, data: None,
+        }, cx);
+        assert_eq!(window.focused(cx), focused, "retired recovery cannot move native focus");
+        assert_eq!(window.a11y_frame_number(), frame, "no watcher flush or redraw hides the old input");
+        assert_eq!(rig.graph.root.read(cx).reduced(), before + 1, "only the independently admitted retry reduced");
+        focused
+    });
+    assert_eq!(rig.graph.root.read_with(rig.cx, |root, _| root.reduced()), before + 1,
+        "old releases cannot queue another retry at the end of the effect");
+    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), held_focus,
+        "deferred native effects cannot move the retired control's focus");
+    assert_eq!(rig.cx.update(|window, _| window.a11y_frame_number()), frame,
+        "the full rejected input batch still precedes a watcher redraw");
+    rig.settle();
+    assert_eq!(asked.load(Ordering::SeqCst), 2);
+    assert_eq!(phases(&mut rig), [ProjectPhase::Failed]);
+    let current = snapshot(&mut rig);
+    assert!(!current.workspace().projects[0].same_index_attempt(&old_attempt), "the new failure owns a different durable caller key");
+    let after = rig.graph.root.read_with(rig.cx, |root, _| root.reduced());
+    rig.cx.update(|window, cx| target.action.run(window, cx));
+    rig.cx.run_until_parked();
+    assert_eq!(rig.graph.root.read_with(rig.cx, |root, _| root.reduced()), after,
+        "a later failure at the same route and phase cannot revive the original callback");
+    assert_eq!(asked.load(Ordering::SeqCst), 2);
+    click(&mut rig, "Try again");
+    assert_eq!(asked.load(Ordering::SeqCst), 3, "the freshly painted current recovery still reaches the owner without Back");
+    assert_eq!(phases(&mut rig), [ProjectPhase::Failed]);
+    std::fs::remove_dir_all(parent).expect("owned fixture cleanup");
+}
+
 #[gpui::test]
 fn what_the_window_says_about_this_launch_is_said_once_and_goes_when_dismissed(cx: &mut TestAppContext) {
     let mut rig = first_run(cx, 1440.0);

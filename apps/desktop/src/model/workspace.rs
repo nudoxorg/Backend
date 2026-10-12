@@ -78,6 +78,13 @@ pub struct WorkspaceProject {
 }
 
 impl WorkspaceProject {
+    /// The attempt represented by a recovery control. Presentation changes
+    /// do not retire it; a new phase, transport request or durable receipt does.
+    pub(crate) fn same_index_attempt(&self, other: &Self) -> bool {
+        self.id == other.id && self.phase == other.phase
+            && self.request == other.request && self.operation == other.operation
+    }
+
     /// Creates an indeterminate indexing row from an admitted folder.
     #[must_use]
     pub fn indexing(path: impl Into<Arc<str>>) -> Result<Self, IdentityError> {
@@ -137,6 +144,39 @@ impl WorkspaceProject {
         self.phase = ProjectPhase::Failed;
         self.error = Some(Arc::from(message));
         self
+    }
+}
+
+#[cfg(test)]
+mod attempt_tests {
+    use super::*;
+
+    #[test]
+    fn recovery_attempt_ignores_words_but_retires_phase_request_and_operation() {
+        let id = LocalProjectId::new("/fixture/recovery-attempt").expect("project");
+        let mut expected = WorkspaceProject::indexing_with_id(id.clone()).with_error("first refusal");
+        expected.operation = Some(super::super::index_operation::tests::claim(&id, 0x91));
+        let mut current = expected.clone();
+        current.label = "renamed presentation".into();
+        current.error = Some("updated product words".into());
+        current.progress = Some(100);
+        current.files_indexed = Some(42);
+        current.recent = false;
+        assert!(current.same_index_attempt(&expected));
+        for phase in [ProjectPhase::Indexing, ProjectPhase::Ready, ProjectPhase::Cancelling,
+            ProjectPhase::Cancelled, ProjectPhase::Unconfirmed, ProjectPhase::Missing] {
+            assert!(!WorkspaceProject { phase, ..current.clone() }.same_index_attempt(&expected));
+        }
+        assert!(!WorkspaceProject { request: Some(RequestId::new(9)), ..current.clone() }.same_index_attempt(&expected));
+        assert!(!WorkspaceProject { operation: Some(super::super::index_operation::tests::claim(&id, 0x92)),
+            ..current.clone() }.same_index_attempt(&expected), "same phase does not lend a later caller key");
+        assert!(!WorkspaceProject { operation: None, ..current.clone() }.same_index_attempt(&expected));
+        let mut observed = current.clone();
+        let operation = observed.operation.as_mut().expect("retained operation");
+        operation.observation = Some(super::super::index_operation::tests::published(operation));
+        assert!(!observed.same_index_attempt(&expected), "a later receipt at the same caller key retires the represented state");
+        assert!(!WorkspaceProject { id: LocalProjectId::new("/fixture/other-project").expect("other"),
+            ..current }.same_index_attempt(&expected));
     }
 }
 

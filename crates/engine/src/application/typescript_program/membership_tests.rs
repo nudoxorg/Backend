@@ -699,6 +699,107 @@ fn configured_package_keeps_selected_semantics_excluded_gaps_and_exact_source_fr
 
 #[test]
 #[ignore = "requires pinned Node and TypeScript API paths in TSZ_PROGRAM_TEST_NODE and TSZ_PROGRAM_TEST_TYPESCRIPT_API"]
+fn angular_solution_selects_app_program_without_inheriting_root_references() {
+    let fixture = Fixture::new();
+    let root_config = r#"{"compilerOptions":{"strict":true,"target":"ES2022","module":"ES2022","moduleResolution":"Bundler"},"files":[],"references":[{"path":"./tsconfig.app.json"},{"path":"./tsconfig.spec.json"}]}"#;
+    let app_config =
+        r#"{"extends":"./tsconfig.json","files":["src/main.ts"],"include":["types/**/*.d.ts"]}"#;
+    let spec_config = r#"{"extends":"./tsconfig.json","files":["src/main.spec.ts"]}"#;
+    for (path, text) in [
+        ("tsconfig.json", root_config),
+        ("tsconfig.app.json", app_config),
+        ("tsconfig.spec.json", spec_config),
+        (
+            "angular.json",
+            r#"{"projects":{"app":{"architect":{"build":{"options":{"tsConfig":"tsconfig.app.json"}},"test":{"options":{"tsConfig":"tsconfig.spec.json"}}}}}}"#,
+        ),
+        ("src/main.spec.ts", "export const testOnly = 1;\n"),
+    ] {
+        fs::write(fixture.root.join(path), text).unwrap();
+    }
+    let mut sources = Fixture::sources();
+    sources.push(PackageSource::new("src/main.spec.ts", "export const testOnly = 1;\n").unwrap());
+    let admitted = fixture.host().admit(&fixture.root).unwrap().unwrap();
+    let inputs = admitted.inputs();
+    let app_path = fixture.root.join("tsconfig.app.json");
+    assert_eq!(
+        super::select_config(&inputs)
+            .unwrap()
+            .unwrap()
+            .path
+            .as_ref(),
+        app_path
+    );
+    for (path, text) in [
+        ("tsconfig.json", root_config),
+        ("tsconfig.app.json", app_config),
+        ("tsconfig.spec.json", spec_config),
+    ] {
+        let captured = inputs
+            .config_candidates
+            .iter()
+            .find(|config| config.path.as_ref() == fixture.root.join(path))
+            .unwrap();
+        assert_eq!(captured.bytes.as_ref(), text.as_bytes());
+    }
+    let report = super::run_program_bridge(
+        &inputs,
+        Some(&app_path),
+        &sources,
+        &fixture
+            .root
+            .join("node_modules/typescript/lib/typescript.js"),
+        Instant::now() + Duration::from_secs(90),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(report.error.is_none(), "{:?}", report.error);
+    assert_eq!(Path::new(&report.config_path), app_path);
+    assert!(
+        report.project_references.is_empty(),
+        "the selected app must not inherit solution references"
+    );
+    let options = &report.compiler_options["compilerOptions"];
+    assert_eq!(options["strict"], true);
+    assert_eq!(options["target"], "ES2022");
+    assert_eq!(options["module"], "ES2022");
+    assert_eq!(options["moduleResolution"], "Bundler");
+    let native = build_native_inputs(
+        &inputs,
+        &mut inputs.resolver(),
+        &sources,
+        Instant::now() + Duration::from_secs(90),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(
+        selected(&native),
+        BTreeSet::from(["src/lib.ts", "src/main.ts"])
+    );
+    assert_eq!(
+        native.package_membership["src/main.spec.ts"],
+        TypeScriptPackageSourceMembership::ExcludedFromConfiguredProgram
+    );
+    native
+        .closure_witness
+        .validate_current(admitted.witness.as_ref())
+        .unwrap();
+    fs::write(
+        fixture.root.join("tsconfig.spec.json"),
+        format!("{spec_config}\n"),
+    )
+    .unwrap();
+    assert!(
+        native
+            .closure_witness
+            .validate_current(admitted.witness.as_ref())
+            .is_err(),
+        "the excluded spec config remains an exact captured witness"
+    );
+}
+
+#[test]
+#[ignore = "requires pinned Node and TypeScript API paths in TSZ_PROGRAM_TEST_NODE and TSZ_PROGRAM_TEST_TYPESCRIPT_API"]
 fn configured_extends_inherits_membership_while_project_references_still_refuse() {
     let fixture = Fixture::new();
     fs::write(fixture.root.join("tsconfig.base.json"), r#"{"compilerOptions":{"strict":true,"target":"ES2020","module":"CommonJS","allowJs":false},"include":["src/**/*"]}"#).unwrap();

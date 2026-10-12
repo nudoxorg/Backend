@@ -168,9 +168,49 @@ pub fn row_resolver(
             .find(|row| row.id == backend_library::RowId::Symbol(symbol))
             .map(|row| {
                 (
-                    Identity::parse_with_key(&row.label, IdentityKey::Symbol(symbol)),
+                    Identity::parse_with_key(&row.label, IdentityKey::Symbol(symbol))
+                        .with_captured_source(
+                            row.source
+                                .captured()
+                                .map(backend_library::SourceLocation::path),
+                            row.source
+                                .captured()
+                                .map(backend_library::SourceLocation::start_line),
+                        ),
                     row.kind,
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod retained_site_tests {
+    use super::*;
+
+    #[test]
+    fn named_outline_borrows_its_retained_site_without_rewriting_the_operand() {
+        let label = "/gymbro::semantic::owner::CaféService";
+        let symbol = backend_library::symbol_key(label);
+        let basis = backend_library::Basis::new(
+            backend_library::view_state_root(&[]),
+            backend_library::object_version(b"outline"),
+        );
+        let source = backend_library::SourceLocation::new("src/café.service.ts", 17);
+        let Ok(source) = source else {
+            panic!("valid retained site");
+        };
+        let rows =
+            [
+                backend_library::Row::new(backend_library::RowId::Symbol(symbol), basis, label)
+                    .with_source(source),
+            ];
+        let mut resolve = row_resolver(&rows);
+        let Some((identity, _)) = resolve(symbol) else {
+            panic!("retained identity");
+        };
+        assert_eq!(identity.coordinate().as_str(), label);
+        assert_eq!(identity.name(), "CaféService");
+        assert_eq!(identity.language(), crate::Language::TypeScript);
+        assert_eq!(identity.key(), IdentityKey::Symbol(symbol));
     }
 }

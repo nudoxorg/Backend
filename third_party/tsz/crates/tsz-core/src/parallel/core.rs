@@ -69,3 +69,7 @@ include!("core/checking.rs");
 
 include!("core/project_resolution_execution.rs");
 include!("core/project_checker_partitions.rs");
+
+#[cfg(test)]
+#[path = "core/selected_ambient_exports_tests.rs"]
+mod selected_ambient_exports_tests;

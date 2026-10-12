@@ -342,6 +342,34 @@ pub fn resolve_selected_view_address<'view>(
     view.source_coordinate_address(coordinate)
 }
 
+/// Resolves a document address to its exact admitted symbol row.
+///
+/// A retained symbol without local package membership can still report its
+/// actual document and source availability. Its complete, unique label must
+/// exist in this immutable view; a name, path, or parsed key is insufficient.
+/// This does not grant declaration or owning-package authority. Rows claiming
+/// a package and legacy source aliases keep the stricter declaration proof.
+///
+/// # Errors
+/// Refuses ambiguous labels and coordinates naming a non-symbol row.
+pub fn resolve_selected_document_row<'view>(
+    view: &'view crate::ViewRoot,
+    coordinate: &str,
+) -> Result<Option<&'view Row>, crate::CommandFailure> {
+    if coordinate.is_empty() || coordinate.len() > crate::MAX_ROW_IDENTITY_PREIMAGE_BYTES {
+        return Ok(None);
+    }
+    if view.label_is_ambiguous(coordinate) {
+        return SelectedViewAddress::Ambiguous.declaration();
+    }
+    if let Some(row) = view.unique_symbol_by_label(coordinate)
+        && row.package.is_none()
+    {
+        return Ok(Some(row));
+    }
+    resolve_selected_view_address(view, coordinate).declaration()
+}
+
 fn canonical_line(line: &str) -> Option<u32> {
     if line.is_empty() || line.starts_with('0') || !line.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;

@@ -18,20 +18,21 @@ struct NameRanked {
 }
 
 impl NameRanked {
-    fn new(row: &Row, text: Option<&str>) -> Option<Self> {
+    fn new(row: &Row, text: Option<&str>, qualified: Option<bool>) -> Option<Self> {
         let normalized_label = row.label.to_lowercase();
-        if text.is_some_and(|text| !normalized_label.contains(text)) {
+        if qualified.is_none() && text.is_some_and(|text| !normalized_label.contains(text)) {
             return None;
         }
         // Coordinates carry an opaque identity before the declaration name.
         // Compare a complete name segment (including relative qualification),
         // never a suffix within a name such as `MockEnvironment`.
-        let exact = text.is_some_and(|text| {
-            normalized_label == text
-                || normalized_label
-                    .strip_suffix(text)
-                    .is_some_and(|prefix| prefix.ends_with("::"))
-        });
+        let exact = qualified == Some(true)
+            || text.is_some_and(|text| {
+                normalized_label == text
+                    || normalized_label
+                        .strip_suffix(text)
+                        .is_some_and(|prefix| prefix.ends_with("::"))
+            });
         Some(Self {
             id: row.id,
             normalized_label,
@@ -107,6 +108,33 @@ impl PartialOrd for SearchRanked {
         Some(self.cmp(other))
     }
 }
+
+// Only producer-retained sites influence this presentation order. Test/support
+// paths are a navigation hint, never a declaration or language authority.
+fn outline_order(row: &Row) -> (Reverse<(bool, bool, u8)>, &str, RowId) {
+    let path = row.source.file_path();
+    let support = path.is_some_and(|path| {
+        path.split('/')
+            .any(|part| matches!(part, "test" | "tests" | "__tests__"))
+            || path.ends_with(".spec.ts")
+            || path.ends_with(".spec.tsx")
+            || path.ends_with(".test.ts")
+            || path.ends_with(".test.tsx")
+    });
+    (
+        Reverse((
+            path.is_some() && !support,
+            path.is_some(),
+            row.kind.map_or(1, super::declaration_name_priority),
+        )),
+        path.unwrap_or(""),
+        row.id,
+    )
+}
+
+// Retain the borrowed key once: heap comparisons never rescan a source path.
+#[derive(Eq, PartialEq, Ord, PartialOrd)]
+struct OutlineRanked<'a>((Reverse<(bool, bool, u8)>, &'a str, RowId));
 
 fn retained_page_capacity(start: usize, limit: usize) -> usize {
     start.saturating_add(limit).saturating_add(1)
@@ -205,6 +233,7 @@ impl ProjectionArrangement {
         limit: usize,
         row_for_id: F,
         address_matches: A,
+        relative_matches: impl Fn(RowId, &str) -> Option<bool>,
         work: &WorkCounters,
     ) -> ArrangementPage
     where
@@ -241,6 +270,7 @@ impl ProjectionArrangement {
             self.name_postings.as_ref(),
             row_for_id,
             address_matches,
+            relative_matches,
             work,
         )
     }
@@ -267,52 +297,60 @@ impl ProjectionArrangement {
         )
     }
 
-    pub(crate) fn unscoped_symbols_page(&self, limit: usize) -> ArrangementPage {
-        let mut ids = self
-            .unscoped_symbols
-            .as_ref()
-            .map(|tree| {
-                tree.iter()
-                    .map(|(id, ())| *id)
-                    .take(limit.saturating_add(1))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let has_more = ids.len() > limit;
-        ids.truncate(limit);
-        ArrangementPage { ids, has_more }
-    }
-
-    pub(crate) fn package_symbols_page(
-        &self,
-        package: PackageKey,
-        limit: usize,
-    ) -> ArrangementPage {
-        self.package_symbols_page_from(package, 0, limit)
-    }
-
-    pub(crate) fn package_symbols_page_from(
+    /// One shared bounded order for outline trees and their row projection.
+    pub(crate) fn outline_page<'view>(
         &self,
         package: PackageKey,
         start: usize,
         limit: usize,
+        row_for_id: impl Fn(RowId) -> Option<&'view Row>,
+        work: &WorkCounters,
     ) -> ArrangementPage {
-        let Some(tree) = self.package_symbols.as_ref() else {
-            return ArrangementPage {
-                ids: Vec::new(),
-                has_more: false,
-            };
+        let capacity = retained_page_capacity(start, limit);
+        let mut retained =
+            BinaryHeap::with_capacity(capacity.min(usize::from(crate::QueryLimit::MAX)));
+        let mut visited = 0_usize;
+        let mut visit = |id| {
+            visited = visited.saturating_add(1);
+            if let Some(row) = row_for_id(id) {
+                retained.push(OutlineRanked(outline_order(row)));
+                if retained.len() > capacity {
+                    retained.pop();
+                }
+            }
         };
-        let lower = PackageRowKey { package, id: None };
-        let mut ids = tree
-            .range((std::ops::Bound::Included(lower), std::ops::Bound::Unbounded))
-            .take_while(|(key, ())| key.package == package)
-            .filter_map(|(key, ())| key.id)
+        let mut scoped = false;
+        if let Some(tree) = self.package_symbols.as_ref() {
+            let lower = PackageRowKey { package, id: None };
+            for (key, ()) in tree
+                .range((std::ops::Bound::Included(lower), std::ops::Bound::Unbounded))
+                .take_while(|(key, ())| key.package == package)
+            {
+                if let Some(id) = key.id {
+                    scoped = true;
+                    visit(id);
+                }
+            }
+        }
+        // Preserve the existing unambiguous legacy single-package relation.
+        if !scoped && self.package_count() == 1 {
+            if let Some(tree) = self.unscoped_symbols.as_ref() {
+                for (id, ()) in tree.iter() {
+                    visit(*id);
+                }
+            }
+        }
+        work.record_scan(visited);
+        let mut retained = retained.into_vec();
+        work.record_sort(retained.len());
+        retained.sort_unstable();
+        let has_more = retained.len() > start.saturating_add(limit);
+        let ids = retained
+            .into_iter()
             .skip(start)
-            .take(limit.saturating_add(1))
-            .collect::<Vec<_>>();
-        let has_more = ids.len() > limit;
-        ids.truncate(limit);
+            .take(limit)
+            .map(|row| row.0.2)
+            .collect();
         ArrangementPage { ids, has_more }
     }
 
@@ -370,6 +408,7 @@ fn select_name_matches_page<'view>(
     postings: Option<&NamePostingTree>,
     row_for_id: impl Fn(RowId) -> Option<&'view Row>,
     address_matches: impl Fn(RowId, AddressSelection<'_>) -> bool,
+    relative_matches: impl Fn(RowId, &str) -> Option<bool>,
     work: &WorkCounters,
 ) -> ArrangementPage {
     let normalized = selection.posting_text().to_lowercase();
@@ -405,7 +444,13 @@ fn select_name_matches_page<'view>(
                 NameSelection::Address(address) => address_matches(id, address),
             })
             .filter_map(row_for_id)
-            .filter_map(|row| NameRanked::new(row, name_text.as_deref())),
+            .filter_map(|row| {
+                let qualified = match selection {
+                    NameSelection::Name { text, .. } => relative_matches(row.id, text),
+                    NameSelection::Address(_) => None,
+                };
+                NameRanked::new(row, name_text.as_deref(), qualified)
+            }),
         capacity,
     );
     work.record_sort(rows.len());
@@ -508,8 +553,9 @@ mod ordering_laws {
             )]);
         changed.score = Some(987);
         assert_ne!(original, changed);
-        let original = NameRanked::new(&original, Some("environment")).expect("name candidate");
-        let changed = NameRanked::new(&changed, Some("environment")).expect("name candidate");
+        let original =
+            NameRanked::new(&original, Some("environment"), None).expect("name candidate");
+        let changed = NameRanked::new(&changed, Some("environment"), None).expect("name candidate");
         assert!(original == changed);
         assert_eq!(original.cmp(&changed), Ordering::Equal);
 
@@ -521,7 +567,7 @@ mod ordering_laws {
             fixture("a::MockEnvironment", DeclarationKind::Class, true),
         ]
         .into_iter()
-        .map(|row| NameRanked::new(&row, Some("environment")).expect("name candidate"))
+        .map(|row| NameRanked::new(&row, Some("environment"), None).expect("name candidate"))
         .collect::<Vec<_>>();
         for (at, left) in tiers.iter().enumerate() {
             for (other_at, right) in tiers.iter().enumerate() {
@@ -556,5 +602,92 @@ mod ordering_laws {
         assert!(rows[0] == rows[1] && rows[1] == rows[2]);
         assert_eq!(rows[3].cmp(&rows[0]), Ordering::Less);
         assert!(rows[3] != rows[0]);
+    }
+}
+
+#[cfg(test)]
+mod outline_selection_profile {
+    use super::*;
+
+    #[test]
+    #[ignore = "broker-only bounded outline rank versus original canonical seek experiment"]
+    fn profile_outline_rank_and_original_canonical_prefix() {
+        for rows in [300_usize, 10_000, 100_000] {
+            let source = crate::view_state_root(&[]);
+            let basis = crate::Basis::new(source, crate::object_version(b"outline-profile"));
+            let package = crate::package_key("/outline-profile");
+            let mut values = Vec::with_capacity(rows + 1);
+            values.push(Row::new(RowId::Package(package), basis, "/outline-profile"));
+            for i in 0..rows {
+                let path = if i % 5 == 0 {
+                    "src/app.spec.ts"
+                } else {
+                    "src/app.ts"
+                };
+                values.push(
+                    Row::in_package(
+                        RowId::Symbol(crate::symbol_key(&format!("profile::{i}"))),
+                        basis,
+                        package,
+                        format!("/outline-profile::semantic::{i}::N{i}"),
+                    )
+                    .with_kind(crate::DeclarationKind::Class)
+                    .with_source(
+                        crate::SourceLocation::new(path, 1).expect("retained fixture site"),
+                    ),
+                );
+            }
+            // Index construction and canonical proof preparation are outside
+            // measured selection. This partial fixture claims no native coverage.
+            let view = crate::ViewRoot::new_incomplete(
+                crate::view_key(b"outline-profile"),
+                basis,
+                crate::Frontier::new(basis.branch, basis.log, basis.schema, source, 0),
+                values,
+                vec![crate::Coverage::Unavailable {
+                    lane: crate::Lane::Names,
+                    reason: crate::Reason::Incomplete,
+                }],
+            )
+            .expect("canonical fixture");
+            let work = WorkCounters::default();
+            let arrangement = ProjectionArrangement::build(&view, &work).expect("retained index");
+            for observation in 0..3 {
+                let tree = arrangement.package_symbols.as_ref().expect("package index");
+                let lower = PackageRowKey { package, id: None };
+                let started = std::time::Instant::now();
+                let mut old_visits = 0_usize;
+                let old = tree
+                    .range((std::ops::Bound::Included(lower), std::ops::Bound::Unbounded))
+                    .take_while(|(key, ())| key.package == package)
+                    .filter_map(|(key, ())| key.id)
+                    .inspect(|_| old_visits += 1)
+                    .take(201)
+                    .collect::<Vec<_>>();
+                let old_elapsed = started.elapsed();
+                let before = work.snapshot();
+                let started = std::time::Instant::now();
+                let ranked =
+                    arrangement.outline_page(package, 0, 200, |id| view.row_ref(id), &work);
+                let ranked_elapsed = started.elapsed();
+                let after = work.snapshot();
+                assert_eq!(old.len(), 201);
+                assert_eq!(old_visits, 201);
+                assert_eq!(ranked.ids.len(), 200);
+                assert!(ranked.has_more);
+                assert_eq!(after.scan_rows - before.scan_rows, rows as u64);
+                eprintln!(
+                    "outline_selection_profile {}",
+                    serde_json::json!({
+                        "rows": rows, "observation": observation, "limit": 200,
+                        "canonical_visits": old_visits, "canonical_ns": old_elapsed.as_nanos(),
+                        "ranked_visits": after.scan_rows - before.scan_rows,
+                        "retained_rank_keys": after.sort_rows - before.sort_rows,
+                        "ranked_ns": ranked_elapsed.as_nanos()
+                    })
+                );
+                std::hint::black_box((old, ranked));
+            }
+        }
     }
 }

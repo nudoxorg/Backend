@@ -759,6 +759,28 @@ fn external_address(text: &str) -> bool {
         && encoded.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+/// Splits one borrowed relative member spelling at its rightmost `.` or `::`.
+/// Public source/semantic/external addresses are classified separately before
+/// this grammar is used; no spelling here becomes a declaration identity.
+pub(crate) fn relative_name_tail(text: &str) -> Option<(&str, &str)> {
+    let colon = text.rfind("::").map(|at| (at, 2));
+    let dot = text.rfind('.').map(|at| (at, 1));
+    let (at, width) = match (colon, dot) {
+        (Some(colon), Some(dot)) => {
+            if colon.0 > dot.0 {
+                colon
+            } else {
+                dot
+            }
+        }
+        (Some(separator), None) | (None, Some(separator)) => separator,
+        (None, None) => return None,
+    };
+    let owner = &text[..at];
+    let leaf = &text[at + width..];
+    (!owner.is_empty() && !leaf.is_empty()).then_some((owner, leaf))
+}
+
 /// Name or exact declaration-address lookup pinned to a source root.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NameQuery {
@@ -809,8 +831,9 @@ impl NameQuery {
         {
             NameSelection::Address(AddressSelection { text, name, source })
         } else {
-            // Relative qualifications are ordinary case-insensitive names.
-            // Only their leaf selects the posting; the full text verifies a hit.
+            // Relative owner/member spellings use a leaf posting, then verify
+            // either the retained full label or exact typed parent ancestry.
+            let name = relative_name_tail(text).map_or(name, |(_, leaf)| leaf);
             NameSelection::Name { text, name }
         }
     }

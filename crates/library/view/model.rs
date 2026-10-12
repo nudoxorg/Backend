@@ -544,7 +544,8 @@ impl DocumentSelection {
     }
 
     /// Retains the exact requested address only when it uniquely selects an
-    /// actual declaration and owning package in this immutable source view.
+    /// actual symbol in this immutable source view. Local declarations and
+    /// source aliases additionally retain their owning-package proof.
     #[must_use]
     pub fn from_selected_view(
         view: &super::ViewRoot,
@@ -559,11 +560,7 @@ impl DocumentSelection {
         {
             return None;
         }
-        let super::SelectedViewAddress::Declaration { row, .. } =
-            super::resolve_selected_view_address(view, coordinate)
-        else {
-            return None;
-        };
+        let row = super::resolve_selected_document_row(view, coordinate).ok()??;
         let RowId::Symbol(symbol) = row.id else {
             return None;
         };

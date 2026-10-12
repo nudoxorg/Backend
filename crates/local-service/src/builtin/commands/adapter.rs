@@ -4501,8 +4501,7 @@ impl CommandAdapter {
             let Some(label) = label else {
                 return Ok(None);
             };
-            let Some(row) =
-                view_build::resolve_selected_view_address(library.view(), label).declaration()?
+            let Some(row) = backend_library::resolve_selected_document_row(library.view(), label)?
             else {
                 return Ok(None);
             };
@@ -6852,6 +6851,153 @@ mod tests {
                 .row_ref(backend_engine::RowId::Package(package))
                 .is_some(),
             "the fixture includes an actual selected package row"
+        );
+    }
+
+    #[test]
+    fn copied_retained_external_documents_dispatch_and_certify_the_actual_native_rows() {
+        use backend_library::{
+            CommandDto, CommandFailure, CommandReply, DocumentQuery, Row, RowId,
+        };
+
+        let mut fixture = AdapterFixture::new();
+        let basis = fixture.parts().1.engine().daemon().library().view().basis();
+        let rows = [
+            "retained-external-target-one",
+            "retained-external-target-two",
+        ]
+        .map(|preimage| {
+            let symbol = backend_library::symbol_key(preimage);
+            Row::new(
+                RowId::Symbol(symbol),
+                basis,
+                format!(
+                    "{}::external::{}::HTTPieArgumentParser",
+                    fixture.label,
+                    RowId::Symbol(symbol)
+                ),
+            )
+            .try_with_identity_preimage(preimage)
+            .expect("producer identity preimage")
+        });
+        fixture.publish_rows(rows.to_vec());
+        let (adapter, daemon) = fixture.parts();
+        let library = daemon.engine().daemon().library();
+        let root = library.revision_root();
+        let source = backend_library::Basis {
+            root,
+            ..library.view().basis()
+        };
+        let capability = library.view().capability();
+        let before = owner_cursor(daemon);
+        for (index, row) in rows.iter().enumerate() {
+            for source_read in [false, true] {
+                let query = DocumentQuery::new(backend_library::symbol_key(&row.label), root)
+                    .with_source_basis(source);
+                let command = if source_read {
+                    Command::Source(query)
+                } else {
+                    Command::Document(query)
+                };
+                let id = 0x6e00 + index as u64 * 2 + u64::from(source_read);
+                // Use the same owner proof and exact coordinate key claim that
+                // Session::document/source emit after reading the revision.
+                let certificate = crate::builtin::projection::certificate_for_snapshot_page(
+                    daemon.engine().daemon().library().view(),
+                    daemon.engine().daemon().library().cursor(),
+                    None,
+                    &[],
+                    None,
+                )
+                .expect("actual current owner proof")
+                .with_claim(WireClaim::Key {
+                    schema: backend_engine::WireSchema::Symbol,
+                    id: backend_engine::encode_id(
+                        backend_library::symbol_key(&row.label).as_bytes(),
+                    ),
+                    value: row.label.clone(),
+                });
+                let dto = CommandDto::new(id, command).with_certificate(certificate);
+                let body = serde_json::to_vec(&dto).expect("actual copied-operand request");
+                let Executed::Reply(bytes) = adapter
+                    .execute_or_defer(daemon, &body, id)
+                    .expect("document dispatch without source inference")
+                else {
+                    panic!("retained document is an immediate read");
+                };
+                let reply =
+                    backend_library::ReplyDto::decode_with_certificate(&bytes, capability.clone())
+                        .expect("authenticated native identity and document selection");
+                backend_library::admit_reply(&dto, &reply)
+                    .expect("client's exact locator admission");
+                let CommandReply::Document(document) = reply.reply else {
+                    panic!("published retained document");
+                };
+                let RowId::Symbol(symbol) = row.id else {
+                    panic!("native symbol");
+                };
+                assert_eq!(document.symbol, symbol);
+                assert_ne!(document.symbol, backend_library::symbol_key(&row.label));
+                assert_eq!(document.source_basis(), Some(source));
+                assert_eq!(
+                    document
+                        .selection
+                        .as_ref()
+                        .expect("exact copied address")
+                        .coordinate(),
+                    row.label
+                );
+                assert_eq!(
+                    document.location,
+                    backend_library::SourceAvailability::NotCaptured
+                );
+                assert_eq!(
+                    document.excerpt,
+                    backend_library::SourceExcerpt::NotCaptured
+                );
+                assert_eq!(document.facts, row.facts);
+                assert!(document.signature.is_none());
+                assert!(document.fragments.is_empty());
+            }
+            for coordinate in [
+                "HTTPieArgumentParser".to_owned(),
+                row.label.replace("HTTPieArgumentParser", "Other"),
+            ] {
+                let query = DocumentQuery::new(backend_library::symbol_key(&coordinate), root);
+                assert_eq!(
+                    adapter
+                        .standard(
+                            daemon,
+                            &Command::Document(query),
+                            Some(symbol_coordinate_certificate(&coordinate))
+                        )
+                        .expect("absent copied operand")
+                        .0,
+                    CommandReply::Failed(CommandFailure::NotFound)
+                );
+            }
+            let foreign = backend_library::Basis {
+                object: backend_library::object_version(b"foreign-stream"),
+                ..source
+            };
+            let query = DocumentQuery::new(backend_library::symbol_key(&row.label), root)
+                .with_source_basis(foreign);
+            assert!(matches!(
+                adapter
+                    .standard(
+                        daemon,
+                        &Command::Document(query),
+                        Some(symbol_coordinate_certificate(&row.label))
+                    )
+                    .expect("full-basis refusal")
+                    .0,
+                CommandReply::Failed(CommandFailure::WrongBasis { .. })
+            ));
+        }
+        assert_eq!(
+            owner_cursor(daemon),
+            before,
+            "document/source reads do not admit compiler work"
         );
     }
 

@@ -118,6 +118,7 @@ pub(crate) struct GraphViewRequest {
 
 enum QueuedIntent {
     Plain(Intent),
+    Retry { intent: Intent, expected: crate::model::WorkspaceProject },
     Acquire { intent: Intent, composition: crate::host::registry::Composition, attachment: OwnerAttachment, owner: super::acquire::OwnerRequest },
     Index { intent: Intent, attachment: super::actor::IndexMutationLease },
     IndexStatus { intent: Intent, attachment: OwnerAttachment },
@@ -125,7 +126,7 @@ enum QueuedIntent {
 }
 
 impl QueuedIntent {
-    fn intent(&self) -> &Intent { match self { Self::Plain(intent) | Self::Acquire { intent, .. } | Self::Index { intent, .. } | Self::IndexStatus { intent, .. } | Self::Read { intent, .. } => intent } }
+    fn intent(&self) -> &Intent { match self { Self::Plain(intent) | Self::Retry { intent, .. } | Self::Acquire { intent, .. } | Self::Index { intent, .. } | Self::IndexStatus { intent, .. } | Self::Read { intent, .. } => intent } }
 }
 
 enum IndexPreflightSave { Writing, Saved }
@@ -364,6 +365,12 @@ impl UiRootEntity {
         for queued in pending {
             match queued {
                 QueuedIntent::Plain(intent) => self.dispatch(intent, cx),
+                QueuedIntent::Retry { intent, expected }
+                    if self.snapshot().workspace().projects.iter().any(|row| row.same_index_attempt(&expected)) =>
+                {
+                    self.dispatch(intent, cx);
+                }
+                QueuedIntent::Retry { .. } => {},
                 QueuedIntent::Acquire { intent: Intent::AddRelease(release), composition, attachment, owner }
                     if super::acquire::current_composition(cx).is_some_and(|current| current.generation == composition.generation)
                         && self.store.as_ref().is_some_and(|store| store.read(cx).admits_owner_attachment(&attachment)) =>
@@ -742,7 +749,11 @@ impl UiRootEntity {
             self.queue_read(intent, dependency, cx);
             return;
         }
-        if matches!(&intent, Intent::AddRelease(_)) {
+        if let Intent::RetryIndex(project) = &intent {
+            let Some(expected) = self.snapshot().workspace().projects.iter()
+                .find(|row| row.id == *project).cloned() else { return; };
+            self.pending.push(QueuedIntent::Retry { intent, expected });
+        } else if matches!(&intent, Intent::AddRelease(_)) {
             // Capture before the end-effect handoff. A newly installed owner
             // cannot inherit a click admitted by the previous composition.
             let Some(composition) = super::acquire::current_composition(cx) else { return; };

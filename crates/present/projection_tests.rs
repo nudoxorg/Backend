@@ -313,3 +313,67 @@ fn page_projection_oversize_evidence_refuses_atomically_without_omitting_faults(
         "summary cannot drop actual faults to manufacture a fitting answer"
     );
 }
+
+#[test]
+fn retained_external_document_page_keeps_actual_identity_and_explicit_source_refusal() {
+    let native = symbol_key("retained-scoped-external-target");
+    let coordinate = format!(
+        "/abs/httpie::external::{}::HTTPieArgumentParser",
+        backend_library::RowId::Symbol(native)
+    );
+    let root = backend_library::view_state_root(&[]);
+    let basis = backend_library::Basis::new(
+        root,
+        backend_library::object_version(b"external-source-fixture"),
+    );
+    let row = backend_library::Row::new(backend_library::RowId::Symbol(native), basis, &coordinate);
+    let document = backend_library::Document::new(native, root, row.document.clone())
+        .with_source_basis(basis)
+        .with_location(row.source.clone())
+        .with_excerpt(row.excerpt.clone())
+        .with_selection(
+            backend_library::DocumentSelection::from_row(&row, basis)
+                .expect("fixture native selection"),
+        )
+        .expect("actual row and exact basis");
+    let page = crate::assemble::page_from_document(&coordinate, &document, &[], &[], Vec::new());
+    assert_eq!(page.identity().key(), IdentityKey::Symbol(native));
+    assert!(page.prose().is_empty());
+    assert!(page.signature().is_none());
+    assert!(page.source().site().is_none());
+    let answer = Answer::Page(Box::new(page));
+    for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+        let value = encoded(&answer, detail);
+        assert_eq!(value["identity"]["coordinate"], coordinate);
+        assert_eq!(value["identity"]["shape"], "external");
+        assert_eq!(
+            value["identity"]["semantic_data"]["value"],
+            json!(native.as_bytes())
+        );
+        assert!(value["identity"].get("path").is_none());
+        assert!(value["identity"].get("line").is_none());
+        assert_eq!(value["source_fault"]["slug"], "source-unavailable");
+        assert_eq!(value["source_fault"]["cause"], "not-captured");
+        assert_eq!(value["source_fault"]["operand"], coordinate);
+        assert!(value.get("source").is_none());
+        for rendered in [
+            markdown::answer_with_detail(
+                &answer,
+                detail,
+                None,
+                ContinuationTarget::McpTool("backend.document"),
+            ),
+            text::answer_with_detail(
+                &answer,
+                Theme::plain(),
+                detail,
+                None,
+                ContinuationTarget::CliOption,
+            ),
+        ] {
+            assert!(rendered.contains(&coordinate));
+            assert!(rendered.contains("source-unavailable"));
+            assert!(!rendered.contains("not-found"));
+        }
+    }
+}
