@@ -309,6 +309,58 @@ pub(crate) fn fixture_with_mode(
 }
 
 #[cfg(unix)]
+fn protocol_fixture_python() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+    // Match the existing native-tooling/engine test authority convention. An
+    // explicit selection fails closed instead of falling through to another tool.
+    let selected = std::env::var_os("COMPILER_PYTHON_COMPILER")
+        .or_else(|| std::env::var_os("NUDOX_PYTHON"))
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("PATH").and_then(|paths| {
+            std::env::split_paths(&paths).map(|directory| directory.join("python3"))
+                .find(|path| path.is_file())
+        })).ok_or("BEM2 protocol controls require a real Python executable on PATH or COMPILER_PYTHON_COMPILER")?;
+    let program = selected.canonicalize()?;
+    let metadata = std::fs::metadata(&program)?;
+    if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+        return Err("Selected protocol fixture Python is not an executable regular file".into());
+    }
+    Ok(program)
+}
+
+#[cfg(unix)]
+#[test]
+fn local_semantic_protocol_fixture_binds_actual_interpreter_and_script_dependency() -> TestResult {
+    let fixture = fixture(4096)?;
+    let interpreter = protocol_fixture_python()?;
+    let script = fixture
+        ._directory
+        .path()
+        .join("protocol-fixture.py")
+        .canonicalize()?;
+    let executable = backend_compile::ExecutableIdentity::from_path(&interpreter)?;
+    let dependency = backend_compile::ExecutableIdentity::from_path(&script)?;
+    let closure = backend_compile::ToolchainArtifact::new(executable, vec![dependency.digest()]);
+    let config = fixture._directory.path().join("embedding.config");
+    let inspected = backend_engine::application::inspect_embedding_runtime(&config)?
+        .ok_or("installed protocol fixture configuration is missing")?;
+    assert_eq!(inspected.spec.executable(), closure.identity().to_bytes());
+    assert!(
+        fixture.provision.runtime().is_some(),
+        "actual interpreter admitted by normal activation"
+    );
+    let mut changed = std::fs::read(&script)?;
+    changed.extend_from_slice(b"\n# changed protocol bytes\n");
+    std::fs::write(&script, changed)?;
+    let reopened = EmbeddingRuntimeProvision::open(&config)?;
+    assert!(
+        reopened.runtime().is_none(),
+        "changed protocol dependency cannot reactivate under the previous exact closure"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
 fn fixture_with_mode_and_winner(
     maximum_text: u32,
     mode: &str,
@@ -316,14 +368,14 @@ fn fixture_with_mode_and_winner(
 ) -> Result<ProtocolFixture, Box<dyn std::error::Error>> {
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir()?;
+    let interpreter = protocol_fixture_python()?;
     let program = directory.path().join("protocol-fixture.py");
     let log = directory.path().join("input.jsonl");
     let entered = directory.path().join("second-page-entered");
     let release = directory.path().join("second-page-release");
     std::fs::write(
         &program,
-        br"#!/usr/bin/python3
-import json, os, struct, sys, time
+        br"import json, os, struct, sys, time
 frame = sys.stdin.buffer.read()
 if frame[:4] != b'BEM2' or len(frame) < 108: sys.exit(3)
 purpose = frame[4]
@@ -372,9 +424,15 @@ sys.stdout.buffer.write(response)",
         &config,
         EmbeddingRuntimeInstall {
             requirement: EmbeddingRequirement::Optional,
-            program,
-            arguments: Vec::new(),
-            dependencies: Vec::new(),
+            program: interpreter,
+            arguments: vec![
+                "-I".to_owned(),
+                program
+                    .to_str()
+                    .ok_or("UTF-8 protocol script path")?
+                    .to_owned(),
+            ],
+            dependencies: vec![program],
             environment: vec![
                 ("FIXTURE_LOG".into(), log.to_string_lossy().into_owned()),
                 ("FIXTURE_MODE".into(), mode.to_owned()),
