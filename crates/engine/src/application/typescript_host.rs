@@ -534,14 +534,23 @@ impl TypeScriptResolverCapability<'_> {
                 maximum: MAX_RESOLVER_OBSERVATIONS,
             });
         }
-        let cost = lexical.as_os_str().as_encoded_bytes().len()
+        let cost = lexical
+            .as_os_str()
+            .as_encoded_bytes()
+            .len()
             .saturating_mul(2)
             .saturating_add(parent.path.as_os_str().as_encoded_bytes().len())
-            .saturating_add(parent.canonical_path.as_deref()
-                .map_or(0, |p| p.as_os_str().as_encoded_bytes().len()));
+            .saturating_add(
+                parent
+                    .canonical_path
+                    .as_deref()
+                    .map_or(0, |p| p.as_os_str().as_encoded_bytes().len()),
+            );
         ensure_metadata_capacity(&self.observations, cost, &lexical)?;
         self.observations.retained_metadata_bytes += cost;
-        self.observations.missing_paths.insert(lexical.clone(), None);
+        self.observations
+            .missing_paths
+            .insert(lexical.clone(), None);
         self.observations
             .external_absent_directories
             .insert(lexical, parent);
@@ -779,7 +788,11 @@ impl TypeScriptResolverCapability<'_> {
         }
         for (path, parent) in &self.observations.missing_paths {
             digest.update(&[2]);
-            if self.observations.external_absent_directories.contains_key(path) {
+            if self
+                .observations
+                .external_absent_directories
+                .contains_key(path)
+            {
                 update_external_absent_directory_path(&mut digest, path)?;
             } else {
                 update_logical_path(&mut digest, self.witness, path)?;
@@ -980,54 +993,96 @@ impl TypeScriptResolverCapability<'_> {
         units: usize,
         phase: &str,
     ) -> Result<(), TypeScriptProjectHostError> {
-        charge_closure_replay_work(&mut self.observations.closure_replay_work_units, units, phase)
+        charge_closure_replay_work(
+            &mut self.observations.closure_replay_work_units,
+            units,
+            phase,
+        )
     }
 
-    fn index_captured_peer_manifest(&mut self, path: &Path) -> Result<(), TypeScriptProjectHostError> {
+    fn index_captured_peer_manifest(
+        &mut self,
+        path: &Path,
+    ) -> Result<(), TypeScriptProjectHostError> {
         if path.file_name().and_then(|name| name.to_str()) != Some("package.json") {
             return Ok(());
         }
-        let Some(directory) = path.parent() else { return Ok(()); };
-        if self.observations.captured_peer_manifests.contains_key(directory) {
+        let Some(directory) = path.parent() else {
+            return Ok(());
+        };
+        if self
+            .observations
+            .captured_peer_manifests
+            .contains_key(directory)
+        {
             return Ok(());
         }
-        self.charge_closure_replay_work(path.as_os_str().as_encoded_bytes().len(),
-            "captured peer candidate path")?;
-        let Some(prefix) = directory.to_str().and_then(typescript_peer_directory_prefix)
+        self.charge_closure_replay_work(
+            path.as_os_str().as_encoded_bytes().len(),
+            "captured peer candidate path",
+        )?;
+        let Some(prefix) = directory
+            .to_str()
+            .and_then(typescript_peer_directory_prefix)
             .and_then(|prefix| normalize_absolute_path(Path::new(prefix)))
-        else { return Ok(()); };
+        else {
+            return Ok(());
+        };
         // Safe relative peer keys cannot escape an already admitted prefix, so
         // those manifests require no external-candidate parse or index.
         if self.witness.path_is_admitted(&prefix) {
             return Ok(());
         }
-        let source = self.observations.loaded_sources.get(path)
+        let source = self
+            .observations
+            .loaded_sources
+            .get(path)
             .expect("newly captured source is present");
         let content_id = source.content_id;
         let mut candidates = Vec::new();
-        let mut metadata = directory.as_os_str().as_encoded_bytes().len()
+        let mut metadata = directory
+            .as_os_str()
+            .as_encoded_bytes()
+            .len()
             .saturating_add(path.as_os_str().as_encoded_bytes().len())
-            .saturating_add(content_id.as_ref().len()).saturating_add(1);
+            .saturating_add(content_id.as_ref().len())
+            .saturating_add(1);
         if source.bytes.len() <= MAX_PACKAGE_MANIFEST_BYTES {
             // The existing UTF-8 config reader removes one leading BOM and
             // accepts JSONC just like the selected SDK's readJson fallback.
             // Keep raw bytes/CID, and leave malformed/unsupported manifests
             // without candidates, matching readJson's empty-object fallback.
             // Charge decoding, the bounded JSONC buffers and parse BEFORE work.
-            charge_closure_replay_work(&mut self.observations.closure_replay_work_units,
-                source.bytes.len().saturating_mul(5), "captured peer manifest decoding")?;
+            charge_closure_replay_work(
+                &mut self.observations.closure_replay_work_units,
+                source.bytes.len().saturating_mul(5),
+                "captured peer manifest decoding",
+            )?;
             if let Ok(manifest) = parse_typescript_config(path, &source.bytes)
-                && let Some(peers) = manifest.get("peerDependencies")
+                && let Some(peers) = manifest
+                    .get("peerDependencies")
                     .and_then(serde_json::Value::as_object)
             {
                 for key in peers.keys() {
-                    charge_closure_replay_work(&mut self.observations.closure_replay_work_units,
-                        key.len().saturating_add(1), "captured peer key validation")?;
-                    if !valid_peer_package_key(key) { continue; }
-                    let candidate_bytes = prefix.as_os_str().as_encoded_bytes().len()
-                        .saturating_add(1).saturating_add(key.len());
-                    charge_closure_replay_work(&mut self.observations.closure_replay_work_units,
-                        candidate_bytes, "captured peer candidate allocation")?;
+                    charge_closure_replay_work(
+                        &mut self.observations.closure_replay_work_units,
+                        key.len().saturating_add(1),
+                        "captured peer key validation",
+                    )?;
+                    if !valid_peer_package_key(key) {
+                        continue;
+                    }
+                    let candidate_bytes = prefix
+                        .as_os_str()
+                        .as_encoded_bytes()
+                        .len()
+                        .saturating_add(1)
+                        .saturating_add(key.len());
+                    charge_closure_replay_work(
+                        &mut self.observations.closure_replay_work_units,
+                        candidate_bytes,
+                        "captured peer candidate allocation",
+                    )?;
                     metadata = metadata.saturating_add(candidate_bytes);
                     ensure_metadata_capacity(&self.observations, metadata, directory)?;
                     candidates.push(prefix.join(key).into_boxed_path());
@@ -1035,16 +1090,27 @@ impl TypeScriptResolverCapability<'_> {
             }
         }
         ensure_peer_index_capacity(&self.observations, 1, metadata, directory)?;
-        self.charge_closure_replay_work(path.as_os_str().as_encoded_bytes().len(),
-            "captured peer manifest source key")?;
+        self.charge_closure_replay_work(
+            path.as_os_str().as_encoded_bytes().len(),
+            "captured peer manifest source key",
+        )?;
         self.observations.retained_metadata_bytes += metadata;
-        self.observations.captured_peer_manifests.insert(directory.to_path_buf(),
-            CapturedPeerManifest { source_path: path.to_path_buf().into_boxed_path(),
-                content_id, candidates: candidates.into_boxed_slice(), activated: false });
+        self.observations.captured_peer_manifests.insert(
+            directory.to_path_buf(),
+            CapturedPeerManifest {
+                source_path: path.to_path_buf().into_boxed_path(),
+                content_id,
+                candidates: candidates.into_boxed_slice(),
+                activated: false,
+            },
+        );
         self.activate_captured_peer_manifest(directory)
     }
 
-    fn activate_captured_peer_manifest(&mut self, directory: &Path) -> Result<(), TypeScriptProjectHostError> {
+    fn activate_captured_peer_manifest(
+        &mut self,
+        directory: &Path,
+    ) -> Result<(), TypeScriptProjectHostError> {
         let Some(manifest) = self.observations.captured_peer_manifests.get(directory) else {
             return Ok(());
         };
@@ -1054,11 +1120,21 @@ impl TypeScriptResolverCapability<'_> {
         let mut count = 0_usize;
         let mut metadata = 0_usize;
         for candidate in &manifest.candidates {
-            let bytes = candidate.as_os_str().as_encoded_bytes().len()
+            let bytes = candidate
+                .as_os_str()
+                .as_encoded_bytes()
+                .len()
                 .saturating_add(directory.as_os_str().as_encoded_bytes().len());
-            charge_closure_replay_work(&mut self.observations.closure_replay_work_units,
-                bytes.saturating_add(1), "captured peer candidate activation")?;
-            if !self.observations.peer_directory_candidates.contains_key(candidate.as_ref()) {
+            charge_closure_replay_work(
+                &mut self.observations.closure_replay_work_units,
+                bytes.saturating_add(1),
+                "captured peer candidate activation",
+            )?;
+            if !self
+                .observations
+                .peer_directory_candidates
+                .contains_key(candidate.as_ref())
+            {
                 count = count.saturating_add(1);
                 metadata = metadata.saturating_add(bytes);
             }
@@ -1066,10 +1142,14 @@ impl TypeScriptResolverCapability<'_> {
         ensure_peer_index_capacity(&self.observations, count, metadata, directory)?;
         self.observations.retained_metadata_bytes += metadata;
         let observations = &mut self.observations;
-        let manifest = observations.captured_peer_manifests.get_mut(directory)
+        let manifest = observations
+            .captured_peer_manifests
+            .get_mut(directory)
             .expect("captured manifest remains present");
         for candidate in &manifest.candidates {
-            observations.peer_directory_candidates.entry(candidate.to_path_buf())
+            observations
+                .peer_directory_candidates
+                .entry(candidate.to_path_buf())
                 .or_insert_with(|| directory.to_path_buf());
         }
         manifest.activated = true;
@@ -1088,29 +1168,48 @@ impl TypeScriptResolverCapability<'_> {
         // pnpm-style symlink roots without rescanning all realpath snapshots.
         let mut target_row = None;
         if let Some(target) = canonical_path.as_ref()
-            && !self.observations.realpath_queries_by_target.contains_key(target)
+            && !self
+                .observations
+                .realpath_queries_by_target
+                .contains_key(target)
         {
-            let cost = target.as_os_str().as_encoded_bytes().len()
+            let cost = target
+                .as_os_str()
+                .as_encoded_bytes()
+                .len()
                 .saturating_add(path.as_os_str().as_encoded_bytes().len());
-            self.charge_closure_replay_work(cost.saturating_add(1),
-                "canonical realpath index allocation")?;
+            self.charge_closure_replay_work(
+                cost.saturating_add(1),
+                "canonical realpath index allocation",
+            )?;
             let new_realpath = usize::from(!self.observations.realpaths.contains_key(&path));
-            ensure_peer_index_capacity(&self.observations, 1 + new_realpath,
-                cost.saturating_mul(1 + new_realpath), &path)?;
+            ensure_peer_index_capacity(
+                &self.observations,
+                1 + new_realpath,
+                cost.saturating_mul(1 + new_realpath),
+                &path,
+            )?;
             target_row = Some((target.clone(), path.clone(), cost));
         }
-        let peer_directory = canonical_path.as_ref()
-            .filter(|directory| self.observations.captured_peer_manifests.get(*directory)
-                .is_some_and(|manifest| !manifest.activated));
+        let peer_directory = canonical_path.as_ref().filter(|directory| {
+            self.observations
+                .captured_peer_manifests
+                .get(*directory)
+                .is_some_and(|manifest| !manifest.activated)
+        });
         if let Some(directory) = peer_directory {
-            self.charge_closure_replay_work(directory.as_os_str().as_encoded_bytes().len(),
-                "captured peer activation path")?;
+            self.charge_closure_replay_work(
+                directory.as_os_str().as_encoded_bytes().len(),
+                "captured peer activation path",
+            )?;
         }
         let peer_directory = peer_directory.cloned();
         record_realpath_ledger(&mut self.observations, path, canonical_path, identity)?;
         if let Some((target, lexical, cost)) = target_row {
             self.observations.retained_metadata_bytes += cost;
-            self.observations.realpath_queries_by_target.insert(target, lexical);
+            self.observations
+                .realpath_queries_by_target
+                .insert(target, lexical);
         }
         if let Some(directory) = peer_directory {
             self.activate_captured_peer_manifest(&directory)?;
@@ -1843,20 +1942,28 @@ fn captured_peer_directory_candidate(
     let Some(manifest) = observations.captured_peer_manifests.get(directory) else {
         return false;
     };
-    manifest.activated && witness.path_is_admitted(directory)
-        && observations.loaded_sources.get(manifest.source_path.as_ref())
+    manifest.activated
+        && witness.path_is_admitted(directory)
+        && observations
+            .loaded_sources
+            .get(manifest.source_path.as_ref())
             .is_some_and(|source| source.content_id == manifest.content_id)
         && captured_canonical_realpath(directory, observations)
 }
 
 fn valid_peer_package_key(key: &str) -> bool {
     let valid_name = |name: &str| {
-        !name.is_empty() && name != "." && name != ".."
-            && name.bytes().all(|byte| byte.is_ascii_alphanumeric()
-                || matches!(byte, b'.' | b'-' | b'_' | b'~'))
+        !name.is_empty()
+            && name != "."
+            && name != ".."
+            && name.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'~')
+            })
     };
     let mut names = key.split('/');
-    let Some(first) = names.next() else { return false; };
+    let Some(first) = names.next() else {
+        return false;
+    };
     if let Some(scope) = first.strip_prefix('@') {
         valid_name(scope) && names.next().is_some_and(valid_name) && names.next().is_none()
     } else {
@@ -1865,7 +1972,9 @@ fn valid_peer_package_key(key: &str) -> bool {
 }
 
 fn captured_canonical_realpath(directory: &Path, observations: &ResolverObservationLedger) -> bool {
-    observations.realpath_queries_by_target.get(directory)
+    observations
+        .realpath_queries_by_target
+        .get(directory)
         .and_then(|lexical| observations.realpaths.get(lexical))
         .is_some_and(|proof| proof.canonical_path.as_deref() == Some(directory))
 }
@@ -1896,7 +2005,8 @@ fn ensure_peer_index_capacity(
     let count = observations.observation_count().saturating_add(entries);
     if count > MAX_RESOLVER_OBSERVATIONS {
         return Err(TypeScriptProjectHostError::ResolverObservationLimit {
-            observed: count, maximum: MAX_RESOLVER_OBSERVATIONS,
+            observed: count,
+            maximum: MAX_RESOLVER_OBSERVATIONS,
         });
     }
     ensure_metadata_capacity(observations, metadata, path)
@@ -2722,10 +2832,7 @@ pub(crate) fn select_project_config<'a>(
 fn validate_config_graph_acyclic(
     configs: &std::collections::BTreeMap<PathBuf, TypeScriptConfigInput>,
 ) -> Result<(), TypeScriptProjectHostError> {
-    fn dependencies(
-        config: &TypeScriptConfigInput,
-        kind: ConfigDependencyKind,
-    ) -> &[Box<Path>] {
+    fn dependencies(config: &TypeScriptConfigInput, kind: ConfigDependencyKind) -> &[Box<Path>] {
         match kind {
             ConfigDependencyKind::Extends => &config.extends,
             ConfigDependencyKind::References => &config.references,
@@ -3022,7 +3129,8 @@ fn strip_jsonc(text: &str) -> Option<String> {
         } else if byte == b'/' && bytes.get(index + 1) == Some(&b'/') {
             output.extend_from_slice(b"  ");
             index += 2;
-            while index < bytes.len() && !matches!(bytes[index], b'\n' | b'\r')
+            while index < bytes.len()
+                && !matches!(bytes[index], b'\n' | b'\r')
                 && !jsonc_unicode_line_break(&bytes[index..])
             {
                 output.push(b' ');
@@ -3118,13 +3226,12 @@ fn config_paths_from_field(
     };
     let strings = match kind {
         ConfigDependencyKind::References => {
-            let entries =
-                field_value
-                    .as_array()
-                    .ok_or_else(|| TypeScriptProjectHostError::ConfigInvalid {
-                        config: source.to_path_buf().into_boxed_path(),
-                        message: "references must be an array".into(),
-                    })?;
+            let entries = field_value.as_array().ok_or_else(|| {
+                TypeScriptProjectHostError::ConfigInvalid {
+                    config: source.to_path_buf().into_boxed_path(),
+                    message: "references must be an array".into(),
+                }
+            })?;
             entries
                 .iter()
                 .map(|entry| {
@@ -3650,8 +3757,11 @@ impl TypeScriptProjectHost {
             });
         }
         if let Some(proof) = &resource_proof {
-            proof.validate_current().map_err(|source| TypeScriptProjectHostError::BundledSdkAdmission {
-                path: node.clone().into_boxed_path(), message: source.to_string().into_boxed_str(),
+            proof.validate_current().map_err(|source| {
+                TypeScriptProjectHostError::BundledSdkAdmission {
+                    path: node.clone().into_boxed_path(),
+                    message: source.to_string().into_boxed_str(),
+                }
             })?;
         }
         let node_identity = self.admit_node_runtime(&node)?;
@@ -5179,12 +5289,9 @@ printf 'Version 5.9.3\n'
             r#"{"projects":{"app":{"architect":{"build":{"options":{"tsConfig":"tsconfig.app.json"}}}}}}"#,
         )
         .expect("write Angular build configuration");
-        fs::write(fixture.0.join("tsconfig.json"), root_bytes)
-            .expect("write solution config");
-        fs::write(fixture.0.join("tsconfig.app.json"), app_bytes)
-            .expect("write app config");
-        fs::write(fixture.0.join("tsconfig.spec.json"), spec_bytes)
-            .expect("write spec config");
+        fs::write(fixture.0.join("tsconfig.json"), root_bytes).expect("write solution config");
+        fs::write(fixture.0.join("tsconfig.app.json"), app_bytes).expect("write app config");
+        fs::write(fixture.0.join("tsconfig.spec.json"), spec_bytes).expect("write spec config");
         let module_root = fs::canonicalize(modules).expect("canonical module root");
         let (selected, _) = angular_build_config_paths(&fixture.0, &module_root)
             .expect("select Angular build config");
@@ -5193,12 +5300,12 @@ printf 'Version 5.9.3\n'
             .expect("capture Angular solution, build, and spec configs");
         assert_eq!(configs.len(), 3);
 
-        let root = fs::canonicalize(fixture.0.join("tsconfig.json"))
-            .expect("canonical solution config");
-        let app = fs::canonicalize(fixture.0.join("tsconfig.app.json"))
-            .expect("canonical app config");
-        let spec = fs::canonicalize(fixture.0.join("tsconfig.spec.json"))
-            .expect("canonical spec config");
+        let root =
+            fs::canonicalize(fixture.0.join("tsconfig.json")).expect("canonical solution config");
+        let app =
+            fs::canonicalize(fixture.0.join("tsconfig.app.json")).expect("canonical app config");
+        let spec =
+            fs::canonicalize(fixture.0.join("tsconfig.spec.json")).expect("canonical spec config");
         let root_input = configs
             .iter()
             .find(|config| config.path.as_ref() == root)
@@ -5284,8 +5391,8 @@ printf 'Version 5.9.3\n'
         assert_eq!(paths.len(), configs.len());
         let shared = fs::canonicalize(fixture.0.join("configs/shared.json"))
             .expect("canonical shared config");
-        let base = fs::canonicalize(fixture.0.join("configs/base.json"))
-            .expect("canonical base config");
+        let base =
+            fs::canonicalize(fixture.0.join("configs/base.json")).expect("canonical base config");
         let shared_input = configs
             .iter()
             .find(|config| config.path.as_ref() == shared)
@@ -6080,47 +6187,84 @@ printf 'Version 5.9.3\n'
             capability.directory_exists(&candidate),
             Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })
         ));
-        assert!(matches!(capability.observe_absent_directory(&candidate),
-            Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })),
-            "a reported miss alone carries no peer lookup authority");
-        capability.try_load_source(&project_root.join("package.json"))
+        assert!(
+            matches!(
+                capability.observe_absent_directory(&candidate),
+                Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })
+            ),
+            "a reported miss alone carries no peer lookup authority"
+        );
+        capability
+            .try_load_source(&project_root.join("package.json"))
             .expect("capture admitted peer manifest");
         assert_eq!(capability.observations.captured_peer_manifests.len(), 1);
-        assert!(capability.observations.peer_directory_candidates.is_empty(),
-            "parsed peers stay inactive until the exact directory realpath is captured");
-        assert!(matches!(capability.observe_absent_directory(&candidate),
-            Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })),
-            "manifest bytes alone do not prove the compiler's real package directory");
-        capability.realpath(&project_root).expect("capture selected package realpath");
+        assert!(
+            capability.observations.peer_directory_candidates.is_empty(),
+            "parsed peers stay inactive until the exact directory realpath is captured"
+        );
+        assert!(
+            matches!(
+                capability.observe_absent_directory(&candidate),
+                Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })
+            ),
+            "manifest bytes alone do not prove the compiler's real package directory"
+        );
+        capability
+            .realpath(&project_root)
+            .expect("capture selected package realpath");
         let unrelated = parent.join("unselected-type-root");
-        assert!(matches!(capability.observe_absent_directory(&unrelated),
-            Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })));
+        assert!(matches!(
+            capability.observe_absent_directory(&unrelated),
+            Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })
+        ));
         fs::create_dir(&unrelated).expect("materialize unrelated external type root");
-        assert!(matches!(capability.observe_absent_directory(&unrelated),
-            Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })),
-            "external type-root presence cannot change refusal into acceptance");
+        assert!(
+            matches!(
+                capability.observe_absent_directory(&unrelated),
+                Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })
+            ),
+            "external type-root presence cannot change refusal into acceptance"
+        );
         fs::remove_dir(&unrelated).expect("remove unrelated type root");
-        assert!(matches!(capability.observe_absent_directory(&parent.join("../foreign")),
-            Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })),
-            "malformed peer names cannot escape the derived peer base");
+        assert!(
+            matches!(
+                capability.observe_absent_directory(&parent.join("../foreign")),
+                Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })
+            ),
+            "malformed peer names cannot escape the derived peer base"
+        );
         capability
             .observe_absent_directory(&candidate)
             .expect("replay source-derived compiler negative peer observation");
-        let digest = capability.resolver_witness().expect("hash external absence");
+        let digest = capability
+            .resolver_witness()
+            .expect("hash external absence");
         capability
             .observe_absent_directory(&candidate)
             .expect("repeated observation retains the same proof");
         assert_eq!(capability.resolver_witness().unwrap(), digest);
         assert_eq!(capability.observations.external_absent_directories.len(), 1);
         let indexed_work = capability.closure_replay_work_units();
-        capability.try_load_source(&project_root.join("package.json"))
+        capability
+            .try_load_source(&project_root.join("package.json"))
             .expect("reuse captured manifest without reparsing");
-        capability.realpath(&project_root).expect("reuse captured exact directory realpath");
-        capability.observe_absent_directory(&candidate).expect("reuse indexed peer candidate");
-        assert_eq!(capability.closure_replay_work_units(), indexed_work,
-            "repeated manifest/realpath/miss observations perform no repeated index work");
+        capability
+            .realpath(&project_root)
+            .expect("reuse captured exact directory realpath");
+        capability
+            .observe_absent_directory(&candidate)
+            .expect("reuse indexed peer candidate");
+        assert_eq!(
+            capability.closure_replay_work_units(),
+            indexed_work,
+            "repeated manifest/realpath/miss observations perform no repeated index work"
+        );
         assert!(capability.observations.directories.is_empty());
-        assert_eq!(capability.loaded_sources().len(), 1, "only admitted manifest bytes");
+        assert_eq!(
+            capability.loaded_sources().len(),
+            1,
+            "only admitted manifest bytes"
+        );
         assert!(matches!(
             capability.try_load_source(&candidate.join("index.d.ts")),
             Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })
@@ -6137,8 +6281,11 @@ printf 'Version 5.9.3\n'
             witness: &witness,
             observations: ResolverObservationLedger::default(),
         };
-        other.realpath(&project_root).expect("capture package realpath before its manifest");
-        other.try_load_source(&project_root.join("package.json"))
+        other
+            .realpath(&project_root)
+            .expect("capture package realpath before its manifest");
+        other
+            .try_load_source(&project_root.join("package.json"))
             .expect("later manifest capture activates the same candidate index");
         assert!(!other.observations.peer_directory_candidates.is_empty());
         other
@@ -6146,7 +6293,8 @@ printf 'Version 5.9.3\n'
             .expect("observe a distinct absent peer directory");
         assert_ne!(other.resolver_witness().unwrap(), digest);
         fs::create_dir(parent.join("@scope")).expect("create external peer scope parent");
-        other.observe_absent_directory(&parent.join("@scope/peer"))
+        other
+            .observe_absent_directory(&parent.join("@scope/peer"))
             .expect("a captured scoped package peer derives the same bounded candidate class");
         let closure = capability.seal().expect("seal the typed negative closure");
         closure
@@ -6182,8 +6330,7 @@ printf 'Version 5.9.3\n'
             Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })
         ));
         fs::remove_dir_all(&candidate).expect("remove external candidate");
-        symlink(parent.join("missing-target"), &candidate)
-            .expect("create dangling external link");
+        symlink(parent.join("missing-target"), &candidate).expect("create dangling external link");
         assert!(other.observe_absent_directory(&candidate).is_err());
         assert_eq!(other.loaded_sources().len(), 1);
 
@@ -6195,25 +6342,42 @@ printf 'Version 5.9.3\n'
             witness: &witness,
             observations: ResolverObservationLedger::default(),
         };
-        linked.try_load_source(&project_root.join("package.json"))
+        linked
+            .try_load_source(&project_root.join("package.json"))
             .expect("capture peers for the symlink parent proof");
-        linked.realpath(&project_root).expect("capture package realpath");
-        linked.observe_absent_directory(&candidate).expect("capture missing peer through link");
-        let proof = linked.observations.external_absent_directories.get(&candidate).unwrap();
+        linked
+            .realpath(&project_root)
+            .expect("capture package realpath");
+        linked
+            .observe_absent_directory(&candidate)
+            .expect("capture missing peer through link");
+        let proof = linked
+            .observations
+            .external_absent_directories
+            .get(&candidate)
+            .unwrap();
         assert_eq!(proof.canonical_path.as_deref(), Some(target.as_path()));
-        assert_eq!(proof.identity, Some(file_identity(&fs::symlink_metadata(&parent).unwrap(),
-            &parent, None).unwrap()), "proof captures the lexical link inode");
+        assert_eq!(
+            proof.identity,
+            Some(file_identity(&fs::symlink_metadata(&parent).unwrap(), &parent, None).unwrap()),
+            "proof captures the lexical link inode"
+        );
         let linked = linked.seal().expect("seal lexical parent-link proof");
-        linked.validate_current(&witness).expect("unchanged link and missing peer");
+        linked
+            .validate_current(&witness)
+            .expect("unchanged link and missing peer");
 
         let previous_target = outer.0.join("previous-symlink-parent-target");
         fs::rename(&target, &previous_target).expect("move canonical target directory");
         fs::create_dir(&target).expect("replace target at the same canonical path");
         linked.validate_current(&witness).expect(
-            "same lexical link and canonical path retain an absence proof, not target-inode proof");
+            "same lexical link and canonical path retain an absence proof, not target-inode proof",
+        );
         fs::create_dir(&candidate).expect("materialize peer inside replacement target");
-        assert!(matches!(linked.validate_current(&witness),
-            Err(TypeScriptProjectHostError::WitnessChanged { .. })));
+        assert!(matches!(
+            linked.validate_current(&witness),
+            Err(TypeScriptProjectHostError::WitnessChanged { .. })
+        ));
         fs::remove_dir(&candidate).expect("restore candidate absence");
         fs::remove_dir(&target).expect("remove replacement target");
         fs::rename(&previous_target, &target).expect("restore original canonical target");
@@ -6222,14 +6386,22 @@ printf 'Version 5.9.3\n'
         fs::create_dir(&retarget).expect("create distinct target");
         fs::remove_file(&parent).expect("remove lexical link");
         symlink(&retarget, &parent).expect("retarget lexical link");
-        assert!(matches!(linked.validate_current(&witness),
-            Err(TypeScriptProjectHostError::WitnessChanged { .. })),
-            "canonical target-path changes invalidate the parent proof");
+        assert!(
+            matches!(
+                linked.validate_current(&witness),
+                Err(TypeScriptProjectHostError::WitnessChanged { .. })
+            ),
+            "canonical target-path changes invalidate the parent proof"
+        );
         fs::remove_file(&parent).expect("remove retargeted lexical link");
         fs::rename(&target, &parent).expect("replace the link with a regular directory");
-        assert!(matches!(linked.validate_current(&witness),
-            Err(TypeScriptProjectHostError::WitnessChanged { .. })),
-            "replacing the lexical symlink invalidates its inode/canonical-path proof");
+        assert!(
+            matches!(
+                linked.validate_current(&witness),
+                Err(TypeScriptProjectHostError::WitnessChanged { .. })
+            ),
+            "replacing the lexical symlink invalidates its inode/canonical-path proof"
+        );
     }
 
     #[test]
@@ -6239,73 +6411,132 @@ printf 'Version 5.9.3\n'
         fs::create_dir_all(&project_root).expect("create project root");
         let fixture = Fixture(project_root.clone());
         let modules = fixture.install("5.9.3");
-        fs::write(project_root.join("package.json"),
-            br#"{"peerDependencies":{"react":"*"}}"#).expect("write peers");
+        fs::write(
+            project_root.join("package.json"),
+            br#"{"peerDependencies":{"react":"*"}}"#,
+        )
+        .expect("write peers");
         let ProjectTypeScriptSearch::Found(project) =
             find_project_typescript(&project_root).expect("discover local compiler")
-        else { panic!("local compiler should be selected"); };
+        else {
+            panic!("local compiler should be selected");
+        };
         let node = project_root.join("node");
         fs::write(&node, b"node witness").expect("write Node witness");
         let package_root = fs::canonicalize(modules.join("typescript"))
             .expect("canonical TypeScript package root");
-        let witness = TypeScriptProjectWitness::capture(&project_root, None, &project,
-            &project.compiler, &node, &modules, &package_root, project.workspace.as_ref())
-            .expect("capture project witness");
+        let witness = TypeScriptProjectWitness::capture(
+            &project_root,
+            None,
+            &project,
+            &project.compiler,
+            &node,
+            &modules,
+            &package_root,
+            project.workspace.as_ref(),
+        )
+        .expect("capture project witness");
         let parent = outer.0.join("peer-probesnode_modules");
         fs::create_dir(&parent).expect("create external peer parent");
         let candidate = parent.join("react");
         let mut exhausted = TypeScriptResolverCapability {
             witness: &witness,
             observations: ResolverObservationLedger {
-                closure_replay_work_units: super::super::typescript_program::MAX_CLOSURE_REPLAY_WORK_UNITS,
+                closure_replay_work_units:
+                    super::super::typescript_program::MAX_CLOSURE_REPLAY_WORK_UNITS,
                 ..ResolverObservationLedger::default()
             },
         };
-        assert!(matches!(exhausted.try_load_source(&project_root.join("package.json")),
-            Err(TypeScriptProjectHostError::CompilerIoClosureLimit { .. })));
+        assert!(matches!(
+            exhausted.try_load_source(&project_root.join("package.json")),
+            Err(TypeScriptProjectHostError::CompilerIoClosureLimit { .. })
+        ));
         assert!(exhausted.observations.captured_peer_manifests.is_empty());
         assert!(exhausted.observations.peer_directory_candidates.is_empty());
-        assert!(matches!(exhausted.observe_absent_directory(&candidate),
-            Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })),
-            "index work exhaustion cannot leave a partial external candidate grant");
+        assert!(
+            matches!(
+                exhausted.observe_absent_directory(&candidate),
+                Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })
+            ),
+            "index work exhaustion cannot leave a partial external candidate grant"
+        );
         let mut replay_first = TypeScriptResolverCapability {
             witness: &witness,
             observations: ResolverObservationLedger::default(),
         };
-        replay_first.charge_closure_replay_work(
-            usize::try_from(super::super::typescript_program::MAX_CLOSURE_REPLAY_WORK_UNITS - 1).unwrap(),
-            "preceding ordinary replay").expect("charge ordinary work before indexing");
-        assert!(matches!(replay_first.try_load_source(&project_root.join("package.json")),
-            Err(TypeScriptProjectHostError::CompilerIoClosureLimit { .. })));
+        replay_first
+            .charge_closure_replay_work(
+                usize::try_from(
+                    super::super::typescript_program::MAX_CLOSURE_REPLAY_WORK_UNITS - 1,
+                )
+                .unwrap(),
+                "preceding ordinary replay",
+            )
+            .expect("charge ordinary work before indexing");
+        assert!(matches!(
+            replay_first.try_load_source(&project_root.join("package.json")),
+            Err(TypeScriptProjectHostError::CompilerIoClosureLimit { .. })
+        ));
         assert!(replay_first.observations.captured_peer_manifests.is_empty());
-        assert!(replay_first.observations.peer_directory_candidates.is_empty());
+        assert!(
+            replay_first
+                .observations
+                .peer_directory_candidates
+                .is_empty()
+        );
         let mut capability = TypeScriptResolverCapability {
             witness: &witness,
             observations: ResolverObservationLedger::default(),
         };
-        capability.try_load_source(&project_root.join("package.json"))
+        capability
+            .try_load_source(&project_root.join("package.json"))
             .expect("capture admitted peer manifest");
-        capability.realpath(&project_root).expect("capture package realpath");
+        capability
+            .realpath(&project_root)
+            .expect("capture package realpath");
         let indexing_work = capability.closure_replay_work_units();
         assert!(indexing_work > 0);
-        let remaining = super::super::typescript_program::MAX_CLOSURE_REPLAY_WORK_UNITS - indexing_work;
-        capability.charge_closure_replay_work(usize::try_from(remaining).unwrap(),
-            "following ordinary replay").expect("exact shared remaining work fits");
-        assert!(matches!(capability.charge_closure_replay_work(1, "one additional replay unit"),
-            Err(TypeScriptProjectHostError::CompilerIoClosureLimit { .. })),
-            "index work cannot leave a separate fresh ordinary replay allowance");
+        let remaining =
+            super::super::typescript_program::MAX_CLOSURE_REPLAY_WORK_UNITS - indexing_work;
+        capability
+            .charge_closure_replay_work(
+                usize::try_from(remaining).unwrap(),
+                "following ordinary replay",
+            )
+            .expect("exact shared remaining work fits");
+        assert!(
+            matches!(
+                capability.charge_closure_replay_work(1, "one additional replay unit"),
+                Err(TypeScriptProjectHostError::CompilerIoClosureLimit { .. })
+            ),
+            "index work cannot leave a separate fresh ordinary replay allowance"
+        );
         let cost = candidate.as_os_str().as_encoded_bytes().len() * 2
             + parent.as_os_str().as_encoded_bytes().len() * 2;
         capability.observations.retained_metadata_bytes = MAX_RESOLVER_METADATA_BYTES - cost + 1;
         let missing_before = capability.observations.missing_paths.len();
-        assert!(matches!(capability.observe_absent_directory(&candidate),
-            Err(TypeScriptProjectHostError::ResolverMetadataLimit { .. })),
-            "both retained candidate keys must be charged before publication");
-        assert!(capability.observations.external_absent_directories.is_empty());
+        assert!(
+            matches!(
+                capability.observe_absent_directory(&candidate),
+                Err(TypeScriptProjectHostError::ResolverMetadataLimit { .. })
+            ),
+            "both retained candidate keys must be charged before publication"
+        );
+        assert!(
+            capability
+                .observations
+                .external_absent_directories
+                .is_empty()
+        );
         assert_eq!(capability.observations.missing_paths.len(), missing_before);
         capability.observations.retained_metadata_bytes = MAX_RESOLVER_METADATA_BYTES - cost;
-        capability.observe_absent_directory(&candidate).expect("exact remaining byte bound fits");
-        assert_eq!(capability.observations.retained_metadata_bytes, MAX_RESOLVER_METADATA_BYTES);
+        capability
+            .observe_absent_directory(&candidate)
+            .expect("exact remaining byte bound fits");
+        assert_eq!(
+            capability.observations.retained_metadata_bytes,
+            MAX_RESOLVER_METADATA_BYTES
+        );
     }
 
     #[test]
@@ -6319,14 +6550,24 @@ printf 'Version 5.9.3\n'
         let modules = fixture.install("5.9.3");
         let ProjectTypeScriptSearch::Found(project) =
             find_project_typescript(&project_root).expect("discover local compiler")
-        else { panic!("local compiler should be selected"); };
+        else {
+            panic!("local compiler should be selected");
+        };
         let node = project_root.join("node");
         fs::write(&node, b"node witness").expect("write Node witness");
         let package_root = fs::canonicalize(modules.join("typescript"))
             .expect("canonical TypeScript package root");
-        let witness = TypeScriptProjectWitness::capture(&project_root, None, &project,
-            &project.compiler, &node, &modules, &package_root, project.workspace.as_ref())
-            .expect("capture project witness");
+        let witness = TypeScriptProjectWitness::capture(
+            &project_root,
+            None,
+            &project,
+            &project.compiler,
+            &node,
+            &modules,
+            &package_root,
+            project.workspace.as_ref(),
+        )
+        .expect("capture project witness");
         let parent = outer.0.join("peer-probesnode_modules");
         fs::create_dir(&parent).expect("create external peer parent");
         let candidate = parent.join("react");
@@ -6339,108 +6580,233 @@ printf 'Version 5.9.3\n'
         symlink(&directory, &alias).expect("create pnpm-style package directory alias");
         let inactive_directory = project_root.join("packages/unqueried-peer-owner");
         fs::create_dir_all(&inactive_directory).expect("create unqueried workspace package");
-        fs::write(inactive_directory.join("package.json"),
-            br#"{"peerDependencies":{"react":"*"}}"#).expect("write same pending peer");
+        fs::write(
+            inactive_directory.join("package.json"),
+            br#"{"peerDependencies":{"react":"*"}}"#,
+        )
+        .expect("write same pending peer");
         let mut manifest_first = TypeScriptResolverCapability {
-            witness: &witness, observations: ResolverObservationLedger::default(),
+            witness: &witness,
+            observations: ResolverObservationLedger::default(),
         };
-        manifest_first.try_load_source(&inactive_directory.join("package.json"))
+        manifest_first
+            .try_load_source(&inactive_directory.join("package.json"))
             .expect("capture a prior manifest without its directory realpath");
-        assert!(!manifest_first.observations.captured_peer_manifests
-            .get(&inactive_directory).unwrap().activated);
-        assert!(manifest_first.observations.peer_directory_candidates.is_empty(),
-            "an inactive same-candidate owner does not reserve the active candidate key");
-        let source = manifest_first.try_load_source(&alias.join("package.json"))
-            .expect("capture admitted aliased package").expect("manifest exists");
-        assert_eq!(source.content_id, ContentId::<SourceFactDomain>::from_canonical_bytes(raw));
-        assert_ne!(source.content_id, ContentId::<SourceFactDomain>::from_canonical_bytes(&raw[3..]),
-            "the compiler text BOM removal does not normalize durable raw source identity");
-        assert!(manifest_first.observations.peer_directory_candidates.is_empty());
-        manifest_first.realpath(&alias).expect("capture lexical alias to canonical package root");
-        assert!(!manifest_first.observations.realpaths.contains_key(&directory),
-            "activation uses the actual alias observation, not an invented self-realpath");
-        assert_eq!(manifest_first.observations.realpath_queries_by_target.get(&directory), Some(&alias));
-        manifest_first.observe_absent_directory(&candidate)
-            .expect("BOM/CR-terminated JSONC peers activate from the exact captured canonical target");
-        assert_eq!(manifest_first.observations.peer_directory_candidates.get(&candidate), Some(&directory),
-            "the actually queried package activates despite an earlier pending same-candidate manifest");
-        manifest_first.realpath(&inactive_directory).expect("later activate the other exact owner");
-        assert!(manifest_first.observations.captured_peer_manifests
-            .get(&inactive_directory).unwrap().activated);
-        assert_eq!(manifest_first.observations.peer_directory_candidates.get(&candidate), Some(&directory),
-            "two activated owners retain the first sufficient captured proof without rescanning");
+        assert!(
+            !manifest_first
+                .observations
+                .captured_peer_manifests
+                .get(&inactive_directory)
+                .unwrap()
+                .activated
+        );
+        assert!(
+            manifest_first
+                .observations
+                .peer_directory_candidates
+                .is_empty(),
+            "an inactive same-candidate owner does not reserve the active candidate key"
+        );
+        let source = manifest_first
+            .try_load_source(&alias.join("package.json"))
+            .expect("capture admitted aliased package")
+            .expect("manifest exists");
+        assert_eq!(
+            source.content_id,
+            ContentId::<SourceFactDomain>::from_canonical_bytes(raw)
+        );
+        assert_ne!(
+            source.content_id,
+            ContentId::<SourceFactDomain>::from_canonical_bytes(&raw[3..]),
+            "the compiler text BOM removal does not normalize durable raw source identity"
+        );
+        assert!(
+            manifest_first
+                .observations
+                .peer_directory_candidates
+                .is_empty()
+        );
+        manifest_first
+            .realpath(&alias)
+            .expect("capture lexical alias to canonical package root");
+        assert!(
+            !manifest_first
+                .observations
+                .realpaths
+                .contains_key(&directory),
+            "activation uses the actual alias observation, not an invented self-realpath"
+        );
+        assert_eq!(
+            manifest_first
+                .observations
+                .realpath_queries_by_target
+                .get(&directory),
+            Some(&alias)
+        );
+        manifest_first.observe_absent_directory(&candidate).expect(
+            "BOM/CR-terminated JSONC peers activate from the exact captured canonical target",
+        );
+        assert_eq!(
+            manifest_first
+                .observations
+                .peer_directory_candidates
+                .get(&candidate),
+            Some(&directory),
+            "the actually queried package activates despite an earlier pending same-candidate manifest"
+        );
+        manifest_first
+            .realpath(&inactive_directory)
+            .expect("later activate the other exact owner");
+        assert!(
+            manifest_first
+                .observations
+                .captured_peer_manifests
+                .get(&inactive_directory)
+                .unwrap()
+                .activated
+        );
+        assert_eq!(
+            manifest_first
+                .observations
+                .peer_directory_candidates
+                .get(&candidate),
+            Some(&directory),
+            "two activated owners retain the first sufficient captured proof without rescanning"
+        );
         let used = manifest_first.closure_replay_work_units();
-        manifest_first.try_load_source(&alias.join("package.json")).expect("reuse raw source");
-        manifest_first.realpath(&alias).expect("reuse exact alias proof");
-        assert_eq!(manifest_first.closure_replay_work_units(), used,
-            "duplicate package/alias observations do not parse or index again");
-        let first = manifest_first.seal().expect("seal manifest-first alias witness");
-        first.validate_current(&witness).expect("unchanged raw bytes and alias revalidate");
+        manifest_first
+            .try_load_source(&alias.join("package.json"))
+            .expect("reuse raw source");
+        manifest_first
+            .realpath(&alias)
+            .expect("reuse exact alias proof");
+        assert_eq!(
+            manifest_first.closure_replay_work_units(),
+            used,
+            "duplicate package/alias observations do not parse or index again"
+        );
+        let first = manifest_first
+            .seal()
+            .expect("seal manifest-first alias witness");
+        first
+            .validate_current(&witness)
+            .expect("unchanged raw bytes and alias revalidate");
 
         let mut realpath_first = TypeScriptResolverCapability {
-            witness: &witness, observations: ResolverObservationLedger::default(),
+            witness: &witness,
+            observations: ResolverObservationLedger::default(),
         };
-        realpath_first.realpath(&alias).expect("capture alias before manifest");
-        realpath_first.try_load_source(&alias.join("package.json"))
+        realpath_first
+            .realpath(&alias)
+            .expect("capture alias before manifest");
+        realpath_first
+            .try_load_source(&alias.join("package.json"))
             .expect("later raw manifest activates recorded canonical target");
-        realpath_first.observe_absent_directory(&candidate).expect("same derived peer miss");
-        realpath_first.seal().expect("seal realpath-first alias witness")
-            .validate_current(&witness).expect("both observation orders revalidate");
+        realpath_first
+            .observe_absent_directory(&candidate)
+            .expect("same derived peer miss");
+        realpath_first
+            .seal()
+            .expect("seal realpath-first alias witness")
+            .validate_current(&witness)
+            .expect("both observation orders revalidate");
 
-        for (name, separator) in [("line-separator-peer", "\u{2028}"),
-                                  ("paragraph-separator-peer", "\u{2029}")] {
+        for (name, separator) in [
+            ("line-separator-peer", "\u{2028}"),
+            ("paragraph-separator-peer", "\u{2029}"),
+        ] {
             let unicode_directory = project_root.join("packages").join(name);
             fs::create_dir_all(&unicode_directory).expect("create Unicode JSONC package root");
-            let raw = format!("\u{feff}{{// declared peer{separator}\"peerDependencies\":{{\"{name}\":\"*\"}}}}");
+            let raw = format!(
+                "\u{feff}{{// declared peer{separator}\"peerDependencies\":{{\"{name}\":\"*\"}}}}"
+            );
             let path = unicode_directory.join("package.json");
             fs::write(&path, raw.as_bytes()).expect("write raw Unicode line-break manifest");
             let mut unicode = TypeScriptResolverCapability {
-                witness: &witness, observations: ResolverObservationLedger::default(),
+                witness: &witness,
+                observations: ResolverObservationLedger::default(),
             };
-            let source = unicode.try_load_source(&path).expect("capture Unicode JSONC manifest")
+            let source = unicode
+                .try_load_source(&path)
+                .expect("capture Unicode JSONC manifest")
                 .expect("manifest exists");
-            assert_eq!(source.content_id, ContentId::<SourceFactDomain>::from_canonical_bytes(raw.as_bytes()),
-                "Unicode whitespace transformation does not alter raw source identity");
-            unicode.realpath(&unicode_directory).expect("capture exact Unicode peer owner");
-            unicode.observe_absent_directory(&parent.join(name))
+            assert_eq!(
+                source.content_id,
+                ContentId::<SourceFactDomain>::from_canonical_bytes(raw.as_bytes()),
+                "Unicode whitespace transformation does not alter raw source identity"
+            );
+            unicode
+                .realpath(&unicode_directory)
+                .expect("capture exact Unicode peer owner");
+            unicode
+                .observe_absent_directory(&parent.join(name))
                 .expect("TypeScript Unicode line terminator leaves following peer key visible");
-            unicode.seal().expect("seal Unicode JSONC proof").validate_current(&witness)
+            unicode
+                .seal()
+                .expect("seal Unicode JSONC proof")
+                .validate_current(&witness)
                 .expect("raw Unicode bytes and directory proof revalidate");
         }
 
         let malformed_directory = project_root.join("packages/malformed-peer-owner");
         fs::create_dir_all(&malformed_directory).expect("create malformed peer root");
-        fs::write(malformed_directory.join("package.json"),
-            br#"{"peerDependencies":{"broken-peer":"*"},"#).expect("write malformed manifest");
+        fs::write(
+            malformed_directory.join("package.json"),
+            br#"{"peerDependencies":{"broken-peer":"*"},"#,
+        )
+        .expect("write malformed manifest");
         let mut malformed = TypeScriptResolverCapability {
-            witness: &witness, observations: ResolverObservationLedger::default(),
+            witness: &witness,
+            observations: ResolverObservationLedger::default(),
         };
-        malformed.try_load_source(&malformed_directory.join("package.json"))
+        malformed
+            .try_load_source(&malformed_directory.join("package.json"))
             .expect("retain exact malformed raw source without deriving candidates");
-        malformed.realpath(&malformed_directory).expect("capture malformed package directory");
-        assert!(matches!(malformed.observe_absent_directory(&parent.join("broken-peer")),
-            Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })),
-            "malformed package fallback cannot fabricate a peer candidate");
+        malformed
+            .realpath(&malformed_directory)
+            .expect("capture malformed package directory");
+        assert!(
+            matches!(
+                malformed.observe_absent_directory(&parent.join("broken-peer")),
+                Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })
+            ),
+            "malformed package fallback cannot fabricate a peer candidate"
+        );
 
         fs::remove_file(&alias).expect("remove witnessed alias");
         symlink(&malformed_directory, &alias).expect("retarget alias to another admitted package");
-        assert!(matches!(first.validate_current(&witness),
-            Err(TypeScriptProjectHostError::WitnessChanged { .. })),
-            "retargeting the lexical alias invalidates the canonical-target proof");
+        assert!(
+            matches!(
+                first.validate_current(&witness),
+                Err(TypeScriptProjectHostError::WitnessChanged { .. })
+            ),
+            "retargeting the lexical alias invalidates the canonical-target proof"
+        );
     }
 
     #[test]
     fn peer_directory_prefix_matches_typescript_utf16_substring_without_path_allowlist() {
-        assert_eq!(typescript_peer_directory_prefix(
-            "/work/sol61-ts-app-proof/current71-excal-01/excalidraw/packages/excalidraw"),
-            Some("/work/sol61"));
+        assert_eq!(
+            typescript_peer_directory_prefix(
+                "/work/sol61-ts-app-proof/current71-excal-01/excalidraw/packages/excalidraw"
+            ),
+            Some("/work/sol61")
+        );
         assert_eq!(typescript_peer_directory_prefix("/"), Some("/"));
         assert_eq!(typescript_peer_directory_prefix("/short"), Some("/short"));
-        assert_eq!(typescript_peer_directory_prefix("/owned/node_modules-shadow/package"),
-            Some("/owned/node_modules"));
-        assert_eq!(typescript_peer_directory_prefix("/abc/😀defghijk"), Some("/abc/😀defg"));
-        assert_eq!(typescript_peer_directory_prefix("/abcdefghi😀/package"), None,
-            "do not admit an unrepresentable split UTF-16 surrogate");
+        assert_eq!(
+            typescript_peer_directory_prefix("/owned/node_modules-shadow/package"),
+            Some("/owned/node_modules")
+        );
+        assert_eq!(
+            typescript_peer_directory_prefix("/abc/😀defghijk"),
+            Some("/abc/😀defg")
+        );
+        assert_eq!(
+            typescript_peer_directory_prefix("/abcdefghi😀/package"),
+            None,
+            "do not admit an unrepresentable split UTF-16 surrogate"
+        );
     }
 
     #[test]

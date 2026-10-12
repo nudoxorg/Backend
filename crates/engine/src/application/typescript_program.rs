@@ -1396,22 +1396,14 @@ fn replay_observations(
         ));
     }
 
-    resolver.charge_closure_replay_work(
-        metrics.access_operations,
-        "retained filesystem access",
-    )?;
-    resolver.charge_closure_replay_work(
-        metrics.directory_queries,
-        "directory query replay",
-    )?;
+    resolver.charge_closure_replay_work(metrics.access_operations, "retained filesystem access")?;
+    resolver.charge_closure_replay_work(metrics.directory_queries, "directory query replay")?;
     resolver.charge_closure_replay_work(
         metrics.directory_enumerations,
         "directory enumeration replay",
     )?;
-    resolver.charge_closure_replay_work(
-        metrics.directory_visited_entries,
-        "directory entry replay",
-    )?;
+    resolver
+        .charge_closure_replay_work(metrics.directory_visited_entries, "directory entry replay")?;
     resolver.charge_closure_replay_work(
         metrics.directory_verification_entries,
         "directory result verification",
@@ -1420,14 +1412,10 @@ fn replay_observations(
         metrics.matcher_result_entries,
         "matcher result verification",
     )?;
-    resolver.charge_closure_replay_work(
-        metrics.matcher_pattern_items,
-        "matcher pattern item replay",
-    )?;
-    resolver.charge_closure_replay_work(
-        metrics.matcher_pattern_bytes,
-        "matcher pattern byte replay",
-    )?;
+    resolver
+        .charge_closure_replay_work(metrics.matcher_pattern_items, "matcher pattern item replay")?;
+    resolver
+        .charge_closure_replay_work(metrics.matcher_pattern_bytes, "matcher pattern byte replay")?;
     resolver.charge_closure_replay_work(
         metrics.directory_query_cache_bytes,
         "exact directory-query cache admission",
@@ -1507,10 +1495,7 @@ fn replay_observations(
             "compiler reported fewer visited entries than its retained directory views",
         ));
     }
-    resolver.charge_closure_replay_work(
-        view_entries,
-        "directory snapshot comparison",
-    )?;
+    resolver.charge_closure_replay_work(view_entries, "directory snapshot comparison")?;
 
     let mut referenced_views = BTreeSet::new();
     let mut checked_views = BTreeSet::new();
@@ -1685,10 +1670,14 @@ fn replay_observations(
                                         closure_mismatch(
                                             "admitted directory has no retained immutable snapshot",
                                         )
-                                    })?.len();
-                                resolver.charge_closure_replay_work(snapshot_entries,
-                                    "directory snapshot entry comparison")?;
-                                let snapshot = resolver.observed_program_directory_entries(&canonical)
+                                    })?
+                                    .len();
+                                resolver.charge_closure_replay_work(
+                                    snapshot_entries,
+                                    "directory snapshot entry comparison",
+                                )?;
+                                let snapshot = resolver
+                                    .observed_program_directory_entries(&canonical)
                                     .expect("retained immutable snapshot remains present");
                                 let mut files = Vec::new();
                                 let mut directories = Vec::new();
