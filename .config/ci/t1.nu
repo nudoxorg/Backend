@@ -98,7 +98,7 @@ def main []: nothing -> nothing {
     # reviewed (see tests/surface/cases.json and .config/ci/surface.py).
     if $built and ("tests/surface/cases.json" | path exists) {
         ci-step "t2" "surface cases (advisory)" {||
-            run-bounded 15min "python3" ($env.FILE_PWD | path join "surface.py") "--bin-dir" $bin_dir "--print-missing"
+            run-bounded 15min "nix" "develop" ".#surface" "--command" "python3" ($env.FILE_PWD | path join "surface.py") "--bin-dir" $bin_dir "--print-missing"
         } | ignore
     }
     if ($cache | is-not-empty) {

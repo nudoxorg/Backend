@@ -299,6 +299,25 @@ let
       '';
     }
   );
+  # T2 runtime only: reuse T1 binaries, with native compiler authorities.
+  # Corpus selection is the harness's job; do not fetch the legacy deep corpus.
+  surface = pkgs.mkShell (
+    builtins.removeAttrs common [
+      "NUDOX_RUST_CORPUS_DIR"
+      "NUDOX_TYPESCRIPT_CORPUS_DIR"
+      "NUDOX_PYTHON_CORPUS_DIR"
+      "NUDOX_GO_CORPUS_DIR"
+      "NUDOX_JAVA_CORPUS_DIR"
+      "NUDOX_CSHARP_CORPUS_DIR"
+      "NUDOX_CLANG_CORPUS_DIR"
+    ]
+    // {
+      packages = tools.nativeCompilers ++ [
+        pkgs.python3
+        pkgs.coreutils
+      ];
+    }
+  );
   # Emulated test lanes: the `cross` shell plus what running a test needs that
   # a compile check does not. Each target gets a real linker and C library
   # (zig compiles the C sources; the target's GCC links), and a runner Cargo
@@ -371,6 +390,7 @@ in
     observability
     services
     smoke
+    surface
     verification
     ;
 }
