@@ -41,7 +41,7 @@ const MAX_BRIDGE_MATCHER_RESULT_WORK: usize = 196_608;
 const MAX_BRIDGE_MATCHER_PATTERN_ITEMS: usize = 131_072;
 const MAX_BRIDGE_MATCHER_PATTERN_BYTES: usize = 512 * 1024;
 const MAX_BRIDGE_DIRECTORY_QUERY_CACHE_BYTES: usize = 1024 * 1024;
-const MAX_CLOSURE_REPLAY_WORK_UNITS: u64 = 2_000_000;
+pub(super) const MAX_CLOSURE_REPLAY_WORK_UNITS: u64 = 2_000_000;
 const MAX_PROJECT_WORK_UNITS: u64 = 16_000_000_000;
 const LIB_VIRTUAL_PREFIX: &str = "@compiler/lib.";
 
@@ -1396,64 +1396,27 @@ fn replay_observations(
         ));
     }
 
-    let mut work_units = 0_u64;
-    let charge = |work_units: &mut u64,
-                  units: usize,
-                  phase: &str|
-     -> Result<(), TypeScriptProjectHostError> {
-        let next = work_units.saturating_add(u64::try_from(units).unwrap_or(u64::MAX));
-        if next > MAX_CLOSURE_REPLAY_WORK_UNITS {
-            return Err(closure_limit(
-                phase,
-                usize::try_from(next).unwrap_or(usize::MAX),
-                usize::try_from(MAX_CLOSURE_REPLAY_WORK_UNITS).unwrap_or(usize::MAX),
-            ));
-        }
-        *work_units = next;
-        Ok(())
-    };
-    charge(
-        &mut work_units,
-        metrics.access_operations,
-        "retained filesystem access",
-    )?;
-    charge(
-        &mut work_units,
-        metrics.directory_queries,
-        "directory query replay",
-    )?;
-    charge(
-        &mut work_units,
+    resolver.charge_closure_replay_work(metrics.access_operations, "retained filesystem access")?;
+    resolver.charge_closure_replay_work(metrics.directory_queries, "directory query replay")?;
+    resolver.charge_closure_replay_work(
         metrics.directory_enumerations,
         "directory enumeration replay",
     )?;
-    charge(
-        &mut work_units,
-        metrics.directory_visited_entries,
-        "directory entry replay",
-    )?;
-    charge(
-        &mut work_units,
+    resolver
+        .charge_closure_replay_work(metrics.directory_visited_entries, "directory entry replay")?;
+    resolver.charge_closure_replay_work(
         metrics.directory_verification_entries,
         "directory result verification",
     )?;
-    charge(
-        &mut work_units,
+    resolver.charge_closure_replay_work(
         metrics.matcher_result_entries,
         "matcher result verification",
     )?;
-    charge(
-        &mut work_units,
-        metrics.matcher_pattern_items,
-        "matcher pattern item replay",
-    )?;
-    charge(
-        &mut work_units,
-        metrics.matcher_pattern_bytes,
-        "matcher pattern byte replay",
-    )?;
-    charge(
-        &mut work_units,
+    resolver
+        .charge_closure_replay_work(metrics.matcher_pattern_items, "matcher pattern item replay")?;
+    resolver
+        .charge_closure_replay_work(metrics.matcher_pattern_bytes, "matcher pattern byte replay")?;
+    resolver.charge_closure_replay_work(
         metrics.directory_query_cache_bytes,
         "exact directory-query cache admission",
     )?;
@@ -1532,17 +1495,13 @@ fn replay_observations(
             "compiler reported fewer visited entries than its retained directory views",
         ));
     }
-    charge(
-        &mut work_units,
-        view_entries,
-        "directory snapshot comparison",
-    )?;
+    resolver.charge_closure_replay_work(view_entries, "directory snapshot comparison")?;
 
     let mut referenced_views = BTreeSet::new();
     let mut checked_views = BTreeSet::new();
     let mut checked_realpaths = BTreeMap::<String, (String, bool)>::new();
     for access in accesses {
-        charge(&mut work_units, 1, "filesystem access replay")?;
+        resolver.charge_closure_replay_work(1, "filesystem access replay")?;
         let path = Path::new(&access.path);
         if !path.is_absolute() || normalize_path(path).to_string_lossy() != access.path {
             return Err(closure_mismatch(
@@ -1568,7 +1527,9 @@ fn replay_observations(
                 }
             }
             ProgramAccessKind::Directory => {
-                if resolver.directory_exists(path)? != access.exists.unwrap_or(false) {
+                if access.exists == Some(false) {
+                    resolver.observe_absent_directory(path)?;
+                } else if resolver.directory_exists(path)? != access.exists.unwrap_or(false) {
                     return Err(closure_mismatch(&format!(
                         "compiler directory result changed at {:?}",
                         access.path
@@ -1633,7 +1594,7 @@ fn replay_observations(
                 }
                 validate_matcher_transcript(access, entries)?;
                 for resolution in &access.directory_realpaths {
-                    charge(&mut work_units, 1, "directory realpath replay")?;
+                    resolver.charge_closure_replay_work(1, "directory realpath replay")?;
                     let path = Path::new(&resolution.path);
                     let target = Path::new(&resolution.target);
                     if !path.is_absolute()
@@ -1676,7 +1637,7 @@ fn replay_observations(
                 let mut access_files = BTreeSet::new();
                 let mut access_directories = BTreeSet::new();
                 for view_path in &access.directory_view_paths {
-                    charge(&mut work_units, 1, "directory snapshot replay")?;
+                    resolver.charge_closure_replay_work(1, "directory snapshot replay")?;
                     let view = view_by_path
                         .get(view_path.as_str())
                         .copied()
@@ -1703,21 +1664,24 @@ fn replay_observations(
                                         view.path
                                     )));
                                 }
-                                let snapshot = resolver
+                                let snapshot_entries = resolver
                                     .observed_program_directory_entries(&canonical)
                                     .ok_or_else(|| {
                                         closure_mismatch(
                                             "admitted directory has no retained immutable snapshot",
                                         )
-                                    })?;
+                                    })?
+                                    .len();
+                                resolver.charge_closure_replay_work(
+                                    snapshot_entries,
+                                    "directory snapshot entry comparison",
+                                )?;
+                                let snapshot = resolver
+                                    .observed_program_directory_entries(&canonical)
+                                    .expect("retained immutable snapshot remains present");
                                 let mut files = Vec::new();
                                 let mut directories = Vec::new();
                                 for entry in snapshot {
-                                    charge(
-                                        &mut work_units,
-                                        1,
-                                        "directory snapshot entry comparison",
-                                    )?;
                                     if !resolver.program_directory_entry_is_admitted(entry) {
                                         return Err(
                                             TypeScriptProjectHostError::SourceOutsideCapability {
@@ -1779,7 +1743,7 @@ fn replay_observations(
                     }
                 }
                 for entry in entries {
-                    charge(&mut work_units, 1, "directory result verification")?;
+                    resolver.charge_closure_replay_work(1, "directory result verification")?;
                     let entry_path = Path::new(entry);
                     if !entry_path.is_absolute()
                         || normalize_path(entry_path).to_string_lossy() != entry.as_str()
@@ -1808,7 +1772,7 @@ fn replay_observations(
             "compiler returned an unreferenced directory enumeration view",
         ));
     }
-    Ok(work_units)
+    Ok(resolver.closure_replay_work_units())
 }
 
 fn validate_matcher_transcript(
