@@ -10,6 +10,7 @@
 //! delays the answer under the field, never a key.
 
 use super::path::{self, Completion, Folder, Refusal};
+use std::rc::Rc;
 use crate::core::LocalProjectId;
 use crate::navigation::{Intent, OrbitRoute, Overlay, Route};
 use crate::shell::kit::text;
@@ -44,12 +45,14 @@ struct Probe {
 /// There is at most one later request, replaced by the latest input/submit.
 enum Work {
     Probe { typed: String, edit: u64, shelf: Vec<LocalProjectId> },
-    Admit { typed: String, edit: u64, submission: u64, answer: Option<Task<Result<Folder, Refusal>>> },
+    Admit { typed: String, edit: u64, submission: u64, visit: crate::runtime::ui_graph::AddProjectVisit, answer: Option<Task<Result<Folder, Refusal>>> },
 }
 
 /// The dialog's content: the field, what the disk says under it, the buttons.
 pub(crate) struct Form {
     links: Links,
+    /// The visit that mounted the retained input and its Enter listener.
+    mounted_visit: Option<crate::runtime::ui_graph::AddProjectVisit>,
     input: Entity<InputState>,
     /// The measure of the plate's inner width, handed in by the dialog each
     /// frame it draws this.
@@ -101,6 +104,7 @@ impl Form {
         });
         Self {
             links,
+            mounted_visit: None,
             input,
             measure: None,
             probe: Probe::default(),
@@ -124,6 +128,7 @@ impl Form {
     /// Opens fresh: an empty field, focused, nothing said.
     pub(crate) fn opened(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.retire_submission();
+        self.mounted_visit = None;
         self.probe = Probe::default();
         self.observed_text.clear();
         self.walking = None;
@@ -229,7 +234,8 @@ impl Form {
     }
 
     fn can_submit(&self, cx: &App) -> bool {
-        !self.landed && !self.submitted && self.links.snapshot(cx).overlay() == Some(Overlay::AddProject)
+        !self.landed && !self.submitted
+            && self.mounted_visit.is_some_and(|visit| self.links.admits_add_project_visit(visit, cx))
     }
 
     #[cfg(test)]
@@ -239,8 +245,9 @@ impl Form {
 
     fn request_admission(&mut self, answer: Option<Task<Result<Folder, Refusal>>>, cx: &mut Context<Self>) {
         if !self.can_submit(cx) { return; }
+        let Some(visit) = self.mounted_visit else { return; };
         self.submitted = true;
-        self.enqueue(Work::Admit { typed: self.typed(cx), edit: self.edit, submission: self.submission, answer }, cx);
+        self.enqueue(Work::Admit { typed: self.typed(cx), edit: self.edit, submission: self.submission, visit, answer }, cx);
         cx.notify();
     }
 
@@ -274,7 +281,7 @@ impl Form {
                         add.finished(cx);
                     });
                 }
-                Work::Admit { typed, edit, submission, answer } => {
+                Work::Admit { typed, edit, submission, visit, answer } => {
                     let request_text = typed.clone();
                     let answer = match answer {
                         Some(answer) => answer.await,
@@ -284,7 +291,8 @@ impl Form {
                     };
                     let _ = add.update(cx, |add, cx| {
                         if add.submission == submission && add.edit == edit && add.typed(cx) == typed
-                            && !add.landed && add.links.snapshot(cx).overlay() == Some(Overlay::AddProject) {
+                            && !add.landed && add.links.snapshot(cx).overlay() == Some(Overlay::AddProject)
+                            && add.links.admits_add_project_visit(visit, cx) {
                             add.submitted = false;
                             add.admitted(answer, cx);
                         }
@@ -436,6 +444,13 @@ impl Render for Form {
         } else {
             below = below.children(verdict).children(suggestions);
         }
+        // A retained native dialog callback cannot act on a cover or on a
+        // later return to Add before the ordinary overlay watcher repaints.
+        let visit = self.links.add_project_visit(cx);
+        self.mounted_visit = visit;
+        let links = self.links.clone();
+        let admit: facet::controls::button::ActivationAdmission = Rc::new(move |cx|
+            visit.is_some_and(|visit| links.admits_add_project_visit(visit, cx)));
         let chosen = cx.entity();
         let cancelled = self.links.clone();
         let pick = self.links.clone();
@@ -443,13 +458,19 @@ impl Render for Form {
         if let Some(refusal) = &self.said {
             field = field.fault(SharedString::from(refusal.says()));
         }
+        let input_admit = Rc::clone(&admit);
         div()
             .id("add-folder")
             .flex()
             .flex_col()
             .gap(measure.space(Space::Roomy))
-            .capture_key_down(cx.listener(|add, event: &KeyDownEvent, window, cx| {
+            .capture_key_down(cx.listener(move |add, event: &KeyDownEvent, window, cx| {
                 let plain = !event.keystroke.modifiers.platform && !event.keystroke.modifiers.control && !event.keystroke.modifiers.alt;
+                if plain && matches!(event.keystroke.key.as_str(), "enter" | "space" | "up" | "down" | "tab") && !input_admit(cx) {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    return;
+                }
                 match event.keystroke.key.as_str() {
                     "down" if plain => add.walk(1, cx),
                     "up" if plain => add.walk(-1, cx),
@@ -475,19 +496,30 @@ impl Render for Form {
                         button("add-folder-choose", "Choose folder…", &measure)
                             .ghost()
                             .icon(Icon::Folder)
-                            .on_click(move |_, cx| pick.dispatch(Intent::OpenFolderPicker, cx)),
+                            .when_current(Rc::clone(&admit))
+                            .on_click(move |_, cx| {
+                                if let Some(visit) = visit { pick.dispatch_add_project(Intent::OpenFolderPicker, visit, cx); }
+                            }),
                     )
                     .child(
                         div()
                             .flex()
                             .gap(measure.space(Space::Base))
-                            .child(button("add-folder-cancel", "Cancel", &measure).on_click(move |_, cx| cancelled.dispatch(Intent::DismissOverlay, cx)))
+                            .child(button("add-folder-cancel", "Cancel", &measure)
+                                .when_current(Rc::clone(&admit))
+                                .on_click(move |_, cx| {
+                                    if let Some(visit) = visit { cancelled.dispatch_add_project(Intent::DismissOverlay, visit, cx); }
+                                }))
                             .child(
                                 button("add-folder-add", "Add", &measure)
                                     .primary()
                                     .disabled(typed_nothing)
                                     .busy(self.submitted)
-                                    .on_click(move |window, cx| chosen.update(cx, |add, cx| add.submit(window, cx))),
+                                    .when_current(Rc::clone(&admit))
+                                    .on_click(move |window, cx| {
+                                        if !admit(cx) { return; }
+                                        chosen.update(cx, |add, cx| add.submit(window, cx));
+                                    }),
                             ),
                     ),
             )
