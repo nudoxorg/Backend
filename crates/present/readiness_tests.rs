@@ -195,7 +195,16 @@ fn bounded_mcp_hint_preserves_complete_receipt_and_cli_single_observation_semant
                 .expect("complete budgeted projection");
                 let body: serde_json::Value = serde_json::from_slice(&payload.bytes).expect("JSON");
                 assert_eq!(body["index_operation"], phase["reply"]["data"]);
-                assert_eq!(body["index_poll"]["call"], action.call);
+                assert_eq!(
+                    body["index_poll"]["call"],
+                    IndexPollDto::for_detail(&bounded, detail)
+                        .expect("same detail action")
+                        .call
+                );
+                assert_eq!(
+                    body["index_poll"]["call"]["arguments"]["detail"],
+                    detail.name()
+                );
             }
         } else {
             assert!(
@@ -275,7 +284,9 @@ fn durable_accepted_and_active_work_share_one_copyable_restart_safe_poll() {
                     body["index_operation"],
                     serde_json::to_value(&observation).expect("exact receipt")
                 );
-                assert_eq!(body["index_poll"]["call"], expected_call);
+                let mut detailed_call = expected_call.clone();
+                detailed_call["arguments"]["detail"] = serde_json::json!(detail.name());
+                assert_eq!(body["index_poll"]["call"], detailed_call);
                 assert_eq!(body["index_poll"]["shell"], expected_shell);
                 assert!(payload.bytes.len() < 4096, "a poll hint must stay small");
                 let mut older = serde_json::to_value(ProductDto::new(&view)).expect("DTO");

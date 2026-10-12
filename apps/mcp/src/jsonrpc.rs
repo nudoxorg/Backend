@@ -1077,16 +1077,12 @@ impl<P: Product> Server<P> {
         context: &[u8],
     ) -> Result<Value, RpcError> {
         let view = backend_present::product_view_for_command(command, reply);
-        let view = if detail == Detail::Full {
-            view
-        } else {
-            view.with_bounded_index_poll().map_err(|error| {
-                RpcError::from_fault(&Fault::from_client_error(
-                    &error,
-                    surface_error_operand(command),
-                ))
-            })?
-        };
+        let view = view.with_bounded_index_poll().map_err(|error| {
+            RpcError::from_fault(&Fault::from_client_error(
+                &error,
+                surface_error_operand(command),
+            ))
+        })?;
         let view = match view.cursor_family().cloned() {
             Some(cursor) => {
                 let token = self.issue_cursor(cursor, context)?;
@@ -1101,7 +1097,7 @@ impl<P: Product> Server<P> {
             None,
             SurfaceBody {
                 fault: view.fault().map(backend_present::FaultDto::new),
-                index_poll: backend_present::IndexPollDto::new(&view),
+                index_poll: backend_present::IndexPollDto::for_detail(&view, detail),
                 surface: SurfaceProjection {
                     reply,
                     next_cursor,
@@ -1117,7 +1113,7 @@ impl<P: Product> Server<P> {
             RpcError::tool(format!("typed surface projection decode failed: {error}"))
         })?;
         Ok(tool_result(
-            &bounded_text(&markdown::product(&view)),
+            &bounded_text(&markdown::product_with_detail(&view, detail)),
             structured,
             view.fault().is_some(),
         ))
@@ -1367,8 +1363,7 @@ impl<P: Product> Server<P> {
             .transpose()?;
         let projected_product = match (answer, next.as_deref()) {
             (Answer::Product(product), None)
-                if detail == Detail::Full
-                    || (product.index_operation().is_none() && product.index_job().is_none()) =>
+                if product.index_operation().is_none() && product.index_job().is_none() =>
             {
                 None
             }
@@ -1377,16 +1372,12 @@ impl<P: Product> Server<P> {
                     Some(token) => (**product).clone().project_cursor(token, cursor_target),
                     None => (**product).clone(),
                 };
-                let product = if detail == Detail::Full {
-                    product
-                } else {
-                    product.with_bounded_index_poll().map_err(|error| {
-                        RpcError::from_fault(&Fault::from_client_error(
-                            &error,
-                            backend_present::Operand::Whole,
-                        ))
-                    })?
-                };
+                let product = product.with_bounded_index_poll().map_err(|error| {
+                    RpcError::from_fault(&Fault::from_client_error(
+                        &error,
+                        backend_present::Operand::Whole,
+                    ))
+                })?;
                 Some(Answer::Product(Box::new(product)))
             }
             _ => None,

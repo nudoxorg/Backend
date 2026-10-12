@@ -76,6 +76,7 @@ pub fn answer_with_detail(
     match value {
         Answer::Page(value) => page_projection(&PageProjection::new(value, detail)),
         Answer::Records(value) => records_with_cursor(value, None, cursor, target),
+        Answer::Product(value) => product_with_detail(value, detail),
         _ => answer(value),
     }
 }
@@ -259,7 +260,7 @@ fn inline_code_delimiter(value: &str) -> Option<usize> {
         return None;
     }
 
-    let mut longest = 0;
+    let mut longest: usize = 0;
     let mut run = 0;
     for character in value.chars() {
         if character == '`' {
@@ -653,12 +654,22 @@ pub fn status(status: &Status) -> String {
 /// Renders one durable product answer: a heading, then one record per row.
 #[must_use]
 pub fn product(view: &ProductView) -> String {
+    product_projection(view, None)
+}
+
+/// Renders the same receipt with a copyable MCP action retaining its detail.
+#[must_use]
+pub fn product_with_detail(view: &ProductView, detail: Detail) -> String {
+    product_projection(view, Some(detail))
+}
+
+fn product_projection(view: &ProductView, detail: Option<Detail>) -> String {
     let mut lines = Lines::new();
     lines.push(format!("# {}", view.heading()));
     if let Some(reason) = view.fault() {
         lines.push(fault(reason));
         if view.records().is_empty() {
-            index_job_footer(view, &mut lines);
+            index_job_footer(view, detail, &mut lines);
             return lines.finish();
         }
     }
@@ -666,14 +677,14 @@ pub fn product(view: &ProductView) -> String {
         lines.push(note);
         if view.records().is_empty() {
             index_search_page_footer(view, &mut lines);
-            index_job_footer(view, &mut lines);
+            index_job_footer(view, detail, &mut lines);
             return lines.finish();
         }
     }
     if view.records().is_empty() {
         lines.push("no row at this revision");
         index_search_page_footer(view, &mut lines);
-        index_job_footer(view, &mut lines);
+        index_job_footer(view, detail, &mut lines);
         return lines.finish();
     }
     for record in view.records() {
@@ -691,15 +702,16 @@ pub fn product(view: &ProductView) -> String {
     }
     lines.push(format!("{} row(s)", view.records().len()));
     index_search_page_footer(view, &mut lines);
-    index_job_footer(view, &mut lines);
+    index_job_footer(view, detail, &mut lines);
     lines.finish()
 }
 
-fn index_job_footer(view: &ProductView, lines: &mut Lines) {
-    if let Some(next) = view
-        .index_poll_affordance()
-        .and_then(|step| step.tool_call())
-    {
+fn index_job_footer(view: &ProductView, detail: Option<Detail>, lines: &mut Lines) {
+    let poll = match detail {
+        Some(detail) => crate::IndexPollDto::for_detail(view, detail),
+        None => crate::IndexPollDto::new(view),
+    };
+    if let Some(crate::IndexPollDto { call: next, .. }) = poll {
         if let Some(job @ IndexJobProjection::Cancellation(_)) = view.index_job()
             && let Some(ticket) = job.ticket_json()
         {

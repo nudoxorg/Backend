@@ -937,10 +937,40 @@ impl IndexPollDto {
     /// Derives one observation from the shared typed operation/job policy.
     #[must_use]
     pub fn new(view: &ProductView) -> Option<Self> {
-        let affordance = view.index_poll_affordance()?;
+        Self::from_affordance(view.index_poll_affordance()?, None)
+    }
+
+    /// Keeps the requested receipt detail when the next MCP action is copied.
+    #[must_use]
+    pub fn for_detail(view: &ProductView, detail: Detail) -> Option<Self> {
+        Self::from_affordance(view.index_poll_affordance()?, Some(detail))
+    }
+
+    /// Projects an admitted unchanged reference with the same detail policy.
+    #[must_use]
+    pub fn for_reference(
+        reference: &backend_client::IndexProgressReference,
+        detail: Detail,
+    ) -> Option<Self> {
+        Self::from_affordance(
+            Affordance::ObserveIndexChanges {
+                reference: reference.clone(),
+            },
+            Some(detail),
+        )
+    }
+
+    fn from_affordance(affordance: Affordance, detail: Option<Detail>) -> Option<Self> {
+        let mut call = affordance.tool_call()?;
+        if let Some(detail) = detail {
+            call.get_mut("arguments")?.as_object_mut()?.insert(
+                "detail".to_owned(),
+                serde_json::Value::String(detail.name().to_owned()),
+            );
+        }
         Some(Self {
             shell: affordance.shell()?,
-            call: affordance.tool_call()?,
+            call,
         })
     }
 }
@@ -1006,6 +1036,16 @@ impl ProductDto {
     /// Projects one product answer.
     #[must_use]
     pub fn new(view: &ProductView) -> Self {
+        Self::project(view, None)
+    }
+
+    /// Projects the complete receipt and preserves detail in its next action.
+    #[must_use]
+    pub fn for_detail(view: &ProductView, detail: Detail) -> Self {
+        Self::project(view, Some(detail))
+    }
+
+    fn project(view: &ProductView, detail: Option<Detail>) -> Self {
         Self {
             heading: view.heading().to_owned(),
             records: view
@@ -1039,7 +1079,10 @@ impl ProductDto {
                 }),
             index_job: view.index_job().cloned(),
             index_operation: view.index_operation().cloned(),
-            index_poll: IndexPollDto::new(view),
+            index_poll: match detail {
+                Some(detail) => IndexPollDto::for_detail(view, detail),
+                None => IndexPollDto::new(view),
+            },
             selected_source_frontier: view.selected_source_frontier().cloned(),
             package_source_membership_page: view.package_source_membership_page().cloned(),
             semantic_data: view.semantic_data().cloned(),
