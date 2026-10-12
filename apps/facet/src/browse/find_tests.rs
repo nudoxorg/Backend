@@ -88,6 +88,7 @@ fn actions(reads: &Rc<RefCell<Vec<SharedString>>>, opened: &Rc<RefCell<Vec<Share
     let opened = Rc::clone(opened);
     Actions {
         retry: None,
+        retry_admit: Rc::new(|_| false),
         scroll: ScrollHandle::new(),
         initial_held: vec![], persist_held: Rc::new(|_, _| {}),
         return_focus: Rc::new(|_, _, _| crate::browse::library::ReturnDisposition::Invalid),

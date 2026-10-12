@@ -221,6 +221,191 @@ fn a_new_native_failure_paint_cannot_submit_through_unobserved_starting_or_ready
     }
 }
 
+/// Refuses two actual pool reads of the exact Find query, then returns its
+/// prepared empty result through the ordinary Browse landing path.
+struct FindRecoveryReads(Arc<AtomicUsize>);
+impl PageReader for FindRecoveryReads {
+    fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+        let ReadRequest::Browse(crate::model::browse::BrowseKey::Find(query)) = request else {
+            return Fixture.read(request, context);
+        };
+        assert_eq!(query.text.as_ref(), "RelationLabel", "the law counts the actual represented query");
+        if self.0.fetch_add(1, Ordering::SeqCst) < 2 {
+            return Err(ReadFailure::Fault(crate::core::ErrorValue::new(
+                crate::core::FaultCode::Transport, "actual Find read fixture refused")));
+        }
+        let answers = Known::Known(super::SearchPage {
+            query: Arc::clone(&query.text), rows: Arc::from([]),
+            coverage: backend_present::CoverageLine::new(&[], Some(0)), next: None,
+        });
+        let package_coverage = Known::Known(());
+        let prepared = Arc::new(crate::runtime::browse_views::prepare_find(
+            query.text.as_ref(), &answers, &[], &package_coverage,
+        ));
+        Ok(PageValue::Browse(crate::model::browse::BrowseValue::Find(Arc::new(
+            crate::model::browse::FindModel { answers, packages: Arc::from([]), package_coverage, prepared },
+        ))))
+    }
+}
+
+fn find_retry_native(rig: &mut Rig) -> (gpui::accesskit::NodeId, gpui::Bounds<gpui::Pixels>) {
+    rig.cx.update(|window, _| {
+        let native = window.a11y_tree().expect("Find failure AX").nodes.iter()
+            .find(|(_, node)| node.role() == gpui::Role::Button && node.label() == Some("Retry current Find query")
+                && node.supports_action(gpui::AccessibleAction::Click)).map(|(id, _)| *id).expect("native Find recovery");
+        (native, window.a11y_node_bounds(native).expect("actual mounted native Retry bounds"))
+    })
+}
+
+#[gpui::test]
+fn retained_native_find_retry_cannot_adopt_a_later_same_query_read_and_fresh_failure_recovers(cx: &mut TestAppContext) {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let client = Arc::clone(&reads);
+    let query = SearchQuery::new("RelationLabel", 200).expect("query");
+    let key = crate::model::browse::BrowseKey::Find(query.clone());
+    let route = Route::Orbit(crate::navigation::OrbitRoute::Browse(crate::navigation::BrowseRoute::Find(query)));
+    let mut rig = rig_with_reads(cx, Some(route.clone()), 1440.0, 900.0,
+        ReadPool::start(1, move |_| FindRecoveryReads(Arc::clone(&client))).expect("pool"));
+    let shell = rig.shell.clone();
+    rig.cx.update(|window, cx| {
+        window.replace_root(cx, |window, cx| gpui_component::Root::new(shell, window, cx).bordered(false));
+        window.set_a11y_forced(true);
+    });
+    rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+    let (native, bounds) = find_retry_native(&mut rig);
+    let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+    let before = rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted);
+    let focused = rig.cx.update(|window, cx| {
+        let before_press = window.focused(cx);
+        window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+            position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left,
+            click_count: 1, first_mouse: false,
+        }), cx);
+        let focused = window.focused(cx);
+        assert!(focused.is_some(), "the current native recovery receives the held press");
+        assert_ne!(focused, before_press, "current Retry accepts native focus from the query field");
+        rig.graph.store.update(cx, |store, cx| store.retry(PageKey::Browse(key.clone()), cx));
+        window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+            position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1,
+        }), cx);
+        for key in ["enter", "space"] {
+            let keystroke = gpui::Keystroke::parse(key).expect("Find Retry key");
+            window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                keystroke: keystroke.clone(), is_held: false, prefer_character_input: false,
+            }), cx);
+            window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
+        }
+        window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+            action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: native, data: None,
+        }, cx);
+        assert_eq!(rig.graph.store.read(cx).stats().submitted, before + 1, "old native input cannot replace the newer pool read");
+        assert_eq!(window.focused(cx), focused);
+        let query_focus = before_press.expect("mounted native Find query focus");
+        query_focus.focus(window);
+        window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+            position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left,
+            click_count: 1, first_mouse: false,
+        }), cx);
+        window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+            position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1,
+        }), cx);
+        let focused = window.focused(cx);
+        assert_eq!(focused, Some(query_focus), "a newly attempted stale press cannot steal native query focus");
+        assert_eq!(window.a11y_frame_number(), frame, "the admission runs against retained native handlers before watcher redraw");
+        focused
+    });
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted), before + 1);
+    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused);
+    assert_eq!(rig.cx.update(|window, _| window.a11y_frame_number()), frame);
+    rig.settle();
+    assert_eq!(reads.load(Ordering::SeqCst), 2);
+    assert_eq!(rig.route(), route, "identical failure keeps the exact query visit mounted");
+    let (_, bounds) = find_retry_native(&mut rig);
+    rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    rig.settle();
+    assert_eq!(reads.load(Ordering::SeqCst), 3, "fresh Find recovery reaches the real worker without Back");
+    assert_eq!(rig.route(), route);
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.pages().browse(&key).loaded_value().is_some()));
+}
+
+#[gpui::test]
+fn identical_owner_failure_retires_native_find_retry_before_watcher_and_fresh_offline_retry_works(cx: &mut TestAppContext) {
+    let at = crate::core::VersionedRoot::synthetic(backend_library::view_state_root(&[("shell".into(), "tests".into())]), 4);
+    let gate = crate::runtime::owner::OwnerGate::ready(at, crate::model::ServiceMode::Attached);
+    let reads = Arc::new(AtomicUsize::new(0));
+    let client = Arc::clone(&reads);
+    let query = SearchQuery::new("RelationLabel", 200).expect("query");
+    let key = PageKey::Browse(crate::model::browse::BrowseKey::Find(query.clone()));
+    let route = Route::Orbit(crate::navigation::OrbitRoute::Browse(crate::navigation::BrowseRoute::Find(query)));
+    let mut rig = super::rig_with_engine_gate_at_root(cx, Some(route.clone()), 1440.0, 900.0,
+        ReadPool::start(1, move |_| FindRecoveryReads(Arc::clone(&client))).expect("pool"), super::RootOnly, Some(gate.clone()), at);
+    let shell = rig.shell.clone();
+    rig.cx.update(|window, cx| {
+        window.replace_root(cx, |window, cx| gpui_component::Root::new(shell, window, cx).bordered(false));
+        window.set_a11y_forced(true);
+    });
+    rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+    let failure = crate::runtime::owner::OwnerFault::Host("Find owner unavailable".into());
+    gate.publish(crate::runtime::owner::OwnerState::Failed(failure.clone()));
+    rig.settle();
+    let (native, bounds) = find_retry_native(&mut rig);
+    let stamp = rig.graph.store.read_with(rig.cx, |store, _| store.stamp(&key));
+    let retry = rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_retry().expect("painted failure token"));
+    let submitted = rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted);
+    let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+    let focused = rig.cx.update(|window, cx| {
+        let before_press = window.focused(cx);
+        window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+            position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left,
+            click_count: 1, first_mouse: false,
+        }), cx);
+        let focused = window.focused(cx);
+        assert_ne!(focused, before_press, "current offline Retry accepts native focus from the query field");
+        gate.publish(crate::runtime::owner::OwnerState::Failed(failure.clone()));
+        assert_eq!(rig.graph.store.read(cx).stamp(&key), stamp, "same query and identical fault words cannot stand in for retry identity");
+        assert_ne!(rig.graph.store.read(cx).current_owner_retry(), Some(retry.clone()));
+        window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+            position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1,
+        }), cx);
+        for key in ["enter", "space"] {
+            let keystroke = gpui::Keystroke::parse(key).expect("offline Find Retry key");
+            window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                keystroke: keystroke.clone(), is_held: false, prefer_character_input: false,
+            }), cx);
+            window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
+        }
+        window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+            action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: native, data: None,
+        }, cx);
+        assert!(matches!(gate.state(), crate::runtime::owner::OwnerState::Failed(_)), "old native callback cannot adopt a newer identical owner failure");
+        assert_eq!(rig.graph.store.read(cx).stats().submitted, submitted);
+        assert_eq!(window.focused(cx), focused);
+        let query_focus = before_press.expect("mounted native Find query focus");
+        query_focus.focus(window);
+        window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+            position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left,
+            click_count: 1, first_mouse: false,
+        }), cx);
+        window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+            position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1,
+        }), cx);
+        let focused = window.focused(cx);
+        assert_eq!(focused, Some(query_focus), "a newly attempted stale press cannot steal native query focus");
+        assert_eq!(window.a11y_frame_number(), frame);
+        focused
+    });
+    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused);
+    assert_eq!(rig.cx.update(|window, _| window.a11y_frame_number()), frame);
+    assert!(matches!(gate.state(), crate::runtime::owner::OwnerState::Failed(_)));
+    rig.settle();
+    let (_, bounds) = find_retry_native(&mut rig);
+    rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    assert!(matches!(gate.state(), crate::runtime::owner::OwnerState::Starting), "fresh exact offline recovery restarts locally without a Serving owner");
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted), submitted, "offline restart does not force a read through an unadmitted owner");
+    assert_eq!(rig.route(), route);
+}
+
 #[derive(Default)]
 struct Observations {
     published: AtomicBool,

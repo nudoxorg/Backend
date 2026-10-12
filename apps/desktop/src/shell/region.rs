@@ -471,11 +471,6 @@ impl Links {
             .update(cx, |store, cx| store.cancel_prefetch(key, cx));
     }
 
-    /// Asks for a page again after a fault.
-    pub(crate) fn retry(&self, key: PageKey, cx: &mut App) {
-        self.store.update(cx, |store, cx| store.retry(key, cx));
-    }
-
     /// Retry the page/owner receipt retained by a painted recovery control.
     pub(crate) fn retry_at(&self, expected: &PageRetryReceipt, cx: &mut App) {
         self.store.update(cx, |store, cx| {

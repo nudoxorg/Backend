@@ -498,6 +498,41 @@ fn find_callback(rig: &mut crate::shell::tests::Rig, route: &BrowseRoute) -> sup
     }
 }
 
+#[gpui::test]
+fn retained_find_retry_callback_never_revives_on_an_identical_later_fault_or_same_query_return(cx: &mut TestAppContext) {
+    let browse = BrowseRoute::Find(SearchQuery::new("RelationLabel", SearchQuery::DEFAULT_LIMIT).expect("query"));
+    let route = Route::Orbit(OrbitRoute::Browse(browse.clone()));
+    // Fixture refuses Browse through the actual pool with identical words on
+    // each call. This law retains the production callback, not a test action.
+    let mut rig = rig(cx, Some(route.clone()), 1200.0, 800.0);
+    rig.go(crate::navigation::Intent::SetMotion(crate::model::MotionPreference::Reduced));
+    let key = crate::model::pages::PageKey::Browse(BrowseKey::from(&browse));
+    let source = find_callback(&mut rig, &browse);
+    let first = rig.graph.store.read_with(rig.cx, |store, _| store.capture_page_retry(&key).expect("first fault receipt"));
+    let callback = super::find_retry_action(source.clone(), Some(first.clone()));
+    rig.graph.store.update(rig.cx, |store, cx| store.retry(key.clone(), cx));
+    rig.settle();
+    assert!(rig.cx.update(|_, cx| source.failed_retry(cx).is_ok()), "the route and identical fault alone would revive the old callback");
+    let next = rig.graph.store.read_with(rig.cx, |store, _| store.capture_page_retry(&key).expect("next identical fault receipt"));
+    assert_ne!(first, next, "a later fault on the same query carries a different page stamp");
+    let submitted = rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted);
+    rig.cx.update(|window, cx| callback(window, cx));
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted), submitted);
+    let current = super::find_retry_action(source, Some(next));
+    rig.cx.update(|window, cx| current(window, cx));
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted), submitted + 1, "fresh exact callback retries without Back");
+    rig.settle();
+    let source = find_callback(&mut rig, &browse);
+    let receipt = rig.graph.store.read_with(rig.cx, |store, _| store.capture_page_retry(&key).expect("current fault"));
+    let before_return = super::find_retry_action(source, Some(receipt));
+    rig.go(crate::navigation::Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
+    rig.go(crate::navigation::Intent::Navigate(route.clone()));
+    let submitted = rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted);
+    rig.cx.update(|window, cx| before_return(window, cx));
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted), submitted, "equal query text cannot adopt a later reading visit");
+    assert_eq!(rig.route(), route);
+}
+
 fn land_find(rig: &mut crate::shell::tests::Rig, route: &BrowseRoute, query: &str, includes_answer: bool) {
     rig.graph.store.update(rig.cx, |store, cx| store.test_land_browse(BrowseKey::from(route), find_fixture(query, includes_answer), cx));
 }
