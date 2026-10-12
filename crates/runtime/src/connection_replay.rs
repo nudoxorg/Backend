@@ -5,7 +5,7 @@ use std::path::Path;
 
 /// Original durable-directory boundary; this is not directory admission.
 #[derive(Clone, Copy, Debug)]
-pub enum StartupWorkspaceSelection<'a> {
+pub enum ConnectionWorkspaceSelection<'a> {
     /// Explicit path or workspace environment override.
     Explicit(&'a Path),
     /// Platform HOME layout, retaining its original anchor.
@@ -19,7 +19,7 @@ pub enum StartupWorkspaceSelection<'a> {
 /// Complete selected path operands and the original initialization boundary.
 /// Borrowing this observation cannot initialize state or grant owner authority.
 #[derive(Clone, Copy, Debug)]
-pub struct StartupRecoverySelection<'a> {
+pub struct ConnectionReplaySelection<'a> {
     /// Selected indexed project identity.
     pub project: &'a Path,
     /// Selected durable directory identity, also retained for default roots.
@@ -29,29 +29,31 @@ pub struct StartupRecoverySelection<'a> {
     /// Selected authority-file operand, including an environment override.
     pub authority_secret: &'a Path,
     /// Explicit versus platform-default directory selection.
-    pub workspace: StartupWorkspaceSelection<'a>,
+    pub workspace: ConnectionWorkspaceSelection<'a>,
 }
 
 impl WorkspacePaths {
     /// Projects the already-captured Unix recovery selection without reading
     /// the environment again or changing the workspace's admission boundary.
     #[must_use]
-    pub fn startup_recovery_selection(&self) -> Option<StartupRecoverySelection<'_>> {
+    pub fn connection_replay_selection(&self) -> Option<ConnectionReplaySelection<'_>> {
         let workspace = match &self.private_application_root {
-            None => StartupWorkspaceSelection::Explicit(&self.data),
+            None => ConnectionWorkspaceSelection::Explicit(&self.data),
             Some(root) => match root.suffix {
                 #[cfg(target_os = "macos")]
-                ["Library", "Application Support"] => StartupWorkspaceSelection::Home(&root.anchor),
+                ["Library", "Application Support"] => {
+                    ConnectionWorkspaceSelection::Home(&root.anchor)
+                }
                 #[cfg(not(target_os = "macos"))]
-                [".local", "state"] => StartupWorkspaceSelection::Home(&root.anchor),
+                [".local", "state"] => ConnectionWorkspaceSelection::Home(&root.anchor),
                 #[cfg(not(target_os = "macos"))]
-                [] => StartupWorkspaceSelection::XdgState(&root.anchor),
+                [] => ConnectionWorkspaceSelection::XdgState(&root.anchor),
                 #[cfg(not(target_os = "macos"))]
-                ["state"] => StartupWorkspaceSelection::XdgData(&root.anchor),
+                ["state"] => ConnectionWorkspaceSelection::XdgData(&root.anchor),
                 _ => return None,
             },
         };
-        Some(StartupRecoverySelection {
+        Some(ConnectionReplaySelection {
             project: &self.project,
             data: &self.data,
             endpoint: &self.endpoint,

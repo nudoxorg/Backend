@@ -678,7 +678,10 @@ impl ProductView {
 
     /// Bind only the display continuation to the actual CLI attachment; ticket and result
     /// remain unchanged. A missing UTF-8 connection context must not be fabricated.
-    pub fn bind_embedding_refresh_context(&mut self, context: &crate::OwnerContext) {
+    pub fn bind_embedding_refresh_context(
+        &mut self,
+        context: Option<&crate::ConnectionReplayContext>,
+    ) {
         use backend_library::EmbeddingRefreshObservation as O;
         let ticket = match self.embedding_refresh.as_ref() {
             Some(
@@ -694,13 +697,23 @@ impl ProductView {
         };
         match serde_json::to_string(&action) {
             Ok(request) => {
-                self.note = Some(format!(
-                    "Observe this exact operation: {}",
-                    context.passive_command_shell(
+                let command = context.and_then(|context| {
+                    context.command_shell(&crate::ConnectionReplayCommand::new(
                         backend_library::CommandId::EmbeddingRefresh,
-                        &[request]
-                    )
-                ))
+                        true,
+                        vec![request],
+                    ))
+                });
+                if let Some(command) = command {
+                    self.note = Some(format!("Observe this exact operation: {command}"));
+                } else {
+                    let note = "No exact copyable CLI observation command is available for this attachment; retain the original selection and exact ticket.";
+                    self.note =
+                        Some(self.note.take().map_or_else(
+                            || note.to_owned(),
+                            |original| format!("{original}\n{note}"),
+                        ));
+                }
             }
             Err(error) => {
                 self.note = Some(format!("Observation command could not be encoded: {error}"))

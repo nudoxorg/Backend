@@ -25,6 +25,7 @@ pub const MAX_ENDPOINT_PATH: usize = backend_replication::MAX_UNIX_ENDPOINT_PATH
 pub const ENDPOINT_ENV: &str = "BACKEND_LOCALD_ENDPOINT";
 
 mod client;
+mod connection_replay;
 mod cluster;
 mod error;
 mod embedding_setup;

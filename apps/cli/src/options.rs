@@ -200,11 +200,24 @@ pub fn split(args: &[String]) -> Result<(Options, Vec<String>), Fault> {
         && !rest
             .first()
             .and_then(|word| grammar_for(word))
-            .is_some_and(|grammar| grammar.name() == "health")
+            .is_some_and(|grammar| {
+                grammar.name() == "health"
+                    || (grammar.name() == "embedding-refresh"
+                        && rest.len() == 2
+                        && serde_json::from_str::<backend_library::EmbeddingRefreshAction>(
+                            &rest[1],
+                        )
+                        .is_ok_and(|action| {
+                            matches!(
+                                action,
+                                backend_library::EmbeddingRefreshAction::Observe { .. }
+                            )
+                        }))
+            })
     {
         return Err(Fault::usage(
             "--passive",
-            "--passive is available only with health/status",
+            "--passive is available only with health/status or an exact embedding-refresh Observe request",
         ));
     }
     let format = format.unwrap_or_default();

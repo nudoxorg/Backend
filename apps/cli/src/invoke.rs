@@ -210,6 +210,9 @@ pub fn help_for(grammar: CommandGrammar) -> String {
     if !grammar.aliases().is_empty() {
         let _ = writeln!(out, "\nalso spelled: {}", grammar.aliases().join(", "));
     }
+    if grammar.name() == "embedding-refresh" {
+        out.push_str("\nUse --passive only with an explicit Observe request to contact the existing ticket owner without starting another owner. Start and Cancel remain deliberate non-passive actions.\n");
+    }
     if grammar.name() == "health" {
         out.push_str("\nConnect without starting an owner or creating state: nudox --passive status\nOn Unix, a cold status returns an explicit unsent startup observation after a short wait. Retry its printed command for authenticated status.\n");
     }
@@ -241,7 +244,7 @@ options
   --project PATH                Select the project; defaults to the current directory.
   --workspace PATH              Select durable state; defaults to this project's private app-data root.
   --endpoint PATH               Connect to a specific local daemon.
-  --passive                     With health/status, connect without starting locald or creating state.
+  --passive                     With health/status or an exact embedding-refresh Observe request, connect without starting locald or creating state.
   -h, --help                    Show this help, or one command's help after its name.
   -V, --version                 Show the version.
 

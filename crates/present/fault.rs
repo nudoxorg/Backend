@@ -287,34 +287,6 @@ impl OwnerContext {
     fn recovery_shell(&self) -> String {
         format!("{} health", self.connection_shell())
     }
-
-    /// Formats a registered command on the exact existing attachment. Passive
-    /// observation never starts another owner when the issued ticket's owner is absent.
-    #[must_use]
-    pub fn passive_command_shell(
-        &self,
-        command: backend_library::CommandId,
-        arguments: &[String],
-    ) -> String {
-        let mut output = format!(
-            "{} --passive {}",
-            self.connection_shell(),
-            backend_library::command_spec(command).name
-        );
-        for argument in arguments {
-            output.push(' ');
-            output.push_str(&crate::shell::quote_argument(argument));
-        }
-        output
-    }
-
-    /// Formats the registered owner operation on this exact attachment. The CLI
-    /// captures the current config; this instruction grants no readiness.
-    #[must_use]
-    pub fn embedding_refresh_shell(&self) -> Option<String> {
-        let grammar = crate::grammar_for("embedding-refresh")?;
-        Some(format!("{} {}", self.connection_shell(), grammar.name()))
-    }
 }
 
 /// The next step a reader can take, typed so each surface renders its idiom.

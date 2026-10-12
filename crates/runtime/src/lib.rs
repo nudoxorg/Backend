@@ -145,9 +145,9 @@ pub struct WorkspacePaths {
 }
 
 #[cfg(unix)]
-mod startup_recovery;
+mod connection_replay;
 #[cfg(unix)]
-pub use startup_recovery::{StartupRecoverySelection, StartupWorkspaceSelection};
+pub use connection_replay::{ConnectionReplaySelection, ConnectionWorkspaceSelection};
 
 impl WorkspacePaths {
     /// Discovers a project session from explicit values, environment, and the

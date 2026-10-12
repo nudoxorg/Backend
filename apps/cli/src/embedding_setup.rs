@@ -6,7 +6,7 @@ use backend_local_service::builtin::query::{
     PinnedCandleSetupRequest, PreparedCandleSetup, admit_candle_setup_authority,
     download_candle_artifacts, inspect_candle_helper,
 };
-use backend_present::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand, OwnerContext};
+use backend_present::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand};
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
@@ -195,32 +195,36 @@ fn download_install(
 }
 enum SetupState {
     ObservedHelper,
-    InstalledNotActivated(OwnerContext),
+    InstalledNotActivated(Option<backend_present::ConnectionReplayContext>),
 }
 impl SetupState {
     fn installed(workspace: &backend_runtime::WorkspacePaths) -> Result<Self, Fault> {
-        let text = |path: &Path| {
-            path.to_str().map(str::to_owned).ok_or_else(|| refusal(
-                "Artifacts were saved but not activated. A selected attachment path is not UTF-8, so no safe copyable command can be provided.".to_owned(),
-            ))
-        };
-        Ok(Self::InstalledNotActivated(OwnerContext::new(
-            text(workspace.project())?,
-            text(workspace.data())?,
-            text(workspace.endpoint())?,
-        )))
+        Ok(Self::InstalledNotActivated(
+            crate::connection_replay::context(workspace),
+        ))
     }
     fn action(&self) -> Result<String, Fault> {
         match self {
             Self::ObservedHelper => {
                 Ok("No execution or semantic attestation; compare this identity with a trusted matched build receipt.".to_owned())
             }
-            Self::InstalledNotActivated(context) => {
-                let command = context.reindex_shell().ok_or_else(|| Fault::usage("add", "the Add command is not registered"))?;
-                let refresh = context.embedding_refresh_shell().ok_or_else(|| Fault::usage("embedding-refresh", "the refresh command is not registered"))?;
+            Self::InstalledNotActivated(Some(context)) => {
+                let command = context.command_shell(&backend_present::ConnectionReplayCommand::new(
+                    backend_library::CommandId::Add, false, vec![context.project().to_owned()],
+                ));
+                let refresh = context.command_shell(&backend_present::ConnectionReplayCommand::new(
+                    backend_library::CommandId::EmbeddingRefresh, false, Vec::new(),
+                ));
+                let (Some(command), Some(refresh)) = (command, refresh) else {
+                    return Ok(Self::unavailable_action().to_owned());
+                };
                 Ok(format!("Saved for the next local owner startup. If no owner is running, `{command}` starts it with these artifacts; poll the Add receipt, then search. An already-running owner keeps its admitted recipe; saving does not reactivate it. Run `{refresh}` and copy its observation command until it reports the actual compiler commit and query admission. If it is busy or refuses, retain its actual cause and retry deliberately after the outstanding work completes. Then run the scoped Add command above and observe actual publication. Semantic availability requires completed inference under the installed recipe. Explicit remote configuration remains authoritative."))
             }
+            Self::InstalledNotActivated(None) => Ok(Self::unavailable_action().to_owned()),
         }
+    }
+    const fn unavailable_action() -> &'static str {
+        "Artifacts were saved but not activated. The selected attachment cannot be represented by an exact copyable CLI command. Retain the original project, workspace boundary, endpoint and authority-file selection; deliberately run embedding-refresh on that selection and observe its exact ticket before Add. Installation is not semantic availability; completed inference and publication are still required."
     }
     const fn name(&self) -> &'static str {
         match self {
@@ -502,11 +506,13 @@ mod tests {
     fn setup_json_observations_never_claim_activation_or_available() {
         for state in [
             SetupState::ObservedHelper,
-            SetupState::InstalledNotActivated(OwnerContext::new(
+            SetupState::InstalledNotActivated(None),
+            SetupState::InstalledNotActivated(Some(backend_present::ConnectionReplayContext::new(
                 "/original/project".into(),
-                "/original/state".into(),
                 "/original/socket".into(),
-            )),
+                "/original/authority".into(),
+                backend_present::ConnectionReplayWorkspace::Explicit("/original/state".into()),
+            ))),
         ] {
             let output = render(
                 &Options::plain(Format::Json),
@@ -526,9 +532,45 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn installed_setup_without_exact_connection_retains_saved_state_on_every_surface() {
+        for format in [Format::Human, Format::Markdown, Format::Json] {
+            let output = render(
+                &Options::plain(format),
+                SetupState::InstalledNotActivated(None),
+                "retained-recipe",
+            )
+            .expect("saved observation remains renderable");
+            assert!(output.contains("installed-not-activated"));
+            assert!(output.contains("Artifacts were saved but not activated"));
+            assert!(output.contains("cannot be represented by an exact copyable CLI command"));
+            assert!(!output.contains("--workspace"));
+            assert!(!output.contains("--endpoint"));
+            if format == Format::Json {
+                let value: serde_json::Value = serde_json::from_str(&output).expect("JSON");
+                assert_eq!(value["identity"], "retained-recipe");
+                assert!(value.get("activated").is_none());
+                assert!(value.get("available").is_none());
+            }
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn installed_setup_guidance_copies_the_discovered_attachment_without_rebinding_or_activation() {
+        // This positive control must not inherit a legitimate non-renderable
+        // authority override from the caller. Pin it in a child, never globally.
+        if std::env::var_os("NUDOX_TEST_SETUP_REPLAY").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+                .args(["--exact", "embedding_setup::tests::installed_setup_guidance_copies_the_discovered_attachment_without_rebinding_or_activation", "--nocapture"])
+                .env("NUDOX_TEST_SETUP_REPLAY", "1")
+                .env(backend_runtime::AUTHORITY_SECRET_ENV, "/original/authority 'literal")
+                .output().expect("owned read-only scoped guidance control");
+            assert!(output.status.success(), "{output:?}");
+            assert!(output.stderr.is_empty(), "{output:?}");
+            return;
+        }
+
         let workspace = backend_runtime::WorkspacePaths::discover(
             Some("/original/project 'quoted'".into()),
             Some("/original/state with spaces".into()),
@@ -540,7 +582,9 @@ mod tests {
         let command = action.split('`').nth(1).expect("exact copyable command");
         let parsed = std::process::Command::new("/bin/sh")
             .arg("-c")
-            .arg(format!("set -- {command}; printf '%s\\000' \"$@\""))
+            .arg(format!(
+                "nudox() {{ printf '%s\\000' nudox \"$@\"; }}; {command}"
+            ))
             .output()
             .expect("argv only; no nudox execution");
         assert!(parsed.status.success());
@@ -577,7 +621,9 @@ mod tests {
             .expect("exact scoped refresh command");
         let parsed = std::process::Command::new("/bin/sh")
             .arg("-c")
-            .arg(format!("set -- {refresh}; printf '%s\\000' \"$@\""))
+            .arg(format!(
+                "nudox() {{ printf '%s\\000' nudox \"$@\"; }}; {refresh}"
+            ))
             .output()
             .expect("argv only; no nudox or helper execution");
         assert!(parsed.status.success());

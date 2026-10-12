@@ -196,18 +196,8 @@ pub(crate) fn execute_with_recovery(
 }
 
 fn bind_answer_to_workspace(mut answer: Answer, paths: &backend_runtime::WorkspacePaths) -> Answer {
-    if let Answer::Product(view) = &mut answer
-        && let (Some(project), Some(workspace), Some(endpoint)) = (
-            paths.project().to_str(),
-            paths.data().to_str(),
-            paths.endpoint().to_str(),
-        )
-    {
-        view.bind_embedding_refresh_context(&backend_present::OwnerContext::new(
-            project.to_owned(),
-            workspace.to_owned(),
-            endpoint.to_owned(),
-        ));
+    if let Answer::Product(view) = &mut answer {
+        view.bind_embedding_refresh_context(crate::connection_replay::context(paths).as_ref());
     }
     answer
 }

@@ -233,39 +233,15 @@ fn pending_status_retry(
     request: &Request,
     workspace: &backend_runtime::WorkspacePaths,
 ) -> Option<String> {
-    // Do not guess a missing working-directory capture or project a non-UTF-8
-    // operand. The generic original-command retry remains available instead.
-    fn operand(path: &std::path::Path) -> Option<String> {
-        let text = path.to_str()?;
-        (path.is_absolute() && !text.contains('\0')).then(|| text.to_owned())
-    }
     if !matches!(request, Request::Status) {
         return None;
     }
-    let selected = workspace.startup_recovery_selection()?;
-    operand(selected.data)?;
-    let directory = match selected.workspace {
-        backend_runtime::StartupWorkspaceSelection::Explicit(path) => {
-            backend_present::StartupRecoveryWorkspace::Explicit(operand(path)?)
-        }
-        backend_runtime::StartupWorkspaceSelection::Home(anchor) => {
-            backend_present::StartupRecoveryWorkspace::Home(operand(anchor)?)
-        }
-        backend_runtime::StartupWorkspaceSelection::XdgState(anchor) => {
-            backend_present::StartupRecoveryWorkspace::XdgState(operand(anchor)?)
-        }
-        backend_runtime::StartupWorkspaceSelection::XdgData(anchor) => {
-            backend_present::StartupRecoveryWorkspace::XdgData(operand(anchor)?)
-        }
-    };
-    Some(
-        backend_present::StartupRecoveryContext::new(
-            operand(selected.project)?,
-            operand(selected.endpoint)?,
-            operand(selected.authority_secret)?,
-            directory,
-        )
-        .shell(),
+    crate::connection_replay::context(workspace)?.command_shell(
+        &backend_present::ConnectionReplayCommand::new(
+            backend_library::CommandId::Health,
+            false,
+            Vec::new(),
+        ),
     )
 }
 
@@ -891,24 +867,57 @@ mod startup_tests {
         let words: Vec<String> = serde_json::from_str(&encoded).expect("probe arguments");
         let (options, words) = options::split(&words).expect("actual recovery option split");
         let paths = workspace(&options).expect("actual read-only recovery discovery");
-        assert!(matches!(
-            plan(
-                &words,
-                &options,
-                paths.project().to_str().expect("probe project")
-            )
-            .expect("actual read-only recovery command plan")
-            .request,
-            Request::Status
-        ));
-        let selection = paths.startup_recovery_selection().expect("Unix selection");
+        let planned = plan(
+            &words,
+            &options,
+            paths.project().to_str().expect("probe project"),
+        )
+        .expect("actual read-only recovery command plan")
+        .request;
+        let replay_action = std::env::var_os("NUDOX_TEST_REPLAY_ACTION").is_some();
+        if !replay_action {
+            assert!(matches!(planned, Request::Status));
+        }
+        let (id, observation) = match &planned {
+            Request::Status => (
+                backend_library::CommandId::Health,
+                serde_json::json!("status"),
+            ),
+            Request::Index(path) => (
+                backend_library::CommandId::Add,
+                serde_json::json!({ "add": path }),
+            ),
+            Request::Surface(command) => {
+                assert!(matches!(
+                    &**command,
+                    backend_library::SurfaceCommand::EmbeddingRefresh { .. }
+                ));
+                (
+                    backend_library::CommandId::EmbeddingRefresh,
+                    serde_json::to_value(&**command).expect("exact refresh request"),
+                )
+            }
+            _ => panic!("unexpected read-only replay probe action"),
+        };
+        let rendered = if replay_action {
+            crate::connection_replay::context(&paths).and_then(|context| {
+                context.command_shell(&backend_present::ConnectionReplayCommand::new(
+                    id,
+                    options.passive(),
+                    words[1..].to_vec(),
+                ))
+            })
+        } else {
+            pending_status_retry(&Request::Status, &paths)
+        };
+        let selection = paths.connection_replay_selection().expect("Unix selection");
         let (boundary, anchor) = match selection.workspace {
-            backend_runtime::StartupWorkspaceSelection::Explicit(_) => ("explicit", None),
-            backend_runtime::StartupWorkspaceSelection::Home(anchor) => ("home", Some(anchor)),
-            backend_runtime::StartupWorkspaceSelection::XdgState(anchor) => {
+            backend_runtime::ConnectionWorkspaceSelection::Explicit(_) => ("explicit", None),
+            backend_runtime::ConnectionWorkspaceSelection::Home(anchor) => ("home", Some(anchor)),
+            backend_runtime::ConnectionWorkspaceSelection::XdgState(anchor) => {
                 ("xdg-state", Some(anchor))
             }
-            backend_runtime::StartupWorkspaceSelection::XdgData(anchor) => {
+            backend_runtime::ConnectionWorkspaceSelection::XdgData(anchor) => {
                 ("xdg-data", Some(anchor))
             }
         };
@@ -919,7 +928,9 @@ mod startup_tests {
             "authority": paths.authority_secret().to_str(),
             "boundary": boundary,
             "anchor": anchor.and_then(std::path::Path::to_str),
-            "retry": pending_status_retry(&Request::Status, &paths),
+            "retry": rendered,
+            "planned": observation,
+            "passive": options.passive(),
         });
         println!("\nRECOVERY_SELECTION={value}");
     }
@@ -970,10 +981,13 @@ mod startup_tests {
             .expect("env boundary");
         assert_eq!(values.len(), split + 6);
         let mut replay = Command::new(executable);
-        replay.args(["--exact", PROBE, "--nocapture"]).env(
-            "NUDOX_TEST_RECOVERY_ARGV",
-            serde_json::to_string(&values[..split]).expect("actual parsed argv"),
-        );
+        replay
+            .args(["--exact", PROBE, "--nocapture"])
+            .env("NUDOX_TEST_REPLAY_ACTION", "1")
+            .env(
+                "NUDOX_TEST_RECOVERY_ARGV",
+                serde_json::to_string(&values[..split]).expect("actual parsed argv"),
+            );
         for (name, value) in [
             "HOME",
             "XDG_STATE_HOME",
@@ -1015,61 +1029,97 @@ mod startup_tests {
         let origins = ["explicit", "environment", "home", "xdg-state", "xdg-data"];
         for origin in origins {
             for custom_authority in [false, true] {
-                let mut argv = vec![
-                    "--project".to_owned(),
-                    project.to_str().expect("project").to_owned(),
-                    "--endpoint".to_owned(),
-                    endpoint.to_str().expect("endpoint").to_owned(),
-                ];
-                if origin == "explicit" {
-                    argv.extend([
-                        "--workspace".to_owned(),
-                        state.to_str().expect("state").to_owned(),
-                    ]);
+                for action in ["health", "status", "observe", "start", "add"] {
+                    let mut argv = vec![
+                        "--project".to_owned(),
+                        project.to_str().expect("project").to_owned(),
+                        "--endpoint".to_owned(),
+                        endpoint.to_str().expect("endpoint").to_owned(),
+                    ];
+                    if origin == "explicit" {
+                        argv.extend([
+                            "--workspace".to_owned(),
+                            state.to_str().expect("state").to_owned(),
+                        ]);
+                    }
+                    let ticket = backend_library::EmbeddingRefreshTicket {
+                        sequence: std::num::NonZeroU64::new(1).expect("sequence"),
+                        owner_epoch: 19,
+                        owner_fence: [0x51; 32],
+                        configuration: [0x73; 32],
+                    };
+                    match action {
+                        "health" | "status" => argv.push(action.to_owned()),
+                        "observe" => {
+                            argv.extend([
+                                "--passive".to_owned(),
+                                "embedding-refresh".to_owned(),
+                                serde_json::to_string(
+                                    &backend_library::EmbeddingRefreshAction::Observe { ticket },
+                                )
+                                .expect("exact Observe"),
+                            ]);
+                        }
+                        "start" => argv.extend([
+                            "embedding-refresh".to_owned(),
+                            serde_json::to_string(
+                                &backend_library::EmbeddingRefreshAction::Start {
+                                    configuration: ticket.configuration,
+                                    timeout_seconds: 30,
+                                },
+                            )
+                            .expect("exact Start"),
+                        ]),
+                        "add" => argv.extend([
+                            "add".to_owned(),
+                            project.to_str().expect("project").to_owned(),
+                        ]),
+                        _ => unreachable!(),
+                    }
+                    let mut original = Command::new(&executable);
+                    original
+                        .args(["--exact", PROBE, "--nocapture"])
+                        .env(
+                            "NUDOX_TEST_RECOVERY_ARGV",
+                            serde_json::to_string(&argv).expect("original argv"),
+                        )
+                        .env("NUDOX_TEST_REPLAY_ACTION", "1")
+                        .env("HOME", &home)
+                        .env_remove("XDG_STATE_HOME")
+                        .env_remove("XDG_DATA_HOME")
+                        .env_remove(backend_runtime::DATA_ENV)
+                        .env_remove(backend_runtime::AUTHORITY_SECRET_ENV);
+                    match origin {
+                        "environment" => {
+                            original.env(backend_runtime::DATA_ENV, &state);
+                        }
+                        "xdg-state" => {
+                            original.env("XDG_STATE_HOME", &xdg);
+                        }
+                        "xdg-data" => {
+                            original.env("XDG_DATA_HOME", &xdg);
+                        }
+                        _ => {}
+                    }
+                    if custom_authority {
+                        original.env(backend_runtime::AUTHORITY_SECRET_ENV, &authority);
+                    }
+                    let before = recovery_observation(&mut original);
+                    assert_eq!(
+                        before["boundary"],
+                        if origin == "environment" {
+                            "explicit"
+                        } else {
+                            origin
+                        }
+                    );
+                    let shell = before["retry"].as_str().expect("complete captured retry");
+                    assert_eq!(
+                        before,
+                        replay_startup_selection(&executable, shell),
+                        "{origin}/{custom_authority}/{action}"
+                    );
                 }
-                argv.push("status".to_owned());
-                let mut original = Command::new(&executable);
-                original
-                    .args(["--exact", PROBE, "--nocapture"])
-                    .env(
-                        "NUDOX_TEST_RECOVERY_ARGV",
-                        serde_json::to_string(&argv).expect("original argv"),
-                    )
-                    .env("HOME", &home)
-                    .env_remove("XDG_STATE_HOME")
-                    .env_remove("XDG_DATA_HOME")
-                    .env_remove(backend_runtime::DATA_ENV)
-                    .env_remove(backend_runtime::AUTHORITY_SECRET_ENV);
-                match origin {
-                    "environment" => {
-                        original.env(backend_runtime::DATA_ENV, &state);
-                    }
-                    "xdg-state" => {
-                        original.env("XDG_STATE_HOME", &xdg);
-                    }
-                    "xdg-data" => {
-                        original.env("XDG_DATA_HOME", &xdg);
-                    }
-                    _ => {}
-                }
-                if custom_authority {
-                    original.env(backend_runtime::AUTHORITY_SECRET_ENV, &authority);
-                }
-                let before = recovery_observation(&mut original);
-                assert_eq!(
-                    before["boundary"],
-                    if origin == "environment" {
-                        "explicit"
-                    } else {
-                        origin
-                    }
-                );
-                let shell = before["retry"].as_str().expect("complete captured retry");
-                assert_eq!(
-                    before,
-                    replay_startup_selection(&executable, shell),
-                    "{origin}/{custom_authority}"
-                );
             }
         }
         assert!(
@@ -1137,6 +1187,68 @@ mod startup_tests {
             assert!(
                 value["retry"].is_null(),
                 "no lossy or CWD-guessed default anchor"
+            );
+        }
+    }
+
+    #[test]
+    fn refresh_and_add_replay_suppress_incomplete_authority_without_guessing() {
+        use std::process::Command;
+        let executable = std::env::current_exe().expect("test executable");
+        let ticket = backend_library::EmbeddingRefreshTicket {
+            sequence: std::num::NonZeroU64::new(1).expect("sequence"),
+            owner_epoch: 7,
+            owner_fence: [0x51; 32],
+            configuration: [0x73; 32],
+        };
+        for action in [
+            vec![
+                "--passive".to_owned(),
+                "embedding-refresh".to_owned(),
+                serde_json::to_string(&backend_library::EmbeddingRefreshAction::Observe {
+                    ticket: ticket.clone(),
+                })
+                .expect("Observe"),
+            ],
+            vec![
+                "embedding-refresh".to_owned(),
+                serde_json::to_string(&backend_library::EmbeddingRefreshAction::Start {
+                    configuration: ticket.configuration,
+                    timeout_seconds: 30,
+                })
+                .expect("Start"),
+            ],
+            vec!["add".to_owned(), "/tmp/nrri-incomplete-project".to_owned()],
+        ] {
+            let mut argv = vec![
+                "--project".to_owned(),
+                "/tmp/nrri-incomplete-project".to_owned(),
+                "--workspace".to_owned(),
+                "/tmp/nrri-incomplete-state".to_owned(),
+                "--endpoint".to_owned(),
+                "/tmp/nrri-incomplete.sock".to_owned(),
+            ];
+            argv.extend(action);
+            let mut command = Command::new(&executable);
+            command
+                .args([
+                    "--exact",
+                    "process::startup_tests::startup_recovery_discovery_probe",
+                    "--nocapture",
+                ])
+                .env(
+                    "NUDOX_TEST_RECOVERY_ARGV",
+                    serde_json::to_string(&argv).expect("argv"),
+                )
+                .env("NUDOX_TEST_REPLAY_ACTION", "1")
+                .env(backend_runtime::AUTHORITY_SECRET_ENV, "relative authority");
+            let value = recovery_observation(&mut command);
+            assert_eq!(value["authority"], "relative authority");
+            assert_eq!(value["boundary"], "explicit");
+            assert!(value["retry"].is_null());
+            assert!(
+                !value["planned"].is_null(),
+                "typed caller action is retained without a fabricated connection command"
             );
         }
     }

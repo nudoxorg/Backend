@@ -136,16 +136,25 @@ fn refresh_cli_mcp_actions_and_all_projections_keep_exact_outcome_without_corpus
             )
         );
         let mut cli_view = view.clone();
-        cli_view.bind_embedding_refresh_context(&OwnerContext::new(
+        cli_view.bind_embedding_refresh_context(Some(&ConnectionReplayContext::new(
             "/caller/project with 'quote".to_owned(),
-            "/caller/workspace; literal".to_owned(),
             "/caller/socket $literal".to_owned(),
-        ));
+            "/caller/authority $literal".to_owned(),
+            ConnectionReplayWorkspace::Explicit("/caller/workspace; literal".to_owned()),
+        )));
         let cli_text = text::product(&cli_view, Theme::plain());
         assert!(cli_text.contains("--passive embedding-refresh"));
         assert!(cli_text.contains("/caller/workspace; literal"));
         assert!(cli_text.contains("/caller/socket $literal"));
         assert_eq!(cli_view.embedding_refresh(), view.embedding_refresh());
+        assert!(cli_text.contains("BACKEND_LOCALD_AUTHORITY_SECRET_FILE="));
+        let mut no_action = view.clone();
+        no_action.bind_embedding_refresh_context(None);
+        assert_eq!(no_action.embedding_refresh(), view.embedding_refresh());
+        let no_action_text = text::product(&no_action, Theme::plain());
+        assert!(no_action_text.contains("No exact copyable CLI observation command"));
+        assert!(!no_action_text.contains("--passive embedding-refresh"));
+        assert!(no_action_text.contains("backend.embedding_refresh"));
         let answer = Answer::Product(Box::new(view));
         for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
             let encoded = encode_answer(&answer, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES)

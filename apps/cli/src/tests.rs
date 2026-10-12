@@ -1850,3 +1850,57 @@ fn cli_semantic_history_follows_exact_returned_continuations_without_losing_proo
         "advertised hard bound is enforced"
     );
 }
+
+#[test]
+fn passive_refresh_accepts_only_exact_observe_without_capture_or_mutation() {
+    use backend_library::{EmbeddingRefreshAction as A, EmbeddingRefreshTicket};
+    let ticket = EmbeddingRefreshTicket {
+        sequence: std::num::NonZeroU64::new(1).expect("sequence"),
+        owner_epoch: 9,
+        owner_fence: [0x61; 32],
+        configuration: [0x73; 32],
+    };
+    let observe = A::Observe {
+        ticket: ticket.clone(),
+    };
+    let json = serde_json::to_string(&observe).expect("exact ticket");
+    let (options, argv) =
+        options::split(&["--passive".into(), "embedding-refresh".into(), json.clone()])
+            .expect("passive exact Observe");
+    assert!(options.passive());
+    let invocation = crate::invoke::parse(&argv, None).expect("registered Observe grammar");
+    assert!(
+        matches!(crate::lower(&invocation, "/unchanged/project").expect("actual typed lowering"),
+        backend_present::Request::Surface(command) if *command == backend_library::SurfaceCommand::EmbeddingRefresh { request: observe })
+    );
+    let mut extra = serde_json::to_value(&A::Observe {
+        ticket: ticket.clone(),
+    })
+    .expect("JSON");
+    extra["unexpected"] = serde_json::json!(true);
+    for argv in [
+        vec!["embedding-refresh".into()],
+        vec![
+            "embedding-refresh".into(),
+            serde_json::to_string(&A::Start {
+                configuration: ticket.configuration,
+                timeout_seconds: 30,
+            })
+            .expect("Start"),
+        ],
+        vec![
+            "embedding-refresh".into(),
+            serde_json::to_string(&A::Cancel { ticket }).expect("Cancel"),
+        ],
+        vec!["embedding-refresh".into(), "{malformed".into()],
+        vec!["embedding-refresh".into(), extra.to_string()],
+        vec!["embedding-refresh".into(), json, "extra".into()],
+        vec!["add".into(), "/unchanged/project".into()],
+    ] {
+        let mut input = vec!["--passive".to_owned()];
+        input.extend(argv);
+        let error = options::split(&input).expect_err("passive never captures or mutates");
+        assert_eq!(error.slug(), FaultSlug::Usage);
+        assert_eq!(error.operand().render(), "--passive");
+    }
+}
