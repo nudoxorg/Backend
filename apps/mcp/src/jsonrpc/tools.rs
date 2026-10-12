@@ -602,6 +602,7 @@ fn ticket_schema() -> Value {
 /// Returns the canonical `tools/list` projection for the offline budget
 /// fixture generator. This is kept at the protocol edge so the generator
 /// cannot accidentally grow a second hand-written tool schema.
+#[cfg(feature = "token-budget")]
 pub(crate) fn token_budget_tools() -> Value {
     tools_value()
 }

@@ -83,6 +83,7 @@ pub(crate) struct Reconnecting<E: Endpoint> {
 impl<E: Endpoint> Reconnecting<E> {
     /// Wraps an already-connected product together with the endpoint that
     /// produced it.
+    #[cfg(test)]
     pub(crate) const fn new(endpoint: E, product: E::Product) -> Self {
         Self {
             endpoint,
