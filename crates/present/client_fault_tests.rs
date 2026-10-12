@@ -8,6 +8,8 @@ use std::io::ErrorKind;
 fn every_client_error_has_an_explicit_truthful_fault_class() {
     let root = backend_library::view_state_root(&[]);
     let basis = backend_library::ViewRevision::from(root);
+    let operation_key =
+        backend_library::IndexOperationKey::from_bytes([18; 32]).expect("operation key");
     let cases = [
         (
             ClientError::Io("fixture endpoint".into()),
@@ -44,6 +46,17 @@ fn every_client_error_has_an_explicit_truthful_fault_class() {
             FaultSlug::Endpoint,
             CauseSlug::Unreachable,
             Affordance::None,
+        ),
+        (
+            ClientError::IndexOperationDeliveryUnknown {
+                operation_key,
+                cause: Box::new(ClientError::Protocol(
+                    "replacement receipt did not prove this saved request".to_owned(),
+                )),
+            },
+            FaultSlug::Protocol,
+            CauseSlug::Unproven,
+            Affordance::PollIndexOperation { operation_key },
         ),
         (
             ClientError::RemoteDeadlineExceeded,
@@ -145,7 +158,7 @@ fn every_client_error_has_an_explicit_truthful_fault_class() {
             Affordance::None,
         ),
     ];
-    assert_eq!(cases.len(), 20);
+    assert_eq!(cases.len(), 21);
     for (error, slug, cause, affordance) in cases {
         let fault = Fault::from_client_error(&error, Operand::Text("original operand".into()));
         assert_eq!(fault.slug(), slug, "{error:?}");
@@ -224,6 +237,36 @@ fn cancellation_unknown_mutation_and_startup_repair_never_suggest_blind_retry() 
     );
     assert_eq!(unknown.affordance(), &Affordance::None);
     assert!(unknown.cause().sentence().contains("outcome is unknown"));
+    let operation_key =
+        backend_library::IndexOperationKey::from_bytes([19; 32]).expect("saved key");
+    let delivery = Fault::from_client_error(
+        &ClientError::IndexOperationDeliveryUnknown {
+            operation_key,
+            cause: Box::new(ClientError::Startup(
+                backend_runtime::RuntimeError::EndpointUnavailable {
+                    endpoint: "/fixture/replacement.sock".into(),
+                    source: std::io::Error::from(ErrorKind::ConnectionRefused),
+                }
+                .into(),
+            )),
+        },
+        Operand::Whole,
+    );
+    assert_eq!(
+        delivery.startup_recovery(),
+        None,
+        "replacement startup cannot authorize replaying the already-sent Add"
+    );
+    assert_eq!(
+        delivery.affordance(),
+        &Affordance::PollIndexOperation { operation_key }
+    );
+    assert!(
+        delivery
+            .cause()
+            .sentence()
+            .contains("/fixture/replacement.sock")
+    );
     for error in [
         backend_runtime::RuntimeError::MissingExecutable("/fixture/backend-locald".into()),
         backend_runtime::RuntimeError::InvalidPath("fixture deterministic configuration refusal"),

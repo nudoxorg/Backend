@@ -75,7 +75,10 @@ use backend_replication::{
     LocalControlError, LocalControlLimits, ReplicationError, read_frame, write_frame,
 };
 pub use backend_runtime::{StartupFailure, StartupFailureCause, StartupRecovery};
-pub use index_operation::{index_with_journal, surface_with_index_journal};
+pub use index_operation::{
+    IndexJournalDispatch, JournaledIndexStart, index_with_journal, index_with_journal_recovery,
+    surface_with_index_journal,
+};
 pub use index_progress::{
     IndexObservationFingerprint, IndexOperationWaitResult, IndexOperationWaitStop,
     IndexProgressRead, IndexProgressReference, IndexProgressUpdate, MAX_INDEX_OPERATION_WAIT,
@@ -225,6 +228,14 @@ pub enum ClientError {
     /// the owner may or may not have admitted it. A replacement connection
     /// does not resolve that ambiguity.
     MutationOutcomeUnknown(std::io::ErrorKind),
+    /// A caller-journaled index start has no admitted outcome. Its original
+    /// identity and the actual delivery/replacement failure remain resumable.
+    IndexOperationDeliveryUnknown {
+        /// Key durably saved before the original start was sent.
+        operation_key: IndexOperationKey,
+        /// Original transport, replacement startup, or receipt admission cause.
+        cause: Box<ClientError>,
+    },
     /// A remote-index connect or read-only request exceeded its bounded client lease.
     RemoteDeadlineExceeded,
     /// Caller cancellation, never a reconnectable endpoint failure.
@@ -295,6 +306,13 @@ impl fmt::Display for ClientError {
                     "mutation outcome is unknown after endpoint disconnect: {kind}"
                 )
             }
+            Self::IndexOperationDeliveryUnknown {
+                operation_key,
+                cause,
+            } => write!(
+                formatter,
+                "saved index operation {operation_key} has no admitted outcome; delivery/replacement observation: {cause}"
+            ),
             Self::RemoteDeadlineExceeded => {
                 formatter.write_str("remote index exceeded the bounded client request deadline")
             }

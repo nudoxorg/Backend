@@ -192,18 +192,114 @@ fn verify_attachment(
     Ok(())
 }
 
+/// A journal command dispatched while its exact request lock is held.
+/// Observation does not authorize a mutation. Start carries a borrowed,
+/// unforgeable capability for the already-saved request.
+pub enum IndexJournalDispatch<'held> {
+    /// Read the existing exact key without a start capability.
+    Observe(IndexOperationKey),
+    /// Send or reconcile the internally admitted, saved start.
+    Start(JournaledIndexStart<'held>),
+}
+
+impl IndexJournalDispatch<'_> {
+    /// Existing typed owner command; the simple transport adapter uses this.
+    #[must_use]
+    pub fn command(&self) -> SurfaceCommand {
+        match self {
+            Self::Observe(operation_key) => SurfaceCommand::IndexOperationStatus {
+                operation_key: *operation_key,
+            },
+            Self::Start(start) => start.command(),
+        }
+    }
+}
+
+/// One exact saved start borrowed from the live caller journal lock scope.
+/// It has no public constructor or cloning API. Reconciliation derives the
+/// original command from its private claim rather than accepting a new payload.
+///
+/// Reconciliation is available only inside the admitted callback:
+/// ```no_run
+/// use backend_client::{index_with_journal_recovery, ClientError, IndexJournalDispatch};
+/// use backend_library::{CompileExecutionIntent, PackageReference, SurfaceCommand, SurfaceReply};
+/// use backend_runtime::WorkspacePaths;
+/// fn scoped(paths: &WorkspacePaths, package: PackageReference,
+///     mut transport: impl FnMut(SurfaceCommand) -> Result<SurfaceReply, ClientError>)
+///     -> Result<SurfaceReply, ClientError> {
+///     index_with_journal_recovery(paths, package, CompileExecutionIntent::Interactive, |dispatch| {
+///         match dispatch {
+///             IndexJournalDispatch::Observe(operation_key) => transport(SurfaceCommand::IndexOperationStatus { operation_key }),
+///             IndexJournalDispatch::Start(start) => start.reconcile_after_reconnect(&mut transport),
+///         }
+///     })
+/// }
+/// ```
+/// A capability cannot escape the higher-ranked journal callback:
+/// ```compile_fail
+/// use backend_client::{index_with_journal_recovery, ClientError, IndexJournalDispatch};
+/// use backend_library::{CompileExecutionIntent, PackageReference};
+/// use backend_runtime::WorkspacePaths;
+/// fn escape(paths: &WorkspacePaths, package: PackageReference) {
+///     let mut escaped = None;
+///     let _ = index_with_journal_recovery(paths, package, CompileExecutionIntent::Interactive, |dispatch| {
+///         if let IndexJournalDispatch::Start(start) = dispatch {
+///             escaped = Some(start);
+///         }
+///         Err(ClientError::Protocol("no transport".to_owned()))
+///     });
+///     drop(escaped);
+/// }
+/// ```
+/// Supplying a command cannot manufacture the held capability:
+/// ```compile_fail
+/// use backend_client::JournaledIndexStart;
+/// use backend_library::SurfaceCommand;
+/// use backend_runtime::WorkspacePaths;
+/// fn forge(paths: &WorkspacePaths, original: SurfaceCommand) {
+///     let _ = JournaledIndexStart::new(paths, original);
+/// }
+/// ```
+pub struct JournaledIndexStart<'held> {
+    paths: &'held WorkspacePaths,
+    root: &'held DirectoryCapability,
+    directory: &'held DirectoryCapability,
+    name: &'held str,
+    claim: &'held Claim,
+    // This borrow keeps the actual successfully locked File alive. No lock is
+    // reacquired during nested recovery, and callers cannot supply this field.
+    _lock: &'held File,
+}
+
+struct HeldIndexRequest<'held> {
+    paths: &'held WorkspacePaths,
+    root: &'held DirectoryCapability,
+    directory: &'held DirectoryCapability,
+    name: &'held str,
+    lock: &'held File,
+}
+
 fn start_claim(
-    transport: &mut impl FnMut(SurfaceCommand) -> Result<SurfaceReply, ClientError>,
+    transport: &mut impl for<'held> FnMut(
+        IndexJournalDispatch<'held>,
+    ) -> Result<SurfaceReply, ClientError>,
+    held: &HeldIndexRequest<'_>,
     claim: &Claim,
 ) -> Result<SurfaceReply, ClientError> {
-    exchange(
-        transport,
-        SurfaceCommand::IndexOperationStart {
-            operation_key: claim.operation_key,
-            package: claim.package.clone(),
-            execution_intent: claim.execution_intent,
-        },
-    )
+    let start = JournaledIndexStart {
+        paths: held.paths,
+        root: held.root,
+        directory: held.directory,
+        name: held.name,
+        claim,
+        _lock: held.lock,
+    };
+    start.verify()?;
+    let command = start.command();
+    let reply = transport(IndexJournalDispatch::Start(start))?;
+    backend_library::admit_surface_reply(&command, &reply)
+        .map_err(|error| ClientError::Protocol(error.to_string()))?;
+    Ok(reply)
 }
 
 fn reply_observation(reply: &SurfaceReply) -> Result<&IndexOperationObservation, ClientError> {
@@ -220,29 +316,38 @@ fn admit_observation(
     claim: &Claim,
     observation: &IndexOperationObservation,
 ) -> Result<(), ClientError> {
+    admit_request_observation(
+        claim.operation_key,
+        &claim.package,
+        claim.execution_intent,
+        observation,
+    )
+}
+
+fn admit_request_observation(
+    operation_key: IndexOperationKey,
+    package: &PackageReference,
+    execution_intent: CompileExecutionIntent,
+    observation: &IndexOperationObservation,
+) -> Result<(), ClientError> {
     SurfaceReply::IndexOperationStatus(observation.clone())
-        .admit(
-            SurfaceCommand::IndexOperationStatus {
-                operation_key: claim.operation_key,
-            }
-            .id(),
-        )
+        .admit(SurfaceCommand::IndexOperationStatus { operation_key }.id())
         .map_err(|error| ClientError::Protocol(error.to_string()))?;
-    let digest = index_operation_request_digest(&claim.package, claim.execution_intent);
+    let digest = index_operation_request_digest(package, execution_intent);
     let matches = match observation {
         IndexOperationObservation::Known(status) => {
-            status.operation_key == claim.operation_key
-                && status.package == claim.package
-                && status.execution_intent == claim.execution_intent
+            status.operation_key == operation_key
+                && &status.package == package
+                && status.execution_intent == execution_intent
                 && status.request_digest == digest
         }
         IndexOperationObservation::OutsideReceiptWindow {
-            operation_key,
+            operation_key: observed,
             request_digest,
-        } => *operation_key == claim.operation_key && *request_digest == digest,
-        IndexOperationObservation::Unknown { operation_key } => {
-            *operation_key == claim.operation_key
-        }
+        } => *observed == operation_key && *request_digest == digest,
+        IndexOperationObservation::Unknown {
+            operation_key: observed,
+        } => *observed == operation_key,
     };
     if matches {
         Ok(())
@@ -250,6 +355,76 @@ fn admit_observation(
         Err(ClientError::Protocol(
             "index operation evidence does not match the saved request".to_owned(),
         ))
+    }
+}
+
+impl JournaledIndexStart<'_> {
+    /// The exact typed payload saved before this lock-scoped send.
+    #[must_use]
+    pub fn command(&self) -> SurfaceCommand {
+        SurfaceCommand::IndexOperationStart {
+            operation_key: self.claim.operation_key,
+            package: self.claim.package.clone(),
+            execution_intent: self.claim.execution_intent,
+        }
+    }
+
+    fn verify(&self) -> Result<(), ClientError> {
+        if read_claim(self.directory, self.name)?.as_ref() != Some(self.claim) {
+            return Err(io_error(
+                "saved caller claim changed during held reconciliation",
+            ));
+        }
+        verify_attachment(self.paths, self.root, self.directory, self.claim)
+    }
+
+    /// Admits the caller's frozen connection attachment against this saved
+    /// request before sending through that caller's authenticated Session.
+    /// # Errors
+    /// Refuses a different project, state, endpoint or private owner authority.
+    pub fn admit_workspace(&self, paths: &WorkspacePaths) -> Result<(), ClientError> {
+        self.verify()?;
+        if attachment(paths)? != self.claim.attachment {
+            return Err(io_error(
+                "held start does not match the replacement connection attachment",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Reconciles only this original start after the caller has authenticated
+    /// its replacement. The capability borrows the still-held request lock,
+    /// private claim, directory and root; no caller can acquire it independently.
+    /// Known/uncertain evidence is returned unchanged. Only the existing
+    /// unknown/interrupted-capture policy repeats the identical saved payload.
+    /// # Errors
+    /// Returns transport, attachment, saved-claim or exact-evidence failures.
+    pub fn reconcile_after_reconnect(
+        &self,
+        mut transport: impl FnMut(SurfaceCommand) -> Result<SurfaceReply, ClientError>,
+    ) -> Result<SurfaceReply, ClientError> {
+        self.verify()?;
+        let reply = exchange(
+            &mut transport,
+            SurfaceCommand::IndexOperationStatus {
+                operation_key: self.claim.operation_key,
+            },
+        )?;
+        self.verify()?;
+        let observation = reply_observation(&reply)?;
+        admit_observation(self.claim, observation)?;
+        match saved_operation_action(observation) {
+            SavedOperationAction::Observe => {
+                Ok(SurfaceReply::IndexOperationStarted(observation.clone()))
+            }
+            SavedOperationAction::ReplaySameKey => {
+                self.verify()?;
+                let reply = exchange(&mut transport, self.command())?;
+                self.verify()?;
+                admit_observation(self.claim, reply_observation(&reply)?)?;
+                Ok(reply)
+            }
+        }
     }
 }
 
@@ -365,6 +540,24 @@ pub fn index_with_journal(
     execution_intent: CompileExecutionIntent,
     mut transport: impl FnMut(SurfaceCommand) -> Result<SurfaceReply, ClientError>,
 ) -> Result<SurfaceReply, ClientError> {
+    index_with_journal_recovery(paths, package, execution_intent, |dispatch| {
+        transport(dispatch.command())
+    })
+}
+
+/// Executes the same caller journal with a borrowed capability on every start.
+/// The higher-ranked transport cannot retain a capability beyond its held lock
+/// scope. Existing transports can use `index_with_journal` unchanged.
+/// # Errors
+/// Returns the same journal, attachment and exact-receipt failures as the simple API.
+pub fn index_with_journal_recovery(
+    paths: &WorkspacePaths,
+    package: PackageReference,
+    execution_intent: CompileExecutionIntent,
+    mut transport: impl for<'held> FnMut(
+        IndexJournalDispatch<'held>,
+    ) -> Result<SurfaceReply, ClientError>,
+) -> Result<SurfaceReply, ClientError> {
     let package = match package {
         PackageReference::Local(path) => {
             let canonical = backend_runtime::normalize_surface_path(Path::new(path.as_str()));
@@ -428,14 +621,21 @@ pub fn index_with_journal(
             claim
         }
     };
+    let held = HeldIndexRequest {
+        paths,
+        root: &root,
+        directory: &directory,
+        name: &name,
+        lock: &lock,
+    };
     verify_attachment(paths, &root, &directory, &claim)?;
     let observation = if saved.is_some() {
-        let reply = exchange(
-            &mut transport,
-            SurfaceCommand::IndexOperationStatus {
-                operation_key: claim.operation_key,
-            },
-        )?;
+        let command = SurfaceCommand::IndexOperationStatus {
+            operation_key: claim.operation_key,
+        };
+        let reply = transport(IndexJournalDispatch::Observe(claim.operation_key))?;
+        backend_library::admit_surface_reply(&command, &reply)
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
         let SurfaceReply::IndexOperationStatus(observation) = reply else {
             return Err(ClientError::Protocol(
                 "durable index status reply changed shape".to_owned(),
@@ -451,10 +651,10 @@ pub fn index_with_journal(
             SavedOperationAction::Observe => SurfaceReply::IndexOperationStatus(observation),
             SavedOperationAction::ReplaySameKey => {
                 verify_attachment(paths, &root, &directory, &claim)?;
-                start_claim(&mut transport, &claim)?
+                start_claim(&mut transport, &held, &claim)?
             }
         },
-        None => start_claim(&mut transport, &claim)?,
+        None => start_claim(&mut transport, &held, &claim)?,
     };
     let observation = reply_observation(&reply)?;
     admit_observation(&claim, observation)?;
@@ -474,7 +674,7 @@ pub fn index_with_journal(
             )?;
             claim = next;
             verify_attachment(paths, &root, &directory, &claim)?;
-            reply = start_claim(&mut transport, &claim)?;
+            reply = start_claim(&mut transport, &held, &claim)?;
         }
     }
     let observation = reply_observation(&reply)?;
@@ -573,6 +773,265 @@ mod tests {
             claim.execution_intent,
             state,
         ))
+    }
+
+    #[test]
+    fn reconnect_reconciliation_uses_shared_saved_key_policy_without_replacement_authority() {
+        for (state, replay) in [
+            (Some(IndexOperationState::Accepted), false),
+            (Some(IndexOperationState::Failed { reason: IndexOperationFailureReason::Refused,
+                detail: ProductText::from_static("original terminal failure"), compiler_failure: None }), false),
+            (Some(IndexOperationState::Unresolved { reason: backend_library::IndexOperationUnresolvedReason::RestartedDuringPublication,
+                detail: ProductText::from_static("publication evidence remains unresolved") }), false),
+            (Some(IndexOperationState::Unresolved { reason: backend_library::IndexOperationUnresolvedReason::SemanticWorkInterruptedAfterCapture,
+                detail: ProductText::from_static("same-key interrupted capture recovery") }), true),
+            (None, true),
+        ] {
+            for outside in [false, true].into_iter().filter(|outside| !outside || state.is_none()) {
+                let fixture = Fixture::new();
+                let replay = replay && !outside;
+                let mut observed_claim = None;
+                let mut commands = Vec::new();
+                let reply = index_with_journal_recovery(&fixture.paths, fixture.package.clone(), CompileExecutionIntent::Interactive, |dispatch| {
+                    let IndexJournalDispatch::Start(start) = dispatch else { panic!("fresh claim sends original start"); };
+                    let claim = fixture.claims().pop().expect("saved before capability dispatch");
+                    observed_claim = Some(claim.clone());
+                    let original = start.command();
+                    commands.push(original.clone()); // Scripted original send loses its reply.
+                    assert_eq!(original, SurfaceCommand::IndexOperationStart { operation_key: claim.operation_key,
+                        package: claim.package.clone(), execution_intent: claim.execution_intent });
+                    let observation = if outside { IndexOperationObservation::OutsideReceiptWindow {
+                        operation_key: claim.operation_key, request_digest: index_operation_request_digest(&claim.package, claim.execution_intent)
+                    }} else { state.clone().map_or(IndexOperationObservation::Unknown { operation_key: claim.operation_key }, |state| known(&claim, state)) };
+                    let expected = if replay { known(&claim, IndexOperationState::Accepted) } else { observation.clone() };
+                    let reply = start.reconcile_after_reconnect(|command| {
+                        commands.push(command.clone());
+                        match command {
+                            SurfaceCommand::IndexOperationStatus { operation_key } => {
+                                assert_eq!(operation_key, claim.operation_key);
+                                Ok(SurfaceReply::IndexOperationStatus(observation.clone()))
+                            }
+                            SurfaceCommand::IndexOperationStart { .. } => {
+                                assert!(replay);
+                                assert_eq!(command, original);
+                                Ok(SurfaceReply::IndexOperationStarted(expected.clone()))
+                            }
+                            _ => panic!("only original request reconciliation"),
+                        }
+                    }).expect("exact original evidence");
+                    assert_eq!(reply, SurfaceReply::IndexOperationStarted(expected));
+                    assert_eq!(commands.len(), if replay { 3 } else { 2 });
+                    assert_eq!(fixture.claims(), [claim], "capability never replaces or acknowledges the held claim");
+                    Ok(reply)
+                }).expect("original journal admits reconciliation");
+                let claim = observed_claim.expect("original claim");
+                assert!(matches!(reply, SurfaceReply::IndexOperationStarted(_)));
+                if matches!(state, Some(IndexOperationState::Failed { .. })) {
+                    assert!(fixture.claims().is_empty(), "only outer journal acknowledges original terminal");
+                } else {
+                    assert_eq!(fixture.claims(), [claim], "nonterminal keeps original identity");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reconnect_reconciliation_rejects_foreign_status_and_replayed_start_receipts() {
+        for late in [false, true] {
+            let fixture = Fixture::new();
+            let mut observed_claim = None;
+            let mut calls = 0;
+            let error = index_with_journal_recovery(
+                &fixture.paths,
+                fixture.package.clone(),
+                CompileExecutionIntent::Interactive,
+                |dispatch| {
+                    let IndexJournalDispatch::Start(start) = dispatch else {
+                        panic!("original start");
+                    };
+                    let claim = fixture.claims().pop().expect("held saved claim");
+                    observed_claim = Some(claim.clone());
+                    let original = start.command();
+                    let foreign = IndexOperationObservation::Known(IndexOperationStatus::new(
+                        claim.operation_key,
+                        PackageReference::parse("/another/project").expect("distinct request"),
+                        claim.execution_intent,
+                        IndexOperationState::Accepted,
+                    ));
+                    start.reconcile_after_reconnect(|command| {
+                        calls += 1;
+                        match command {
+                            SurfaceCommand::IndexOperationStatus { operation_key } => {
+                                Ok(SurfaceReply::IndexOperationStatus(if late {
+                                    IndexOperationObservation::Unknown { operation_key }
+                                } else {
+                                    foreign.clone()
+                                }))
+                            }
+                            SurfaceCommand::IndexOperationStart { .. } => {
+                                assert!(late);
+                                assert_eq!(command, original);
+                                Ok(SurfaceReply::IndexOperationStarted(foreign.clone()))
+                            }
+                            _ => panic!("no unrelated command"),
+                        }
+                    })
+                },
+            )
+            .expect_err("same key cannot authenticate a different request");
+            assert!(matches!(error, ClientError::Protocol(_)));
+            assert_eq!(calls, if late { 2 } else { 1 });
+            assert_eq!(fixture.claims(), [observed_claim.expect("original claim")]);
+        }
+
+        for change_claim in [false, true] {
+            let fixture = Fixture::new();
+            let mut observed_claim = None;
+            let mut calls = 0;
+            let error = index_with_journal_recovery(
+                &fixture.paths,
+                fixture.package.clone(),
+                CompileExecutionIntent::Interactive,
+                |dispatch| {
+                    let IndexJournalDispatch::Start(start) = dispatch else {
+                        panic!("held original start");
+                    };
+                    let claim = fixture.claims().pop().expect("original claim");
+                    observed_claim = Some(claim.clone());
+                    start.reconcile_after_reconnect(|command| {
+                        calls += 1;
+                        let SurfaceCommand::IndexOperationStatus { operation_key } = command else {
+                            panic!("changed authority/claim must prevent replay");
+                        };
+                        if change_claim {
+                            let mut replaced = claim.clone();
+                            replaced.package = PackageReference::parse("/foreign/request")
+                                .expect("foreign package");
+                            let name = format!(
+                                "{}.json",
+                                blake3::Hash::from(index_operation_request_digest(
+                                    &claim.package,
+                                    claim.execution_intent
+                                ))
+                                .to_hex()
+                            );
+                            std::fs::write(
+                                fixture.paths.data().join(JOURNAL_DIRECTORY).join(name),
+                                serde_json::to_vec(&replaced).expect("foreign claim bytes"),
+                            )
+                            .expect("simulate external claim replacement");
+                        } else {
+                            std::fs::write(fixture.paths.authority_secret(), [71; 32])
+                                .expect("simulate changed private authority");
+                        }
+                        Ok(SurfaceReply::IndexOperationStatus(
+                            IndexOperationObservation::Unknown { operation_key },
+                        ))
+                    })
+                },
+            )
+            .expect_err("changed attachment/claim cannot authorize replay");
+            assert!(matches!(error, ClientError::Io(_)));
+            assert_eq!(calls, 1);
+            let mut expected = observed_claim.expect("original claim");
+            if change_claim {
+                expected.package =
+                    PackageReference::parse("/foreign/request").expect("foreign package");
+            }
+            assert_eq!(
+                fixture.claims(),
+                [expected],
+                "refusal does not overwrite external evidence"
+            );
+        }
+    }
+
+    #[test]
+    fn held_start_capability_excludes_same_request_race_and_keeps_other_project_independent() {
+        let fixture = Fixture::new();
+        let other_path = fixture.root.join("independent-project");
+        std::fs::create_dir(&other_path).expect("independent actual project");
+        let other =
+            PackageReference::parse(other_path.to_str().expect("UTF-8")).expect("other project");
+        let mut original_claim = None;
+        let mut other_key = None;
+        index_with_journal_recovery(
+            &fixture.paths,
+            fixture.package.clone(),
+            CompileExecutionIntent::Interactive,
+            |dispatch| {
+                let IndexJournalDispatch::Start(start) = dispatch else {
+                    panic!("original start");
+                };
+                let claim = fixture.claims().pop().expect("held original claim");
+                original_claim = Some(claim.clone());
+                std::thread::scope(|scope| {
+                    let contender = scope.spawn(|| {
+                        fixture.index(|_| {
+                            panic!("same request cannot dispatch while capability is held")
+                        })
+                    });
+                    let error = contender
+                        .join()
+                        .expect("contender drained")
+                        .expect_err("held real lock excludes second caller");
+                    assert!(matches!(error, ClientError::Io(_)));
+                    assert!(
+                        error
+                            .to_string()
+                            .contains("another caller is reconciling this request")
+                    );
+                });
+                index_with_journal(
+                    &fixture.paths,
+                    other.clone(),
+                    CompileExecutionIntent::Interactive,
+                    |command| {
+                        let SurfaceCommand::IndexOperationStart {
+                            operation_key,
+                            package,
+                            execution_intent,
+                        } = command
+                        else {
+                            panic!("other project owns its own start");
+                        };
+                        assert_eq!(package, other);
+                        assert_ne!(operation_key, claim.operation_key);
+                        other_key = Some(operation_key);
+                        Ok(SurfaceReply::IndexOperationStarted(
+                            IndexOperationObservation::Known(IndexOperationStatus::new(
+                                operation_key,
+                                package,
+                                execution_intent,
+                                IndexOperationState::Accepted,
+                            )),
+                        ))
+                    },
+                )
+                .expect("unrelated request is not serialized by held capability");
+                start.reconcile_after_reconnect(|command| {
+                    assert_eq!(
+                        command,
+                        SurfaceCommand::IndexOperationStatus {
+                            operation_key: claim.operation_key
+                        }
+                    );
+                    Ok(SurfaceReply::IndexOperationStatus(known(
+                        &claim,
+                        IndexOperationState::Accepted,
+                    )))
+                })
+            },
+        )
+        .expect("held original request completes without reacquiring its own lock");
+        let claims = fixture.claims();
+        assert_eq!(claims.len(), 2);
+        assert!(claims.contains(&original_claim.expect("original identity")));
+        assert!(
+            claims
+                .iter()
+                .any(|claim| Some(claim.operation_key) == other_key && claim.package == other)
+        );
     }
 
     #[test]

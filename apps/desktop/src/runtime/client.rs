@@ -685,6 +685,7 @@ fn fault(error: ClientError) -> EngineFault {
         | ClientError::Disconnected(_)
         | ClientError::QueryPreparationDisconnected { .. }
         | ClientError::MutationOutcomeUnknown(_)
+        | ClientError::IndexOperationDeliveryUnknown { .. }
         | ClientError::Io(_)
         | ClientError::Transport(_)
         | ClientError::RemoteDeadlineExceeded => FaultCode::Transport,

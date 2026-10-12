@@ -4,9 +4,8 @@
 //! document plus the rows around it, an outline is a tree of keys plus the rows
 //! that name them, a probe that fails becomes a note rather than a failure —
 //! lives in [`backend_present::answer`], because the MCP surface must make the
-//! same ones. What is left here is the mechanical half: forwarding one
-//! [`Probe`] to the matching `Session` method. There is no branching in it, so
-//! there is nothing for the two surfaces to disagree about.
+//! same ones. The CLI's optional owner replacement policy only repeats
+//! unpinned reads or reconciles a journaled start under its original key.
 
 use backend_client::{ClientError, Session};
 use backend_library::{
@@ -18,41 +17,65 @@ use backend_present::{Engine, Fault, Probe, Request};
 pub use backend_present::Answer;
 
 /// One connected local daemon session, seen as the shared driver's engine.
-pub struct SessionEngine<'a>(&'a mut Session, Option<&'a backend_runtime::WorkspacePaths>);
+pub struct SessionEngine<'a> {
+    session: &'a mut Session,
+    paths: Option<&'a backend_runtime::WorkspacePaths>,
+    recovery: Option<&'a mut crate::owner_recovery::OwnerRecovery>,
+}
 
 impl<'a> SessionEngine<'a> {
     /// Borrows one connected session as an engine.
     pub const fn new(session: &'a mut Session) -> Self {
-        Self(session, None)
+        Self {
+            session,
+            paths: None,
+            recovery: None,
+        }
     }
 }
 
 impl Engine for SessionEngine<'_> {
     fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
-        self.0.revision().map(|revision| revision.root)
+        self.session.revision().map(|revision| revision.root)
     }
 
     fn health(&mut self) -> Result<HealthReport, ClientError> {
-        self.0.health()
+        match &mut self.recovery {
+            Some(recovery) => recovery.read(
+                self.session,
+                crate::owner_recovery::RecoverableRead::Health,
+                Session::health,
+            ),
+            None => self.session.health(),
+        }
     }
 
     fn probe(&mut self, probe: Probe<'_>) -> Result<ReplyDto, ClientError> {
         match probe {
-            Probe::Packages => self.0.packages(),
-            Probe::Index(path) => self.0.index(path),
+            Probe::Packages => self.session.packages(),
+            Probe::Index(path) => self.session.index(path),
             Probe::IndexWithExecutionIntent {
                 path,
                 execution_intent,
-            } => self.0.index_with_execution_intent(path, execution_intent),
-            Probe::Remove(path) => self.0.remove(path),
-            Probe::Document(at) => self.0.document(at),
-            Probe::Source(at) => self.0.source(at),
-            Probe::Related(at) => self.0.related(at),
-            Probe::Graph(at) => self.0.graph(at),
-            Probe::Search { text, limit } => self.0.search(text, limit),
-            Probe::Names { text, limit } => self.0.names(text, limit),
-            Probe::Outline(path) => self.0.outline(path),
-            Probe::OutlinePage { path, limit } => self.0.outline_page(path, limit, None),
+            } => self
+                .session
+                .index_with_execution_intent(path, execution_intent),
+            Probe::Remove(path) => self.session.remove(path).map_err(nonrepeatable),
+            Probe::Document(at) => self.session.document(at),
+            Probe::Source(at) => self.session.source(at),
+            Probe::Related(at) => self.session.related(at),
+            Probe::Graph(at) => self.session.graph(at),
+            Probe::Search { text, limit } => match &mut self.recovery {
+                Some(recovery) => recovery.read(
+                    self.session,
+                    crate::owner_recovery::RecoverableRead::UnselectedSearch,
+                    |session| session.search(text, limit),
+                ),
+                None => self.session.search(text, limit),
+            },
+            Probe::Names { text, limit } => self.session.names(text, limit),
+            Probe::Outline(path) => self.session.outline(path),
+            Probe::OutlinePage { path, limit } => self.session.outline_page(path, limit, None),
         }
     }
 
@@ -62,8 +85,16 @@ impl Engine for SessionEngine<'_> {
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
         match probe {
-            Probe::Search { text, limit } => self.0.search_page(text, limit, continuation),
-            Probe::Names { text, limit } => self.0.names_page(text, limit, continuation),
+            Probe::Search { text, limit } if continuation.is_none() => match &mut self.recovery {
+                Some(recovery) => recovery.read(
+                    self.session,
+                    crate::owner_recovery::RecoverableRead::UnselectedSearch,
+                    |session| session.search_page(text, limit, None),
+                ),
+                None => self.session.search_page(text, limit, None),
+            },
+            Probe::Search { text, limit } => self.session.search_page(text, limit, continuation),
+            Probe::Names { text, limit } => self.session.names_page(text, limit, continuation),
             _ if continuation.is_none() => self.probe(probe),
             _ => Err(ClientError::Protocol(
                 "this CLI command does not support continuation pages".to_owned(),
@@ -72,15 +103,22 @@ impl Engine for SessionEngine<'_> {
     }
 
     fn prepare_query_continuation(&mut self, token: &str) -> Result<PageContinuation, ClientError> {
-        self.0.decode_page_continuation(token)
+        self.session.decode_page_continuation(token)
     }
 
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
-        match self.1 {
-            Some(paths) => backend_client::surface_with_index_journal(paths, command, |command| {
-                self.0.surface(command)
-            }),
-            None => self.0.surface(command),
+        let session = &mut *self.session;
+        let recovery = &mut self.recovery;
+        match self.paths {
+            Some(paths) => {
+                backend_client::surface_with_index_journal(paths, command, |command| match recovery
+                    .as_deref_mut()
+                {
+                    Some(recovery) => recovery.surface(session, command, None),
+                    None => session.surface(command),
+                })
+            }
+            None => session.surface(command),
         }
     }
 
@@ -89,13 +127,19 @@ impl Engine for SessionEngine<'_> {
         package: backend_library::PackageReference,
         execution_intent: backend_library::CompileExecutionIntent,
     ) -> Result<SurfaceReply, ClientError> {
-        match self.1 {
-            Some(paths) => {
-                backend_client::index_with_journal(paths, package, execution_intent, |command| {
-                    self.0.surface(command)
-                })
-            }
-            None => self.0.surface(SurfaceCommand::IndexStart {
+        let session = &mut *self.session;
+        let recovery = &mut self.recovery;
+        match self.paths {
+            Some(paths) => backend_client::index_with_journal_recovery(
+                paths,
+                package,
+                execution_intent,
+                |dispatch| match recovery.as_deref_mut() {
+                    Some(recovery) => recovery.journal(session, dispatch, None),
+                    None => session.surface(dispatch.command()),
+                },
+            ),
+            None => session.surface(SurfaceCommand::IndexStart {
                 package,
                 execution_intent,
             }),
@@ -123,7 +167,37 @@ pub fn execute_in_workspace(
     request: &Request,
     paths: &backend_runtime::WorkspacePaths,
 ) -> Result<Answer, Fault> {
-    backend_present::answer(&mut SessionEngine(session, Some(paths)), request)
+    backend_present::answer(
+        &mut SessionEngine {
+            session,
+            paths: Some(paths),
+            recovery: None,
+        },
+        request,
+    )
+}
+
+pub(crate) fn execute_with_recovery(
+    session: &mut Session,
+    request: &Request,
+    paths: &backend_runtime::WorkspacePaths,
+    recovery: &mut crate::owner_recovery::OwnerRecovery,
+) -> Result<Answer, Fault> {
+    backend_present::answer(
+        &mut SessionEngine {
+            session,
+            paths: Some(paths),
+            recovery: Some(recovery),
+        },
+        request,
+    )
+}
+
+fn nonrepeatable(error: ClientError) -> ClientError {
+    match error {
+        ClientError::Disconnected(kind) => ClientError::MutationOutcomeUnknown(kind),
+        error => error,
+    }
 }
 
 /// Returns the exact revision an answer was read at, for a caption.

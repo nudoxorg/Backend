@@ -818,6 +818,7 @@ pub fn failure(error: &ClientError) -> ReadFailure {
         ClientError::Disconnected(_)
         | ClientError::QueryPreparationDisconnected { .. }
         | ClientError::MutationOutcomeUnknown(_)
+        | ClientError::IndexOperationDeliveryUnknown { .. }
         | ClientError::Io(_)
         | ClientError::Startup(_)
         | ClientError::Transport(_)
