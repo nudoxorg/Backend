@@ -71,6 +71,39 @@ class SmokeContract(unittest.TestCase):
             out.write('\n{"name":"frame","draw_ms":0.8}\n')
         self.assertTrue(smoke.drew_a_frame(trace))
 
+    def gui(self, visible=True, quit_code=0):
+        def executable(name, code):
+            path = self.bin_dir / name
+            path.write_text(f"#!{os.sys.executable}\n" + code)
+            path.chmod(0o700)
+
+        executable("Xvfb", "import os, sys, time\nos.write(int(sys.argv[2]), b'91\\n')\ntime.sleep(30)\n")
+        executable("xdotool", "import os, sys\nfrom pathlib import Path\n"
+                   f"visible = {visible!r}\n"
+                   "if sys.argv[1] == 'search':\n"
+                   "    if visible: print('123')\n"
+                   "    sys.exit(0 if visible else 1)\n"
+                   "Path(os.environ['HOME'], 'quit').touch()\n")
+        executable("backend-desktop", "import os, sys, time\nfrom pathlib import Path\n"
+                   "Path(os.environ['NUDOX_TRACE']).write_text('{\"name\":\"frame\"}\\n')\n"
+                   "deadline = time.monotonic() + 3\n"
+                   "while not Path(os.environ['HOME'], 'quit').exists():\n"
+                   "    if time.monotonic() > deadline: sys.exit(9)\n"
+                   "    time.sleep(0.01)\n"
+                   f"sys.exit({quit_code})\n")
+        with patch.dict(os.environ, {"PATH": str(self.bin_dir)}), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return smoke.smoke_gui(self.bin_dir, self.home, 5)
+
+    def test_gui_requires_visible_window_and_successful_public_quit(self):
+        self.assertEqual(self.gui(), 0)
+
+    def test_gui_paint_without_visible_window_fails(self):
+        self.assertEqual(self.gui(visible=False), 1)
+
+    def test_gui_crash_on_quit_fails(self):
+        self.assertEqual(self.gui(quit_code=7), 1)
+
     def test_environment_cannot_attach_to_real_workspace(self):
         with patch.dict(os.environ, {
             "BACKEND_PROJECT": "/real/project", "BACKEND_LOCALD_ENDPOINT": "/real/socket",
