@@ -1650,6 +1650,7 @@ dependencies = [
  "backend-runtime",
  "backend-semantic",
  "backend-version",
+ "fancy-regex 0.17.0",
  "serde",
  "serde_json",
 ]

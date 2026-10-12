@@ -294,6 +294,14 @@ pub enum Request {
     },
     /// One package outline, resolved to names.
     Outline(String),
+    /// An authenticated page of package declaration names. Plain CLI outline
+    /// retains its existing tree query; bounded adapters may choose this path.
+    OutlinePage {
+        /// Exact project path.
+        path: String,
+        /// Owner query limit, retained unchanged by every continuation.
+        limit: u16,
+    },
     /// One durable product operation.
     Surface(Box<SurfaceCommand>),
 }

@@ -11,6 +11,7 @@ backend-client = { path = "../client" }
 backend-library = { path = "../library" }
 serde.workspace = true
 serde_json.workspace = true
+fancy-regex = "=0.17.0"
 
 [dev-dependencies]
 allocation-counter.workspace = true

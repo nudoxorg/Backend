@@ -70,9 +70,10 @@ impl OutlineEntry {
     /// Returns the displayed name, falling back to the key tag.
     #[must_use]
     pub fn name(&self) -> String {
-        self.identity
-            .as_ref()
-            .map_or_else(|| format!("‹{}›", self.tag), |identity| identity.name().to_owned())
+        self.identity.as_ref().map_or_else(
+            || format!("‹{}›", self.tag),
+            |identity| identity.name().to_owned(),
+        )
     }
 
     /// Returns the number of nodes in this subtree, including itself.
@@ -96,6 +97,7 @@ pub struct OutlineTree {
     package: Identity,
     roots: Box<[OutlineEntry]>,
     truncation: Truncation,
+    page: Option<OutlinePageState>,
 }
 
 impl OutlineTree {
@@ -109,11 +111,46 @@ impl OutlineTree {
         Self {
             package,
             roots: roots.into(),
+            page: None,
             truncation: match extent {
                 OutlineExtent::Complete => Truncation::Complete,
                 OutlineExtent::Truncated => Truncation::Truncated,
             },
         }
+    }
+
+    /// Retains a complete admitted native page's scope and continuation.
+    #[must_use]
+    pub fn with_page(mut self, snapshot: &backend_library::ViewSnapshot, limit: u16) -> Self {
+        self.page = Some(OutlinePageState {
+            basis: snapshot.root.basis(),
+            sequence: snapshot.root.frontier().sequence,
+            limit,
+            continuation: snapshot
+                .next
+                .map(backend_library::PageContinuation::from_cursor),
+            coverage: crate::CoverageLine::new(
+                snapshot.root.coverage(),
+                Some(snapshot.root.rows().len() as u64),
+            ),
+        });
+        self
+    }
+
+    /// Exact source identity retained by a paged outline, for bounded re-reads.
+    #[must_use]
+    pub fn page_basis(&self) -> Option<(backend_library::Basis, u64)> {
+        self.page.as_ref().map(|page| (page.basis, page.sequence))
+    }
+
+    /// Owner-issued continuation; never manufactured from a rendered prefix.
+    #[must_use]
+    pub fn continuation(&self) -> Option<backend_library::PageContinuation> {
+        self.page.as_ref().and_then(|page| page.continuation)
+    }
+
+    pub(crate) fn page(&self) -> Option<&OutlinePageState> {
+        self.page.as_ref()
     }
 
     /// Returns the package this outline describes.
@@ -212,5 +249,168 @@ mod retained_site_tests {
         assert_eq!(identity.name(), "CaféService");
         assert_eq!(identity.language(), crate::Language::TypeScript);
         assert_eq!(identity.key(), IdentityKey::Symbol(symbol));
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OutlinePageState {
+    pub(crate) basis: backend_library::Basis,
+    pub(crate) sequence: u64,
+    pub(crate) limit: u16,
+    pub(crate) continuation: Option<backend_library::PageContinuation>,
+    pub(crate) coverage: crate::CoverageLine,
+}
+
+/// Builds a forest induced by every row of one admitted outline page. An
+/// out-of-page parent is not invented; cycles are promoted as roots once.
+/// No declaration is dropped to make the rendering fit.
+pub(crate) fn page_tree(
+    path: &str,
+    snapshot: &backend_library::ViewSnapshot,
+    limit: u16,
+) -> Result<OutlineTree, backend_client::ClientError> {
+    use backend_library::{RowId, package_key};
+    use std::collections::{BTreeMap, BTreeSet};
+    let rows = snapshot.root.rows();
+    let package = package_key(path);
+    if !(1..=backend_library::QueryLimit::MAX).contains(&limit)
+        || rows.len() > usize::from(limit)
+        || rows
+            .iter()
+            .any(|row| row.package != Some(package) || !matches!(row.id, RowId::Symbol(_)))
+    {
+        return Err(backend_client::ClientError::Protocol(
+            "outline page contains an out-of-scope declaration".to_owned(),
+        ));
+    }
+    let symbols = rows
+        .iter()
+        .filter_map(|row| match row.id {
+            RowId::Symbol(id) => Some(id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let selected = symbols.iter().copied().collect::<BTreeSet<_>>();
+    let mut children = BTreeMap::<SymbolKey, Vec<SymbolKey>>::new();
+    let mut roots = Vec::new();
+    for row in rows {
+        let RowId::Symbol(id) = row.id else {
+            unreachable!()
+        };
+        match row.parent.filter(|id| selected.contains(id)) {
+            Some(parent) => children.entry(parent).or_default().push(id),
+            None => roots.push(id),
+        }
+    }
+    fn node(
+        id: SymbolKey,
+        children: &BTreeMap<SymbolKey, Vec<SymbolKey>>,
+        visited: &mut BTreeSet<SymbolKey>,
+        resolve: &mut impl FnMut(SymbolKey) -> Option<(Identity, Option<DeclarationKind>)>,
+    ) -> OutlineEntry {
+        visited.insert(id);
+        let resolved = resolve(id);
+        let mut entries = Vec::new();
+        for child in children.get(&id).into_iter().flatten() {
+            if !visited.contains(child) {
+                entries.push(node(*child, children, visited, resolve));
+            }
+        }
+        OutlineEntry {
+            tag: KeyTag::from_key(id.as_bytes()),
+            identity: resolved.as_ref().map(|(identity, _)| identity.clone()),
+            kind: resolved.and_then(|(_, kind)| kind),
+            children: entries.into_boxed_slice(),
+        }
+    }
+    let mut resolve = row_resolver(rows);
+    let mut visited = BTreeSet::new();
+    let mut entries = Vec::new();
+    for id in roots.into_iter().chain(symbols) {
+        if !visited.contains(&id) {
+            entries.push(node(id, &children, &mut visited, &mut resolve));
+        }
+    }
+    Ok(OutlineTree::new(
+        Identity::parse_with_key(path, IdentityKey::Package(package)),
+        entries,
+        if snapshot.next.is_some() {
+            OutlineExtent::Truncated
+        } else {
+            OutlineExtent::Complete
+        },
+    )
+    .with_page(snapshot, limit))
+}
+
+#[cfg(test)]
+mod page_scope_tests {
+    use super::*;
+    use backend_library::{
+        Basis, Coverage, Cursor, Frontier, Lane, Library, PageRequest, QueryLimit, Reason, Row,
+        RowId, ViewRoot, object_version, package_key, symbol_key, view_key, view_state_root,
+    };
+    #[test]
+    fn page_forest_keeps_every_native_id_once_across_cycles_and_out_of_page_parents() {
+        let path = "/scope";
+        let basis = Basis::new(view_state_root(&[]), object_version(b"page-scope"));
+        let a = symbol_key("a");
+        let b = symbol_key("b");
+        let c = symbol_key("c");
+        let rows = vec![
+            Row::new(RowId::Package(package_key(path)), basis, path),
+            Row::in_package(RowId::Symbol(a), basis, package_key(path), "/scope::A").with_parent(b),
+            Row::in_package(RowId::Symbol(b), basis, package_key(path), "/scope::B").with_parent(a),
+            Row::in_package(RowId::Symbol(c), basis, package_key(path), "/scope::C")
+                .with_parent(symbol_key("outside")),
+        ];
+        let root = ViewRoot::new_incomplete(
+            view_key(b"page-scope"),
+            basis,
+            Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+            rows,
+            vec![Coverage::Unavailable {
+                lane: Lane::Exact,
+                reason: Reason::NoIndex,
+            }],
+        )
+        .expect("incomplete source");
+        let cursor = Cursor::for_view_root(&root);
+        let library = Library::from_view(root, cursor).expect("real immutable catalog");
+        let page = library
+            .outline_page(
+                package_key(path),
+                PageRequest::new(library.revision_root(), QueryLimit::new(3).expect("limit")),
+            )
+            .expect("actual native page");
+        let tree = page_tree(path, &page.snapshot, 3).expect("induced forest");
+        assert_eq!(tree.count(), 3);
+        fn keys(node: &OutlineEntry, output: &mut std::collections::BTreeSet<SymbolKey>) {
+            let IdentityKey::Symbol(id) = node.identity().expect("retained identity").key() else {
+                panic!("symbol");
+            };
+            assert!(output.insert(id));
+            for child in node.children() {
+                keys(child, output);
+            }
+        }
+        let mut actual = std::collections::BTreeSet::new();
+        for root in tree.roots() {
+            keys(root, &mut actual);
+        }
+        assert_eq!(actual, [a, b, c].into_iter().collect());
+        assert!(page_tree("/foreign", &page.snapshot, 3).is_err());
+        assert!(page_tree(path, &page.snapshot, 0).is_err());
+        assert_eq!(
+            tree.continuation(),
+            page.snapshot
+                .next
+                .map(backend_library::PageContinuation::from_cursor)
+        );
+        let dto = crate::OutlineDto::new(&tree);
+        let decoded: crate::OutlineDto =
+            serde_json::from_value(serde_json::to_value(&dto).expect("projection"))
+                .expect("stable typed decode");
+        assert_eq!(decoded, dto);
     }
 }

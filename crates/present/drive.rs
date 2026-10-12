@@ -254,6 +254,7 @@ impl Answer {
     pub fn continuation(&self) -> Option<PageContinuation> {
         match self {
             Self::Records(records) => records.continuation(),
+            Self::Outline(outline) => outline.continuation(),
             _ => None,
         }
     }
@@ -263,6 +264,7 @@ impl Answer {
     pub fn cursor(&self) -> Option<ContinuationCursor> {
         match self {
             Self::Records(records) => records.continuation().map(ContinuationCursor::Page),
+            Self::Outline(outline) => outline.continuation().map(ContinuationCursor::Page),
             Self::Product(product) => product.cursor_family().cloned(),
             _ => None,
         }
@@ -342,6 +344,7 @@ pub fn answer(engine: &mut dyn Engine, request: &Request) -> Result<Answer, Faul
             Ok(Answer::Records(Box::new(record_list(text, &snapshot))))
         }
         Request::Outline(path) => outline(engine, path),
+        Request::OutlinePage { .. } => answer_paged(engine, request, None),
         Request::Surface(command) => surface(engine, command),
     }
 }
@@ -390,6 +393,33 @@ pub fn answer_paged(
                 "resolve",
             )?;
             Ok(Answer::Records(Box::new(record_list(text, &snapshot))))
+        }
+        Request::OutlinePage { path, limit } => {
+            let reply = read_page(
+                engine,
+                Probe::OutlinePage {
+                    path,
+                    limit: *limit,
+                },
+                continuation,
+            )?;
+            let CommandReply::ProjectionPage(page) = reply.reply else {
+                return Err(shape("outline-page"));
+            };
+            if page.terminal
+                != page
+                    .snapshot
+                    .next
+                    .map_or(backend_library::PageTerminal::Complete, |cursor| {
+                        backend_library::PageTerminal::More(PageContinuation::from_cursor(cursor))
+                    })
+            {
+                return Err(shape("outline-page terminal"));
+            }
+            crate::outline::page_tree(path, &page.snapshot, *limit)
+                .map(Box::new)
+                .map(Answer::Outline)
+                .map_err(|error| Fault::from_client_error(&error, Operand::Path(path.clone())))
         }
         _ if continuation.is_some() => Err(Fault::usage(
             "cursor",

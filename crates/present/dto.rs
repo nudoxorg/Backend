@@ -759,6 +759,9 @@ pub struct OutlineDto {
     pub declarations: usize,
     /// How many nodes did not resolve to a name.
     pub unnamed: usize,
+    /// Native paging scope, absent for the legacy plain outline query.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<OutlinePageDto>,
 }
 
 impl OutlineDto {
@@ -771,8 +774,43 @@ impl OutlineDto {
             extent: tree.truncation().name().to_owned(),
             declarations: tree.count(),
             unnamed: tree.unresolved(),
+            page: tree.page().map(|page| OutlinePageDto {
+                limit: page.limit,
+                more: page.continuation.is_some(),
+                coverage: CoverageDto::all(page.coverage),
+                source_root: backend_library::encode_id(page.basis.root.as_bytes()),
+                source_object: backend_library::encode_id(page.basis.object.as_bytes()),
+                branch: backend_library::encode_id(page.basis.branch.as_bytes()),
+                log: backend_library::encode_id(page.basis.log.as_bytes()),
+                schema: page.basis.schema,
+                sequence: page.sequence,
+            }),
         }
     }
+}
+
+/// Exact admitted scope of an outline page. The continuation itself is
+/// transported in the common `nextCursor` envelope, never inside this DTO.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct OutlinePageDto {
+    /// Effective native query limit; reuse unchanged with the next cursor.
+    pub limit: u16,
+    /// The owner has another page.
+    pub more: bool,
+    /// Complete lane coverage facts for this projection.
+    pub coverage: Vec<CoverageDto>,
+    /// Exact producer source relation root.
+    pub source_root: String,
+    /// Exact producer source object.
+    pub source_object: String,
+    /// Producer branch.
+    pub branch: String,
+    /// Producer log.
+    pub log: String,
+    /// Producer schema.
+    pub schema: u16,
+    /// Producer sequence.
+    pub sequence: u64,
 }
 
 /// The engine's whole state.

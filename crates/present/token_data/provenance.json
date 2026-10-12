@@ -1,0 +1,13 @@
+{
+  "upstream": "https://github.com/openai/tiktoken/tree/0.11.0",
+  "algorithm": "src/lib.rs encode_ordinary and _byte_pair_merge; count-only specialization",
+  "license": "MIT",
+  "encoding": "cl100k_base",
+  "policy": "ordinary text, special-looking sequences encoded as ordinary text",
+  "pattern": "'(?i:[sdmt]|ll|ve|re)|[^\\r\\n\\p{L}\\p{N}]?+\\p{L}++|\\p{N}{1,3}+| ?[^\\s\\p{L}\\p{N}]++[\\r\\n]*+|\\s++$|\\s*[\\r\\n]|\\s+(?!\\S)|\\s",
+  "mergeableRanks": 100256,
+  "maxTokenBytes": 128,
+  "assetFormat": "CL100K\\x01\\x00; u32 LE count; rank-ordered u16 LE length + raw bytes",
+  "assetSha256": "69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992",
+  "referenceFingerprint": "8613f818e5af318d868379772ce5234e3a3e8519b6c611d94cf708fdfc580fbc"
+}

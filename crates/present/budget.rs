@@ -224,6 +224,7 @@ pub fn encode_answer(
                         extent: outline.extent,
                         declarations: outline.declarations,
                         unnamed: outline.unnamed,
+                        page: outline.page,
                     },
                     budget,
                 )
@@ -662,6 +663,8 @@ struct SummaryOutlineDto {
     extent: String,
     declarations: usize,
     unnamed: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    page: Option<crate::dto::OutlinePageDto>,
 }
 
 #[derive(Serialize)]
