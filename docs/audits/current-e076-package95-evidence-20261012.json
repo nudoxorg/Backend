@@ -1,0 +1,109 @@
+{
+  "schema": "nudox.root-linux-package-audit.v1",
+  "source": {
+    "commit": "e0767e71b7077f9bbd1604cbf7bb097090fbbba3",
+    "tree": "519dcf63c5b558a509f254998131f768c3f3c14e",
+    "clean": true
+  },
+  "scope": "Root independently rehashed mirrored streams, terminal receipts and generated metadata; archive and executable hashes are producer-reported, not direct Root binary rehashes.",
+  "failed_attempt": {
+    "files": {
+      "receipt.json": {
+        "sha256": "7241a98c61a599229918c9bf89d06e4a695b578c8ed2c62c2fef643875a5ab23",
+        "bytes": 31109
+      },
+      "stdout.log": {
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      "stderr.log": {
+        "sha256": "4af6f98038193623eeb4595d9ab72cdbd2a047a118c62b6c86f79de36efed868",
+        "bytes": 279
+      }
+    },
+    "exit": 32,
+    "seconds": 0.036003404995426536,
+    "cause": "Missing historical SDK bind-mount directory; wrapper failed before the packager ran."
+  },
+  "successful_attempt": {
+    "files": {
+      "receipt.json": {
+        "sha256": "7f3eafd6d6178d47d18b923c2df400b14d24d12eb8263c757046ace7f9c526ae",
+        "bytes": 28357
+      },
+      "stdout.log": {
+        "sha256": "6b3ad27a9290c4bcd4ac74442333a530d15b5706842b5eda5fc5eaea3b93daf9",
+        "bytes": 918
+      },
+      "stderr.log": {
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      }
+    },
+    "exit": 0,
+    "seconds": 72.26855677599087,
+    "finished_utc": "2026-10-12T00:34:30.086321+00:00",
+    "argv": [
+      "unshare",
+      "--mount",
+      "--fork",
+      "/bin/sh",
+      "/root/sol61-ilo-real-cli-mcp-20261011/package-in-ubuntu-current95-slot0.sh",
+      "/bin/sh",
+      "/root/sol61-ilo-real-cli-mcp-20261011/package-current-e076-95-02.sh"
+    ],
+    "guard_age_seconds": 9.343488,
+    "terminal_process_group_empty": true,
+    "permit_released": true
+  },
+  "generated_metadata": {
+    "sdk-source-receipt.json": {
+      "bytes": 17795,
+      "sha256": "c1dccd268469aa1ce15cfc04cd3d772f79c7e766cc888d8834fe2c87af4af8f1"
+    },
+    "release-manifest.json": {
+      "bytes": 698,
+      "sha256": "147e2f7969b1f3a8add4eacfb503ead2c3fee6c9a62bb16428f67bd3e7a342c5"
+    },
+    "install-linux-x64.py": {
+      "bytes": 49954,
+      "sha256": "b731cf790b2d1cd73088f934c0073a4269027d7791b1aac810b5c94fd4b5f330"
+    },
+    "build-manifest.json": {
+      "bytes": 801,
+      "sha256": "dcfe25c941f6ca04a1842c68547afde7a6d91fdfb3eff46d0bab1ee78c35a050"
+    },
+    "packaging-manifest.json": {
+      "bytes": 40327,
+      "sha256": "b32d6222ef82dbd77faa5037af86166f05a2daffb9b2bf29d7e8a21cd78a983b"
+    }
+  },
+  "producer_reported_candidate": {
+    "schema": "nudox.current-installed-acceptance-pins.v1",
+    "source_commit": "e0767e71b7077f9bbd1604cbf7bb097090fbbba3",
+    "source_tree": "519dcf63c5b558a509f254998131f768c3f3c14e",
+    "archive": "nudox-linux-x86_64-e0767e71b7.tar.gz",
+    "archive_sha256": "ba67413f5569fbd695dd4ff21637e6046439b0337586e3f3c0cfa0a33ec84275",
+    "archive_bytes": 221791292,
+    "release_manifest_sha256": "147e2f7969b1f3a8add4eacfb503ead2c3fee6c9a62bb16428f67bd3e7a342c5",
+    "installer_sha256": "b731cf790b2d1cd73088f934c0073a4269027d7791b1aac810b5c94fd4b5f330",
+    "build_manifest_sha256": "dcfe25c941f6ca04a1842c68547afde7a6d91fdfb3eff46d0bab1ee78c35a050",
+    "packaging_manifest_sha256": "b32d6222ef82dbd77faa5037af86166f05a2daffb9b2bf29d7e8a21cd78a983b",
+    "executables": {
+      "backend-cli": "3883f3b6cba9859ba68f6afd01f05723942979fd86d74a0536f6377e1282c9fe",
+      "backend-mcp": "8acb31598c7aef8cf59d4cb05aaaaabc7e7567accb297dc6f6697fce1aff8eae",
+      "backend-locald": "10577383b24db37e4a5cbf3e66582fe938f11234beebcafcef49f0526e7d419d"
+    }
+  },
+  "sdk": {
+    "files": 135,
+    "same_original_input_inventory": true,
+    "node": "v24.18.0",
+    "typescript": "5.9.3",
+    "sdk_receipt_sha256": "c1dccd268469aa1ce15cfc04cd3d772f79c7e766cc888d8834fe2c87af4af8f1"
+  },
+  "actual_tests_run": 0,
+  "installed_runtime_acceptance": "UNRUN",
+  "public_release_promoted": false,
+  "portability_scope": "Diagnostic Linux x86_64 candidate requiring glibc 2.39 (Ubuntu 24); no Ubuntu 22 or Mac native acceptance credited."
+}
