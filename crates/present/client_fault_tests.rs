@@ -244,20 +244,42 @@ fn cancellation_unknown_mutation_and_startup_repair_never_suggest_blind_retry() 
 
 #[test]
 fn remote_authorization_refusals_preserve_basis_and_require_new_authority() {
+    let expected = [1; 32];
+    let mut observed = expected;
+    observed[31] = 2;
     let fault = Fault::from_client_error(
-        &ClientError::StaleRemoteRoot {
-            expected: [1; 32],
-            observed: [2; 32],
-        },
+        &ClientError::StaleRemoteRoot { expected, observed },
         Operand::Whole,
     );
     assert_eq!(
         fault.operand(),
-        &Operand::Basis {
-            expected: KeyTag::from_key(&[1; 32]),
-            observed: KeyTag::from_key(&[2; 32])
-        }
+        &Operand::Text(format!(
+            "grant root {} differs from current root {}",
+            backend_library::encode_id(&expected),
+            backend_library::encode_id(&observed),
+        ))
     );
+    for rendered in [text::fault(&fault, Theme::plain()), markdown::fault(&fault)] {
+        assert!(rendered.contains(&backend_library::encode_id(&expected)));
+        assert!(rendered.contains(&backend_library::encode_id(&observed)));
+    }
+    for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+        let encoded = encode_serializable(
+            "fault",
+            detail,
+            None,
+            FaultDto::new(&fault),
+            DEFAULT_RESPONSE_BUDGET_BYTES,
+        )
+        .expect("bounded exact-root fault");
+        let value: serde_json::Value = serde_json::from_slice(&encoded.bytes).expect("actual JSON");
+        assert_eq!(value["operand"], fault.operand().render());
+        let operand = value["operand"]
+            .as_str()
+            .expect("full rendered root operand");
+        assert!(operand.contains(&backend_library::encode_id(&expected)));
+        assert!(operand.contains(&backend_library::encode_id(&observed)));
+    }
     for error in [
         ClientError::StaleRemoteCapability,
         ClientError::RemoteCapabilityRevoked,

@@ -945,10 +945,11 @@ impl Fault {
             ClientError::StaleRemoteRoot { expected, observed } => {
                 return Self::new(
                     FaultSlug::WrongBasis,
-                    Operand::Basis {
-                        expected: KeyTag::from_key(expected),
-                        observed: KeyTag::from_key(observed),
-                    },
+                    Operand::Text(format!(
+                        "grant root {} differs from current root {}",
+                        backend_library::encode_id(expected),
+                        backend_library::encode_id(observed),
+                    )),
                     Cause::new(
                         CauseSlug::Moved,
                         "the remote grant names a different selected view root; obtain a grant for the current root before retrying this read",
@@ -1040,7 +1041,7 @@ impl Fault {
             ClientError::RemoteDeadlineExceeded => (
                 FaultSlug::Endpoint,
                 CauseSlug::Unreachable,
-                "the remote index connect or read-only request exceeded its bounded client deadline; check endpoint availability, then retry this read as a new bounded request".to_owned(),
+                "the owner connection or read-only request exceeded its bounded client deadline; check endpoint availability, then retry this read as a new bounded request".to_owned(),
                 Affordance::Retry,
             ),
             ClientError::StaleRemoteCapability => (
