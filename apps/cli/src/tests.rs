@@ -559,6 +559,18 @@ fn a_missing_operand_prints_the_exact_usage_line() {
 }
 
 #[test]
+fn a_missing_operand_through_a_cli_alias_uses_the_entered_installed_command() {
+    let fault = invoke::parse(&words("document"), None).expect_err("missing coordinate");
+    assert_eq!(fault.slug(), FaultSlug::Usage);
+    assert_eq!(fault.operand().render(), "document");
+    assert_eq!(
+        fault.cause().sentence(),
+        "usage: nudox document <COORDINATE>"
+    );
+    assert_eq!(render::exit_code(&fault), ExitCode::from(64));
+}
+
+#[test]
 fn a_page_bound_outside_its_range_is_refused_with_the_value() {
     let invocation = invoke::parse(&words("search ferris --limit 900"), None).expect("parse");
     let fault = lower(&invocation, "/abs/project").expect_err("out of range");

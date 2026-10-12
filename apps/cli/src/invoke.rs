@@ -16,6 +16,7 @@ use core::fmt::Write as _;
 
 /// The escape hatch that takes one tagged `SurfaceCommand` JSON object.
 pub const SURFACE_VERB: &str = "surface";
+const INSTALLED_COMMAND_NAME: &str = "nudox";
 
 /// Parses one argument vector against the shared command registry.
 ///
@@ -59,7 +60,18 @@ pub fn parse(args: &[String], default_limit: Option<&str>) -> Result<Invocation,
     {
         invocation.set("limit", limit);
     }
-    invocation.check()?;
+    if let Err(fault) = invocation.check() {
+        if fault.slug().is_usage() && grammar.aliases().contains(&spelling) {
+            let canonical_usage = grammar.usage();
+            if let Some(operands) = canonical_usage.strip_prefix(grammar.name()) {
+                return Err(Fault::usage(
+                    spelling,
+                    format!("usage: {INSTALLED_COMMAND_NAME} {spelling}{operands}"),
+                ));
+            }
+        }
+        return Err(fault);
+    }
     Ok(invocation)
 }
 
