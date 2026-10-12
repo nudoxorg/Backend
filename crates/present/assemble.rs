@@ -333,7 +333,11 @@ pub fn shelf_from_root(root: &ViewRoot, revision: KeyTag) -> Shelf {
 fn language_counts(rows: &[Row]) -> BTreeMap<String, BTreeMap<Language, u64>> {
     let mut counts: BTreeMap<String, BTreeMap<Language, u64>> = BTreeMap::new();
     for row in rows {
-        let identity = Identity::parse(&row.label);
+        let captured = row.source.captured();
+        let identity = Identity::parse(&row.label).with_captured_source(
+            captured.map(backend_library::SourceLocation::path),
+            captured.map(backend_library::SourceLocation::start_line),
+        );
         let Some(project) = identity.project() else {
             continue;
         };

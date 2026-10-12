@@ -1075,6 +1075,139 @@ fn usability_package_only_shelf_keeps_readiness_and_marks_count_unavailable() {
 }
 
 #[test]
+fn shelf_counts_captured_native_rows_without_inventing_uncaptured_or_empty_counts() {
+    use backend_library::{Frontier, Row, ViewRoot, view_key};
+    let basis = basis();
+    let native = format!(
+        "{PROJECT}::semantic::{}::WeightBurndownComponent",
+        "73".repeat(32)
+    );
+    let uncaptured = format!(
+        "{PROJECT}::semantic::{}::ImportedComponent",
+        "74".repeat(32)
+    );
+    let external = format!(
+        "{PROJECT}::external::symbol:{}::ExternalComponent",
+        "75".repeat(32)
+    );
+    let loose_project = "/abs/loose-native";
+    let loose = format!("{loose_project}::semantic::{}::Session", "76".repeat(32));
+    let empty_project = "/abs/package-only";
+    let rows = vec![
+        Row::new(RowId::Package(package_key(PROJECT)), basis, PROJECT),
+        Row::new(
+            RowId::Package(package_key(empty_project)),
+            basis,
+            empty_project,
+        ),
+        Row::in_package(
+            RowId::Symbol(symbol_key(&native)),
+            basis,
+            package_key(PROJECT),
+            &native,
+        )
+        .with_source(SourceLocation::new("src/app/weight.ts", 17).expect("native captured site")),
+        Row::in_package(
+            RowId::Symbol(symbol_key(DECLARATION)),
+            basis,
+            package_key(PROJECT),
+            DECLARATION,
+        ),
+        Row::in_package(
+            RowId::Symbol(symbol_key(&uncaptured)),
+            basis,
+            package_key(PROJECT),
+            &uncaptured,
+        ),
+        Row::in_package(
+            RowId::Symbol(symbol_key(&external)),
+            basis,
+            package_key(PROJECT),
+            &external,
+        ),
+        Row::in_package(
+            RowId::Symbol(symbol_key(&loose)),
+            basis,
+            package_key(loose_project),
+            &loose,
+        )
+        .with_source(SourceLocation::new("session.py", 5).expect("loose captured site")),
+        Row::new(
+            RowId::Object(backend_library::object_version(b"non-declaration")),
+            basis,
+            format!("{PROJECT}::src/object.ts:1::metadata"),
+        )
+        .with_source(
+            SourceLocation::new("src/object.ts", 1).expect("object capture is not a declaration"),
+        ),
+    ];
+    let root = ViewRoot::new_incomplete(
+        view_key(b"captured-native-shelf-counts"),
+        basis,
+        Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 0),
+        rows,
+        Vec::new(),
+    )
+    .expect("display facts claim no native coverage");
+    let shelf = shelf_from_root(&root, KeyTag::from_key(root.root().as_bytes()));
+    let entry = |project: &str| {
+        shelf
+            .entries()
+            .iter()
+            .find(|entry| {
+                entry
+                    .identity()
+                    .project()
+                    .is_some_and(|identity| identity.root() == project)
+            })
+            .expect("project retained on shelf")
+    };
+    assert_eq!(shelf.entries().len(), 3);
+    let populated = entry(PROJECT);
+    assert_eq!(populated.declarations().map(RowCount::get), Some(2));
+    assert_eq!(populated.languages().len(), 2);
+    for language in [Language::TypeScript, Language::Rust] {
+        assert_eq!(
+            populated
+                .languages()
+                .iter()
+                .find(|count| count.language() == language)
+                .map(|count| count.declarations().get()),
+            Some(1)
+        );
+    }
+    let loose = entry(loose_project);
+    assert_eq!(loose.declarations().map(RowCount::get), Some(1));
+    assert_eq!(
+        loose.languages(),
+        &[LanguageCount::new(Language::Python, 1)]
+    );
+    assert_eq!(entry(empty_project).declarations(), None);
+    assert!(text::shelf(&shelf, Theme::plain()).contains("2 declaration(s)"));
+    assert!(markdown::shelf(&shelf).contains("2 declaration(s)"));
+    for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+        let encoded = encode_answer(
+            &Answer::Shelf(Box::new(shelf.clone())),
+            detail,
+            None,
+            DEFAULT_RESPONSE_BUDGET_BYTES,
+        )
+        .expect("bounded native shelf");
+        let json: serde_json::Value = serde_json::from_slice(&encoded.bytes).expect("shelf JSON");
+        let projects = json["projects"].as_array().expect("projects");
+        let find = |project: &str| {
+            projects
+                .iter()
+                .find(|entry| entry["identity"]["coordinate"] == project)
+                .expect("exact project coordinate")
+        };
+        assert_eq!(find(PROJECT)["declarations"], 2);
+        assert_eq!(find(loose_project)["declarations"], 1);
+        assert!(find(empty_project)["declarations"].is_null());
+    }
+}
+
+#[test]
 fn an_empty_graph_names_the_missing_edges() {
     let list = RecordList::new(
         "/abs/pkg::session.h:1::Session",

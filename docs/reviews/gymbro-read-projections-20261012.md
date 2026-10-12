@@ -1,0 +1,11 @@
+# GymBro projection follow-through
+
+Source base: canonical `b81b361942bce1e0cf44d5e7edec75f975f9cf3a`. The attached GymBro session report describes an older installed source whose exact binary identity was not supplied; it is a diagnostic report, not current-source native evidence.
+
+The existing `2c7fb434ae` change already distinguishes an unavailable package declaration count from zero, propagates batched read completeness from producer through the versioned wire and presentation DTO, and preserves document Summary signatures. Subsequent page projection changes retain the signature in JSON and readable output while omitting captured source bodies by Summary policy. These fixes remain in the base; no duplicate extent, capability, or signature fields are added.
+
+A remaining source defect was found in shared shelf assembly: content-addressed compiler coordinates have no embedded filename. `language_counts` ignored their captured `Row.source` even though record and document assembly already use that admitted location. This excluded genuine compiler rows from language/count evidence in a full retained root and could omit a native-only project with no package row. Shelf assembly now uses the same captured-source identity enrichment. A package-only reply still returns an unavailable count; no extra query or native-readiness claim is made.
+
+The discriminating shelf control combines a captured TypeScript compiler coordinate, a structural Rust declaration, uncaptured semantic and external coordinates, a non-declaration object, a captured loose Python project, and a package-only project. It verifies exact counts/languages, loose-project retention, unknown-count preservation and all three DTO detail levels, alongside both readable renderers. The fixture is explicitly incomplete and claims no compiler coverage.
+
+Native compilation/tests and installed current-package/runtime acceptance for this atom are **UNRUN**. The sole ILO broker owns the separate current95 build/runtime cohort. Source formatting and `git diff --check` are the local checks; neither is a compile or runtime pass.
