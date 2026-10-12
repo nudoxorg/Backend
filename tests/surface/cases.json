@@ -3,23 +3,69 @@
   "cases": [
     {
       "name": "polyglot",
-      "project": "tests/journeys/fixtures/polyglot",
-      "languages": ["rust", "python", "typescript", "go", "java", "csharp", "cpp"],
+      "project": "tests/surface/fixtures/polyglot",
+      "languages": [
+        "rust",
+        "python",
+        "typescript",
+        "go",
+        "java",
+        "csharp",
+        "cpp"
+      ],
       "cli": [
-        ["search", "ferris"],
-        ["search", "monty"],
-        ["search", "turing"],
-        ["search", "Gopher"],
-        ["search", "Duke"],
-        ["search", "Anders"],
-        ["search", "Bjarne"],
-        ["outline"],
-        ["packages"]
+        [
+          "search",
+          "ferris"
+        ],
+        [
+          "search",
+          "monty"
+        ],
+        [
+          "search",
+          "turing"
+        ],
+        [
+          "search",
+          "Gopher"
+        ],
+        [
+          "search",
+          "Duke"
+        ],
+        [
+          "search",
+          "Anders"
+        ],
+        [
+          "search",
+          "Bjarne"
+        ],
+        [
+          "outline"
+        ],
+        [
+          "packages"
+        ]
       ],
       "mcp": [
-        {"tool": "backend.search", "arguments": {"query": "ferris"}},
-        {"tool": "backend.search", "arguments": {"query": "Gopher"}},
-        {"tool": "backend.outline", "arguments": {}}
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "ferris"
+          }
+        },
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "Gopher"
+          }
+        },
+        {
+          "tool": "backend.outline",
+          "arguments": {}
+        }
       ]
     }
   ]
