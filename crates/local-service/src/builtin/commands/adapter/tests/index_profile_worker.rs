@@ -214,6 +214,7 @@ fn existing_index_worker_shutdown_preserves_selected_current_and_retires_queue()
         matches!(&completion.outcome, ProfileOutcome::Admitted(Ok(()))),
         "actual compiled Python profile must be admitted"
     );
+    assert_mixed_native_compiler_admitted(&fixture.adapter.as_ref().expect("actual adapter").compiler);
     let before = attempt_dispositions(&fixture, &attempts);
     assert!(matches!(&before[0], AttemptDisposition::Published(_)));
     assert_eq!(before[1], AttemptDisposition::Pending);
