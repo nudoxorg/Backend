@@ -484,7 +484,8 @@ mod tests {
     fn setup_publication_preserves_required_policy_and_matching_descriptor_without_activation()
     -> TestResult {
         let directory = tempfile::tempdir()?;
-        let compiler = directory.path().join("compiler");
+        crate::test_support::make_private(directory.path())?;
+        let compiler = directory.path().canonicalize()?.join("compiler");
         let prepared =
             prepared_publication_fixture(directory.path(), EmbeddingRequirement::Required)?;
         let installed = prepared.install(&compiler)?;
@@ -514,7 +515,8 @@ mod tests {
     #[test]
     fn changed_prepared_dependency_never_publishes_runtime_or_descriptor() -> TestResult {
         let directory = tempfile::tempdir()?;
-        let compiler = directory.path().join("compiler");
+        crate::test_support::make_private(directory.path())?;
+        let compiler = directory.path().canonicalize()?.join("compiler");
         let installed =
             prepared_publication_fixture(directory.path(), EmbeddingRequirement::Optional)?;
         let old_spec = installed.install(&compiler)?;
@@ -548,7 +550,8 @@ mod tests {
     #[test]
     fn immutable_descriptor_write_failure_preserves_previous_runtime_selection() -> TestResult {
         let directory = tempfile::tempdir()?;
-        let compiler = directory.path().join("compiler");
+        crate::test_support::make_private(directory.path())?;
+        let compiler = directory.path().canonicalize()?.join("compiler");
         let old = prepared_publication_fixture(directory.path(), EmbeddingRequirement::Optional)?
             .install(&compiler)?;
         let old_descriptor =
@@ -607,7 +610,8 @@ mod tests {
     #[test]
     fn setup_install_lock_refuses_concurrent_publication() -> TestResult {
         let directory = tempfile::tempdir()?;
-        let compiler = directory.path().join("compiler");
+        crate::test_support::make_private(directory.path())?;
+        let compiler = directory.path().canonicalize()?.join("compiler");
         backend_platform::durable::ensure_private_directory(&compiler)?;
         let parent = DirectoryCapability::open(&compiler)?;
         let lock = parent.open_private_file_read_write("embedding-setup.lock", true)?;

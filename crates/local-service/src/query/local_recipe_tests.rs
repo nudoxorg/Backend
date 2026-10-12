@@ -144,12 +144,13 @@ fn local_recipe_admission_reuses_the_actual_activated_arc_without_probing() -> T
     use std::os::unix::fs::PermissionsExt;
 
     let directory = crate::test_support::private_temp_dir("local-recipe")?;
-    let program = directory.path().join("protocol-fixture.py");
-    let counter = directory.path().join("calls");
+    let root = directory.path().canonicalize()?;
+    let program = root.join("protocol-fixture.py");
+    let interpreter = super::super::local_semantic::tests::protocol_fixture_python()?;
+    let counter = root.join("calls");
     std::fs::write(
         &program,
-        br"#!/usr/bin/env python3
-import os, struct, sys
+        br"import os, struct, sys
 frame = sys.stdin.buffer.read()
 if frame[:4] != b'BEM2' or len(frame) < 108:
     sys.exit(3)
@@ -173,14 +174,20 @@ sys.stdout.buffer.write(response)
     )?;
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700))?;
     let contract = contract();
-    let config = directory.path().join("embedding.config");
+    let config = root.join("compiler").join("embedding.config");
     let spec = install_embedding_runtime(
         &config,
         EmbeddingRuntimeInstall {
             requirement: EmbeddingRequirement::Optional,
-            program,
-            arguments: Vec::new(),
-            dependencies: Vec::new(),
+            program: interpreter,
+            arguments: vec![
+                "-I".to_owned(),
+                program
+                    .to_str()
+                    .ok_or("UTF-8 protocol script path")?
+                    .to_owned(),
+            ],
+            dependencies: vec![program],
             environment: vec![(
                 "FIXTURE_COUNTER".to_owned(),
                 counter.to_string_lossy().into_owned(),

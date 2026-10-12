@@ -823,7 +823,7 @@ pub(crate) fn fixture_with_mode(
 }
 
 #[cfg(unix)]
-fn protocol_fixture_python() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+pub(crate) fn protocol_fixture_python() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
     use std::os::unix::fs::PermissionsExt;
     // Match the existing native-tooling/engine test authority convention. An
     // explicit selection fails closed instead of falling through to another tool.
@@ -882,11 +882,13 @@ fn fixture_with_mode_and_winner(
 ) -> Result<ProtocolFixture, Box<dyn std::error::Error>> {
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir()?;
+    crate::test_support::make_private(directory.path())?;
+    let root = directory.path().canonicalize()?;
     let interpreter = protocol_fixture_python()?;
-    let program = directory.path().join("protocol-fixture.py");
-    let log = directory.path().join("input.jsonl");
-    let entered = directory.path().join("second-page-entered");
-    let release = directory.path().join("second-page-release");
+    let program = root.join("protocol-fixture.py");
+    let log = root.join("input.jsonl");
+    let entered = root.join("second-page-entered");
+    let release = root.join("second-page-release");
     std::fs::write(
         &program,
         br"import json, os, struct, sys, time
@@ -936,7 +938,8 @@ sys.stdout.buffer.write(response)",
         document_treatment: LocalEmbeddingTreatment::UnmodifiedUtf8,
         provider_options: *blake3::hash(b"explicit fixture tokenizer/pool options").as_bytes(),
     };
-    let config = directory.path().join("embedding.config");
+    let compiler = root.join("compiler");
+    let config = compiler.join("embedding.config");
     let spec = install_embedding_runtime(
         &config,
         EmbeddingRuntimeInstall {
@@ -983,7 +986,7 @@ sys.stdout.buffer.write(response)",
             options_digest: contract.options_digest(),
         },
     )?;
-    let descriptor = directory.path().join("embedding-query.config");
+    let descriptor = compiler.join("embedding-query.config");
     backend_platform::durable::write_private_atomic(
         &descriptor,
         &LocalQueryRecipeDescriptor::new(spec, contract)?.canonical_bytes(),
