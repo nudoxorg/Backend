@@ -18,6 +18,12 @@ On a cold owner, the existing native history worker may need to reconstruct its 
 
 The original full `Session::semantic_versions`/`SurfaceCommand::SemanticVersions` API remains available for existing internal consumers, with its original full reply shape and exact package admission. Normal installed named reads use the new page. Live DTO becomes 29; persisted view rows, certificates and compact events remain unchanged, with historical journal envelopes 21 through 28 still admitted by the maintained checked grammar. The independent native-worker refusal cutover law remains explicitly DTO27 versus historical DTO28.
 
+## Current work bounds
+
+This atom bounds the complete response and each emitted segment. It does not yet make catalog preparation proportional to the returned page: the owner gathers at most `MAX_PRODUCT_ROWS` retained generations, admits their full records, and hashes their complete image catalogs and exact metadata on every request. The existing authority projection clones its retained proof status; page building also clones emitted items and serializes bounded candidate pages when reducing their whole-item count. Consequently, walking P pages of N retained images can repeat O(P × N) catalog admission/hashing, in addition to bounded page serialization. No immutable snapshot-owned commitment reuse or constant-work pagination is claimed here. Those costs and genuine large-project runtime performance remain UNRUN and need a separate structural successor.
+
+The corrected library fixture retains the exact selected source root captured in the public DTO while scaling only its explicitly synthetic history-image catalog. The 133-image positive walk passes that same captured root to the factory. An independent wrong-root call still requires `InvalidCatalog`; the saved-cursor changed-source and strict response source-field controls remain intact. The prior 7460 fixture supplied a different root to the positive walk and was guaranteed to refuse before paging; it is superseded by this source-only correction, not credited as a passing test.
+
 ## Controls and remaining gates
 
 All newly added controls are **UNRUN**. Source parsing by rustfmt and a clean diff check are not compilation or runtime proof.

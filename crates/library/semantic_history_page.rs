@@ -749,6 +749,13 @@ mod tests {
     use crate::{Command, CommandDto, CommandReply, ReplyDto, SurfaceCommand, SurfaceReply};
     use std::collections::BTreeSet;
 
+    // Exact selected frontier captured in the retained public DTO. The scaled
+    // image catalog below changes no selected-source field.
+    const CAPTURED_SOURCE_ROOT: [u8; 32] = [
+        2, 50, 167, 209, 110, 146, 255, 176, 60, 124, 126, 30, 167, 190, 176, 3, 205, 247, 221, 70,
+        33, 231, 162, 84, 85, 223, 230, 22, 114, 23, 117, 253,
+    ];
+
     fn retained_fixture(images: u32) -> SemanticVersionRecord {
         // The captured 42-image DTO supplies the public schema. Scaling its
         // catalog is a deterministic unit fixture, not native compiler proof.
@@ -763,13 +770,15 @@ mod tests {
         };
         let mut record = records[0].clone();
         record.artifacts = images;
-        // The unit owner fixture has its own source-root identity; the captured
-        // packet supplies the schema, not authority for this synthetic catalog.
-        record
-            .selected_source_frontier
-            .as_mut()
-            .expect("selected source")
-            .source_relation_root = [2; 32];
+        assert_eq!(
+            record
+                .selected_source_frontier
+                .as_ref()
+                .expect("captured selected source")
+                .source_relation_root,
+            CAPTURED_SOURCE_ROOT,
+            "retain the captured source identity while scaling only history images"
+        );
         let SemanticHistoryPublicationStatus::Published { commit, proof, .. } =
             &mut record.history_status
         else {
@@ -819,6 +828,18 @@ mod tests {
             panic!("full proof");
         };
         let records = [record.clone()];
+        assert_eq!(
+            SemanticVersionsPage::from_versions(
+                record.package.clone(),
+                [17; 32],
+                [29; 32],
+                &records,
+                8,
+                None,
+            ),
+            Err(SemanticHistoryPageError::InvalidCatalog),
+            "a real source-root mismatch must still refuse before paging"
+        );
         let mut cursor = None;
         let mut images = Vec::new();
         let mut seen = BTreeSet::new();
@@ -829,7 +850,7 @@ mod tests {
             let page = SemanticVersionsPage::from_versions(
                 record.package.clone(),
                 [17; 32],
-                [29; 32],
+                CAPTURED_SOURCE_ROOT,
                 &records,
                 8,
                 cursor.as_ref(),
@@ -916,7 +937,7 @@ mod tests {
             let page = SemanticVersionsPage::from_versions(
                 selected.package.clone(),
                 [1; 32],
-                [2; 32],
+                CAPTURED_SOURCE_ROOT,
                 &versions,
                 3,
                 cursor.as_ref(),
@@ -967,16 +988,22 @@ mod tests {
         record
             .admit()
             .expect("a valid complete item is not an invalid catalog");
-        let error =
-            SemanticVersionsPage::from_versions(package, [1; 32], [2; 32], &[record], 1, None)
-                .expect_err("a whole item cannot fit");
+        let error = SemanticVersionsPage::from_versions(
+            package,
+            [1; 32],
+            CAPTURED_SOURCE_ROOT,
+            &[record],
+            1,
+            None,
+        )
+        .expect_err("a whole item cannot fit");
         assert_eq!(error, SemanticHistoryPageError::WholeItemOversized);
         assert!(error.to_string().contains("lowering limit cannot"));
         let record = retained_fixture(133);
         let first = SemanticVersionsPage::from_versions(
             record.package.clone(),
             [1; 32],
-            [2; 32],
+            CAPTURED_SOURCE_ROOT,
             &[record.clone()],
             8,
             None,
@@ -986,7 +1013,7 @@ mod tests {
             SemanticVersionsPage::from_versions(
                 record.package.clone(),
                 [9; 32],
-                [2; 32],
+                CAPTURED_SOURCE_ROOT,
                 &[record],
                 8,
                 first.next_cursor.as_ref()
@@ -1001,7 +1028,7 @@ mod tests {
         let first = SemanticVersionsPage::from_versions(
             record.package.clone(),
             [1; 32],
-            [2; 32],
+            CAPTURED_SOURCE_ROOT,
             &[record.clone()],
             8,
             None,
@@ -1021,7 +1048,7 @@ mod tests {
         let preparing = SemanticVersionsPage::from_versions(
             record.package.clone(),
             [1; 32],
-            [2; 32],
+            CAPTURED_SOURCE_ROOT,
             &[pending.clone()],
             8,
             Some(&saved),
@@ -1034,7 +1061,7 @@ mod tests {
         let resumed = SemanticVersionsPage::from_versions(
             record.package.clone(),
             [1; 32],
-            [2; 32],
+            CAPTURED_SOURCE_ROOT,
             &[reopened.clone()],
             8,
             Some(&saved),
@@ -1047,7 +1074,7 @@ mod tests {
             SemanticVersionsPage::from_versions(
                 record.package.clone(),
                 [9; 32],
-                [2; 32],
+                CAPTURED_SOURCE_ROOT,
                 &[reopened.clone()],
                 8,
                 Some(&saved)
@@ -1076,7 +1103,7 @@ mod tests {
             SemanticVersionsPage::from_versions(
                 record.package.clone(),
                 [1; 32],
-                [2; 32],
+                CAPTURED_SOURCE_ROOT,
                 &[pending],
                 8,
                 Some(&saved)
@@ -1092,7 +1119,7 @@ mod tests {
         let mut page = SemanticVersionsPage::from_versions(
             record.package.clone(),
             [1; 32],
-            [2; 32],
+            CAPTURED_SOURCE_ROOT,
             &[record.clone()],
             2,
             None,
@@ -1149,7 +1176,7 @@ mod tests {
         let page = SemanticVersionsPage::from_versions(
             record.package.clone(),
             [1; 32],
-            [2; 32],
+            CAPTURED_SOURCE_ROOT,
             &[record.clone()],
             8,
             None,
@@ -1263,7 +1290,7 @@ mod tests {
                 SemanticVersionsPage::from_versions(
                     record.package.clone(),
                     [1; 32],
-                    [2; 32],
+                    CAPTURED_SOURCE_ROOT,
                     &[record.clone()],
                     limit,
                     None
