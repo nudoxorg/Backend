@@ -1,0 +1,43 @@
+{
+  "kind": "Root independent source/data audit; no Rust/native/token-counter execution",
+  "sourcePacketHead": "a71c4173594f1b8bbb074cc8b096798113bb8e6f",
+  "verifiedPostimageFiles": [
+    "Cargo.lock",
+    "apps/mcp/src/jsonrpc.rs",
+    "apps/mcp/src/jsonrpc/codec.rs",
+    "apps/mcp/src/jsonrpc/fixtures/httpie-outline-cb57.raw",
+    "apps/mcp/src/jsonrpc/tests.rs",
+    "apps/mcp/src/jsonrpc/tests/token_outline.rs",
+    "apps/mcp/src/jsonrpc/tools.rs",
+    "apps/mcp/src/jsonrpc/wire_admission.rs",
+    "crates/present/Cargo.toml",
+    "crates/present/budget.rs",
+    "crates/present/call.rs",
+    "crates/present/drive.rs",
+    "crates/present/dto.rs",
+    "crates/present/lib.rs",
+    "crates/present/outline.rs",
+    "crates/present/token_count.rs",
+    "crates/present/token_data/LICENSE",
+    "crates/present/token_data/README.md",
+    "crates/present/token_data/cl100k.ranks",
+    "crates/present/token_data/provenance.json",
+    "crates/present/token_data/reference.json"
+  ],
+  "officialUpstreamUrl": "https://openaipublic.blob.core.windows.net/encodings/cl100k_base.tiktoken",
+  "upstreamBytes": 1681126,
+  "upstreamSha256": "223921b76ee99bde995b7ff738513eef100fb51d18c93597a113bcffe865b2a7",
+  "retainedVocabularyBytes": 844354,
+  "retainedVocabularySha256": "69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992",
+  "rankCount": 100256,
+  "allRanksUniqueAndContiguous": true,
+  "allSingleBytesPresent": true,
+  "maxTokenBytes": 128,
+  "exactReconstructionFromOfficialVocabulary": true,
+  "referenceCaseCount": 266,
+  "referenceCounts": "Retained upstream oracle values, not rerun by Root",
+  "actualRawMatches": [
+    "/private/tmp/nudox-sol61-fresh-app-acceptance-20261011/currentcb57-selected-read02-closed/0034-backend-outline.raw"
+  ],
+  "native": "UNRUN"
+}
