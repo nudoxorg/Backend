@@ -374,7 +374,7 @@ fn index_progress_tool() -> Value {
     job_tool(
         INDEX_PROGRESS_TOOL,
         "Index Progress",
-        "Read one immediate, bounded observation of an owner-issued indexing ticket or durable operation_key returned by backend.index. Ticket unknown-after-restart, operation unknown, unresolved, active and published evidence are distinct states.",
+        "Read an immediate observation of an owner-issued indexing ticket or durable operation_key. Copy the returned index_poll.call for a conditional wait of at most 10 seconds: unchanged pending observations return a compact reference, while changed/terminal/unknown evidence returns the complete receipt. Omit conditional options for the complete immediate snapshot. Ticket unknown-after-restart, operation unknown, unresolved, active and published evidence remain distinct.",
         json!({
             "type": "object",
             "properties": {
@@ -389,12 +389,24 @@ fn index_progress_tool() -> Value {
                     "default": 0,
                     "description": "Return only progress events after this sequence. Reuse next_sequence from the previous pending observation."
                 },
+                "after_observation": {
+                    "type": "string", "pattern": "^[0-9a-f]{64}$",
+                    "description": "Exact full active observation fingerprint returned in index_poll.call; requires operation_key. Changes of owner, state, request or source capture cannot be represented as unchanged."
+                },
+                "wait_millis": {
+                    "type": "integer", "minimum": 0, "maximum": 10000, "default": 0,
+                    "description": "Bounded conditional wait under the original request deadline/cancellation. With an operation_key requires after_observation; ticket uses after_sequence. Never starts or cancels owner work."
+                },
                 "detail": detail_property(INDEX_PROGRESS_TOOL)
             },
             "oneOf": [
-                {"required": ["ticket"], "not": {"required": ["operation_key"]}},
+                {"required": ["ticket"], "not": {"anyOf": [{"required": ["operation_key"]}, {"required": ["after_observation"]}]}},
                 {"required": ["operation_key"], "not": {"anyOf": [{"required": ["ticket"]}, {"required": ["after_sequence"]}]}}
             ],
+            "allOf": [{
+                "if": {"required": ["operation_key", "wait_millis"], "properties": {"wait_millis": {"minimum": 1}}},
+                "then": {"required": ["after_observation"]}
+            }],
             "additionalProperties": false
         }),
         true,
@@ -434,7 +446,7 @@ fn job_tool(
         "title": title,
         "description": description,
         "inputSchema": input_schema,
-        "outputSchema": index_job_output_schema(),
+        "outputSchema": if name == INDEX_PROGRESS_TOOL { index_progress_output_schema() } else { index_job_output_schema() },
         "annotations": {
             "title": title,
             "readOnlyHint": read_only,
@@ -450,6 +462,13 @@ fn index_job_output_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
+            "answer": {"type":"string"},
+            "detail": {"enum":["summary", "standard", "full"]},
+            "budget": {"type":"object", "properties": {
+                "bytes":{"type":"integer", "minimum":0},
+                "estimatedTokens":{"type":"integer", "minimum":0},
+                "bytesPerToken":{"type":"integer", "minimum":1}
+            }, "required":["bytes", "estimatedTokens", "bytesPerToken"], "additionalProperties":false},
             "fault": {"type": "object"},
             "index_poll": index_poll_schema(),
             "surface": {
@@ -480,6 +499,48 @@ fn index_job_output_schema() -> Value {
         },
         "required": ["surface"],
         "additionalProperties": false
+    })
+}
+
+fn index_progress_output_schema() -> Value {
+    let complete = index_job_output_schema();
+    let reference = json!({"oneOf": [
+        {"type":"object", "properties": {
+            "identity":{"const":"operation"},
+            "operation_key":{"type":"string", "pattern":"^[0-9a-f]{64}$"},
+            "ticket":ticket_schema()["oneOf"][0],
+            "after_observation":{"type":"string", "pattern":"^[0-9a-f]{64}$"}
+        }, "required":["identity", "operation_key", "ticket", "after_observation"], "additionalProperties":false},
+        {"type":"object", "properties": {
+            "identity":{"const":"ticket"},
+            "ticket":ticket_schema()["oneOf"][0],
+            "after_sequence":{"type":"integer", "minimum":0},
+            "stage":{"enum":["acquiring", "staging", "scanning", "compiling", "publishing"]}
+        }, "required":["identity", "ticket", "after_sequence", "stage"], "additionalProperties":false}
+    ]});
+    json!({
+        "type":"object",
+        "properties": {
+            "answer":complete["properties"]["answer"],
+            "detail":complete["properties"]["detail"],
+            "budget":complete["properties"]["budget"],
+            "fault":complete["properties"]["fault"],
+            "index_poll":index_poll_schema(),
+            "surface":{"oneOf":[complete["properties"]["surface"], {
+                "type":"object", "properties": {
+                    "result":{"const":"index-progress-unchanged"},
+                    "data":{"type":"object", "properties": {
+                        "state":{"const":"pending-unchanged"}, "reference":reference
+                    }, "required":["state", "reference"], "additionalProperties":false}
+                }, "required":["result", "data"], "additionalProperties":false
+            }]}
+        },
+        "required":["surface"],
+        "allOf":[{
+            "if":{"properties":{"surface":{"properties":{"result":{"const":"index-progress-unchanged"}}}}},
+            "then":{"required":["index_poll"], "not":{"required":["fault"]}}
+        }],
+        "additionalProperties":false
     })
 }
 

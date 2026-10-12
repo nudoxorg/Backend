@@ -576,6 +576,10 @@ struct Fake {
     continuation_error: Option<ClientError>,
     /// Optional product reply used by the high-fanout surface budget case.
     surface_reply: Option<SurfaceReply>,
+    /// Exact sequential observations for bounded-wait controls.
+    surface_replies: std::collections::VecDeque<SurfaceReply>,
+    /// Signals a real actor progress read before external cancellation.
+    surface_admitted: Option<std::sync::mpsc::SyncSender<()>>,
     /// Already-persisted durable identity used by the shared index-driver fixture.
     durable_index_key: Option<backend_library::IndexOperationKey>,
     /// Typed client failure returned by the surface boundary.
@@ -862,8 +866,14 @@ impl Engine for Fake {
 
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
         self.surface_commands.push(command.clone());
+        if let Some(admitted) = self.surface_admitted.take() {
+            admitted.send(()).expect("actual progress read admitted");
+        }
         if let Some(error) = self.surface_error.take() {
             return Err(error);
+        }
+        if let Some(reply) = self.surface_replies.pop_front() {
+            return Ok(reply);
         }
         if let Some(reply) = self.surface_reply.take() {
             return Ok(reply);
@@ -2080,7 +2090,7 @@ fn owner_index_job_tools_advertise_exact_tickets_and_immediate_progress() {
             .is_none()
     );
     assert_eq!(
-        progress["outputSchema"]["properties"]["surface"]["required"],
+        progress["outputSchema"]["properties"]["surface"]["oneOf"][0]["required"],
         json!(["result", "data"])
     );
 
@@ -2248,10 +2258,18 @@ fn index_first_use_returns_one_admitted_durable_poll_and_copying_it_only_observe
                 serde_json::to_value(&operation).expect("exact durable receipt")
             );
             let next = &content["index_poll"]["call"];
+            assert_eq!(next["name"], "backend.index_progress");
+            assert_eq!(next["arguments"]["operation_key"], "52".repeat(32));
+            let conditional = detail == "summary"
+                && matches!(&operation, IndexOperationObservation::Known(status) if matches!(status.state, IndexOperationState::Active { .. }));
+            assert_eq!(next["arguments"].get("wait_millis").is_some(), conditional);
             assert_eq!(
-                *next,
-                json!({"name":"backend.index_progress", "arguments":{"operation_key":"52".repeat(32)}})
+                next["arguments"].get("after_observation").is_some(),
+                conditional
             );
+            if conditional {
+                assert_eq!(next["arguments"]["wait_millis"], 10000);
+            }
             assert!(text_of(&wire["result"]).contains(&next.to_string()));
             assert_eq!(
                 text_of(&wire["result"])
@@ -2264,15 +2282,23 @@ fn index_first_use_returns_one_admitted_durable_poll_and_copying_it_only_observe
             write_message(&mut line, &wire).expect("whole production line");
             assert_stdio_line_accounting(std::str::from_utf8(&line).expect("UTF-8"));
 
+            let mut next_operation = operation.clone();
+            if conditional
+                && let IndexOperationObservation::Known(status) = &mut next_operation
+                && let IndexOperationState::Active { stage, .. } = &mut status.state
+            {
+                *stage = IndexJobStage::Publishing;
+            }
             server.product.surface_reply =
-                Some(SurfaceReply::IndexOperationStatus(operation.clone()));
+                Some(SurfaceReply::IndexOperationStatus(next_operation.clone()));
             let observed = request(&mut server, "tools/call", next);
             assert_eq!(observed["id"], 9);
             assert!(observed.get("error").is_none(), "{observed}");
             assert_eq!(observed["result"]["isError"], false);
             assert_eq!(
                 observed["result"]["structuredContent"]["surface"]["data"],
-                serde_json::to_value(&operation).expect("same retained receipt")
+                serde_json::to_value(&next_operation)
+                    .expect("exact next receipt; changed active stage is immediate")
             );
             assert_eq!(
                 server.product.surface_commands,
@@ -7006,6 +7032,275 @@ fn cancelled_endpoint_admission_preserves_previous_and_parked_continuation_proof
                     .expect("same issuing owner"),
                 next
             );
+        }
+    }
+}
+
+#[cfg(test)]
+#[expect(
+    clippy::expect_used,
+    clippy::panic,
+    reason = "conditional MCP projection controls"
+)]
+mod conditional_progress_tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn real_stdio_intake_cancels_conditional_wait_and_completed_id_can_be_reused() {
+        use std::io::{BufRead as _, Write as _};
+        use std::time::{Duration, Instant};
+        let (mut input, server_input) =
+            std::os::unix::net::UnixStream::pair().expect("owned input");
+        let (output, mut server_output) =
+            std::os::unix::net::UnixStream::pair().expect("owned output");
+        server_input
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("fixture bound");
+        output
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("response bound");
+        let mut output = std::io::BufReader::new(output);
+        let (admitted, admission) = std::sync::mpsc::sync_channel(1);
+        let server = Server::with_authority(
+            Fake {
+                surface_reply: Some(phases().remove(1)),
+                surface_admitted: Some(admitted),
+                ..Fake::default()
+            },
+            PROJECT.to_owned(),
+            [7; 32],
+        );
+        let serving = std::thread::spawn(move || {
+            serve_stdio_server(
+                server,
+                std::io::BufReader::new(server_input),
+                &mut server_output,
+            )
+        });
+        writeln!(input, "{}", json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"conditional-progress-law","version":"1"}}})).expect("initialize");
+        let mut line = String::new();
+        output.read_line(&mut line).expect("initialize reply");
+        assert!(assert_stdio_line_accounting(&line)["result"]["serverInfo"].is_object());
+        writeln!(
+            input,
+            "{}",
+            json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+        )
+        .expect("ack");
+        let mut arguments = active_arguments();
+        arguments["wait_millis"] = json!(10000);
+        writeln!(input, "{}", json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":INDEX_PROGRESS_TOOL,"arguments":arguments}})).expect("conditional progress");
+        admission
+            .recv_timeout(Duration::from_secs(1))
+            .expect("owner read occurs before cancellation");
+        let started = Instant::now();
+        writeln!(
+            input,
+            "{}",
+            json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}})
+        )
+        .expect("independent intake cancellation");
+        line.clear();
+        output.read_line(&mut line).expect("cancelled response");
+        let cancelled = assert_stdio_line_accounting(&line);
+        assert_eq!(cancelled["id"], 7);
+        assert_eq!(cancelled["error"]["code"], -32800);
+        assert!(
+            cancelled.get("result").is_none(),
+            "no success/pending reference after cancellation"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "intake interrupts the actual 10-second actor wait"
+        );
+        writeln!(input, "{}", json!({"jsonrpc":"2.0","id":7,"method":"ping"}))
+            .expect("completed id reuse");
+        line.clear();
+        output.read_line(&mut line).expect("next request");
+        let reused = assert_stdio_line_accounting(&line);
+        assert_eq!(reused["id"], 7);
+        assert!(reused.get("error").is_none());
+        input.shutdown(std::net::Shutdown::Write).expect("EOF");
+        serving.join().expect("actor stops").expect("clean stdio");
+    }
+
+    fn phases() -> Vec<SurfaceReply> {
+        let capture: Value = serde_json::from_str(include_str!(
+            "../../../../crates/client/src/fixtures/go05-progress-waveform.json"
+        ))
+        .expect("actual waveform");
+        capture["runs"]
+            .as_array()
+            .expect("complete states")
+            .iter()
+            .map(|run| serde_json::from_value(run["reply"].clone()).expect("actual receipt"))
+            .collect()
+    }
+    fn active_arguments() -> Value {
+        let replies = phases();
+        let SurfaceReply::IndexOperationStatus(backend_library::IndexOperationObservation::Known(
+            status,
+        )) = &replies[1]
+        else {
+            panic!("actual active")
+        };
+        json!({"operation_key":status.operation_key, "after_observation":backend_client::IndexObservationFingerprint::active(status).expect("actual full fingerprint").expect("active"), "wait_millis":0})
+    }
+
+    #[test]
+    fn conditional_mcp_progress_is_explicit_pending_and_old_full_snapshot_remains_exact() {
+        for detail in ["summary", "standard", "full"] {
+            let active = phases().remove(1);
+            let mut server = ready(Fake {
+                surface_reply: Some(active.clone()),
+                ..Fake::default()
+            });
+            let mut arguments = active_arguments();
+            arguments["detail"] = json!(detail);
+            let unchanged = call(&mut server, INDEX_PROGRESS_TOOL, &arguments);
+            assert_eq!(unchanged["isError"], false);
+            let body = &unchanged["structuredContent"];
+            assert_eq!(body["surface"]["data"]["state"], "pending-unchanged");
+            let reference = &body["surface"]["data"]["reference"];
+            assert_eq!(reference["operation_key"], arguments["operation_key"]);
+            assert_eq!(
+                reference["after_observation"],
+                arguments["after_observation"]
+            );
+            assert_eq!(
+                reference["ticket"],
+                serde_json::to_value(&active).expect("exact status")["data"]["detail"]["state"]["detail"]
+                    ["ticket"]
+            );
+            assert_eq!(
+                body["index_poll"]["call"]["arguments"]["wait_millis"],
+                10000
+            );
+            assert!(text_of(&unchanged).contains("remains pending"));
+            assert!(!text_of(&unchanged).contains("published"));
+            assert!(
+                serde_json::to_vec(&unchanged)
+                    .expect("complete result")
+                    .len()
+                    < 2200
+            );
+            assert_context_bounded(&unchanged);
+            server.product.surface_reply = Some(active.clone());
+            let complete = call(
+                &mut server,
+                INDEX_PROGRESS_TOOL,
+                &json!({"operation_key":arguments["operation_key"],"detail":"full"}),
+            );
+            assert_eq!(
+                complete["structuredContent"]["surface"],
+                serde_json::to_value(&active).expect("old full request is exact")
+            );
+            assert_eq!(
+                complete["structuredContent"]["index_poll"]["call"]["arguments"],
+                json!({"operation_key":arguments["operation_key"]})
+            );
+            assert!(
+                complete["structuredContent"]
+                    .get("index_progress")
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn conditional_mcp_terminal_refusal_keeps_every_actual_go05_fault_and_source_fact() {
+        let terminal = phases().pop().expect("actual refusal");
+        for detail in ["summary", "standard", "full"] {
+            let mut server = ready(Fake {
+                surface_reply: Some(terminal.clone()),
+                ..Fake::default()
+            });
+            let mut arguments = active_arguments();
+            arguments["wait_millis"] = json!(10000);
+            arguments["detail"] = json!(detail);
+            let result = call(&mut server, INDEX_PROGRESS_TOOL, &arguments);
+            assert_eq!(result["isError"], true);
+            let actual = serde_json::to_value(&terminal).expect("actual typed terminal");
+            assert_eq!(result["structuredContent"]["surface"], actual);
+            assert_eq!(
+                result["structuredContent"]["fault"]["compiler_failure"],
+                actual["data"]["detail"]["state"]["detail"]["compiler_failure"]
+            );
+            assert!(result["structuredContent"].get("index_poll").is_none());
+            assert_eq!(
+                server.product.surface_commands.len(),
+                1,
+                "terminal returns immediately despite requested wait"
+            );
+            assert_context_bounded(&result);
+        }
+    }
+
+    #[test]
+    fn conditional_mcp_uses_existing_ticket_sequence_and_returns_terminal_without_new_event() {
+        let ticket = super::index_job_ticket();
+        let pending = SurfaceReply::IndexProgress(backend_library::IndexJobObservation::Pending(
+            backend_library::IndexProgressPage {
+                ticket: ticket.clone(),
+                stage: backend_library::IndexJobStage::Compiling,
+                events: Box::new([]),
+                next_sequence: 7,
+                truncated: false,
+                has_more: false,
+            },
+        ));
+        let terminal = SurfaceReply::IndexProgress(backend_library::IndexJobObservation::Terminal(
+            backend_library::IndexJobTerminal {
+                ticket: ticket.clone(),
+                outcome: backend_library::IndexJobOutcome::Cancelled,
+            },
+        ));
+        let mut server = ready(Fake {
+            surface_replies: [pending, terminal.clone()].into(),
+            ..Fake::default()
+        });
+        let result = call(
+            &mut server,
+            INDEX_PROGRESS_TOOL,
+            &json!({"ticket":ticket,"after_sequence":7,"wait_millis":1}),
+        );
+        assert_eq!(result["isError"], false);
+        assert_eq!(
+            result["structuredContent"]["surface"]["data"],
+            serde_json::to_value(&terminal).expect("terminal")["data"]
+        );
+        assert_eq!(server.product.surface_commands.len(), 2);
+        assert!(
+            server
+                .product
+                .surface_commands
+                .iter()
+                .all(|command| matches!(
+                    command,
+                    SurfaceCommand::IndexProgress {
+                        after_sequence: 7,
+                        ..
+                    }
+                ))
+        );
+    }
+
+    #[test]
+    fn conditional_mcp_input_refusals_make_no_owner_calls() {
+        let valid = active_arguments();
+        let key = valid["operation_key"].clone();
+        for input in [
+            json!({"operation_key":key,"wait_millis":10000}),
+            json!({"operation_key":key,"after_observation":valid["after_observation"],"wait_millis":10001}),
+            json!({"operation_key":key,"after_observation":"AA".repeat(32)}),
+            json!({"operation_key":key,"wait_millis":-1}),
+            json!({"ticket":super::index_job_ticket(),"after_observation":valid["after_observation"]}),
+        ] {
+            let mut server = ready(Fake::default());
+            let result = call(&mut server, INDEX_PROGRESS_TOOL, &input);
+            assert_eq!(result["isError"], true);
+            assert!(server.product.surface_commands.is_empty());
         }
     }
 }

@@ -107,6 +107,62 @@ fn accepted_pending_work_offers_an_exact_executable_poll_without_becoming_a_faul
 }
 
 #[test]
+fn bounded_mcp_hint_preserves_complete_receipt_and_cli_single_observation_semantics() {
+    let capture: serde_json::Value = serde_json::from_str(include_str!(
+        "../client/src/fixtures/go05-progress-waveform.json"
+    ))
+    .expect("retained actual waveform");
+    for phase in capture["runs"].as_array().expect("actual states") {
+        let reply: SurfaceReply =
+            serde_json::from_value(phase["reply"].clone()).expect("actual typed receipt");
+        let ordinary = product_view(&reply);
+        let bounded = ordinary
+            .clone()
+            .with_bounded_index_poll()
+            .expect("admitted conditional hint");
+        assert_eq!(bounded.index_operation(), ordinary.index_operation());
+        assert_eq!(bounded.records(), ordinary.records());
+        assert_eq!(bounded.fault(), ordinary.fault());
+        assert_eq!(bounded.index_job(), ordinary.index_job());
+        if let Some(action) = IndexPollDto::new(&bounded) {
+            let original = IndexPollDto::new(&ordinary).expect("ordinary pending hint");
+            assert_eq!(
+                action.shell, original.shell,
+                "CLI stays an immediate single read"
+            );
+            assert!(original.call["arguments"].get("wait_millis").is_none());
+            assert_eq!(action.call["arguments"]["wait_millis"], 10000);
+            assert_eq!(
+                action.call["arguments"]["after_observation"]
+                    .as_str()
+                    .expect("full fingerprint")
+                    .len(),
+                64
+            );
+            assert!(markdown::product(&bounded).contains(&action.call.to_string()));
+            assert!(text::product(&bounded, Theme::plain()).contains(&action.shell));
+            for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+                let payload = encode_answer(
+                    &Answer::Product(Box::new(bounded.clone())),
+                    detail,
+                    None,
+                    DEFAULT_RESPONSE_BUDGET_BYTES,
+                )
+                .expect("complete budgeted projection");
+                let body: serde_json::Value = serde_json::from_slice(&payload.bytes).expect("JSON");
+                assert_eq!(body["index_operation"], phase["reply"]["data"]);
+                assert_eq!(body["index_poll"]["call"], action.call);
+            }
+        } else {
+            assert!(
+                ordinary.index_poll_affordance().is_none(),
+                "terminal failure is never a pending delta hint"
+            );
+        }
+    }
+}
+
+#[test]
 fn durable_accepted_and_active_work_share_one_copyable_restart_safe_poll() {
     use backend_library::{
         CompileExecutionIntent, IndexOperationKey, IndexOperationObservation, IndexOperationState,

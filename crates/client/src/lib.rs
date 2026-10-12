@@ -69,12 +69,19 @@ pub use request_context::RequestCancellationReason;
 #[cfg(any(unix, windows))]
 pub use request_context::RequestContext;
 mod index_operation;
+mod index_progress;
 pub use backend_replication::SelectedGenerationStamp as SelectedStamp;
 use backend_replication::{
     LocalControlError, LocalControlLimits, ReplicationError, read_frame, write_frame,
 };
 pub use backend_runtime::{StartupFailure, StartupFailureCause, StartupRecovery};
 pub use index_operation::{index_with_journal, surface_with_index_journal};
+#[cfg(any(unix, windows))]
+pub use index_progress::read_index_progress;
+pub use index_progress::{
+    IndexObservationFingerprint, IndexProgressRead, IndexProgressReference, IndexProgressUpdate,
+    MAX_INDEX_PROGRESS_WAIT_MILLIS,
+};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{Read, Write};

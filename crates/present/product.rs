@@ -381,6 +381,7 @@ pub struct ProductView {
     index_search_page: Option<IndexSearchPageInfo>,
     index_job: Option<IndexJobProjection>,
     index_operation: Option<backend_library::IndexOperationObservation>,
+    index_progress_poll: Option<backend_client::IndexProgressReference>,
     selected_source_frontier: Option<SelectedProjectSourceFrontier>,
     package_source_membership_page: Option<backend_library::PackageSourceMembershipPageResultV1>,
     semantic_data: Option<ProductSemanticData>,
@@ -620,6 +621,11 @@ impl ProductView {
     /// only legacy job results use an issued ticket and event sequence.
     #[must_use]
     pub fn index_poll_affordance(&self) -> Option<crate::Affordance> {
+        if let Some(reference) = &self.index_progress_poll {
+            return Some(crate::Affordance::ObserveIndexChanges {
+                reference: reference.clone(),
+            });
+        }
         if let Some(operation) = self.index_operation() {
             return match operation {
                 backend_library::IndexOperationObservation::Known(status)
@@ -638,6 +644,38 @@ impl ProductView {
         }
         self.index_job()
             .and_then(IndexJobProjection::poll_affordance)
+    }
+
+    /// Adds an opt-in bounded MCP continuation to a complete pending answer.
+    /// Full/immediate clients and the CLI can retain their existing projection.
+    /// # Errors
+    /// Returns a typed error if the retained active status cannot be committed.
+    pub fn with_bounded_index_poll(mut self) -> Result<Self, backend_client::ClientError> {
+        if let Some(backend_library::IndexOperationObservation::Known(status)) =
+            &self.index_operation
+        {
+            if let backend_library::IndexOperationState::Active { ticket, .. } = &status.state
+                && let Some(after_observation) =
+                    backend_client::IndexObservationFingerprint::active(status)?
+            {
+                self.index_progress_poll =
+                    Some(backend_client::IndexProgressReference::Operation {
+                        operation_key: status.operation_key,
+                        ticket: ticket.clone(),
+                        after_observation,
+                    });
+            }
+        } else if let Some(IndexJobProjection::Progress(IndexJobObservation::Pending(page))) =
+            &self.index_job
+            && !page.has_more
+        {
+            self.index_progress_poll = Some(backend_client::IndexProgressReference::Ticket {
+                ticket: page.ticket.clone(),
+                after_sequence: page.next_sequence,
+                stage: page.stage,
+            });
+        }
+        Ok(self)
     }
 
     /// Complete bounded compiler shape egress, never a reconstructed source projection.
@@ -832,6 +870,7 @@ impl ProductView {
             index_search_page: None,
             index_job: None,
             index_operation: None,
+            index_progress_poll: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
             semantic_data: None,
@@ -850,6 +889,7 @@ impl ProductView {
             index_search_page: None,
             index_job: None,
             index_operation: None,
+            index_progress_poll: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
             semantic_data: None,
@@ -866,6 +906,7 @@ impl ProductView {
             index_search_page: None,
             index_job: None,
             index_operation: None,
+            index_progress_poll: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
             semantic_data: None,
@@ -882,6 +923,7 @@ impl ProductView {
             index_search_page: None,
             index_job: None,
             index_operation: None,
+            index_progress_poll: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
             semantic_data: None,
@@ -898,6 +940,7 @@ impl ProductView {
             index_search_page: None,
             index_job: None,
             index_operation: None,
+            index_progress_poll: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
             semantic_data: None,
