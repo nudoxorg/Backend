@@ -460,7 +460,7 @@ fn step_metadata_bytes<R: CanonicalRelation>(
 ) -> Option<(usize, usize, usize)> {
     let mut in_flight = size_of::<CanonicalNode<R>>().checked_mul(nodes.len())?;
     let mut frontier = in_flight.checked_mul(2)?;
-    let mut overlay = size_of::<CheckedCanonicalRoot<R>>()
+    let mut overlay = size_of::<helpers::OverlayNode<R>>()
         .checked_add(size_of::<[u8; crate::ID_BYTES]>())?
         .checked_add(MAP_NODE_LINK_BYTES)?
         .checked_mul(nodes.len())?;
@@ -1162,7 +1162,8 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
     /// Each step reuses the prior step's immutable frontier through an
     /// in-memory checked-node overlay. Unchanged descendants continue to load
     /// from the original store, so a batch retains O(changed frontier) memory
-    /// and never hydrates the full relation. The resulting delta is rooted at
+    /// and never hydrates the full relation. Superseded intermediate nodes are
+    /// excluded from the final CAS frontier. The resulting delta is rooted at
     /// the original source and contains one canonical before/after entry per
     /// effective key.
     ///
@@ -1338,6 +1339,11 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> LazyTree<'a, R, L> {
             }
             root = update.target_root();
         }
+
+        // The overlay's marker is included in bounded metadata accounting.
+        // Its raw borrowed child iterator allocates no decoded keys or child
+        // vector and never opens an unchanged subtree.
+        overlay.retain_selected_frontier(root.root().as_bytes(), &mut frontier)?;
 
         let mut work = work;
         work.loaded_nodes = work.loaded_nodes.saturating_add(batch_attempt.loaded_nodes);

@@ -11,13 +11,13 @@ pub struct LazyTreeWork {
     /// Number of authenticated node load requests made through the loader,
     /// including hits served by an in-memory overlay.
     pub loaded_nodes: usize,
-    /// Number of canonical nodes emitted into the changed frontier.
+    /// Number of canonical nodes constructed, including superseded batch nodes.
     pub rebuilt_nodes: usize,
     /// Number of extra nodes created by split propagation.
     pub split_nodes: usize,
     /// Number of logical entries removed.
     pub removed_entries: usize,
-    /// Total bytes in the changed frontier.
+    /// Total constructed canonical bytes, including superseded batch nodes.
     pub emitted_bytes: usize,
     /// Conservative peak metadata charge for a bounded batch update.
     ///
@@ -148,6 +148,7 @@ impl<R: CanonicalRelation> LazyPreparedUpdate<R> {
     }
 
     /// Borrows newly encoded nodes in child-to-root order for store CAS.
+    /// Batch updates exclude superseded nodes unreachable from the target.
     #[must_use]
     pub fn changed_nodes(&self) -> &[CanonicalNode<R>] {
         &self.changed

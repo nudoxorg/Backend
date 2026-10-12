@@ -1069,6 +1069,35 @@ fn lazy_batch_reuses_its_frontier_and_emits_one_exact_delta()
     assert_eq!(delta.target(), update.target().root());
     assert_eq!(delta.changes().count(), changes.len());
     assert_eq!(update.target().row_count(), expected.len() as u64);
+    let canonical = PersistentTree::<RelationFixture>::from_sorted_items(&expected)?;
+    let selected_nodes = canonical
+        .node_closure()
+        .map(|node| (node.id().to_bytes(), node.canonical_bytes().to_vec()))
+        .collect::<BTreeMap<_, _>>();
+    for node in update.changed_nodes() {
+        assert_eq!(
+            selected_nodes.get(node.commitment().as_bytes()),
+            Some(&node.as_bytes().to_vec()),
+            "mixed insert/replace/remove must never publish a superseded node"
+        );
+    }
+    let mut stored = loader.nodes.clone();
+    stored.extend(
+        update
+            .changed_nodes()
+            .iter()
+            .map(|node| (node.commitment().to_bytes(), node.as_bytes().to_vec())),
+    );
+    let cold_loader = CountingLoader {
+        nodes: stored,
+        calls: Cell::new(0),
+    };
+    let cold_claim = UntrustedId::<RelationFixture>::from_wire(
+        update.target().root().as_bytes(),
+        IdContext::relation::<RelationFixture>(),
+    )?;
+    let cold = LazyTree::open(&cold_loader, cold_claim)?;
+    assert_eq!(cold.page(None, expected.len() + 1)?.entries(), expected);
     assert!(update.work().rebuilt_nodes < tree.node_closure().count());
     assert!(matches!(
         lazy.prepare_update(&[
@@ -1083,6 +1112,180 @@ fn lazy_batch_reuses_its_frontier_and_emits_one_exact_delta()
         ]),
         Err(LazyTreeError::Node(NodeError::UnsortedOrDuplicate))
     ));
+    Ok(())
+}
+
+#[test]
+fn lazy_nonempty_ingest_publishes_only_final_reachable_nodes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let base = PersistentTree::<RelationFixture>::from_sorted_items(&[(0, 0)])?;
+    let base_nodes = base
+        .node_closure()
+        .map(|node| (node.id().to_bytes(), node.canonical_bytes().to_vec()))
+        .collect::<BTreeMap<_, _>>();
+    let loader = CountingLoader {
+        nodes: base_nodes.clone(),
+        calls: Cell::new(0),
+    };
+    let claim = UntrustedId::from_wire(
+        base.root().commitment().as_bytes(),
+        IdContext::relation::<RelationFixture>(),
+    )?;
+    let lazy = LazyTree::open(&loader, claim)?;
+    let changes = (1..=6_000)
+        .map(|key| TreeChange {
+            key,
+            after: Some(key * 2),
+        })
+        .collect::<Vec<_>>();
+    let update = lazy.prepare_update(&changes)?;
+    let expected = (0..=6_000).map(|key| (key, key * 2)).collect::<Vec<_>>();
+    let canonical = PersistentTree::<RelationFixture>::from_sorted_items(&expected)?;
+    let selected_nodes = canonical
+        .node_closure()
+        .map(|node| (node.id().to_bytes(), node.canonical_bytes().to_vec()))
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        update.target().node().as_bytes(),
+        canonical.root().as_bytes()
+    );
+    let delta = update.delta();
+    assert_eq!(delta.base(), base.root().commitment());
+    assert_eq!(delta.target(), update.target().root());
+    assert_eq!(delta.changes().count(), 6_000);
+    for (change, requested) in delta.changes().zip(&changes) {
+        assert_eq!(change.key, requested.key);
+        assert_eq!(change.before, None);
+        assert_eq!(change.after, requested.after);
+    }
+    let mut published = base_nodes.clone();
+    let mut final_nodes = BTreeMap::new();
+    let mut physical_bytes = 0;
+    for node in update.changed_nodes() {
+        let version = node.commitment().to_bytes();
+        assert_eq!(
+            selected_nodes.get(&version),
+            Some(&node.as_bytes().to_vec())
+        );
+        assert!(final_nodes.insert(version, ()).is_none(), "unique frontier");
+        let admitted = admit_canonical_root::<RelationFixture>(node.as_bytes())?;
+        for child in admitted.child_iter()? {
+            assert!(
+                published.contains_key(child?.commitment.as_bytes()),
+                "every selected child must precede its parent or be in the old CAS"
+            );
+        }
+        physical_bytes += node.as_bytes().len();
+        published.insert(version, node.as_bytes().to_vec());
+    }
+    for (version, bytes) in &selected_nodes {
+        assert_eq!(
+            published.get(version),
+            Some(bytes),
+            "complete final frontier"
+        );
+    }
+    assert!(update.work().rebuilt_nodes > update.changed_nodes().len());
+    assert!(update.work().emitted_bytes > physical_bytes);
+    let cold_loader = CountingLoader {
+        nodes: published,
+        calls: Cell::new(0),
+    };
+    let cold_claim = UntrustedId::<RelationFixture>::from_wire(
+        update.target().root().as_bytes(),
+        IdContext::relation::<RelationFixture>(),
+    )?;
+    let cold = LazyTree::open(&cold_loader, cold_claim)?;
+    let mut after = None;
+    let mut observed = Vec::new();
+    loop {
+        let page = cold.page(after.as_ref(), 257)?;
+        observed.extend_from_slice(page.entries());
+        let Some(next) = page.next() else { break };
+        after = Some(*next);
+    }
+    assert_eq!(observed, expected, "cold read retains all 6001 actual rows");
+    Ok(())
+}
+
+#[test]
+fn admitted_child_wire_walk_never_decodes_keys_or_adds_byte_order_requirements()
+-> Result<(), Box<dyn std::error::Error>> {
+    static KEY_DECODES: AtomicUsize = AtomicUsize::new(0);
+    #[derive(Debug, Eq, PartialEq)]
+    struct LittleEndianRelation;
+    impl Relation for LittleEndianRelation {
+        const DOMAIN: u8 = 1;
+        const TYPE: u16 = 27;
+        type Key = u64;
+        type Value = u64;
+        fn encode_key(value: &u64, out: &mut Vec<u8>) {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        fn encode_value(value: &u64, out: &mut Vec<u8>) {
+            out.extend_from_slice(&value.to_be_bytes());
+        }
+    }
+    impl CanonicalRelation for LittleEndianRelation {
+        fn decode_key(bytes: &[u8]) -> Result<Self::Key, RelationDecodeError> {
+            KEY_DECODES.fetch_add(1, AtomicOrdering::Relaxed);
+            bytes
+                .try_into()
+                .map(u64::from_le_bytes)
+                .map_err(|_| RelationDecodeError::Malformed)
+        }
+        fn decode_value(bytes: &[u8]) -> Result<Self::Value, RelationDecodeError> {
+            bytes
+                .try_into()
+                .map(u64::from_be_bytes)
+                .map_err(|_| RelationDecodeError::Malformed)
+        }
+    }
+    let left = canonical_leaf::<LittleEndianRelation>(&[(255, 1)])?;
+    let right = canonical_leaf::<LittleEndianRelation>(&[(256, 2)])?;
+    let branch = canonical_branch::<LittleEndianRelation>(
+        1,
+        &[
+            Child {
+                first_key: 255,
+                node: left.clone(),
+            },
+            Child {
+                first_key: 256,
+                node: right.clone(),
+            },
+        ],
+    )?;
+    let checked = admit_canonical_root::<LittleEndianRelation>(branch.as_bytes())?;
+    assert!(
+        matches!(
+            CanonicalNodeView::parse(
+                branch.as_bytes(),
+                SchemaIdentity::of_relation::<LittleEndianRelation>()
+            ),
+            Err(NodeError::UnsortedOrDuplicate),
+        ),
+        "this typed key order deliberately differs from encoded byte order"
+    );
+    let before = KEY_DECODES.load(AtomicOrdering::Relaxed);
+    let children = checked.child_wire_iter()?.collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(KEY_DECODES.load(AtomicOrdering::Relaxed), before);
+    assert_eq!(children.len(), 2);
+    assert_eq!(children[0].first_key, &255u64.to_le_bytes());
+    assert_eq!(children[0].commitment, left.commitment().as_bytes());
+    assert_eq!(children[1].first_key, &256u64.to_le_bytes());
+    assert_eq!(children[1].commitment, right.commitment().as_bytes());
+    let decoded = checked.child_iter()?.collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(
+        decoded
+            .iter()
+            .map(|child| child.first_key)
+            .collect::<Vec<_>>(),
+        [255, 256]
+    );
+    assert!(KEY_DECODES.load(AtomicOrdering::Relaxed) > before);
+    let leaf = admit_canonical_root::<LittleEndianRelation>(left.as_bytes())?;
+    assert_eq!(leaf.child_wire_iter()?.count(), 0);
     Ok(())
 }
 

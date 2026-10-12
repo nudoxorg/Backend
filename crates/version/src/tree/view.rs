@@ -214,6 +214,16 @@ pub struct CanonicalChildWireIter<'a> {
     reader: Reader<'a>,
     level: u16,
 }
+
+impl<'a> CanonicalChildWireIter<'a> {
+    pub(super) const fn from_admitted_body(body: &'a [u8], level: u16) -> Self {
+        Self {
+            reader: Reader::new(body),
+            level,
+        }
+    }
+}
+
 impl<'a> Iterator for CanonicalChildWireIter<'a> {
     type Item = Result<CanonicalChildWireRef<'a>, NodeError>;
     fn next(&mut self) -> Option<Self::Item> {

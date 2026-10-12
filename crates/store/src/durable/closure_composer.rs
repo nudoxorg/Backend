@@ -1007,9 +1007,53 @@ mod tests {
         let work = prepared.work();
         assert!(work.peak_metadata_bytes > 0);
         assert!(work.peak_metadata_bytes <= maximum);
-        assert_eq!(work.rebuilt_nodes, prepared.changed_nodes().len());
+        // Construction work counts intermediate path copies; the durable
+        // frontier contains only nodes reachable from the final checked root.
+        assert!(work.rebuilt_nodes > prepared.changed_nodes().len());
         assert!(work.loaded_nodes < 640);
         assert!(work.rebuilt_nodes < changes.len() * shape.max_tree_levels * 8);
+        let mut expected = base
+            .objects()
+            .iter()
+            .map(|object| (*object.id().as_bytes(), ()))
+            .chain(changes.iter().map(|change| (change.key, ())))
+            .collect::<Vec<_>>();
+        expected.sort_unstable_by_key(|(key, ())| *key);
+        let canonical =
+            backend_version::PersistentTree::<ManifestRelation>::from_sorted_items(&expected)
+                .expect("independent final member tree");
+        assert_eq!(
+            prepared.target().node().as_bytes(),
+            canonical.root().as_bytes()
+        );
+        for node in prepared.changed_nodes() {
+            assert!(
+                canonical.node_closure().any(|selected| {
+                    selected.id().as_bytes() == node.commitment().as_bytes()
+                        && selected.canonical_bytes() == node.as_bytes()
+                }),
+                "only final reachable nodes may enter the durable frontier"
+            );
+        }
+        assert_eq!(prepared.delta().changes().count(), changes.len());
+        test.store
+            .write_lazy_relation_update(&prepared)
+            .expect("write complete selected frontier");
+        let cold = FileStore::open(&test.path, 1024 * 1024).expect("cold store");
+        let cold_loader = cold.owned_relation_node_loader();
+        let cold_claim = UntrustedId::<ManifestRelation>::from_wire(
+            prepared.target().root().as_bytes(),
+            IdContext::relation::<ManifestRelation>(),
+        )
+        .expect("exact typed target claim");
+        let cold_tree = LazyTree::open(&cold_loader, cold_claim).expect("cold target admission");
+        assert_eq!(
+            cold_tree
+                .page(None, expected.len() + 1)
+                .expect("cold complete member page")
+                .entries(),
+            expected,
+        );
     }
 
     #[test]
