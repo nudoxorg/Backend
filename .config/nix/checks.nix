@@ -52,7 +52,13 @@ let
 in
 {
   surface-smoke-contract =
-    pkgs.runCommand "nudox-surface-smoke-contract" { nativeBuildInputs = [ pkgs.python3 ]; }
+    pkgs.runCommand "nudox-surface-smoke-contract"
+      {
+        nativeBuildInputs = [
+          pkgs.python3
+          pkgs.git
+        ];
+      }
       ''
         cp ${../ci/smoke.py} smoke.py
         cp ${../ci/test_smoke.py} test_smoke.py
@@ -66,6 +72,9 @@ in
         cp ${../ci/test_layout.py} test_layout.py
         cp ${../ci/test_test_layout.py} test_test_layout.py
         python3 test_test_layout.py
+        cp ${../ci/restore-mtimes.py} restore-mtimes.py
+        cp ${../ci/test_restore_mtimes.py} test_restore_mtimes.py
+        HOME="$TMPDIR" python3 test_restore_mtimes.py
         touch "$out"
       '';
 
