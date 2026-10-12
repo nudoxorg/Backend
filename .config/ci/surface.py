@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import fcntl
 import json
 import os
 import re
@@ -43,7 +44,7 @@ TOLERANCE = {"seconds": 1.5, "peak_rss_kib": 1.25, "cpu_seconds": 1.5}
 # Below these floors noise dominates and a change is not a regression.
 FLOOR = {"seconds": 2.0, "peak_rss_kib": 64 * 1024, "cpu_seconds": 2.0}
 # Values that legitimately change from run to run.
-VOLATILE_KEYS = re.compile(r"(elapsed|duration|_ms|_ns|timestamp|started_at|finished_at|generated_at|pid)$")
+VOLATILE_KEYS = {"elapsed_ms", "duration_ms", "timestamp", "started_at", "finished_at", "generated_at", "pid"}
 
 
 def log(message: str) -> None:
@@ -53,7 +54,7 @@ def log(message: str) -> None:
 def stable(value):
     """Drops run-dependent fields so snapshots compare behaviour only."""
     if isinstance(value, dict):
-        return {key: stable(item) for key, item in sorted(value.items()) if not VOLATILE_KEYS.search(key)}
+        return {key: stable(item) for key, item in sorted(value.items()) if key not in VOLATILE_KEYS}
     if isinstance(value, list):
         return [stable(item) for item in value]
     return value
@@ -68,7 +69,7 @@ class Owner:
         self.workspace = case_root / "workspace"
         self.endpoint = case_root / "locald.sock"
         self.env = isolated_env(self.home, bin_dir)
-        self.workspace.mkdir(parents=True)
+        self.workspace.mkdir(parents=True, mode=0o700)
         authority = self.workspace / "authority.secret"
         self.env["BACKEND_LOCALD_WORKSPACE"] = str(self.workspace)
         self.env["BACKEND_LOCALD_AUTHORITY_SECRET_FILE"] = str(authority)
@@ -219,7 +220,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
     case_root = SCRATCH / case["name"]
     if case_root.exists():
         shutil.rmtree(case_root)
-    case_root.mkdir(parents=True)
+    case_root.mkdir(parents=True, mode=0o700)
     project = case_root / "project"
     shutil.copytree(ROOT / case["project"], project)
     timeout = case.get("timeout_seconds", 300)
@@ -285,8 +286,21 @@ def main() -> int:
         help="print the would-be snapshot of a case that has none, for review in CI logs",
     )
     args = parser.parse_args()
+    # Fixed paths require exclusive ownership; another local run must never
+    # remove an active case workspace. Concourse tasks have separate /tmp.
+    SCRATCH.mkdir(parents=True, exist_ok=True, mode=0o700)
+    lock = open(SCRATCH / ".lock", "w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        parser.error("another surface run owns the fixed scratch paths")
     cases = json.loads((SURFACE / "cases.json").read_text())["cases"]
+    if any(not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", case["name"]) for case in cases):
+        parser.error("case names must be simple scratch directory names")
     if args.case:
+        unknown = set(args.case) - {case["name"] for case in cases}
+        if unknown:
+            parser.error(f"unknown cases: {sorted(unknown)}")
         cases = [case for case in cases if case["name"] in args.case]
     failed = []
     report = {}

@@ -3,7 +3,7 @@
 # Invoked as `nu .config/ci/t1.nu` inside the lean
 # `.#smoke` dev shell; run the same command locally to get the same verdict.
 #
-# It builds only the three product binaries (CLI, MCP, desktop) for the host
+# It builds the product binaries (CLI, MCP, desktop and their locald owner) for the host
 # target: no --all-targets, so none of the ~330 test binaries are linked, and
 # no foreign targets. Then .config/ci/smoke.py starts each one: CLI --help,
 # MCP initialize + tools/list on stdio, and the desktop drawing a first frame
@@ -68,7 +68,7 @@ def main []: nothing -> nothing {
 
     let build_args = $SURFACES | each {|surface| ["--package" $surface.package "--bin" $surface.bin] } | flatten
     let built = if $capacity {
-        ci-step "t1" "build cli, mcp, desktop" {||
+        ci-step "t1" "build cli, mcp, desktop, locald" {||
             # Keep this lane conservative regardless of ambient shell settings.
             with-env {CARGO_BUILD_JOBS: "2"} {
                 run-bounded 30min $cargo "build" "--locked" "--jobs" "2" ...$build_args

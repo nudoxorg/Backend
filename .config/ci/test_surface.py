@@ -18,6 +18,10 @@ class AdmissionTests(unittest.TestCase):
             with self.subTest(answer=answer), self.assertRaises(RuntimeError):
                 surface.require_cli_success("cli add", answer)
 
+    def test_normalizer_preserves_semantic_and_budget_fields(self):
+        self.assertEqual(surface.stable({"timeout_ms": 100, "diagnostic": "bad", "duration_ms": 3}),
+                         {"timeout_ms": 100, "diagnostic": "bad"})
+
     def test_successful_structured_answer_is_admitted(self):
         surface.require_cli_success("cli add", {"exit": 0, "json": {"answer": "indexed"}})
 
