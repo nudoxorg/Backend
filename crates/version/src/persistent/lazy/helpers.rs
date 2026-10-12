@@ -7,13 +7,18 @@ use super::{
     canonical_branch_from_commitments, canonical_empty, canonical_leaf,
 };
 use crate::{CanonicalRootAdmissionError, admit_canonical_root_claim};
-use std::collections::BTreeMap;
+use std::{cell::Cell, collections::BTreeMap};
+
+pub(super) struct OverlayNode<R: CanonicalRelation> {
+    checked: CheckedCanonicalRoot<R>,
+    selected: Cell<bool>,
+}
 
 /// Checked-node write overlay used only while building a multi-key lazy
 /// update. Its lifetime is tied to the backing loader.
 pub(super) struct OverlayLoader<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> {
     base: &'a L,
-    nodes: BTreeMap<[u8; crate::ID_BYTES], CheckedCanonicalRoot<R>>,
+    nodes: BTreeMap<[u8; crate::ID_BYTES], OverlayNode<R>>,
 }
 
 impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> OverlayLoader<'a, R, L> {
@@ -40,7 +45,56 @@ impl<'a, R: CanonicalRelation, L: TreeNodeLoader<R>> OverlayLoader<'a, R, L> {
                 CanonicalRootAdmissionError::Identity(_) => NodeError::AnchorMismatch,
             })
         })?;
-        self.nodes.insert(version, checked);
+        self.nodes.insert(
+            version,
+            OverlayNode {
+                checked,
+                selected: Cell::new(false),
+            },
+        );
+        Ok(())
+    }
+
+    /// Intermediate path copies remain available during construction, but
+    /// only nodes reachable from the final root belong in its CAS frontier.
+    /// Reuse the admitted overlay and one marker per node: this does not load
+    /// unchanged subtrees or allocate a second complete node index.
+    pub(super) fn retain_selected_frontier(
+        &self,
+        target: &[u8; crate::ID_BYTES],
+        frontier: &mut Vec<CanonicalNode<R>>,
+    ) -> Result<(), LazyTreeError<L::Error>> {
+        self.mark_selected(target)?;
+        // The construction order already places children before parents.
+        // Consume each marker once to preserve that order and remove repeats.
+        frontier.retain(|node| {
+            self.nodes
+                .get(node.commitment().as_bytes())
+                .is_some_and(|node| node.selected.replace(false))
+        });
+        Ok(())
+    }
+
+    fn mark_selected(
+        &self,
+        version: &[u8; crate::ID_BYTES],
+    ) -> Result<(), LazyTreeError<L::Error>> {
+        let Some(node) = self.nodes.get(version) else {
+            // The final root authenticates this unchanged durable subtree;
+            // its descendants do not need another physical publication.
+            return Ok(());
+        };
+        if node.selected.replace(true) {
+            return Ok(());
+        }
+        for child in node
+            .checked
+            .child_wire_iter()
+            .map_err(LazyTreeError::Node)?
+        {
+            let child = child.map_err(LazyTreeError::Node)?;
+            self.mark_selected(child.commitment)?;
+        }
         Ok(())
     }
 }
@@ -51,7 +105,7 @@ impl<R: CanonicalRelation, L: TreeNodeLoader<R>> TreeNodeLoader<R> for OverlayLo
     fn load(&self, claim: UntrustedId<R>) -> Result<CheckedCanonicalRoot<R>, Self::Error> {
         self.nodes
             .get(claim.as_bytes())
-            .cloned()
+            .map(|node| node.checked.clone())
             .map_or_else(|| self.base.load(claim), Ok)
     }
 }

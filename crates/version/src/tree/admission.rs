@@ -253,12 +253,31 @@ impl<R: CanonicalRelation> CheckedCanonicalRoot<R> {
     /// Returns a grammar error if the admitted bytes cannot be traversed as a
     /// canonical node.
     pub fn child_iter(&self) -> Result<CanonicalChildIter<'_, R>, NodeError> {
+        Ok(CanonicalChildIter {
+            reader: NodeReader::new(self.admitted_child_body()?),
+            child_level: self.node().level().saturating_sub(1),
+            marker: PhantomData,
+        })
+    }
+
+    /// Borrows child commitments from these already admitted canonical bytes.
+    ///
+    /// This retains typed relation admission without decoding keys again or
+    /// requiring their encoded byte order to match `R::Key` order. Leaves
+    /// return an empty iterator; traversal allocates no key or child vector.
+    ///
+    /// # Errors
+    /// Returns a grammar error if the admitted frame cannot be traversed.
+    pub fn child_wire_iter(&self) -> Result<super::CanonicalChildWireIter<'_>, NodeError> {
+        Ok(super::CanonicalChildWireIter::from_admitted_body(
+            self.admitted_child_body()?,
+            self.node().level().saturating_sub(1),
+        ))
+    }
+
+    fn admitted_child_body(&self) -> Result<&[u8], NodeError> {
         if self.node().level() == 0 {
-            return Ok(CanonicalChildIter {
-                reader: NodeReader::new(&[]),
-                child_level: 0,
-                marker: PhantomData,
-            });
+            return Ok(&[]);
         }
         let mut reader = NodeReader::new(self.bytes());
         if reader.take(NODE_MAGIC.len())? != NODE_MAGIC
@@ -271,14 +290,10 @@ impl<R: CanonicalRelation> CheckedCanonicalRoot<R> {
         let _version = reader.byte()?;
         let _domain = reader.byte()?;
         let _type = reader.u16()?;
-        let level = reader.u16()?;
+        let _level = reader.u16()?;
         let body = reader.field()?;
         reader.finish()?;
-        Ok(CanonicalChildIter {
-            reader: NodeReader::new(body),
-            child_level: level.checked_sub(1).ok_or(NodeError::LevelMismatch)?,
-            marker: PhantomData,
-        })
+        Ok(body)
     }
 
     /// Decodes the entries of an admitted leaf without exposing its wire
