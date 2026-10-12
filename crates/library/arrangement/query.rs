@@ -109,6 +109,33 @@ impl PartialOrd for SearchRanked {
     }
 }
 
+// Only producer-retained sites influence this presentation order. Test/support
+// paths are a navigation hint, never a declaration or language authority.
+fn outline_order(row: &Row) -> (Reverse<(bool, bool, u8)>, &str, RowId) {
+    let path = row.source.file_path();
+    let support = path.is_some_and(|path| {
+        path.split('/')
+            .any(|part| matches!(part, "test" | "tests" | "__tests__"))
+            || path.ends_with(".spec.ts")
+            || path.ends_with(".spec.tsx")
+            || path.ends_with(".test.ts")
+            || path.ends_with(".test.tsx")
+    });
+    (
+        Reverse((
+            path.is_some() && !support,
+            path.is_some(),
+            row.kind.map_or(1, super::declaration_name_priority),
+        )),
+        path.unwrap_or(""),
+        row.id,
+    )
+}
+
+// Retain the borrowed key once: heap comparisons never rescan a source path.
+#[derive(Eq, PartialEq, Ord, PartialOrd)]
+struct OutlineRanked<'a>((Reverse<(bool, bool, u8)>, &'a str, RowId));
+
 fn retained_page_capacity(start: usize, limit: usize) -> usize {
     start.saturating_add(limit).saturating_add(1)
 }
@@ -270,52 +297,57 @@ impl ProjectionArrangement {
         )
     }
 
-    pub(crate) fn unscoped_symbols_page(&self, limit: usize) -> ArrangementPage {
-        let mut ids = self
-            .unscoped_symbols
-            .as_ref()
-            .map(|tree| {
-                tree.iter()
-                    .map(|(id, ())| *id)
-                    .take(limit.saturating_add(1))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let has_more = ids.len() > limit;
-        ids.truncate(limit);
-        ArrangementPage { ids, has_more }
-    }
-
-    pub(crate) fn package_symbols_page(
-        &self,
-        package: PackageKey,
-        limit: usize,
-    ) -> ArrangementPage {
-        self.package_symbols_page_from(package, 0, limit)
-    }
-
-    pub(crate) fn package_symbols_page_from(
+    /// One shared bounded order for outline trees and their row projection.
+    pub(crate) fn outline_page<'view>(
         &self,
         package: PackageKey,
         start: usize,
         limit: usize,
+        row_for_id: impl Fn(RowId) -> Option<&'view Row>,
+        work: &WorkCounters,
     ) -> ArrangementPage {
-        let Some(tree) = self.package_symbols.as_ref() else {
-            return ArrangementPage {
-                ids: Vec::new(),
-                has_more: false,
-            };
+        let capacity = retained_page_capacity(start, limit);
+        let mut retained =
+            BinaryHeap::with_capacity(capacity.min(usize::from(crate::QueryLimit::MAX)));
+        let mut visit = |id| {
+            if let Some(row) = row_for_id(id) {
+                retained.push(OutlineRanked(outline_order(row)));
+                if retained.len() > capacity {
+                    retained.pop();
+                }
+            }
         };
-        let lower = PackageRowKey { package, id: None };
-        let mut ids = tree
-            .range((std::ops::Bound::Included(lower), std::ops::Bound::Unbounded))
-            .take_while(|(key, ())| key.package == package)
-            .filter_map(|(key, ())| key.id)
+        let mut scoped = false;
+        if let Some(tree) = self.package_symbols.as_ref() {
+            let lower = PackageRowKey { package, id: None };
+            for (key, ()) in tree
+                .range((std::ops::Bound::Included(lower), std::ops::Bound::Unbounded))
+                .take_while(|(key, ())| key.package == package)
+            {
+                if let Some(id) = key.id {
+                    scoped = true;
+                    visit(id);
+                }
+            }
+        }
+        // Preserve the existing unambiguous legacy single-package relation.
+        if !scoped && self.package_count() == 1 {
+            if let Some(tree) = self.unscoped_symbols.as_ref() {
+                for (id, ()) in tree.iter() {
+                    visit(*id);
+                }
+            }
+        }
+        let mut retained = retained.into_vec();
+        work.record_sort(retained.len());
+        retained.sort_unstable();
+        let has_more = retained.len() > start.saturating_add(limit);
+        let ids = retained
+            .into_iter()
             .skip(start)
-            .take(limit.saturating_add(1))
-            .collect::<Vec<_>>();
-        let has_more = ids.len() > limit;
-        ids.truncate(limit);
+            .take(limit)
+            .map(|row| row.0.2)
+            .collect();
         ArrangementPage { ids, has_more }
     }
 

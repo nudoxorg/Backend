@@ -533,9 +533,17 @@ fn outline(engine: &mut dyn Engine, path: &str) -> Result<Answer, Fault> {
     let CommandReply::Outline(tree) = reply.reply else {
         return Err(shape("outline"));
     };
-    let rows = outline_rows(engine, path)
+    let snapshot = outline_snapshot(engine, path)
+        .and_then(|snapshot| {
+            check_outline_projection(&tree, &snapshot)?;
+            Ok(snapshot)
+        })
         .map_err(|error| Fault::from_client_error(&error, Operand::Path(path.to_owned())))?;
-    Ok(Answer::Outline(Box::new(outline_tree(path, &tree, &rows))))
+    Ok(Answer::Outline(Box::new(outline_tree(
+        path,
+        &tree,
+        snapshot.root.rows(),
+    ))))
 }
 
 fn surface(engine: &mut dyn Engine, command: &SurfaceCommand) -> Result<Answer, Fault> {
@@ -701,17 +709,37 @@ fn probe_members(engine: &mut dyn Engine, coordinate: &str, notes: &mut Vec<Faul
     }
 }
 
+fn check_outline_projection(
+    tree: &backend_library::Outline,
+    snapshot: &ViewSnapshot,
+) -> Result<(), ClientError> {
+    let source = snapshot.root.basis();
+    if tree.basis() != source.root || tree.source_basis().is_some_and(|basis| basis != source) {
+        return Err(ClientError::CommandFailed(
+            backend_library::CommandFailure::WrongBasis {
+                expected: source.root.into(),
+                observed: tree.basis().into(),
+            },
+        ));
+    }
+    Ok(())
+}
+
 fn outline_rows(engine: &mut dyn Engine, path: &str) -> Result<Vec<Row>, ClientError> {
+    outline_snapshot(engine, path).map(|snapshot| snapshot.root.rows().to_vec())
+}
+
+fn outline_snapshot(engine: &mut dyn Engine, path: &str) -> Result<ViewSnapshot, ClientError> {
     let reply = engine.probe(Probe::OutlinePage {
         path,
         limit: PROBE_ROWS,
     })?;
     match reply.reply {
-        CommandReply::ProjectionPage(page) => Ok(page.snapshot.root.rows().to_vec()),
+        CommandReply::ProjectionPage(page) => Ok(page.snapshot),
         CommandReply::Packages(snapshot)
         | CommandReply::Names(snapshot)
         | CommandReply::Search(snapshot)
-        | CommandReply::Graph(snapshot) => Ok(snapshot.root.rows().to_vec()),
+        | CommandReply::Graph(snapshot) => Ok(snapshot),
         _ => Err(ClientError::Protocol(
             "outline page reply changed shape".to_owned(),
         )),
@@ -732,6 +760,51 @@ mod readiness_controls {
     use backend_library::{
         Command, CommandFailure, Library, OutlineQuery, PageRequest, QueryLimit, package_key,
     };
+
+    #[test]
+    fn outline_projection_refuses_a_changed_selected_root_or_source_frontier() {
+        let library = Library::new();
+        let snapshot = library
+            .packages_page(PageRequest::new(
+                library.revision_root(),
+                QueryLimit::default(),
+            ))
+            .expect("actual projection")
+            .snapshot;
+        let basis = snapshot.root.basis();
+        let mut tree = backend_library::Outline::new(
+            package_key("/gymbro"),
+            library.revision_root(),
+            backend_library::OutlineNode {
+                symbol: backend_library::symbol_key("WeekService"),
+                children: Box::new([]),
+            },
+        )
+        .with_source_basis(basis);
+        assert!(check_outline_projection(&tree, &snapshot).is_ok());
+        tree.basis = backend_library::view_state_root(&[("foreign".to_owned(), "root".to_owned())]);
+        assert!(matches!(
+            check_outline_projection(&tree, &snapshot),
+            Err(ClientError::CommandFailed(
+                CommandFailure::WrongBasis { .. }
+            ))
+        ));
+        tree.basis = library.revision_root();
+        tree.source = Some(backend_library::Basis {
+            root: tree.basis,
+            ..basis
+        });
+        // Even with the same visible root, a different branch/log/schema/source
+        // object must not be joined. Change the producer object, not its rows.
+        tree.source.as_mut().expect("source").object =
+            backend_library::object_version(b"foreign producer");
+        assert!(matches!(
+            check_outline_projection(&tree, &snapshot),
+            Err(ClientError::CommandFailed(
+                CommandFailure::WrongBasis { .. }
+            ))
+        ));
+    }
 
     #[test]
     fn an_actual_absent_outline_retains_not_found_and_an_exact_reindex_action() {

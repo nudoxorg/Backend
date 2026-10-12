@@ -10,7 +10,7 @@ use crate::{
     ViewStateRoot, view_identity_bytes,
 };
 use crate::{ReferenceFact, ReferenceRecord};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Query family and page credit are part of the continuation contract.
 #[derive(Clone, Copy)]
@@ -178,18 +178,27 @@ impl Library {
         if !self.arrangement.has_package(package) {
             return Err(LibraryError::NotFound);
         }
-        let mut recipe_bytes = b"outline-page".to_vec();
+        let mut recipe_bytes = b"outline-page-v2".to_vec();
         recipe_bytes.extend_from_slice(package.as_bytes());
         let recipe = self.query_recipe(&recipe_bytes, None);
         let limit = usize::from(page.limit().get());
         let cursor = page.continuation().map(crate::PageContinuation::cursor);
         let start = self.check_query_cursor(cursor, recipe, limit, |offset| {
-            self.arrangement
-                .package_symbols_page_from(package, offset, limit)
+            self.arrangement.outline_page(
+                package,
+                offset,
+                limit,
+                |id| self.view.row_ref(id),
+                &self.work,
+            )
         })?;
-        let result = self
-            .arrangement
-            .package_symbols_page_from(package, start, limit);
+        let result = self.arrangement.outline_page(
+            package,
+            start,
+            limit,
+            |id| self.view.row_ref(id),
+            &self.work,
+        );
         self.projection_page(&recipe_bytes, &result, start, limit)
     }
 
@@ -383,70 +392,53 @@ impl Library {
         if !self.arrangement.has_package(query.package) {
             return Err(LibraryError::NotFound);
         }
-        let symbol_page = self
-            .arrangement
-            .package_symbols_page(query.package, usize::from(QueryLimit::MAX));
-        let mut truncated = symbol_page.has_more;
-        let mut symbols = symbol_page
+        let page = self.arrangement.outline_page(
+            query.package,
+            0,
+            usize::from(QueryLimit::MAX),
+            |id| self.view.row_ref(id),
+            &self.work,
+        );
+        let mut truncated = page.has_more;
+        let symbols = page
             .ids
             .iter()
-            .filter_map(|&id| self.row_for_id(id))
-            .filter_map(|row| match row.id {
-                RowId::Symbol(symbol) => Some(symbol),
-                RowId::Package(_) | RowId::Object(_) => None,
+            .filter_map(|id| match id {
+                RowId::Symbol(symbol) => Some(*symbol),
+                _ => None,
             })
             .collect::<Vec<_>>();
-        // Existing single-package fixtures predate explicit package
-        // membership. Keep their unambiguous result while ensuring an
-        // unscoped symbol can never leak across a multi-package projection.
-        if symbols.is_empty() && self.arrangement.package_count() == 1 {
-            symbols = self
-                .arrangement
-                .unscoped_symbols_page(usize::from(QueryLimit::MAX))
-                .ids
-                .iter()
-                .filter_map(|&id| self.row_for_id(id))
-                .filter_map(|row| match row.id {
-                    RowId::Symbol(symbol) if row.package.is_none() => Some(symbol),
-                    RowId::Package(_) | RowId::Object(_) | RowId::Symbol(_) => None,
-                })
-                .collect();
-        }
         if symbols.is_empty() {
             return Err(LibraryError::NotFound);
         }
-        let mut roots = symbols
-            .iter()
-            .copied()
-            .filter(|symbol| {
-                self.row_for_id(RowId::Symbol(*symbol))
-                    .is_some_and(|row| row.parent.is_none())
-            })
-            .collect::<Vec<_>>();
-        if roots.is_empty() {
-            roots.push(symbols[0]);
-        }
-        let mut budget = usize::from(QueryLimit::MAX);
-        let mut nodes = Vec::new();
-        for symbol in roots {
-            if budget == 0 {
-                truncated = true;
-                break;
+        let selected = symbols.iter().copied().collect::<BTreeSet<_>>();
+        let mut children = BTreeMap::<SymbolKey, Vec<SymbolKey>>::new();
+        let mut roots = Vec::new();
+        for symbol in &symbols {
+            let parent = self
+                .view
+                .row_ref(RowId::Symbol(*symbol))
+                .and_then(|row| row.parent);
+            if let Some(parent) = parent.filter(|parent| selected.contains(parent)) {
+                children.entry(parent).or_default().push(*symbol);
+            } else {
+                // An out-of-page parent stays a retained row fact; this bounded
+                // forest promotes its child for navigation, without inventing an edge.
+                roots.push(*symbol);
             }
-            budget = budget.saturating_sub(1);
-            let mut path = BTreeSet::new();
-            path.insert(symbol);
-            nodes.push(OutlineNode {
-                symbol,
-                children: self.outline_children(
-                    query.package,
+        }
+        let mut visited = BTreeSet::new();
+        let mut nodes = Vec::new();
+        for symbol in roots.into_iter().chain(symbols.iter().copied()) {
+            if !visited.contains(&symbol) {
+                nodes.push(Self::outline_selected_node(
                     symbol,
-                    &mut budget,
+                    &children,
+                    &mut visited,
                     0,
-                    &mut path,
                     &mut truncated,
-                ),
-            });
+                ));
+            }
         }
         let root = nodes.remove(0);
         Ok(Outline::new(query.package, basis, root)
@@ -459,52 +451,33 @@ impl Library {
             .with_source_basis(self.revision_basis()))
     }
 
-    fn outline_children(
-        &self,
-        package: PackageKey,
-        parent: SymbolKey,
-        budget: &mut usize,
+    fn outline_selected_node(
+        symbol: SymbolKey,
+        children: &BTreeMap<SymbolKey, Vec<SymbolKey>>,
+        visited: &mut BTreeSet<SymbolKey>,
         depth: usize,
-        path: &mut BTreeSet<SymbolKey>,
         truncated: &mut bool,
-    ) -> Box<[OutlineNode]> {
-        // Outline replies have no independent continuation shape, so enforce
-        // a hard node/depth budget at the arrangement boundary. A malformed
-        // cyclic parent relation is cut at the path edge rather than causing
-        // unbounded recursion or a whole-view scan.
+    ) -> OutlineNode {
         const MAX_DEPTH: usize = 64;
-        if *budget == 0 || depth >= MAX_DEPTH {
-            *truncated = true;
-            return Box::new([]);
-        }
-        let page = self
-            .arrangement
-            .children_page(package, Some(parent), *budget);
-        *truncated |= page.has_more;
-        let mut children = Vec::with_capacity(page.ids.len());
-        for id in page.ids {
-            if *budget == 0 {
-                break;
-            }
-            let Some(Row {
-                id: RowId::Symbol(symbol),
-                ..
-            }) = self.row_for_id(id)
-            else {
-                continue;
-            };
-            if !path.insert(symbol) {
+        visited.insert(symbol);
+        let mut nodes = Vec::new();
+        for child in children.get(&symbol).into_iter().flatten() {
+            if visited.contains(child) || depth >= MAX_DEPTH {
+                *truncated = true;
                 continue;
             }
-            *budget = (*budget).saturating_sub(1);
-            let nested = self.outline_children(package, symbol, budget, depth + 1, path, truncated);
-            path.remove(&symbol);
-            children.push(OutlineNode {
-                symbol,
-                children: nested,
-            });
+            nodes.push(Self::outline_selected_node(
+                *child,
+                children,
+                visited,
+                depth + 1,
+                truncated,
+            ));
         }
-        children.into_boxed_slice()
+        OutlineNode {
+            symbol,
+            children: nodes.into_boxed_slice(),
+        }
     }
 
     /// Searches registered names and document text with stable row identity.

@@ -388,7 +388,7 @@ fn paged_recipe(command: &Command) -> Result<Vec<u8>, BuiltinModelError> {
     match command {
         Command::PackagePage(_) => Ok(b"packages-page".to_vec()),
         Command::OutlinePage { package, .. } => {
-            let mut recipe = b"outline-page".to_vec();
+            let mut recipe = b"outline-page-v2".to_vec();
             recipe.extend_from_slice(package.as_bytes());
             Ok(recipe)
         }
