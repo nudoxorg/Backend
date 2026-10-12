@@ -2,6 +2,22 @@
 
 This checkpoint follows the [previous readiness report](runtime-readiness-20261011-evening.md). It separates actual native execution from source-reviewed changes. Public installers still select historical binaries; no new production-readiness or public-release claim is made.
 
+## 04:38 GMT active gates
+
+Root merged PR #163 through Glide into canonical `a26a758a38827ce20bf32f90f5f326aef0d6a5ec`, then integrated the independently reviewed selected-TypeScript-config closure repair at `7ac642096f1f28733b9f2d9f894430ea7882261d`. Raw discovered configs remain captured for invalidation; only the selected program and its actual inheritance/reference closure are parsed for admission. Unrelated malformed or missing editor-only configs cannot veto a different selected program. The six new host controls remain native-unrun.
+
+| Current gate | Actual result | Limit |
+| --- | --- | --- |
+| Native102, frozen `42b04e1024`, full five libraries | Cargo is actually running on ILO | The successor uses the same five compiler/tool byte identities through a surviving realized Nix shell. No test result is credited until termination. It does not test later semantic, client-retry or selected-config source. |
+| Fresh-key PocketBase missing-Go run05, installed `e0767e71b7` | **RED**: TypeScript primitive child-count refusal; no publication | The 766,861-byte generated `types.d.ts` has raw SHA-256 `a1bf4dfbb780099a2605764f3899234b7b47335f27f3f4e2600f9ecdbfbee098`. Its product content identity is a different typed digest. The terminal primitive law requires zero children but observed one. The failure masks missing-Go guidance; that guidance has not passed. |
+| Run05 latency/output | 426.739 seconds from start to terminal; 800 progress polls; 2,348,241 response bytes; 856,950 actual cl100k tokens | The observer repeatedly requests full progress at 0.5-second intervals. Individual response bounds passed; aggregate cost is a defect, not a performance pass. Outer duration was 625.290 seconds, with the owned scope released after two complete empty scans. |
+| GUI native81 preflight | **Blocked before Cargo** | Four exact pinned Clang-wrapper paths disappeared. The derivation still exists; restoring its exact output is pending. Eleven other tool witnesses match. There is no current GUI screenshot or window proof. |
+| Public installer and local launcher recheck | Anonymous shell asset returned HTTP 200; installed Mac CLI version/help exit 0 | This rechecks diagnostic delivery and startup only. The installed generation remains historical; it does not prove current indexing or semantic search. |
+
+Root and independent Luna review traced the PocketBase failure to a shared pending computed-child run: template lowering appends a text child before recursively interning its string substitution, so the primitive row consumes the template child. Both legacy and native-TSZ paths are being repaired by staging recursive rows first and publishing the ordered template run afterwards. Primitive arity validation will stay strict. This repair and its real generated-file regression have not yet passed native execution.
+
+The Excalidraw failed run's same-process RSS reached 5.357 GiB, but its failure occurred before the TSZ bridge. The memory sample cannot attribute that peak to TSZ or to selected-config closure expansion. A successful replacement run needs phase markers before any allocation claim. Separate source review found repeated library loads and checker-plan arena cloning as experiment candidates, not measured causes or improvements.
+
 ## 04:15 GMT follow-through
 
 Coworker PR #162 is merged into canonical `d66b1ec81f5917eaf106f012ff9265e6141dd102`. Root read the complete ten-file diff and integrated it into the follow-through branch. The canonical checkout was fast-forwarded with the user's three-line Nix edit preserved byte-for-byte (SHA-256 `9cee064afabfacafd6b59a041993f6a0f98f382cf37866caf1d9e12225acff63`). Luna ran **15 pure artifact-helper tests**, not 16, against exact d66 Git blobs: all passed in 0.060 seconds. This does not prove a native artifact or window. The sole CI publisher runs after a matched three-bin build and three smoke checks; its standalone arbitrary `--bin-dir` interface still relies on that caller for source provenance.
