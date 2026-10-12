@@ -92,7 +92,9 @@ impl Form {
                 let typed = input.read(cx).value().to_string();
                 add.edited(typed, cx);
             }
-            InputEvent::PressEnter { .. } => add.submit(window, cx),
+            // Submission captures the painted visit in the propagated native
+            // Enter action below, before this queued notification is delivered.
+            InputEvent::PressEnter { .. } => {},
             InputEvent::Focus | InputEvent::Blur => {}
         });
         let overlay = cx.subscribe(&links.store, |add: &mut Self, _, event, cx| {
@@ -459,11 +461,29 @@ impl Render for Form {
             field = field.fault(SharedString::from(refusal.says()));
         }
         let input_admit = Rc::clone(&admit);
+        let enter_admit = Rc::clone(&admit);
         div()
             .id("add-folder")
             .flex()
             .flex_col()
             .gap(measure.space(Space::Roomy))
+            // InputState propagates Enter only after its own editing/menu
+            // handling. Capture this paint's visit now; a queued PressEnter
+            // must not borrow mounted_visit from a later Add render.
+            .on_action(cx.listener(move |add, _: &gpui_component::input::Enter, window, cx| {
+                window.prevent_default();
+                cx.stop_propagation();
+                let Some(visit) = visit else { return; };
+                if !enter_admit(cx) || !add.input.read(cx).focus_handle(cx).is_focused(window) { return; }
+                let form = cx.entity().downgrade();
+                window.defer(cx, move |window, cx| {
+                    let _ = form.update(cx, |add, cx| {
+                        if add.mounted_visit == Some(visit) && add.links.admits_add_project_visit(visit, cx) {
+                            add.submit(window, cx);
+                        }
+                    });
+                });
+            }))
             .capture_key_down(cx.listener(move |add, event: &KeyDownEvent, window, cx| {
                 let plain = !event.keystroke.modifiers.platform && !event.keystroke.modifiers.control && !event.keystroke.modifiers.alt;
                 if plain && matches!(event.keystroke.key.as_str(), "enter" | "space" | "up" | "down" | "tab") && !input_admit(cx) {
