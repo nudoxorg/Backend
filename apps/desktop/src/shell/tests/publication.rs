@@ -3,7 +3,7 @@
 use super::{Fixture, PACKAGE, Rig, package, page, registry_dossier, rig_with_reads};
 use crate::model::pages::{
     DeclRef, DocFragment, GapReason, IndexedPackage, Known, OutlinePosition, PackageRef, PageKey,
-    PageValue, ReadFailure, Readiness, SignatureText, SymbolRef,
+    PageValue, ReadFailure, Readiness, SearchQuery, SignatureText, SymbolRef,
 };
 use crate::navigation::{Coordinate, Intent, PackageLane, PackageRoute, Route, SymbolRoute, View};
 use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
@@ -302,7 +302,7 @@ fn retained_native_find_retry_cannot_adopt_a_later_same_query_read_and_fresh_fai
         assert_eq!(rig.graph.store.read(cx).stats().submitted, before + 1, "old native input cannot replace the newer pool read");
         assert_eq!(window.focused(cx), focused);
         let query_focus = before_press.expect("mounted native Find query focus");
-        query_focus.focus(window);
+        query_focus.focus(window, cx);
         window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
             position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left,
             click_count: 1, first_mouse: false,
@@ -382,7 +382,7 @@ fn identical_owner_failure_retires_native_find_retry_before_watcher_and_fresh_of
         assert_eq!(rig.graph.store.read(cx).stats().submitted, submitted);
         assert_eq!(window.focused(cx), focused);
         let query_focus = before_press.expect("mounted native Find query focus");
-        query_focus.focus(window);
+        query_focus.focus(window, cx);
         window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
             position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left,
             click_count: 1, first_mouse: false,

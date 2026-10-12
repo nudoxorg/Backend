@@ -1764,7 +1764,7 @@ mod tests {
                 let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
                 assert_eq!(ask.read_with(rig.cx, |ask, cx| ask.choices(cx).len()), 1);
                 let label = if all { "Open every search result as a page".to_owned() }
-                    else { rig.cx.update(|window, _| window.a11y_tree().expect("mounted result tree").nodes.values()
+                    else { rig.cx.update(|window, _| window.a11y_tree().expect("mounted result tree").nodes.iter().map(|(_, node)| node)
                         .find(|node| node.role() == gpui::Role::Link && node.label().is_some_and(|label| label.starts_with("Result 1:")))
                         .and_then(|node| node.label()).expect("first result label").to_owned()) };
                 let bounds = crate::shell::tests::native_bounds(&mut rig, "Link", &label, true).expect("current native result");
