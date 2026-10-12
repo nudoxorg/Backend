@@ -825,8 +825,34 @@ fn surface(
         CommandId::PackageVersions => SurfaceCommand::PackageVersions {
             package: package(invocation, 0)?,
         },
-        CommandId::SemanticVersions => SurfaceCommand::SemanticVersions {
+        CommandId::SemanticVersions => SurfaceCommand::SemanticVersionsPage {
             package: package(invocation, 0)?,
+            limit: match invocation.option("limit") {
+                None => backend_library::DEFAULT_SEMANTIC_HISTORY_PAGE_ITEMS,
+                Some(value) => value
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|limit| {
+                        *limit > 0 && *limit <= backend_library::MAX_SEMANTIC_HISTORY_PAGE_ITEMS
+                    })
+                    .ok_or_else(|| {
+                        Fault::usage(
+                            "limit",
+                            format!(
+                                "choose a whole number from 1 to {}",
+                                backend_library::MAX_SEMANTIC_HISTORY_PAGE_ITEMS
+                            ),
+                        )
+                    })?,
+            },
+            cursor: invocation
+                .option("cursor")
+                .map(|value| {
+                    backend_library::SemanticVersionsCursor::new(value).map_err(|error| {
+                        Fault::admission(error, Operand::Argument("cursor".to_owned()))
+                    })
+                })
+                .transpose()?,
         },
         CommandId::SemanticShapes => {
             let request = serde_json::from_str::<backend_library::SemanticShapeReadRequest>(

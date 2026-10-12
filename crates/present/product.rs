@@ -341,6 +341,20 @@ impl From<&SemanticHistoryPublicationStatus> for ProductSemanticHistoryStatus {
                     input_replay_status: proof.input_replay_status,
                 },
             },
+            SemanticHistoryPublicationStatus::PublishedCatalog {
+                selection_id,
+                commit,
+                reference,
+                catalog,
+            } => Self::Published {
+                selection_id: *selection_id,
+                commit: *commit,
+                reference: reference.clone(),
+                proof: ProductSemanticHistoryProofSummary {
+                    reference_tip: catalog.reference_tip,
+                    input_replay_status: catalog.input_replay_status,
+                },
+            },
             SemanticHistoryPublicationStatus::Refused {
                 selection_id,
                 reason,
@@ -367,6 +381,8 @@ impl From<&SemanticHistoryPublicationStatus> for ProductSemanticHistoryStatus {
 pub enum ProductSemanticData {
     /// Exact compiler-version records usable as the shape read source operand.
     Versions(Box<[SemanticVersionRecord]>),
+    /// Bounded, lossless version/history-catalog segments and their exact continuation.
+    VersionsPage(backend_library::SemanticVersionsPage),
     /// Existing shape wire egress after certificate-bearing direct admission.
     Shapes(backend_library::SemanticShapeExport),
 }
@@ -1135,6 +1151,51 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
                     .find_map(|record| record.selected_source_frontier.clone()),
             );
             view.semantic_data = Some(ProductSemanticData::Versions(records.clone()));
+            view
+        }
+        SurfaceReply::SemanticVersionsPage(page) => {
+            let mut view = ProductView::rows(
+                "semantic-versions",
+                page.entries
+                    .iter()
+                    .map(|entry| {
+                        let mut row = semantic_row(&entry.version);
+                        if !entry.images.is_empty() {
+                            let total = match &entry.version.history_status {
+                                SemanticHistoryPublicationStatus::PublishedCatalog {
+                                    catalog,
+                                    ..
+                                } => catalog.image_count,
+                                _ => 0,
+                            };
+                            let mut tags = row.tags.to_vec();
+                            tags.push(format!(
+                                "history images {}..{} of {}",
+                                entry.start_ordinal,
+                                entry.start_ordinal as usize + entry.images.len(),
+                                total
+                            ));
+                            row.tags = tags.into_boxed_slice();
+                        }
+                        row
+                    })
+                    .collect(),
+            )
+            .with_selected_source_frontier(
+                page.entries
+                    .iter()
+                    .find_map(|entry| entry.version.selected_source_frontier.clone()),
+            );
+            view.note = Some(
+                if page.state == backend_library::SemanticVersionsPageState::Preparing {
+                    "The cold owner is preparing the exact saved history catalog. No images were returned and the cursor has not advanced; use semantic_continue to resume.".to_owned()
+                } else if page.next_cursor.is_some() {
+                    "More retained versions or history images remain. Copy semantic_continue exactly; each selected source operand is already usable.".to_owned()
+                } else {
+                    "All retained versions and published history images have been returned for this page chain.".to_owned()
+                },
+            );
+            view.semantic_data = Some(ProductSemanticData::VersionsPage(page.clone()));
             view
         }
         SurfaceReply::SemanticVersionSelected(record) => {
@@ -2825,7 +2886,8 @@ fn semantic_history_label(status: &SemanticHistoryPublicationStatus) -> &'static
         SemanticHistoryPublicationStatus::Deferred { .. } => {
             "derived history deferred · retry scheduled"
         }
-        SemanticHistoryPublicationStatus::Published { .. } => "derived history published",
+        SemanticHistoryPublicationStatus::Published { .. }
+        | SemanticHistoryPublicationStatus::PublishedCatalog { .. } => "derived history published",
         SemanticHistoryPublicationStatus::Refused { .. } => "derived history refused",
         SemanticHistoryPublicationStatus::Superseded { .. } => "derived history superseded",
     }

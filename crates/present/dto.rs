@@ -956,6 +956,9 @@ pub struct ProductDto {
     /// Exact existing shape wire tree exported after direct certificate admission.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_data: Option<crate::product::ProductSemanticData>,
+    /// Copyable next bounded semantic-history read, preserving its exact cursor and detail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_continue: Option<SemanticContinueDto>,
     /// Exact source-only package metadata lookup evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_discovery: Option<crate::product::PackageDiscoveryProjection>,
@@ -1009,6 +1012,39 @@ impl IndexPollDto {
         Some(Self {
             shell: affordance.shell()?,
             call,
+        })
+    }
+}
+
+/// Copyable CLI and MCP reads of the same exact semantic-history continuation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticContinueDto {
+    /// Installed read command with the exact returned cursor.
+    pub shell: String,
+    /// Exact next MCP read; this is never mutation or publication authority.
+    pub call: serde_json::Value,
+}
+
+impl SemanticContinueDto {
+    /// Projects the continuation from the retained typed page, with the caller's detail.
+    #[must_use]
+    pub fn new(view: &ProductView, detail: Detail) -> Option<Self> {
+        let crate::ProductSemanticData::VersionsPage(page) = view.semantic_data()? else {
+            return None;
+        };
+        let cursor = page.next_cursor.as_ref()?;
+        Some(Self {
+            shell: format!(
+                "nudox --detail {} semantic-versions {} --limit {} --cursor {}",
+                detail.name(),
+                crate::shell::quote_argument(page.package.as_str()),
+                page.limit,
+                crate::shell::quote_argument(cursor.as_str())
+            ),
+            call: serde_json::json!({ "name": "backend.semantic_versions", "arguments": {
+                "package": page.package.as_str(), "limit": page.limit, "cursor": cursor.as_str(), "detail": detail.name(),
+            }}),
         })
     }
 }
@@ -1124,6 +1160,7 @@ impl ProductDto {
             selected_source_frontier: view.selected_source_frontier().cloned(),
             package_source_membership_page: view.package_source_membership_page().cloned(),
             semantic_data: view.semantic_data().cloned(),
+            semantic_continue: SemanticContinueDto::new(view, detail.unwrap_or(Detail::Standard)),
             package_discovery: view.package_discovery().cloned(),
         }
     }

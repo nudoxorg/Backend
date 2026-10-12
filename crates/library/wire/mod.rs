@@ -69,6 +69,6 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version. Version 28 distinguishes native checker
-/// worker-pool startup refusal. Persisted view rows and compact events are unchanged.
-pub const DTO_VERSION: u16 = 28;
+/// Current transport DTO version. Version 29 adds bounded semantic-history pages.
+/// Persisted view rows and compact events are unchanged.
+pub const DTO_VERSION: u16 = 29;

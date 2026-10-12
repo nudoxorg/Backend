@@ -59,6 +59,7 @@ pub fn answer_with_detail(
     match value {
         Answer::Page(value) => page_projection(&PageProjection::new(value, detail), theme),
         Answer::Records(value) => records_with_cursor(value, None, theme, cursor, target),
+        Answer::Product(value) => product_with_detail(value, theme, detail),
         _ => answer(value, theme),
     }
 }
@@ -567,6 +568,12 @@ pub fn status(status: &Status, theme: Theme) -> String {
 /// Renders one durable product answer: a heading, then one record per row.
 #[must_use]
 pub fn product(view: &ProductView, theme: Theme) -> String {
+    product_with_detail(view, theme, crate::Detail::Standard)
+}
+
+/// Renders a product while retaining the caller's detail in its next history read.
+#[must_use]
+pub fn product_with_detail(view: &ProductView, theme: Theme, detail: crate::Detail) -> String {
     let mut lines = Lines::new();
     lines.push(theme.paint(Style::Heading, view.heading()));
     if let Some(reason) = view.fault() {
@@ -581,6 +588,9 @@ pub fn product(view: &ProductView, theme: Theme) -> String {
         if view.records().is_empty() {
             index_search_page_footer(view, &mut lines);
             index_job_footer(view, &mut lines, theme);
+            if let Some(next) = crate::SemanticContinueDto::new(view, detail) {
+                lines.push(format!("  Continue history: {}", next.shell));
+            }
             return lines.finish();
         }
     }
@@ -617,6 +627,9 @@ pub fn product(view: &ProductView, theme: Theme) -> String {
     lines.push(theme.paint(Style::Dim, &format!("{} row(s)", view.records().len())));
     index_search_page_footer(view, &mut lines);
     index_job_footer(view, &mut lines, theme);
+    if let Some(next) = crate::SemanticContinueDto::new(view, detail) {
+        lines.push(format!("  Continue history: {}", next.shell));
+    }
     lines.finish()
 }
 

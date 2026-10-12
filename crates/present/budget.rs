@@ -267,6 +267,7 @@ pub fn encode_answer(
                         selected_source_frontier: product.selected_source_frontier,
                         package_source_membership_page: product.package_source_membership_page,
                         semantic_data: product.semantic_data,
+                        semantic_continue: product.semantic_continue,
                         package_discovery: product.package_discovery,
                     },
                     budget,
@@ -703,6 +704,8 @@ struct SummaryProductDto {
     package_source_membership_page: Option<backend_library::PackageSourceMembershipPageResultV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     semantic_data: Option<crate::product::ProductSemanticData>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    semantic_continue: Option<crate::dto::SemanticContinueDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     package_discovery: Option<crate::product::PackageDiscoveryProjection>,
 }

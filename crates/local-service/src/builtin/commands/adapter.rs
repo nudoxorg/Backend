@@ -16,7 +16,7 @@ use super::index::{
     PreparedIndex, PreparedProductSelection, capture_index_scan, commit_pending_capture_failure,
     finish_deferred_index, finish_index_scan, index_project_intent_at,
     index_project_intent_with_cluster_and_intent, package_source_membership_page,
-    remove_project_intent, run_index_scan, semantic_version_record, semantic_versions,
+    remove_project_intent, run_index_scan, semantic_version_record, semantic_versions, semantic_versions_page,
 };
 use super::index_operation::{
     Acceptance as IndexOperationAcceptance, IndexOperationJournal, JournalEntry,
@@ -513,6 +513,7 @@ fn answers_while_indexing(command: &Command) -> bool {
                 | S::IndexSearch { .. }
                 | S::PackageVersions { .. }
                 | S::SemanticVersions { .. }
+                | S::SemanticVersionsPage { .. }
                 | S::SemanticShapes { .. }
                 | S::PackageSourceMembership { .. }
                 | S::PackageProfile { .. }
@@ -5431,6 +5432,15 @@ impl CommandAdapter {
                     CommandReply::Surface(backend_engine::SurfaceReply::SemanticVersions(records))
                 },
             ),
+            backend_engine::SurfaceCommand::SemanticVersionsPage { package, limit, cursor } => {
+                let workspace = self.registry.as_ref().map(|gateway| gateway.workspace_root());
+                semantic_versions_page(
+                    daemon, package, workspace, &mut self.semantic_authority, limit, cursor.as_ref(),
+                ).map_or_else(
+                    |error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error.to_string())),
+                    |page| CommandReply::Surface(backend_engine::SurfaceReply::SemanticVersionsPage(page)),
+                )
+            },
             backend_engine::SurfaceCommand::SemanticShapes { .. } => CommandReply::Failed(
                 backend_engine::CommandFailure::InvalidQuery(
                     "semantic shapes require the certificate-bearing direct command selected by Session".to_owned())),
@@ -6464,6 +6474,8 @@ mod tests {
     mod index_publication_worker_tests;
     #[path = "index_request_admission.rs"]
     mod index_request_admission_tests;
+    #[path = "semantic_history_page.rs"]
+    mod semantic_history_page_tests;
 
     #[test]
     fn owned_intent_preparation_moves_facts_and_preserves_bound_canonical_identity() {

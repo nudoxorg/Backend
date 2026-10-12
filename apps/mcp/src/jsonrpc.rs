@@ -807,12 +807,15 @@ impl<P: Product> Server<P> {
             | ToolRoute::RefusedIndexAwait => None,
         };
         let index_search_tool = grammar.is_some_and(|grammar| grammar.name() == "index-search");
+        // This owner-admitted catalog cursor is a surface operand. It is not
+        // the query page continuation interpreted and wrapped by MCP below.
+        let semantic_history_tool = grammar.is_some_and(|grammar| grammar.name() == "semantic-versions");
         let index_search_cursor = if index_search_tool {
             self.index_search_cursor(arguments, &context)?
         } else {
             None
         };
-        let continuation = if index_search_tool {
+        let continuation = if index_search_tool || semantic_history_tool {
             None
         } else {
             self.continuation(arguments, &context)?
@@ -835,7 +838,7 @@ impl<P: Product> Server<P> {
                     Value::String(cursor.as_str().to_owned()),
                 );
             }
-        } else {
+        } else if !semantic_history_tool {
             command_arguments.remove("cursor");
         }
         let opener = self.opener()?;

@@ -2754,8 +2754,8 @@ mod index_ticket_reply;
 fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants() {
     use crate::interface::TypeScriptAuthorityFailureKind as F;
     assert_eq!(
-        DTO_VERSION, 28,
-        "native worker refusal first ships with DTO28"
+        DTO_VERSION, 29,
+        "bounded semantic history pages ship with DTO29"
     );
     let kind = F::NativeCheckerWorkerPoolUnavailable;
     let encoded_kind = serde_json::to_vec(&kind).unwrap();
@@ -2763,8 +2763,9 @@ fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants() {
     assert_eq!(serde_json::from_slice::<F>(&encoded_kind).unwrap(), kind);
     // Exact maintained preflight algorithm parameterized by the supported
     // protocol. This is a codec law, not an old-binary process replay.
+    // The exact native-worker refusal cutover stays DTO27 versus DTO28.
     let current = serde_json::to_vec(&serde_json::json!({
-        "version": DTO_VERSION,
+        "version": 28,
         "reply": {"typescript_failure": kind, "unknown_future_shape": true}
     }))
     .unwrap();

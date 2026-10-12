@@ -627,6 +627,14 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
     for spec in grammar.options() {
         properties.insert(spec.json_name().to_owned(), property(*spec));
     }
+    if grammar.tool() == "backend.semantic_versions" {
+        properties.insert("limit".to_owned(), json!({"type":"integer", "minimum":1,
+            "maximum":backend_library::MAX_SEMANTIC_HISTORY_PAGE_ITEMS,
+            "default":backend_library::DEFAULT_SEMANTIC_HISTORY_PAGE_ITEMS,
+            "description":"Whole history image proofs or versions per page; copy the returned continuation until absent."}));
+        properties.insert("cursor".to_owned(), json!({"type":"string", "minLength":340, "maxLength":340,
+            "description":"Exact opaque continuation returned by semantic_continue; bound to the same package, semantic/source roots and catalog."}));
+    }
     // Presentation controls are shared by every read tool. Keeping them out
     // of the command grammar avoids making a presentation preference look
     // like a daemon operand while still making the accepted JSON explicit.
@@ -665,6 +673,37 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
     if grammar.tool() == "backend.index" {
         output_schema["properties"]["index_poll"] = index_poll_schema();
     }
+    if grammar.tool() == "backend.semantic_versions" {
+        output_schema["properties"]["semantic_continue"] = json!({
+            "type":"object",
+            "description":"Exact next bounded history read; Preparing retains the same cursor without advancing. Omitted after all versions and image proofs are returned.",
+            "properties":{
+                "shell":{"type":"string"},
+                "call":{
+                    "type":"object",
+                    "properties":{
+                        "name":{"const":"backend.semantic_versions"},
+                        "arguments":{
+                            "type":"object",
+                            "properties":{
+                                "package":{"type":"string"},
+                                "limit":{"type":"integer","minimum":1,"maximum":backend_library::MAX_SEMANTIC_HISTORY_PAGE_ITEMS},
+                                "cursor":{"type":"string","minLength":340,"maxLength":340},
+                                "detail":{"type":"string","enum":["summary","standard","full"]}
+                            },
+                            "required":["package","limit","cursor","detail"],
+                            "additionalProperties":false
+                        }
+                    },
+                    "required":["name","arguments"],
+                    "additionalProperties":false
+                }
+            },
+            "required":["shell","call"],
+            "additionalProperties":false
+        });
+    }
+
     json!({
         "name": grammar.tool(),
         "title": title,

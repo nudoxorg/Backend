@@ -1800,6 +1800,29 @@ impl Session {
         }
     }
 
+    /// Reads one bounded, lossless page of retained versions and published history images.
+    /// Saved continuations retain the exact semantic/source basis across owner restart.
+    ///
+    /// # Errors
+    /// Returns an error when the package, cursor, page bound, transport or owner reply fails admission.
+    pub fn semantic_versions_page(
+        &mut self,
+        package: PackageReference,
+        limit: u16,
+        cursor: Option<backend_library::SemanticVersionsCursor>,
+    ) -> Result<backend_library::SemanticVersionsPage, ClientError> {
+        match self.surface(SurfaceCommand::SemanticVersionsPage {
+            package,
+            limit,
+            cursor,
+        })? {
+            SurfaceReply::SemanticVersionsPage(page) => Ok(page),
+            _ => Err(ClientError::Protocol(
+                "semantic version page reply changed shape".to_owned(),
+            )),
+        }
+    }
+
     /// Reads one bounded page of exact source File rows selected by a local Project.
     ///
     /// Continuations are stateless and bound to the same package, selected

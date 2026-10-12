@@ -839,6 +839,36 @@ pub fn admit_surface_reply(
         .admit(command.id())
         .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
     admit_index_reply(command, reply)?;
+    if let crate::SurfaceCommand::SemanticVersions { package } = command {
+        let crate::SurfaceReply::SemanticVersions(versions) = reply else {
+            return Err(ReplyAdmissionError::Protocol(
+                "semantic versions reply changed shape".to_owned(),
+            ));
+        };
+        if versions.iter().any(|version| version.package != *package) {
+            return Err(ReplyAdmissionError::Protocol(
+                "semantic versions reply changed package".to_owned(),
+            ));
+        }
+    }
+    if let crate::SurfaceCommand::SemanticVersionsPage {
+        package,
+        limit,
+        cursor,
+    } = command
+    {
+        let crate::SurfaceReply::SemanticVersionsPage(page) = reply else {
+            return Err(ReplyAdmissionError::Protocol(
+                "semantic version page reply changed shape".to_owned(),
+            ));
+        };
+        if !page.admits_request(package, *limit, cursor.as_ref()) {
+            return Err(ReplyAdmissionError::Protocol(
+                "semantic version page does not match its exact request".to_owned(),
+            ));
+        }
+    }
+
     if let (crate::SurfaceCommand::ProjectTree { root }, crate::SurfaceReply::ProjectTree(tree)) =
         (command, reply)
         && !tree.request_binding().is_some_and(|binding| {

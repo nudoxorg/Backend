@@ -282,6 +282,7 @@ const fn surface_is_repeatable(command: &SurfaceCommand) -> Repeatable {
         | SurfaceCommand::IndexProgress { .. }
         | SurfaceCommand::PackageVersions { .. }
         | SurfaceCommand::SemanticVersions { .. }
+        | SurfaceCommand::SemanticVersionsPage { .. }
         | SurfaceCommand::PackageProfile { .. }
         | SurfaceCommand::ForgeReference { .. }
         | SurfaceCommand::Subscriptions

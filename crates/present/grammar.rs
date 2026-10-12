@@ -532,6 +532,17 @@ const CURSOR: ArgumentSpec = ArgumentSpec::optional(
     "Opaque continuation returned by the preceding page; bound to its query and index snapshot.",
 );
 
+const SEMANTIC_HISTORY_LIMIT: ArgumentSpec = ArgumentSpec::optional(
+    "limit",
+    ArgumentKind::Limit,
+    "Maximum whole history image proofs or versions without a catalog per page, 1 to 16 (default 8). A page may contain fewer items to fit the response budget.",
+);
+const SEMANTIC_HISTORY_CURSOR: ArgumentSpec = ArgumentSpec::optional(
+    "cursor",
+    ArgumentKind::Cursor,
+    "Copy the preceding semantic_continue call unchanged; bound to its package, semantic/source roots, and exact retained version/history catalog.",
+);
+
 /// The calling convention of every registry row, in registry order.
 pub const GRAMMARS: [CommandGrammar; 53] = [
     CommandGrammar {
@@ -832,8 +843,8 @@ pub const GRAMMARS: [CommandGrammar; 53] = [
             ArgumentKind::PackageReference,
             "A pinned purl or an exact local package label.",
         )],
-        options: &[],
-        when: "Use before select-semantic-version to see which compiler generations were retained.",
+        options: &[SEMANTIC_HISTORY_LIMIT, SEMANTIC_HISTORY_CURSOR],
+        when: "Read retained compiler generations and complete published history proofs in bounded pages. Copy the returned continuation until it is absent; the source operand remains usable without downloading every proof image.",
     },
     CommandGrammar {
         name: "semantic-shapes",
@@ -845,7 +856,7 @@ pub const GRAMMARS: [CommandGrammar; 53] = [
             "Exact selected SemanticVersionRecord, full selected SymbolKey byte arrays, max_nodes and max_bytes.",
         )],
         options: &[],
-        when: "Use after semantic-versions and an exact selected-key read to obtain compiler-owned member/type shapes with source/image provenance. Unavailable and unsupported remain typed facts; no source-text fallback is inferred.",
+        when: "Use after semantic-versions and an exact selected-key read to obtain compiler-owned member/type shapes with source/image provenance. Copy the selected semantic_data.value.entries[].version into request.source; its history proofs need not finish paging first. Unavailable and unsupported remain typed facts; no source-text fallback is inferred.",
     },
     CommandGrammar {
         name: "package-source-membership",

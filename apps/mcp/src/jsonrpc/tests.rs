@@ -1213,9 +1213,17 @@ fn semantic_shapes_actual_jsonrpc_preserves_full_view_in_summary_and_full() {
         let selected: backend_library::SemanticShapeReadRequest =
             serde_json::from_value(operands.clone()).expect("request");
         let mut server = ready(Fake {
-            surface_reply: Some(SurfaceReply::SemanticVersions(Box::new([selected
-                .source()
-                .clone()]))),
+            surface_reply: Some(SurfaceReply::SemanticVersionsPage(
+                backend_library::SemanticVersionsPage::from_versions(
+                    selected.source().package.clone(),
+                    [17; 32],
+                    selected.source().selected_source_frontier.as_ref().expect("selected source").source_relation_root,
+                    &[selected.source().clone()],
+                    backend_library::DEFAULT_SEMANTIC_HISTORY_PAGE_ITEMS,
+                    None,
+                )
+                .expect("actual bounded source page"),
+            )),
             ..Fake::default()
         });
         let resolved = call(
@@ -1232,7 +1240,9 @@ fn semantic_shapes_actual_jsonrpc_preserves_full_view_in_summary_and_full() {
             "backend.semantic_versions",
             &json!({"package":"/abs/shape-fixture","detail":detail}),
         );
-        let source = versions["structuredContent"]["semantic_data"]["value"][0].clone();
+        let source =
+            versions["structuredContent"]["semantic_data"]["value"]["entries"][0]["version"]
+                .clone();
         assert_eq!(source, operands["source"]);
         let mut shape_operands = operands.clone();
         shape_operands["source"] = source;
@@ -1285,6 +1295,19 @@ fn semantic_versions_jsonrpc_preserves_captured_semver_and_matches_the_cli_proje
     .expect("complete captured public source packet");
     let reply: SurfaceReply = serde_json::from_value(packet["surface"].clone())
         .expect("complete source DTO; no wire certificate is fabricated");
+    let SurfaceReply::SemanticVersions(records) = reply else {
+        panic!("retained versions");
+    };
+    let page = backend_library::SemanticVersionsPage::from_versions(
+        records[0].package.clone(),
+        [17; 32],
+        records[0].selected_source_frontier.as_ref().expect("exact captured source frontier").source_relation_root,
+        &records,
+        backend_library::DEFAULT_SEMANTIC_HISTORY_PAGE_ITEMS,
+        None,
+    )
+    .expect("source-bound first page");
+    let reply = SurfaceReply::SemanticVersionsPage(page.clone());
     let answer = Answer::Product(Box::new(backend_present::product_view(&reply)));
     let package = packet["surface"]["data"][0]["package"]["value"]
         .as_str()
@@ -1304,13 +1327,41 @@ fn semantic_versions_jsonrpc_preserves_captured_semver_and_matches_the_cli_proje
         assert_eq!(result["isError"], false, "{response}");
         assert_eq!(
             result["structuredContent"]["semantic_data"]["value"],
-            packet["surface"]["data"]
+            serde_json::to_value(&page).expect("complete bounded source page")
         );
         assert!(
             result["structuredContent"]["records"][0]["history_status"]["proof"]
                 .get("images")
                 .is_none()
         );
+        let source =
+            &result["structuredContent"]["semantic_data"]["value"]["entries"][0]["version"];
+        for field in [
+            "package",
+            "coordinate",
+            "profile",
+            "generation",
+            "generation_root",
+            "dependency_set",
+            "manifest",
+            "artifacts",
+            "semantic_bytes",
+            "complete",
+            "selected",
+            "freshness",
+            "selected_source_frontier",
+        ] {
+            assert_eq!(
+                source[field], packet["surface"]["data"][0][field],
+                "exact captured {field}"
+            );
+        }
+        assert_eq!(
+            source["history_status"]["catalog"]["package_identity"],
+            packet["surface"]["data"][0]["history_status"]["proof"]["package_identity"]
+        );
+        backend_library::admit_surface_reply(&server.product.surface_commands[0], &reply)
+            .expect("fixture models an admitted production response");
         // The CLI adapter regression compares its actual JSON bytes to this
         // same production encoder and its Markdown to this shared renderer.
         let cli_projection = backend_present::encode_answer(
@@ -1325,10 +1376,15 @@ fn semantic_versions_jsonrpc_preserves_captured_semver_and_matches_the_cli_proje
         assert_eq!(result["structuredContent"], cli_projection);
         assert_eq!(
             text_of(result),
-            backend_present::bounded_text(&backend_present::markdown::answer(&answer))
+            backend_present::bounded_text(&backend_present::markdown::answer_with_detail(
+                &answer,
+                detail,
+                None,
+                backend_present::ContinuationTarget::McpTool("backend.semantic_versions"),
+            ))
         );
         assert!(
-            matches!(&server.product.surface_commands[0], SurfaceCommand::SemanticVersions { package: observed } if observed.as_str() == package)
+            matches!(&server.product.surface_commands[0], SurfaceCommand::SemanticVersionsPage { package: observed, limit: backend_library::DEFAULT_SEMANTIC_HISTORY_PAGE_ITEMS, cursor: None } if observed.as_str() == package)
         );
     }
 }
@@ -1346,18 +1402,25 @@ fn semantic_versions_jsonrpc_keeps_true_oversize_refusals_atomic() {
     };
     // Repeating an actual display operand exercises only egress budgeting. It
     // does not assert that a compiler owner published duplicate generations.
-    for detail in ["summary", "standard", "full"] {
-        let mut server = ready(Fake {
-            surface_reply: Some(SurfaceReply::SemanticVersions(
-                vec![records[0].clone(), records[0].clone()].into_boxed_slice(),
-            )),
-            ..Fake::default()
-        });
-        let response = request(
-            &mut server,
-            "tools/call",
-            &json!({"name":"backend.semantic_versions","arguments":{"package":records[0].package.as_str(),"detail":detail}}),
+    for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+        // Exercise the retained full-history egress contract directly. The
+        // normal named command now requires an admitted bounded page; a
+        // repeated display fixture is not a valid owner page response.
+        let mut server = ready(Fake::default());
+        let reply = SurfaceReply::SemanticVersions(
+            vec![records[0].clone(), records[0].clone()].into_boxed_slice(),
         );
+        let answer = Answer::Product(Box::new(backend_present::product_view(&reply)));
+        let result = server
+            .rendered(
+                &answer,
+                detail,
+                b"legacy-full-history-egress",
+                CursorTarget::CliOption,
+                SURFACE_TOOL,
+            )
+            .expect("actual production MCP egress");
+        let response = encoded_stdio_reply(json!({"jsonrpc":"2.0", "id":9, "result":result}));
         assert_context_bounded(&response);
         assert_eq!(response["result"]["isError"], true);
         assert_eq!(
@@ -1369,9 +1432,9 @@ fn semantic_versions_jsonrpc_keeps_true_oversize_refusals_atomic() {
                 .get("semantic_data")
                 .is_none()
         );
+        assert!(server.product.surface_commands.is_empty());
     }
 }
-
 #[test]
 fn semantic_shapes_jsonrpc_refuses_oversized_view_without_dropping_required_facts() {
     // This is an untrusted egress fixture at the surface budget seam, not a
@@ -7724,4 +7787,160 @@ mod conditional_progress_tests {
             assert!(server.product.surface_commands.is_empty());
         }
     }
+}
+
+#[test]
+fn semantic_history_pages_copy_exact_mcp_calls_and_preserve_whole_line_budget() {
+    let packet: Value = serde_json::from_str(include_str!(
+        "../../../../crates/present/fixtures/semantic-versions-semver-public.json"
+    ))
+    .expect("captured complete public history schema");
+    let SurfaceReply::SemanticVersions(records) =
+        serde_json::from_value(packet["surface"].clone()).expect("typed source DTO")
+    else {
+        panic!("versions");
+    };
+    let package = records[0].package.clone();
+    let backend_library::SemanticHistoryPublicationStatus::Published {
+        proof: original, ..
+    } = &records[0].history_status
+    else {
+        panic!("published history");
+    };
+    for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+        let mut cursor = None;
+        let mut replies = VecDeque::new();
+        loop {
+            let page = backend_library::SemanticVersionsPage::from_versions(
+                package.clone(),
+                [17; 32],
+                records[0].selected_source_frontier.as_ref().expect("exact captured source frontier").source_relation_root,
+                &records,
+                8,
+                cursor.as_ref(),
+            )
+            .expect("fixture owner's admitted whole page");
+            cursor = page.next_cursor.clone();
+            replies.push_back(SurfaceReply::SemanticVersionsPage(page));
+            if cursor.is_none() {
+                break;
+            }
+        }
+        let mut server = ready(Fake {
+            surface_replies: replies,
+            ..Fake::default()
+        });
+        let mut call = json!({"name":"backend.semantic_versions", "arguments":{"package":package.as_str(),"detail":detail.name()}});
+        let mut images = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        let mut catalog = None;
+        let mut pages = 0;
+        loop {
+            let response = request(&mut server, "tools/call", &call);
+            assert_context_bounded(&response);
+            assert_eq!(response["id"], 9);
+            assert_eq!(response["result"]["isError"], false, "{response}");
+            let value = &response["result"]["structuredContent"];
+            assert_eq!(value["detail"], detail.name());
+            let page: backend_library::SemanticVersionsPage =
+                serde_json::from_value(value["semantic_data"]["value"].clone())
+                    .expect("complete projected typed page");
+            backend_library::admit_surface_reply(
+                server
+                    .product
+                    .surface_commands
+                    .last()
+                    .expect("actual dispatched command"),
+                &SurfaceReply::SemanticVersionsPage(page.clone()),
+            )
+            .expect("exact command/page scope");
+            for entry in &page.entries {
+                assert_eq!(entry.start_ordinal as usize, images.len());
+                let backend_library::SemanticHistoryPublicationStatus::PublishedCatalog {
+                    catalog: header,
+                    ..
+                } = &entry.version.history_status
+                else {
+                    panic!("catalog header");
+                };
+                catalog = Some(header.clone());
+                for image in &entry.images {
+                    assert!(seen.insert(image.image.artifact_ordinal));
+                    images.push(image.clone());
+                }
+            }
+            pages += 1;
+            assert!(pages <= 42);
+            let Some(next) = value.get("semantic_continue") else {
+                break;
+            };
+            assert_eq!(next["call"]["name"], "backend.semantic_versions");
+            assert_eq!(next["call"]["arguments"]["detail"], detail.name());
+            assert_eq!(next["call"]["arguments"]["package"], package.as_str());
+            assert_eq!(
+                next["call"]["arguments"]["cursor"],
+                page.next_cursor.as_ref().expect("next cursor").as_str()
+            );
+            assert!(
+                text_of(&response["result"]).contains(
+                    next["call"]["arguments"]["cursor"]
+                        .as_str()
+                        .expect("literal cursor guidance")
+                )
+            );
+            call = next["call"].clone();
+        }
+        assert!(pages > 1);
+        assert_eq!(seen.len(), 42);
+        assert_eq!(
+            catalog
+                .expect("header")
+                .assemble(images.into_boxed_slice())
+                .expect("whole exact proof"),
+            *original
+        );
+        assert!(server.product.surface_replies.is_empty());
+    }
+}
+
+#[test]
+fn semantic_history_tool_schema_describes_exact_input_and_returned_read() {
+    let mut server = ready(Fake::default());
+    let response = request(&mut server, "tools/list", &json!({}));
+    let tools = response["result"]["tools"]
+        .as_array()
+        .expect("actual advertised tools");
+    let tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "backend.semantic_versions")
+        .expect("history tool");
+    assert_eq!(tool["inputSchema"]["properties"]["limit"]["minimum"], 1);
+    assert_eq!(tool["inputSchema"]["properties"]["limit"]["maximum"], 16);
+    assert_eq!(tool["inputSchema"]["properties"]["limit"]["default"], 8);
+    assert_eq!(
+        tool["inputSchema"]["properties"]["cursor"]["maxLength"],
+        340
+    );
+    let call = &tool["outputSchema"]["properties"]["semantic_continue"]["properties"]["call"];
+    assert_eq!(
+        call["properties"]["name"]["const"],
+        "backend.semantic_versions"
+    );
+    let arguments = &call["properties"]["arguments"];
+    assert_eq!(
+        arguments["required"],
+        json!(["package", "limit", "cursor", "detail"])
+    );
+    assert_eq!(arguments["properties"]["limit"]["maximum"], 16);
+    assert_eq!(arguments["properties"]["cursor"]["maxLength"], 340);
+    assert_eq!(arguments["additionalProperties"], false);
+    assert!(
+        tools
+            .iter()
+            .filter(|tool| tool["name"] != "backend.semantic_versions")
+            .all(|tool| tool["outputSchema"]["properties"]
+                .get("semantic_continue")
+                .is_none())
+    );
+    assert!(server.product.surface_commands.is_empty());
 }

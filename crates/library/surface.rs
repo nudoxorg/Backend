@@ -657,6 +657,17 @@ pub enum SemanticHistoryPublicationStatus {
         /// Exact, bounded proof summary for this branch commit.
         proof: SemanticHistoryPublicationProof,
     },
+    /// Published history with a complete catalog commitment and separately paged image proofs.
+    PublishedCatalog {
+        /// Exact committed selection whose catalog is being read.
+        selection_id: [u8; 32],
+        /// Final package history commit.
+        commit: [u8; 32],
+        /// Exact verified public reference.
+        reference: String,
+        /// Complete immutable catalog header, not a claim that this page contains every image.
+        catalog: crate::SemanticHistoryCatalog,
+    },
     /// History could not be produced or admitted for this selected image.
     Refused {
         /// Identity of the selected product version whose history was refused.
@@ -753,6 +764,18 @@ impl SemanticVersionRecord {
                 || proof.selection.profile != self.profile)
         {
             return Err(ProductAdmissionError::SemanticVersionShape);
+        }
+        if let SemanticHistoryPublicationStatus::PublishedCatalog {
+            commit,
+            reference,
+            catalog,
+            ..
+        } = &self.history_status
+        {
+            if reference != "selected-native-v3" {
+                return Err(ProductAdmissionError::SemanticVersionShape);
+            }
+            catalog.admit(self, *commit)?;
         }
         if match &self.history_status {
             SemanticHistoryPublicationStatus::Deferred { reason, .. }
@@ -3224,6 +3247,15 @@ pub enum SurfaceCommand {
         /// Exact product package reference.
         package: PackageReference,
     },
+    /// Read a bounded lossless page of versions and their published history catalogs.
+    SemanticVersionsPage {
+        /// Exact package owning the retained versions.
+        package: PackageReference,
+        /// Whole image-proof or version items admitted in one response.
+        limit: u16,
+        /// Exact continuation from the previous owner response.
+        cursor: Option<crate::SemanticVersionsCursor>,
+    },
     /// Read compiler-owned member/type shapes for exact selected keys.
     SemanticShapes {
         /// Source selection and bounded full-key operands.
@@ -3415,7 +3447,9 @@ impl SurfaceCommand {
             Self::Owner { .. } => CommandId::Owner,
             Self::IndexSearch { .. } => CommandId::IndexSearch,
             Self::PackageVersions { .. } => CommandId::PackageVersions,
-            Self::SemanticVersions { .. } => CommandId::SemanticVersions,
+            Self::SemanticVersions { .. } | Self::SemanticVersionsPage { .. } => {
+                CommandId::SemanticVersions
+            }
             Self::SemanticShapes { .. } => CommandId::SemanticShapes,
             Self::PackageSourceMembership { .. } => CommandId::PackageSourceMembership,
             Self::SelectSemanticVersion { .. } => CommandId::SelectSemanticVersion,
@@ -3462,6 +3496,11 @@ impl SurfaceCommand {
                 if *limit == 0 || usize::from(*limit) > MAX_PRODUCT_ROWS =>
             {
                 Err(ProductAdmissionError::RowBound)
+            }
+            Self::SemanticVersionsPage { limit, .. }
+                if *limit == 0 || *limit > crate::MAX_SEMANTIC_HISTORY_PAGE_ITEMS =>
+            {
+                Err(ProductAdmissionError::SemanticVersionShape)
             }
             Self::SelectSemanticVersion {
                 coordinate,
@@ -4941,6 +4980,8 @@ pub enum SurfaceReply {
     PackageVersions(Box<[RegistryPackageRecord]>),
     /// Immutable compiler generations for one exact package.
     SemanticVersions(Box<[SemanticVersionRecord]>),
+    /// Complete bounded version/catalog segments with exact continuation.
+    SemanticVersionsPage(crate::SemanticVersionsPage),
     /// Egress view exported after direct shape certificate admission.
     SemanticShapes(crate::SemanticShapeExport),
     /// One bounded page of exact selected Project source membership.
@@ -5036,7 +5077,9 @@ impl SurfaceReply {
             Self::IndexSearchWithDiscovery(_) => CommandId::IndexSearch,
             Self::IndexSearchPage(_) => CommandId::IndexSearch,
             Self::PackageVersions(_) => CommandId::PackageVersions,
-            Self::SemanticVersions(_) => CommandId::SemanticVersions,
+            Self::SemanticVersions(_) | Self::SemanticVersionsPage(_) => {
+                CommandId::SemanticVersions
+            }
             Self::SemanticShapes(_) => CommandId::SemanticShapes,
             Self::PackageSourceMembershipPage(_) => CommandId::PackageSourceMembership,
             Self::IndexStarted(_) => CommandId::IndexStart,
@@ -5129,12 +5172,19 @@ impl SurfaceReply {
                     .map_err(|_| ProductAdmissionError::PackageGraphPage)?;
                 page.rows.len()
             }
+            Self::SemanticVersionsPage(page) => {
+                page.admit()?;
+                page.entries.len()
+            }
             Self::SemanticVersions(records) => {
                 let mut selected_targets = BTreeSet::new();
                 let mut response_package = None;
                 let mut selected_frontier: Option<Option<&SelectedProjectSourceFrontier>> = None;
                 for record in records {
                     record.admit()?;
+                    if matches!(&record.history_status, SemanticHistoryPublicationStatus::PublishedCatalog { .. }) {
+                        return Err(ProductAdmissionError::SemanticVersionShape);
+                    }
                     if response_package.is_some_and(|prior| prior != &record.package) {
                         return Err(ProductAdmissionError::SemanticVersionShape);
                     }
@@ -5170,7 +5220,7 @@ impl SurfaceReply {
             }
             Self::SemanticVersionSelected(record) => {
                 record.admit()?;
-                if !record.selected {
+                if !record.selected || matches!(&record.history_status, SemanticHistoryPublicationStatus::PublishedCatalog { .. }) {
                     return Err(ProductAdmissionError::SemanticVersionShape);
                 }
                 1
@@ -5430,6 +5480,7 @@ impl SurfaceReply {
                         ),
                     )
                 })),
+            Self::SemanticVersionsPage(page) => serialized_json_size(page),
             Self::SemanticVersions(records) => records.iter().fold(0_usize, |bound, record| {
                 bound
                     .saturating_add(fixed_record_bound())
@@ -5543,7 +5594,7 @@ impl Write for JsonSizeCounter {
 }
 
 /// Counts the encoded size without allocating a temporary serialized copy.
-fn serialized_json_size(value: &impl Serialize) -> usize {
+pub(crate) fn serialized_json_size(value: &impl Serialize) -> usize {
     let mut counter = JsonSizeCounter::default();
     if serde_json::to_writer(&mut counter, value).is_ok() {
         counter.0

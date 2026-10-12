@@ -678,6 +678,11 @@ fn product_projection(view: &ProductView, detail: Option<Detail>) -> String {
         if view.records().is_empty() {
             index_search_page_footer(view, &mut lines);
             index_job_footer(view, detail, &mut lines);
+            if let Some(next) =
+                crate::SemanticContinueDto::new(view, detail.unwrap_or(Detail::Standard))
+            {
+                lines.push(format!("Continue history with `{}`", next.call));
+            }
             return lines.finish();
         }
     }
@@ -703,6 +708,9 @@ fn product_projection(view: &ProductView, detail: Option<Detail>) -> String {
     lines.push(format!("{} row(s)", view.records().len()));
     index_search_page_footer(view, &mut lines);
     index_job_footer(view, detail, &mut lines);
+    if let Some(next) = crate::SemanticContinueDto::new(view, detail.unwrap_or(Detail::Standard)) {
+        lines.push(format!("Continue history with `{}`", next.call));
+    }
     lines.finish()
 }
 

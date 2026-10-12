@@ -6669,11 +6669,62 @@ pub(super) fn semantic_versions(
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
 ) -> Result<Box<[backend_engine::SemanticVersionRecord]>, BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
-    let selected_source_frontier = selected_project_source_frontier(&snapshot, package)?;
+    semantic_versions_from_snapshot(
+        &snapshot,
+        daemon.engine().daemon().library().view(),
+        package,
+        workspace,
+        semantic_authority,
+    )
+}
+
+/// Roots and records are captured from one immutable owner snapshot.
+pub(super) fn semantic_versions_page(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    package: backend_engine::PackageReference,
+    workspace: Option<&Path>,
+    semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
+    limit: u16,
+    cursor: Option<&backend_library::SemanticVersionsCursor>,
+) -> Result<backend_library::SemanticVersionsPage, BuiltinModelError> {
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    let semantic_root = snapshot
+        .relation::<BuiltinSemanticRelation>()
+        .map(|relation| *relation.root().as_bytes())
+        .map_err(|error| BuiltinModelError(format!("open semantic history page: {error}")))?;
+    let source_root = snapshot
+        .relation::<BuiltinWorkspaceRelation>()
+        .map(|relation| *relation.root().as_bytes())
+        .map_err(|error| BuiltinModelError(format!("open semantic source page: {error}")))?;
+    let versions = semantic_versions_from_snapshot(
+        &snapshot,
+        daemon.engine().daemon().library().view(),
+        &package,
+        workspace,
+        semantic_authority,
+    )?;
+    backend_library::SemanticVersionsPage::from_versions(
+        package,
+        semantic_root,
+        source_root,
+        &versions,
+        limit,
+        cursor,
+    )
+    .map_err(|error| BuiltinModelError(error.to_string()))
+}
+fn semantic_versions_from_snapshot(
+    snapshot: &WorkspaceSnapshot,
+    fallback_view: &backend_library::ViewRoot,
+    package: &backend_engine::PackageReference,
+    workspace: Option<&Path>,
+    semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
+) -> Result<Box<[backend_engine::SemanticVersionRecord]>, BuiltinModelError> {
+    let selected_source_frontier = selected_project_source_frontier(snapshot, package)?;
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(format!("open semantic version history: {error}")))?;
-    let capture_relation = semantic_capture_relation(&snapshot)
+    let capture_relation = semantic_capture_relation(snapshot)
         .map_err(|error| BuiltinModelError(format!("open semantic capture history: {error}")))?;
     let mut selected = BTreeMap::<(PackageUrl, LanguageProfile), [u8; 32]>::new();
     let mut unavailable = None;
@@ -6752,7 +6803,7 @@ pub(super) fn semantic_versions(
                         )
                         .map_err(|error| BuiltinModelError(error.to_owned()))?;
                     let freshness =
-                        semantic_authority.freshness(&snapshot, freshness_key, claim)?;
+                        semantic_authority.freshness(snapshot, freshness_key, claim)?;
                     generations.push((
                         target,
                         selected_key,
@@ -6776,9 +6827,8 @@ pub(super) fn semantic_versions(
         after = Some(next);
     }
     if generations.is_empty() {
-        let view = daemon.engine().daemon().library().view();
         let fallback =
-            super::super::product_state::indexed_semantic_versions(view, package, workspace)
+            super::super::product_state::indexed_semantic_versions(fallback_view, package, workspace)
                 .map_err(BuiltinModelError)?;
         if !fallback.is_empty() {
             return Ok(fallback);

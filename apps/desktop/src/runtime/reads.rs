@@ -596,6 +596,7 @@ pub(crate) const fn read_only(command: &SurfaceCommand) -> bool {
             | SurfaceCommand::IndexSearch { .. }
             | SurfaceCommand::PackageVersions { .. }
             | SurfaceCommand::SemanticVersions { .. }
+            | SurfaceCommand::SemanticVersionsPage { .. }
             | SurfaceCommand::PackageProfile { .. }
             | SurfaceCommand::Subscriptions
             | SurfaceCommand::Projects

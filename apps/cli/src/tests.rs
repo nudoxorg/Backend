@@ -1687,3 +1687,166 @@ fn cli_exports_plain_graph_continuation_without_leaking_the_wire_proof() {
         expected[2..4]
     );
 }
+
+#[test]
+fn cli_semantic_history_follows_exact_returned_continuations_without_losing_proofs() {
+    let packet: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../crates/present/fixtures/semantic-versions-semver-public.json"
+    ))
+    .expect("captured public history schema");
+    let backend_library::SurfaceReply::SemanticVersions(records) =
+        serde_json::from_value(packet["surface"].clone()).expect("typed retained versions")
+    else {
+        panic!("versions");
+    };
+    struct HistoryTransport {
+        records: Box<[backend_library::SemanticVersionRecord]>,
+        commands: Vec<SurfaceCommand>,
+    }
+    impl CommandTransport for HistoryTransport {
+        fn request(&mut self, request: CommandDto) -> Result<ReplyDto, ClientError> {
+            backend_library::admit_request(&request).expect("normal request admission");
+            let Command::Surface(command) = &request.command else {
+                panic!("history surface read");
+            };
+            let SurfaceCommand::SemanticVersionsPage {
+                package,
+                limit,
+                cursor,
+            } = command
+            else {
+                panic!("bounded history lowering");
+            };
+            self.commands.push(command.clone());
+            let page = backend_library::SemanticVersionsPage::from_versions(
+                package.clone(),
+                [17; 32],
+                self.records[0].selected_source_frontier.as_ref().expect("exact captured source frontier").source_relation_root,
+                &self.records,
+                *limit,
+                cursor.as_ref(),
+            )
+            .expect("fixture producer page");
+            let reply = ReplyDto::new(
+                request.request_id,
+                CommandReply::Surface(backend_library::SurfaceReply::SemanticVersionsPage(page)),
+            );
+            let bytes = serde_json::to_vec(&reply).expect("actual versioned wire reply");
+            let decoded = backend_library::decode_reply_body(&bytes).expect("strict wire decoder");
+            admit_reply(&request, decoded)
+        }
+    }
+    let package = records[0].package.clone();
+    let original = records[0].history_status.clone();
+    let mut session = backend_client::Session::from_transport(
+        "/private/history-page.sock",
+        HistoryTransport {
+            records,
+            commands: Vec::new(),
+        },
+    );
+    let mut invocation = invoke::parse(
+        &["semantic-versions".to_owned(), package.as_str().to_owned()],
+        None,
+    )
+    .expect("installed command grammar");
+    let mut images = Vec::new();
+    let mut catalog = None;
+    let mut pages = 0;
+    loop {
+        let request = lower(&invocation, "/abs/project").expect("normal CLI lowering");
+        let answer = run::execute(&mut session, &request).expect("normal Session surface dispatch");
+        let text = render::json_with_detail(&answer, backend_present::Detail::Full);
+        assert!(text.len() <= backend_present::DEFAULT_RESPONSE_BUDGET_BYTES);
+        let value: serde_json::Value = serde_json::from_str(&text).expect("whole CLI JSON");
+        for format in ["human", "markdown"] {
+            let options = options::split(&[
+                "--format".to_owned(),
+                format.to_owned(),
+                "--detail".to_owned(),
+                "full".to_owned(),
+            ])
+            .expect("actual CLI detail")
+            .0;
+            let rendered = render::answer(&answer, &options);
+            if value.get("semantic_continue").is_some() {
+                assert!(rendered.contains("full"), "{rendered}");
+                assert!(rendered.contains("cursor"), "{rendered}");
+            }
+        }
+        assert_eq!(value["answer"], "product");
+        assert_eq!(value["semantic_data"]["kind"], "versions-page");
+        let page: backend_library::SemanticVersionsPage =
+            serde_json::from_value(value["semantic_data"]["value"].clone())
+                .expect("complete typed page projection");
+        assert_eq!(page.entries[0].start_ordinal as usize, images.len());
+        for entry in &page.entries {
+            let backend_library::SemanticHistoryPublicationStatus::PublishedCatalog {
+                catalog: header,
+                ..
+            } = &entry.version.history_status
+            else {
+                panic!("explicit catalog");
+            };
+            catalog = Some(header.clone());
+            images.extend_from_slice(&entry.images);
+        }
+        pages += 1;
+        assert!(pages <= 42);
+        let Some(next) = value.get("semantic_continue") else {
+            break;
+        };
+        assert_eq!(next["call"]["name"], "backend.semantic_versions");
+        assert_eq!(next["call"]["arguments"]["package"], package.as_str());
+        assert_eq!(next["call"]["arguments"]["detail"], "full");
+        assert!(
+            next["shell"]
+                .as_str()
+                .expect("copyable CLI read")
+                .contains("--detail full semantic-versions")
+        );
+        let mut args = next["call"]["arguments"]
+            .as_object()
+            .expect("actual returned arguments")
+            .clone();
+        args.remove("detail");
+        invocation = backend_present::Invocation::from_json(
+            grammar_for("semantic-versions").expect("same shared grammar"),
+            &args,
+        )
+        .expect("literal returned continuation accepted");
+    }
+    assert!(pages > 1);
+    let backend_library::SemanticHistoryPublicationStatus::Published { proof, .. } = original
+    else {
+        panic!("complete retained proof");
+    };
+    assert_eq!(
+        catalog
+            .expect("header")
+            .assemble(images.into_boxed_slice())
+            .expect("no gaps or duplicate images"),
+        proof
+    );
+    let grammar = grammar_for("semantic-versions").expect("grammar");
+    assert!(grammar.installed_usage().contains("--limit"));
+    assert!(grammar.installed_usage().contains("--cursor"));
+    let help = invoke::help_for(grammar);
+    assert!(help.contains("1 to 16 (default 8)"));
+    assert!(help.contains("semantic/source roots"));
+    assert!(!help.contains("1 to 200"));
+    let invalid = invoke::parse(
+        &[
+            "semantic-versions".to_owned(),
+            package.as_str().to_owned(),
+            "--limit".to_owned(),
+            "17".to_owned(),
+        ],
+        None,
+    )
+    .expect("syntactic integer");
+    assert!(
+        lower(&invalid, "/abs/project").is_err(),
+        "advertised hard bound is enforced"
+    );
+}
