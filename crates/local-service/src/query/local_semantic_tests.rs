@@ -16,6 +16,48 @@ use std::time::{Duration, Instant};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[test]
+fn local_semantic_complete_projection_admission_uses_configured_credits_not_project_caps()
+-> TestResult {
+    // Both historical ceilings are exceeded; this exercises the exact admission
+    // calculation used by production without allocating that artificial corpus.
+    let count = 131_073;
+    let envelope = ProjectionEnvelope::new(count, 1024)?;
+    assert!(count > 65_536);
+    assert!(envelope.limits.max_total_payload_bytes > 512 * 1024 * 1024);
+    assert_eq!(envelope.limits.max_candidates, count);
+    assert_eq!(
+        envelope.limits.max_total_payload_bytes,
+        count * (1024 * 4 + 4)
+    );
+    let budget = backend_compile::EmbeddingMemoryBudget::new(envelope.credits);
+    let held = budget.reserve(17)?;
+    assert_eq!(
+        budget.reserve(envelope.credits).err(),
+        Some(EmbeddingMemoryError {
+            requested: envelope.credits,
+            available: envelope.credits - 17,
+        })
+    );
+    drop(held);
+    let admitted = budget.reserve(envelope.credits)?;
+    assert_eq!(budget.used(), envelope.credits);
+    drop(admitted);
+    assert_eq!(budget.used(), 0);
+    let refused = ProjectionEnvelope::new(usize::MAX, 384);
+    assert!(matches!(refused, Err(LocalSemanticError::Representation {
+        allocation: ProjectionAllocation::EntryDescriptors,
+        required,
+        maximum,
+    }) if required > maximum && maximum == isize::MAX as u128));
+    assert!(
+        !LocalSemanticError::CorpusEnvelope
+            .setup_instruction()
+            .contains("Reduce")
+    );
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn local_semantic_alternating_warm_queries_retain_exact_answers_and_credits() -> TestResult {

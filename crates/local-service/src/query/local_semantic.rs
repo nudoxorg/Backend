@@ -22,8 +22,6 @@ use std::{
 use {super::LocalAnswer, backend_library::SemanticSearchStatus};
 
 const MAX_DESCRIPTOR_BYTES: u64 = 214;
-const MAX_LOCAL_DOCUMENTS: usize = 65_536;
-const MAX_LOCAL_PAYLOAD_BYTES: usize = 512 * 1024 * 1024;
 const PAGE_ROWS: usize = 256;
 
 /// Why the local lane refused setup or one complete operation. No string classification.
@@ -37,8 +35,17 @@ pub enum LocalSemanticError {
     DescriptorIo(io::Error),
     /// The declared query recipe differs from its activated runtime.
     Recipe(LocalQueryRecipeError),
-    /// A selected corpus was not complete, empty or outside the declared finite envelope.
+    /// A selected corpus was empty, incomplete, or disagreed with its complete witness.
     CorpusEnvelope,
+    /// The complete allocation cannot be represented by the host or credit counter.
+    Representation {
+        /// Allocation or counter whose representation refused admission.
+        allocation: ProjectionAllocation,
+        /// Required bytes before any allocation or inference.
+        required: u128,
+        /// Largest representable byte extent for that allocation or counter.
+        maximum: u128,
+    },
     /// Exact canonical row input exceeded the activated text bound or its corpus was invalid.
     Corpus(QueryError),
     /// Shared compiler/query credits refused the entire operation.
@@ -97,7 +104,10 @@ impl LocalSemanticError {
                 "Run nudox embedding-setup to install matching runtime and query recipe artifacts, reopen the local owner, then run nudox add .; inspect the retained setup refusal if installation fails."
             }
             Self::CorpusEnvelope => {
-                "Reduce the selected corpus to the admitted document and payload envelope; a partial or sampled projection cannot answer exact search."
+                "Select a complete coherent view; a partial or sampled projection cannot answer exact search."
+            }
+            Self::Representation { .. } => {
+                "The complete projection exceeds a typed host allocation or credit-counter representation; inspect the required and representable byte extents."
             }
             Self::Corpus(QueryError::SemanticDocumentTooLarge { .. }) => {
                 "The exact canonical document exceeds the activated text bound; explicitly provision sufficient per-document input limits or reduce the selection."
@@ -131,6 +141,7 @@ impl LocalSemanticError {
                 SemanticSearchReason::InvalidConfiguration
             }
             Self::CorpusEnvelope
+            | Self::Representation { .. }
             | Self::Corpus(_)
             | Self::Memory(_)
             | Self::Allocation(_)
@@ -156,8 +167,16 @@ impl fmt::Display for LocalSemanticError {
             }
             Self::Recipe(error) => error.fmt(f),
             Self::CorpusEnvelope => {
-                f.write_str("complete local semantic corpus exceeds its admitted envelope")
+                f.write_str("selected local semantic corpus is empty, incomplete, or inconsistent")
             }
+            Self::Representation {
+                allocation,
+                required,
+                maximum,
+            } => write!(
+                f,
+                "local semantic {allocation:?} requires {required} bytes; representation permits {maximum}"
+            ),
             Self::Corpus(error) => error.fmt(f),
             Self::Memory(error) => error.fmt(f),
             Self::Allocation(error) => error.fmt(f),
@@ -183,7 +202,10 @@ impl std::error::Error for LocalSemanticError {
             Self::Relation(error) => Some(error),
             Self::Lexical(error) => Some(error),
             Self::Worker(error) => Some(error),
-            Self::RuntimeUnavailable(_) | Self::RecipeNotConfigured | Self::CorpusEnvelope => None,
+            Self::RuntimeUnavailable(_)
+            | Self::RecipeNotConfigured
+            | Self::CorpusEnvelope
+            | Self::Representation { .. } => None,
         }
     }
 }
@@ -604,6 +626,80 @@ fn build_projection(
     )
 }
 
+/// Concrete representation boundaries, rather than a maximum project size.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectionAllocation {
+    /// A single encoded float32 vector is a contiguous Vec allocation.
+    VectorPayload,
+    /// The sorted complete input descriptors are one contiguous Vec allocation.
+    EntryDescriptors,
+    /// The extension's complete payload counter uses usize.
+    PayloadCounter,
+    /// Shared embedding memory credits use u64.
+    CreditCounter,
+}
+
+struct ProjectionEnvelope {
+    limits: vector::Limits,
+    credits: u64,
+}
+
+impl ProjectionEnvelope {
+    fn new(count: usize, dimensions: u32) -> Result<Self, LocalSemanticError> {
+        fn represent(
+            allocation: ProjectionAllocation,
+            required: u128,
+            maximum: u128,
+        ) -> Result<u128, LocalSemanticError> {
+            if required > maximum {
+                return Err(LocalSemanticError::Representation {
+                    allocation,
+                    required,
+                    maximum,
+                });
+            }
+            Ok(required)
+        }
+        // count is usize and dimensions is u32, so these products fit u128.
+        let payload = represent(
+            ProjectionAllocation::VectorPayload,
+            u128::from(dimensions) * 4 + 4,
+            isize::MAX as u128,
+        )?;
+        represent(
+            ProjectionAllocation::EntryDescriptors,
+            count as u128 * std::mem::size_of::<(u64, Vec<u8>)>() as u128,
+            isize::MAX as u128,
+        )?;
+        let total = represent(
+            ProjectionAllocation::PayloadCounter,
+            count as u128 * payload,
+            usize::MAX as u128,
+        )?;
+        // Prospective construction credits include both owned payloads and canonical
+        // encoding, plus the existing conservative descriptor/tree construction allowance.
+        // This is accounting, not an assertion about allocator overhead or measured RSS.
+        let credits = represent(
+            ProjectionAllocation::CreditCounter,
+            count as u128 * (payload * 2 + 512) + 1024,
+            u128::from(u64::MAX),
+        )?;
+        Ok(Self {
+            limits: vector::Limits {
+                max_candidates: count.max(PAGE_ROWS),
+                max_tombstones: count.max(PAGE_ROWS),
+                // Checked above, before these narrowing conversions.
+                max_payload_bytes: usize::try_from(payload)
+                    .map_err(|_| LocalSemanticError::CorpusEnvelope)?,
+                max_total_payload_bytes: usize::try_from(total)
+                    .map_err(|_| LocalSemanticError::CorpusEnvelope)?,
+                max_page: PAGE_ROWS,
+            },
+            credits: u64::try_from(credits).map_err(|_| LocalSemanticError::CorpusEnvelope)?,
+        })
+    }
+}
+
 fn build_projection_checked(
     coordinator: &QueryCoordinator,
     coverage: CoverageWitness,
@@ -613,10 +709,7 @@ fn build_projection_checked(
     check: &mut impl FnMut(ProjectionPhase) -> Result<(), LocalSemanticError>,
 ) -> Result<Projection, LocalSemanticError> {
     let count = coordinator.semantic_document_count();
-    if count == 0
-        || count > MAX_LOCAL_DOCUMENTS
-        || !matches!(coverage, CoverageWitness::Complete(_))
-    {
+    if count == 0 || !matches!(coverage, CoverageWitness::Complete(_)) {
         return Err(LocalSemanticError::CorpusEnvelope);
     }
     check(ProjectionPhase::TextBounds)?;
@@ -628,36 +721,14 @@ fn build_projection_checked(
         .semantic_row_clone_extent_controlled(&mut || check(ProjectionPhase::RowCloneExtent))?;
     check(ProjectionPhase::DocumentPage)?;
     let recipe = admitted.recipe();
-    let payload = usize::try_from(recipe.dimensions.get())
-        .ok()
-        .and_then(|dimension| dimension.checked_mul(4))
-        .and_then(|bytes| bytes.checked_add(4))
-        .ok_or(LocalSemanticError::CorpusEnvelope)?;
-    let total = count
-        .checked_mul(payload)
-        .filter(|bytes| *bytes <= MAX_LOCAL_PAYLOAD_BYTES)
-        .ok_or(LocalSemanticError::CorpusEnvelope)?;
-    let reservation = count
-        .checked_mul(
-            payload
-                .checked_mul(2)
-                .and_then(|bytes| bytes.checked_add(512))
-                .ok_or(LocalSemanticError::CorpusEnvelope)?,
-        )
-        .and_then(|bytes| bytes.checked_add(1024))
-        .ok_or(LocalSemanticError::CorpusEnvelope)?;
+    // Coverage never depends on a project-size constant. The entire selected relation
+    // is admitted against representable storage and the configured shared credit account.
+    let envelope = ProjectionEnvelope::new(count, recipe.dimensions.get())?;
     let memory = runtime
         .memory_budget()
-        .reserve(u64::try_from(reservation).map_err(|_| LocalSemanticError::CorpusEnvelope)?)
+        .reserve(envelope.credits)
         .map_err(LocalSemanticError::Memory)?;
-    // These limits describe this admitted COMPLETE corpus, never the extension's small defaults.
-    let limits = vector::Limits {
-        max_candidates: count.max(256),
-        max_tombstones: count.max(256),
-        max_payload_bytes: payload,
-        max_total_payload_bytes: total,
-        max_page: 256,
-    };
+    let limits = envelope.limits;
     let mut entries = Vec::new();
     entries
         .try_reserve_exact(count)
@@ -735,7 +806,7 @@ fn build_projection_checked(
     )?;
     let mut ids = Vec::new();
     ids.try_reserve_exact(count)
-        .map_err(|_| LocalSemanticError::CorpusEnvelope)?;
+        .map_err(LocalSemanticError::Allocation)?;
     for id in facts.ids() {
         check(ProjectionPhase::Source)?;
         ids.push(id);

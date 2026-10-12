@@ -31,7 +31,7 @@ pub use local_recipe::{
     AdmittedLocalQueryRecipe, LocalEmbeddingTreatment, LocalQueryRecipeContract,
     LocalQueryRecipeDescriptor, LocalQueryRecipeError,
 };
-pub use local_semantic::{LocalSemantic, LocalSemanticError};
+pub use local_semantic::{LocalSemantic, LocalSemanticError, ProjectionAllocation};
 pub use local_semantic_owner::{LocalSemanticOwner, QueryCompletionPolicy};
 pub use remote::{
     ActiveQdrant, ConfiguredQdrant, EMBEDDING_DEVICE_ENV, EMBEDDING_DIMENSIONS_ENV,
