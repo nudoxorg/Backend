@@ -84,17 +84,16 @@ class Tests(unittest.TestCase):
     marker=active/'.installed-release.json'; installed={'tag':tag,'version':'0.0.0','source_sha':'a'*40,'asset':('nudox-macos-arm64-' if platform=='macos-arm64' else 'nudox-linux-x86_64-')+('a'*10)+'.tar.gz','sha256':'c'*64}; marker.write_text(json.dumps(installed))
     current=managed/'current'; current.symlink_to(pathlib.Path('versions')/tag)
     before=marker.read_bytes(); pointer=os.readlink(current)
-    for incoming,reason in [('checkpoint-20261008-'+('b'*10)+'-'+platform,'older'),
-                            ('checkpoint-20261009-'+('b'*10)+'-'+platform,'different same-date')]:
-     with patch.object(module,'safe_extract') as extract:
-      with self.assertRaisesRegex(module.InstallError,reason):
-       module.install(prefix,{**installed,'tag':incoming,'source_sha':'b'*40,'asset':installed['asset'].replace('a'*10,'b'*10)},{'sha256':'d'*64},pathlib.Path(temp)/'not-downloaded.tar.gz')
-      extract.assert_not_called()
-     self.assertEqual(os.readlink(current),pointer); self.assertEqual(marker.read_bytes(),before)
+    incoming='checkpoint-20261008-'+('b'*10)+'-'+platform
+    with patch.object(module,'safe_extract') as extract:
+     with self.assertRaisesRegex(module.InstallError,'older'):
+      module.install(prefix,{**installed,'tag':incoming,'source_sha':'b'*40,'asset':installed['asset'].replace('a'*10,'b'*10)},{'sha256':'d'*64},pathlib.Path(temp)/'not-downloaded.tar.gz')
+     extract.assert_not_called()
+    self.assertEqual(os.readlink(current),pointer); self.assertEqual(marker.read_bytes(),before)
     module.check_checkpoint_update(current,installed)
     module.check_checkpoint_update(current,{**installed,'tag':'checkpoint-20261010-'+('b'*10)+'-'+platform,'source_sha':'b'*40,'asset':installed['asset'].replace('a'*10,'b'*10)})
     module.check_checkpoint_update(current,{**installed,'tag':'checkpoint-20261008-'+('b'*10)+'-'+platform,'source_sha':'b'*40,'asset':installed['asset'].replace('a'*10,'b'*10)},True)
- def test_actual_same_day_override_and_idempotent_reinstall_keep_verified_files(self):
+ def test_actual_same_day_update_and_idempotent_reinstall_keep_verified_files(self):
   with tempfile.TemporaryDirectory() as temp:
    root=pathlib.Path(temp).resolve(); prefix=root/'prefix'
    def package(source,date):
@@ -102,16 +101,18 @@ class Tests(unittest.TestCase):
     archive=self.archive(directory,source=source)
     entry={'tag':'checkpoint-'+date+'-'+source[:10]+'-macos-arm64','version':'0.0.0','source_sha':source,'asset':'nudox-macos-arm64-'+source[:10]+'.tar.gz'}
     return entry,{'sha256':hashlib.sha256(archive.read_bytes()).hexdigest()},archive
-   first=package('a'*40,'20261009'); other=package('b'*40,'20261009')
+   first=package('e'*40,'20261009'); other=package('2'*40,'20261009')
    mac.install(prefix,*first); current=prefix/'lib/nudox/current'
    original=current.resolve(); files={p.name:p.read_bytes() for p in (original/'bin').iterdir()}
    mac.install(prefix,*first); self.assertEqual(current.resolve(),original)
    self.assertEqual({p.name:p.read_bytes() for p in (original/'bin').iterdir()},files)
-   with self.assertRaisesRegex(mac.InstallError,'different same-date'): mac.install(prefix,*other)
-   self.assertEqual(current.resolve(),original)
-   mac.install(prefix,*other,allow_downgrade=True); changed=current.resolve()
+   mac.install(prefix,*other); changed=current.resolve()
    self.assertNotEqual(changed,original); self.assertTrue(original.is_dir())
+   self.assertEqual({p.name:p.read_bytes() for p in (original/'bin').iterdir()},files)
    mac.install(prefix,*other); self.assertEqual(current.resolve(),changed)
+   (changed/'bin/backend-cli').write_bytes(b'tampered after same-day update')
+   with self.assertRaises(mac.InstallError): mac.install(prefix,*other)
+   self.assertEqual(current.resolve(),changed)
  def test_main_reuses_verified_existing_release_before_archive_fetch(self):
   with tempfile.TemporaryDirectory() as temp:
    root=pathlib.Path(temp).resolve(); entry,manifest,archive,args=self.mac_release(root/'archive')

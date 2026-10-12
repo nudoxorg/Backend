@@ -54,7 +54,7 @@ def validate_channel(channel):
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--prefix',type=Path,help='install prefix (default ~/.local)')
-    parser.add_argument('--allow-downgrade',action='store_true',help='allow an older or different same-date checkpoint')
+    parser.add_argument('--allow-downgrade',action='store_true',help='allow an older checkpoint or an unordered checkpoint/stable replacement')
     parser.add_argument('--channel-url',default=CHANNEL,help=argparse.SUPPRESS)
     args=parser.parse_args(argv); selected=platform_key()
     channel=validate_channel(json.loads(fetch(args.channel_url,65536)))

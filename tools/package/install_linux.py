@@ -705,7 +705,12 @@ def _read_active_marker(current):
 
 
 def check_checkpoint_update(current, incoming, allow_downgrade=False):
-    """Admit exact marker identities; the explicit flag changes ordering only."""
+    """Admit the selected checkpoint; dates order days, not opaque revisions.
+
+    A digest-pinned installer or promoted channel selects the exact incoming
+    revision. Different revisions on the same day are ordinary replacements,
+    not evidence of a downgrade. Identity and byte checks remain mandatory.
+    """
     incoming_date = _validate_marker(incoming)
     if not current.exists():
         if current.is_symlink():
@@ -723,9 +728,8 @@ def check_checkpoint_update(current, incoming, allow_downgrade=False):
         if incoming_date is None and active_date is None and tuple(map(int, incoming["version"].split("."))) > tuple(map(int, installed["version"].split("."))):
             return
         raise InstallError("refusing unordered checkpoint/stable replacement; use --allow-downgrade explicitly")
-    if incoming_date <= active_date:
-        reason = "older" if incoming_date < active_date else "different same-date"
-        raise InstallError(f"refusing {reason} checkpoint {incoming['tag']}; active is {installed['tag']}. Use --allow-downgrade to replace it explicitly")
+    if incoming_date < active_date:
+        raise InstallError(f"refusing older checkpoint {incoming['tag']}; active is {installed['tag']}. Use --allow-downgrade to replace it explicitly")
 
 
 @contextmanager
@@ -829,7 +833,7 @@ def _install_locked(prefix, entry, manifest, archive, *, allow_downgrade=False):
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--prefix", type=Path, help="user install prefix (default: ~/.local)")
-    parser.add_argument("--allow-downgrade", action="store_true", help="allow an older or different same-date checkpoint")
+    parser.add_argument("--allow-downgrade", action="store_true", help="allow an older checkpoint or an unordered checkpoint/stable replacement")
     parser.add_argument("--candidate-directory", type=Path, help="install the exact digest-pinned package output for native QA")
     args = parser.parse_args(argv)
     if sys.platform != "linux" or not (os.uname().machine.lower() in {"x86_64", "amd64"}):
