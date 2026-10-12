@@ -94,6 +94,7 @@ struct PaintedLabels {
     focus: Option<NodeId>,
     native_scope: NativeControlScope,
     controls: NativeFrameControls,
+    search: Option<Rc<Search>>,
     territories: Vec<draw::TerritoryLabel>,
     nodes: Vec<draw::NodeLabel>,
     admission: Option<InteractionAdmission>,
@@ -308,6 +309,7 @@ pub struct GraphView {
     find_bounds: Option<Bounds<Pixels>>,
     discovery: Option<Rc<Discovery>>,
     search: Rc<Search>,
+    search_query: String,
     stats: Stats,
     painted_labels: Option<PaintedLabels>,
     scene_paint: Rc<Cell<Option<usize>>>,
@@ -446,6 +448,7 @@ impl GraphView {
             find_bounds: None,
             discovery: None,
             search,
+            search_query: String::new(),
             stats: Stats::default(),
             painted_labels: None,
             scene_paint: Rc::new(Cell::new(None)),
@@ -572,6 +575,13 @@ impl GraphView {
                 handles.push(self.tour_focus[0].clone());
             }
         }
+        if painted.controls.resources_enabled && self.state.find_open && (!self.results.is_empty() || !self.search.chains.is_empty()) {
+            if !self.current_find_query(cx) || !painted.search.as_ref().is_some_and(|search| Rc::ptr_eq(search, &self.search)) {
+                return Err(NativeFocusDenial::ControlVisit);
+            }
+            handles.extend(self.declaration_focus.iter().take(self.results.len().min(super::discovery::ROWS)).cloned());
+            handles.extend(self.declaration_focus.iter().skip(super::discovery::ROWS).take(self.search.chains.len().min(super::discovery::CHAINS)).cloned());
+        }
         if painted.controls.resources_enabled && !self.state.find_open {
             handles.push(self.declaration_focus[32].clone());
             if self.declarations_open {
@@ -585,6 +595,14 @@ impl GraphView {
         if painted.controls.resources_enabled { handles.push(self.status_focus.clone()); }
         handles.retain(|handle| self.focus_handle.contains(handle, window));
         Ok(handles)
+    }
+
+    /// Moving from the editor to one of its current native result buttons
+    /// keeps Find open through Input's ordinary blur observer.
+    fn find_result_focused(&self, window: &Window, cx: &App) -> bool {
+        self.state.find_open && self.native_focus_order(window, cx).is_ok_and(|order| order.iter().any(|handle|
+            self.declaration_focus.iter().take(super::discovery::ROWS + super::discovery::CHAINS)
+                .any(|result| result == handle && result.is_focused(window))))
     }
 
     /// Passive native failure evidence; this never changes focus or admission.
@@ -669,7 +687,10 @@ impl GraphView {
         };
         if !self.admits_native_focus(next, cx) { return NativeFocusStep::Denied; }
         if let Some(row) = self.declaration_focus[..32].iter().position(|handle| handle == next) {
-            self.declaration_scroll.scroll_to_item(row);
+            if self.state.find_open {
+                let row = if row < super::discovery::ROWS { row } else { self.results.len() + row - super::discovery::ROWS + 1 };
+                self.results_scroll.scroll_to_item(row);
+            } else { self.declaration_scroll.scroll_to_item(row); }
         }
         next.focus(window, cx); NativeFocusStep::Moved
     }
@@ -1057,6 +1078,7 @@ impl GraphView {
     fn resume_search(&mut self, q: &str, cx: &mut Context<Self>) {
         if !self.state.find_open { self._search_task = None; self.searching = false; return; }
         self._search_task = None;
+        self.search_query = q.to_owned();
         if q.trim().is_empty() { self.search = empty_search(); self.results.clear(); self.searching = false; return; }
         let Some(discovery) = &self.discovery else { self.searching = true; return; };
         if let Some(search) = discovery.cached(q) {
@@ -1077,7 +1099,7 @@ impl GraphView {
 
     /// Latest-wins worker delivery is also the held-completion test boundary.
     fn deliver_search(&mut self, generation: u64, query: &str, search: Search, cx: &mut Context<Self>) {
-        if !self.state.accepts(generation) { return; }
+        if !self.state.accepts(generation) || self.search_query != query || !self.current_find_query(cx) { return; }
         let Some(discovery) = &self.discovery else { return; };
         let search = discovery.remember(query, search);
         self.results = search.rows.iter().map(|row| row.node).collect();
@@ -1087,7 +1109,24 @@ impl GraphView {
         cx.notify();
     }
 
+    /// The actual editor can change before its Change observer runs. Results
+    /// belong to the query submitted by this graph, never that later field text.
+    fn current_find_query(&self, cx: &App) -> bool {
+        self.state.find_open && self.find.read(cx).value().as_ref() == self.search_query
+    }
+
+    fn find_result_admission(&self, cx: &Context<Self>) -> crate::controls::button::ActivationAdmission {
+        let generation = self.state.generation;
+        let search = self.search.clone();
+        let query = self.search_query.clone();
+        let input = self.find.clone();
+        let admission = self.control_admission(cx, move |graph| graph.state.accepts(generation)
+            && !graph.searching && Rc::ptr_eq(&graph.search, &search));
+        Rc::new(move |cx| input.read(cx).value().as_ref() == query && admission(cx))
+    }
+
     fn choose_result(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.current_find_query(cx) || !self.admits_native_interaction(cx) { return; }
         if self.searching {
             self.state.apply(Event::AwaitResult);
             cx.notify();
@@ -1161,7 +1200,9 @@ impl GraphView {
             InputEvent::Blur => {
                 // The engine can resume a paused caret after blur. Drop its
                 // ownership rather than leaving a hidden input timer alive.
-                this.reset_find(window, cx);
+                if !this.find_focused(window, cx) && !this.find_result_focused(window, cx) {
+                    this.reset_find(window, cx);
+                }
             }
         })
     }
@@ -1204,7 +1245,7 @@ impl GraphView {
     }
 
     fn find_key(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.state.find_open {
+        if !self.state.find_open || (event.keystroke.key != "escape" && !self.current_find_query(cx)) {
             return;
         }
         match event.keystroke.key.as_str() {
@@ -2410,7 +2451,7 @@ impl Element for Canvas {
         self.view.update(cx, |view, cx| {
             view.stats = stats.stats;
             view.scene_paint.set(Some(Arc::as_ptr(&p.scene) as usize));
-            view.painted_labels = Some(PaintedLabels { view: p.view, camera: p.cam, focus: p.focus, native_scope: view.native_scope(), controls,
+            view.painted_labels = Some(PaintedLabels { view: p.view, camera: p.cam, focus: p.focus, native_scope: view.native_scope(), controls, search: p.search.clone(),
                 territories: stats.territory_labels, nodes: stats.node_labels, admission: view.interaction_admission.clone() });
             // If newly accepted text covers a parked pointer, let the next
             // committed frame retire its expanded glyph hover exactly once.
@@ -2523,7 +2564,8 @@ impl Render for GraphView {
             .capture_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
                 // Find capture cannot borrow a tour button's local Enter. When
                 // Find is closed, that button owns its native release pipeline.
-                if !this.state.find_open { return; }
+                if !this.state.find_open || (!this.find_focused(window, cx)
+                    && (event.keystroke.key != "escape" || !this.find_result_focused(window, cx))) { return; }
                 if find_admission.as_ref().is_none_or(|admit| admit(InteractionPhase::LocalFocus, cx)) && this.admits_local_focus(cx) {
                     if event.keystroke.key == "enter" && find_admission.as_ref().is_some_and(|admit| !admit(InteractionPhase::Activate, cx)) {
                         cx.stop_propagation(); return;
@@ -2878,7 +2920,8 @@ impl GraphView {
         let palette = cx.palette();
         let q = self.find.read(cx).value().to_lowercase();
         let q = q.rsplit("::").next().unwrap_or("").trim().to_owned();
-        let rows = self.results.iter().enumerate().map(|(n, &i)| {
+        let active = self.admits_control_render(cx) && self.current_find_query(cx) && !self.searching;
+        let rows = self.results.iter().take(super::discovery::ROWS).enumerate().map(|(n, &i)| {
             let node = self.world.node(i);
             let name = SharedString::from(self.search.rows[n].label.clone());
             let at = super::highlight::match_range(&name, &q);
@@ -2910,8 +2953,12 @@ impl GraphView {
                 _ => runs.push(TextRun { len: name.len(), ..base.clone() }),
             }
             let selected = n == self.state.result_sel;
-            div()
-                .id(("graph-result", i as usize))
+            let admission = self.find_result_admission(cx);
+            let focus = self.declaration_focus.get(n);
+            let owner = cx.entity().downgrade();
+            let mut row = div()
+                .id(("graph-result", i as usize)).role(gpui::Role::Button)
+                .aria_label(format!("Select {}", self.search.rows[n].label))
                 .flex()
                 .items_center()
                 .gap(px(10.0))
@@ -2933,11 +2980,19 @@ impl GraphView {
                         .set(ty::MONO_SMALL, measure)
                         .text_color(palette.ink4.hsla())
                         .child(self.world.qual(i)),
-                )
-                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _: &MouseDownEvent, window, cx| {
-                    this.close_find(window, cx);
-                    this.set_focus(Some(i), true, cx);
-                }))
+                );
+            if let Some(focus) = focus.filter(|_| active) {
+                row = crate::controls::button::capture_activation_admission(row, admission.clone());
+                row = crate::controls::button::native_button(row, focus, move |window, cx| {
+                    if !admission(cx) { return; }
+                    let _ = owner.update(cx, |graph, cx| {
+                        if !graph.current_find_query(cx) || graph.results.get(n) != Some(&i) { return; }
+                        graph.state.result_sel = n;
+                        graph.choose_result(window, cx);
+                    });
+                });
+            } else { row = row.aria_disabled(true); }
+            row
         });
         let top = self.find_bounds.map_or(54.0, |b| f32::from(b.bottom()) - self.view.map_or(0.0, |v| v.y) + 8.0);
         let available = self.view.map_or(480.0, |v| (v.h - top - 18.0).max(24.0));
@@ -2947,13 +3002,28 @@ impl GraphView {
             .children(self.find.read(cx).value().trim().is_empty().then(|| self.find_hints(measure, cx)))
             .children((!self.find.read(cx).value().trim().is_empty() && self.results.is_empty() && self.search.chains.is_empty()).then(|| div().px(px(8.0)).py(px(10.0)).set(ty::SMALL, measure).text_color(palette.ink3.hsla()).child(graph_text("graph-search-result-state", if self.discovery.is_none() || self.searching { "Finding…" } else { self.search.empty_message(&self.world).unwrap_or("No matching declarations observed in this graph.") }, ty::SMALL, measure, palette.ink3, crate::probe::TextOverflow::Wrap))))
             .children((!self.search.chains.is_empty()).then(|| div().px(px(8.0)).pt(px(8.0)).set(ty::SMALL, measure).text_color(palette.ink4.hsla()).child(if self.results.is_empty() { "no one call does it; in steps" } else { "or, in steps" })))
-            .children(self.search.chains.iter().enumerate().map(|(n, chain)| {
+            .children(self.search.chains.iter().take(super::discovery::CHAINS).enumerate().map(|(n, chain)| {
                 let selected = self.state.result_sel == self.results.len() + n;
-                div().id(("graph-chain-result", n)).px(px(8.0)).py(px(8.0)).cursor_pointer().when_selected(selected, palette)
+                let admission = self.find_result_admission(cx);
+                let owner = cx.entity().downgrade();
+                let focus = self.declaration_focus.get(super::discovery::ROWS + n);
+                let mut row = div().id(("graph-chain-result", n)).role(gpui::Role::Button)
+                    .aria_label(format!("Select {}", chain.brief)).px(px(8.0)).py(px(8.0)).cursor_pointer().when_selected(selected, palette)
                     .flex().items_start().gap(px(8.0)).set(ty::MONO_SMALL, measure).text_color(palette.ink1.hsla())
                     .child(graph_text(format!("graph-chain-calls-{n}"), "◆".repeat(chain.steps.len()), ty::SMALL, measure, palette.peri.base, crate::probe::TextOverflow::Wrap))
-                    .child(div().min_w(px(0.0)).child(chain.brief.clone()))
-                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, window, cx| { this.state.result_sel = this.results.len() + n; this.choose_result(window, cx); }))
+                    .child(div().min_w(px(0.0)).child(chain.brief.clone()));
+                if let Some(focus) = focus.filter(|_| active) {
+                    row = crate::controls::button::capture_activation_admission(row, admission.clone());
+                    row = crate::controls::button::native_button(row, focus, move |window, cx| {
+                        if !admission(cx) { return; }
+                        let _ = owner.update(cx, |graph, cx| {
+                            if !graph.current_find_query(cx) { return; }
+                            graph.state.result_sel = graph.results.len() + n;
+                            graph.choose_result(window, cx);
+                        });
+                    });
+                } else { row = row.aria_disabled(true); }
+                row
             }))
             .children((!self.search.lit.is_empty()).then(|| div().px(px(8.0)).pt(px(8.0)).pb(px(4.0)).set(ty::SMALL, measure).text_color(palette.ink4.hsla()).child(format!("{} lit in the graph, across {} package{}", self.search.lit.len(), self.search.packages, if self.search.packages == 1 { "" } else { "s" }))));
         cut().chamfer(Chamfer::Sm).plate(Plate::Flat).fill(tone(palette.glass, 0.94))
@@ -4150,6 +4220,167 @@ mod tests {
         assert_eq!(view.read_with(cx, |v, _| v.frame.as_ref().map(|frame| frame.node)), Some(3));
         cx.update(|window, cx| assert!(!view.read(cx).find_focused(window, cx)));
         assert_eq!(cx.update(|window, cx| window.simulate_next_frame(cx)), 0);
+    }
+
+    #[gpui::test]
+    fn find_result_native_input_retires_before_query_observation_or_same_query_return(cx: &mut TestAppContext) {
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Default::default() }, cx); });
+        for return_to_same_query in [false, true] {
+            let world = Arc::new(crate::graph::model::tests::tiny());
+            let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+            let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::World, window, cx));
+            cx.update(|window, _| window.set_a11y_forced(true));
+            frames(cx, 30);
+            cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+            cx.simulate_keystrokes("/");
+            cx.simulate_input("Page");
+            frames(cx, 30);
+            let input = view.read_with(cx, |graph, _| graph.find.clone());
+            let label = view.read_with(cx, |graph, _| {
+                assert_eq!(graph.results.first(), Some(&0), "the ordinary query worker supplied the actual Page result");
+                format!("Select {}", graph.search.rows[0].label)
+            });
+            let (node, at, frame) = cx.update(|window, _| {
+                let node = window.a11y_tree().expect("committed Find tree").nodes.iter().find(|(_, node)|
+                    node.role() == gpui::Role::Button && node.label() == Some(label.as_str())
+                        && node.supports_action(gpui::AccessibleAction::Click)).map(|(id, _)| *id).expect("native result Click");
+                (node, window.a11y_node_bounds(node).expect("native result bounds").center(), window.a11y_frame_number())
+            });
+            let focus = cx.update(|window, cx| {
+                window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                    position: at, modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1, first_mouse: false,
+                }), cx);
+                assert!(view.read(cx).declaration_focus[0].is_focused(window), "the current native press owns the result handle");
+                if return_to_same_query {
+                    view.update(cx, |graph, cx| { graph.close_find(window, cx); graph.open_find(window, cx); });
+                } else {
+                    input.update(cx, |input, cx| input.replace_all("from_str", window, cx));
+                    assert_eq!(view.read(cx).search_query, "Page", "the Change observer has not run");
+                }
+                window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                    position: at, modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1,
+                }), cx);
+                // Deliver real native key releases and AccessKit to the retained
+                // result, without giving its query watcher a redraw first.
+                let result = view.read(cx).declaration_focus[0].clone();
+                result.focus(window, cx);
+                for key in ["enter", "space"] {
+                    let keystroke = gpui::Keystroke::parse(key).expect("native result key");
+                    window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent { keystroke: keystroke.clone(), is_held: false, prefer_character_input: false }), cx);
+                    window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
+                }
+                window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+                    action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: node, data: None,
+                }, cx);
+                let escape = gpui::Keystroke::parse("escape").expect("native stale result Escape");
+                window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent { keystroke: escape.clone(), is_held: false, prefer_character_input: false }), cx);
+                window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke: escape }), cx);
+                assert!(view.read(cx).state.find_open, "a retired result cannot close the replacement Find visit");
+                let editor = input.read(cx).focus_handle(cx);
+                editor.focus(window, cx);
+                for key in ["tab", "shift-tab"] {
+                    let keystroke = gpui::Keystroke::parse(key).expect("native stale result Tab");
+                    window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent { keystroke: keystroke.clone(), is_held: false, prefer_character_input: false }), cx);
+                    window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
+                    assert!(editor.is_focused(window), "stale painted results cannot admit a native Tab transfer");
+                }
+                window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                    position: at, modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1, first_mouse: false,
+                }), cx);
+                window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                    position: at, modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1,
+                }), cx);
+                assert!(editor.is_focused(window), "retired native pointer input cannot steal editor focus");
+                assert_eq!(view.read(cx).focused(), None, "held release, key, AX and new stale pointer never choose the old node");
+                assert!(view.read(cx).state.find_open);
+                assert_eq!(window.a11y_frame_number(), frame, "the actual committed old listeners are still mounted");
+                window.focused(cx)
+            });
+            assert_eq!(cx.update(|window, cx| window.focused(cx)), focus, "effects cannot refocus the retired native result");
+            assert_eq!(cx.update(|window, _| window.a11y_frame_number()), frame);
+            frames(cx, 30);
+            assert_eq!(view.read_with(cx, |graph, _| graph.focused()), None);
+            let expected = if return_to_same_query { 0 } else { 3 };
+            let label = view.read_with(cx, |graph, _| {
+                assert_eq!(graph.results.first(), Some(&expected), "ordinary search renewal supplies the fresh exact node");
+                format!("Select {}", graph.search.rows[0].label)
+            });
+            let at = cx.update(|window, _| {
+                let node = window.a11y_tree().expect("renewed tree").nodes.iter().find(|(_, node)|
+                    node.role() == gpui::Role::Button && node.label() == Some(label.as_str())).map(|(id, _)| *id).expect("fresh result");
+                window.a11y_node_bounds(node).expect("fresh native bounds").center()
+            });
+            cx.simulate_click(at, Modifiers::none());
+            frames(cx, 30);
+            assert_eq!(view.read_with(cx, |graph, _| graph.focused()), Some(expected), "fresh native query controls remain usable");
+        }
+    }
+
+    #[gpui::test]
+    fn find_enter_cannot_choose_old_results_before_the_actual_editor_change_observer(cx: &mut TestAppContext) {
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Default::default() }, cx); });
+        let world = Arc::new(crate::graph::model::tests::tiny());
+        let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+        let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::World, window, cx));
+        frames(cx, 30);
+        cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+        cx.simulate_keystrokes("/"); cx.simulate_input("Page"); frames(cx, 30);
+        cx.update(|window, cx| {
+            let input = view.read(cx).find.clone();
+            input.update(cx, |input, cx| input.replace_all("from_str", window, cx));
+            assert_eq!(view.read(cx).search_query, "Page", "hold the normal Change publication at the effect boundary");
+            assert!(view.read(cx).find_focused(window, cx));
+            let keystroke = gpui::Keystroke::parse("enter").expect("native editor Enter");
+            window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent { keystroke: keystroke.clone(), is_held: false, prefer_character_input: false }), cx);
+            window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
+            assert_eq!(view.read(cx).focused(), None);
+            assert!(view.read(cx).state.find_open && view.read(cx).state.pending_accept.is_none(), "old-query Enter neither opens nor reserves a later answer");
+        });
+        frames(cx, 30);
+        assert_eq!(view.read_with(cx, |graph, _| graph.focused()), None);
+        assert!(view.read_with(cx, |graph, _| graph.results.contains(&3)), "the actual replacement worker resolves from_str");
+        cx.simulate_keystrokes("enter"); frames(cx, 30);
+        assert_eq!(view.read_with(cx, |graph, _| graph.focused()), Some(3));
+    }
+
+    #[gpui::test]
+    fn current_find_result_tab_survives_input_blur_and_native_keyboard_or_ax_opens_exact_node(cx: &mut TestAppContext) {
+        use gpui::AppContext;
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Default::default() }, cx); });
+        for activation in ["enter", "space", "ax", "escape"] {
+            let world = Arc::new(crate::graph::model::tests::tiny());
+            let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+            let mut graph = None;
+            let (_, cx) = cx.add_window_view(|window, cx| {
+                let view = cx.new(|cx| GraphView::with_scene(scene.clone(), Start::World, window, cx));
+                graph = Some(view.clone());
+                gpui_component::Root::new(view, window, cx)
+            });
+            let graph = graph.expect("real component-root graph");
+            cx.update(|window, _| window.set_a11y_forced(true));
+            frames(cx, 30);
+            cx.simulate_keystrokes("tab"); frames(cx, 2);
+            assert!(cx.update(|window, cx| graph.read(cx).find_focused(window, cx)));
+            cx.simulate_input("from_str"); frames(cx, 30);
+            assert_eq!(graph.read_with(cx, |graph, _| graph.results.first().copied()), Some(3));
+            cx.simulate_keystrokes("tab"); frames(cx, 2);
+            cx.update(|window, cx| {
+                assert!(graph.read(cx).declaration_focus[0].is_focused(window), "Input Tab reaches the mounted native result");
+                assert!(graph.read(cx).state.find_open, "the ordinary native blur retains Find for its admitted result");
+            });
+            if activation == "ax" {
+                let node = cx.update(|window, _| window.a11y_tree().expect("native result tree").nodes.iter().find(|(_, node)|
+                    node.role() == gpui::Role::Button && node.label().is_some_and(|label| label.starts_with("Select "))
+                        && node.supports_action(gpui::AccessibleAction::Click)).map(|(id, _)| *id).expect("actual result Click"));
+                cx.update(|window, cx| window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+                    action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: node, data: None,
+                }, cx));
+            } else { cx.simulate_keystrokes(activation); }
+            frames(cx, 30);
+            assert_eq!(graph.read_with(cx, |graph, _| graph.focused()), (activation != "escape").then_some(3));
+            assert!(!graph.read_with(cx, |graph, _| graph.state.find_open));
+            assert!(cx.update(|window, cx| graph.focus_handle(cx).is_focused(window)), "current result activation or Escape returns native canvas focus");
+        }
     }
 
     #[gpui::test]
