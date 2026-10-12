@@ -229,6 +229,15 @@ impl RemoteSemantic {
         }
     }
 
+    pub(crate) fn retain_owed_local_completion(
+        &mut self,
+        interested: impl FnMut(&QueryCoordinator, &str, &super::LocalQuery) -> bool,
+    ) {
+        if let Self::Local(owner) = self {
+            owner.retain_owed_completion(interested);
+        }
+    }
+
     /// Advances only a finished local worker and invalidates superseded selection work.
     pub(crate) fn poll_local(
         &mut self,

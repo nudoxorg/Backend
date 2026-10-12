@@ -560,6 +560,7 @@ struct PendingSemanticSearchReply {
     ticket: u64,
     request_id: u64,
     body: Vec<u8>,
+    query: backend_engine::Query,
     workspace: backend_engine::WorkspaceRoot,
     basis: backend_library::ViewRevision,
     deadline: std::time::Instant,
@@ -1053,7 +1054,10 @@ impl CommandAdapter {
         {
             let bytes = body
                 .len()
-                .checked_add(std::mem::size_of::<PendingSemanticSearchReply>())
+                .checked_mul(2) // Raw request plus its retained typed query text/cursor.
+                .and_then(|bytes| {
+                    bytes.checked_add(std::mem::size_of::<PendingSemanticSearchReply>())
+                })
                 .and_then(|bytes| bytes.checked_add(1024))
                 .and_then(|bytes| u64::try_from(bytes).ok())
                 .ok_or_else(|| BuiltinModelError("semantic reply extent overflow".to_owned()))?;
@@ -1084,6 +1088,7 @@ impl CommandAdapter {
                     ticket: transport_ticket,
                     request_id: request.request_id,
                     body: retained,
+                    query: query.clone(),
                     workspace: daemon.engine().daemon().owner().snapshot().root(),
                     basis: query.basis(),
                     deadline,
@@ -3419,8 +3424,10 @@ impl CommandAdapter {
         daemon: &mut ProductDaemon,
         mut ready: Vec<(u64, Result<Vec<u8>, BuiltinModelError>)>,
     ) -> Vec<(u64, Result<Vec<u8>, BuiltinModelError>)> {
+        self.retain_live_semantic_completion();
         ready.extend(self.search_completions(daemon));
         ready.extend(self.semantic_search_completion(daemon));
+        self.retain_live_semantic_completion();
         self.with_browse_completions(daemon, ready)
     }
 
@@ -3437,6 +3444,7 @@ impl CommandAdapter {
     fn abandon_active_reply(&mut self, ticket: u64) {
         self.semantic_search_replies
             .retain(|pending| pending.ticket != ticket);
+        self.retain_live_semantic_completion();
         if let Some(indexing) = &mut self.indexing {
             if indexing
                 .legacy_add
@@ -3449,6 +3457,24 @@ impl CommandAdapter {
                 .retain(|(transport_ticket, _)| *transport_ticket != ticket);
         }
         self.browse_lane.abandon_reply(ticket);
+    }
+
+    /// Only an exact, live, admitted ticket protects a first completion from
+    /// optional cache reclamation. Called outside the active popped-ticket dispatch
+    /// so internal prepare/search polling cannot accidentally abandon that reply.
+    fn retain_live_semantic_completion(&mut self) {
+        let now = std::time::Instant::now();
+        let waiters = &self.semantic_search_replies;
+        self.remote_semantic
+            .retain_owed_local_completion(|coordinator, text, local| {
+                waiters.iter().any(|pending| {
+                    pending.deadline > now
+                        && pending.workspace == coordinator.workspace_root()
+                        && pending.basis == pending.query.basis()
+                        && pending.query.text() == text
+                        && coordinator.matches_local_page_shape(local, &pending.query)
+                })
+            });
     }
 
     /// Checks the current owner after index publication and queued writers,

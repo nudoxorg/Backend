@@ -127,3 +127,182 @@ fn local_semantic_deferred_shared_pressure_yields_optional_cache_before_reply_an
     assert_eq!(calls(&producer.log, 2), documents);
     assert!(adapter.semantic_search_replies.is_empty());
 }
+
+fn enter_held_query(
+    adapter: &mut CommandAdapter,
+    daemon: &mut ProductDaemon,
+    entered: &std::path::Path,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(12);
+    while !entered.exists() {
+        assert!(adapter.poll_deferred(daemon).is_empty());
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+fn drain_worker_without_reply_dispatch(adapter: &mut CommandAdapter, daemon: &ProductDaemon) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(12);
+    while adapter.remote_semantic.local_preparation().is_some() {
+        assert!(adapter.search_completions(daemon).is_empty());
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+#[test]
+fn local_semantic_sole_ticket_abandon_or_deadline_demotes_completion_without_cancelling_worker() {
+    for expire in [false, true] {
+        let producer =
+            crate::builtin::query::local_semantic::tests::fixture_with_mode(4096, "gate-query")
+                .expect("actual protocol activation");
+        let runtime = producer.provision.runtime().expect("activated runtime");
+        let mut fixture = AdapterFixture::new();
+        let (adapter, daemon) = fixture.parts();
+        adapter.remote_semantic = crate::builtin::query::RemoteSemantic::select_owner(
+            &producer.provision,
+            &producer.descriptor,
+            crate::builtin::query::RemoteSemantic::Unconfigured,
+        );
+        let body = search_body(daemon, 4600, "sole held intent");
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &body, 5600),
+            Ok(Executed::Deferred)
+        ));
+        enter_held_query(adapter, daemon, &producer.entered);
+        let workspace = daemon.engine().daemon().owner().snapshot().root();
+        let view = daemon.engine().daemon().library().view().root();
+        let selected = adapter
+            .search_lane
+            .selected_cancellation(workspace, view)
+            .expect("selected lifetime");
+        if expire {
+            adapter
+                .semantic_search_replies
+                .front_mut()
+                .expect("sole live ticket")
+                .deadline = std::time::Instant::now();
+            let replies = adapter.poll_deferred(daemon);
+            assert_eq!(replies.len(), 1);
+            assert_eq!(replies[0].0, 5600);
+            let wire: serde_json::Value =
+                serde_json::from_slice(replies[0].1.as_ref().expect("bounded deadline reply"))
+                    .expect("wire");
+            assert_eq!(wire["reply"]["data"]["kind"], "invalid_query");
+        } else {
+            adapter.abandon_reply(5600);
+        }
+        assert!(adapter.semantic_search_replies.is_empty());
+        assert!(
+            !selected.load(Ordering::Acquire),
+            "waiter loss never cancels shared work"
+        );
+        assert!(adapter.remote_semantic.local_preparation().is_some());
+        fs::write(&producer.release, b"finish orphaned owned query").expect("release");
+        drain_worker_without_reply_dispatch(adapter, daemon);
+        let crate::builtin::query::RemoteSemantic::Local(owner) = &adapter.remote_semantic else {
+            panic!("local owner")
+        };
+        assert!(owner.has_retained_projection());
+        assert!(!owner.owes_completion(), "no orphan nonoptional completion");
+        assert_eq!(
+            owner.cached_completions(),
+            1,
+            "successful shared work becomes optional reuse"
+        );
+        let log = fs::read_to_string(&producer.log).expect("raw protocol log");
+        let pressure = runtime
+            .memory_budget()
+            .reserve(runtime.memory_budget().capacity() - runtime.memory_budget().used())
+            .expect("all unoccupied credits held");
+        let required = runtime
+            .memory_budget()
+            .reserve(1)
+            .expect("mandatory admission reclaims the abandoned first completion");
+        let crate::builtin::query::RemoteSemantic::Local(owner) = &adapter.remote_semantic else {
+            panic!("local owner")
+        };
+        assert_eq!(owner.cached_completions(), 0);
+        assert!(!owner.owes_completion());
+        assert!(owner.has_retained_projection());
+        drop(required);
+        drop(pressure);
+        let retry = search_body(daemon, 4601, "sole held intent");
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &retry, 5601),
+            Ok(Executed::Deferred)
+        ));
+        let wire = owed_reply(adapter, daemon, 5601);
+        assert_eq!(wire["semantic_search"]["status"], "available");
+        assert_eq!(
+            fs::read_to_string(&producer.log).expect("raw log"),
+            log,
+            "retry reuses admitted document/query inputs without another helper call"
+        );
+    }
+}
+#[test]
+fn local_semantic_exact_live_duplicate_protects_first_completion_until_last_ticket_abandons() {
+    let producer =
+        crate::builtin::query::local_semantic::tests::fixture_with_mode(4096, "gate-query")
+            .expect("actual protocol activation");
+    let runtime = producer.provision.runtime().expect("runtime");
+    let mut fixture = AdapterFixture::new();
+    let (adapter, daemon) = fixture.parts();
+    adapter.remote_semantic = crate::builtin::query::RemoteSemantic::select_owner(
+        &producer.provision,
+        &producer.descriptor,
+        crate::builtin::query::RemoteSemantic::Unconfigured,
+    );
+    for (id, ticket) in [(4700, 5700), (4701, 5701)] {
+        let body = search_body(daemon, id, "same held intent");
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &body, ticket),
+            Ok(Executed::Deferred)
+        ));
+    }
+    enter_held_query(adapter, daemon, &producer.entered);
+    adapter.abandon_reply(5700);
+    fs::write(&producer.release, b"finish while duplicate remains").expect("release");
+    drain_worker_without_reply_dispatch(adapter, daemon);
+    let crate::builtin::query::RemoteSemantic::Local(owner) = &adapter.remote_semantic else {
+        panic!("local owner")
+    };
+    assert!(
+        owner.owes_completion(),
+        "exact surviving duplicate protects delivery"
+    );
+    assert_eq!(owner.cached_completions(), 0);
+    let pressure = runtime
+        .memory_budget()
+        .reserve(runtime.memory_budget().capacity() - runtime.memory_budget().used())
+        .expect("all free credits held");
+    assert!(
+        runtime.memory_budget().reserve(1).is_err(),
+        "live first answer is never optional cache"
+    );
+    // A different queued query cannot inherit the old query's delivery ownership.
+    drop(pressure);
+    let body = search_body(daemon, 4702, "different waiting intent");
+    assert!(matches!(
+        adapter.execute_or_defer(daemon, &body, 5702),
+        Ok(Executed::Deferred)
+    ));
+    adapter.abandon_reply(5701);
+    let crate::builtin::query::RemoteSemantic::Local(owner) = &adapter.remote_semantic else {
+        panic!("local owner")
+    };
+    assert!(!owner.owes_completion());
+    assert_eq!(owner.cached_completions(), 1);
+    let pressure = runtime
+        .memory_budget()
+        .reserve(runtime.memory_budget().capacity() - runtime.memory_budget().used())
+        .expect("all free credits held");
+    let required = runtime
+        .memory_budget()
+        .reserve(1)
+        .expect("different query cannot pin abandoned completion");
+    drop(required);
+    drop(pressure);
+    let wire = owed_reply(adapter, daemon, 5702);
+    assert_eq!(wire["request_id"], 4702);
+    assert_eq!(wire["semantic_search"]["status"], "available");
+}

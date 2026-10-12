@@ -179,6 +179,8 @@ impl backend_compile::EmbeddingMemoryReclaimer for CompletionCache {
 
 struct Worker {
     selection: Selection,
+    key: Arc<QueryKey>,
+    completion_owed: bool,
     completed: mpsc::Receiver<(LocalSemantic, Option<Completed>)>,
     worker: JoinHandle<()>,
 }
@@ -290,6 +292,42 @@ impl LocalSemanticOwner {
             Execution::Ready { .. } => None,
         }
     }
+    /// The serving adapter supplies interest from its existing admitted live tickets.
+    /// Abandonment changes delivery ownership only, never shared worker cancellation.
+    pub(super) fn retain_owed_completion(
+        &mut self,
+        mut interested: impl FnMut(&QueryCoordinator, &str, &LocalQuery) -> bool,
+    ) {
+        match &mut self.execution {
+            Execution::Working(worker) => {
+                worker.completion_owed = interested(
+                    &worker.selection.coordinator,
+                    &worker.key.text,
+                    &worker.key.query,
+                );
+            }
+            Execution::Ready {
+                selection,
+                owed_completion,
+                ..
+            } => {
+                let keep = selection
+                    .as_ref()
+                    .zip(owed_completion.as_ref())
+                    .is_some_and(|(selection, done)| {
+                        interested(&selection.coordinator, &done.key.text, &done.key.query)
+                    });
+                if !keep && let Some(done) = owed_completion.take() {
+                    if done.answer.is_some() {
+                        self.cache.insert(done, self.completion_policy);
+                    }
+                    // No waiter owns a failed attempt: release it, never negative-cache it.
+                }
+            }
+            Execution::Closed => {}
+        }
+    }
+
     pub(super) fn poll(&mut self, workspace: backend_engine::WorkspaceRoot, view: ViewStateRoot) {
         match &mut self.execution {
             Execution::Working(worker) => {
@@ -344,7 +382,17 @@ impl LocalSemanticOwner {
         }
         // The first completion belongs to the owed attempt, not optional retention.
         // Required compiler/query work cannot reclaim it before the reply projects it.
-        let owed_completion = completion;
+        let owed_completion = if worker.completion_owed {
+            completion
+        } else {
+            if let Some(done) = completion
+                && done.answer.is_some()
+                && core.has_projection()
+            {
+                self.cache.insert(done, self.completion_policy);
+            }
+            None
+        };
         // Recheck after joining, including cancellation after computation but before drain.
         let current = worker.selection.current(workspace, view);
         if !current {
@@ -563,6 +611,8 @@ impl LocalSemanticOwner {
             Ok(worker) => {
                 self.execution = Execution::Working(Worker {
                     selection,
+                    key,
+                    completion_owed: true,
                     completed,
                     worker,
                 })
@@ -630,7 +680,7 @@ impl LocalSemanticOwner {
     }
 
     #[cfg(test)]
-    pub(super) fn owes_completion(&self) -> bool {
+    pub(crate) fn owes_completion(&self) -> bool {
         matches!(
             &self.execution,
             Execution::Ready {
@@ -641,12 +691,17 @@ impl LocalSemanticOwner {
     }
 
     #[cfg(test)]
-    pub(super) fn cached_completions(&self) -> usize {
+    pub(crate) fn cached_completions(&self) -> usize {
         self.cache
             .0
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_retained_projection(&self) -> bool {
+        matches!(&self.execution, Execution::Ready { core, .. } if core.has_projection())
     }
 
     #[cfg(test)]

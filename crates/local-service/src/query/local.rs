@@ -1617,6 +1617,29 @@ impl QueryCoordinator {
         self.search_local_controlled(self.local_page_query(request)?, checkpoint)
     }
 
+    /// Checks the exact page shape without allocating a second normalized query.
+    /// The caller must also compare the original text; normalization is deterministic
+    /// for that same text and these same rank-prefix/semantic bounds.
+    pub(crate) fn matches_local_page_shape(
+        &self,
+        local: &LocalQuery,
+        request: &backend_engine::Query,
+    ) -> bool {
+        if request.basis() != self.corpus.view.root() {
+            return false;
+        }
+        let page_rows = usize::from(request.limit().get());
+        let offset = request.cursor().map_or(Ok(0), |cursor| {
+            usize::try_from(cursor.query_offset()).map_err(|_| QueryError::InvalidCursor)
+        });
+        let selected_rows = usize::try_from(self.corpus.view.row_count());
+        let (Ok(offset), Ok(selected_rows)) = (offset, selected_rows) else {
+            return false;
+        };
+        rank_prefix_limit(offset, page_rows, selected_rows)
+            .is_ok_and(|limit| local.limit() == limit && local.semantic_limit() == page_rows)
+    }
+
     fn local_page_query(&self, request: &backend_engine::Query) -> Result<LocalQuery, QueryError> {
         if request.basis() != self.corpus.view.root() {
             return Err(QueryError::StaleViewBinding);
