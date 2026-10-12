@@ -897,7 +897,42 @@ impl<'de> Deserialize<'de> for SymbolArena {
     }
 }
 
+/// Invocation-local identity of borrowed symbol storage. Equal keys guarantee
+/// identical ID and name lookups; the borrow keeps every backing allocation live.
+#[derive(Clone, Copy)]
+pub struct SymbolArenaStorageKey<'a>(&'a SymbolArena);
+
+impl PartialEq for SymbolArenaStorageKey<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.base_offset == other.0.base_offset
+            && Arc::ptr_eq(&self.0.shared_prefix, &other.0.shared_prefix)
+            && Arc::ptr_eq(&self.0.symbols, &other.0.symbols)
+            && Arc::ptr_eq(&self.0.shared_name_index, &other.0.shared_name_index)
+            && Arc::ptr_eq(&self.0.name_index, &other.0.name_index)
+    }
+}
+
+impl Eq for SymbolArenaStorageKey<'_> {}
+
+impl std::hash::Hash for SymbolArenaStorageKey<'_> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        use std::hash::Hash;
+        self.0.base_offset.hash(state);
+        Arc::as_ptr(&self.0.shared_prefix).hash(state);
+        Arc::as_ptr(&self.0.symbols).hash(state);
+        Arc::as_ptr(&self.0.shared_name_index).hash(state);
+        Arc::as_ptr(&self.0.name_index).hash(state);
+    }
+}
+
 impl SymbolArena {
+    /// Borrow the exact immutable symbol and name-index storage for local
+    /// duplicate-work detection. This is not a semantic or serialized identity.
+    #[must_use]
+    pub fn storage_key(&self) -> SymbolArenaStorageKey<'_> {
+        SymbolArenaStorageKey(self)
+    }
+
     /// Base offset for checker-local symbols to avoid ID collisions.
     pub const CHECKER_SYMBOL_BASE: u32 = 0x1000_0000;
     /// Maximum pre-allocation to avoid capacity overflow.
