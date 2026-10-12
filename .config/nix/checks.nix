@@ -51,6 +51,15 @@ let
       null;
 in
 {
+  surface-smoke-contract =
+    pkgs.runCommand "nudox-surface-smoke-contract" { nativeBuildInputs = [ pkgs.python3 ]; }
+      ''
+        cp ${../ci/smoke.py} smoke.py
+        cp ${../ci/test_smoke.py} test_smoke.py
+        python3 test_smoke.py
+        touch "$out"
+      '';
+
   nushell-command = commands.backendCi;
   agent-skills = commands.agentSkills;
   formatting = formatting.check;
