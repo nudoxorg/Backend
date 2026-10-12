@@ -865,16 +865,16 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 1532,
+                "bytes": 1731,
                 "bytesPerToken": 4,
-                "estimatedTokens": 383,
+                "estimatedTokens": 433,
                 "limitBytes": 49152,
                 "scope": "complete_jsonrpc_line"
               }
             },
             "content": [
               {
-                "text": "~lanes exact✓1 names✓1 graph✓1 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n1 row(s); complete records and native operands are in `structuredContent.records`.\n",
+                "text": "~lanes exact✓1 names✓1 graph✓1 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n• `ferris` · function · rust\n  `/tmp/nudox-surface/polyglot/project::semantic::ef50602bb73121801eebfb4a0bdf09fb05c9af6f8f13ef9eb04d0be5012fcabf::ferris`\n1 row(s) on this page; showing 1 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
                 "type": "text"
               }
             ],
@@ -983,16 +983,16 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 1535,
+                "bytes": 1732,
                 "bytesPerToken": 4,
-                "estimatedTokens": 384,
+                "estimatedTokens": 433,
                 "limitBytes": 49152,
                 "scope": "complete_jsonrpc_line"
               }
             },
             "content": [
               {
-                "text": "~lanes exact✓1 names✓1 graph✓1 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n1 row(s); complete records and native operands are in `structuredContent.records`.\n",
+                "text": "~lanes exact✓1 names✓1 graph✓1 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n• `Gopher` · function · go\n  `/tmp/nudox-surface/polyglot/project::semantic::9eee4f803fd11b29079f40c668c96ca0fa48dc32b53ad946b94d3ec159c74445::Gopher`\n1 row(s) on this page; showing 1 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\n",
                 "type": "text"
               }
             ],

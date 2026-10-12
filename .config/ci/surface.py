@@ -135,7 +135,8 @@ def isolated_env(home: Path, bin_dir: Path) -> dict[str, str]:
     env = {
         name: value
         for name, value in os.environ.items()
-        if not name.startswith(("BACKEND_", "NUDOX_WORKSPACE", "NUDOX_PROJECT"))
+        if not name.startswith(("BACKEND_", "FORGEJO_", "NUDOX_WORKSPACE", "NUDOX_PROJECT"))
+        and name != "NIX_BUILDER_KEY"
     }
     for name, sub in (
         ("HOME", ""),

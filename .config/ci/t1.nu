@@ -94,9 +94,9 @@ def main []: nothing -> nothing {
     } else { true }
     # T2 surface prototype (W2.3): real product operations against the
     # binaries just built, snapshotted. Advisory: its verdict is reported but
-    # never fails T1. It moves to its own parallel job once its cases are
-    # reviewed (see tests/surface/cases.json and .config/ci/surface.py).
-    if $built and ("tests/surface/cases.json" | path exists) {
+    # never fails T1. CI_T2_EXTERNAL=1 delegates it to the parallel artifact
+    # consumer; local invocations retain this advisory check (see tests/surface/cases.json and .config/ci/surface.py).
+    if $built and ($env.CI_T2_EXTERNAL? | default "0") != "1" and ("tests/surface/cases.json" | path exists) {
         ci-step "t2" "surface cases (advisory)" {||
             run-bounded 15min "nix" "develop" ".#surface" "--command" "python3" ($env.FILE_PWD | path join "surface.py") "--bin-dir" $bin_dir "--print-missing"
         } | ignore

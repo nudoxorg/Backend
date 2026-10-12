@@ -112,6 +112,19 @@ class ArtifactTests(unittest.TestCase):
             self.assertTrue(Path(argv[1]).is_absolute())
             self.assertTrue(Path(argv[-1]).is_absolute())
 
+    def test_runtime_only_consumer_verifies_then_imports_without_smoke(self):
+        with patch("sys.argv", ["t1_artifacts.py", "verify", str(self.root), "--source-sha", SHA, "--import-runtime"]), patch.object(t1_artifacts.subprocess, "run") as run:
+            t1_artifacts.main()
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args.args[0], ["nix-store", "--import"])
+
+    def test_damaged_runtime_is_never_imported(self):
+        (self.root / "runtime.nar").write_bytes(b"damaged")
+        with patch("sys.argv", ["t1_artifacts.py", "verify", str(self.root), "--source-sha", SHA, "--import-runtime"]), patch.object(t1_artifacts.subprocess, "run") as run:
+            with self.assertRaises(ValueError):
+                t1_artifacts.main()
+        run.assert_not_called()
+
     def test_invalid_runtime_root_rejected(self):
         self.manifest["runtime_roots"] = ["/tmp/runtime"]
         self.save()
