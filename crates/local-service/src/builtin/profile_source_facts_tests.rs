@@ -248,7 +248,7 @@ fn prepare_files_at_source_version(
     let fact_changes = super::super::commands::prepare_source_facts_changes(
         &sources,
         facts.as_ref(),
-        &updates,
+        updates,
         &selected,
         &old_files,
     )
@@ -741,7 +741,7 @@ fn warm_facts_reuse_requires_the_exact_selected_source_and_manifest() {
             super::super::commands::prepare_source_facts_changes(
                 &sources,
                 selected_facts,
-                &[],
+                Vec::new(),
                 &selected,
                 &previous,
             )

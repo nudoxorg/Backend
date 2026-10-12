@@ -537,6 +537,8 @@ pub struct BinderState {
     // ===== Module Augmentations (Rule #44) =====
     /// Tracks interface/type declarations inside `declare module 'x'` blocks that should
     /// merge with the target module's symbols. Maps module specifier to augmentations.
+    /// A bound body keeps its specifier key even without named declarations;
+    /// an empty entry records its literal augmentation owner, not an export.
     ///
     /// Wrapped in `Arc` so the merged cross-file augmentation map can be shared
     /// across N per-file binders without deep-cloning. Mutations go through

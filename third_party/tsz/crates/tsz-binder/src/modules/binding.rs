@@ -179,6 +179,12 @@ impl BinderState {
                             Arc::make_mut(&mut self.shorthand_ambient_modules)
                                 .insert(module_specifier);
                         } else {
+                            // A bound augmentation body owns this literal key
+                            // even when it contains only re-export edges and
+                            // contributes no named augmentation declaration.
+                            Arc::make_mut(&mut self.module_augmentations)
+                                .entry(module_specifier.clone())
+                                .or_default();
                             // The augmented body binds IN-PLACE at the current
                             // (boundary) scope rather than under a fresh child scope.
                             let boundary_scope_id = self.current_scope_id;
@@ -408,11 +414,21 @@ impl BinderState {
             if module_symbol_id.is_some()
                 && let Some(module_specifier) = declared_module_specifier.as_ref()
                 && let Some(symbol) = self.symbols.get(module_symbol_id)
-                && let Some(exports) = symbol.exports.as_ref()
-                && !exports.is_empty()
             {
-                Arc::make_mut(&mut self.module_exports)
-                    .insert(module_specifier.clone(), exports.as_ref().clone());
+                if let Some(exports) = symbol.exports.as_ref()
+                    && !exports.is_empty()
+                {
+                    Arc::make_mut(&mut self.module_exports)
+                        .insert(module_specifier.clone(), exports.as_ref().clone());
+                } else if module.body.is_some() {
+                    // A bound ambient body owns an export surface even when its
+                    // only members are re-export edges. Keep that declaration
+                    // provenance so exact External requests can traverse those
+                    // edges without borrowing a same-spelling program file.
+                    Arc::make_mut(&mut self.module_exports)
+                        .entry(module_specifier.clone())
+                        .or_default();
+                }
             }
 
             // After exiting the anonymous module scope, promote exported symbols

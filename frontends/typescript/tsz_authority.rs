@@ -1290,8 +1290,8 @@ fn module_resolution_digest(resolutions: &[TszProjectModuleResolution]) -> [u8; 
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
-    use tsz::parser::node::NodeAccess;
     use std::time::{Duration, Instant};
+    use tsz::parser::node::NodeAccess;
 
     fn options() -> TszProjectOptions {
         let mut checker = TszCheckerOptions::default();

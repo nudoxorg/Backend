@@ -74,6 +74,12 @@ impl RegionCore {
         self.renders
     }
 
+    /// Action handlers can bind one reading visit independently of its
+    /// rapidly changing local presentation fields.
+    pub(crate) fn watch_reading_visit(&mut self, store: &DataStore) {
+        self.watch.watch_reading_visit(store);
+    }
+
     /// Replaces the watched page keys.
     pub(crate) fn watch_keys(&mut self, store: &DataStore, keys: impl IntoIterator<Item = PageKey>) {
         self.watch.retarget(store, keys);

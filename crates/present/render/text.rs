@@ -621,35 +621,8 @@ pub fn product(view: &ProductView, theme: Theme) -> String {
 }
 
 fn index_job_footer(view: &ProductView, lines: &mut Lines, theme: Theme) {
-    if let Some(observation) = view.index_operation() {
-        let terminal_failure = matches!(
-            observation,
-            backend_library::IndexOperationObservation::Known(status)
-                if matches!(
-                    &status.state,
-                    backend_library::IndexOperationState::Failed { .. }
-                )
-        );
-        if !terminal_failure {
-            let key = match observation {
-                backend_library::IndexOperationObservation::Known(status) => status.operation_key,
-                backend_library::IndexOperationObservation::Unknown { operation_key }
-                | backend_library::IndexOperationObservation::OutsideReceiptWindow {
-                    operation_key,
-                    ..
-                } => *operation_key,
-            };
-            lines.push(theme.paint(
-                Style::Dim,
-                &format!("  Saved operation; backend index_progress --operation-key {key}"),
-            ));
-        }
-    }
-    let Some(job) = view.index_job() else {
-        return;
-    };
-    if let Some(next) = job.poll_affordance().and_then(|step| step.shell()) {
-        if matches!(job, IndexJobProjection::Cancellation(_))
+    if let Some(next) = view.index_poll_affordance().and_then(|step| step.shell()) {
+        if let Some(job @ IndexJobProjection::Cancellation(_)) = view.index_job()
             && let Some(ticket) = job.ticket_json()
         {
             lines.push(format!(
@@ -659,22 +632,19 @@ fn index_job_footer(view: &ProductView, lines: &mut Lines, theme: Theme) {
         lines.push(theme.paint(Style::Dim, &format!("  Operation in flight; {next}")));
         return;
     }
+    let Some(job) = view.index_job() else {
+        return;
+    };
     let guidance = match job {
-        IndexJobProjection::Started(backend_library::IndexStartResult::Started { .. }) => {
-            "poll backend.index_progress with the exact ticket shown above (after_sequence 0)"
-        }
+        // Only the shared policy above may offer a next observation.
+        IndexJobProjection::Started(backend_library::IndexStartResult::Started { .. })
+        | IndexJobProjection::Progress(backend_library::IndexJobObservation::Pending(_))
+        | IndexJobProjection::Cancellation(backend_library::IndexCancelReceipt {
+            status: backend_library::IndexCancelStatus::Requested,
+            ..
+        }) => return,
         IndexJobProjection::Started(backend_library::IndexStartResult::Terminal(_))
         | IndexJobProjection::Terminal(_) => "the owner returned a terminal index receipt",
-        IndexJobProjection::Progress(backend_library::IndexJobObservation::Pending(page)) => {
-            lines.push(theme.paint(
-                Style::Dim,
-                &format!(
-                    "  poll backend.index_progress with the exact ticket shown above (after_sequence {})",
-                    page.next_sequence
-                ),
-            ));
-            return;
-        }
         IndexJobProjection::Progress(backend_library::IndexJobObservation::Terminal(_)) => {
             "the owner returned a terminal index receipt"
         }
@@ -687,10 +657,6 @@ fn index_job_footer(view: &ProductView, lines: &mut Lines, theme: Theme) {
         IndexJobProjection::Progress(backend_library::IndexJobObservation::Unknown { .. }) => {
             "this ticket is no longer active or retained by the current owner"
         }
-        IndexJobProjection::Cancellation(backend_library::IndexCancelReceipt {
-            status: backend_library::IndexCancelStatus::Requested,
-            ..
-        }) => "cancellation was requested; poll backend.index_progress for its terminal receipt",
         IndexJobProjection::Cancellation(backend_library::IndexCancelReceipt {
             status: backend_library::IndexCancelStatus::Terminal(_),
             ..

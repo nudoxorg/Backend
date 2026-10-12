@@ -370,3 +370,172 @@ fn exercise(fixture: &OwnerFixture) {
     drop(rig);
     gate.close();
 }
+
+
+const VIEW_CHILD: &str = "NUDOX_TEST_PRODUCTION_HEADER_CHILD";
+/// Walk the actual represented header order, which includes the shelf,
+/// history, breadcrumbs and local controls according to the current route.
+fn header_tab_to(rig: &mut Rig, targets: &crate::shell::focus::Targets, id: &str) {
+    let count = targets.list_probe().upgrade().expect("live header targets").borrow().len();
+    for _ in 0..count {
+        rig.keys("tab");
+        if rig.cx.update(|window, _| targets.native_focused(window)).as_deref() == Some(id) { return; }
+    }
+    panic!("native header Tab must reach {id} through its represented current controls");
+}
+
+const VIEW_NAME: &str = "shell::graph_tests::production::production_graph_header_native_controls_open_and_return_to_the_exact_selected_symbol";
+
+#[test]
+fn production_graph_header_native_controls_open_and_return_to_the_exact_selected_symbol() {
+    // Reuse the real owned source/service setup; do not install a projection
+    // fixture or manufacture a selected declaration from its display name.
+    if std::env::var_os(VIEW_CHILD).is_none() {
+        let output = Command::new(std::env::current_exe().expect("test executable"))
+            .args(["--exact", VIEW_NAME, "--nocapture", "--test-threads=1"])
+            .env(VIEW_CHILD, "1").env("SEED", "0").env("ITERATIONS", "1")
+            .output().expect("isolated actual-owner header test");
+        assert!(output.status.success(), "actual-owner header failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("PRODUCTION-HEADER: native controls and exact selection"));
+        return;
+    }
+    let fixture = OwnerFixture::start();
+    exercise_header_controls(&fixture);
+    fixture.service.close().expect("close actual private service");
+    std::fs::remove_dir_all(&fixture.scratch).expect("remove owned source/state");
+    println!("PRODUCTION-HEADER: native controls and exact selection");
+}
+
+fn header_node(rig: &mut Rig, label: &str) -> gpui::accesskit::NodeId {
+    let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("committed native header");
+    let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree");
+    let nodes: Vec<_> = tree["nodes"].as_object().expect("nodes").values()
+        .filter(|node| node["aria"]["role"] == "Button" && node["aria"]["label"] == label).collect();
+    assert_eq!(nodes.len(), 1, "exact mounted header control: {json}");
+    assert!(nodes[0]["aria"]["on_action"].as_array().expect("native actions").iter().any(|action| action == "Click"));
+    gpui::accesskit::NodeId(nodes[0]["accesskit_id"].as_str().expect("actual node").parse().expect("native node ID"))
+}
+
+fn exercise_header_controls(fixture: &OwnerFixture) {
+    let _lease = registry::publish_serving(fixture.paths.endpoint(), fixture.paths.data(), None, None);
+    let gate = OwnerGate::ready(fixture.root, ServiceMode::Attached);
+    let endpoint = fixture.paths.endpoint().to_path_buf();
+    let read_gate = gate.clone();
+    let pool = ReadPool::start(2, move |_| SessionReader::gated(&endpoint, read_gate.clone())).expect("actual socket reads");
+    let engine = LocalEngineClient::gated(fixture.paths.endpoint(),
+        LocalProjectId::from_path(&fixture.project).expect("actual project"), gate.clone());
+    let mut cx = TestAppContext::single();
+    let mut rig = rig_with_production_owner(&mut cx, pool, engine, gate.clone(), fixture.root);
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    rig.go(Intent::Navigate(Route::World));
+    assert_eq!(projection(&mut rig).1, Origin::IndexedOwner, "actual service/index producer, no TestProjection");
+    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("real indexed scene");
+    let node = graph.read_with(rig.cx, |graph, _| graph.world().nodes.iter()
+        .position(|node| node.name.as_ref() == "keep_local")).expect("actual compiled declaration");
+    let node = u32::try_from(node).expect("bounded indexed node ID");
+    for (input, id, view) in [("enter", "view-page", View::Page), ("space", "view-code", View::Code),
+        ("pointer", "view-page", View::Page), ("accessibility", "view-code", View::Code)] {
+        rig.go(Intent::Navigate(Route::World));
+        rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(node, cx));
+        rig.settle();
+        let expected = rig.graph.store.read_with(rig.cx, |store, _| store.graph_focus()
+            .and_then(|focus| focus.indexed.clone())).expect("selected exact indexed declaration");
+        assert!(expected.1.as_str().contains("keep_local"));
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_targets(cx));
+        rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx|
+            shell.take_zone(super::super::focus::Zone::Titlebar, window, cx)));
+        header_tab_to(&mut rig, &targets, "view-page");
+        assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(), Some("view-page"),
+            "Tab reaches the real Page receiver through the mounted header controls");
+        if view == View::Code { rig.keys("tab"); }
+        assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(), Some(id));
+        let native = header_node(&mut rig, if view == View::Page { "Show Page view" } else { "Show Code view" });
+        match input {
+            "pointer" => {
+                let bounds = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds(id, cx)).expect("actual painted bounds");
+                rig.cx.simulate_click(bounds.center(), Modifiers::none());
+            }
+            "accessibility" => { rig.cx.update(|window, cx| window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+                action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: native, data: None,
+            }, cx)); }
+            key => rig.native_press(key),
+        }
+        rig.settle();
+        assert!(matches!(rig.route(), Route::Symbol(route) if route.package.as_str() == expected.0.as_str()
+            && route.id.as_str() == expected.1.as_str() && route.view == view), "{input} opens the exact selected indexed symbol");
+        let opened = rig.route();
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_targets(cx));
+        rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx|
+            shell.take_zone(super::super::focus::Zone::Titlebar, window, cx)));
+        header_tab_to(&mut rig, &targets, "jump-back");
+        let back = header_node(&mut rig, "Back to graph");
+        match input {
+            "pointer" => {
+                let bounds = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("jump-back", cx)).expect("native Back bounds");
+                rig.cx.simulate_click(bounds.center(), Modifiers::none());
+            }
+            "accessibility" => { rig.cx.update(|window, cx| window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+                action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: back, data: None,
+            }, cx)); }
+            key => rig.native_press(key),
+        }
+        rig.settle();
+        assert_eq!(rig.route(), Route::World, "native Back returns to the actual graph visit");
+        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.graph_focus().and_then(|focus| focus.indexed.clone())), Some(expected),
+            "Back preserves the selected semantic declaration instead of adopting a row number");
+        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_targets(cx));
+        rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx|
+            shell.take_zone(super::super::focus::Zone::Titlebar, window, cx)));
+        header_tab_to(&mut rig, &targets, "jump-forward");
+        rig.native_press("enter");
+        assert_eq!(rig.route(), opened, "native Forward restores the exact declaration/view visit");
+        rig.keys("secondary-[");
+        assert_eq!(rig.route(), Route::World, "the existing Back shortcut keeps the same history semantics");
+    }
+
+    // The original frame remains committed throughout this complete native
+    // input batch. Owner replacement precedes its watcher and cannot grant
+    // old controls pointer focus, Tab focus, or key/accessibility activation.
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_targets(cx));
+    rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx|
+        shell.take_zone(super::super::focus::Zone::Titlebar, window, cx)));
+    header_tab_to(&mut rig, &targets, "view-code");
+    let bounds = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("view-page", cx)).expect("old painted Page");
+    let native = header_node(&mut rig, "Show Page view");
+    gate.publish(OwnerState::Starting);
+    gate.publish(OwnerState::Ready { key: fixture.root, mode: ServiceMode::Attached });
+    let (original_focus, original_frame) = rig.cx.update(|window, cx| {
+        let before = window.focused(cx);
+        assert_eq!(targets.native_focused(window).as_deref(), Some("view-code"));
+        let frame = window.a11y_frame_number();
+        window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+            position: bounds.center(), modifiers: Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1, first_mouse: false,
+        }), cx);
+        assert_eq!(window.focused(cx), before, "stale pointer capture rejects before native focus");
+        window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+            position: bounds.center(), modifiers: Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1,
+        }), cx);
+        for key in ["shift-tab", "enter", "space"] {
+            let keystroke = gpui::Keystroke::parse(key).expect("native key");
+            window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent { keystroke: keystroke.clone(), is_held: false, prefer_character_input: false }), cx);
+            window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
+        }
+        window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+            action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: native, data: None,
+        }, cx);
+        assert_eq!(window.focused(cx), before, "stale native input does not transfer keyboard ownership");
+        assert_eq!(window.a11y_frame_number(), frame, "no forced redraw conceals the retained control");
+        assert_eq!(rig.graph.store.read(cx).snapshot().route(), &Route::World, "stale controls cannot navigate before the watcher");
+        (before, frame)
+    });
+    // Window.defer runs after the held Shell/Reader borrows return. Observe
+    // that real delayed focus phase before allowing an owner watcher/redraw.
+    rig.cx.update(|window, cx| {
+        assert_eq!(window.focused(cx), original_focus, "retired deferred Tab cannot steal native focus after routing returns");
+        assert_eq!(window.a11y_frame_number(), original_frame, "the same original native frame still owns this observation");
+        assert_eq!(rig.graph.store.read(cx).snapshot().route(), &Route::World);
+    });
+    rig.cx.run_until_parked();
+    assert_eq!(rig.route(), Route::World);
+}

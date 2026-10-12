@@ -622,10 +622,16 @@ pub(super) fn finish_index_scan(
     let mut source_facts_changes = prepare_source_facts_changes(
         &relation,
         facts_relation.as_ref(),
-        &scan.source_facts,
+        scan.source_facts,
         &scan.files,
         &old_files,
     )?;
+    // Source comparisons and exact after-images are now prepared. The committed
+    // project is reread below before compilation; the scan's decoded compact
+    // rows and accounting/configuration payloads are not compiler authority.
+    drop(scan.files);
+    drop(scan.encoded_fact_bytes);
+    drop(scan.compiler_configuration);
     // Keep these source rows private until every semantic profile has been
     // admitted. The eventual BuiltinIntent carries source and semantic roots
     // in one workspace transition.
@@ -727,7 +733,8 @@ pub(super) fn finish_index_scan(
                 Some(key) => capture_intent.with_operation_key(key)?,
                 None => capture_intent,
             };
-            let capture_request = super::adapter::prepare_builtin_intent(daemon, &capture_intent)?;
+            let capture_request =
+                super::adapter::prepare_owned_builtin_intent(daemon, capture_intent)?;
             let capture_request_identity = capture_request.request_identity();
             let daemon_for_commit = &mut *daemon;
             semantic_authority.commit_product_selection_transaction(Vec::new(), move || {
@@ -1013,7 +1020,7 @@ pub(in crate::builtin) fn prepare_source_facts_changes(
     facts_relation: Option<
         &backend_engine::WorkspaceRelationHandle<ProductSourceFileFactsRelation>,
     >,
-    updates: &[ProductSourceFileFactsUpdate],
+    updates: Vec<ProductSourceFileFactsUpdate>,
     selected_files: &[([u8; 32], ProductSourceRecord)],
     previous_files: &[[u8; 32]],
 ) -> Result<Vec<BuiltinSourceFactsChange>, BuiltinModelError> {
@@ -1024,27 +1031,20 @@ pub(in crate::builtin) fn prepare_source_facts_changes(
     }
     let mut afters = BTreeMap::<[u8; 32], Option<ProductSourceFileFactsRecord>>::new();
     for update in updates {
-        let manifest = ProductSourceFileFactsRecord::Manifest(update.manifest().clone());
-        let manifest_key = update.manifest_key();
-        if product_source_file_facts_record_key(manifest.file_key().unwrap_or([0; 32]), &manifest)
-            .map_err(BuiltinModelError)?
-            != manifest_key
-        {
-            return Err(BuiltinModelError(
-                "source facts manifest key does not match its file".to_owned(),
-            ));
-        }
-        insert_source_facts_after(&mut afters, manifest_key, manifest)?;
-        for (key, record) in update.pages() {
-            if product_source_file_facts_record_key(record.file_key().unwrap_or([0; 32]), record)
+        for (key, record) in update.into_rows() {
+            if product_source_file_facts_record_key(record.file_key().unwrap_or([0; 32]), &record)
                 .map_err(BuiltinModelError)?
-                != *key
+                != key
             {
-                return Err(BuiltinModelError(
-                    "source facts page key does not match its row".to_owned(),
-                ));
+                let message = match &record {
+                    ProductSourceFileFactsRecord::Manifest(_) => {
+                        "source facts manifest key does not match its file"
+                    }
+                    _ => "source facts page key does not match its row",
+                };
+                return Err(BuiltinModelError(message.to_owned()));
             }
-            insert_source_facts_after(&mut afters, *key, record.clone())?;
+            insert_source_facts_after(&mut afters, key, record)?;
         }
     }
 
@@ -1144,15 +1144,82 @@ fn insert_source_facts_after(
     key: [u8; 32],
     record: ProductSourceFileFactsRecord,
 ) -> Result<(), BuiltinModelError> {
-    if afters
-        .insert(key, Some(record.clone()))
-        .is_some_and(|previous| previous.is_some_and(|previous| previous != record))
-    {
-        return Err(BuiltinModelError(
-            "source facts updates contain a content-key collision".to_owned(),
-        ));
+    match afters.entry(key) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(Some(record));
+        }
+        std::collections::btree_map::Entry::Occupied(mut entry) => match entry.get() {
+            Some(previous) if previous != &record => {
+                return Err(BuiltinModelError(
+                    "source facts updates contain a content-key collision".to_owned(),
+                ));
+            }
+            Some(_) => {}
+            None => {
+                entry.insert(Some(record));
+            }
+        },
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod owned_source_facts_handoff_tests {
+    use super::*;
+
+    fn manifest(content: u8) -> ([u8; 32], ProductSourceFileFactsRecord) {
+        backend_engine::build_product_source_file_facts(
+            [1; 32],
+            "src/owned.rs",
+            backend_compile::SourceLanguage::Rust,
+            [content; 32],
+            [3; 32],
+            backend_version::ContentId::<backend_version::SourceFactDomain>::from_canonical_bytes(
+                b"source",
+            ),
+            &[],
+        )
+        .expect("complete empty file facts")
+        .into_rows()
+        .next()
+        .expect("manifest")
+    }
+
+    fn path_pointer(row: &ProductSourceFileFactsRecord) -> *const u8 {
+        let ProductSourceFileFactsRecord::Manifest(manifest) = row else {
+            panic!("manifest fixture")
+        };
+        manifest.path().as_ptr()
+    }
+
+    #[test]
+    fn facts_accumulator_moves_rows_and_preserves_first_equal_allocation() {
+        let (key, row) = manifest(2);
+        let original_path = path_pointer(&row);
+        let duplicate = row.clone();
+        let mut afters = BTreeMap::new();
+        insert_source_facts_after(&mut afters, key, row).expect("owned insertion");
+        assert_eq!(
+            path_pointer(afters[&key].as_ref().expect("after")),
+            original_path
+        );
+        insert_source_facts_after(&mut afters, key, duplicate).expect("equal duplicate");
+        assert_eq!(
+            path_pointer(afters[&key].as_ref().expect("after")),
+            original_path
+        );
+        let before = afters[&key].clone();
+        let (_, collision) = manifest(9);
+        assert!(insert_source_facts_after(&mut afters, key, collision).is_err());
+        assert_eq!(
+            afters[&key], before,
+            "collision refusal must not replace admitted rows"
+        );
+        afters.insert(key, None);
+        let (_, row) = manifest(2);
+        insert_source_facts_after(&mut afters, key, row.clone()).expect("after replaces deletion");
+        assert_eq!(afters[&key], Some(row));
+    }
 }
 
 fn prepare_source_capture_changes(

@@ -819,7 +819,7 @@ fn search_page_enumerates_multiple_200_row_pages_beyond_4096_with_tied_names() {
         view.clone(),
         view.capability().expect("capability"),
         crate::builtin::admitted_coverage().expect("coverage"),
-        evidence,
+        evidence.clone(),
     )
     .expect("large bounded coordinator");
     let library = backend_library::Library::from_view(
@@ -835,7 +835,11 @@ fn search_page_enumerates_multiple_200_row_pages_beyond_4096_with_tied_names() {
     let mut query = original.clone();
     let mut ids = Vec::new();
     let mut pages = 0;
+    let mut cold_request = None;
     loop {
+        if ids.len() == 4_000 {
+            cold_request = Some(query.clone());
+        }
         if matches!(ids.len(), 0 | 200 | 4_000) {
             let prefix = coordinator
                 .search_local_page(&query)
@@ -882,6 +886,34 @@ fn search_page_enumerates_multiple_200_row_pages_beyond_4096_with_tied_names() {
         query = original.clone().with_cursor(next);
     }
     assert_eq!(replay, ids);
+
+    // Reconstruct the actual selected corpus and library, then resume an
+    // issued deep cursor. A resident heap or a different prefix width cannot
+    // become authority for the predecessor's canonical rows or ordinal scores.
+    let cold = QueryCoordinator::new(
+        workspace,
+        view.clone(),
+        view.capability().expect("capability"),
+        crate::builtin::admitted_coverage().expect("coverage"),
+        evidence,
+    )
+    .expect("cold selected coordinator");
+    let reopened = backend_library::Library::from_view(
+        view.clone(),
+        backend_library::Cursor::for_view_root(&view),
+    )
+    .expect("cold selected library");
+    let deep = route_search_page(&cold, &reopened, &cold_request.expect("deep issued cursor"))
+        .expect("cold deep page");
+    assert_eq!(ranked_page_ids(&deep), ids[4_000..4_200]);
+    let last = route_search_page(
+        &cold,
+        &reopened,
+        &original.with_cursor(deep.next.expect("last bounded page")),
+    )
+    .expect("cold final page");
+    assert_eq!(ranked_page_ids(&last), ids[4_200..]);
+    assert!(last.next.is_none());
 }
 
 #[test]

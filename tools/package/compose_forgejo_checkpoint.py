@@ -10,6 +10,8 @@ import ast
 from collections.abc import Callable
 from dataclasses import dataclass
 import hashlib
+import datetime
+import tempfile
 import json
 import os
 from pathlib import Path
@@ -89,6 +91,15 @@ class LinuxPackage:
 
 
 @dataclass(frozen=True)
+class MacSdkPackage:
+    directory: Path
+    manifest: dict
+    manifest_bytes: bytes
+    archive: Path
+    tag: str
+
+
+@dataclass(frozen=True)
 class CandidateBundle:
     bootstrap_tag: str
     bootstrap: bytes
@@ -97,6 +108,7 @@ class CandidateBundle:
     libraries: dict[str, PlatformLibrary]
     linux_package: LinuxPackage
     source: SourceSnapshot
+    mac_package: MacSdkPackage | None = None
 
 
 def digest(body: bytes) -> str:
@@ -409,7 +421,66 @@ def replace_bootstrap_identity(template: bytes, *, bootstrap_tag: str, channel_u
     return result
 
 
-def compose_candidate(source: SourceSnapshot, package: LinuxPackage) -> CandidateBundle:
+def validate_mac_sdk_package(directory: Path, source: SourceSnapshot, checkpoint_date: str) -> MacSdkPackage:
+    """Explicit current Mac selection; never reinterpret the historical channel archive."""
+    import install_macos_preview as mac
+    try:
+        directory = Path(directory)
+        if directory.is_symlink():
+            raise ValueError('Mac SDK package input must not be a symlink')
+        directory = directory.resolve(strict=True)
+        if not directory.is_dir():
+            raise ValueError('Mac SDK package input must be a real directory')
+        if not isinstance(checkpoint_date, str) or not re.fullmatch('[0-9]{8}', checkpoint_date):
+            raise ValueError('invalid Mac checkpoint date')
+        datetime.datetime.strptime(checkpoint_date, '%Y%m%d')
+        raw = read_regular(directory/'release-manifest.json', MAX_JSON, 'Mac SDK release manifest')
+        manifest = json.loads(raw)
+        if (not isinstance(manifest, dict) or manifest.get('schema') != 1
+                or manifest.get('platform') != 'macos-arm64' or manifest.get('package_schema') != mac.SDK_SCHEMA
+                or manifest.get('source_sha') != source.revision or manifest.get('source_tree') != source.tree
+                or manifest.get('production_ready') is not False
+                or manifest.get('asset') != 'nudox-macos-arm64-'+source.revision[:10]+'.tar.gz'
+                or type(manifest.get('size_bytes')) is not int or not 0 < manifest['size_bytes'] <= mac.MAX_ARCHIVE_BYTES
+                or not isinstance(manifest.get('sha256'), str) or not re.fullmatch('[a-f0-9]{64}', manifest['sha256'])):
+            raise ValueError('Mac SDK package differs from selected current source/artifact')
+        archive = directory/manifest['asset']
+        # Full bounded artifact read, not a HEAD/length-only admission.
+        descriptor = os.open(archive, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        observed = hashlib.sha256()
+        with os.fdopen(descriptor, 'rb') as stream:
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_size != manifest['size_bytes'] or before.st_nlink != 1:
+                raise ValueError('Mac SDK archive is not the selected regular artifact')
+            while chunk := stream.read(1024*1024): observed.update(chunk)
+            if observed.hexdigest() != manifest['sha256']:
+                raise ValueError('Mac SDK archive digest differs from selected manifest')
+            if read_regular(directory/'install-macos-arm64.py', MAX_SCRIPT, 'Mac SDK installer') != source.mac_library:
+                raise ValueError('Mac SDK installer differs from selected source')
+            stream.seek(0)
+            with tempfile.TemporaryDirectory(prefix='nudox-mac-sdk-admission-') as temporary:
+                stage = Path(temporary)
+                mac.safe_extract(archive, stage, archive_file=stream)
+                package = json.loads(read_regular(stage/'manifest.json', mac.MAX_PACKAGE_METADATA_BYTES, 'Mac SDK package metadata'))
+                mac.verify_sdk_package(stage, package, source.revision)
+                origin = json.loads(read_regular(stage/mac.SDK_MANIFEST, mac.MAX_PACKAGE_METADATA_BYTES, 'selected Mac application manifest'))['source']
+                selected_lock = digest(source_file(source.root, source.revision, 'Cargo.lock', MAX_SCRIPT))
+                if origin['git_tree'] != source.tree or origin['cargo_lock_sha256'] != selected_lock:
+                    raise ValueError('Mac application tree/lock differs from selected current source')
+                if package.get('build_manifest_sha256') != manifest.get('build_manifest_sha256'):
+                    raise ValueError('Mac SDK release/application manifest binding differs')
+            if mac._file_identity(before) != mac._file_identity(os.fstat(stream.fileno())) or mac._file_identity(before) != mac._file_identity(archive.lstat()):
+                raise ValueError('Mac SDK archive identity changed during admission')
+        sidecar = read_regular(directory/(manifest['asset']+'.sha256'), 4096, 'Mac SDK archive sidecar')
+        if sidecar != (manifest['sha256']+'  '+manifest['asset']+'\n').encode():
+            raise ValueError('Mac SDK checksum sidecar differs from artifact')
+        return MacSdkPackage(directory, manifest, raw, archive,
+                             'checkpoint-'+checkpoint_date+'-'+source.revision[:10]+'-macos-arm64')
+    except (mac.InstallError, KeyError, TypeError, ValueError, OSError, tarfile.TarError) as error:
+        raise CandidateError('Mac SDK candidate refused: '+str(error)) from error
+
+
+def compose_candidate(source: SourceSnapshot, package: LinuxPackage, mac_package: MacSdkPackage | None = None) -> CandidateBundle:
     verify_library_contract(source.mac_library, "macos-arm64")
     if linux_checkpoint_tag(package.manifest, package.installer, package.manifest_sha256) != package.tag:
         raise CandidateError("Linux package checkpoint identity changed after admission")
@@ -421,6 +492,10 @@ def compose_candidate(source: SourceSnapshot, package: LinuxPackage) -> Candidat
     date = linux_tag.split("-")[1]
     bootstrap_tag = (f"nudox-diagnostic-installer-{date}-{package.manifest['source_sha'][:10]}-"
                      f"{package.manifest_sha256[:10]}-{source.revision[:10]}")
+    if mac_package is not None:
+        if mac_package.manifest.get('source_sha') != source.revision or mac_package.manifest.get('source_tree') != source.tree:
+            raise CandidateError('Mac SDK package differs from selected source')
+        bootstrap_tag += '-'+mac_package.tag.split('-')[1]+'-'+mac_package.manifest['sha256'][:10]
     if not re.fullmatch(r"[A-Za-z0-9.-]{1,100}", bootstrap_tag):
         raise CandidateError("derived bootstrap tag is invalid")
     if bootstrap_tag in {linux_tag, original_mac_row["tag"]}:
@@ -450,6 +525,11 @@ def compose_candidate(source: SourceSnapshot, package: LinuxPackage) -> Candidat
         "sha256": mac_installer.sha256,
         "bytes": mac_installer.byte_count,
     }
+    if mac_package is not None:
+        mac_row.update(source=mac_package.manifest['source_sha'], tag=mac_package.tag,
+                       archive={'url': bootstrap.release_url(mac_package.tag, mac_package.archive.name),
+                                'sha256': mac_package.manifest['sha256'], 'bytes': mac_package.manifest['size_bytes']},
+                       known_failures=['SDK-only app-preserving CLI candidate; whole-application fresh install/update acceptance is not established.'])
     base_linux_row = source.base_channel["platforms"]["linux-x64"]
     known_failures = linux_failures_for_candidate(base_linux_row, package)
     if package.native_qa_limitation not in known_failures:
@@ -483,12 +563,12 @@ def compose_candidate(source: SourceSnapshot, package: LinuxPackage) -> Candidat
         bootstrap.admit_libraries(channel, libraries={key: value.bootstrap_pin for key, value in libraries.items()})
     except (bootstrap.InstallError, KeyError, TypeError, ValueError) as error:
         raise CandidateError(f"assembled channel and bootstrap pins disagree: {error}") from error
-    if (mac_row["tag"] != original_mac_row["tag"]
+    if mac_package is None and (mac_row["tag"] != original_mac_row["tag"]
             or mac_row["source"] != original_mac_row["source"]
             or mac_row["archive"] != original_mac_row["archive"]):
         raise CandidateError("Mac release identity changed while composing the Linux candidate")
     launcher = candidate_launcher(source.launcher_template, bootstrap_tag, bootstrap_bytes)
-    return CandidateBundle(bootstrap_tag, bootstrap_bytes, launcher, channel, libraries, package, source)
+    return CandidateBundle(bootstrap_tag, bootstrap_bytes, launcher, channel, libraries, package, source, mac_package)
 
 
 def write_exclusive(path: Path | str, body: bytes, *, dir_fd: int | None = None) -> None:
@@ -660,6 +740,10 @@ def prepare_output(bundle: CandidateBundle, output_dir: Path) -> dict:
         raise CandidateError("candidate output directory must be outside the source checkout")
     if output == bundle.linux_package.directory or bundle.linux_package.directory in output.parents:
         raise CandidateError("candidate output directory must be outside the selected package input")
+    if bundle.mac_package is not None:
+        mac_input = bundle.mac_package.directory.resolve(strict=True)
+        if output == mac_input or mac_input in output.parents:
+            raise CandidateError('candidate output directory must be outside the selected Mac package input')
     parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
         parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
@@ -738,6 +822,18 @@ def prepare_output(bundle: CandidateBundle, output_dir: Path) -> dict:
             bootstrap_file, launcher_file, "install.sh", linux_file, mac_file,
             "preview-channel.json", manifest_name, archive_name, checksum_name,
         }
+        if bundle.mac_package is not None:
+            mac = bundle.mac_package
+            mac_manifest_name = 'release-manifest-macos-arm64.json'
+            write_asset(mac_manifest_name, mac.manifest_bytes)
+            copy_verified(mac.archive, output/mac.archive.name, mac.manifest['sha256'], mac.manifest['size_bytes'],
+                          destination_dir_fd=output_fd, verify_destination=verify_binding)
+            mac_checksum = (mac.manifest['sha256']+'  '+mac.archive.name+'\n').encode()
+            write_asset(mac.archive.name+'.sha256', mac_checksum)
+            expected_assets.update({mac_manifest_name: {'sha256': digest(mac.manifest_bytes), 'bytes': len(mac.manifest_bytes)},
+                                   mac.archive.name: {'sha256': mac.manifest['sha256'], 'bytes': mac.manifest['size_bytes']},
+                                   mac.archive.name+'.sha256': {'sha256': digest(mac_checksum), 'bytes': len(mac_checksum)}})
+            asset_names |= {mac_manifest_name, mac.archive.name, mac.archive.name+'.sha256'}
         verify_binding()
         actual_names = set(os.listdir(output_fd))
         if actual_names != asset_names:
@@ -774,9 +870,9 @@ def prepare_output(bundle: CandidateBundle, output_dir: Path) -> dict:
                 "uncompleted_native_qa_template_sha256": bundle.linux_package.native_qa_template_sha256,
             },
             "macos_identity": {
-                "source": bundle.source.base_channel["platforms"]["macos-arm64"]["source"],
-                "tag": bundle.source.base_channel["platforms"]["macos-arm64"]["tag"],
-                "archive": bundle.source.base_channel["platforms"]["macos-arm64"]["archive"],
+                "source": bundle.channel["platforms"]["macos-arm64"]["source"],
+                "tag": bundle.channel["platforms"]["macos-arm64"]["tag"],
+                "archive": bundle.channel["platforms"]["macos-arm64"]["archive"],
             },
             "assets": assets,
         }
@@ -805,10 +901,13 @@ def prepare_output(bundle: CandidateBundle, output_dir: Path) -> dict:
         os.close(parent_fd)
 
 
-def assemble(source_root: Path, linux_package_dir: Path, output_dir: Path) -> dict:
+def assemble(source_root: Path, linux_package_dir: Path, output_dir: Path, *, mac_package_dir: Path | None = None, mac_checkpoint_date: str | None = None) -> dict:
     source = selected_source_snapshot(source_root)
     package = validate_linux_package(linux_package_dir, source)
-    bundle = compose_candidate(source, package)
+    if (mac_package_dir is None) != (mac_checkpoint_date is None):
+        raise CandidateError('Mac SDK directory and explicit checkpoint date must be selected together')
+    mac = validate_mac_sdk_package(mac_package_dir, source, mac_checkpoint_date) if mac_package_dir is not None else None
+    bundle = compose_candidate(source, package, mac)
     return prepare_output(bundle, output_dir)
 
 
@@ -818,11 +917,13 @@ def main(argv=None) -> int:
                         help="clean Git checkout containing the reviewed bootstrap and current Mac library")
     parser.add_argument("--linux-package-directory", required=True, type=Path,
                         help="validated Linux release package with its manifest, archive, installer and QA template")
+    parser.add_argument("--mac-sdk-package-directory", type=Path, help="optional current finalized SDK-only Mac CLI package; historical Mac remains unchanged when omitted")
+    parser.add_argument("--mac-checkpoint-date", help="explicit YYYYMMDD date for the selected current Mac artifact")
     parser.add_argument("--output-directory", required=True, type=Path,
                         help="new private directory for immutable candidate assets; no upload is performed")
     args = parser.parse_args(argv)
     try:
-        receipt = assemble(args.source_root, args.linux_package_directory, args.output_directory)
+        receipt = assemble(args.source_root, args.linux_package_directory, args.output_directory, mac_package_dir=args.mac_sdk_package_directory, mac_checkpoint_date=args.mac_checkpoint_date)
     except (CandidateError, OSError, ValueError, subprocess.CalledProcessError, tarfile.TarError) as error:
         print(f"candidate assembly refused: {error}", file=sys.stderr)
         return 1

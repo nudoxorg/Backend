@@ -1085,7 +1085,10 @@ impl<'checkpoint> BindResultReducer<'checkpoint> {
 
                 for (module_key, exports_table) in result.module_exports.iter() {
                     let remapped = remap_symbol_table_required(exports_table, &id_remap);
-                    if !remapped.is_empty() {
+                    // Retain an empty surface captured from a declared ambient
+                    // body. Its file-local skeleton still owns the re-export
+                    // edges; an empty table is not an absent module declaration.
+                    if !remapped.is_empty() || result.declared_modules.contains(module_key) {
                         merge_module_exports_prefer_value_over_type_only(
                             &self.global_symbols,
                             self.module_exports.entry(module_key.clone()).or_default(),

@@ -1068,6 +1068,7 @@ impl Map {
             route: snapshot.route().clone(),
             authority: snapshot.key().authority(),
             generation: self.open_generation,
+            visit: snapshot.session().reading.current.id,
         }
     }
 
@@ -1077,6 +1078,7 @@ impl Map {
             self.open_generation,
             snapshot.route(),
             snapshot.key().authority(),
+            snapshot.session().reading.current.id,
             snapshot.overlay().is_some() || snapshot.page_overlay().is_some(),
         )
     }
@@ -1184,7 +1186,7 @@ impl Map {
             return;
         };
         self.pending = Some(OpenRequest {
-            generation: self.open_generation,
+            basis: self.callback_basis(cx),
             node,
             target,
             origin,
@@ -1192,9 +1194,7 @@ impl Map {
             focus_at_open: focus,
             source_at_open: self.visible.then(|| self.anchor_for(node, cx)).flatten(),
             query: query.clone(),
-            route: snapshot.route().clone(),
             root: snapshot.key(),
-            authority: snapshot.key().authority(),
         });
         self.links.store.update(cx, |store, cx| {
             store.ensure(PageKey::Search(query), cx);
@@ -1223,6 +1223,7 @@ impl Map {
             self.open_generation,
             snapshot.route(),
             snapshot.key(),
+            snapshot.session().reading.current.id,
             focus,
             (self.visible || request.origin == OpenOrigin::Peek) && snapshot.overlay().is_none(),
         ) {
@@ -1407,11 +1408,12 @@ enum OpenOrigin {
 }
 
 /// A deferred native callback cannot survive a different content visit.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct CallbackBasis {
     route: Route,
     authority: ProducerAuthority,
     generation: u64,
+    visit: crate::navigation::presentation::VisitId,
 }
 
 impl CallbackBasis {
@@ -1420,11 +1422,13 @@ impl CallbackBasis {
         generation: u64,
         route: &Route,
         authority: ProducerAuthority,
+        visit: crate::navigation::presentation::VisitId,
         has_overlay: bool,
     ) -> bool {
         self.generation == generation
             && self.route == *route
             && self.authority == authority
+            && self.visit == visit
             && !has_overlay
     }
 }
@@ -1433,7 +1437,7 @@ impl CallbackBasis {
 /// Even returning to the same route cannot revive a superseded generation.
 #[derive(Clone, Debug)]
 struct OpenRequest {
-    generation: u64,
+    basis: CallbackBasis,
     node: NodeId,
     target: OpenView,
     origin: OpenOrigin,
@@ -1441,10 +1445,8 @@ struct OpenRequest {
     focus_at_open: Option<NodeId>,
     source_at_open: Option<gpui::Bounds<gpui::Pixels>>,
     query: SearchQuery,
-    route: Route,
     /// Diagnostic root metadata is kept separately from the canonical key.
     root: VersionedRoot,
-    authority: ProducerAuthority,
 }
 
 impl OpenRequest {
@@ -1453,12 +1455,11 @@ impl OpenRequest {
         generation: u64,
         route: &Route,
         root: VersionedRoot,
+        visit: crate::navigation::presentation::VisitId,
         focus: Option<NodeId>,
         visible: bool,
     ) -> bool {
-        self.generation == generation
-            && self.route == *route
-            && self.authority == root.authority()
+        self.basis.matches(generation, route, root.authority(), visit, false)
             && focus == self.focus_at_open
             && visible
             && (self.origin == OpenOrigin::Peek || is_graph(route))
@@ -2061,11 +2062,14 @@ mod tests {
             route: Route::World,
             authority: root.authority(),
             generation: 4,
+            visit: crate::navigation::presentation::VisitId::initial(),
         };
-        assert!(basis.matches(4, &Route::World, observed_root.authority(), false));
-        assert!(!basis.matches(5, &Route::World, root.authority(), false));
-        assert!(!basis.matches(4, &Route::World, root.with_generation(3).authority(), false));
-        assert!(!basis.matches(4, &Route::World, root.authority(), true));
+        assert!(basis.matches(4, &Route::World, observed_root.authority(), basis.visit, false));
+        assert!(!basis.matches(5, &Route::World, root.authority(), basis.visit, false));
+        assert!(!basis.matches(4, &Route::World, root.with_generation(3).authority(), basis.visit, false));
+        assert!(!basis.matches(4, &Route::World, root.authority(), basis.visit, true));
+        assert!(!basis.matches(4, &Route::World, root.authority(), basis.visit.next().expect("later reading"), false),
+            "same route and owner cannot revive a callback from a previous reading visit");
     }
 
     #[test]
@@ -2075,7 +2079,8 @@ mod tests {
             1,
         );
         let request = OpenRequest {
-            generation: 5,
+            basis: CallbackBasis { generation: 5, route: Route::World, authority: root.authority(),
+                visit: crate::navigation::presentation::VisitId::initial() },
             node: 7,
             target: OpenView::Page,
             origin: OpenOrigin::Graph,
@@ -2083,34 +2088,34 @@ mod tests {
             focus_at_open: Some(7),
             source_at_open: None,
             query: SearchQuery::new("Value", 200).expect("query"),
-            route: Route::World,
             root,
-            authority: root.authority(),
         };
-        assert!(request.accepts(5, &Route::World, root, Some(7), true));
+        assert!(request.accepts(5, &Route::World, root, request.basis.visit, Some(7), true));
+        assert!(!request.accepts(5, &Route::World, root, request.basis.visit.next().expect("later reading"), Some(7), true),
+            "a late lookup from the previous reading cannot navigate the same route reopened later");
         let observed_root = VersionedRoot::from_revision(
             root.producer_epoch(),
             root.revision(),
             root.observation().saturating_add(1),
         );
         assert!(
-            request.accepts(5, &Route::World, observed_root, Some(7), true),
+            request.accepts(5, &Route::World, observed_root, request.basis.visit, Some(7), true),
             "diagnostic observation changes do not stale a callback for the same authority"
         );
         assert!(
-            !request.accepts(6, &Route::World, root, Some(7), true),
+            !request.accepts(6, &Route::World, root, request.basis.visit, Some(7), true),
             "a newer request supersedes the previous one"
         );
         assert!(
-            !request.accepts(5, &Route::World, root, Some(8), true),
+            !request.accepts(5, &Route::World, root, request.basis.visit, Some(8), true),
             "the camera's selected symbol changed"
         );
         assert!(
-            !request.accepts(5, &Route::World, root, None, true),
+            !request.accepts(5, &Route::World, root, request.basis.visit, None, true),
             "the source disappeared"
         );
         assert!(
-            !request.accepts(5, &Route::World, root.with_generation(2), Some(7), true),
+            !request.accepts(5, &Route::World, root.with_generation(2), request.basis.visit, Some(7), true),
             "a retained last-good read is stale"
         );
         let changed_epoch = VersionedRoot::from_revision(
@@ -2133,7 +2138,7 @@ mod tests {
         );
         for changed in [changed_epoch, changed_cursor, changed_root] {
             assert!(
-                !request.accepts(5, &Route::World, changed, Some(7), true),
+                !request.accepts(5, &Route::World, changed, request.basis.visit, Some(7), true),
                 "changed producer authority cannot complete an old callback"
             );
         }
@@ -2141,11 +2146,12 @@ mod tests {
             5,
             &Route::Orbit(crate::navigation::OrbitRoute::Home),
             root,
+            request.basis.visit,
             Some(7),
             true
         ));
         assert!(
-            !request.accepts(5, &Route::World, root, Some(7), false),
+            !request.accepts(5, &Route::World, root, request.basis.visit, Some(7), false),
             "overlays or hidden graphs cannot complete an open"
         );
         let doubleclicked = OpenRequest {
@@ -2153,21 +2159,21 @@ mod tests {
             ..request.clone()
         };
         assert!(
-            doubleclicked.accepts(5, &Route::World, root, Some(8), true),
+            doubleclicked.accepts(5, &Route::World, root, request.basis.visit, Some(8), true),
             "doubleclick B may open B while A remains focused"
         );
         assert!(
-            !doubleclicked.accepts(5, &Route::World, root, Some(9), true),
+            !doubleclicked.accepts(5, &Route::World, root, request.basis.visit, Some(9), true),
             "a later focus supersedes doubleclicked B"
         );
         let graph_route = crate::shell::tests::view_route("RelationLabel", View::Graph);
         let scoped = OpenRequest {
-            route: graph_route.clone(),
+            basis: CallbackBasis { route: graph_route.clone(), ..request.basis.clone() },
             ..request
         };
         let other_release = graph_route.with_release(Some(
             crate::navigation::ReleaseId::new("0.3.0").expect("release"),
         ));
-        assert!(!scoped.accepts(5, &other_release, root, Some(7), true));
+        assert!(!scoped.accepts(5, &other_release, root, scoped.basis.visit, Some(7), true));
     }
 }

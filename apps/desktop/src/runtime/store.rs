@@ -129,6 +129,9 @@ impl StoreEvent {
 /// event for a watched branch), so the view calls `cx.notify()` only then.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Watch {
+    /// Optional action-bound reading identity; ordinary Reading watches still
+    /// observe the full presentation branch.
+    visit: Option<crate::navigation::presentation::VisitId>,
     keys: BTreeMap<PageKey, Stamp>,
     branches: BTreeSet<Branch>,
 }
@@ -142,6 +145,7 @@ impl Watch {
         branches: &[Branch],
     ) -> Self {
         Self {
+            visit: None,
             keys: keys
                 .into_iter()
                 .map(|key| {
@@ -151,6 +155,12 @@ impl Watch {
                 .collect(),
             branches: branches.iter().copied().collect(),
         }
+    }
+
+    /// Watch only reading ownership, without subscribing cached action
+    /// handlers to every saved offset, focus, or lens edit in that visit.
+    pub(crate) fn watch_reading_visit(&mut self, store: &DataStore) {
+        self.visit = Some(store.snapshot.session().reading.current.id);
     }
 
     /// Replaces the watched keys (after the view navigates).
@@ -167,6 +177,15 @@ impl Watch {
     /// Returns whether `event` changed a watched slice, recording its stamp.
     pub fn changed(&mut self, store: &DataStore, event: &StoreEvent) -> bool {
         match event {
+            StoreEvent::Snapshot(Branch::Reading) => {
+                let moved = self.visit.as_mut().is_some_and(|seen| {
+                    let current = store.snapshot.session().reading.current.id;
+                    let moved = *seen != current;
+                    *seen = current;
+                    moved
+                });
+                moved || self.branches.contains(&Branch::Reading)
+            }
             StoreEvent::Snapshot(branch) => self.branches.contains(branch),
             // Page watches receive their own stamp movements. Aggregate
             // consumers subscribe to the publication boundary directly.
@@ -2810,6 +2829,42 @@ mod watch_tests {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div()
         }
+    }
+
+    #[gpui::test]
+    fn a_reading_visit_watch_ignores_presentation_edits_but_observes_equal_route_returns(cx: &mut TestAppContext) {
+        use crate::navigation::{Intent, OrbitRoute, Route};
+        use crate::navigation::presentation::{ReadingChange, ReadingFocus, ReadingOffset, ReadingText, ReaderLens};
+        let snapshot = Arc::new(AppSnapshot::empty(VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("visit-watch".to_owned(), "tests".to_owned())]), 2)));
+        let store = cx.update(|cx| DataStore::install(cx, snapshot.clone(), None));
+        cx.update(|cx| {
+            let mut visit_watch = Watch::new(store.read(cx), [], &[]);
+            visit_watch.watch_reading_visit(store.read(cx));
+            let mut full_reading_watch = Watch::new(store.read(cx), [], &[Branch::Reading]);
+            for change in [ReadingChange::ReaderOffset(ReadingOffset::new(0.0, -24.0).expect("bounded offset")),
+                ReadingChange::Focus(Some(ReadingFocus::Reader(ReadingText::new("actual-row").expect("bounded focus")))),
+                ReadingChange::ReaderLens(ReaderLens::Relations)] {
+                let before = store.read(cx).snapshot();
+                let edited = Arc::new(crate::navigation::reduce(&before,
+                    Intent::SetReading { visit: before.session().reading.current.id, change }).snapshot);
+                assert_eq!(edited.session().reading.current.id, before.session().reading.current.id);
+                assert_ne!(edited.session().reading, before.session().reading);
+                store.update(cx, |store, cx| store.admit_snapshot(edited, cx));
+                let event = StoreEvent::Snapshot(Branch::Reading);
+                assert!(!visit_watch.changed(store.read(cx), &event), "offset/focus/lens cannot repaint action-bound chrome");
+                assert!(full_reading_watch.changed(store.read(cx), &event), "existing full Reading subscribers retain their original behavior");
+            }
+            let before = store.read(cx).snapshot();
+            let away = crate::navigation::reduce(&before, Intent::Navigate(Route::World)).snapshot;
+            let returned = Arc::new(crate::navigation::reduce(&away, Intent::Navigate(Route::Orbit(OrbitRoute::Home))).snapshot);
+            assert_eq!(returned.route(), before.route());
+            assert_ne!(returned.session().reading.current.id, before.session().reading.current.id);
+            store.update(cx, |store, cx| store.admit_snapshot(returned, cx));
+            let event = StoreEvent::Snapshot(Branch::Reading);
+            assert!(visit_watch.changed(store.read(cx), &event), "a new reading renews handlers even with an equal route/root");
+            assert!(!visit_watch.changed(store.read(cx), &event), "coalesced Reading events renew this visit only once");
+        });
     }
 
     #[gpui::test]

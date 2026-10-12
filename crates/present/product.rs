@@ -613,6 +613,33 @@ impl ProductView {
         self.index_operation.as_ref()
     }
 
+    /// Exact next observation of accepted work, without inferring active work
+    /// from unknown, unresolved, expired, or terminal publication evidence.
+    ///
+    /// A durable operation key takes precedence over its process-local ticket;
+    /// only legacy job results use an issued ticket and event sequence.
+    #[must_use]
+    pub fn index_poll_affordance(&self) -> Option<crate::Affordance> {
+        if let Some(operation) = self.index_operation() {
+            return match operation {
+                backend_library::IndexOperationObservation::Known(status)
+                    if matches!(
+                        &status.state,
+                        backend_library::IndexOperationState::Accepted
+                            | backend_library::IndexOperationState::Active { .. }
+                    ) =>
+                {
+                    Some(crate::Affordance::PollIndexOperation {
+                        operation_key: status.operation_key,
+                    })
+                }
+                _ => None,
+            };
+        }
+        self.index_job()
+            .and_then(IndexJobProjection::poll_affordance)
+    }
+
     /// Complete bounded compiler shape egress, never a reconstructed source projection.
     #[must_use]
     pub fn semantic_data(&self) -> Option<&ProductSemanticData> {
@@ -3687,6 +3714,23 @@ mod tests {
             ] {
                 let view = product_view(&reply);
                 assert_eq!(view.index_operation(), Some(&observation));
+                let pending = matches!(
+                    &observation,
+                    IndexOperationObservation::Known(status)
+                        if matches!(&status.state, IndexOperationState::Accepted | IndexOperationState::Active { .. })
+                );
+                assert_eq!(view.index_poll_affordance().is_some(), pending);
+                assert_eq!(crate::IndexPollDto::new(&view).is_some(), pending);
+                if !pending {
+                    assert!(
+                        !crate::render::markdown::product(&view).contains("backend.index_progress"),
+                        "terminal or unestablished evidence must not promise an in-flight observation"
+                    );
+                    assert!(
+                        !crate::render::text::product(&view, crate::Theme::plain())
+                            .contains("index_progress")
+                    );
+                }
                 if let IndexOperationObservation::Known(status) = &observation {
                     match &status.state {
                         IndexOperationState::Failed { .. } => {
@@ -3790,6 +3834,7 @@ mod tests {
                 }
                 let dto = crate::dto::ProductDto::new(&view);
                 assert_eq!(dto.index_operation.as_ref(), Some(&observation));
+                assert_eq!(dto.index_poll.is_some(), pending);
                 let encoded = serde_json::to_value(&dto).expect("full product DTO");
                 assert_eq!(encoded["index_operation"], expected);
                 let decoded: crate::dto::ProductDto =

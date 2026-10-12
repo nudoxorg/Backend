@@ -31,6 +31,13 @@ def sdk_only(config):
     return selected
 
 
+def sdk_cli_archive(config):
+    selected = config.get('sdk_cli_archive', False)
+    if type(selected) is not bool or (selected and not sdk_only(config)):
+        raise ValueError('sdk_cli_archive requires the SDK-only application release')
+    return selected
+
+
 def release_inputs(config):
     return INPUTS - LEGACY_INPUTS if sdk_only(config) else INPUTS
 
@@ -72,6 +79,7 @@ def selected_managed_build(config, output):
 
 
 def preflight(config, stage="build"):
+    sdk_cli_archive(config)
     problems = []
     if platform.system() != "Darwin" or platform.machine().lower() not in {"arm64", "aarch64"}:
         problems.append("Apple Silicon macOS build host required")
@@ -182,6 +190,7 @@ def finalize(config):
     admission = preflight(config, stage="sign")
     if not admission["ready"]:
         raise ValueError("signing preflight failed: " + "; ".join(admission["blockers"]))
+    sdk_cli_archive(config)
     source = Path(config["source_root"]).resolve()
     output = Path(config["output_dir"]).resolve()
     package = output / "package"
@@ -273,6 +282,9 @@ def finalize(config):
     manifest = {"schema": 1, "version": version, "source_sha": config["expected_revision"], "source_tree": config["expected_tree"], "cargo_lock_sha256": sha256(source / "Cargo.lock"), "platform": "macos", "target": "aarch64-apple-darwin", "asset": ASSET, "sha256": sha256(archive), "size_bytes": archive.stat().st_size, "minimum_os": config["minimum_os"], "build_manifest_sha256": sha256(build_manifest), "signed": True, "notarized": True}
     (candidate / "release-manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     (candidate / (ASSET + ".sha256")).write_text(f'{manifest["sha256"]}  {ASSET}\n')
+    if sdk_cli_archive(config):
+        import macos_sdk_cli_package
+        macos_sdk_cli_package.derive(app, output/'sdk-cli-candidate', config['expected_revision'])
     print(json.dumps({"candidate": str(candidate), "version": version, "sha256": manifest["sha256"], "next": "test this archive natively and record native-qa.json before staging"}))
 
 

@@ -1,0 +1,19 @@
+{
+  "source_root": "/absolute/path/to/clean-canonical-backend",
+  "output_dir": "/absolute/path/outside-checkout/current-macos-sdk",
+  "expected_revision": "REPLACE_WITH_FULL_CANONICAL_SHA",
+  "expected_tree": "REPLACE_WITH_FULL_TREE_SHA",
+  "sdk_only": true,
+  "sdk_cli_archive": true,
+  "cargo_runner": "/absolute/path/to/reviewed-native-cargo-runner",
+  "expected_runner_sha256": "REPLACE_WITH_RUNNER_SHA256",
+  "cargo_bundle": "/absolute/path/to/cargo-bundle",
+  "icon": "/absolute/path/to/clean-canonical-backend/apps/desktop/macos/Nudox.icns",
+  "expected_icon_sha256": "1b33e3326891dc464475fb96e5187f1aa36ba3a49dbcddbe7a8a9ac53c3f03e5",
+  "minimum_os": "26.0",
+  "signing_identity": "Developer ID Application: REPLACE (TEAMID)",
+  "notary_profile": "nudox-notary",
+  "disk_floor_gib": 40,
+  "helpers_dir": "/absolute/path/to/current-source-typescript-sdk",
+  "helpers_receipt": "/absolute/path/to/current-source-typescript-sdk-receipt.json"
+}

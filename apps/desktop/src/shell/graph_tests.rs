@@ -1399,3 +1399,67 @@ fn actual_graph_fact_selectors_expose_unknown_reach_and_unsupported_shapes(cx: &
     let unsupported = "Callable argument and return type facts are unavailable in this graph. Find declarations by name.";
     assert!(super::tests::native_bounds(&mut rig, "Label", unsupported, false).is_some(), "opaque signatures cannot certify a complete negative shape search");
 }
+
+/// Navigation publishes each snapshot immediately, while its observers wait
+/// for the native effect cycle to finish. Equal final route/root cannot lend
+/// the original committed controls a new reading before watcher and paint.
+#[gpui::test]
+fn coalesced_graph_return_retires_old_native_resource_controls_before_redraw(cx: &mut TestAppContext) {
+    let (mut rig, _) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);
+    tab_to_graph_control(&mut rig, "Declarations");
+    rig.native_press("enter");
+    rig.settle();
+    let name = "Select real-rust-canary::cadence::advance_signal · function. src/cadence.rs:8";
+    let row = super::tests::native_bounds(&mut rig, "Button", name, true).expect("actual committed declaration row");
+    let old_node = rig.cx.update(|window, _| window.a11y_tree().expect("native tree").nodes.iter()
+        .find(|(_, node)| node.role() == gpui::Role::Button && node.label() == Some(name))
+        .map(|(id, _)| *id).expect("actual native row identity"));
+    tab_to_graph_control(&mut rig, "Hide declarations");
+    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("mounted graph");
+    assert!(graph.read_with(rig.cx, |graph, _| graph.focused()).is_none());
+    let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    rig.cx.update(|window, cx| {
+        let focus = window.focused(cx);
+        let frame = window.a11y_frame_number();
+        let attachment = rig.graph.store.read(cx).current_owner_attachment();
+        // Both actual Root dispatches publish synchronously. Their observer
+        // effects remain queued until this retained native batch returns.
+        rig.graph.root.update(cx, |root, cx| {
+            root.dispatch(Intent::Navigate(Route::Orbit(crate::navigation::OrbitRoute::Home)), cx);
+            root.dispatch(Intent::Navigate(before.route().clone()), cx);
+        });
+        let returned = rig.graph.store.read(cx).snapshot();
+        assert_eq!(returned.route(), before.route());
+        assert!(returned.key().same_authority(before.key()));
+        assert_ne!(returned.session().reading.current.id, before.session().reading.current.id,
+            "actual Root/reducer dispatch allocated a new reading despite an equal final route");
+        assert_eq!(rig.graph.store.read(cx).current_owner_attachment(), attachment);
+        window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+            position: row.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left,
+            click_count: 1, first_mouse: false,
+        }), cx);
+        assert_eq!(window.focused(cx), focus, "old resource pointer is denied before automatic native focus");
+        window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+            position: row.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1,
+        }), cx);
+        for key in ["enter", "space"] {
+            let keystroke = gpui::Keystroke::parse(key).expect("native release key");
+            window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent { keystroke: keystroke.clone(), is_held: false, prefer_character_input: false }), cx);
+            window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
+        }
+        window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+            action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: old_node, data: None,
+        }, cx);
+        assert_eq!(window.focused(cx), focus);
+        assert!(graph.read(cx).focused().is_none(), "old AX/pointer/key actions cannot select a declaration in the new reading");
+        assert_eq!(window.a11y_frame_number(), frame, "no forced repaint hides the old native controls");
+        assert_eq!(rig.graph.store.read(cx).snapshot().route(), &Route::World);
+    });
+    assert!(graph.read_with(rig.cx, |graph, _| graph.focused()).is_none(), "deferred old actions remain retired after event dispatch returns");
+    rig.cx.run_until_parked();
+    let current_row = super::tests::native_bounds(&mut rig, "Button", name, true).expect("fresh native row in the reopened reading");
+    rig.cx.simulate_click(current_row.center(), gpui::Modifiers::none());
+    rig.settle();
+    assert_eq!(graph.read_with(rig.cx, |graph, _| graph.focused()), Some(1), "freshly admitted reading remains operable");
+    assert_eq!(rig.route(), Route::World);
+}

@@ -7,6 +7,7 @@ use backend_extension_trustfall::{
 use backend_semantic::ir::SemanticCoreReader;
 use backend_semantic::{Entity, EntityId, Source};
 use backend_version::{CoverageWitness, RelationState};
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::num::NonZeroUsize;
@@ -197,6 +198,76 @@ fn placement_key(
         sourced,
         kind,
     )
+}
+
+/// The retained local prefix stores exactly the rank-budgeted identity/relevance
+/// pairs. Its greatest (weakest) hit is at the root, so a complete hit scan
+/// performs logarithmic retention work instead of shifting the entire prefix
+/// for every match. The caller supplies one ordering for retention and output.
+struct RetainedLocalRankPrefix {
+    hits: Vec<(EntityId, lexical::Relevance)>,
+    limit: usize,
+}
+
+impl RetainedLocalRankPrefix {
+    fn new(limit: usize) -> Result<Self, std::collections::TryReserveError> {
+        let mut hits = Vec::new();
+        hits.try_reserve_exact(limit)?;
+        Ok(Self { hits, limit })
+    }
+
+    fn offer(
+        &mut self,
+        hit: (EntityId, lexical::Relevance),
+        compare: &impl Fn(&(EntityId, lexical::Relevance), &(EntityId, lexical::Relevance)) -> Ordering,
+    ) {
+        if self.limit == 0 {
+            return;
+        }
+        if self.hits.len() < self.limit {
+            self.hits.push(hit);
+            let mut child = self.hits.len() - 1;
+            while child > 0 {
+                let parent = (child - 1) / 2;
+                if !compare(&self.hits[parent], &self.hits[child]).is_lt() {
+                    break;
+                }
+                self.hits.swap(parent, child);
+                child = parent;
+            }
+            return;
+        }
+        if !compare(&hit, &self.hits[0]).is_lt() {
+            return;
+        }
+        self.hits[0] = hit;
+        let mut parent = 0;
+        // Only a node before len/2 has a child. This also bounds 2*parent+1.
+        while parent < self.hits.len() / 2 {
+            let left = parent * 2 + 1;
+            let right = left + 1;
+            let child = if right < self.hits.len()
+                && compare(&self.hits[left], &self.hits[right]).is_lt()
+            {
+                right
+            } else {
+                left
+            };
+            if !compare(&self.hits[parent], &self.hits[child]).is_lt() {
+                break;
+            }
+            self.hits.swap(parent, child);
+            parent = child;
+        }
+    }
+
+    fn into_sorted(
+        mut self,
+        compare: impl Fn(&(EntityId, lexical::Relevance), &(EntityId, lexical::Relevance)) -> Ordering,
+    ) -> Vec<(EntityId, lexical::Relevance)> {
+        self.hits.sort_unstable_by(compare);
+        self.hits
+    }
 }
 
 /// A package's name from its label: the last part of its path, less the
@@ -1358,20 +1429,28 @@ impl QueryCoordinator {
     /// Returns [`QueryError::LexicalProvider`] if the admitted local Tantivy
     /// projection cannot serve a page.
     pub fn search_local(&self, query: LocalQuery) -> Result<LocalAnswer, QueryError> {
-        let mut top_matches: Vec<(EntityId, lexical::Relevance)> = Vec::new();
-        top_matches
-            .try_reserve_exact(query.limit())
-            .map_err(|error| QueryError::LexicalProvider {
+        let mut retained = RetainedLocalRankPrefix::new(query.limit()).map_err(|error| {
+            QueryError::LexicalProvider {
                 phase: LexicalPhase::ComposeRows,
                 cause: LexicalFailureCause::Allocation {
                     requested: query.limit(),
                     error,
                 },
-            })?;
+            }
+        })?;
         let mut seen_hits = 0usize;
         let mut total_matches = 0usize;
         let mut composition_failure = None;
         let words = query.words();
+        let compare = |left: &(EntityId, lexical::Relevance),
+                       right: &(EntityId, lexical::Relevance)| {
+            self.corpus
+                .placement_key(left.0, words)
+                .cmp(&self.corpus.placement_key(right.0, words))
+                .reverse()
+                .then_with(|| left.1.cmp(&right.1).reverse())
+                .then_with(|| left.0.cmp(&right.0))
+        };
         let exact_lexical_total = self
             .corpus
             .lexical
@@ -1405,23 +1484,7 @@ impl QueryCoordinator {
                         return;
                     }
                 };
-                let ranked = (hit.document, hit.relevance);
-                let insertion = top_matches.partition_point(|known| {
-                    let known_key = self.corpus.placement_key(known.0, words);
-                    let ranked_key = self.corpus.placement_key(ranked.0, words);
-                    known_key
-                        .cmp(&ranked_key)
-                        .reverse()
-                        .then_with(|| known.1.cmp(&ranked.1).reverse())
-                        .then_with(|| known.0.cmp(&ranked.0))
-                        .is_lt()
-                });
-                if insertion < query.limit() {
-                    top_matches.insert(insertion, ranked);
-                    if top_matches.len() > query.limit() {
-                        top_matches.pop();
-                    }
-                }
+                retained.offer((hit.document, hit.relevance), &compare);
             })
             .map_err(|error| QueryError::provider(LexicalPhase::ScanHits, error))?;
         if let Some(cause) = composition_failure {
@@ -1439,6 +1502,7 @@ impl QueryCoordinator {
                 },
             });
         }
+        let top_matches = retained.into_sorted(compare);
         let mut rows = Vec::with_capacity(top_matches.len());
         for (entity, relevance) in &top_matches {
             let selected =
@@ -2745,5 +2809,95 @@ mod bounded_semantic_text_tests {
         row.documentation.clear();
         assert_eq!(bounded_semantic_text(&row, id, 1024)?, semantic_text(&row));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod retained_local_rank_prefix_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    fn hit(index: usize, weight: u16) -> (EntityId, lexical::Relevance) {
+        let source = Source::new(1, "rank-prefix-law").expect("source");
+        let entity = Entity::new(source, format!("declaration::{index}"), None).expect("entity");
+        (
+            EntityId::from_value(&entity),
+            lexical::Relevance::exact(weight),
+        )
+    }
+
+    fn compare(
+        left: &(EntityId, lexical::Relevance),
+        right: &(EntityId, lexical::Relevance),
+    ) -> Ordering {
+        right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0))
+    }
+
+    fn permutations(
+        input: &mut [(EntityId, lexical::Relevance)],
+        at: usize,
+        visit: &mut impl FnMut(&[(EntityId, lexical::Relevance)]),
+    ) {
+        if at == input.len() {
+            visit(input);
+            return;
+        }
+        for next in at..input.len() {
+            input.swap(at, next);
+            permutations(input, at + 1, visit);
+            input.swap(at, next);
+        }
+    }
+
+    #[test]
+    fn retained_prefix_matches_full_sort_for_every_traversal_tie_and_page_credit() {
+        let mut input = [hit(0, 1), hit(1, 4), hit(2, 4), hit(3, 2), hit(4, 1)];
+        let mut full = input.to_vec();
+        full.sort_unstable_by(compare);
+        let mut visits = 0;
+        let count = input.len();
+        permutations(&mut input, 0, &mut |traversal| {
+            visits += 1;
+            for limit in 0..=count + 1 {
+                let mut retained = RetainedLocalRankPrefix::new(limit).expect("rank storage");
+                for hit in traversal {
+                    retained.offer(*hit, &compare);
+                }
+                assert_eq!(retained.into_sorted(compare), full[..limit.min(full.len())]);
+            }
+        });
+        assert_eq!(visits, 120);
+    }
+
+    #[test]
+    fn deep_prefix_has_logarithmic_retention_work_and_no_growth_after_reservation() {
+        const MATCHES: usize = 8_192;
+        const PREFIX: usize = 4_096;
+        let mut full = (0..MATCHES).map(|index| hit(index, 1)).collect::<Vec<_>>();
+        full.sort_unstable_by(compare);
+        let comparisons = Cell::new(0usize);
+        let counted = |left: &(EntityId, lexical::Relevance),
+                       right: &(EntityId, lexical::Relevance)| {
+            comparisons.set(comparisons.get() + 1);
+            compare(left, right)
+        };
+        let mut retained = RetainedLocalRankPrefix::new(PREFIX).expect("rank storage");
+        let reserved = retained.hits.as_ptr();
+        let capacity = retained.hits.capacity();
+        // Worst-to-best traversal keeps replacing the root even after the
+        // prefix is full; this is not an early-discard comparison shortcut.
+        for hit in full.iter().rev() {
+            retained.offer(*hit, &counted);
+            assert!(retained.hits.len() <= PREFIX);
+            assert_eq!(retained.hits.as_ptr(), reserved);
+            assert_eq!(retained.hits.capacity(), capacity);
+        }
+        let logarithmic_bound = MATCHES * (2 * PREFIX.ilog2() as usize + 1);
+        assert!(
+            comparisons.get() <= logarithmic_bound,
+            "{} comparisons exceed {logarithmic_bound}",
+            comparisons.get()
+        );
+        assert_eq!(retained.into_sorted(compare), full[..PREFIX]);
     }
 }

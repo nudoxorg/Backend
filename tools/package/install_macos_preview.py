@@ -14,6 +14,9 @@ MAX_PACKAGE_METADATA_BYTES=16*1024**2
 DOWNLOAD_TIMEOUT_SECONDS=20
 DOWNLOAD_PROGRESS_INTERVAL_SECONDS=5
 DOWNLOAD_PROGRESS_BYTES=8*1024**2
+SDK_SCHEMA="nudox.mac-sdk-cli-package.v1"
+SDK_BIN="Nudox.app/Contents/MacOS"
+SDK_MANIFEST="Nudox.app/Contents/Resources/build-manifest.json"
 REQUIRED_BINARIES=('backend-cli','backend-mcp','backend-locald')
 class InstallError(Exception): pass
 class HTTPSOnlyRedirect(urllib.request.HTTPRedirectHandler):
@@ -191,7 +194,7 @@ def _replace_symlink(link: Path, target: str) -> None:
         except FileNotFoundError:
             pass
 
-def verify_existing_install(final: Path, expected_marker: dict, entry: dict, manifest: dict) -> None:
+def verify_existing_install(final: Path, expected_marker: dict, entry: dict, manifest: dict) -> str:
     """Reuse a prior release only after rechecking the files on disk."""
     try:
         marker_bytes, _ = _verified_package_file(final, ".installed-release.json", read_bytes=True, max_bytes=16 * 1024)
@@ -201,7 +204,10 @@ def verify_existing_install(final: Path, expected_marker: dict, entry: dict, man
     if existing_marker != expected_marker:
         raise InstallError(f"release {entry['tag']} is already installed with different bytes")
     try:
-        verify_package(final, entry, manifest)
+        layout = verify_package(final, entry, manifest)
+        if layout == SDK_BIN:
+            sdk_command_link(final)
+        return layout
     except (InstallError, OSError, KeyError, TypeError, ValueError) as error:
         raise InstallError(f"existing release at {final} failed its integrity/startup recheck; refusing to reuse it: {error}") from error
 
@@ -412,7 +418,7 @@ def _reuse_existing_install_locked(prefix, entry, manifest, allow_downgrade):
         return False
     if stat.S_ISLNK(final_stat.st_mode) or not stat.S_ISDIR(final_stat.st_mode):
         raise InstallError(f"version path exists and is not an install directory: {final}")
-    verify_existing_install(final, marker, entry, manifest)
+    binary_directory = verify_existing_install(final, marker, entry, manifest)
     aliases = _check_command_aliases(prefix, managed_root, create_bin=True)
     bin_dir, links, current = aliases
     _publish_command_aliases(bin_dir, links, current, managed_root, final)
@@ -458,13 +464,15 @@ def _install_locked(prefix, entry, manifest, archive, *, allow_downgrade=False):
     stage = Path(tempfile.mkdtemp(prefix=".staging-", dir=version_root))
     try:
         safe_extract(archive, stage)
-        verify_package(stage, entry, manifest)
+        binary_directory = verify_package(stage, entry, manifest)
+        if binary_directory == SDK_BIN:
+            sdk_command_link(stage, create=True)
         (stage / ".installed-release.json").write_text(json.dumps(marker, sort_keys=True) + "\n")
         os.chmod(stage, 0o755)
         if final.exists() or final.is_symlink():
             if final.is_symlink() or not final.is_dir():
                 raise InstallError(f"version path already exists and is not an install directory: {final}")
-            verify_existing_install(final, marker, entry, manifest)
+            binary_directory = verify_existing_install(final, marker, entry, manifest)
             shutil.rmtree(stage)
         else:
             os.replace(stage, final)
@@ -472,6 +480,7 @@ def _install_locked(prefix, entry, manifest, archive, *, allow_downgrade=False):
         shutil.rmtree(stage, ignore_errors=True)
         raise
 
+    bin_dir, links, current = _check_command_aliases(prefix, managed_root, create_bin=True)
     _publish_command_aliases(bin_dir, links, current, managed_root, final)
 
 def shlex_quote(value: str) -> str:
@@ -479,10 +488,10 @@ def shlex_quote(value: str) -> str:
     return shlex.quote(value)
 HTTPS=urllib.request.build_opener(HTTPSOnlyRedirect())
 
-def safe_extract(archive,destination):
-    with tarfile.open(archive,'r:gz') as bundle:
+def safe_extract(archive,destination,*,archive_file=None):
+    with tarfile.open(name=archive if archive_file is None else None, fileobj=archive_file, mode='r:gz') as bundle:
         members=bundle.getmembers()
-        if not members or len(members)>10000: raise InstallError('invalid member count')
+        if not members or len(members)>65536: raise InstallError('invalid member count')
         seen=set(); parsed=[]; total=0
         for member in members:
             relative=_safe_member(member,'nudox-macos-arm64')
@@ -490,7 +499,26 @@ def safe_extract(archive,destination):
             seen.add(relative); total+=member.size
             if total>MAX_ARCHIVE_BYTES: raise InstallError('archive expands beyond limit')
             parsed.append((member,relative))
-        required={'bin/'+n for n in REQUIRED_BINARIES}|{'manifest.json','native-build-manifest.json','README.txt'}
+        metadata = next((m for m,p in parsed if p == 'manifest.json' and m.isreg()), None)
+        if metadata is None or metadata.size > MAX_PACKAGE_METADATA_BYTES:
+            raise InstallError('missing or oversized package manifest')
+        with bundle.extractfile(metadata) as stream:
+            try: package = json.loads(stream.read(MAX_PACKAGE_METADATA_BYTES + 1))
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise InstallError('package manifest is not valid JSON') from error
+        sdk = isinstance(package, dict) and package.get('schema') == SDK_SCHEMA
+        modes = sdk_inventory(package) if sdk else None
+        required = ({SDK_BIN+'/'+n for n in REQUIRED_BINARIES}|{SDK_MANIFEST, 'manifest.json'} if sdk
+                    else {'bin/'+n for n in REQUIRED_BINARIES}|{'manifest.json','native-build-manifest.json','README.txt'})
+        if sdk and {p for m,p in parsed if m.isreg()} != set(modes)|{'manifest.json'}:
+            raise InstallError('SDK archive differs from its complete file inventory')
+        if sdk:
+            expected_dirs = {parent.as_posix() for name in modes for parent in PurePosixPath(name).parents if parent.as_posix() != '.'}
+            if any(m.isdir() and p is not None and p not in expected_dirs for m,p in parsed):
+                raise InstallError('SDK archive contains unreceipted directory')
+            for member, relative in parsed:
+                if member.isreg() and relative != 'manifest.json' and (member.mode & 0o7777) != modes[relative]['mode']:
+                    raise InstallError('SDK archive mode differs from its receipt')
         if not required<={p for m,p in parsed if m.isreg()}: raise InstallError('missing product binaries/manifests')
         for member,relative in parsed:
             if relative is None: continue
@@ -498,11 +526,19 @@ def safe_extract(archive,destination):
             target.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
             if member.isdir(): target.mkdir(mode=0o700,exist_ok=True); continue
             with bundle.extractfile(member) as source,target.open('xb') as output: shutil.copyfileobj(source,output,1024*1024)
-            os.chmod(target,0o755 if relative.startswith('bin/') else 0o644)
+            os.chmod(target,modes[relative]['mode'] if sdk and relative != 'manifest.json' else (0o755 if relative.startswith('bin/') else 0o644))
 def verify_package(root,entry,manifest):
     package_bytes,_=_verified_package_file(root,'manifest.json',read_bytes=True,max_bytes=MAX_PACKAGE_METADATA_BYTES)
     try: package=json.loads(package_bytes)
     except (UnicodeDecodeError,json.JSONDecodeError) as error: raise InstallError('package manifest is not valid JSON') from error
+    if isinstance(package, dict) and package.get('schema') == SDK_SCHEMA:
+        if set(os.listdir(root)) - {'Nudox.app', 'manifest.json', '.installed-release.json', 'bin'}:
+            raise InstallError('SDK install contains files outside its closed transport root')
+        if _lstat_or_none(root/'bin') is not None:
+            sdk_command_link(root)
+        verify_sdk_package(root, package, entry['source_sha'])
+        check_startup(root, SDK_BIN)
+        return SDK_BIN
     if not isinstance(package,dict) or package.get('schema')!='nudox.mac-cli-diagnostic-preview.v1' or package.get('source')!=entry['source_sha'] or package.get('production_ready') is not False: raise InstallError('exact diagnostic source identity required')
     runtime_digest=package.get('runtime_manifest_sha256')
     if not isinstance(runtime_digest,str) or not re.fullmatch(r'[a-f0-9]{64}',runtime_digest): raise InstallError('invalid native build receipt digest')
@@ -521,9 +557,193 @@ def verify_package(root,entry,manifest):
         paths.add(path)
         if _verified_package_file(root,path)[1]!=expected_digest: raise InstallError('packaged file hash mismatch')
     if not {'bin/'+n for n in REQUIRED_BINARIES}<=paths: raise InstallError('incomplete executable inventory')
+    check_startup(root, 'bin')
+    return 'bin'
+
+def check_startup(root, binary_directory):
     clean={k:v for k,v in os.environ.items() if not k.startswith(('NUDOX_','DYLD_'))}
     for name in REQUIRED_BINARIES:
-        if subprocess.run([str(root/'bin'/name),'--help'],env=clean,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=15).returncode: raise InstallError('packaged startup failed: '+name)
+        if subprocess.run([str(root/binary_directory/name),'--help'],env=clean,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=15).returncode: raise InstallError('packaged startup failed: '+name)
+    if binary_directory == SDK_BIN:
+        receipt_path = 'Nudox.app/Contents/Resources/Build Evidence/compiler-helpers-receipt.json'
+        receipt = json.loads(_verified_package_file(root, receipt_path, read_bytes=True, max_bytes=MAX_PACKAGE_METADATA_BYTES)[0])
+        helper_root = root/'Nudox.app/Contents/Resources/Helpers/typescript'
+        node = helper_root/'node/bin/node'
+        probe = subprocess.run([str(node), '--version'], env=clean, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
+        if probe.returncode or probe.stdout.strip() != receipt['tools']['node']['version'].encode():
+            raise InstallError('installed SDK Node version probe failed')
+        probe = subprocess.run([str(node), '-e', "const ts=require(process.argv[1]);if(typeof ts.createProgram!=='function')process.exit(2);process.stdout.write(ts.version)",
+                                str(helper_root/'node_modules/typescript')], env=clean, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
+        if probe.returncode or probe.stdout != receipt['tools']['typescript']['version'].encode():
+            raise InstallError('installed SDK TypeScript Compiler API probe failed')
+
+
+def sdk_command_link(root, *, create=False):
+    """Generated outside the sealed .app; keeps aliases stable across layout updates."""
+    link = root/'bin'
+    before = _lstat_or_none(link)
+    if before is None and create:
+        os.symlink(SDK_BIN, link)
+        before = link.lstat()
+    if (before is None or not stat.S_ISLNK(before.st_mode) or before.st_uid != os.geteuid()
+            or before.st_nlink != 1 or os.readlink(link) != SDK_BIN
+            or link.resolve(strict=True) != (root/SDK_BIN).resolve(strict=True)
+            or _file_identity(before) != _file_identity(link.lstat())):
+        raise InstallError('installed SDK command compatibility link is missing or changed')
+
+
+def sdk_inventory(package):
+    records = package.get('files')
+    if not isinstance(records, dict) or not 0 < len(records) <= 65536:
+        raise InstallError('invalid complete SDK package inventory')
+    total = 0
+    for name, record in records.items():
+        if (not isinstance(name, str) or not name.startswith('Nudox.app/') or len(name) > 4096 or '\\' in name
+                or any(part in {'', '.', '..'} for part in name.split('/'))
+                or not isinstance(record, dict) or set(record) != {'sha256', 'size_bytes', 'mode'}
+                or not isinstance(record['sha256'], str) or not re.fullmatch('[a-f0-9]{64}', record['sha256'])
+                or type(record['size_bytes']) is not int or not 0 <= record['size_bytes'] <= MAX_MEMBER_BYTES
+                or type(record['mode']) is not int or record['mode'] not in {0o400, 0o444, 0o600, 0o644, 0o755}):
+            raise InstallError('invalid SDK package file record')
+        total += record['size_bytes']
+    if total > MAX_ARCHIVE_BYTES:
+        raise InstallError('SDK package inventory exceeds byte limit')
+    return records
+
+def verify_sdk_package(root, package, source):
+    """Retain the existing .app SDK authority; this envelope only binds transport bytes."""
+    records = sdk_inventory(package)
+    if (package.get('source') != source or package.get('production_ready') is not False
+            or package.get('binary_directory') != SDK_BIN):
+        raise InstallError('SDK CLI package differs from selected source/layout')
+    observed = set()
+    _validate_install_directory(root/'Nudox.app')
+    for directory, dirs, files in os.walk(root/'Nudox.app', followlinks=False):
+        for name in dirs:
+            _validate_install_directory(Path(directory)/name)
+        for name in files:
+            relative = (Path(directory)/name).relative_to(root).as_posix()
+            if relative not in {'manifest.json', '.installed-release.json'}:
+                observed.add(relative)
+    if observed != set(records):
+        raise InstallError('SDK installed file set differs from complete inventory')
+    expected_dirs = {parent.as_posix() for name in records for parent in PurePosixPath(name).parents if parent.as_posix() != '.'}
+    for directory, dirs, _ in os.walk(root/'Nudox.app', followlinks=False):
+        if any((Path(directory)/name).relative_to(root).as_posix() not in expected_dirs for name in dirs):
+            raise InstallError('SDK install contains unreceipted directory')
+    for name, record in records.items():
+        _, digest = _verified_package_file(root, name, max_bytes=record['size_bytes'])
+        metadata = (root/name).lstat()
+        if digest != record['sha256'] or metadata.st_size != record['size_bytes'] or stat.S_IMODE(metadata.st_mode) != record['mode']:
+            raise InstallError('SDK package file hash/size/mode mismatch: '+name)
+    raw, digest = _verified_package_file(root, SDK_MANIFEST, read_bytes=True, max_bytes=MAX_PACKAGE_METADATA_BYTES)
+    if digest != package.get('build_manifest_sha256'):
+        raise InstallError('SDK application manifest hash mismatch')
+    try: evidence = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise InstallError('invalid SDK application manifest') from error
+    if not isinstance(evidence, dict) or not isinstance(evidence.get('source'), dict):
+        raise InstallError('invalid SDK application identity')
+    if not isinstance(evidence.get('bundle'), dict) or evidence['bundle'].get('identifier') != 'dev.nudox.desktop':
+        raise InstallError('unrecognized SDK application bundle identity')
+    origin = evidence['source']
+    if (evidence.get('schema') != 1 or evidence.get('product') != 'Nudox'
+            or origin.get('git_revision') != source or origin.get('working_tree') != 'clean'
+            or not isinstance(origin.get('git_tree'), str) or not re.fullmatch('[a-f0-9]{40}', origin['git_tree'])
+            or not isinstance(origin.get('cargo_lock_sha256'), str) or not re.fullmatch('[a-f0-9]{64}', origin['cargo_lock_sha256'])
+            or evidence.get('target') != {'triple': 'aarch64-apple-darwin', 'architecture': 'arm64'}):
+        raise InstallError('SDK application clean source/target mismatch')
+    build_raw, build_digest = _verified_package_file(root, 'Nudox.app/Contents/Resources/Build Evidence/application-build-receipt.json', read_bytes=True, max_bytes=MAX_PACKAGE_METADATA_BYTES)
+    try: build = json.loads(build_raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise InstallError('invalid application build receipt') from error
+    application_build = evidence.get('application_build')
+    images = build.get('executables') if isinstance(build, dict) else None
+    if (not isinstance(application_build, dict) or not isinstance(build, dict) or build.get('schema') != 1
+            or build.get('source') != origin or build.get('target') != evidence['target']['triple']
+            or build_digest != application_build.get('receipt_sha256')
+            or not isinstance(images, dict) or set(images) != {*REQUIRED_BINARIES, 'backend-desktop'}
+            or application_build.get('executables') != images
+            or any(not isinstance(value, str) or not re.fullmatch('[a-f0-9]{64}', value) for value in images.values())):
+        raise InstallError('application build receipt differs from selected bundle provenance')
+    helpers = evidence.get('compiler_helpers', {})
+    if not isinstance(helpers, dict) or not isinstance(evidence.get('sdk_finalization'), dict):
+        raise InstallError('invalid SDK finalization identity')
+    if (helpers.get('assembly_mode') != 'typescript-sdk-only'
+            or helpers.get('runtime_probe_status') != 'passed post-sign Node and Compiler API probes'
+            or evidence.get('sdk_finalization', {}).get('native_probes_stage') != 'after inner signing, before outer app seal'):
+        raise InstallError('SDK application has no completed post-sign native admission')
+    inventory = evidence.get('files')
+    if not isinstance(inventory, dict) or not inventory:
+        raise InstallError('missing SDK application inventory')
+    for name, record in inventory.items():
+        if not isinstance(name, str):
+            raise InstallError('invalid SDK application inventory path')
+        actual = records.get('Nudox.app/'+name)
+        if not isinstance(record, dict) or record.get('kind') != 'file' or actual != {k: record.get(k) for k in ('sha256', 'size_bytes', 'mode')}:
+            raise InstallError('SDK application inventory differs from transport: '+str(name))
+    extra = set(records) - {'Nudox.app/'+name for name in inventory} - {SDK_MANIFEST}
+    if any(not name.startswith('Nudox.app/Contents/_CodeSignature/') for name in extra):
+        raise InstallError('SDK transport contains unreceipted application files')
+    receipt_name = 'Nudox.app/Contents/Resources/Build Evidence/compiler-helpers-receipt.json'
+    receipt_raw, receipt_digest = _verified_package_file(root, receipt_name, read_bytes=True, max_bytes=MAX_PACKAGE_METADATA_BYTES)
+    try: receipt = json.loads(receipt_raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise InstallError('invalid SDK helper receipt') from error
+    if not isinstance(receipt, dict) or not isinstance(receipt.get('tools'), dict):
+        raise InstallError('invalid SDK helper identity')
+    if (receipt.get('schema') != 1 or receipt.get('source') != origin
+            or receipt.get('target') != evidence['target']['triple'] or receipt_digest != helpers.get('receipt_sha256')
+            or any(receipt.get(key) != helpers.get(key) for key in ('files', 'tools', 'notices'))
+            or set(receipt.get('tools', {})) != {'node', 'typescript'}):
+        raise InstallError('SDK helper receipt differs from application authority')
+    files = receipt.get('files')
+    modes = receipt.get('file_modes')
+    if not isinstance(files, dict) or not 0 < len(files) <= 512 or not isinstance(modes, dict) or set(files) != set(modes):
+        raise InstallError('invalid SDK helper file/mode receipt')
+    if any(not isinstance(name, str) for name in files):
+        raise InstallError('invalid SDK helper path')
+    sdk_prefix = 'Nudox.app/Contents/Resources/Helpers/'
+    if {sdk_prefix+name for name in files} != {name for name in records if name.startswith(sdk_prefix)}:
+        raise InstallError('SDK payload membership differs from helper receipt')
+    for name, digest in files.items():
+        actual = records.get(sdk_prefix+name)
+        if (actual is None or actual['sha256'] != digest or actual['mode'] != modes[name]
+                or modes[name] != (0o755 if name == 'typescript/node/bin/node' else 0o644)
+                or (name not in {'typescript/node/bin/node', 'typescript/node/LICENSE'} and not name.startswith('typescript/node_modules/typescript/'))):
+            raise InstallError('SDK helper identity differs from transport inventory')
+    if (sum(records[sdk_prefix+name]['size_bytes'] for name in files) > 512*1024**2
+            or sum(records[sdk_prefix+name]['size_bytes'] for name in files if name.startswith('typescript/node_modules/typescript/')) > 96*1024**2
+            or records.get(sdk_prefix+'typescript/node/LICENSE', {}).get('size_bytes', 1024**2+1) > 1024**2):
+        raise InstallError('SDK helper/package/notice byte bound exceeded')
+    node = 'typescript/node/bin/node'
+    node_record = records.get(sdk_prefix+node)
+    tools = receipt['tools']
+    if not all(isinstance(tools.get(name), dict) for name in ('node', 'typescript')):
+        raise InstallError('invalid SDK tool identities')
+    if (node_record is None or node_record['mode'] != 0o755
+            or tools['node'].get('sha256') != files.get(node)
+            or not isinstance(tools['node'].get('version'), str) or not tools['node']['version']
+            or not isinstance(tools['typescript'].get('version'), str) or not tools['typescript']['version']):
+        raise InstallError('SDK Node/TypeScript tool identity is incomplete')
+    notices = receipt.get('notices', {})
+    expected_notices = {'node': 'typescript/node/LICENSE', 'typescript': 'typescript/node_modules/typescript/LICENSE.txt',
+                        'typescript_third_party': 'typescript/node_modules/typescript/ThirdPartyNoticeText.txt'}
+    required = {'typescript/node_modules/typescript/package.json', 'typescript/node_modules/typescript/bin/tsc',
+                'typescript/node_modules/typescript/lib/typescript.js', *expected_notices.values()}
+    if notices != expected_notices or not required <= set(files):
+        raise InstallError('SDK compiler/notice inventory is incomplete')
+    ts_raw, _ = _verified_package_file(root, sdk_prefix+'typescript/node_modules/typescript/package.json', read_bytes=True, max_bytes=1024*1024)
+    try: ts = json.loads(ts_raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise InstallError('invalid TypeScript package identity') from error
+    if not isinstance(ts, dict) or ts.get('name') != 'typescript' or ts.get('version') != tools['typescript']['version']:
+        raise InstallError('TypeScript package identity differs from receipt')
+    for name in (*REQUIRED_BINARIES, 'backend-desktop', 'Nudox'):
+        image = records.get(SDK_BIN+'/'+name)
+        if image is None or image['mode'] != 0o755:
+            raise InstallError('SDK CLI executable inventory is incomplete')
+
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__); parser.add_argument('--prefix',type=Path)
     parser.add_argument('--allow-downgrade',action='store_true',help='allow an older or different same-date checkpoint')
@@ -542,14 +762,14 @@ def main(argv=None):
     if reuse_existing_install(prefix,entry,manifest,allow_downgrade=args.allow_downgrade):
         print('Verified existing release '+args.tag+'; reused it without downloading the archive.',file=sys.stderr)
         print('Installed diagnostic Mac CLI preview in '+str(prefix)+'; add '+str(prefix/'bin')+' to PATH.')
-        print('Known publication failures remain; ad-hoc signed, not notarized. Commands: nudox, nudox-mcp, nudox-locald.')
+        print('Diagnostic CLI package; native whole-application acceptance remains separate. Commands: nudox, nudox-mcp, nudox-locald.')
         return 0
     with tempfile.TemporaryDirectory(prefix='nudox-mac-preview-') as temporary:
         archive=Path(temporary)/'archive.tar.gz'
         download_archive(args.archive_url,args.archive_sha256,size,archive)
         install(prefix,entry,manifest,archive,allow_downgrade=args.allow_downgrade)
     print('Installed diagnostic Mac CLI preview in '+str(prefix)+'; add '+str(prefix/'bin')+' to PATH.')
-    print('Known publication failures remain; ad-hoc signed, not notarized. Commands: nudox, nudox-mcp, nudox-locald.')
+    print('Diagnostic CLI package; native whole-application acceptance remains separate. Commands: nudox, nudox-mcp, nudox-locald.')
     return 0
 if __name__=='__main__':
     try: raise SystemExit(main())

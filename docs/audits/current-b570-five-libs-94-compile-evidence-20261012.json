@@ -1,0 +1,82 @@
+{
+  "schema": "nudox.root-native-compile-audit.v1",
+  "scope": "Root independently rehashed producer-reported raw streams and terminal receipt; no local native execution",
+  "source": {
+    "commit": "b57052614fae4caa2fb4391da10c84582dc4b4a0",
+    "tree": "bd2b0ea74406e121014ce93871f71899b9bf96aa",
+    "clean": true,
+    "cargo_lock_sha256": "8cb2dc2961cbf03d85bbff37dcdfcbfce9afc035867b053f2a92acd419d5cebd",
+    "nested_cargo_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350",
+    "clean_before": true,
+    "clean_after": true
+  },
+  "manifest_sha256": "cef784a92a1556cfa4ec4b9efac81a6e177c0886bb0be9ce5e83810803f871a0",
+  "files": {
+    "receipt.json": {
+      "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/native94/receipt.json",
+      "bytes": 59623,
+      "sha256": "6514321391da492fffd90df49335a2ba3bcf62fadf514e6ab80acabc45973502"
+    },
+    "stdout.log": {
+      "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/native94/stdout.log",
+      "bytes": 798305,
+      "sha256": "246fb998024e37170426bad19247ab2ac3accd05d8a956af5a5c0fd2211aa6bf"
+    },
+    "stderr.log": {
+      "path": "/private/tmp/sol61-ilo-real-cli-mcp-20261011/native94/stderr.log",
+      "bytes": 272063,
+      "sha256": "a62f676d7c1ef67b581ab0271a3f71bfea8b1e064a7e7676efb1d1b1859b8a86"
+    }
+  },
+  "argv": [
+    "/root/nudox-corpus-20261006/tool-recovery/cargo-mixed-permit-b0e12d0aa9/cargo",
+    "test",
+    "--locked",
+    "--offline",
+    "-j2",
+    "--no-fail-fast",
+    "-p",
+    "backend-frontend-typescript",
+    "-p",
+    "backend-mcp",
+    "-p",
+    "backend-local-service",
+    "-p",
+    "backend-present",
+    "-p",
+    "backend-cli",
+    "--lib",
+    "--message-format=json-render-diagnostics",
+    "--",
+    "--nocapture",
+    "--test-threads=2"
+  ],
+  "exit": 101,
+  "seconds": 451.22906989697367,
+  "finished_utc": "2026-10-11T23:56:24.723477+00:00",
+  "actual_tests_run": 0,
+  "emitted_test_artifacts": [],
+  "package_attribution_verified": false,
+  "errors": [
+    {
+      "code": "E0308",
+      "message": "mismatched types",
+      "location": "crates/present/readiness_tests.rs:164:34",
+      "source": "actual rendered stderr; no JSON diagnostic attribution claimed"
+    }
+  ],
+  "source_clean_after": true,
+  "tools_unchanged": true,
+  "terminal_process_group_empty": true,
+  "latest_resources": {
+    "timestamp": "2026-10-11T23:56:22.455897+00:00",
+    "disk_available": 151621365760,
+    "memory_available": 60593754112,
+    "charged": 38134346008,
+    "growth": 13905667752,
+    "attempt_growth": 567234560,
+    "low_memory_samples": 0
+  },
+  "repair_source": "16d1f57193d1f269110a11a6460d12bfcf8a62ae",
+  "repair_native_status": "UNRUN"
+}

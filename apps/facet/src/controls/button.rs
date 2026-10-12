@@ -442,6 +442,29 @@ where
     }
 }
 
+/// Share the current-host admission boundary across plate controls: capture
+/// denies before native pointer focus, and activation rechecks on release/AX.
+pub(crate) fn wire_with_admission<E>(
+    element: E,
+    touch: &Touch,
+    activate: Option<Handler>,
+    admission: Option<ActivationAdmission>,
+) -> E
+where
+    E: StatefulInteractiveElement + InteractiveElement + Styled,
+{
+    let activate = activate.map(|activate| {
+        if let Some(admit) = &admission {
+            let admit = admit.clone();
+            Rc::new(move |window: &mut Window, cx: &mut App| {
+                if admit(cx) { activate(window, cx); }
+            }) as Handler
+        } else { activate }
+    });
+    let element = wire(element, touch, activate);
+    if let Some(admit) = admission { capture_activation_admission(element, admit) } else { element }
+}
+
 impl RenderOnce for Button {
     #[allow(clippy::too_many_lines)]
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
@@ -634,21 +657,7 @@ impl RenderOnce for Button {
             .aria_disabled(self.disabled || self.busy)
             .opacity(if self.disabled { 0.42 } else { 1.0 });
         let plate = if active {
-            let activate = self.on_click.map(|activate| {
-                if let Some(admit) = &self.admission {
-                    let admit = admit.clone();
-                    Rc::new(move |window: &mut Window, cx: &mut App| {
-                        if admit(cx) { activate(window, cx); }
-                    }) as Handler
-                } else {
-                    activate
-                }
-            });
-            let plate = wire(plate, &touch, activate);
-            let plate = if let Some(admit) = self.admission {
-                capture_activation_admission(plate, admit)
-            } else { plate };
-            plate.into_any_element()
+            wire_with_admission(plate, &touch, self.on_click, self.admission).into_any_element()
         } else {
             plate.into_any_element()
         };

@@ -903,6 +903,11 @@ pub struct ProductDto {
     /// typed failure/unresolved reason.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index_operation: Option<backend_library::IndexOperationObservation>,
+    /// Exact executable observation of accepted indexing work, when present.
+    /// This is guidance derived from the retained typed result, not authority
+    /// to start a mutation or a claim that publication has completed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_poll: Option<IndexPollDto>,
     /// Exact checked Project membership captured with the selected semantic generations.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_source_frontier: Option<backend_library::SelectedProjectSourceFrontier>,
@@ -916,6 +921,28 @@ pub struct ProductDto {
     /// Exact source-only package metadata lookup evidence.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_discovery: Option<crate::product::PackageDiscoveryProjection>,
+}
+
+/// Copyable CLI and MCP actions for the same admitted index observation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexPollDto {
+    /// Installed command with the exact durable key or issued ticket.
+    pub shell: String,
+    /// Exact next MCP tool call; no new index mutation is inferred.
+    pub call: serde_json::Value,
+}
+
+impl IndexPollDto {
+    /// Derives one observation from the shared typed operation/job policy.
+    #[must_use]
+    pub fn new(view: &ProductView) -> Option<Self> {
+        let affordance = view.index_poll_affordance()?;
+        Some(Self {
+            shell: affordance.shell()?,
+            call: affordance.tool_call()?,
+        })
+    }
 }
 
 /// Shared page envelope projected for CLI, MCP, and desktop product replies.
@@ -1012,6 +1039,7 @@ impl ProductDto {
                 }),
             index_job: view.index_job().cloned(),
             index_operation: view.index_operation().cloned(),
+            index_poll: IndexPollDto::new(view),
             selected_source_frontier: view.selected_source_frontier().cloned(),
             package_source_membership_page: view.package_source_membership_page().cloned(),
             semantic_data: view.semantic_data().cloned(),

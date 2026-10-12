@@ -459,7 +459,7 @@ impl<'a> CheckerContext<'a> {
         Some(false)
     }
 
-    /// Legacy export tables share string keys for files and ambient modules.
+    /// Legacy export tables share string keys for files and literal modules.
     /// A collision cannot prove which lexical owner supplied a retained row.
     fn reexport_owner_is_ambiguous(&self, importer: usize, owner: &str) -> Option<bool> {
         if !self.is_captured_program_file_key(owner)? {
@@ -468,7 +468,9 @@ impl<'a> CheckerContext<'a> {
         self.get_binder_for_file(importer)?;
         for binder in self.all_binders.as_ref()?.iter() {
             self.types.execution_checkpoint(1).ok()?;
-            if binder.declared_modules.contains(owner) {
+            if binder.declared_modules.contains(owner)
+                || binder.module_augmentations.contains_key(owner)
+            {
                 return Some(true);
             }
         }
