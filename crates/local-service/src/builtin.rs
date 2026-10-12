@@ -1718,13 +1718,26 @@ fn changed_rows(base: &ViewRoot, target: &ViewRoot) -> Vec<backend_engine::RowCh
     changes
 }
 
+#[path = "builtin/startup_timing.rs"]
+mod startup_timing;
+
+pub(crate) fn compose_owner(
+    config: &ProcessConfig,
+) -> Result<impl crate::service::OwnerService + 'static, ProcessError> {
+    let mut timing = startup_timing::Timing::new();
+    let result = compose_owner_timed(config, &mut timing);
+    timing.publish(result.is_ok());
+    result
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "startup must complete all durable admission before binding"
 )]
-pub(crate) fn compose_owner(
+fn compose_owner_timed(
     config: &ProcessConfig,
-) -> Result<impl crate::service::OwnerService + 'static, ProcessError> {
+    timing: &mut startup_timing::Timing,
+) -> Result<impl crate::service::OwnerService + 'static + use<>, ProcessError> {
     let limits = config.listener.limits.transport;
     let profile = match config.profile.as_str() {
         "builtin" => BuiltinProfile::Product,
@@ -1767,6 +1780,7 @@ pub(crate) fn compose_owner(
         .map_err(ProcessError::Profile)?;
     let relation_registry =
         product_relation_registry().map_err(|error| ProcessError::Profile(error.to_string()))?;
+    timing.begin(startup_timing::Phase::WorkspaceOpen);
     let mut daemon = crate::Locald::open_with_dispatcher_and_registry(
         &config.workspace,
         BuiltinModel,
@@ -1776,6 +1790,7 @@ pub(crate) fn compose_owner(
         relation_registry,
     )
     .map_err(|error| embedded_host::owner_open_refusal(&config.workspace, error))?;
+    timing.begin(startup_timing::Phase::DirectoryAdmission);
     let workspace_admission = daemon
         .engine()
         .daemon()
@@ -1790,13 +1805,16 @@ pub(crate) fn compose_owner(
     workspace_admission::admit_local_owner_directories(&workspace_admission).map_err(|error| {
         ProcessError::Profile(format!("admit local workspace directory: {error}"))
     })?;
+    timing.admit_destination(&config.workspace);
     let compiler_root = config.workspace.join("compiler");
     backend_platform::durable::ensure_private_directory(&compiler_root)
         .map_err(|error| ProcessError::Profile(format!("open private compiler state: {error}")))?;
+    timing.begin(startup_timing::Phase::EmbeddingProvision);
     let embedding = backend_engine::application::EmbeddingRuntimeProvision::open(
         compiler_root.join("embedding.config"),
     )
     .map_err(|error| ProcessError::Profile(format!("open compiler embedding runtime: {error}")))?;
+    timing.begin(startup_timing::Phase::CompilerSelection);
     let cargo_metadata_policy = match config.registry.policy {
         backend_engine::registry::AcquisitionPolicy::Online => {
             backend_engine::application::DEFAULT_RUST_CARGO_METADATA_POLICY
@@ -1831,6 +1849,7 @@ pub(crate) fn compose_owner(
             ))
         })?,
     };
+    timing.begin(startup_timing::Phase::CompilerOwner);
     let mut compiler_host = backend_engine::application::LocalCompilerHost::new(
         embedded_host::EmbeddedCompilerEnvironment {
             data_root: compiler_root.clone(),
@@ -1872,6 +1891,7 @@ pub(crate) fn compose_owner(
     .map_err(|error| {
         ProcessError::Profile(format!("publish compiler selection receipt: {error}"))
     })?;
+    timing.begin(startup_timing::Phase::SemanticAuthorityOpen);
     #[cfg(feature = "cluster-process-journey-hooks")]
     if std::env::var_os("BACKEND_JOURNEY_REMOTE_SEGMENT_GC")
         .is_some_and(|value| value.to_str() == Some("1"))
@@ -1889,6 +1909,7 @@ pub(crate) fn compose_owner(
     let mut image_rows = view_build::ImageRowResidence::default();
     let mut generations = SemanticGenerationResidence::default();
     semantic_authority.install_image_loader(&mut generations);
+    timing.begin(startup_timing::Phase::SemanticReconcile);
     #[cfg(feature = "cluster-process-journey-hooks")]
     if std::env::var_os("BACKEND_JOURNEY_REMOTE_SEGMENT_GC")
         .is_some_and(|value| value.to_str() == Some("1"))
@@ -1914,9 +1935,11 @@ pub(crate) fn compose_owner(
         &compiler_root.join("embedding-query.config"),
     );
     let semantic_deployment = SemanticDeployment::from_remote(&remote_semantic);
+    timing.begin(startup_timing::Phase::ViewRecovery);
     let view_path = config.workspace.join("view.journal");
     let view_journal = ViewJournal::open(&view_path).map_err(ProcessError::Profile)?;
     let workspace_root = daemon.engine().daemon().owner().head().root();
+    timing.workspace_root(workspace_root.to_bytes());
     let workspace_snapshot = daemon.engine().daemon().owner().snapshot();
     let view_capability = builtin_view_capability_for_workspace(&workspace_snapshot)
         .map_err(|error| ProcessError::Profile(error.to_string()))?;
@@ -1928,6 +1951,7 @@ pub(crate) fn compose_owner(
         )
         .map_err(|error| embedded_host::journal_refusal(&view_journal, error))?;
     let recovered_view = view_recovery.recovered;
+    timing.begin(startup_timing::Phase::ViewRestore);
     let cursor_sequence_floor = match view_recovery.cursor_sequence_floor {
         view_journal::CursorSequenceFloor::Empty => None,
         view_journal::CursorSequenceFloor::Proven(sequence) => Some(sequence),
@@ -1989,6 +2013,7 @@ pub(crate) fn compose_owner(
     // The workspace journal is authoritative. A crash can occur after a
     // workspace commit and between several bounded view-row publications;
     // repair that derived suffix before the listener becomes visible.
+    timing.begin(startup_timing::Phase::ViewPublication);
     #[cfg(feature = "cluster-process-journey-hooks")]
     if std::env::var_os("BACKEND_JOURNEY_REMOTE_SEGMENT_GC")
         .is_some_and(|value| value.to_str() == Some("1"))
@@ -2013,6 +2038,7 @@ pub(crate) fn compose_owner(
         eprintln!("journey startup phase: publish_builtin_view complete");
     }
     let published_roots = published.roots;
+    timing.begin(startup_timing::Phase::SqlProjection);
     let projection_path = config.workspace.join(backend_extension_turso::FILE_NAME);
     let sql_projection =
         sql_projection::open_current(&projection_path, &daemon).map_err(|error| {
@@ -2021,6 +2047,7 @@ pub(crate) fn compose_owner(
                 projection_path.display()
             ))
         })?;
+    timing.begin(startup_timing::Phase::ProjectionWatermarks);
     #[cfg(feature = "cluster-process-journey-hooks")]
     if std::env::var_os("BACKEND_JOURNEY_REMOTE_SEGMENT_GC")
         .is_some_and(|value| value.to_str() == Some("1"))
@@ -2038,6 +2065,7 @@ pub(crate) fn compose_owner(
     {
         eprintln!("journey startup phase: mark_projections_current complete");
     }
+    timing.begin(startup_timing::Phase::ClusterOwner);
     let owner_cluster = cluster_dispatch::OwnerCompilerClusterRuntime::open_if_configured(
         &config.workspace,
         semantic_authority.store(),
@@ -2106,6 +2134,7 @@ pub(crate) fn compose_owner(
         // worker is offline.
         replication.start_reconnect();
     }
+    timing.begin(startup_timing::Phase::CommandOwner);
     let registry = RegistryGateway::open_with_workspace_admission(
         &config.registry,
         config.workspace.join("registry"),
@@ -2152,6 +2181,7 @@ pub(crate) fn compose_owner(
         pending_stored_acks,
     )
     .map_err(|error| ProcessError::Profile(format!("start command read lane: {error}")))?;
+    timing.begin(startup_timing::Phase::QueryWarmup);
     commands.warm_queries(&daemon);
     let commands = Arc::new(Mutex::new(commands));
     let command_commands = Arc::clone(&commands);

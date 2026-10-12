@@ -84,7 +84,10 @@ mod shelf;
 mod shell;
 mod signature;
 mod status;
+mod startup_recovery;
 mod token_count;
+
+pub use startup_recovery::{StartupRecoveryContext, StartupRecoveryWorkspace};
 
 pub use assemble::{
     outline_tree, page_from_document, page_from_document_with_graph_relations, project_of,

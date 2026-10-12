@@ -1,0 +1,349 @@
+{
+  "schema": "nudox.root-independent-normal-gui-audit.v1",
+  "source": "6a7a96b20896cdfb392b3f6cb5e94e99aff0bf77",
+  "tree": "8e3ed7ae8ecfcba6b2eb8b64e48cad21b0892067",
+  "binary_sha256": "96b06be3d224e660577a7a2a751f75481a330ff8e9bfe6012ff1abae37eb1904",
+  "both_lock_sha256": [
+    "1681d11b2be9b746ce4596fe43d545010f43861cf6f498a9bff342c0555a18cd",
+    "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+  ],
+  "original_custody_sha256": "818bd4f2a1db2cb2a3707f91eeb96345aa60b3b077d9eece2ccae54d495ffd33",
+  "verified_files": [
+    {
+      "path": "gui-normal6a-managed-03/receipt.json",
+      "bytes": 27292,
+      "sha256": "c4e47ab141a5ac2226f65fc2e05a1e43d60e61bfa2d95cc6c3b7bdcc051e1d72"
+    },
+    {
+      "path": "gui-normal6a-managed-03/stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "gui-normal6a-managed-03/stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "monitor-output03/driver.stderr",
+      "bytes": 1054,
+      "sha256": "b103bd11b6335a15d32f316237eef457ba00acb267d7e212dd72c64fd5b059d4"
+    },
+    {
+      "path": "monitor-output03/driver.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "monitor-output03/receipt.json",
+      "bytes": 6178,
+      "sha256": "1e6e9df41691307bf7400603ce3fb495e413ca692e83e315087446026dc55e49"
+    },
+    {
+      "path": "output03/accessibility-bus.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "output03/accessibility-bus.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "output03/accessibility-registry.stderr",
+      "bytes": 63,
+      "sha256": "ef5037846adf78b931d57517d8d48c02a0d14781c007bf2c88eb53c66797305f"
+    },
+    {
+      "path": "output03/accessibility-registry.stdout",
+      "bytes": 77,
+      "sha256": "9d307ed556499f37fcb1517732638144b4ee8125619c1a443295c570b34c6bae"
+    },
+    {
+      "path": "output03/actual-normal-capture-request.json",
+      "bytes": 2511,
+      "sha256": "bdb7356ed3ce0a11ec73be2a2c39e0863c7271e76709b10d46b71e8b67e525ae"
+    },
+    {
+      "path": "output03/initial-normal/normal_empty_startup-attempt-01/after.json",
+      "bytes": 9518,
+      "sha256": "63577ce53d3d91d527f3c8e9f6daed68055d1a3514257547214c78077f853339"
+    },
+    {
+      "path": "output03/initial-normal/normal_empty_startup-attempt-01/after.request.json",
+      "bytes": 568,
+      "sha256": "1aa5c42b8d207d0617406b971f5629186ca37da6c633415ca7e93d10f99bf9ce"
+    },
+    {
+      "path": "output03/initial-normal/normal_empty_startup-attempt-01/before.json",
+      "bytes": 9518,
+      "sha256": "63577ce53d3d91d527f3c8e9f6daed68055d1a3514257547214c78077f853339"
+    },
+    {
+      "path": "output03/initial-normal/normal_empty_startup-attempt-01/before.request.json",
+      "bytes": 568,
+      "sha256": "1aa5c42b8d207d0617406b971f5629186ca37da6c633415ca7e93d10f99bf9ce"
+    },
+    {
+      "path": "output03/initial-normal/normal_empty_startup-attempt-01/native.png",
+      "bytes": 286,
+      "sha256": "8a67fffea7d3f3bd724483f9298f1ec4437875c08c833a40ebf7fbf973cb5007"
+    },
+    {
+      "path": "output03/normal-desktop.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "output03/normal-desktop.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "output03/normal-ui-trace.jsonl",
+      "bytes": 6871,
+      "sha256": "5b590f321f30ae8a2493e50dae265ca940bd5afdf2569ed963f00a6c63f92c3d"
+    },
+    {
+      "path": "output03/session-bus.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "output03/session-bus.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "output03/startup-receipt.json",
+      "bytes": 6649,
+      "sha256": "d7375b53a466f4107069bbb1b5e5af4d5017c41be478124b3d57f3749a43f773"
+    },
+    {
+      "path": "output03/xvfb.stderr",
+      "bytes": 936,
+      "sha256": "160d027868303b38699d229564aad727d812d5d7ee81fe5ce2b4221a76bb928e"
+    },
+    {
+      "path": "output03/xvfb.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "rootfs-bootstrap03.json",
+      "bytes": 13072,
+      "sha256": "692db25871d6e6b4ad9838ff19e36731bc54a1e24a8cf232241784117417965d"
+    }
+  ],
+  "verified_file_count": 25,
+  "verified_bytes": 85161,
+  "outer_exit": 1,
+  "outer_seconds": 6.2773335529491305,
+  "permit_released": true,
+  "fresh_guard_age_seconds": 9.291669,
+  "desktop_process": {
+    "pid": 2877478,
+    "start_ticks": "119302629",
+    "pgid": 2877131,
+    "session": 2877131,
+    "uid": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "exe": "/root/.cache/nudox/gui-native81-31230-20261012/target/debug/backend-desktop"
+  },
+  "real_session_and_accessibility_services": true,
+  "actual_accessibility_node_count": 20,
+  "accessibility_before_after_equal": true,
+  "png_dimensions": [
+    1380,
+    880
+  ],
+  "png_rgb_extrema": [
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      0
+    ],
+    [
+      0,
+      0
+    ]
+  ],
+  "png_all_black": true,
+  "root_visually_inspected_actual_png": true,
+  "native_draw_events": [
+    {
+      "t_ms": 484.479,
+      "name": "frame_lifecycle",
+      "pid": 2877478,
+      "window_id": 4294967297,
+      "native_window": null,
+      "frame_id": 1,
+      "kind": "drawn",
+      "a11y_frame": 1
+    }
+  ],
+  "successful_presentation_events": 0,
+  "actual_bootstrap_failures": [
+    {
+      "t_ms": 809.729,
+      "name": "root.bootstrap-failed",
+      "detail": "cancelled"
+    },
+    {
+      "t_ms": 866.192,
+      "name": "root.bootstrap-failed",
+      "detail": "fault:Protocol:protocol: local control request 2 stalled in ReadingHeader"
+    }
+  ],
+  "capture_accepted": false,
+  "actual_selected_gui_tests": 0,
+  "gui_journey_and_animation_proved": false,
+  "cleanup_signals": [
+    {
+      "utc": "2026-10-12T23:48:25.211016+00:00",
+      "signal": 15,
+      "identity": {
+        "pid": 2877445,
+        "state": "S",
+        "ppid": 2877131,
+        "pgid": 2877131,
+        "sid": 2877131,
+        "start": 119302624,
+        "uids": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "ns": [
+          4,
+          4026533586
+        ],
+        "root": [
+          66309,
+          4459126
+        ]
+      },
+      "kernel_returned": true
+    },
+    {
+      "utc": "2026-10-12T23:48:25.219507+00:00",
+      "signal": 15,
+      "identity": {
+        "pid": 2877448,
+        "state": "S",
+        "ppid": 2877131,
+        "pgid": 2877131,
+        "sid": 2877131,
+        "start": 119302625,
+        "uids": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "ns": [
+          4,
+          4026533586
+        ],
+        "root": [
+          66309,
+          4459126
+        ]
+      },
+      "kernel_returned": true
+    },
+    {
+      "utc": "2026-10-12T23:48:25.492870+00:00",
+      "signal": 15,
+      "identity": {
+        "pid": 2877478,
+        "state": "S",
+        "ppid": 2877131,
+        "pgid": 2877131,
+        "sid": 2877131,
+        "start": 119302629,
+        "uids": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "ns": [
+          4,
+          4026533586
+        ],
+        "root": [
+          66309,
+          4459126
+        ]
+      },
+      "kernel_returned": true
+    }
+  ],
+  "cleanup_identity_refusal": "RuntimeError('pre-pidfd signal identity changed')",
+  "positive_adopted_child_reaps": [
+    {
+      "utc": "2026-10-12T23:48:25.728664+00:00",
+      "pid": 2877445,
+      "wait_status": 0
+    },
+    {
+      "utc": "2026-10-12T23:48:25.728684+00:00",
+      "pid": 2877448,
+      "wait_status": 0
+    },
+    {
+      "utc": "2026-10-12T23:48:25.728693+00:00",
+      "pid": 2877449,
+      "wait_status": 0
+    },
+    {
+      "utc": "2026-10-12T23:48:25.728700+00:00",
+      "pid": 2877469,
+      "wait_status": 256
+    },
+    {
+      "utc": "2026-10-12T23:48:25.728708+00:00",
+      "pid": 2877478,
+      "wait_status": 15
+    },
+    {
+      "utc": "2026-10-12T23:48:25.728715+00:00",
+      "pid": 2877459,
+      "wait_status": 0
+    }
+  ],
+  "two_complete_empty_scans": [
+    {
+      "started": "2026-10-12T23:48:25.728728+00:00",
+      "finished": "2026-10-12T23:48:25.749400+00:00",
+      "complete": true,
+      "members": [],
+      "adopted_children_kernel_result": "ECHILD"
+    },
+    {
+      "started": "2026-10-12T23:48:25.949475+00:00",
+      "finished": "2026-10-12T23:48:25.970328+00:00",
+      "complete": true,
+      "members": [],
+      "adopted_children_kernel_result": "ECHILD"
+    }
+  ],
+  "limitations": [
+    "Historical exact 6a source, not current canonical cc79/ca011 execution.",
+    "Real accessibility and draw events do not establish displayed pixels.",
+    "All-black actual native capture rejected by unchanged successful-submission gate.",
+    "The embedded control failure cause is unassigned pending source diagnosis.",
+    "No package publication, interaction, resize, animation, semantic inference or GUI94 law pass.",
+    "Mac excluded with fresh offline evidence; not sampled.",
+    "Custody hashing and logical checks do not independently attest the remote kernel."
+  ]
+}

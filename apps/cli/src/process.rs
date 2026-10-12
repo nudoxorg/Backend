@@ -30,6 +30,10 @@ use std::time::Duration;
 /// the deadline expires, the original command remains explicitly unsent.
 #[cfg(unix)]
 const STARTUP_COMMAND_BUDGET: Duration = backend_runtime::COMMAND_STARTUP_TIMEOUT;
+/// Status can report an unsent cold-start observation while the candidate
+/// finishes ordinary owner admission. Other commands retain their deadline.
+#[cfg(unix)]
+const STATUS_STARTUP_RESPONSE_BUDGET: Duration = Duration::from_secs(1);
 /// EX_TEMPFAIL: the bounded owner wait ended before a command was submitted.
 #[cfg(unix)]
 const EXIT_STARTUP_PENDING: u8 = 75;
@@ -146,16 +150,19 @@ fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), 
                         Fault::from_client_error(&error, Operand::Text("local startup".to_owned()))
                     })?
                     .unwrap_or(STARTUP_COMMAND_BUDGET)
-                    .min(STARTUP_COMMAND_BUDGET),
+                    .min(startup_response_budget(&plan.request)),
                 |phase| {
-                    if let Some(progress) = &progress { let _ = progress.try_send(format!("local startup: {}", phase.as_str())); }
+                    if let Some(progress) = &progress {
+                        let _ = progress.try_send(format!("local startup: {}", phase.as_str()));
+                    }
                 },
                 || startup_scope.check().is_ok(),
             ) {
                 Ok(backend_runtime::LocaldStartup::Ready(endpoint)) => Ok(endpoint),
                 Ok(backend_runtime::LocaldStartup::Pending(pending)) => {
+                    let retry = pending_status_retry(&plan.request, &workspace);
                     return Ok((
-                        render_startup_pending(&pending, options)?,
+                        render_startup_pending(&pending, options, retry.as_deref())?,
                         ExitCode::from(EXIT_STARTUP_PENDING),
                     ));
                 }
@@ -213,6 +220,55 @@ fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), 
     render_admitted_answer(&session, &answer, options).map(|output| (output, outcome))
 }
 
+#[cfg(unix)]
+fn startup_response_budget(request: &Request) -> Duration {
+    match request {
+        Request::Status => STATUS_STARTUP_RESPONSE_BUDGET.min(STARTUP_COMMAND_BUDGET),
+        _ => STARTUP_COMMAND_BUDGET,
+    }
+}
+
+#[cfg(unix)]
+fn pending_status_retry(
+    request: &Request,
+    workspace: &backend_runtime::WorkspacePaths,
+) -> Option<String> {
+    // Do not guess a missing working-directory capture or project a non-UTF-8
+    // operand. The generic original-command retry remains available instead.
+    fn operand(path: &std::path::Path) -> Option<String> {
+        let text = path.to_str()?;
+        (path.is_absolute() && !text.contains('\0')).then(|| text.to_owned())
+    }
+    if !matches!(request, Request::Status) {
+        return None;
+    }
+    let selected = workspace.startup_recovery_selection()?;
+    operand(selected.data)?;
+    let directory = match selected.workspace {
+        backend_runtime::StartupWorkspaceSelection::Explicit(path) => {
+            backend_present::StartupRecoveryWorkspace::Explicit(operand(path)?)
+        }
+        backend_runtime::StartupWorkspaceSelection::Home(anchor) => {
+            backend_present::StartupRecoveryWorkspace::Home(operand(anchor)?)
+        }
+        backend_runtime::StartupWorkspaceSelection::XdgState(anchor) => {
+            backend_present::StartupRecoveryWorkspace::XdgState(operand(anchor)?)
+        }
+        backend_runtime::StartupWorkspaceSelection::XdgData(anchor) => {
+            backend_present::StartupRecoveryWorkspace::XdgData(operand(anchor)?)
+        }
+    };
+    Some(
+        backend_present::StartupRecoveryContext::new(
+            operand(selected.project)?,
+            operand(selected.endpoint)?,
+            operand(selected.authority_secret)?,
+            directory,
+        )
+        .shell(),
+    )
+}
+
 fn startup_error_action(error: &backend_runtime::RuntimeError) -> Affordance {
     Affordance::startup(error.startup_recovery())
 }
@@ -221,6 +277,7 @@ fn startup_error_action(error: &backend_runtime::RuntimeError) -> Affordance {
 fn render_startup_pending(
     pending: &backend_runtime::StartupPending,
     options: &Options,
+    retry_command: Option<&str>,
 ) -> Result<String, Fault> {
     if options.is_machine() {
         #[derive(serde::Serialize)]
@@ -232,6 +289,8 @@ fn render_startup_pending(
             candidate_pid: Option<u32>,
             contender_exited: bool,
             command_submitted: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            retry_command: Option<&'a str>,
         }
         let observation = Pending {
             kind: "local-startup-pending",
@@ -241,9 +300,10 @@ fn render_startup_pending(
             candidate_pid: pending.candidate_pid(),
             contender_exited: pending.contender_exited(),
             command_submitted: false,
+            retry_command,
         };
-        // Only fixed strings, booleans and a numeric observation are serialized.
         // This local CLI response is not a live engine DTO or operation receipt.
+        // A status retry retains only the already-selected connection operands.
         return serde_json::to_string(&observation)
             .map(|json| format!("{json}\n"))
             .map_err(|error| {
@@ -257,8 +317,9 @@ fn render_startup_pending(
         || "no candidate was started".to_owned(),
         |pid| format!("candidate {pid}; ownership is not established by this observation"),
     );
+    let retry = retry_command.map_or_else(String::new, |command| format!("{command}\n"));
     Ok(format!(
-        "local startup pending: {} ({candidate})\ncause: {}\naction: retry the original command; it has not been submitted\n",
+        "local startup pending: {} ({candidate})\ncause: {}\naction: retry the original command; it has not been submitted\n{retry}",
         pending.phase().as_str(),
         pending.cause().as_str()
     ))
@@ -476,11 +537,53 @@ mod help_tests {
         assert!(help_output(&[]).expect("bare help").contains("quick start"));
         assert!(help_output(&["add".to_owned(), ".".to_owned()]).is_none());
     }
+
+    #[test]
+    fn status_help_exposes_passive_observation_before_workspace_startup() {
+        for name in ["status", "health"] {
+            let help = help_output(&[name.to_owned(), "--help".to_owned()]).expect("status help");
+            assert!(help.contains("nudox --passive status"));
+            assert!(help.contains("unsent startup observation"));
+        }
+    }
 }
 
 #[cfg(all(test, unix))]
 mod startup_tests {
     use super::*;
+
+    #[test]
+    fn cold_status_response_horizon_does_not_change_command_or_passive_semantics() {
+        for words in [vec!["status"], vec!["health"]] {
+            let words = words.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            let plan =
+                plan(&words, &Options::fallback(), "/repo").expect("registered command plan");
+            assert!(matches!(plan.request, Request::Status));
+            assert_eq!(
+                startup_response_budget(&plan.request),
+                Duration::from_secs(1)
+            );
+            assert!(plan.wait.is_none());
+        }
+        for words in [vec!["add", "."], vec!["search", "symbols"]] {
+            let words = words.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            let plan =
+                plan(&words, &Options::fallback(), "/repo").expect("registered command plan");
+            assert_eq!(
+                startup_response_budget(&plan.request),
+                STARTUP_COMMAND_BUDGET
+            );
+        }
+        let (options, words) = options::split(&["--passive".to_owned(), "status".to_owned()])
+            .expect("passive options");
+        assert!(options.passive(), "passive remains the connect-only branch");
+        assert!(matches!(
+            plan(&words, &options, "/repo")
+                .expect("passive status plan")
+                .request,
+            Request::Status
+        ));
+    }
 
     #[test]
     fn pending_json_is_a_startup_observation_without_an_accepted_command() {
@@ -503,7 +606,7 @@ mod startup_tests {
         else {
             panic!("no endpoint exists");
         };
-        let json = render_startup_pending(&pending, &Options::plain(options::Format::Json))
+        let json = render_startup_pending(&pending, &Options::plain(options::Format::Json), None)
             .expect("startup response");
         let value: serde_json::Value = serde_json::from_str(&json).expect("typed JSON");
         assert_eq!(value["kind"], "local-startup-pending");
@@ -513,23 +616,337 @@ mod startup_tests {
         assert_eq!(value["command_submitted"], false);
         assert!(value["candidate_pid"].is_null());
         assert_eq!(value["contender_exited"], false);
+        assert!(value.get("retry_command").is_none());
         assert!(value.get("operation").is_none());
         assert!(value.get("readiness").is_none());
-        let text = render_startup_pending(&pending, &Options::fallback()).expect("human pending");
+        let text =
+            render_startup_pending(&pending, &Options::fallback(), None).expect("human pending");
         assert!(text.contains("no candidate was started"));
         assert!(text.contains("it has not been submitted"));
         assert!(!workspace.data().exists());
+        let retry = pending_status_retry(&Request::Status, &workspace);
+        let value: serde_json::Value = serde_json::from_str(
+            &render_startup_pending(
+                &pending,
+                &Options::plain(options::Format::Json),
+                retry.as_deref(),
+            )
+            .expect("pending retry response"),
+        )
+        .expect("pending retry JSON");
+        if let Some(retry) = retry {
+            assert_eq!(value["retry_command"], retry);
+        } else {
+            assert!(value.get("retry_command").is_none());
+        }
+        assert_eq!(value["command_submitted"], false);
+        assert!(value.get("readiness").is_none());
+        assert!(
+            !workspace.data().exists(),
+            "rendering a retry never prepares state"
+        );
         let error = backend_runtime::RuntimeError::StartupPending(pending);
         assert_eq!(
             error.startup_recovery(),
             backend_client::StartupRecovery::RetryOriginalCommand
         );
-        let fault = Fault::from_client_error(
-            &backend_client::ClientError::from(error),
-            Operand::Whole,
-        );
+        let fault =
+            Fault::from_client_error(&backend_client::ClientError::from(error), Operand::Whole);
         assert_eq!(fault.affordance(), &Affordance::Retry);
-        assert!(fault.cause().sentence().contains("it has not been submitted"));
+        assert!(
+            fault
+                .cause()
+                .sentence()
+                .contains("it has not been submitted")
+        );
+    }
+
+    #[test]
+    fn pending_status_retry_never_projects_lossy_paths_or_replays_mutations() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt as _;
+        let root = std::env::temp_dir().join(format!("ncsr-{}", std::process::id()));
+        let workspace = backend_runtime::WorkspacePaths::discover(
+            Some(root.join("project with spaces")),
+            Some(root.join("state'$(sentinel)")),
+            Some(root.join("owner.sock")),
+        )
+        .expect("read-only workspace discovery");
+        if let Some(retry) = pending_status_retry(&Request::Status, &workspace) {
+            assert!(retry.contains("--project '"));
+            assert!(retry.contains("--workspace '"));
+            assert!(retry.contains("'\\''$(sentinel)"));
+            assert!(retry.ends_with(" health"));
+        }
+        assert!(pending_status_retry(&Request::Index(".".to_owned()), &workspace).is_none());
+        let lossless = backend_runtime::WorkspacePaths::discover(
+            Some(root.join(OsString::from_vec(vec![b'p', 0xff]))),
+            Some(root.join("state")),
+            Some(root.join("owner.sock")),
+        )
+        .expect("read-only workspace discovery");
+        assert!(pending_status_retry(&Request::Status, &lossless).is_none());
+        assert!(!root.exists());
+    }
+
+    // Separate test-process discovery avoids global environment mutation and
+    // exercises the same option split and runtime selection as the CLI.
+    #[test]
+    fn startup_recovery_discovery_probe() {
+        let Ok(encoded) = std::env::var("NUDOX_TEST_RECOVERY_ARGV") else {
+            return;
+        };
+        let words: Vec<String> = serde_json::from_str(&encoded).expect("probe arguments");
+        let (options, words) = options::split(&words).expect("actual recovery option split");
+        let paths = workspace(&options).expect("actual read-only recovery discovery");
+        assert!(matches!(
+            plan(
+                &words,
+                &options,
+                paths.project().to_str().expect("probe project")
+            )
+            .expect("actual read-only recovery command plan")
+            .request,
+            Request::Status
+        ));
+        let selection = paths.startup_recovery_selection().expect("Unix selection");
+        let (boundary, anchor) = match selection.workspace {
+            backend_runtime::StartupWorkspaceSelection::Explicit(_) => ("explicit", None),
+            backend_runtime::StartupWorkspaceSelection::Home(anchor) => ("home", Some(anchor)),
+            backend_runtime::StartupWorkspaceSelection::XdgState(anchor) => {
+                ("xdg-state", Some(anchor))
+            }
+            backend_runtime::StartupWorkspaceSelection::XdgData(anchor) => {
+                ("xdg-data", Some(anchor))
+            }
+        };
+        let value = serde_json::json!({
+            "project": paths.project().to_str(),
+            "data": paths.data().to_str(),
+            "endpoint": paths.endpoint().to_str(),
+            "authority": paths.authority_secret().to_str(),
+            "boundary": boundary,
+            "anchor": anchor.and_then(std::path::Path::to_str),
+            "retry": pending_status_retry(&Request::Status, &paths),
+        });
+        println!("\nRECOVERY_SELECTION={value}");
+    }
+
+    fn recovery_observation(command: &mut std::process::Command) -> serde_json::Value {
+        let output = command.output().expect("owned read-only discovery probe");
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        let stdout = std::str::from_utf8(&output.stdout).expect("probe UTF-8");
+        let line = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("RECOVERY_SELECTION="))
+            .expect("actual discovery observation");
+        serde_json::from_str(line).expect("selection JSON")
+    }
+
+    fn replay_startup_selection(executable: &std::path::Path, shell: &str) -> serde_json::Value {
+        use std::process::Command;
+        const PROBE: &str = "process::startup_tests::startup_recovery_discovery_probe";
+        const UNSET: &str = "__UNSET__";
+        let script = format!(
+            r#"nudox() {{ printf '%s\000' "$@" __ENV__ "${{HOME-__UNSET__}}" "${{XDG_STATE_HOME-__UNSET__}}" "${{XDG_DATA_HOME-__UNSET__}}" "${{BACKEND_LOCALD_WORKSPACE-__UNSET__}}" "${{BACKEND_LOCALD_AUTHORITY_SECRET_FILE-__UNSET__}}"; }}; {shell}"#
+        );
+        let parsed = Command::new("/bin/sh")
+            .args(["-c", &script])
+            .env("HOME", "/wrong-home")
+            .env("XDG_STATE_HOME", "/wrong-xdg-state")
+            .env("XDG_DATA_HOME", "/wrong-xdg-data")
+            .env(backend_runtime::DATA_ENV, "/wrong-workspace")
+            .env(backend_runtime::AUTHORITY_SECRET_ENV, "/wrong-authority")
+            .output()
+            .expect("actual POSIX argv and environment parsing");
+        assert!(parsed.status.success(), "{parsed:?}");
+        assert!(parsed.stderr.is_empty(), "{parsed:?}");
+        let values = parsed
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|bytes| !bytes.is_empty())
+            .map(|bytes| {
+                std::str::from_utf8(bytes)
+                    .expect("exact UTF-8 operand")
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        let split = values
+            .iter()
+            .position(|value| value == "__ENV__")
+            .expect("env boundary");
+        assert_eq!(values.len(), split + 6);
+        let mut replay = Command::new(executable);
+        replay.args(["--exact", PROBE, "--nocapture"]).env(
+            "NUDOX_TEST_RECOVERY_ARGV",
+            serde_json::to_string(&values[..split]).expect("actual parsed argv"),
+        );
+        for (name, value) in [
+            "HOME",
+            "XDG_STATE_HOME",
+            "XDG_DATA_HOME",
+            backend_runtime::DATA_ENV,
+            backend_runtime::AUTHORITY_SECRET_ENV,
+        ]
+        .into_iter()
+        .zip(&values[split + 1..])
+        {
+            if value == UNSET {
+                replay.env_remove(name);
+            } else {
+                replay.env(name, value);
+            }
+        }
+        recovery_observation(&mut replay)
+    }
+
+    #[test]
+    fn pending_status_retry_replays_actual_discovery_with_authority_and_default_boundary() {
+        use std::process::Command;
+        const PROBE: &str = "process::startup_tests::startup_recovery_discovery_probe";
+        let executable = std::env::current_exe().expect("current test executable");
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = PathBuf::from("/tmp").join(format!("nrri-{}-{nonce}", std::process::id()));
+        let project = root.join("project ' $(sentinel)");
+        let endpoint = root.join("owner.sock");
+        let state = root.join("explicit `sentinel`; state");
+        let home = root.join("home ' $(sentinel)");
+        let xdg = root.join("xdg ' $(sentinel)");
+        let authority = root.join("authority ' $(sentinel)");
+        #[cfg(target_os = "macos")]
+        let origins = ["explicit", "environment", "home"];
+        #[cfg(not(target_os = "macos"))]
+        let origins = ["explicit", "environment", "home", "xdg-state", "xdg-data"];
+        for origin in origins {
+            for custom_authority in [false, true] {
+                let mut argv = vec![
+                    "--project".to_owned(),
+                    project.to_str().expect("project").to_owned(),
+                    "--endpoint".to_owned(),
+                    endpoint.to_str().expect("endpoint").to_owned(),
+                ];
+                if origin == "explicit" {
+                    argv.extend([
+                        "--workspace".to_owned(),
+                        state.to_str().expect("state").to_owned(),
+                    ]);
+                }
+                argv.push("status".to_owned());
+                let mut original = Command::new(&executable);
+                original
+                    .args(["--exact", PROBE, "--nocapture"])
+                    .env(
+                        "NUDOX_TEST_RECOVERY_ARGV",
+                        serde_json::to_string(&argv).expect("original argv"),
+                    )
+                    .env("HOME", &home)
+                    .env_remove("XDG_STATE_HOME")
+                    .env_remove("XDG_DATA_HOME")
+                    .env_remove(backend_runtime::DATA_ENV)
+                    .env_remove(backend_runtime::AUTHORITY_SECRET_ENV);
+                match origin {
+                    "environment" => {
+                        original.env(backend_runtime::DATA_ENV, &state);
+                    }
+                    "xdg-state" => {
+                        original.env("XDG_STATE_HOME", &xdg);
+                    }
+                    "xdg-data" => {
+                        original.env("XDG_DATA_HOME", &xdg);
+                    }
+                    _ => {}
+                }
+                if custom_authority {
+                    original.env(backend_runtime::AUTHORITY_SECRET_ENV, &authority);
+                }
+                let before = recovery_observation(&mut original);
+                assert_eq!(
+                    before["boundary"],
+                    if origin == "environment" {
+                        "explicit"
+                    } else {
+                        origin
+                    }
+                );
+                let shell = before["retry"].as_str().expect("complete captured retry");
+                assert_eq!(
+                    before,
+                    replay_startup_selection(&executable, shell),
+                    "{origin}/{custom_authority}"
+                );
+            }
+        }
+        assert!(
+            !root.exists(),
+            "discovery and shell parsing never prepare state"
+        );
+    }
+
+    #[test]
+    fn incomplete_authority_or_default_anchor_keeps_only_original_command_retry() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt as _;
+        use std::process::Command;
+        const PROBE: &str = "process::startup_tests::startup_recovery_discovery_probe";
+        let executable = std::env::current_exe().expect("test executable");
+        let argv = serde_json::to_string(&[
+            "--project",
+            "/tmp/nrri-incomplete-project",
+            "--endpoint",
+            "/tmp/nrri-incomplete.sock",
+            "--workspace",
+            "/tmp/nrri-incomplete-state",
+            "status",
+        ])
+        .expect("explicit arguments");
+        for authority in [
+            OsString::from("relative authority ' $(sentinel)"),
+            OsString::from_vec(vec![b'/', b't', b'm', b'p', b'/', 0xff]),
+        ] {
+            let mut command = Command::new(&executable);
+            command
+                .args(["--exact", PROBE, "--nocapture"])
+                .env("NUDOX_TEST_RECOVERY_ARGV", &argv)
+                .env(backend_runtime::AUTHORITY_SECRET_ENV, authority);
+            let value = recovery_observation(&mut command);
+            assert_eq!(value["boundary"], "explicit");
+            assert!(
+                value["retry"].is_null(),
+                "no lossy or CWD-guessed credential"
+            );
+        }
+        let argv = serde_json::to_string(&[
+            "--project",
+            "/tmp/nrri-incomplete-project",
+            "--endpoint",
+            "/tmp/nrri-incomplete.sock",
+            "status",
+        ])
+        .expect("default arguments");
+        for home in [
+            OsString::from("relative home"),
+            OsString::from_vec(vec![b'/', b't', b'm', b'p', b'/', 0xff]),
+        ] {
+            let mut command = Command::new(&executable);
+            command
+                .args(["--exact", PROBE, "--nocapture"])
+                .env("NUDOX_TEST_RECOVERY_ARGV", &argv)
+                .env("HOME", home)
+                .env_remove("XDG_STATE_HOME")
+                .env_remove("XDG_DATA_HOME")
+                .env_remove(backend_runtime::DATA_ENV)
+                .env_remove(backend_runtime::AUTHORITY_SECRET_ENV);
+            let value = recovery_observation(&mut command);
+            assert_eq!(value["boundary"], "home");
+            assert!(
+                value["retry"].is_null(),
+                "no lossy or CWD-guessed default anchor"
+            );
+        }
     }
 
     #[test]
