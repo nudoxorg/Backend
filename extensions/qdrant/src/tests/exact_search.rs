@@ -11,8 +11,8 @@ use std::num::NonZeroU32;
 
 fn recipe(metric: Metric, dimensions: u32) -> EmbeddingRecipe {
     EmbeddingRecipe {
-        model: ModelVersion::from_value(b"local-model"),
-        tokenizer: TokenizerVersion::from_value(b"local-tokenizer"),
+        model: ModelVersion::from_value(&[0xE1; 32]),
+        tokenizer: TokenizerVersion::from_value(&[0xE2; 32]),
         dimensions: NonZeroU32::new(dimensions).expect("dimension"),
         metric,
         pooling: EmbeddingPooling::Mean,
@@ -313,7 +313,7 @@ fn exact_local_search_refuses_every_selected_binding_field_and_recipe_change() {
         1,
         Vec::new(),
         Vec::new(),
-        Authority::from_value(b"other workspace"),
+        Authority::from_value(&[0xE3; 32]),
         index.facts().coverage(),
     )
     .expect("other workspace")
@@ -332,7 +332,7 @@ fn exact_local_search_refuses_every_selected_binding_field_and_recipe_change() {
             ..binding
         },
         Binding {
-            authority: Authority::from_value(b"other"),
+            authority: Authority::from_value(&[0xE4; 32]),
             ..binding
         },
         Binding {
@@ -340,7 +340,7 @@ fn exact_local_search_refuses_every_selected_binding_field_and_recipe_change() {
             ..binding
         },
         Binding {
-            frontier: Frontier::from_value(b"other"),
+            frontier: Frontier::from_value(&[0xE5; 32]),
             ..binding
         },
     ];
@@ -353,11 +353,11 @@ fn exact_local_search_refuses_every_selected_binding_field_and_recipe_change() {
     }
     for changed in [
         EmbeddingRecipe {
-            model: ModelVersion::from_value(b"other"),
+            model: ModelVersion::from_value(&[0xE6; 32]),
             ..recipe
         },
         EmbeddingRecipe {
-            tokenizer: TokenizerVersion::from_value(b"other"),
+            tokenizer: TokenizerVersion::from_value(&[0xE7; 32]),
             ..recipe
         },
         EmbeddingRecipe {
@@ -468,7 +468,7 @@ fn exact_local_search_refuses_legacy_facts_and_checks_complete_coverage() {
     .expect("source");
     for (model, metric) in [
         (recipe.model, recipe.metric),
-        (ModelVersion::from_value(b"wrong model"), recipe.metric),
+        (ModelVersion::from_value(&[0xE8; 32]), recipe.metric),
         (recipe.model, Metric::NegativeDot),
     ] {
         // Matching model/metric/dimension and even a claimed recipe binding
@@ -650,7 +650,7 @@ fn full_recipe_proof_survives_overlay_and_rebuild_and_cannot_be_downgraded() {
             ..recipe
         },
         EmbeddingRecipe {
-            tokenizer: TokenizerVersion::from_value(b"changed tokenizer"),
+            tokenizer: TokenizerVersion::from_value(&[0xE9; 32]),
             ..recipe
         },
         EmbeddingRecipe {

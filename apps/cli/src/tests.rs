@@ -1244,7 +1244,7 @@ fn page_projection_cli_detail_controls_each_format_without_changing_show_source_
     let line = LineNumber::new(42).expect("one-based");
     let native = backend_library::symbol_key("cli-native-entry");
     let page = Page::new(
-        Identity::parse_with_key(coordinate, native.into()),
+        Identity::parse_with_key(coordinate, backend_present::IdentityKey::Symbol(native)),
         Some(backend_library::DeclarationKind::Function),
         Source::Captured {
             site: SourceSite::new(PackagePath::new("src/entry.ts"), line),
