@@ -396,8 +396,14 @@ struct NativeHistoryStatusEntry {
 #[derive(Clone, Default)]
 struct NativeHistoryOwnerState {
     statuses: Arc<VecDeque<NativeHistoryStatusEntry>>,
-    in_flight: HashSet<[u8; 32]>,
+    in_flight: Arc<HashSet<[u8; 32]>>,
     retry_after: Option<ProductSemanticPublicationKey>,
+}
+
+/// Immutable bounded status inventory after all selected keys were scheduled.
+/// Its private fields prevent callers from mixing live outcomes into one view.
+pub(super) struct NativeHistoryStatusSnapshot {
+    state: NativeHistoryOwnerState,
 }
 
 struct NativeHistoryCompletion {
@@ -1519,6 +1525,7 @@ struct SemanticVersionsCatalogSnapshot {
     workspace: backend_version::WorkspaceRoot,
     selections: SelectedClosureSnapshot,
     statuses: Arc<VecDeque<NativeHistoryStatusEntry>>,
+    in_flight: Arc<HashSet<[u8; 32]>>,
     history: Arc<BTreeMap<HistoryKey, HistoryFact>>,
     retained_generations: Arc<BTreeMap<HistoryKey, u64>>,
     committed_observations: Arc<BTreeMap<ProductSemanticPublicationKey, SourceObservationReceipt>>,
@@ -1884,6 +1891,7 @@ impl SemanticAuthority {
             || !Arc::ptr_eq(&entry.selections.by_product, &selections.by_product)
             || !Arc::ptr_eq(&entry.selections.by_binding, &selections.by_binding)
             || !Arc::ptr_eq(&entry.statuses, &self.native_history_state.statuses)
+            || !Arc::ptr_eq(&entry.in_flight, &self.native_history_state.in_flight)
             || !Arc::ptr_eq(&entry.history, &self.history)
             || !Arc::ptr_eq(&entry.retained_generations, &self.retained_generations)
             || !Arc::ptr_eq(&entry.committed_observations, &self.committed_observations)
@@ -1897,18 +1905,26 @@ impl SemanticAuthority {
         Ok(Some(Arc::clone(&entry.catalog)))
     }
 
+    pub(super) fn admit_history_catalog_selections(
+        &self,
+        expected: &SelectedClosureSnapshot,
+    ) -> Result<(), BuiltinModelError> {
+        let current = self.history_catalog_selections()?;
+        if !Arc::ptr_eq(&expected.by_product, &current.by_product)
+            || !Arc::ptr_eq(&expected.by_binding, &current.by_binding)
+        {
+            return Err(BuiltinModelError("semantic history selector changed during catalog preparation; retry the unchanged read".to_owned()));
+        }
+        Ok(())
+    }
+
     pub(super) fn remember_semantic_versions_catalog(
         &mut self,
         workspace: backend_version::WorkspaceRoot,
         catalog: backend_library::SemanticVersionsCatalog,
         selections: SelectedClosureSnapshot,
     ) -> Result<Arc<backend_library::SemanticVersionsCatalog>, BuiltinModelError> {
-        let current = self.history_catalog_selections()?;
-        if !Arc::ptr_eq(&selections.by_product, &current.by_product)
-            || !Arc::ptr_eq(&selections.by_binding, &current.by_binding)
-        {
-            return Err(BuiltinModelError("semantic history selector changed during catalog preparation; retry the unchanged read".to_owned()));
-        }
+        self.admit_history_catalog_selections(&selections)?;
         #[cfg(test)]
         {
             let work = catalog.preparation_work();
@@ -1921,6 +1937,7 @@ impl SemanticAuthority {
             workspace,
             selections,
             statuses: Arc::clone(&self.native_history_state.statuses),
+            in_flight: Arc::clone(&self.native_history_state.in_flight),
             history: Arc::clone(&self.history),
             retained_generations: Arc::clone(&self.retained_generations),
             committed_observations: Arc::clone(&self.committed_observations),
@@ -1945,16 +1962,17 @@ impl SemanticAuthority {
         self.native_history_status_captured(key, claim)
     }
 
-    /// Projects the already-drained owner status inventory. One catalog build
-    /// must not consume new completions between its selected version records.
-    pub(crate) fn native_history_status_captured(
+    /// Schedules missing selected statuses without cloning complete Published
+    /// proof payloads. Catalog builders schedule all keys before capturing the
+    /// bounded inventory, so FIFO eviction cannot change an earlier row later.
+    pub(super) fn request_native_history_status(
         &mut self,
         key: &ProductSemanticPublicationKey,
         claim: SemanticPublicationClaim,
-    ) -> Result<backend_engine::SemanticHistoryPublicationStatus, BuiltinModelError> {
+    ) -> Result<Option<backend_replication::SelectedGenerationStamp>, BuiltinModelError> {
         let (selected_claim, selected) = self.read_selected_pair(key)?;
         if selected_claim != claim {
-            return Ok(backend_engine::SemanticHistoryPublicationStatus::NotSelected);
+            return Ok(None);
         }
         let stamp = Self::selected_generation_stamp(key, &selected)?;
         let status = self.native_history_status_for_stamp(key, stamp);
@@ -1973,18 +1991,65 @@ impl SemanticAuthority {
             // rather than leaving it absent from derived history.
             self.schedule_native_history(key.clone(), claim)?;
         }
-        Ok(self
-            .native_history_status_for_stamp(key, stamp)
-            .cloned()
+        Ok(Some(stamp))
+    }
+
+    pub(super) fn capture_native_history_statuses(&self) -> NativeHistoryStatusSnapshot {
+        NativeHistoryStatusSnapshot {
+            state: self.native_history_state.clone(),
+        }
+    }
+
+    /// Pure projection from one final immutable inventory. No drain, retry,
+    /// scheduling, or inventory mutation occurs between its returned records.
+    pub(super) fn native_history_status_in_snapshot(
+        &self,
+        key: &ProductSemanticPublicationKey,
+        claim: SemanticPublicationClaim,
+        snapshot: &NativeHistoryStatusSnapshot,
+    ) -> Result<backend_engine::SemanticHistoryPublicationStatus, BuiltinModelError> {
+        let (selected_claim, selected) = self.read_selected_pair(key)?;
+        if selected_claim != claim {
+            return Ok(backend_engine::SemanticHistoryPublicationStatus::NotSelected);
+        }
+        let stamp = Self::selected_generation_stamp(key, &selected)?;
+        Ok(Self::native_history_snapshot_status(key, stamp, snapshot))
+    }
+
+    fn native_history_snapshot_status(
+        key: &ProductSemanticPublicationKey,
+        stamp: backend_replication::SelectedGenerationStamp,
+        snapshot: &NativeHistoryStatusSnapshot,
+    ) -> backend_engine::SemanticHistoryPublicationStatus {
+        snapshot
+            .state
+            .statuses
+            .iter()
+            .rev()
+            .find(|entry| entry.key == *key && entry.stamp == stamp)
+            .map(|entry| entry.status.as_ref().clone())
             .unwrap_or_else(|| {
                 let selection_id =
                     super::versioned_planes::native_history_selection_id(key, stamp, None);
-                if self.native_history_state.in_flight.contains(&selection_id) {
+                if snapshot.state.in_flight.contains(&selection_id) {
                     backend_engine::SemanticHistoryPublicationStatus::Pending { selection_id }
                 } else {
                     backend_engine::SemanticHistoryPublicationStatus::NotRequested { selection_id }
                 }
-            }))
+            })
+    }
+
+    /// Observes one already-drained key for legacy individual callers.
+    pub(crate) fn native_history_status_captured(
+        &mut self,
+        key: &ProductSemanticPublicationKey,
+        claim: SemanticPublicationClaim,
+    ) -> Result<backend_engine::SemanticHistoryPublicationStatus, BuiltinModelError> {
+        let Some(stamp) = self.request_native_history_status(key, claim)? else {
+            return Ok(backend_engine::SemanticHistoryPublicationStatus::NotSelected);
+        };
+        let snapshot = self.capture_native_history_statuses();
+        Ok(Self::native_history_snapshot_status(key, stamp, &snapshot))
     }
 
     fn native_history_status_for_stamp(
@@ -2085,8 +2150,7 @@ impl SemanticAuthority {
                 Ok(completion) => completion,
                 Err(mpsc::TryRecvError::Empty | mpsc::TryRecvError::Disconnected) => break,
             };
-            self.native_history_state
-                .in_flight
+            Arc::make_mut(&mut self.native_history_state.in_flight)
                 .remove(&completion.selection_id);
             let still_selected = self
                 .image_loader
@@ -3985,7 +4049,7 @@ impl SemanticAuthority {
         {
             return Ok(());
         }
-        self.native_history_state.in_flight.insert(selection_id);
+        Arc::make_mut(&mut self.native_history_state.in_flight).insert(selection_id);
         let work = NativeHistoryPublicationWork {
             loader: Arc::clone(&self.image_loader),
             store: self.store.clone(),
@@ -4009,7 +4073,7 @@ impl SemanticAuthority {
         match self.native_history_sender.try_send(work) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => {
-                self.native_history_state.in_flight.remove(&selection_id);
+                Arc::make_mut(&mut self.native_history_state.in_flight).remove(&selection_id);
                 self.record_native_history_status(
                     key,
                     stamp,
@@ -4021,7 +4085,7 @@ impl SemanticAuthority {
                 Ok(())
             }
             Err(TrySendError::Disconnected(_)) => {
-                self.native_history_state.in_flight.remove(&selection_id);
+                Arc::make_mut(&mut self.native_history_state.in_flight).remove(&selection_id);
                 self.record_native_history_status(
                     key,
                     stamp,
@@ -4841,6 +4905,29 @@ mod tests {
         let retained = authority
             .remember_semantic_versions_catalog(root, exact, after_mutation)
             .expect("fresh exact selector inventory");
+        Arc::make_mut(&mut authority.native_history_state.in_flight).insert([81; 32]);
+        assert!(
+            authority
+                .cached_semantic_versions_catalog(root, &package, [1; 32], [2; 32])
+                .expect("captured in-flight key")
+                .is_none(),
+            "fallback Pending/NotRequested facts invalidate independently of status rows"
+        );
+        let observed = authority
+            .history_catalog_selections()
+            .expect("same selected inventory");
+        let updated = backend_library::SemanticVersionsCatalog::new(
+            package.clone(),
+            [1; 32],
+            [2; 32],
+            Box::new([]),
+        )
+        .expect("empty shape");
+        let updated = authority
+            .remember_semantic_versions_catalog(root, updated, observed)
+            .expect("exact in-flight observation");
+        assert!(!Arc::ptr_eq(&retained, &updated));
+        let retained = updated;
         let mut writer = authority
             .detach_index_writer(root)
             .expect("unique writer handoff");
@@ -4921,6 +5008,73 @@ mod tests {
                 .expect("exact selector observation")
                 .is_some(),
             "one bounded slot replaces, rather than accumulating, catalogs"
+        );
+    }
+
+    #[test]
+    fn immutable_history_status_projection_observes_final_fifo_and_inflight_snapshot() {
+        let workspace = ScratchWorkspace::new();
+        let mut authority = SemanticAuthority::open(&workspace.0).expect("actual private owner");
+        let key = worker_test_key();
+        let stamp = |revision| {
+            backend_replication::SelectedGenerationStamp::checked(
+                [1; 16],
+                key.profile(),
+                [2; 32],
+                revision,
+                [3; 32],
+                [4; 32],
+                backend_semantic::ir::SemanticPlaneCatalogRoot::from_wire_claim([5; 32]),
+            )
+            .expect("shape-only revision")
+        };
+        let first = stamp(1);
+        let selection_id =
+            super::super::versioned_planes::native_history_selection_id(&key, first, None);
+        Arc::make_mut(&mut authority.native_history_state.in_flight).insert(selection_id);
+        authority.record_native_history_status(
+            key.clone(),
+            first,
+            backend_engine::SemanticHistoryPublicationStatus::Deferred {
+                selection_id,
+                reason: "bounded test scheduling".to_owned(),
+            },
+        );
+        let old = authority.capture_native_history_statuses();
+        for revision in 2..=MAX_NATIVE_HISTORY_STATUS_ROWS as u64 + 1 {
+            let current = stamp(revision);
+            let id =
+                super::super::versioned_planes::native_history_selection_id(&key, current, None);
+            authority.record_native_history_status(
+                key.clone(),
+                current,
+                backend_engine::SemanticHistoryPublicationStatus::Pending { selection_id: id },
+            );
+        }
+        let final_inventory = authority.capture_native_history_statuses();
+        assert_eq!(
+            final_inventory.state.statuses.len(),
+            MAX_NATIVE_HISTORY_STATUS_ROWS
+        );
+        assert!(matches!(
+            SemanticAuthority::native_history_snapshot_status(&key, first, &old),
+            backend_engine::SemanticHistoryPublicationStatus::Deferred { .. }
+        ));
+        assert_eq!(
+            SemanticAuthority::native_history_snapshot_status(&key, first, &final_inventory),
+            backend_engine::SemanticHistoryPublicationStatus::Pending { selection_id },
+            "evicted rows use the captured in-flight fact, never an earlier terminal/status record"
+        );
+        Arc::make_mut(&mut authority.native_history_state.in_flight).remove(&selection_id);
+        let retired = authority.capture_native_history_statuses();
+        assert_eq!(
+            SemanticAuthority::native_history_snapshot_status(&key, first, &retired),
+            backend_engine::SemanticHistoryPublicationStatus::NotRequested { selection_id }
+        );
+        assert_eq!(
+            SemanticAuthority::native_history_snapshot_status(&key, first, &final_inventory),
+            backend_engine::SemanticHistoryPublicationStatus::Pending { selection_id },
+            "an immutable inventory cannot follow later live in-flight mutation"
         );
     }
 

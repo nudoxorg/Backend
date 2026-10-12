@@ -6670,13 +6670,16 @@ pub(super) fn semantic_versions(
 ) -> Result<Box<[backend_engine::SemanticVersionRecord]>, BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
     semantic_authority.drain_native_history_completions()?;
-    semantic_versions_from_snapshot(
+    let selections = semantic_authority.history_catalog_selections()?;
+    let versions = semantic_versions_from_snapshot(
         &snapshot,
         daemon.engine().daemon().library().view(),
         package,
         workspace,
         semantic_authority,
-    )
+    )?;
+    semantic_authority.admit_history_catalog_selections(&selections)?;
+    Ok(versions)
 }
 
 /// Roots and records are captured from one immutable owner snapshot.
@@ -6869,8 +6872,17 @@ fn semantic_versions_from_snapshot(
         record.selected = selected.get(target).copied() == Some(record.generation.to_bytes());
         if record.selected {
             record.selected_source_frontier = selected_source_frontier.clone();
-            record.history_status =
-                semantic_authority.native_history_status_captured(history_key, *claim)?;
+            semantic_authority.request_native_history_status(history_key, *claim)?;
+        }
+    }
+    let statuses = semantic_authority.capture_native_history_statuses();
+    for (_, history_key, claim, record) in &mut generations {
+        if record.selected {
+            record.history_status = semantic_authority.native_history_status_in_snapshot(
+                history_key,
+                *claim,
+                &statuses,
+            )?;
         }
     }
     if selected.iter().any(|(selected_target, identity)| {
