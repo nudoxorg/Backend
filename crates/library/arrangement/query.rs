@@ -309,7 +309,9 @@ impl ProjectionArrangement {
         let capacity = retained_page_capacity(start, limit);
         let mut retained =
             BinaryHeap::with_capacity(capacity.min(usize::from(crate::QueryLimit::MAX)));
+        let mut visited = 0_usize;
         let mut visit = |id| {
+            visited = visited.saturating_add(1);
             if let Some(row) = row_for_id(id) {
                 retained.push(OutlineRanked(outline_order(row)));
                 if retained.len() > capacity {
@@ -338,6 +340,7 @@ impl ProjectionArrangement {
                 }
             }
         }
+        work.record_scan(visited);
         let mut retained = retained.into_vec();
         work.record_sort(retained.len());
         retained.sort_unstable();
@@ -599,5 +602,92 @@ mod ordering_laws {
         assert!(rows[0] == rows[1] && rows[1] == rows[2]);
         assert_eq!(rows[3].cmp(&rows[0]), Ordering::Less);
         assert!(rows[3] != rows[0]);
+    }
+}
+
+#[cfg(test)]
+mod outline_selection_profile {
+    use super::*;
+
+    #[test]
+    #[ignore = "broker-only bounded outline rank versus original canonical seek experiment"]
+    fn profile_outline_rank_and_original_canonical_prefix() {
+        for rows in [300_usize, 10_000, 100_000] {
+            let source = crate::view_state_root(&[]);
+            let basis = crate::Basis::new(source, crate::object_version(b"outline-profile"));
+            let package = crate::package_key("/outline-profile");
+            let mut values = Vec::with_capacity(rows + 1);
+            values.push(Row::new(RowId::Package(package), basis, "/outline-profile"));
+            for i in 0..rows {
+                let path = if i % 5 == 0 {
+                    "src/app.spec.ts"
+                } else {
+                    "src/app.ts"
+                };
+                values.push(
+                    Row::in_package(
+                        RowId::Symbol(crate::symbol_key(&format!("profile::{i}"))),
+                        basis,
+                        package,
+                        format!("/outline-profile::semantic::{i}::N{i}"),
+                    )
+                    .with_kind(crate::DeclarationKind::Class)
+                    .with_source(
+                        crate::SourceLocation::new(path, 1).expect("retained fixture site"),
+                    ),
+                );
+            }
+            // Index construction and canonical proof preparation are outside
+            // measured selection. This partial fixture claims no native coverage.
+            let view = crate::ViewRoot::new_incomplete(
+                crate::view_key(b"outline-profile"),
+                basis,
+                crate::Frontier::new(basis.branch, basis.log, basis.schema, source, 0),
+                values,
+                vec![crate::Coverage::Unavailable {
+                    lane: crate::Lane::Names,
+                    reason: crate::Reason::Incomplete,
+                }],
+            )
+            .expect("canonical fixture");
+            let work = WorkCounters::default();
+            let arrangement = ProjectionArrangement::build(&view, &work).expect("retained index");
+            for observation in 0..3 {
+                let tree = arrangement.package_symbols.as_ref().expect("package index");
+                let lower = PackageRowKey { package, id: None };
+                let started = std::time::Instant::now();
+                let mut old_visits = 0_usize;
+                let old = tree
+                    .range((std::ops::Bound::Included(lower), std::ops::Bound::Unbounded))
+                    .take_while(|(key, ())| key.package == package)
+                    .filter_map(|(key, ())| key.id)
+                    .inspect(|_| old_visits += 1)
+                    .take(201)
+                    .collect::<Vec<_>>();
+                let old_elapsed = started.elapsed();
+                let before = work.snapshot();
+                let started = std::time::Instant::now();
+                let ranked =
+                    arrangement.outline_page(package, 0, 200, |id| view.row_ref(id), &work);
+                let ranked_elapsed = started.elapsed();
+                let after = work.snapshot();
+                assert_eq!(old.len(), 201);
+                assert_eq!(old_visits, 201);
+                assert_eq!(ranked.ids.len(), 200);
+                assert!(ranked.has_more);
+                assert_eq!(after.scan_rows - before.scan_rows, rows as u64);
+                eprintln!(
+                    "outline_selection_profile {}",
+                    serde_json::json!({
+                        "rows": rows, "observation": observation, "limit": 200,
+                        "canonical_visits": old_visits, "canonical_ns": old_elapsed.as_nanos(),
+                        "ranked_visits": after.scan_rows - before.scan_rows,
+                        "retained_rank_keys": after.sort_rows - before.sort_rows,
+                        "ranked_ns": ranked_elapsed.as_nanos()
+                    })
+                );
+                std::hint::black_box((old, ranked));
+            }
+        }
     }
 }

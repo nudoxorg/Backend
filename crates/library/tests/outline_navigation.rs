@@ -38,7 +38,13 @@ fn tree_names_share_the_exact_bounded_page_and_cold_pages_retain_every_row() {
         library.revision_root(),
         QueryLimit::new(200).expect("limit"),
     );
+    let before = library.work_counters();
     let first = library.outline_page(package, request).expect("flat page");
+    assert_eq!(
+        library.work_counters().scan_rows - before.scan_rows,
+        300,
+        "rank selection accounts for every actual visited package row"
+    );
     let tree = library
         .outline(OutlineQuery::new(package, library.revision_root()))
         .expect("tree");

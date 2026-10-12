@@ -106,6 +106,10 @@ impl WorkCounters {
         self.output_rows.fetch_add(rows as u64, Ordering::Relaxed);
     }
 
+    pub(crate) fn record_scan(&self, rows: usize) {
+        self.scan_rows.fetch_add(rows as u64, Ordering::Relaxed);
+    }
+
     pub(crate) fn record_sort(&self, rows: usize) {
         self.sort_rows.fetch_add(rows as u64, Ordering::Relaxed);
     }

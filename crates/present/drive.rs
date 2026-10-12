@@ -535,7 +535,7 @@ fn outline(engine: &mut dyn Engine, path: &str) -> Result<Answer, Fault> {
     };
     let snapshot = outline_snapshot(engine, path)
         .and_then(|snapshot| {
-            check_outline_projection(&tree, &snapshot)?;
+            check_outline_projection(backend_library::package_key(path), &tree, &snapshot)?;
             Ok(snapshot)
         })
         .map_err(|error| Fault::from_client_error(&error, Operand::Path(path.to_owned())))?;
@@ -710,11 +710,22 @@ fn probe_members(engine: &mut dyn Engine, coordinate: &str, notes: &mut Vec<Faul
 }
 
 fn check_outline_projection(
+    package: backend_library::PackageKey,
     tree: &backend_library::Outline,
     snapshot: &ViewSnapshot,
 ) -> Result<(), ClientError> {
+    if tree.package != package {
+        return Err(ClientError::Protocol(
+            "outline package does not match the requested name projection".to_owned(),
+        ));
+    }
+    let Some(producer) = tree.source_basis() else {
+        return Err(ClientError::Protocol(
+            "outline omits its producer source basis; name rows cannot be joined safely".to_owned(),
+        ));
+    };
     let source = snapshot.root.basis();
-    if tree.basis() != source.root || tree.source_basis().is_some_and(|basis| basis != source) {
+    if tree.basis() != source.root || producer != source {
         return Err(ClientError::CommandFailed(
             backend_library::CommandFailure::WrongBasis {
                 expected: source.root.into(),
@@ -781,10 +792,22 @@ mod readiness_controls {
             },
         )
         .with_source_basis(basis);
-        assert!(check_outline_projection(&tree, &snapshot).is_ok());
+        assert!(check_outline_projection(package_key("/gymbro"), &tree, &snapshot).is_ok());
+        tree.package = package_key("/foreign");
+        assert!(matches!(
+            check_outline_projection(package_key("/gymbro"), &tree, &snapshot),
+            Err(ClientError::Protocol(_))
+        ));
+        tree.package = package_key("/gymbro");
+        tree.source = None;
+        assert!(matches!(
+            check_outline_projection(package_key("/gymbro"), &tree, &snapshot),
+            Err(ClientError::Protocol(_))
+        ));
+        tree.source = Some(basis);
         tree.basis = backend_library::view_state_root(&[("foreign".to_owned(), "root".to_owned())]);
         assert!(matches!(
-            check_outline_projection(&tree, &snapshot),
+            check_outline_projection(package_key("/gymbro"), &tree, &snapshot),
             Err(ClientError::CommandFailed(
                 CommandFailure::WrongBasis { .. }
             ))
@@ -799,7 +822,7 @@ mod readiness_controls {
         tree.source.as_mut().expect("source").object =
             backend_library::object_version(b"foreign producer");
         assert!(matches!(
-            check_outline_projection(&tree, &snapshot),
+            check_outline_projection(package_key("/gymbro"), &tree, &snapshot),
             Err(ClientError::CommandFailed(
                 CommandFailure::WrongBasis { .. }
             ))
