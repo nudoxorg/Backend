@@ -21,7 +21,7 @@ use facet::icons::{Icon, IconSize, ui};
 use facet::tokens::ty;
 use facet::{ActiveFacet as _, Measure, Palette, Space};
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, InteractiveElement, IntoElement, KeyDownEvent, ParentElement,
+    AnyElement, App, AppContext as _, Context, Entity, Focusable, InteractiveElement, IntoElement, KeyDownEvent, ParentElement,
     Render, SharedString, Styled, Subscription, Task, Window, div, px,
 };
 use gpui_component::input::{InputEvent, InputState};
