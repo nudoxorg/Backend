@@ -1,0 +1,78 @@
+{
+  "scope": "Root independent mirrored-record audit; executable and physical source identities remain observer measurements, not direct Root ELF/source measurements",
+  "source": {
+    "clean": true,
+    "commit": "e0767e71b7077f9bbd1604cbf7bb097090fbbba3",
+    "tree": "519dcf63c5b558a509f254998131f768c3f3c14e"
+  },
+  "packet_archive_sha256": "52fcad51b95773debc15544ff3b414ddfe74055a216182c26cdfd1489eede170",
+  "packet_files_rehashed": 245,
+  "raw_responses_rehashed": 28,
+  "json_replies_protocol_checked": 25,
+  "passed_observer_checks": 39,
+  "pagination_independently_checked": {
+    "cli-search": {
+      "pages": 4,
+      "unique_coordinates": 4
+    },
+    "cli-resolve": {
+      "pages": 3,
+      "unique_coordinates": 9
+    }
+  },
+  "cli_plain_graph_equals_actual_mcp_graph": true,
+  "cold_issued_cursor_exact_second_page_equal": true,
+  "cold_owner_start_identity_changed": true,
+  "max_response_bytes": 7249,
+  "max_recorded_cl100k_tokens": 4164,
+  "first_literal_cli_search_seconds": 8.039920419920236,
+  "cold_literal_document_seconds": 4.159016208956018,
+  "cold_cursor_reply_seconds": 0.06282230699434876,
+  "history_status": [
+    {
+      "state": "refused",
+      "selection_id": [
+        246,
+        212,
+        92,
+        248,
+        25,
+        115,
+        16,
+        2,
+        238,
+        41,
+        181,
+        155,
+        117,
+        190,
+        168,
+        67,
+        196,
+        5,
+        46,
+        179,
+        105,
+        233,
+        87,
+        250,
+        111,
+        212,
+        57,
+        143,
+        138,
+        66,
+        214,
+        212
+      ],
+      "reason": "VerifyPayloadClosure refused (ResourceLimit): one canonical row needs 8643 bytes; segment ceiling is 4096"
+    }
+  ],
+  "history_acceptance": "RED: exit-0 DTO explicitly refuses derived history at canonical row capacity; no complete history claim",
+  "usage_papercut": "Literal nudox document without an operand exits correctly with 64, but suggests internal backend show instead of nudox document; repair pending",
+  "semantic_acceptance": "UNCONFIGURED: prior actual selected search reported unavailable semantic lane",
+  "outer_exit": 0,
+  "scope_drained_and_permit_released": true,
+  "overall_acceptance": "INCOMPLETE: retained external-document/history defects and unrun positive mutation/protocol lifecycle matrix",
+  "all17_positive_lifecycle_pass": false
+}
