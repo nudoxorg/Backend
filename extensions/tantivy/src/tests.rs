@@ -3883,3 +3883,112 @@ fn preparation_cancellation_publication_race_leaves_only_admissible_immutable_re
     drop(source);
     std::fs::remove_dir_all(root).expect("cleanup");
 }
+
+#[test]
+fn controlled_hit_and_direct_candidate_scoring_stop_inside_token_work() {
+    #[derive(Debug)]
+    enum CpuRefusal {
+        Source(TantivySourceError),
+        Interrupted(usize),
+    }
+    impl From<TantivySourceError> for CpuRefusal {
+        fn from(error: TantivySourceError) -> Self {
+            Self::Source(error)
+        }
+    }
+    let entries = (1..=32)
+        .map(|ordinal| {
+            (
+                document(ordinal),
+                vec![
+                    ("name".to_owned(), "needle".to_owned()),
+                    (
+                        "documentation".to_owned(),
+                        (0..100)
+                            .map(|token| format!("word{token}"))
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    ),
+                ],
+            )
+        })
+        .collect::<Vec<_>>();
+    let (binding, coverage) = binding(&entries);
+    let limits = Limits::default();
+    let state = DocumentState::new(binding, coverage, entries, limits).expect("state");
+    let source = TantivySource::build(&state, limits).expect("source");
+    let query = Query::new(vec!["needle".to_owned()], limits).expect("query");
+    let mut visits = 0;
+    let mut checked_hits = Vec::new();
+    let complete = source
+        .for_each_ranked_hit_controlled(
+            &query,
+            |hit, _| {
+                checked_hits.push(hit);
+                Ok(())
+            },
+            &mut || {
+                visits += 1;
+                Ok::<(), TantivySourceError>(())
+            },
+        )
+        .expect("complete");
+    let mut ordinary_hits = Vec::new();
+    assert_eq!(
+        source
+            .for_each_ranked_hit(&query, |hit| ordinary_hits.push(hit))
+            .expect("ordinary"),
+        complete
+    );
+    assert_eq!(checked_hits, ordinary_hits);
+    assert!(
+        visits > 32 * 100,
+        "checkpoints are inside token and clause work"
+    );
+    for stop_at in [1, 10, 20, visits - 1] {
+        let mut observed = 0;
+        let mut delivered = 0;
+        let stopped = source.for_each_ranked_hit_controlled(
+            &query,
+            |_, _| {
+                delivered += 1;
+                Ok(())
+            },
+            &mut || {
+                observed += 1;
+                if observed == stop_at {
+                    Err(CpuRefusal::Interrupted(observed))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(matches!(stopped, Err(CpuRefusal::Interrupted(at)) if at == stop_at));
+        assert_eq!(observed, stop_at);
+        assert!(delivered <= complete);
+        if stop_at <= 20 {
+            assert_eq!(delivered, 0, "refusal precedes the first callback");
+        }
+    }
+    let mut observed = 0;
+    let candidates = (1..=32).map(document).collect::<Vec<_>>();
+    let stopped = source.relevance_for_candidates_controlled(&query, &candidates, &mut || {
+        observed += 1;
+        if observed == 10 {
+            Err(CpuRefusal::Interrupted(observed))
+        } else {
+            Ok(())
+        }
+    });
+    assert!(matches!(stopped, Err(CpuRefusal::Interrupted(10))));
+    assert_eq!(observed, 10);
+    let oversized = vec![document(1); limits.max_page + 1];
+    let refused = source
+        .relevance_for_candidates_controlled(&query, &oversized, &mut || Ok::<(), CpuRefusal>(()));
+    assert!(matches!(
+        refused,
+        Err(CpuRefusal::Source(TantivySourceError::Contract(
+            Error::SizeLimit
+        )))
+    ));
+}

@@ -261,6 +261,19 @@ impl RetainedLocalRankPrefix {
         }
     }
 
+    fn into_sorted_controlled<E>(
+        mut self,
+        compare: impl Fn(&(EntityId, lexical::Relevance), &(EntityId, lexical::Relevance)) -> Ordering,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<Vec<(EntityId, lexical::Relevance)>, E> {
+        super::controlled_sort::sort_unstable_by_in_place_checked(
+            &mut self.hits,
+            compare,
+            checkpoint,
+        )?;
+        Ok(self.hits)
+    }
+
     fn into_sorted(
         mut self,
         compare: impl Fn(&(EntityId, lexical::Relevance), &(EntityId, lexical::Relevance)) -> Ordering,
@@ -721,6 +734,63 @@ pub struct LocalAnswer {
     pub lanes: Vec<LaneReport>,
 }
 
+/// Exact scan receipt transferred to one semantic worker. Only a complete
+/// LocalAnswer can construct it; it retains the identical admitted corpus Arc.
+/// The original score allocation moves once, while display descriptors carry
+/// canonical IDs rather than copied row/source payloads.
+pub(super) struct LexicalSeed {
+    corpus: Arc<Corpus>,
+    query: LocalQuery,
+    matches: Vec<(EntityId, lexical::Relevance)>,
+    display: Vec<(RowId, Option<lexical::Relevance>)>,
+    total_matches: usize,
+    lanes: Vec<LaneReport>,
+    _memory: backend_compile::EmbeddingMemoryReservation,
+}
+impl LexicalSeed {
+    pub(super) fn admit_selection(&self, coordinator: &QueryCoordinator) -> Result<(), QueryError> {
+        if Arc::ptr_eq(&self.corpus, &coordinator.corpus) {
+            Ok(())
+        } else {
+            Err(QueryError::StaleViewBinding)
+        }
+    }
+    pub(super) fn limit(&self) -> usize {
+        self.query.limit()
+    }
+    pub(super) fn restore(
+        self,
+        coordinator: &QueryCoordinator,
+        checkpoint: &mut impl FnMut() -> Result<(), super::LocalSemanticError>,
+    ) -> Result<(LocalAnswer, backend_compile::EmbeddingMemoryReservation), super::LocalSemanticError>
+    {
+        checkpoint()?;
+        self.admit_selection(coordinator)?;
+        let mut rows = Vec::new();
+        rows.try_reserve_exact(self.display.len())?;
+        for (id, relevance) in self.display {
+            checkpoint()?;
+            let row = self.corpus.view.row(id).ok_or(QueryError::InvalidView)?;
+            rows.push(RankedRow {
+                row,
+                lexical_relevance: relevance,
+            });
+        }
+        checkpoint()?;
+        Ok((
+            LocalAnswer {
+                corpus: self.corpus,
+                query: self.query,
+                matches: self.matches,
+                rows,
+                total_matches: self.total_matches,
+                lanes: self.lanes,
+            },
+            self._memory,
+        ))
+    }
+}
+
 /// Canonical lexical scores for an arbitrary candidate collection. Callers
 /// can ask for one score without relying on the vector's sort order.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -747,6 +817,61 @@ impl CandidateLexicalScores {
 }
 
 impl LocalAnswer {
+    /// Reserves the transferred score allocation and new bounded ID descriptors
+    /// before moving them into the worker. The initial page keeps its rows.
+    pub(super) fn take_lexical_seed(
+        &mut self,
+        budget: &backend_compile::EmbeddingMemoryBudget,
+        checkpoint: &mut impl FnMut() -> Result<(), super::LocalSemanticError>,
+    ) -> Result<LexicalSeed, super::LocalSemanticError> {
+        checkpoint()?;
+        let bytes = self
+            .matches
+            .capacity()
+            .checked_mul(std::mem::size_of::<(EntityId, lexical::Relevance)>())
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    self.rows
+                        .len()
+                        .checked_mul(std::mem::size_of::<(RowId, Option<lexical::Relevance>)>())?,
+                )
+            })
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    self.lanes
+                        .len()
+                        .checked_mul(std::mem::size_of::<LaneReport>())?,
+                )
+            })
+            .and_then(|bytes| bytes.checked_add(3 * 256))
+            .ok_or(super::LocalSemanticError::CorpusEnvelope)?;
+        let memory = budget
+            .reserve(u64::try_from(bytes).map_err(|_| super::LocalSemanticError::CorpusEnvelope)?)
+            .map_err(super::LocalSemanticError::Memory)?;
+        let mut display = Vec::new();
+        display.try_reserve_exact(self.rows.len())?;
+        for row in &self.rows {
+            checkpoint()?;
+            display.push((row.row.id, row.lexical_relevance));
+        }
+        let mut lanes = Vec::new();
+        lanes.try_reserve_exact(self.lanes.len())?;
+        for lane in &self.lanes {
+            checkpoint()?;
+            lanes.push(lane.clone());
+        }
+        checkpoint()?;
+        Ok(LexicalSeed {
+            corpus: Arc::clone(&self.corpus),
+            query: self.query.clone(),
+            matches: std::mem::take(&mut self.matches),
+            display,
+            total_matches: self.total_matches,
+            lanes,
+            _memory: memory,
+        })
+    }
+
     /// Returns the bounded local page's canonical identities in display order.
     ///
     /// The coordinator resolves provider identities through its selected
@@ -816,6 +941,75 @@ impl LocalAnswer {
             }
         }
         Ok(CandidateLexicalScores::from_unsorted(relevance))
+    }
+
+    // Worker-only fallible path. Candidate batches retain their existing finite page bound.
+    pub(super) fn lexical_relevance_for_candidates_controlled<
+        E: From<QueryError> + From<lexical::TantivySourceError>,
+    >(
+        &self,
+        entities: &[EntityId],
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<CandidateLexicalScores, E> {
+        let mut remaining = BTreeSet::new();
+        let mut relevance = Vec::new();
+        relevance
+            .try_reserve_exact(entities.len())
+            .map_err(|error| QueryError::LexicalProvider {
+                phase: LexicalPhase::CandidateScores,
+                cause: LexicalFailureCause::Allocation {
+                    requested: entities.len(),
+                    error,
+                },
+            })?;
+        for entity in entities {
+            checkpoint()?;
+            if let Some(score) = self.lexical_relevance(*entity) {
+                relevance.push((*entity, score));
+            } else {
+                remaining.insert(*entity);
+            }
+        }
+        if !remaining.is_empty() {
+            let requested = remaining.into_iter().collect::<Vec<_>>();
+            for (entity, score) in self.corpus.lexical.relevance_for_candidates_controlled(
+                self.query.lexical(),
+                &requested,
+                checkpoint,
+            )? {
+                checkpoint()?;
+                let Some(selected) = self.corpus.selected.entity(entity) else {
+                    return Err(QueryError::LexicalProvider {
+                        phase: LexicalPhase::CandidateScores,
+                        cause: LexicalFailureCause::MissingSelectedEntity(entity),
+                    }
+                    .into());
+                };
+                let row_id = selected.row.stable_key();
+                if self.query.qualified_clauses().is_empty()
+                    || qualified_row_matches_controlled(
+                        row_id.as_str(),
+                        self.query.qualified_clauses(),
+                        &self.corpus.selected,
+                        &self.corpus.semantic_evidence,
+                        checkpoint,
+                    )?
+                {
+                    relevance.push((entity, score));
+                }
+            }
+        }
+        Ok(CandidateLexicalScores::from_unsorted(relevance))
+    }
+
+    pub(super) fn candidate_entity(
+        &self,
+        candidate: backend_extension_qdrant::CandidateId,
+    ) -> Option<EntityId> {
+        self.corpus
+            .selected
+            .candidate(candidate)
+            .map(|selected| selected.entity)
     }
 
     pub(super) fn candidate_row(
@@ -1405,6 +1599,25 @@ impl QueryCoordinator {
         &self,
         request: &backend_engine::Query,
     ) -> Result<LocalAnswer, QueryError> {
+        self.search_local(self.local_page_query(request)?)
+    }
+
+    /// Initial selected page traversal checks the real selected lifetime while
+    /// preserving the existing cursor/rank-prefix admission and ordering.
+    pub(crate) fn search_local_page_controlled<
+        E: From<QueryError>
+            + From<lexical::TantivySourceError>
+            + From<std::collections::TryReserveError>,
+    >(
+        &self,
+        request: &backend_engine::Query,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<LocalAnswer, E> {
+        checkpoint()?;
+        self.search_local_controlled(self.local_page_query(request)?, checkpoint)
+    }
+
+    fn local_page_query(&self, request: &backend_engine::Query) -> Result<LocalQuery, QueryError> {
         if request.basis() != self.corpus.view.root() {
             return Err(QueryError::StaleViewBinding);
         }
@@ -1419,7 +1632,7 @@ impl QueryCoordinator {
         // The semantic candidate window is independent of the requested page
         // position, so extending a lexical prefix cannot change prior ranks.
         query.semantic_limit = page_rows;
-        self.search_local(query)
+        Ok(query)
     }
 
     /// Executes a complete local search before optional provider work.
@@ -1571,6 +1784,170 @@ impl QueryCoordinator {
         })
     }
 
+    /// Worker lexical execution: checkpoints inside scoring and before each retained row.
+    pub(super) fn search_local_controlled<
+        E: From<QueryError>
+            + From<lexical::TantivySourceError>
+            + From<std::collections::TryReserveError>,
+    >(
+        &self,
+        query: LocalQuery,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<LocalAnswer, E> {
+        checkpoint()?;
+        let mut retained = RetainedLocalRankPrefix::new(query.limit()).map_err(|error| {
+            QueryError::LexicalProvider {
+                phase: LexicalPhase::ComposeRows,
+                cause: LexicalFailureCause::Allocation {
+                    requested: query.limit(),
+                    error,
+                },
+            }
+        })?;
+        let mut seen_hits = 0usize;
+        let mut total_matches = 0usize;
+        let mut composition_failure = None;
+        let words = query.words();
+        let compare = |left: &(EntityId, lexical::Relevance),
+                       right: &(EntityId, lexical::Relevance)| {
+            self.corpus
+                .placement_key(left.0, words)
+                .cmp(&self.corpus.placement_key(right.0, words))
+                .reverse()
+                .then_with(|| left.1.cmp(&right.1).reverse())
+                .then_with(|| left.0.cmp(&right.0))
+        };
+        let exact_lexical_total = self.corpus.lexical.for_each_ranked_hit_controlled(
+            query.lexical(),
+            |hit, checkpoint| {
+                let Some(selected) = self.corpus.selected.entity(hit.document) else {
+                    composition_failure
+                        .get_or_insert(LexicalFailureCause::MissingSelectedEntity(hit.document));
+                    return Ok(());
+                };
+                seen_hits = match seen_hits.checked_add(1) {
+                    Some(total) => total,
+                    None => {
+                        composition_failure.get_or_insert(LexicalFailureCause::HitCountOverflow);
+                        return Ok(());
+                    }
+                };
+                if !query.qualified_clauses().is_empty()
+                    && !qualified_row_matches_controlled(
+                        selected.row.stable_key().as_str(),
+                        query.qualified_clauses(),
+                        &self.corpus.selected,
+                        &self.corpus.semantic_evidence,
+                        checkpoint,
+                    )?
+                {
+                    return Ok(());
+                }
+                total_matches = match total_matches.checked_add(1) {
+                    Some(total) => total,
+                    None => {
+                        composition_failure.get_or_insert(LexicalFailureCause::ResultCountOverflow);
+                        return Ok(());
+                    }
+                };
+                checkpoint()?;
+                retained.offer((hit.document, hit.relevance), &compare);
+                Ok(())
+            },
+            checkpoint,
+        )?;
+        if let Some(cause) = composition_failure {
+            return Err(QueryError::LexicalProvider {
+                phase: LexicalPhase::ComposeRows,
+                cause,
+            }
+            .into());
+        }
+        if exact_lexical_total != seen_hits {
+            return Err(QueryError::LexicalProvider {
+                phase: LexicalPhase::ComposeRows,
+                cause: LexicalFailureCause::HitCountMismatch {
+                    provider: exact_lexical_total,
+                    selected: seen_hits,
+                },
+            }
+            .into());
+        }
+        let mut top_matches = retained.into_sorted_controlled(compare, checkpoint)?;
+        let mut rows = Vec::new();
+        rows.try_reserve_exact(top_matches.len())?;
+        for (entity, relevance) in &top_matches {
+            checkpoint()?;
+            let selected =
+                self.corpus
+                    .selected
+                    .entity(*entity)
+                    .ok_or(QueryError::LexicalProvider {
+                        phase: LexicalPhase::ComposeRows,
+                        cause: LexicalFailureCause::MissingSelectedEntity(*entity),
+                    })?;
+            let row = self
+                .corpus
+                .view
+                .row(selected.row)
+                .ok_or(QueryError::LexicalProvider {
+                    phase: LexicalPhase::ComposeRows,
+                    cause: LexicalFailureCause::MissingViewRow(selected.row),
+                })?;
+            rows.push(RankedRow {
+                row,
+                lexical_relevance: Some(*relevance),
+            });
+        }
+        super::controlled_sort::sort_unstable_in_place_checked(
+            &mut top_matches,
+            |entry| entry.0,
+            checkpoint,
+        )?;
+        let matches = top_matches;
+        let selected_rows = self.corpus.selected.entities.len();
+        let considered = if self.corpus.selected.left_out.is_empty() {
+            CoverageBasis::CompleteView { selected_rows }
+        } else {
+            CoverageBasis::PartialView {
+                selected_rows,
+                left_out: self.corpus.selected.left_out,
+            }
+        };
+        let canonical = SourceBasis::Canonical {
+            workspace: self.corpus.workspace,
+            view: self.corpus.view.version(),
+            relation: self.corpus.view.root(),
+        };
+        let lexical = SourceBasis::Lexical {
+            binding: self.corpus.lexical_binding,
+            evidence: self.corpus.semantic_evidence.evidence_digest(),
+            query: query.lexical().version,
+            overlay: false,
+        };
+        Ok(LocalAnswer {
+            corpus: Arc::clone(&self.corpus),
+            query,
+            matches,
+            rows,
+            total_matches,
+            lanes: vec![
+                LaneReport {
+                    lane: Lane::Canonical,
+                    coverage: considered,
+                    freshness: Freshness::Current,
+                    source: Some(canonical),
+                },
+                LaneReport {
+                    lane: Lane::Lexical,
+                    coverage: considered,
+                    freshness: Freshness::Current,
+                    source: Some(lexical),
+                },
+            ],
+        })
+    }
+
     /// Iterates the selected document inputs in stable row order. Each page
     /// owns only its bounded text strings, and a caller can create another
     /// iterator over the same immutable selection.
@@ -1589,15 +1966,68 @@ impl QueryCoordinator {
     }
 
     /// Checks every exact document extent without text allocation before local inference.
-    pub(crate) fn admit_semantic_text_bounds(&self, maximum: usize) -> Result<usize, QueryError> {
+    pub(crate) fn admit_semantic_text_bounds_controlled<E: From<QueryError>>(
+        &self,
+        maximum: usize,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<usize, E> {
         let mut maximum_observed = 0usize;
         for index in &self.corpus.selected.document_order {
+            checkpoint()?;
             let selected = self.corpus.selected.entities[*index];
             let row = self.corpus.semantic_evidence.facts()[selected.fact_index].presentation();
             maximum_observed =
                 maximum_observed.max(semantic_text_extent(row, selected.row, maximum)?);
         }
         Ok(maximum_observed)
+    }
+
+    /// Borrowed maximum of the actual canonical row allocations copied by composition.
+    /// Shared source/excerpt Arcs are retained without charging their bytes a second time.
+    pub(crate) fn semantic_row_clone_extent_controlled<E: From<QueryError>>(
+        &self,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<usize, E> {
+        let mut maximum = 0usize;
+        for index in &self.corpus.selected.document_order {
+            checkpoint()?;
+            let selected = self.corpus.selected.entities[*index];
+            let row = self
+                .corpus
+                .view
+                .row_ref(selected.row)
+                .ok_or(QueryError::InvalidView)?;
+            let mut bytes = std::mem::size_of::<Row>();
+            for extent in [
+                row.label.len(),
+                row.signature.as_ref().map_or(0, String::len),
+                row.identity_preimage()
+                    .map_or(0, |preimage| preimage.as_str().len()),
+                row.document
+                    .len()
+                    .checked_mul(std::mem::size_of::<backend_engine::Fragment>())
+                    .ok_or(QueryError::CorpusLimit)?,
+                row.facts
+                    .deprecation
+                    .present()
+                    .map_or(0, backend_compile::Deprecation::text_bytes),
+            ] {
+                bytes = bytes.checked_add(extent).ok_or(QueryError::CorpusLimit)?;
+            }
+            for fragment in row.document.iter() {
+                checkpoint()?;
+                let extent = match fragment {
+                    backend_engine::Fragment::Text(text) | backend_engine::Fragment::Code(text) => {
+                        text.len()
+                    }
+                    backend_engine::Fragment::Link { label, .. } => label.len(),
+                    backend_engine::Fragment::Break => 0,
+                };
+                bytes = bytes.checked_add(extent).ok_or(QueryError::CorpusLimit)?;
+            }
+            maximum = maximum.max(bytes);
+        }
+        Ok(maximum)
     }
 
     pub(crate) fn bounded_semantic_document_pages(
@@ -1687,22 +2117,53 @@ fn qualified_row_matches(
     selected: &SelectedCorpus,
     evidence: &SemanticQueryCorpus,
 ) -> bool {
-    clauses
-        .iter()
-        .all(|clause| qualified_clause_matches(row_id, clause, selected, evidence))
+    qualified_row_matches_controlled(row_id, clauses, selected, evidence, &mut || {
+        Ok::<(), std::convert::Infallible>(())
+    })
+    .unwrap_or_else(|never| match never {})
 }
 
+fn qualified_row_matches_controlled<E>(
+    row_id: &str,
+    clauses: &[QualifiedClause],
+    selected: &SelectedCorpus,
+    evidence: &SemanticQueryCorpus,
+    checkpoint: &mut impl FnMut() -> Result<(), E>,
+) -> Result<bool, E> {
+    for clause in clauses {
+        checkpoint()?;
+        if !qualified_clause_matches_controlled(row_id, clause, selected, evidence, checkpoint)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+#[cfg(test)]
 fn qualified_clause_matches(
     row_id: &str,
     clause: &QualifiedClause,
     selected: &SelectedCorpus,
     evidence: &SemanticQueryCorpus,
 ) -> bool {
+    qualified_clause_matches_controlled(row_id, clause, selected, evidence, &mut || {
+        Ok::<(), std::convert::Infallible>(())
+    })
+    .unwrap_or_else(|never| match never {})
+}
+
+fn qualified_clause_matches_controlled<E>(
+    row_id: &str,
+    clause: &QualifiedClause,
+    selected: &SelectedCorpus,
+    evidence: &SemanticQueryCorpus,
+    checkpoint: &mut impl FnMut() -> Result<(), E>,
+) -> Result<bool, E> {
     let Some(candidate_index) = selected.fact_index(evidence, row_id) else {
-        return false;
+        return Ok(false);
     };
     let Some(candidate) = evidence.facts().get(candidate_index) else {
-        return false;
+        return Ok(false);
     };
     let mut current = candidate.presentation();
     if !current
@@ -1710,9 +2171,10 @@ fn qualified_clause_matches(
         .to_ascii_lowercase()
         .starts_with(clause.leaf.as_str())
     {
-        return false;
+        return Ok(false);
     }
     for (owner_index, owner) in clause.owners.iter().enumerate().rev() {
+        checkpoint()?;
         let parent = current.parent.as_deref().and_then(|parent_id| {
             selected
                 .fact_index(evidence, parent_id)
@@ -1731,56 +2193,68 @@ fn qualified_clause_matches(
             );
             if owner_index == 0
                 && parent_is_package_scope
-                && cargo_package_alias_matches(candidate, owner, evidence, selected)
+                && cargo_package_alias_matches_controlled(
+                    candidate, owner, evidence, selected, checkpoint,
+                )?
             {
-                return true;
+                return Ok(true);
             }
-            return false;
+            return Ok(false);
         }
-        if owner_index == 0 && cargo_package_alias_matches(candidate, owner, evidence, selected) {
-            return true;
+        if owner_index == 0
+            && cargo_package_alias_matches_controlled(
+                candidate, owner, evidence, selected, checkpoint,
+            )?
+        {
+            return Ok(true);
         }
-        return false;
+        return Ok(false);
     }
-    true
+    Ok(true)
 }
 
-fn cargo_package_alias_matches(
+fn cargo_package_alias_matches_controlled<E>(
     candidate: &SemanticQueryFact,
     owner: &str,
     evidence: &SemanticQueryCorpus,
     selected: &SelectedCorpus,
-) -> bool {
+    checkpoint: &mut impl FnMut() -> Result<(), E>,
+) -> Result<bool, E> {
     let SemanticQueryEvidence::Compiler(compiler) = candidate.evidence() else {
-        return false;
+        return Ok(false);
     };
     let package = compiler.package();
     let profile = compiler.profile();
     let package_row = RowId::Package(package).stable_key();
     let Some(package_index) = selected.fact_index(evidence, &package_row) else {
-        return false;
+        return Ok(false);
     };
     let Some(package_fact) = evidence.facts().get(package_index) else {
-        return false;
+        return Ok(false);
     };
     let SemanticQueryEvidence::Package(scope) = package_fact.evidence() else {
-        return false;
+        return Ok(false);
     };
     if scope.package() != package {
-        return false;
+        return Ok(false);
     }
     let Some(aliases) = scope.cargo_aliases() else {
-        return false;
+        return Ok(false);
     };
     let Some(observation) = aliases.observation(profile) else {
-        return false;
+        return Ok(false);
     };
-    observation.alias_indices().iter().any(|index| {
-        aliases
+    for index in observation.alias_indices() {
+        checkpoint()?;
+        if aliases
             .aliases()
             .get(usize::from(*index))
             .is_some_and(|alias| alias.as_str().eq_ignore_ascii_case(owner))
-    })
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 struct PreparedCorpus {
@@ -2163,6 +2637,10 @@ fn semantic_read_identity(view: &ViewRoot, evidence: [u8; 32]) -> Vec<u8> {
 /// Query construction or local materialization failure.
 #[derive(Debug)]
 pub enum QueryError {
+    /// The exact selected owner lifetime was retired during this scan.
+    SelectedViewRetired,
+    /// A bounded controlled operation could not reserve its descriptors.
+    Allocation(std::collections::TryReserveError),
     /// Empty text has no meaningful rank.
     EmptyQuery,
     /// Page size is outside the extension bound.
@@ -2338,9 +2816,24 @@ impl std::error::Error for LexicalFailureCause {
     }
 }
 
+impl From<std::collections::TryReserveError> for QueryError {
+    fn from(error: std::collections::TryReserveError) -> Self {
+        Self::Allocation(error)
+    }
+}
+impl From<lexical::TantivySourceError> for QueryError {
+    fn from(error: lexical::TantivySourceError) -> Self {
+        Self::provider(LexicalPhase::ScanHits, error)
+    }
+}
+
 impl fmt::Display for QueryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::SelectedViewRetired => {
+                formatter.write_str("selected query view was retired during execution")
+            }
+            Self::Allocation(error) => error.fmt(formatter),
             Self::EmptyQuery => formatter.write_str("query text is empty"),
             Self::InvalidLimit => formatter.write_str("query page limit is invalid"),
             Self::InvalidCursor => formatter.write_str("search cursor offset is invalid"),
@@ -2380,6 +2873,7 @@ impl fmt::Display for QueryError {
 impl std::error::Error for QueryError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Allocation(error) => Some(error),
             Self::Lexical(error) => Some(error),
             Self::LexicalProvider { cause, .. } => Some(cause),
             _ => None,
@@ -2875,6 +3369,41 @@ mod retained_local_rank_prefix_tests {
         assert_eq!(visits, 120);
     }
 
+    #[test]
+    fn controlled_heap_output_preserves_current_rank_and_allocation_and_stops_inside_sort() {
+        let mut expected = (0..2048)
+            .map(|index| hit(index, (index % 7) as u16))
+            .collect::<Vec<_>>();
+        expected.sort_unstable_by(compare);
+        let make = || {
+            let mut retained = RetainedLocalRankPrefix::new(1024).expect("rank storage");
+            for entry in expected.iter().rev() {
+                retained.offer(*entry, &compare);
+            }
+            retained
+        };
+        let retained = make();
+        let pointer = retained.hits.as_ptr();
+        let capacity = retained.hits.capacity();
+        let mut visits = 0;
+        let actual = retained
+            .into_sorted_controlled(compare, &mut || {
+                visits += 1;
+                Ok::<(), usize>(())
+            })
+            .expect("controlled output");
+        assert_eq!(actual, expected[..1024]);
+        assert_eq!(actual.as_ptr(), pointer);
+        assert_eq!(actual.capacity(), capacity);
+        assert!(visits > 1024);
+        let mut visited = 0;
+        let stopped = make().into_sorted_controlled(compare, &mut || {
+            visited += 1;
+            if visited == 513 { Err(visited) } else { Ok(()) }
+        });
+        assert_eq!(stopped, Err(513));
+        assert_eq!(visited, 513);
+    }
     #[test]
     fn deep_prefix_has_logarithmic_retention_work_and_no_growth_after_reservation() {
         const MATCHES: usize = 8_192;

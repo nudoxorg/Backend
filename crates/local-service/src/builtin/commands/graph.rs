@@ -218,6 +218,7 @@ pub(super) fn execute_search(
     generations: &mut super::super::generation_residence::SemanticGenerationResidence,
     image_rows: &mut super::super::view_build::ImageRowResidence,
     query: &backend_engine::Query,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(CommandReply, backend_library::SemanticSearchStatus), BuiltinModelError> {
     let selection = capture_search(daemon, compiler, snapshots, generations, image_rows)?;
     let coverage = selection.coverage;
@@ -230,12 +231,13 @@ pub(super) fn execute_search(
             selection.corpus,
         )
         .map_err(|error| BuiltinModelError(error.to_string()))?;
-    super::super::query::search_page(
+    super::super::query::search_page_with_cancellation(
         coordinator,
         daemon.engine().daemon().library(),
         remote_semantic,
         coverage,
         query,
+        cancelled,
     )
     .map(|(page, status)| (CommandReply::Search(page), status))
     .map_err(|error| BuiltinModelError(error.to_string()))

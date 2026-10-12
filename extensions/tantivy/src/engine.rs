@@ -1971,6 +1971,24 @@ impl TantivySource {
         Ok(total)
     }
 
+    /// Visits the exact hit stream with fallible document/token/callback checkpoints.
+    /// A refusal stops traversal and returns no successful total. Individual bounded
+    /// payload decode and Tantivy engine/I/O calls are checked before and after.
+    pub fn for_each_ranked_hit_controlled<E: From<TantivySourceError>, C: FnMut() -> Result<(), E>>(
+        &self,
+        query: &Query,
+        visit: impl FnMut(RankedHit, &mut C) -> Result<(), E>,
+        checkpoint: &mut C,
+    ) -> Result<usize, E> {
+        checkpoint()?;
+        self.ensure_live()?;
+        query
+            .validate(self.limits)
+            .map_err(TantivySourceError::from)?;
+        preflight_query_scratch(query, 0, self.rank_budget.max_scratch_bytes)?;
+        self.scan_ranked_hits_controlled(query, 0, visit, checkpoint)
+    }
+
     /// Resolves exact query relevance for a bounded candidate set by direct
     /// ordinal-to-document lookup, without scanning the query result set.
     ///
@@ -1983,20 +2001,33 @@ impl TantivySource {
         query: &Query,
         candidates: &[EntityId],
     ) -> Result<Vec<(EntityId, Relevance)>, TantivySourceError> {
+        self.relevance_for_candidates_controlled(query, candidates, &mut || Ok(()))
+    }
+
+    /// Direct bounded candidate scoring with a fallible token/document checkpoint.
+    pub fn relevance_for_candidates_controlled<E: From<TantivySourceError>>(
+        &self,
+        query: &Query,
+        candidates: &[EntityId],
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<Vec<(EntityId, Relevance)>, E> {
+        checkpoint()?;
         self.ensure_live()?;
-        query.validate(self.limits)?;
+        query
+            .validate(self.limits)
+            .map_err(TantivySourceError::from)?;
         if candidates.len() > self.limits.max_page {
-            return Err(Error::SizeLimit.into());
+            return Err(TantivySourceError::from(Error::SizeLimit).into());
         }
         let clause_bytes = query
             .terms
             .len()
             .checked_mul(size_of::<Option<Relevance>>())
-            .ok_or(Error::SizeLimit)?;
+            .ok_or_else(|| TantivySourceError::from(Error::SizeLimit))?;
         let result_bound_bytes = candidates
             .len()
             .checked_mul(size_of::<(EntityId, Relevance)>())
-            .ok_or(Error::SizeLimit)?;
+            .ok_or_else(|| TantivySourceError::from(Error::SizeLimit))?;
         preflight_query_scratch(
             query,
             result_bound_bytes,
@@ -2006,26 +2037,27 @@ impl TantivySource {
         let mut relevance = Vec::new();
         relevance
             .try_reserve_exact(candidates.len())
-            .map_err(|_| Error::SizeLimit)?;
+            .map_err(|_| TantivySourceError::from(Error::SizeLimit))?;
         let result_capacity_bytes = relevance
             .capacity()
             .checked_mul(size_of::<(EntityId, Relevance)>())
-            .ok_or(Error::SizeLimit)?;
+            .ok_or_else(|| TantivySourceError::from(Error::SizeLimit))?;
         let mut scratch = Vec::new();
         let mut best = Vec::new();
         best.try_reserve_exact(query.terms.len())
-            .map_err(|_| Error::SizeLimit)?;
+            .map_err(|_| TantivySourceError::from(Error::SizeLimit))?;
         let base_scratch_bytes = query_scratch_bytes(query, result_capacity_bytes)?;
         let actual_clause_bytes = best
             .capacity()
             .checked_mul(size_of::<Option<Relevance>>())
-            .ok_or(Error::SizeLimit)?;
+            .ok_or_else(|| TantivySourceError::from(Error::SizeLimit))?;
         let base_scratch_bytes = base_scratch_bytes
             .checked_add(actual_clause_bytes.saturating_sub(clause_bytes))
-            .ok_or(Error::SizeLimit)?;
+            .ok_or_else(|| TantivySourceError::from(Error::SizeLimit))?;
         ensure_rank_scratch_capacity(base_scratch_bytes, self.rank_budget.max_scratch_bytes)?;
         self.record_rank_scratch(base_scratch_bytes);
         for candidate in candidates.iter().copied() {
+            checkpoint()?;
             let Some(ordinal) = self
                 .documents
                 .ordinal_for_entity(&self.identity_ordinals, candidate)
@@ -2049,43 +2081,53 @@ impl TantivySource {
                 .ok_or_else(|| Self::corrupt("candidate segment address is missing"))?;
             let payloads = segment
                 .fast_fields()
-                .bytes(RANK_MATERIAL_FIELD_NAME)?
+                .bytes(RANK_MATERIAL_FIELD_NAME)
+                .map_err(TantivySourceError::from)?
                 .ok_or_else(|| Self::corrupt("rank payload fast field is missing"))?;
             let payload_length = segment
                 .fast_fields()
-                .u64(RANK_MATERIAL_LENGTH_FIELD_NAME)?
+                .u64(RANK_MATERIAL_LENGTH_FIELD_NAME)
+                .map_err(TantivySourceError::from)?
                 .values
                 .get_val(address.doc_id);
-            let payload_length = usize::try_from(payload_length).map_err(|_| Error::SizeLimit)?;
+            let payload_length = usize::try_from(payload_length)
+                .map_err(|_| TantivySourceError::from(Error::SizeLimit))?;
             if payload_length == 0 || payload_length > MAX_RANK_MATERIAL_BYTES {
                 return Err(Self::corrupt("rank payload length is outside its bound").into());
             }
             let required = base_scratch_bytes
                 .checked_add(payload_length)
-                .ok_or(Error::SizeLimit)?;
+                .ok_or_else(|| TantivySourceError::from(Error::SizeLimit))?;
             ensure_rank_scratch_capacity(required, self.rank_budget.max_scratch_bytes)?;
             if scratch.capacity() < payload_length {
                 scratch
                     .try_reserve_exact(payload_length.saturating_sub(scratch.len()))
-                    .map_err(|_| Error::SizeLimit)?;
+                    .map_err(|_| TantivySourceError::from(Error::SizeLimit))?;
             }
             let retained_scratch = base_scratch_bytes
                 .checked_add(scratch.capacity())
-                .ok_or(Error::SizeLimit)?;
+                .ok_or_else(|| TantivySourceError::from(Error::SizeLimit))?;
             ensure_rank_scratch_capacity(retained_scratch, self.rank_budget.max_scratch_bytes)?;
             self.record_rank_scratch(retained_scratch);
             let material = material_for_doc(&payloads, address.doc_id, &mut scratch)?;
             if material.len() != payload_length {
                 return Err(Self::corrupt("rank payload length disagrees with its column").into());
             }
-            let score =
-                self.score_rank_material(query, ordinal as u32, address, material, &mut best)?;
+            let score = self.score_rank_material_controlled(
+                query,
+                ordinal as u32,
+                address,
+                material,
+                &mut best,
+                checkpoint,
+            )?;
             if let Some(score) = score {
                 relevance.push((candidate, score.relevance));
             }
         }
         relevance.sort_unstable_by_key(|(entity, _)| *entity);
         relevance.dedup_by_key(|(entity, _)| *entity);
+        checkpoint()?;
         Ok(relevance)
     }
 
@@ -2128,24 +2170,37 @@ impl TantivySource {
         extra_scratch_bytes: usize,
         mut visit: impl FnMut(RankedHit) -> Result<(), TantivySourceError>,
     ) -> Result<usize, TantivySourceError> {
+        self.scan_ranked_hits_controlled(query, extra_scratch_bytes, |hit, _| visit(hit), &mut || {
+            Ok(())
+        })
+    }
+
+    fn scan_ranked_hits_controlled<E: From<TantivySourceError>, C: FnMut() -> Result<(), E>>(
+        &self,
+        query: &Query,
+        extra_scratch_bytes: usize,
+        mut visit: impl FnMut(RankedHit, &mut C) -> Result<(), E>,
+        checkpoint: &mut C,
+    ) -> Result<usize, E> {
+        checkpoint()?;
         let base_scratch_bytes = query_scratch_bytes(query, extra_scratch_bytes)?;
         ensure_rank_scratch_capacity(base_scratch_bytes, self.rank_budget.max_scratch_bytes)?;
         self.record_rank_scratch(base_scratch_bytes);
         let mut best = Vec::new();
         best.try_reserve_exact(query.terms.len())
-            .map_err(|_| Error::SizeLimit)?;
+            .map_err(|_| TantivySourceError::from(Error::SizeLimit))?;
         let clause_bytes = query
             .terms
             .len()
             .checked_mul(size_of::<Option<Relevance>>())
-            .ok_or(Error::SizeLimit)?;
+            .ok_or_else(|| TantivySourceError::from(Error::SizeLimit))?;
         let actual_clause_bytes = best
             .capacity()
             .checked_mul(size_of::<Option<Relevance>>())
-            .ok_or(Error::SizeLimit)?;
+            .ok_or_else(|| TantivySourceError::from(Error::SizeLimit))?;
         let actual_base_scratch_bytes = base_scratch_bytes
             .checked_add(actual_clause_bytes.saturating_sub(clause_bytes))
-            .ok_or(Error::SizeLimit)?;
+            .ok_or_else(|| TantivySourceError::from(Error::SizeLimit))?;
         ensure_rank_scratch_capacity(
             actual_base_scratch_bytes,
             self.rank_budget.max_scratch_bytes,
@@ -2155,20 +2210,33 @@ impl TantivySource {
         // and the per-clause rank scratch fit the source's declared allowance.
         let searcher = self.reader.searcher();
         let engine_query = self.compile_query(query);
-        let weight = engine_query.weight(EnableScoring::disabled_from_searcher(&searcher))?;
+        let weight = engine_query
+            .weight(EnableScoring::disabled_from_searcher(&searcher))
+            .map_err(TantivySourceError::from)?;
         let mut material = Vec::new();
         let mut total = 0usize;
         self.rank_evaluations.fetch_add(1, Ordering::Relaxed);
         for (segment_ord, segment) in searcher.segment_readers().iter().enumerate() {
-            let ordinals = segment.fast_fields().u64(ORDINAL_FIELD)?;
-            let payload_lengths = segment.fast_fields().u64(RANK_MATERIAL_LENGTH_FIELD)?;
+            checkpoint()?;
+            let ordinals = segment
+                .fast_fields()
+                .u64(ORDINAL_FIELD)
+                .map_err(TantivySourceError::from)?;
+            let payload_lengths = segment
+                .fast_fields()
+                .u64(RANK_MATERIAL_LENGTH_FIELD)
+                .map_err(TantivySourceError::from)?;
             let payloads = segment
                 .fast_fields()
-                .bytes(RANK_MATERIAL_FIELD_NAME)?
+                .bytes(RANK_MATERIAL_FIELD_NAME)
+                .map_err(TantivySourceError::from)?
                 .ok_or_else(|| Self::corrupt("rank payload fast field is missing"))?;
-            let mut scorer = weight.scorer(segment, 1.0)?;
+            let mut scorer = weight
+                .scorer(segment, 1.0)
+                .map_err(TantivySourceError::from)?;
             let mut doc = scorer.doc();
             while doc != TERMINATED {
+                checkpoint()?;
                 self.rank_docs_visited.fetch_add(1, Ordering::Relaxed);
                 // A raw Weight scorer can include tombstoned doc IDs. Collector
                 // APIs normally apply the segment's live-doc bitset; this
@@ -2179,46 +2247,50 @@ impl TantivySource {
                     continue;
                 }
                 let address = DocAddress::new(
-                    u32::try_from(segment_ord).map_err(|_| Error::SizeLimit)?,
+                    u32::try_from(segment_ord)
+                        .map_err(|_| TantivySourceError::from(Error::SizeLimit))?,
                     doc,
                 );
                 let length = usize::try_from(payload_lengths.values.get_val(doc))
-                    .map_err(|_| Error::SizeLimit)?;
+                    .map_err(|_| TantivySourceError::from(Error::SizeLimit))?;
                 if length == 0 || length > MAX_RANK_MATERIAL_BYTES {
                     return Err(Self::corrupt("rank payload length is outside its bound").into());
                 }
                 let required = actual_base_scratch_bytes
                     .checked_add(length)
-                    .ok_or(Error::SizeLimit)?;
+                    .ok_or_else(|| TantivySourceError::from(Error::SizeLimit))?;
                 ensure_rank_scratch_capacity(required, self.rank_budget.max_scratch_bytes)?;
                 self.record_rank_scratch(required);
                 if material.capacity() < length {
                     material
                         .try_reserve_exact(length.saturating_sub(material.len()))
-                        .map_err(|_| Error::SizeLimit)?;
+                        .map_err(|_| TantivySourceError::from(Error::SizeLimit))?;
                 }
                 let retained_scratch = actual_base_scratch_bytes
                     .checked_add(material.capacity())
-                    .ok_or(Error::SizeLimit)?;
+                    .ok_or_else(|| TantivySourceError::from(Error::SizeLimit))?;
                 ensure_rank_scratch_capacity(retained_scratch, self.rank_budget.max_scratch_bytes)?;
                 self.record_rank_scratch(retained_scratch);
-                let ordinal =
-                    u32::try_from(ordinals.values.get_val(doc)).map_err(|_| Error::SizeLimit)?;
+                let ordinal = u32::try_from(ordinals.values.get_val(doc))
+                    .map_err(|_| TantivySourceError::from(Error::SizeLimit))?;
                 let bytes = material_for_doc(&payloads, doc, &mut material)?;
                 if bytes.len() != length {
-                    return Err(
-                        Self::corrupt("rank payload length disagrees with its column").into(),
-                    );
+                    return Err(Self::corrupt("rank payload length disagrees with its column").into());
                 }
-                if let Some(hit) =
-                    self.score_rank_material(query, ordinal, address, bytes, &mut best)?
-                {
-                    total = total.checked_add(1).ok_or(Error::SizeLimit)?;
-                    visit(hit)?;
+                if let Some(hit) = self.score_rank_material_controlled(
+                    query, ordinal, address, bytes, &mut best, checkpoint,
+                )? {
+                    total = total
+                        .checked_add(1)
+                        .ok_or_else(|| TantivySourceError::from(Error::SizeLimit))?;
+                    checkpoint()?;
+                    visit(hit, checkpoint)?;
+                    checkpoint()?;
                 }
                 doc = scorer.advance();
             }
         }
+        checkpoint()?;
         Ok(total)
     }
 
@@ -2228,14 +2300,16 @@ impl TantivySource {
             .fetch_max(bytes, Ordering::Relaxed);
     }
 
-    fn score_rank_material(
+    fn score_rank_material_controlled<E: From<TantivySourceError>>(
         &self,
         query: &Query,
         ordinal: u32,
         address: DocAddress,
         bytes: &[u8],
         best: &mut Vec<Option<Relevance>>,
-    ) -> Result<Option<RankedHit>, TantivySourceError> {
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<Option<RankedHit>, E> {
+        checkpoint()?;
         let Some(entry) = self.documents.get_entry(ordinal as usize) else {
             return Err(Self::corrupt("Tantivy ordinal is outside the selected binding").into());
         };
@@ -2244,19 +2318,23 @@ impl TantivySource {
                 Self::corrupt("Tantivy row address disagrees with the selected ordinal").into(),
             );
         }
-        let (payload_ordinal, id, digest, field_count, mut offset) =
-            parse_rank_material_header(bytes)?;
+        let (payload_ordinal, id, digest, field_count, mut offset) = parse_rank_material_header(bytes)?;
         if payload_ordinal != ordinal
             || id != *entry.document.id.as_bytes()
             || digest != entry.document.fields_digest
         {
-            return Err(Self::corrupt(
-                "Tantivy row identity disagrees with the selected generation",
-            )
-            .into());
+            return Err(
+                Self::corrupt("Tantivy row identity disagrees with the selected generation").into(),
+            );
         }
         if query.terms.is_empty() {
-            let postings = validate_rank_material_tail(bytes, offset, field_count, self.limits)?;
+            let postings = validate_rank_material_tail_controlled(
+                bytes,
+                offset,
+                field_count,
+                self.limits,
+                checkpoint,
+            )?;
             if postings != entry.document.postings {
                 return Err(
                     Self::corrupt("rank payload posting count differs from ordinal map").into(),
@@ -2274,6 +2352,7 @@ impl TantivySource {
         best.resize(query.terms.len(), None::<Relevance>);
         let mut total_tokens = 0u32;
         for _ in 0..field_count {
+            checkpoint()?;
             let field_len = read_material_u32(bytes, &mut offset)? as usize;
             if field_len == 0 || field_len > self.limits.max_field_bytes {
                 return Err(Self::corrupt("rank payload field length is invalid").into());
@@ -2287,7 +2366,10 @@ impl TantivySource {
             }
             let token_count = read_material_u32(bytes, &mut offset)?;
             for _ in 0..token_count {
-                total_tokens = total_tokens.checked_add(1).ok_or(Error::SizeLimit)?;
+                checkpoint()?;
+                total_tokens = total_tokens
+                    .checked_add(1)
+                    .ok_or_else(|| TantivySourceError::from(Error::SizeLimit))?;
                 let token_len = read_material_u32(bytes, &mut offset)? as usize;
                 if token_len == 0 || token_len > self.limits.max_field_bytes {
                     return Err(Self::corrupt("rank payload token length is invalid").into());
@@ -2301,8 +2383,10 @@ impl TantivySource {
                 }
                 if !matches!(&query.fields, FieldSelection::Only(selected) if selected != field) {
                     for (clause, term) in query.terms.iter().enumerate() {
+                        checkpoint()?;
                         if query_token_matches(query, term, token) {
-                            let score = Relevance::new(term.len(), ranking_bytes, weight, 1)?;
+                            let score = Relevance::new(term.len(), ranking_bytes, weight, 1)
+                                .map_err(TantivySourceError::from)?;
                             best[clause] =
                                 Some(best[clause].map_or(score, |current| current.max(score)));
                         }
@@ -2311,18 +2395,19 @@ impl TantivySource {
             }
         }
         if offset != bytes.len() || total_tokens != entry.document.postings {
-            return Err(
-                Self::corrupt("rank payload is malformed or has another posting count").into(),
-            );
+            return Err(Self::corrupt("rank payload is malformed or has another posting count").into());
         }
         let Some(mut relevance) = best.first().and_then(|value| *value) else {
             return Ok(None);
         };
         for clause in best.iter().skip(1) {
+            checkpoint()?;
             let Some(clause) = *clause else {
                 return Ok(None);
             };
-            relevance = relevance.combine(clause)?;
+            relevance = relevance
+                .combine(clause)
+                .map_err(TantivySourceError::from)?;
         }
         Ok(Some(RankedHit {
             document: entry.document.id,
@@ -4931,17 +5016,28 @@ fn read_material_slice<'a>(
 
 fn validate_rank_material_tail(
     bytes: &[u8],
-    mut offset: usize,
+    offset: usize,
     field_count: usize,
     limits: Limits,
 ) -> Result<u32, TantivySourceError> {
+    validate_rank_material_tail_controlled(bytes, offset, field_count, limits, &mut || Ok(()))
+}
+
+fn validate_rank_material_tail_controlled<E: From<TantivySourceError>>(
+    bytes: &[u8],
+    mut offset: usize,
+    field_count: usize,
+    limits: Limits,
+    checkpoint: &mut impl FnMut() -> Result<(), E>,
+) -> Result<u32, E> {
     if field_count > limits.max_fields_per_document {
         return Err(TantivySource::corrupt("rank payload has too many fields").into());
     }
     let mut postings = 0u32;
     for _ in 0..field_count {
+        checkpoint()?;
         let field_len = usize::try_from(read_material_u32(bytes, &mut offset)?)
-            .map_err(|_| Error::SizeLimit)?;
+            .map_err(|_| TantivySourceError::from(Error::SizeLimit))?;
         if field_len == 0 || field_len > limits.max_field_bytes {
             return Err(TantivySource::corrupt("rank payload field length is invalid").into());
         }
@@ -4953,11 +5049,14 @@ fn validate_rank_material_tail(
             return Err(TantivySource::corrupt("rank payload field weight is invalid").into());
         }
         let token_count = usize::try_from(read_material_u32(bytes, &mut offset)?)
-            .map_err(|_| Error::SizeLimit)?;
+            .map_err(|_| TantivySourceError::from(Error::SizeLimit))?;
         for _ in 0..token_count {
-            postings = postings.checked_add(1).ok_or(Error::SizeLimit)?;
+            checkpoint()?;
+            postings = postings
+                .checked_add(1)
+                .ok_or_else(|| TantivySourceError::from(Error::SizeLimit))?;
             let token_len = usize::try_from(read_material_u32(bytes, &mut offset)?)
-                .map_err(|_| Error::SizeLimit)?;
+                .map_err(|_| TantivySourceError::from(Error::SizeLimit))?;
             if token_len == 0 || token_len > limits.max_field_bytes {
                 return Err(TantivySource::corrupt("rank payload token length is invalid").into());
             }
@@ -4965,7 +5064,7 @@ fn validate_rank_material_tail(
             std::str::from_utf8(token)
                 .map_err(|_| TantivySource::corrupt("rank token is not UTF-8"))?;
             let ranking_bytes = usize::try_from(read_material_u32(bytes, &mut offset)?)
-                .map_err(|_| Error::SizeLimit)?;
+                .map_err(|_| TantivySourceError::from(Error::SizeLimit))?;
             if ranking_bytes == 0 || ranking_bytes > limits.max_field_bytes {
                 return Err(TantivySource::corrupt("rank payload token weight is invalid").into());
             }
@@ -5780,6 +5879,28 @@ impl crate::Adapter<TantivySource> {
         candidates: &[EntityId],
     ) -> Result<Vec<(EntityId, Relevance)>, TantivySourceError> {
         self.source().relevance_for_candidates(query, candidates)
+    }
+
+    /// Exact hit traversal with caller-owned typed interruption.
+    pub fn for_each_ranked_hit_controlled<E: From<TantivySourceError>, C: FnMut() -> Result<(), E>>(
+        &self,
+        query: &Query,
+        visit: impl FnMut(RankedHit, &mut C) -> Result<(), E>,
+        checkpoint: &mut C,
+    ) -> Result<usize, E> {
+        self.source()
+            .for_each_ranked_hit_controlled(query, visit, checkpoint)
+    }
+
+    /// Direct candidate scoring with caller-owned typed interruption.
+    pub fn relevance_for_candidates_controlled<E: From<TantivySourceError>>(
+        &self,
+        query: &Query,
+        candidates: &[EntityId],
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<Vec<(EntityId, Relevance)>, E> {
+        self.source()
+            .relevance_for_candidates_controlled(query, candidates, checkpoint)
     }
 
     /// Compatibility no-op; query pages do not retain all-match rank state.

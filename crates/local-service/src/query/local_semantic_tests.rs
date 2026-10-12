@@ -1,0 +1,1399 @@
+//! Production-path protocol controls. This worker is a fixture, never a pretrained-model proof.
+use super::*;
+use crate::builtin::query::{LocalEmbeddingTreatment, LocalQuery, LocalQueryRecipeContract};
+use backend_engine::application::EmbeddingRuntimeProvision;
+#[cfg(unix)]
+use backend_engine::application::{
+    EmbeddingRequirement, EmbeddingRuntimeInstall, EmbeddingRuntimeLimits,
+    install_embedding_runtime,
+};
+#[cfg(unix)]
+use std::num::{NonZeroU16, NonZeroU32};
+#[cfg(unix)]
+use std::sync::{Arc, atomic::AtomicBool};
+#[cfg(unix)]
+use std::time::{Duration, Instant};
+
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+#[cfg(unix)]
+fn selected() -> Result<
+    (
+        QueryCoordinator,
+        backend_library::Library,
+        backend_engine::ViewRoot,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let (workspace, view) = super::super::tests::selected_view();
+    let evidence = super::super::tests::semantic_evidence(workspace, &view);
+    let coordinator = QueryCoordinator::new(
+        workspace,
+        view.clone(),
+        view.capability().ok_or("view capability")?,
+        crate::builtin::admitted_coverage()?,
+        evidence,
+    )?;
+    let library = backend_library::Library::from_view(
+        view.clone(),
+        backend_library::Cursor::for_view_root(&view),
+    )?;
+    Ok((coordinator, library, view))
+}
+
+#[cfg(unix)]
+fn selected_many(
+    count: usize,
+    oversized_last: bool,
+) -> Result<
+    (
+        QueryCoordinator,
+        backend_library::Library,
+        backend_engine::ViewRoot,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let head = crate::builtin::genesis().map_err(|error| error.to_string())?;
+    let (base, _) = crate::builtin::initial_view().map_err(|error| error.to_string())?;
+    let capability =
+        crate::builtin::test_builtin_view_capability().map_err(|error| error.to_string())?;
+    let package = backend_engine::package_key("pkg");
+    let mut rows = vec![backend_engine::Row::new(
+        backend_engine::RowId::Package(package),
+        base.basis(),
+        "pkg",
+    )];
+    for index in 0..count {
+        let label = if index + 1 == count {
+            "meaning related winner".to_owned()
+        } else {
+            format!("fixture declaration {index}")
+        };
+        rows.push(backend_engine::Row::in_package(
+            backend_engine::RowId::Symbol(backend_engine::symbol_key(&label)),
+            base.basis(),
+            package,
+            label,
+        ));
+    }
+    if oversized_last {
+        let row = rows.iter_mut().max_by_key(|row| row.id).ok_or("last row")?;
+        *row = row
+            .clone()
+            .with_document(vec![backend_engine::Fragment::Text("x".repeat(8192))]);
+    }
+    let view = backend_engine::ViewRoot::new_checked(
+        base.recipe(),
+        base.basis(),
+        base.frontier(),
+        rows,
+        vec![backend_engine::ViewCoverage::Complete],
+        capability,
+    )?;
+    let evidence = super::super::tests::semantic_evidence(head.root(), &view);
+    let coordinator = QueryCoordinator::new(
+        head.root(),
+        view.clone(),
+        capability,
+        crate::builtin::admitted_coverage().map_err(|error| error.to_string())?,
+        evidence,
+    )?;
+    let library = backend_library::Library::from_view(
+        view.clone(),
+        backend_library::Cursor::for_view_root(&view),
+    )?;
+    Ok((coordinator, library, view))
+}
+
+#[cfg(unix)]
+struct ProtocolFixture {
+    _directory: tempfile::TempDir,
+    provision: EmbeddingRuntimeProvision,
+    descriptor: std::path::PathBuf,
+    log: std::path::PathBuf,
+    entered: std::path::PathBuf,
+    release: std::path::PathBuf,
+}
+
+#[cfg(unix)]
+fn fixture(maximum_text: u32) -> Result<ProtocolFixture, Box<dyn std::error::Error>> {
+    fixture_with_mode_and_winner(maximum_text, "plain", "")
+}
+
+#[cfg(unix)]
+fn fixture_with_mode(
+    maximum_text: u32,
+    mode: &str,
+) -> Result<ProtocolFixture, Box<dyn std::error::Error>> {
+    fixture_with_mode_and_winner(maximum_text, mode, "")
+}
+
+#[cfg(unix)]
+fn fixture_with_mode_and_winner(
+    maximum_text: u32,
+    mode: &str,
+    winner_text: &str,
+) -> Result<ProtocolFixture, Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir()?;
+    let program = directory.path().join("protocol-fixture.py");
+    let log = directory.path().join("input.jsonl");
+    let entered = directory.path().join("second-page-entered");
+    let release = directory.path().join("second-page-release");
+    std::fs::write(
+        &program,
+        br"#!/usr/bin/python3
+import json, os, struct, sys, time
+frame = sys.stdin.buffer.read()
+if frame[:4] != b'BEM2' or len(frame) < 108: sys.exit(3)
+purpose = frame[4]
+count = struct.unpack('>I', frame[104:108])[0]
+offset = 108
+entries = []
+for _ in range(count):
+    identity = frame[offset:offset+32]
+    length = struct.unpack('>I', frame[offset+32:offset+36])[0]
+    offset += 36
+    text = frame[offset:offset+length].decode('utf8')
+    offset += length
+    entries.append((identity,text))
+if offset != len(frame): sys.exit(4)
+with open(os.environ['FIXTURE_LOG'], 'a') as log:
+    log.write(json.dumps({'purpose':purpose,'texts':[text for _,text in entries]}) + '\n')
+with open(os.environ['FIXTURE_LOG']) as log:
+    documents = sum(json.loads(line)['purpose'] == 2 for line in log)
+mode = os.environ['FIXTURE_MODE']
+if purpose == 2 and documents == 2 and mode != 'plain':
+    with open(os.environ['FIXTURE_ENTERED'], 'w') as marker: marker.write('entered')
+    if mode == 'fail-second': sys.exit(9)
+    while not os.path.exists(os.environ['FIXTURE_RELEASE']): time.sleep(0.005)
+response = bytearray(b'BEC2' + struct.pack('>HI',2,count))
+for identity,text in entries:
+    winner_text = os.environ['FIXTURE_WINNER_TEXT']
+    winner = purpose == 1 or (text == winner_text if winner_text else 'meaning related' in text)
+    response.extend(identity)
+    response.extend(struct.pack('<ff', 0.0 if winner else 1.0, 1.0 if winner else 0.0))
+sys.stdout.buffer.write(response)",
+    )?;
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700))?;
+    let contract = LocalQueryRecipeContract {
+        metric: vector::Metric::CosineDistance,
+        pooling: vector::EmbeddingPooling::Mean,
+        encoding: vector::EmbeddingEncoding::Float32,
+        query_treatment: LocalEmbeddingTreatment::UnmodifiedUtf8,
+        document_treatment: LocalEmbeddingTreatment::UnmodifiedUtf8,
+        provider_options: *blake3::hash(b"explicit fixture tokenizer/pool options").as_bytes(),
+    };
+    let config = directory.path().join("embedding.config");
+    let spec = install_embedding_runtime(
+        &config,
+        EmbeddingRuntimeInstall {
+            requirement: EmbeddingRequirement::Optional,
+            program,
+            arguments: Vec::new(),
+            dependencies: Vec::new(),
+            environment: vec![
+                ("FIXTURE_LOG".into(), log.to_string_lossy().into_owned()),
+                ("FIXTURE_MODE".into(), mode.to_owned()),
+                ("FIXTURE_WINNER_TEXT".into(), winner_text.to_owned()),
+                (
+                    "FIXTURE_ENTERED".into(),
+                    entered.to_string_lossy().into_owned(),
+                ),
+                (
+                    "FIXTURE_RELEASE".into(),
+                    release.to_string_lossy().into_owned(),
+                ),
+            ],
+            limits: EmbeddingRuntimeLimits {
+                stdout_bytes: 128 * 1024,
+                stderr_bytes: 1024,
+                output_bytes: 129 * 1024,
+                input_bytes: 1024 * 1024,
+                wall_time_ms: 5000,
+                workspace_bytes: 1024 * 1024,
+                process_count: 8,
+                memory_bytes: None,
+                cpu_time_ms: None,
+                resident_credit_bytes: 128 * 1024 * 1024,
+            },
+            model_bytes: b"fixture model bytes".to_vec(),
+            tokenizer_bytes: b"fixture tokenizer bytes".to_vec(),
+            dimension: NonZeroU16::new(2).ok_or("dimension")?,
+            normalization: backend_compile::EmbeddingNormalization::L2,
+            maximum_text_bytes: NonZeroU32::new(maximum_text).ok_or("text bound")?,
+            options_digest: contract.options_digest(),
+        },
+    )?;
+    let descriptor = directory.path().join("embedding-query.config");
+    backend_platform::durable::write_private_atomic(
+        &descriptor,
+        &LocalQueryRecipeDescriptor::new(spec, contract)?.canonical_bytes(),
+    )?;
+    let provision = EmbeddingRuntimeProvision::open(&config)?;
+    if provision.runtime().is_none() {
+        return Err("fixture activation must actually succeed".into());
+    }
+    Ok(ProtocolFixture {
+        _directory: directory,
+        provision,
+        descriptor,
+        log,
+        entered,
+        release,
+    })
+}
+
+#[cfg(unix)]
+fn settle_page(
+    coordinator: &QueryCoordinator,
+    library: &backend_library::Library,
+    provider: &mut crate::builtin::query::RemoteSemantic,
+    request: &backend_engine::Query,
+    flag: Arc<AtomicBool>,
+) -> Result<(backend_engine::ViewSnapshot, SemanticSearchStatus), Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let page = super::super::search_page_with_cancellation(
+            coordinator,
+            library,
+            provider,
+            crate::builtin::admitted_coverage()?,
+            request,
+            Arc::clone(&flag),
+        )
+        .map_err(|error| error.to_string())?;
+        if !matches!(
+            page.1,
+            SemanticSearchStatus::Unavailable {
+                reason: SemanticSearchReason::NoActiveProjection
+            }
+        ) {
+            return Ok(page);
+        }
+        if Instant::now() >= deadline {
+            return Err("fixture semantic worker did not retire".into());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[cfg(unix)]
+fn wait_for_fixture_marker(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while !path.exists() {
+        if Instant::now() >= deadline {
+            return Err("fixture did not enter second page".into());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    Ok(())
+}
+
+#[test]
+fn local_semantic_missing_setup_preserves_cause_and_explicit_remote_choice() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let provision = EmbeddingRuntimeProvision::open(directory.path().join("embedding.config"))?;
+    let path = directory.path().join("embedding-query.config");
+    let missing = crate::builtin::query::RemoteSemantic::select_owner(
+        &provision,
+        &path,
+        crate::builtin::query::RemoteSemantic::Unconfigured,
+    );
+    let cause = missing
+        .local_failure()
+        .ok_or("retained local setup cause")?;
+    assert!(matches!(
+        cause,
+        LocalSemanticError::RuntimeUnavailable(
+            backend_engine::application::EmbeddingRuntimeStatus::NotConfigured
+        )
+    ));
+    assert!(missing.is_unconfigured());
+    assert!(
+        cause
+            .setup_instruction()
+            .contains("compiler/embedding.config")
+    );
+    let explicit = crate::builtin::query::RemoteSemantic::select_owner(
+        &provision,
+        &path,
+        crate::builtin::query::RemoteSemantic::Unavailable(Box::new(
+            crate::builtin::query::RemoteConfigError::MissingValue(
+                crate::builtin::query::QDRANT_COLLECTION_ENV,
+            ),
+        )),
+    );
+    assert!(matches!(
+        explicit,
+        crate::builtin::query::RemoteSemantic::Unavailable(_)
+    ));
+    assert!(explicit.local_failure().is_none());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn local_semantic_real_protocol_fixture_contributes_exact_canonical_rows_and_shared_credits()
+-> TestResult {
+    let (coordinator, library, view) = selected_many(300, false)?;
+    let documents = coordinator
+        .semantic_document_pages(NonZeroUsize::new(256).ok_or("page")?)?
+        .flatten()
+        .collect::<Vec<_>>();
+    let winner = documents
+        .iter()
+        .max_by_key(|document| coordinator.semantic_candidate(document.row))
+        .ok_or("winner")?;
+    let winner_row = winner.row;
+    let fixture = fixture_with_mode_and_winner(4096, "plain", &winner.text)?;
+    let winner_id = coordinator
+        .semantic_candidate(winner_row)
+        .ok_or("winner id")?;
+    assert!(
+        documents
+            .iter()
+            .filter_map(|document| coordinator.semantic_candidate(document.row))
+            .filter(|id| *id < winner_id)
+            .count()
+            > 4 * 3,
+        "winner beyond any 4*limit candidate prefix"
+    );
+    let mut provider = crate::builtin::query::RemoteSemantic::select_owner(
+        &fixture.provision,
+        &fixture.descriptor,
+        crate::builtin::query::RemoteSemantic::Unconfigured,
+    );
+    let runtime = fixture.provision.runtime().ok_or("shared runtime")?;
+    if let crate::builtin::query::RemoteSemantic::Local(local) = &provider {
+        assert!(
+            std::sync::Arc::ptr_eq(local.admitted_runtime(), &runtime),
+            "factory must retain exact compiler owner, not equivalent activation"
+        );
+        assert_eq!(
+            local.inventory_status().lifecycle(),
+            backend_engine::CapabilityLifecycle::Installed
+        );
+    } else {
+        return Err("local recipe admission".into());
+    }
+    let baseline = runtime.memory_budget().used();
+    let request =
+        backend_engine::Query::new("intent", view.root(), backend_engine::QueryLimit::new(3)?);
+    let flag = Arc::new(AtomicBool::new(false)); // Actual fixture selection lifetime; no transport claim.
+    let before = std::fs::read_to_string(&fixture.log)?.lines().count();
+    let (page, status) = super::super::search_page_with_cancellation(
+        &coordinator,
+        &library,
+        &mut provider,
+        crate::builtin::admitted_coverage()?,
+        &request,
+        Arc::clone(&flag),
+    )
+    .map_err(|error| error.to_string())?;
+    assert_eq!(
+        status,
+        SemanticSearchStatus::Unavailable {
+            reason: SemanticSearchReason::NoActiveProjection
+        }
+    );
+    assert!(page.rows().is_empty());
+    let (page, status) = settle_page(
+        &coordinator,
+        &library,
+        &mut provider,
+        &request,
+        Arc::clone(&flag),
+    )?;
+    assert_eq!(status, SemanticSearchStatus::Available);
+    assert!(page.rows().iter().any(|row| row.id == winner_row));
+    let log = std::fs::read_to_string(&fixture.log)?;
+    let invocations = log
+        .lines()
+        .skip(before)
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    let observed = invocations
+        .iter()
+        .filter(|entry| entry["purpose"] == 2)
+        .flat_map(|entry| entry["texts"].as_array().into_iter().flatten())
+        .filter_map(serde_json::Value::as_str)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        observed,
+        documents
+            .iter()
+            .map(|document| document.text.as_str())
+            .collect::<Vec<_>>()
+    );
+    let page_counts = invocations
+        .iter()
+        .filter(|entry| entry["purpose"] == 2)
+        .map(|entry| entry["texts"].as_array().map_or(0, Vec::len))
+        .collect::<Vec<_>>();
+    assert_eq!(page_counts, [256, 45]);
+    if let crate::builtin::query::RemoteSemantic::Local(local) = &provider {
+        let projection = local
+            .core()
+            .ok_or("idle semantic owner")?
+            .active
+            .as_ref()
+            .ok_or("complete projection")?;
+        let mut oracle = documents
+            .iter()
+            .map(|document| {
+                let id = coordinator
+                    .semantic_candidate(document.row)
+                    .ok_or("candidate")?;
+                let score = if document.row == winner_row {
+                    0.0f32
+                } else {
+                    1.0f32
+                };
+                Ok((score, id))
+            })
+            .collect::<Result<Vec<_>, &'static str>>()?;
+        oracle.sort_by(|left, right| {
+            left.0
+                .total_cmp(&right.0)
+                .then_with(|| left.1.cmp(&right.1))
+        });
+        let query = vector::QueryVector::new(local.recipe(), vec![0.0, 1.0])?;
+        let exact = projection.index.search_exact_embedding(
+            projection.index.binding(),
+            &query,
+            3,
+            projection.limits,
+        )?;
+        assert_eq!(
+            exact
+                .candidates
+                .iter()
+                .map(|candidate| (candidate.score, candidate.id))
+                .collect::<Vec<_>>(),
+            oracle[..3]
+        );
+        assert_eq!(exact.quality, vector::SearchQuality::Exact);
+    } else {
+        return Err("configured local owner required".into());
+    }
+    assert!(
+        invocations
+            .iter()
+            .any(|entry| entry["purpose"] == 1 && entry["texts"][0] == "intent")
+    );
+    assert!(runtime.memory_budget().used() > baseline);
+    let projection_credits = runtime.memory_budget().used();
+    let (_, warm) = settle_page(
+        &coordinator,
+        &library,
+        &mut provider,
+        &request,
+        Arc::clone(&flag),
+    )?;
+    assert_eq!(warm, SemanticSearchStatus::Available);
+    assert_eq!(
+        std::fs::read_to_string(&fixture.log)?.lines().count(),
+        log.lines().count(),
+        "same actual inputs must reuse runtime coordinates"
+    );
+    flag.store(true, Ordering::Release);
+    let scan_count = coordinator.corpus.lexical.rank_evaluations();
+    let cancelled = super::super::search_page_with_cancellation(
+        &coordinator,
+        &library,
+        &mut provider,
+        crate::builtin::admitted_coverage()?,
+        &request,
+        Arc::clone(&flag),
+    );
+    assert!(matches!(
+        cancelled,
+        Err(super::super::SearchPageError::Local(
+            QueryError::SelectedViewRetired
+        ))
+    ));
+    assert_eq!(
+        coordinator.corpus.lexical.rank_evaluations(),
+        scan_count,
+        "retired selection must not begin another lexical scan"
+    );
+    // The direct semantic fallback contract still retains a previously complete
+    // lexical answer; initial selected execution now refuses before that boundary.
+    let fallback = provider.search_local_with_cancellation(
+        &coordinator,
+        crate::builtin::admitted_coverage()?,
+        coordinator.search_local_page(&request)?,
+        request.text(),
+        Some(Arc::clone(&flag)),
+    );
+    assert!(matches!(
+        fallback.status,
+        SemanticSearchStatus::Unavailable { .. }
+    ));
+    assert!(
+        fallback.result.rows.is_empty(),
+        "cancelled projection retains the original empty lexical answer"
+    );
+    assert!(matches!(
+        provider.local_failure(),
+        Some(LocalSemanticError::Inference(
+            EmbeddingExecutableError::Process(backend_compile::ProcessError::Cancelled)
+        ))
+    ));
+    assert!(
+        runtime.memory_budget().used() < projection_credits,
+        "whole projection lease must release"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn local_semantic_complete_corpus_text_and_memory_refusals_invoke_no_producer() -> TestResult {
+    let limited = fixture(4096)?;
+    let (coordinator, _, _) = selected_many(300, true)?;
+    let mut local = LocalSemantic::open(&limited.provision, &limited.descriptor)?;
+    let before = std::fs::read_to_string(&limited.log)?;
+    let answer = coordinator.search_local(LocalQuery::prefix("alpha", 3)?)?;
+    let flag = AtomicBool::new(false);
+    let (_, status) = local.search(
+        &coordinator,
+        crate::builtin::admitted_coverage()?,
+        answer,
+        "alpha",
+        &flag,
+    );
+    assert!(matches!(status, SemanticSearchStatus::Unavailable { .. }));
+    assert!(matches!(
+        local.failure(),
+        Some(LocalSemanticError::Corpus(
+            QueryError::SemanticDocumentTooLarge { .. }
+        ))
+    ));
+    assert!(!local.has_projection());
+    assert_eq!(std::fs::read_to_string(&limited.log)?, before);
+
+    let sufficient = fixture(4096)?;
+    let (coordinator, _, _) = selected()?;
+    let runtime = sufficient.provision.runtime().ok_or("runtime")?;
+    let mut local = LocalSemantic::open(&sufficient.provision, &sufficient.descriptor)?;
+    let retained = runtime
+        .memory_budget()
+        .reserve(runtime.memory_budget().capacity() - runtime.memory_budget().used())?;
+    let before = std::fs::read_to_string(&sufficient.log)?;
+    let answer = coordinator.search_local(LocalQuery::prefix("alpha", 3)?)?;
+    let (_, status) = local.search(
+        &coordinator,
+        crate::builtin::admitted_coverage()?,
+        answer,
+        "alpha",
+        &flag,
+    );
+    assert!(matches!(status, SemanticSearchStatus::Unavailable { .. }));
+    assert!(matches!(
+        local.failure(),
+        Some(LocalSemanticError::Memory(_))
+    ));
+    assert!(!local.has_projection());
+    assert_eq!(std::fs::read_to_string(&sufficient.log)?, before);
+    drop(retained);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn local_semantic_descriptor_absence_mismatch_and_symlink_never_activate_a_second_runtime()
+-> TestResult {
+    let fixture = fixture(4096)?;
+    let before = std::fs::read_to_string(&fixture.log)?;
+    std::fs::remove_file(&fixture.descriptor)?;
+    assert!(matches!(
+        LocalSemantic::open(&fixture.provision, &fixture.descriptor),
+        Err(LocalSemanticError::RecipeNotConfigured)
+    ));
+    let malformed = vec![0u8; 214];
+    backend_platform::durable::write_private_atomic(&fixture.descriptor, &malformed)?;
+    assert!(matches!(
+        LocalSemantic::open(&fixture.provision, &fixture.descriptor),
+        Err(LocalSemanticError::Recipe(
+            LocalQueryRecipeError::DescriptorFormat
+        ))
+    ));
+    std::fs::remove_file(&fixture.descriptor)?;
+    let target = fixture._directory.path().join("foreign-query.config");
+    std::fs::write(&target, malformed)?;
+    std::os::unix::fs::symlink(&target, &fixture.descriptor)?;
+    assert!(matches!(
+        LocalSemantic::open(&fixture.provision, &fixture.descriptor),
+        Err(LocalSemanticError::DescriptorIo(_))
+    ));
+    assert_eq!(std::fs::read_to_string(&fixture.log)?, before);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn local_semantic_gated_worker_serves_complete_lexical_pages_and_retires_actual_selection()
+-> TestResult {
+    let fixture = fixture_with_mode(4096, "gate-second")?;
+    let (coordinator, library, view) = selected_many(300, false)?;
+    let mut provider = crate::builtin::query::RemoteSemantic::select_owner(
+        &fixture.provision,
+        &fixture.descriptor,
+        crate::builtin::query::RemoteSemantic::Unconfigured,
+    );
+    let runtime = fixture.provision.runtime().ok_or("runtime")?;
+    let baseline = runtime.memory_budget().used();
+    let request =
+        backend_engine::Query::new("fixture", view.root(), backend_engine::QueryLimit::new(3)?);
+    let expected = super::super::search_page(
+        &coordinator,
+        &library,
+        &mut crate::builtin::query::RemoteSemantic::Unconfigured,
+        crate::builtin::admitted_coverage()?,
+        &request,
+    )
+    .map_err(|error| error.to_string())?
+    .0;
+    let flag = Arc::new(AtomicBool::new(false));
+    let first = super::super::search_page_with_cancellation(
+        &coordinator,
+        &library,
+        &mut provider,
+        crate::builtin::admitted_coverage()?,
+        &request,
+        Arc::clone(&flag),
+    )
+    .map_err(|error| error.to_string())?;
+    assert_eq!(
+        first.1,
+        SemanticSearchStatus::Unavailable {
+            reason: SemanticSearchReason::NoActiveProjection
+        }
+    );
+    assert_eq!(first.0, expected);
+    wait_for_fixture_marker(&fixture.entered)?;
+    let calls = std::fs::read_to_string(&fixture.log)?;
+    assert_eq!(
+        provider.local_preparation(),
+        Some(backend_library::QueryPreparationState::Preparing)
+    );
+    let held = runtime.memory_budget().used();
+    for _ in 0..8 {
+        let waiting = super::super::search_page_with_cancellation(
+            &coordinator,
+            &library,
+            &mut provider,
+            crate::builtin::admitted_coverage()?,
+            &request,
+            Arc::clone(&flag),
+        )
+        .map_err(|error| error.to_string())?;
+        assert_eq!(
+            waiting.1,
+            SemanticSearchStatus::Unavailable {
+                reason: SemanticSearchReason::NoActiveProjection
+            }
+        );
+        assert_eq!(waiting.0, expected);
+    }
+    assert_eq!(
+        std::fs::read_to_string(&fixture.log)?,
+        calls,
+        "one worker, no inference queue"
+    );
+    let (changed, _, changed_view) = selected_many(301, false)?;
+    provider.poll_local(changed.workspace_root(), changed_view.root());
+    assert!(flag.load(Ordering::Acquire));
+    assert_eq!(
+        provider.local_preparation(),
+        Some(backend_library::QueryPreparationState::Retiring)
+    );
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        provider.poll_local(changed.workspace_root(), changed_view.root());
+        if provider.local_preparation().is_none() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err("cancelled fixture did not retire".into());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(matches!(
+        provider.local_failure(),
+        Some(LocalSemanticError::Inference(
+            EmbeddingExecutableError::Process(backend_compile::ProcessError::Cancelled)
+        ))
+    ));
+    assert!(
+        runtime.memory_budget().used() < held,
+        "projection/page/query/dispatch leases released"
+    );
+    assert!(
+        runtime.memory_budget().used() >= baseline,
+        "validated runtime cache may retain first-page coordinates"
+    );
+    if let crate::builtin::query::RemoteSemantic::Local(owner) = &provider {
+        assert!(!owner.core().ok_or("retired owner")?.has_projection());
+    }
+    assert_eq!(std::fs::read_to_string(&fixture.log)?, calls);
+    assert!(
+        !fixture.release.exists(),
+        "supervisor cancelled actual gated child without fixture release"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn local_semantic_later_page_failure_discards_entire_projection_and_never_runs_query() -> TestResult
+{
+    let fixture = fixture_with_mode(4096, "fail-second")?;
+    let (coordinator, library, view) = selected_many(300, false)?;
+    let mut provider = crate::builtin::query::RemoteSemantic::select_owner(
+        &fixture.provision,
+        &fixture.descriptor,
+        crate::builtin::query::RemoteSemantic::Unconfigured,
+    );
+    let request =
+        backend_engine::Query::new("fixture", view.root(), backend_engine::QueryLimit::new(3)?);
+    let before = std::fs::read_to_string(&fixture.log)?.lines().count();
+    let flag = Arc::new(AtomicBool::new(false));
+    let (page, status) = settle_page(&coordinator, &library, &mut provider, &request, flag)?;
+    assert_eq!(
+        status,
+        SemanticSearchStatus::Unavailable {
+            reason: SemanticSearchReason::ProviderUnavailable
+        }
+    );
+    let expected = super::super::search_page(
+        &coordinator,
+        &library,
+        &mut crate::builtin::query::RemoteSemantic::Unconfigured,
+        crate::builtin::admitted_coverage()?,
+        &request,
+    )
+    .map_err(|error| error.to_string())?
+    .0;
+    assert_eq!(page, expected);
+    assert!(matches!(
+        provider.local_failure(),
+        Some(LocalSemanticError::Inference(
+            EmbeddingExecutableError::Terminal(backend_compile::ProcessTerminal::Exit)
+        ))
+    ));
+    if let crate::builtin::query::RemoteSemantic::Local(owner) = &provider {
+        assert!(!owner.core().ok_or("refused owner")?.has_projection());
+    }
+    let log = std::fs::read_to_string(&fixture.log)?;
+    let calls = log
+        .lines()
+        .skip(before)
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(calls.len(), 2);
+    assert!(calls.iter().all(|call| call["purpose"] == 2));
+    assert_eq!(calls[0]["texts"].as_array().ok_or("page")?.len(), 256);
+    assert_eq!(calls[1]["texts"].as_array().ok_or("page")?.len(), 45);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn local_semantic_partial_corpus_refuses_before_any_document_or_query_inference() -> TestResult {
+    let fixture = fixture(4096)?;
+    let (coordinator, _, _) = selected()?;
+    let mut core = LocalSemantic::open(&fixture.provision, &fixture.descriptor)?;
+    let before = std::fs::read_to_string(&fixture.log)?;
+    let local = coordinator.search_local(LocalQuery::prefix("alpha", 3)?)?;
+    let (_, status) = core.search(
+        &coordinator,
+        CoverageWitness::Partial(backend_version::partial_coverage(19)),
+        local,
+        "alpha",
+        &AtomicBool::new(false),
+    );
+    assert_eq!(
+        status,
+        SemanticSearchStatus::Unavailable {
+            reason: SemanticSearchReason::ProviderUnavailable
+        }
+    );
+    assert!(matches!(
+        core.failure(),
+        Some(LocalSemanticError::CorpusEnvelope)
+    ));
+    assert!(!core.has_projection());
+    assert_eq!(std::fs::read_to_string(&fixture.log)?, before);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn local_semantic_whole_operation_deadline_discards_gated_projection_and_retains_cause()
+-> TestResult {
+    let fixture = fixture_with_mode(4096, "gate-second")?;
+    let (coordinator, library, view) = selected_many(300, false)?;
+    let mut provider = crate::builtin::query::RemoteSemantic::select_owner(
+        &fixture.provision,
+        &fixture.descriptor,
+        crate::builtin::query::RemoteSemantic::Unconfigured,
+    );
+    let request =
+        backend_engine::Query::new("fixture", view.root(), backend_engine::QueryLimit::new(3)?);
+    let (page, status) = settle_page(
+        &coordinator,
+        &library,
+        &mut provider,
+        &request,
+        Arc::new(AtomicBool::new(false)),
+    )?;
+    assert_eq!(
+        status,
+        SemanticSearchStatus::Unavailable {
+            reason: SemanticSearchReason::ProviderUnavailable
+        }
+    );
+    assert!(matches!(
+        provider.local_failure(),
+        Some(LocalSemanticError::Inference(
+            EmbeddingExecutableError::Process(backend_compile::ProcessError::Deadline)
+        ))
+    ));
+    let expected = super::super::search_page(
+        &coordinator,
+        &library,
+        &mut crate::builtin::query::RemoteSemantic::Unconfigured,
+        crate::builtin::admitted_coverage()?,
+        &request,
+    )
+    .map_err(|error| error.to_string())?
+    .0;
+    assert_eq!(page, expected);
+    if let crate::builtin::query::RemoteSemantic::Local(owner) = &provider {
+        assert!(!owner.core().ok_or("deadline owner")?.has_projection());
+    }
+    assert!(fixture.entered.exists());
+    assert!(!fixture.release.exists());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn every_projection_cpu_phase_discards_cancelled_or_expired_complete_work() -> TestResult {
+    let (coordinator, _, _) = selected_many(30, false)?;
+    let fixture = fixture(4096)?;
+    let runtime = fixture.provision.runtime().ok_or("runtime")?;
+    let core = LocalSemantic::open(&fixture.provision, &fixture.descriptor)?;
+    let coverage = crate::builtin::admitted_coverage()?;
+    let warm_flag = AtomicBool::new(false);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    // This protocol fixture warms actual cache ownership, not a pretrained model.
+    let warm = build_projection(&coordinator, coverage, &core.admitted, &warm_flag, deadline)?;
+    drop(warm);
+    let retained_cache_credit = runtime.memory_budget().used();
+    let producer_calls = std::fs::read_to_string(&fixture.log)?.lines().count();
+    let phases = [
+        ProjectionPhase::TextBounds,
+        ProjectionPhase::RowCloneExtent,
+        ProjectionPhase::DocumentPage,
+        ProjectionPhase::Payload,
+        ProjectionPhase::OrderEntries,
+        ProjectionPhase::Relation,
+        ProjectionPhase::CandidateState,
+        ProjectionPhase::Facts,
+        ProjectionPhase::Base,
+        ProjectionPhase::Source,
+        ProjectionPhase::Index,
+    ];
+    for phase in phases {
+        for expired in [false, true] {
+            let flag = AtomicBool::new(false);
+            let deadline = Instant::now() + Duration::from_secs(30);
+            let mut visits = 0;
+            let stop_at = if matches!(
+                phase,
+                ProjectionPhase::DocumentPage | ProjectionPhase::Index
+            ) {
+                1
+            } else {
+                3
+            };
+            let result = build_projection_checked(
+                &coordinator,
+                coverage,
+                &core.admitted,
+                &flag,
+                deadline,
+                &mut |observed| {
+                    if observed == phase {
+                        visits += 1;
+                        if visits == stop_at {
+                            if expired {
+                                return checkpoint(&flag, Instant::now());
+                            }
+                            flag.store(true, Ordering::Release);
+                        }
+                    }
+                    checkpoint(&flag, deadline)
+                },
+            );
+            let error = result.err().ok_or("CPU refusal returned a projection")?;
+            match (expired, error) {
+                (
+                    false,
+                    LocalSemanticError::Inference(EmbeddingExecutableError::Process(
+                        backend_compile::ProcessError::Cancelled,
+                    )),
+                )
+                | (
+                    true,
+                    LocalSemanticError::Inference(EmbeddingExecutableError::Process(
+                        backend_compile::ProcessError::Deadline,
+                    )),
+                ) => {}
+                (_, error) => return Err(error.into()),
+            }
+            assert_eq!(visits, stop_at, "{phase:?}: no continuation after refusal");
+            assert_eq!(
+                runtime.memory_budget().used(),
+                retained_cache_credit,
+                "{phase:?}: caller projection/page/bookkeeping leases released"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&fixture.log)?.lines().count(),
+                producer_calls,
+                "warm fixture should invoke no new inference after CPU refusal"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn controlled_worker_lexical_scan_preserves_answer_and_stops_inside_callbacks() -> TestResult {
+    let (coordinator, _, _) = selected_many(30, false)?;
+    let query = LocalQuery::prefix("fixture", 20)?;
+    let ordinary = coordinator.search_local(query.clone())?;
+    let mut visits = 0;
+    let checked = coordinator.search_local_controlled(query.clone(), &mut || {
+        visits += 1;
+        Ok::<(), LocalSemanticError>(())
+    })?;
+    assert_eq!(checked.rows, ordinary.rows);
+    assert_eq!(checked.matches, ordinary.matches);
+    assert_eq!(checked.total_matches, ordinary.total_matches);
+    assert_eq!(checked.lanes, ordinary.lanes);
+    assert!(visits > 30);
+    for expired in [false, true] {
+        let flag = AtomicBool::new(false);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut observed = 0;
+        let result = coordinator.search_local_controlled(query.clone(), &mut || {
+            observed += 1;
+            if observed == 12 {
+                if expired {
+                    return checkpoint(&flag, Instant::now());
+                }
+                flag.store(true, Ordering::Release);
+            }
+            checkpoint(&flag, deadline)
+        });
+        assert!(
+            matches!(&result, Err(LocalSemanticError::Inference(EmbeddingExecutableError::Process(backend_compile::ProcessError::Cancelled))) if !expired)
+                || matches!(&result, Err(LocalSemanticError::Inference(EmbeddingExecutableError::Process(backend_compile::ProcessError::Deadline))) if expired)
+        );
+        assert_eq!(observed, 12);
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn same_roots_with_changed_exact_selection_retires_and_releases_the_only_worker() -> TestResult {
+    #[derive(Clone, Copy, Debug)]
+    enum Change {
+        Corpus,
+        Cancellation,
+        Coverage,
+    }
+    for change in [Change::Corpus, Change::Cancellation, Change::Coverage] {
+        let fixture = fixture_with_mode(4096, "gate-second")?;
+        let (coordinator, _, view) = selected_many(300, false)?;
+        let coverage = crate::builtin::admitted_coverage()?;
+        let mut provider = crate::builtin::query::RemoteSemantic::select_owner(
+            &fixture.provision,
+            &fixture.descriptor,
+            crate::builtin::query::RemoteSemantic::Unconfigured,
+        );
+        let runtime = fixture.provision.runtime().ok_or("runtime")?;
+        let flag = Arc::new(AtomicBool::new(false));
+        let query = LocalQuery::prefix("fixture", 3)?;
+        let first = provider.search_local_with_cancellation(
+            &coordinator,
+            coverage,
+            coordinator.search_local(query.clone())?,
+            "fixture",
+            Some(Arc::clone(&flag)),
+        );
+        assert_eq!(
+            first.status,
+            SemanticSearchStatus::Unavailable {
+                reason: SemanticSearchReason::NoActiveProjection
+            }
+        );
+        wait_for_fixture_marker(&fixture.entered)?;
+        let held = runtime.memory_budget().used();
+        let calls = std::fs::read_to_string(&fixture.log)?;
+        let replacement = if matches!(change, Change::Corpus) {
+            selected_many(300, false)?.0
+        } else {
+            coordinator.clone()
+        };
+        assert_eq!(replacement.workspace_root(), coordinator.workspace_root());
+        assert_eq!(replacement.corpus.view.root(), view.root());
+        let replacement_flag = if matches!(change, Change::Cancellation) {
+            Arc::new(AtomicBool::new(false))
+        } else {
+            Arc::clone(&flag)
+        };
+        let replacement_coverage = if matches!(change, Change::Coverage) {
+            CoverageWitness::Partial(backend_version::partial_coverage(19))
+        } else {
+            coverage
+        };
+        let retiring = provider.search_local_with_cancellation(
+            &replacement,
+            replacement_coverage,
+            replacement.search_local(query)?,
+            "fixture",
+            Some(Arc::clone(&replacement_flag)),
+        );
+        assert_eq!(
+            retiring.status,
+            SemanticSearchStatus::Unavailable {
+                reason: SemanticSearchReason::NoActiveProjection
+            },
+            "{change:?}"
+        );
+        assert!(
+            flag.load(Ordering::Acquire),
+            "actual old inference flag must be cancelled"
+        );
+        if matches!(change, Change::Cancellation) {
+            assert!(
+                !replacement_flag.load(Ordering::Acquire),
+                "replacement lifetime is independent"
+            );
+        }
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while provider.local_preparation().is_some() {
+            provider.poll_local(replacement.workspace_root(), view.root());
+            if Instant::now() >= deadline {
+                return Err("same-root stale worker did not join".into());
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(matches!(
+            provider.local_failure(),
+            Some(LocalSemanticError::Inference(
+                EmbeddingExecutableError::Process(backend_compile::ProcessError::Cancelled)
+            ))
+        ));
+        assert!(
+            runtime.memory_budget().used() < held,
+            "{change:?}: projection/page/query/key credits released"
+        );
+        if let crate::builtin::query::RemoteSemantic::Local(owner) = &provider {
+            assert!(!owner.core().ok_or("retired owner")?.has_projection());
+        }
+        assert_eq!(
+            std::fs::read_to_string(&fixture.log)?,
+            calls,
+            "no replacement inference queued"
+        );
+        assert!(
+            !fixture.release.exists(),
+            "actual supervised child stopped without gate release"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn exclusive_worker_stops_in_relation_cpu_phase_then_poll_joins_and_releases() -> TestResult {
+    let fixture = fixture(4096)?;
+    let (coordinator, library, view) = selected_many(30, false)?;
+    let runtime = fixture.provision.runtime().ok_or("runtime")?;
+    let mut provider = crate::builtin::query::RemoteSemantic::select_owner(
+        &fixture.provision,
+        &fixture.descriptor,
+        crate::builtin::query::RemoteSemantic::Unconfigured,
+    );
+    let (entered, entered_receive) = std::sync::mpsc::sync_channel(1);
+    let (release, release_receive) = std::sync::mpsc::sync_channel(1);
+    if let crate::builtin::query::RemoteSemantic::Local(owner) = &mut provider {
+        owner.core_mut().ok_or("idle core")?.cpu_control = Some(CpuControl {
+            phase: ProjectionPhase::Relation,
+            stop_at: 3,
+            visits: 0,
+            entered,
+            release: release_receive,
+        });
+    } else {
+        return Err("local owner".into());
+    }
+    let flag = Arc::new(AtomicBool::new(false));
+    let coverage = crate::builtin::admitted_coverage()?;
+    let request =
+        backend_engine::Query::new("fixture", view.root(), backend_engine::QueryLimit::new(3)?);
+    let expected = super::super::search_page(
+        &coordinator,
+        &library,
+        &mut crate::builtin::query::RemoteSemantic::Unconfigured,
+        coverage,
+        &request,
+    )
+    .map_err(|error| error.to_string())?
+    .0;
+    let first = super::super::search_page_with_cancellation(
+        &coordinator,
+        &library,
+        &mut provider,
+        coverage,
+        &request,
+        Arc::clone(&flag),
+    )
+    .map_err(|error| error.to_string())?;
+    assert_eq!(
+        first.1,
+        SemanticSearchStatus::Unavailable {
+            reason: SemanticSearchReason::NoActiveProjection
+        }
+    );
+    assert_eq!(first.0, expected);
+    entered_receive.recv_timeout(Duration::from_secs(5))?;
+    let held = runtime.memory_budget().used();
+    let calls = std::fs::read_to_string(&fixture.log)?;
+    assert!(
+        !calls.is_empty(),
+        "actual protocol documents preceded relation admission"
+    );
+    // This is the actual selected-owner flag. Client-disconnect authority is not invented.
+    flag.store(true, Ordering::Release);
+    provider.poll_local(coordinator.workspace_root(), view.root());
+    assert_eq!(
+        provider.local_preparation(),
+        Some(backend_library::QueryPreparationState::Retiring)
+    );
+    release.send(())?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while provider.local_preparation().is_some() {
+        provider.poll_local(coordinator.workspace_root(), view.root());
+        if Instant::now() >= deadline {
+            return Err("CPU worker failed to join after actual cancellation".into());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(matches!(
+        provider.local_failure(),
+        Some(LocalSemanticError::Inference(
+            EmbeddingExecutableError::Process(backend_compile::ProcessError::Cancelled)
+        ))
+    ));
+    assert!(
+        runtime.memory_budget().used() < held,
+        "projection/key leases released after actual worker joined"
+    );
+    if let crate::builtin::query::RemoteSemantic::Local(owner) = &provider {
+        let core = owner.core().ok_or("joined core")?;
+        assert!(!core.has_projection());
+        assert_eq!(
+            core.cpu_control.as_ref().ok_or("CPU gate")?.visits,
+            3,
+            "no relation input or later CPU phase traversed after refused checkpoint"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(&fixture.log)?,
+        calls,
+        "no query inference or partial answer after cancellation"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn exact_lexical_seed_moves_scores_preserves_page_and_releases_on_refusal() -> TestResult {
+    let (coordinator, _, _) = selected_many(30, false)?;
+    let query = LocalQuery::prefix("fixture", 20)?;
+    let budget = backend_compile::EmbeddingMemoryBudget::new(8 * 1024 * 1024);
+    // Fixture supplies the caller-owned composition charge before canonical row reconstruction.
+    let row_memory = budget.reserve(1024 * 1024)?;
+    let baseline = budget.used();
+    let mut local = coordinator.search_local(query.clone())?;
+    let expected = local.clone();
+    let score_allocation = local.matches.as_ptr();
+    let scans = coordinator.corpus.lexical.rank_evaluations();
+    let seed = local.take_lexical_seed(&budget, &mut || Ok(()))?;
+    assert!(
+        local.matches.is_empty(),
+        "score allocation moved, never duplicated"
+    );
+    assert_eq!(
+        local.rows, expected.rows,
+        "immediate lexical page unchanged"
+    );
+    assert!(budget.used() > baseline);
+    let (restored, seed_memory) = seed.restore(&coordinator, &mut || Ok(()))?;
+    assert_eq!(restored.matches.as_ptr(), score_allocation);
+    assert_eq!(restored.matches, expected.matches);
+    assert_eq!(restored.rows, expected.rows);
+    assert_eq!(restored.query, expected.query);
+    assert_eq!(restored.total_matches, expected.total_matches);
+    assert_eq!(restored.lanes, expected.lanes);
+    assert_eq!(
+        coordinator.corpus.lexical.rank_evaluations(),
+        scans,
+        "no duplicate lexical scan"
+    );
+    drop(restored);
+    drop(seed_memory);
+    assert_eq!(budget.used(), baseline);
+    let mut local = coordinator.search_local(query.clone())?;
+    let seed = local.take_lexical_seed(&budget, &mut || Ok(()))?;
+    let replacement = selected_many(30, false)?.0;
+    assert_eq!(replacement.workspace_root(), coordinator.workspace_root());
+    assert_eq!(
+        replacement.corpus.view.root(),
+        coordinator.corpus.view.root()
+    );
+    let stale = seed.restore(&replacement, &mut || Ok(()));
+    assert!(matches!(
+        stale,
+        Err(LocalSemanticError::Corpus(QueryError::StaleViewBinding))
+    ));
+    assert_eq!(budget.used(), baseline);
+    let mut local = coordinator.search_local(query.clone())?;
+    let seed = local.take_lexical_seed(&budget, &mut || Ok(()))?;
+    let flag = AtomicBool::new(false);
+    let mut visits = 0;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let refused = seed.restore(&coordinator, &mut || {
+        visits += 1;
+        if visits == 3 {
+            flag.store(true, Ordering::Release);
+        }
+        checkpoint(&flag, deadline)
+    });
+    assert!(matches!(
+        refused,
+        Err(LocalSemanticError::Inference(
+            EmbeddingExecutableError::Process(backend_compile::ProcessError::Cancelled)
+        ))
+    ));
+    assert_eq!(visits, 3);
+    assert_eq!(budget.used(), baseline);
+    let mut local = coordinator.search_local(query)?;
+    let expected_scores = local.matches.clone();
+    let before = local.rows.clone();
+    let refused = local
+        .take_lexical_seed(&backend_compile::EmbeddingMemoryBudget::new(0), &mut || {
+            Ok(())
+        });
+    assert!(matches!(refused, Err(LocalSemanticError::Memory(_))));
+    assert_eq!(
+        local.matches, expected_scores,
+        "account refusal precedes transfer"
+    );
+    assert_eq!(local.rows, before);
+    let cancellation = AtomicBool::new(false);
+    let mut observed = 0;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let refused = local.take_lexical_seed(&budget, &mut || {
+        observed += 1;
+        if observed == 3 {
+            cancellation.store(true, Ordering::Release);
+        }
+        checkpoint(&cancellation, deadline)
+    });
+    assert!(matches!(
+        refused,
+        Err(LocalSemanticError::Inference(
+            EmbeddingExecutableError::Process(backend_compile::ProcessError::Cancelled)
+        ))
+    ));
+    assert_eq!(observed, 3);
+    assert_eq!(
+        local.matches, expected_scores,
+        "partial descriptor construction never transfers scores"
+    );
+    assert_eq!(budget.used(), baseline, "partial seed descriptors released");
+    drop(row_memory);
+    assert_eq!(budget.used(), 0);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn actual_exclusive_worker_consumes_initial_seed_without_a_second_rank_scan() -> TestResult {
+    let fixture = fixture(4096)?;
+    let (coordinator, library, view) = selected_many(30, false)?;
+    let mut provider = crate::builtin::query::RemoteSemantic::select_owner(
+        &fixture.provision,
+        &fixture.descriptor,
+        crate::builtin::query::RemoteSemantic::Unconfigured,
+    );
+    let flag = Arc::new(AtomicBool::new(false));
+    let request =
+        backend_engine::Query::new("fixture", view.root(), backend_engine::QueryLimit::new(3)?);
+    let before = coordinator.corpus.lexical.rank_evaluations();
+    let first = super::super::search_page_with_cancellation(
+        &coordinator,
+        &library,
+        &mut provider,
+        crate::builtin::admitted_coverage()?,
+        &request,
+        Arc::clone(&flag),
+    )
+    .map_err(|error| error.to_string())?;
+    assert_eq!(
+        first.1,
+        SemanticSearchStatus::Unavailable {
+            reason: SemanticSearchReason::NoActiveProjection
+        }
+    );
+    assert_eq!(coordinator.corpus.lexical.rank_evaluations(), before + 1);
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while provider.local_preparation().is_some() {
+        provider.poll_local(coordinator.workspace_root(), view.root());
+        if Instant::now() >= deadline {
+            return Err("seed worker did not join".into());
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    if let crate::builtin::query::RemoteSemantic::Local(owner) = &provider {
+        assert!(owner.core().ok_or("joined owner")?.has_projection());
+        assert!(owner.failure().is_none());
+    } else {
+        return Err("actual local owner".into());
+    }
+    assert_eq!(
+        coordinator.corpus.lexical.rank_evaluations(),
+        before + 1,
+        "worker consumed exactly the initial scan seed"
+    );
+    let invocations = std::fs::read_to_string(&fixture.log)?
+        .lines()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    assert!(
+        invocations.iter().any(|call| call["purpose"] == 1),
+        "actual protocol query invoked (fixture, not model proof)"
+    );
+    Ok(())
+}

@@ -3326,3 +3326,68 @@ fn wire_rejects_version_trailing_parent_order_and_duplicate_errors()
     );
     Ok(())
 }
+
+#[test]
+fn controlled_owned_tree_stops_input_cut_and_node_work_without_a_prefix()
+-> Result<(), Box<dyn std::error::Error>> {
+    #[derive(Debug)]
+    enum Stop {
+        Tree(TreeError),
+        Checkpoint(usize),
+    }
+    impl From<TreeError> for Stop {
+        fn from(error: TreeError) -> Self {
+            Self::Tree(error)
+        }
+    }
+    let count = 8192usize;
+    let entries = || {
+        (0..count as u64)
+            .map(|id| (id, id.rotate_left(7)))
+            .collect::<Vec<_>>()
+    };
+    let ordinary = PersistentTree::<RelationFixture>::from_sorted_items_owned_with_work(entries())?;
+    let mut visits = 0;
+    let checked = PersistentTree::<RelationFixture>::from_sorted_items_owned_controlled_with_work(
+        entries(),
+        &mut || {
+            visits += 1;
+            Ok::<(), TreeError>(())
+        },
+    )?;
+    assert_eq!(
+        checked.0.root().commitment(),
+        ordinary.0.root().commitment()
+    );
+    assert_eq!(checked.1, ordinary.1);
+    // Ordering pass, value/cut pass, leaf construction, and branch construction.
+    for stop_at in [1, 257, count, count + 257, count * 2 + 1, visits - 1] {
+        let mut observed = 0;
+        let refused =
+            PersistentTree::<RelationFixture>::from_sorted_items_owned_controlled_with_work(
+                entries(),
+                &mut || {
+                    observed += 1;
+                    if observed == stop_at {
+                        Err(Stop::Checkpoint(observed))
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+        assert!(matches!(refused, Err(Stop::Checkpoint(at)) if at == stop_at));
+        assert_eq!(
+            observed, stop_at,
+            "no work after the first refused checkpoint"
+        );
+    }
+    let malformed = PersistentTree::<RelationFixture>::from_sorted_items_owned_controlled_with_work(
+        vec![(2, 0), (1, 0)],
+        &mut || Ok::<(), Stop>(()),
+    );
+    assert!(matches!(
+        malformed,
+        Err(Stop::Tree(TreeError::UnsortedOrDuplicate))
+    ));
+    Ok(())
+}

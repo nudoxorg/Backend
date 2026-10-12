@@ -337,6 +337,14 @@ impl<'a> AdmittedEncodedPoint<'a> {
     /// Proves the canonical payload shape, optional recipe dimension, and
     /// finite IEEE-754 values without materializing decoded coordinates.
     fn validate(payload: &'a [u8], expected_dimensions: Option<usize>) -> Result<Self, Error> {
+        Self::validate_controlled(payload, expected_dimensions, &mut || Ok(()))
+    }
+
+    fn validate_controlled<E: From<Error>>(
+        payload: &'a [u8],
+        expected_dimensions: Option<usize>,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<Self, E> {
         let dimension_bytes: [u8; 4] = payload
             .get(..4)
             .ok_or(Error::MalformedInput)?
@@ -345,28 +353,31 @@ impl<'a> AdmittedEncodedPoint<'a> {
         let dimension =
             usize::try_from(u32::from_be_bytes(dimension_bytes)).map_err(|_| Error::SizeLimit)?;
         if dimension == 0 {
-            return Err(Error::MalformedInput);
+            return Err(Error::MalformedInput.into());
         }
         let expected_bytes = dimension
             .checked_mul(size_of::<u32>())
             .and_then(|bytes| bytes.checked_add(4))
             .ok_or(Error::SizeLimit)?;
         if expected_bytes != payload.len() {
-            return Err(Error::MalformedInput);
+            return Err(Error::MalformedInput.into());
         }
         let encoded_coordinates = payload.get(4..).ok_or(Error::MalformedInput)?;
         let (coordinates, remainder) = encoded_coordinates.as_chunks::<4>();
         if !remainder.is_empty() || coordinates.len() != dimension {
-            return Err(Error::MalformedInput);
+            return Err(Error::MalformedInput.into());
         }
-        for bytes in coordinates {
+        for (index, bytes) in coordinates.iter().enumerate() {
+            if index % 256 == 0 {
+                checkpoint()?;
+            }
             let value = f32::from_bits(u32::from_be_bytes(*bytes));
             if !value.is_finite() {
-                return Err(Error::MalformedInput);
+                return Err(Error::MalformedInput.into());
             }
         }
         if expected_dimensions.is_some_and(|expected| expected != dimension) {
-            return Err(Error::DimensionMismatch);
+            return Err(Error::DimensionMismatch.into());
         }
         Ok(Self { coordinates })
     }
@@ -394,26 +405,42 @@ impl VectorFacts {
     /// # Errors
     /// Returns a typed binding, coverage, coordinate, dimension, or size error.
     pub fn from_recipe(state: CandidateState, recipe: EmbeddingRecipe) -> Result<Self, Error> {
+        Self::from_recipe_controlled(state, recipe, &mut || Ok(()))
+    }
+
+    /// Full-recipe admission with checkpoints for every payload and coordinate chunk.
+    pub fn from_recipe_controlled<E: From<Error>>(
+        state: CandidateState,
+        recipe: EmbeddingRecipe,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<Self, E> {
+        checkpoint()?;
         if state.binding().recipe != recipe.version() {
-            return Err(Error::StaleRoot);
+            return Err(Error::StaleRoot.into());
         }
         if recipe.encoding != EmbeddingEncoding::Float32 {
-            return Err(Error::MalformedInput);
+            return Err(Error::MalformedInput.into());
         }
         let dimensions = usize::try_from(recipe.dimensions.get()).map_err(|_| Error::SizeLimit)?;
-        let mut facts = Self::new(state, recipe.model, recipe.metric, dimensions)?;
+        let mut facts =
+            Self::new_controlled(state, recipe.model, recipe.metric, dimensions, checkpoint)?;
         if recipe.normalization == EmbeddingNormalization::UnitL2 {
             for id in facts.ids() {
+                checkpoint()?;
                 let point = facts.encoded_point(id).ok_or(Error::MalformedInput)?;
-                let squared_norm = point
-                    .coordinates()
-                    .map(|value| f64::from(value).powi(2))
-                    .sum::<f64>();
+                let mut squared_norm = 0.0_f64;
+                for (index, value) in point.coordinates().enumerate() {
+                    if index % 256 == 0 {
+                        checkpoint()?;
+                    }
+                    squared_norm += f64::from(value).powi(2);
+                }
                 if (squared_norm - 1.0).abs() > 1.0e-4 {
-                    return Err(Error::MalformedInput);
+                    return Err(Error::MalformedInput.into());
                 }
             }
         }
+        checkpoint()?;
         facts.admitted_recipe = Some(recipe);
         Ok(facts)
     }
@@ -434,17 +461,28 @@ impl VectorFacts {
         metric: Metric,
         dimensions: usize,
     ) -> Result<Self, Error> {
+        Self::new_controlled(state, model, metric, dimensions, &mut || Ok(()))
+    }
+
+    fn new_controlled<E: From<Error>>(
+        state: CandidateState,
+        model: ModelVersion,
+        metric: Metric,
+        dimensions: usize,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<Self, E> {
         if dimensions == 0 {
-            return Err(Error::MalformedInput);
+            return Err(Error::MalformedInput.into());
         }
         if !matches!(
             state.coverage(),
             CoverageWitness::Complete(_) | CoverageWitness::Closed(_)
         ) {
-            return Err(Error::IncompleteCoverage);
+            return Err(Error::IncompleteCoverage.into());
         }
         for (_, payload) in state.iter() {
-            AdmittedEncodedPoint::validate(payload, Some(dimensions))?;
+            checkpoint()?;
+            AdmittedEncodedPoint::validate_controlled(payload, Some(dimensions), checkpoint)?;
         }
         Ok(Self {
             state,

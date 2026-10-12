@@ -81,17 +81,28 @@ impl CandidateState {
         state: RelationState<CandidateRelation>,
         limits: Limits,
     ) -> Result<Self, Error> {
+        Self::from_relation_controlled(binding, state, limits, &mut || Ok(()))
+    }
+
+    /// Consumes complete relation facts with a fallible checkpoint per payload.
+    pub fn from_relation_controlled<E: From<Error>>(
+        binding: Binding,
+        state: RelationState<CandidateRelation>,
+        limits: Limits,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<Self, E> {
+        checkpoint()?;
         let limits = limits.validate()?;
         let coverage = state.coverage();
         if !matches!(
             coverage,
             CoverageWitness::Complete(_) | CoverageWitness::Closed(_)
         ) {
-            return Err(Error::IncompleteCoverage);
+            return Err(Error::IncompleteCoverage.into());
         }
-        validate_candidate_state(&state, limits)?;
+        validate_candidate_state_controlled(&state, limits, checkpoint)?;
         if state.root() != binding.root {
-            return Err(Error::StaleRoot);
+            return Err(Error::StaleRoot.into());
         }
         Ok(Self {
             binding,
@@ -240,23 +251,32 @@ fn validate_candidate_state(
     state: &RelationState<CandidateRelation>,
     limits: Limits,
 ) -> Result<(), Error> {
+    validate_candidate_state_controlled(state, limits, &mut || Ok(()))
+}
+
+fn validate_candidate_state_controlled<E: From<Error>>(
+    state: &RelationState<CandidateRelation>,
+    limits: Limits,
+    checkpoint: &mut impl FnMut() -> Result<(), E>,
+) -> Result<(), E> {
     let mut count = 0usize;
     let mut total = 0usize;
     for (id, payload) in state.iter() {
+        checkpoint()?;
         if *id == 0 {
-            return Err(Error::MalformedInput);
+            return Err(Error::MalformedInput.into());
         }
         if payload.len() > limits.max_payload_bytes {
-            return Err(Error::SizeLimit);
+            return Err(Error::SizeLimit.into());
         }
         count = count.checked_add(1).ok_or(Error::SizeLimit)?;
         total = total.checked_add(payload.len()).ok_or(Error::SizeLimit)?;
         if total > limits.max_total_payload_bytes {
-            return Err(Error::SizeLimit);
+            return Err(Error::SizeLimit.into());
         }
     }
     if count > limits.max_candidates {
-        return Err(Error::SizeLimit);
+        return Err(Error::SizeLimit.into());
     }
     Ok(())
 }

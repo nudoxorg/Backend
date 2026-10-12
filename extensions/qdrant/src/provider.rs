@@ -51,6 +51,37 @@ impl MemorySource {
             coverage,
         })
     }
+
+    /// Consumes strictly sorted, unique IDs without an opaque full-run sort.
+    /// Each identity crosses the caller's fallible execution checkpoint.
+    pub fn from_sorted_ids_controlled<E: From<Error>>(
+        binding: Binding,
+        coverage: CoverageWitness,
+        ids: Vec<CandidateId>,
+        limits: Limits,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<Self, E> {
+        limits.validate()?;
+        if !matches!(coverage, CoverageWitness::Complete(_)) {
+            return Err(Error::IncompleteCoverage.into());
+        }
+        if ids.len() > limits.max_candidates {
+            return Err(Error::SizeLimit.into());
+        }
+        let mut previous = None;
+        for id in &ids {
+            checkpoint()?;
+            if !id.is_valid() || previous.is_some_and(|prior| prior >= *id) {
+                return Err(Error::MalformedInput.into());
+            }
+            previous = Some(*id);
+        }
+        Ok(Self {
+            binding,
+            coverage,
+            ids,
+        })
+    }
 }
 
 impl CandidateSource for MemorySource {

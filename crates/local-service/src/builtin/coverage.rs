@@ -48,7 +48,7 @@ pub(super) enum SemanticDeployment {
 
 impl SemanticDeployment {
     /// Classifies the process-wide optional remote semantic provider.
-    pub(super) const fn from_remote(remote: &super::query::RemoteSemantic) -> Self {
+    pub(super) fn from_remote(remote: &super::query::RemoteSemantic) -> Self {
         if remote.is_unconfigured() {
             Self::Unconfigured
         } else {

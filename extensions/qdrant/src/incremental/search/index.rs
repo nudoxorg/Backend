@@ -208,26 +208,40 @@ impl VectorIndex<crate::MemorySource> {
         limit: usize,
         limits: Limits,
     ) -> Result<VectorSearchResult, Error> {
+        self.search_exact_embedding_controlled(selected, query, limit, limits, &mut || Ok(()))
+    }
+
+    /// Complete exact search with fallible checkpoints for each candidate and
+    /// at most 256 ordered scalar coordinate operations. Refusal yields no prefix.
+    pub fn search_exact_embedding_controlled<E: From<Error>>(
+        &self,
+        selected: Binding,
+        query: &QueryVector,
+        limit: usize,
+        limits: Limits,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<VectorSearchResult, E> {
+        checkpoint()?;
         let limits = limits.validate()?;
         if selected != self.binding()
             || self.facts.binding() != selected
             || query.recipe().version() != selected.recipe
             || self.facts.admitted_recipe() != Some(query.recipe())
         {
-            return Err(Error::StaleRoot);
+            return Err(Error::StaleRoot.into());
         }
         let query = query.query();
         if query.model() != self.facts.model()
             || query.metric() != self.facts.metric()
             || query.values().len() != self.facts.dimensions()
         {
-            return Err(Error::DimensionMismatch);
+            return Err(Error::DimensionMismatch.into());
         }
         if !matches!(self.facts.coverage(), CoverageWitness::Complete(_)) {
-            return Err(Error::IncompleteCoverage);
+            return Err(Error::IncompleteCoverage.into());
         }
         if limit == 0 || limit > limits.max_page {
-            return Err(Error::SizeLimit);
+            return Err(Error::SizeLimit.into());
         }
         let payload_bytes = self
             .facts
@@ -235,11 +249,15 @@ impl VectorIndex<crate::MemorySource> {
             .checked_mul(size_of::<f32>())
             .and_then(|bytes| bytes.checked_add(size_of::<u32>()))
             .ok_or(Error::SizeLimit)?;
-        let count = self
+        let mut count = 0usize;
+        for _ in self
             .facts
             .ids()
             .take(limits.max_candidates.saturating_add(1))
-            .count();
+        {
+            checkpoint()?;
+            count += 1;
+        }
         if count > limits.max_candidates
             || payload_bytes > limits.max_payload_bytes
             || count.checked_mul(payload_bytes).ok_or(Error::SizeLimit)?
@@ -249,17 +267,23 @@ impl VectorIndex<crate::MemorySource> {
                 .as_deref()
                 .is_some_and(|overlay| overlay.tombstones().len() > limits.max_tombstones)
         {
-            return Err(Error::SizeLimit);
+            return Err(Error::SizeLimit.into());
         }
         let mut candidates = Vec::<ScoredCandidate>::new();
         candidates
             .try_reserve_exact(limit.min(count))
             .map_err(|_| Error::SizeLimit)?;
         for id in self.facts.ids() {
+            checkpoint()?;
             let point = self.facts.encoded_point(id).ok_or(Error::MalformedInput)?;
-            let score = score_admitted(self.facts.metric(), query.values(), &point);
+            let score = super::score::score_admitted_controlled(
+                self.facts.metric(),
+                query.values(),
+                &point,
+                checkpoint,
+            )?;
             if !score.is_finite() {
-                return Err(Error::MalformedInput);
+                return Err(Error::MalformedInput.into());
             }
             let candidate = ScoredCandidate { id, score };
             let position = candidates
@@ -277,6 +301,7 @@ impl VectorIndex<crate::MemorySource> {
                 candidates.insert(position, candidate);
             }
         }
+        checkpoint()?;
         Ok(VectorSearchResult {
             binding: selected,
             coverage: self.facts.coverage(),

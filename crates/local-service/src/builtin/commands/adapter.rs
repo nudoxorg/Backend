@@ -1783,6 +1783,7 @@ impl CommandAdapter {
     pub(in crate::builtin) fn close(&mut self) {
         self.journal_readiness.close();
         self.search_lane.close();
+        self.remote_semantic.close_local();
         self.search_preparation_failure = None;
         self.browse_lane.close();
         if let Some(indexing) = self.indexing.as_mut() {
@@ -4764,6 +4765,7 @@ impl CommandAdapter {
         let workspace = daemon.engine().daemon().owner().snapshot().root();
         let view = daemon.engine().daemon().library().view().root();
         self.search_lane.invalidate(workspace, view);
+        self.remote_semantic.poll_local(workspace, view);
         if let Some(completion) = self.search_lane.drain(workspace, view) {
             let succeeded = completion.current && completion.result.is_ok();
             if completion.current {
@@ -4807,7 +4809,7 @@ impl CommandAdapter {
         }
         let workspace = daemon.engine().daemon().owner().snapshot().root();
         let view = daemon.engine().daemon().library().view().root();
-        let Some(_cancelled) = self.search_lane.selected_cancellation(workspace, view) else {
+        let Some(cancelled) = self.search_lane.selected_cancellation(workspace, view) else {
             return Self::certify(
                 daemon,
                 &command,
@@ -4825,6 +4827,7 @@ impl CommandAdapter {
             &mut self.generations,
             &mut self.image_rows,
             query,
+            cancelled,
         )
         .map_or_else(
             |error| (CommandReply::Error(error.to_string()), None),
