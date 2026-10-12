@@ -9,7 +9,7 @@ use super::commands::{ProjectCommand, Weight};
 use crate::core::LocalProjectId;
 use crate::model::{ProjectLifecycle, WorkspaceProject};
 use crate::shell::bodies::{Ctx, Leaf};
-use crate::shell::focus::{Act, Target, native_control};
+use crate::shell::focus::{Act, Target, TargetAction, native_control};
 use crate::shell::kit::text;
 use crate::shell::reader::Reader;
 use facet::Space;
@@ -130,7 +130,7 @@ fn card(
             ctx,
             format!("{command:?}-{}", project.path).to_lowercase(),
             command,
-            &id,
+            project,
             cx,
         ));
     }
@@ -200,20 +200,21 @@ fn act(
     ctx: &mut Ctx<'_>,
     id: String,
     command: ProjectCommand,
-    project: &LocalProjectId,
+    project: &WorkspaceProject,
     cx: &mut Context<Reader>,
 ) -> gpui::AnyElement {
     let links = ctx.links.clone();
-    let intent = command.intent(project);
+    let intent = command.intent(&project.id);
     let expected = ctx
         .links
         .snapshot(cx)
         .workspace()
         .projects
         .iter()
-        .find(|row| row.id == *project)
+        .find(|row| row.id == project.id)
         .and_then(|row| row.operation.clone());
-    let project = project.clone();
+    let expected_attempt = project.clone();
+    let project = project.id.clone();
     let act: Act = Rc::new(move |_, cx| {
         if matches!(
             command,
@@ -237,7 +238,7 @@ fn act(
         }
         links.dispatch(intent.clone(), cx);
     });
-    let target_action = if matches!(
+    let mut target_action = if matches!(
         command,
         ProjectCommand::CheckOutcome | ProjectCommand::StartNewIndex
     ) {
@@ -245,21 +246,37 @@ fn act(
     } else {
         ctx.target_local_action(act, cx)
     };
+    if matches!(command, ProjectCommand::Retry | ProjectCommand::Resume) {
+        // Recovery remains local while the owner starts or fails, but cannot
+        // borrow a different attempt of this folder before its next paint.
+        let local = target_action;
+        let act = local.callback();
+        let links = ctx.links.clone();
+        let payload = (expected_attempt.id.clone(), expected_attempt.phase,
+            expected_attempt.request, expected_attempt.operation.clone());
+        target_action = TargetAction::new(Rc::new(move |cx| {
+            local.admits(cx) && links.snapshot(cx).workspace().projects.iter()
+                .any(|row| row.same_index_attempt(&expected_attempt))
+        }), act).with_payload(payload);
+    }
     let act = target_action.callback();
     ctx.targets.push(Target {
         id: id.clone().into(),
         label: command.label().into(),
-        action: target_action,
+        action: target_action.clone(),
         peek: None,
         source: None,
     });
     let focus = ctx.native_handle(&SharedString::from(id.clone()), cx);
-    let control = button(
+    let mut control = button(
         gpui::SharedString::from(id.clone()),
         command.label(),
         &ctx.measure,
     )
     .on_click(move |window, cx| act(window, cx));
+    if matches!(command, ProjectCommand::Retry | ProjectCommand::Resume) {
+        control = control.when_current(Rc::new(move |cx| target_action.admits(cx)));
+    }
     let mut control = match command.weight() {
         Weight::Primary => control.primary(),
         Weight::Plain => control.ghost(),

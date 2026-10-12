@@ -163,6 +163,40 @@ fn queued_index_cannot_cross_a_same_root_owner_replacement(cx: &mut TestAppConte
 }
 
 #[gpui::test]
+fn queued_retry_cannot_adopt_a_changed_attempt_and_unavailable_owner_keeps_fresh_recovery_local(cx: &mut TestAppContext) {
+    for failed in [false, true] {
+        let gate = OwnerGate::starting();
+        if failed { gate.publish(OwnerState::Failed("owner unavailable".into())); }
+        let schedule = Schedule::new(cx, gate);
+        cx.update(|cx| schedule.root.update(cx, |root, cx| {
+            let events = root.runtime.reject_unsent_index(&schedule.project, authority(), None, "unsent refusal".into());
+            root.apply_events(events, cx);
+            assert_eq!(root.snapshot().workspace().projects[0].phase, ProjectPhase::Failed);
+            let before = root.reduced();
+            root.queue(Intent::RetryIndex(schedule.project.clone()), cx);
+            assert!(matches!(root.pending.first(), Some(QueuedIntent::Retry { .. })), "capture at actual queue ingress");
+            // An independently admitted current command changes the attempt
+            // inside this same effect cycle, before the old queue is drained.
+            root.dispatch(Intent::RetryIndex(schedule.project.clone()), cx);
+            assert_eq!(root.reduced(), before + 1);
+            assert_eq!(root.snapshot().workspace().projects[0].phase, ProjectPhase::Indexing);
+            root.flush_pending(cx);
+            assert_eq!(root.reduced(), before + 1, "the old retry cannot reduce against this later local admission");
+            assert!(!root.has_pending_work(), "unavailable recovery cannot submit a mutation");
+
+            let events = root.runtime.reject_unsent_index(&schedule.project, authority(), None, "current unsent refusal".into());
+            root.apply_events(events, cx);
+            root.queue(Intent::RetryIndex(schedule.project.clone()), cx);
+            root.flush_pending(cx);
+            assert_eq!(root.reduced(), before + 2, "fresh current recovery remains usable without a serving owner");
+            assert_eq!(root.snapshot().workspace().projects[0].phase, ProjectPhase::Indexing);
+            assert!(!root.has_pending_work());
+            assert!(root.snapshot().workspace().projects[0].operation.is_none());
+        }));
+    }
+}
+
+#[gpui::test]
 fn catalog_publication_keeps_home_and_its_navigation_history(cx: &mut TestAppContext) {
     let schedule = Schedule::new(cx, OwnerGate::starting());
     cx.update(|cx| {
