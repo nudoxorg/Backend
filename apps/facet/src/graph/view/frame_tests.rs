@@ -123,9 +123,9 @@ fn retained_tour_buttons_share_native_pointer_keyboard_and_accessibility_without
             }
             "keyboard" => {
                 cx.update(|window, cx| {
-                    let graph = graph.read(cx);
-                    assert!(window.is_focus_handle_mounted(&graph.tour_focus[0]));
-                    graph.tour_focus[0].focus(window, cx);
+                    let stop = graph.read(cx).tour_focus[0].clone();
+                    assert!(window.is_focus_handle_mounted(&stop));
+                    stop.focus(window, cx);
                 });
                 cx.simulate_keystrokes("enter");
             }
@@ -134,9 +134,11 @@ fn retained_tour_buttons_share_native_pointer_keyboard_and_accessibility_without
         settle(cx);
         assert_eq!(graph.read_with(cx, |graph, _| graph.tour_stop()), Some(expected.stops[0].node), "{transport}");
         cx.update(|window, cx| {
+            let receiver = graph.read(cx).focus_handle.clone();
+            window.focus(&receiver, cx);
+            let step = graph.update(cx, |graph, cx| graph.step_native(true, window, cx));
+            assert_eq!(step, super::NativeFocusStep::Moved);
             let graph = graph.read(cx);
-            window.focus(&graph.focus_handle, cx);
-            assert_eq!(graph.step_native(true, window, cx), super::NativeFocusStep::Moved);
             assert!(graph.tour_focus[1].is_focused(window), "Tab enters the current tour stop without opening Find");
             assert!(!graph.find_open() && graph.focused().is_none());
         });
@@ -149,7 +151,7 @@ fn retained_tour_buttons_share_native_pointer_keyboard_and_accessibility_without
                 cx.simulate_mouse_up(at, gpui::MouseButton::Left, gpui::Modifiers::none());
             }
             "keyboard" => {
-                cx.update(|window, cx| graph.read(cx).tour_focus[2].focus(window, cx));
+                cx.update(|window, cx| graph.read(cx).tour_focus[2].clone().focus(window, cx));
                 cx.simulate_keystrokes("space");
             }
             _ => tour_ax_click(cx, second),
@@ -251,9 +253,9 @@ fn stale_tour_focus_cannot_lend_local_enter_to_a_new_find_owner(cx: &mut TestApp
     });
     settle(cx);
     cx.update(|window, cx| {
-        let graph = graph.read(cx);
-        assert!(window.is_focus_handle_mounted(&graph.tour_focus[0]));
-        graph.tour_focus[0].focus(window, cx);
+        let stop = graph.read(cx).tour_focus[0].clone();
+        assert!(window.is_focus_handle_mounted(&stop));
+        stop.focus(window, cx);
     });
     // Hold the original native tree while Find's actual result and current
     // resource producer advance. Its old local tour handle is still focused.
@@ -290,9 +292,9 @@ fn focused_native_tour_chips_delegate_arrows_and_escape_to_the_current_graph(cx:
     cx.simulate_keystrokes("t"); settle(cx);
     for (key, stop, slot) in [("right", Some(1), 1), ("left", Some(0), 2), ("escape", None, 1)] {
         cx.update(|window, cx| {
-            let graph = graph.read(cx);
-            assert!(window.is_focus_handle_mounted(&graph.tour_focus[slot]));
-            graph.tour_focus[slot].focus(window, cx);
+            let stop = graph.read(cx).tour_focus[slot].clone();
+            assert!(window.is_focus_handle_mounted(&stop));
+            stop.focus(window, cx);
         });
         allowed.set(false);
         cx.simulate_keystrokes(key);
@@ -308,7 +310,7 @@ fn focused_native_tour_chips_delegate_arrows_and_escape_to_the_current_graph(cx:
         });
     }
     cx.simulate_keystrokes("t"); settle(cx);
-    cx.update(|window, cx| graph.read(cx).tour_focus[1].focus(window, cx));
+    cx.update(|window, cx| graph.read(cx).tour_focus[1].clone().focus(window, cx));
     cx.simulate_keystrokes("secondary-k"); draw(cx);
     cx.update(|window, cx| {
         let graph = graph.read(cx);

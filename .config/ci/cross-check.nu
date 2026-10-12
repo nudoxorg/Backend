@@ -42,14 +42,14 @@ def main [
         # foreign outputs; parallel Cargo invocations must not share those.
         let target_dir = $target_root | path join $triple
         let started = date now
-        print $"cross: cargo check --locked --workspace --all-targets --target ($triple) --jobs ($jobs)"
+        print $"cross: cargo check --locked --keep-going --workspace --all-targets --target ($triple) --jobs ($jobs)"
         # Stream Cargo's own progress and diagnostics straight through. The
         # verdict comes out of the try itself: an env change such as
         # LAST_EXIT_CODE made inside the block does not survive it, so
         # reading it afterwards reported every clean target as failed.
         let status = (try {
             with-env {CARGO_TARGET_DIR: $target_dir} {
-                run-external "cargo" "check" "--locked" "--workspace" "--all-targets" "--target" $triple "--jobs" ($jobs | into string)
+                run-external "cargo" "check" "--locked" "--keep-going" "--workspace" "--all-targets" "--target" $triple "--jobs" ($jobs | into string)
             }
             0
         } catch {
