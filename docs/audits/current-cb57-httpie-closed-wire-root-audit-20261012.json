@@ -1,0 +1,75 @@
+{
+  "kind": "root-independent-closed-httpie-raw-integrity-and-graph-audit",
+  "source": "cb57fd82308af791812b5a09a6badfac2d62d836",
+  "tree": "ad309041fb1d716a8edd65ad9c3b1c2f342fb4e1",
+  "mirror_manifest_sha256": "23284ccddd4a6c679b2b46fc8b427140811048310702ab27dbcb13f017c40282",
+  "files_rehashed": 267,
+  "bytes_rehashed": 1869469,
+  "raw_calls_rehashed": 91,
+  "actual_jsonrpc_replies": 73,
+  "actual_cli_outputs": 18,
+  "same_label_request_ids_independently_bound": 73,
+  "request_binding_not_inferred_for": [],
+  "caller_graph_records": 5,
+  "full_paged_record_multiset_equals_plain": true,
+  "cold_request_exactly_reuses_original_issued_cursor_and_context": true,
+  "cold_page_all_fields_except_transport_cursor_equal_original_second_page": true,
+  "cold_next_cursor_native_owner_token_exactly_equal": true,
+  "cold_next_cursor_transport_expiry_reissued": {
+    "original": 1791838406,
+    "replayed": 1791839016,
+    "wrapper_mac_not_independently_verified": true
+  },
+  "published_identity_stable_across_restart": true,
+  "recorded_checks": 55,
+  "recorded_checks_all_true": true,
+  "checks_reexecuted_as_native_acceptance": false,
+  "token_counts_independently_rerun": false,
+  "token_faults_as_recorded_by_real_tokenizer": [
+    {
+      "sequence": 34,
+      "label": "backend-outline",
+      "raw_sha256": "516d9b6b4391a9773782f97b4698b871dc77f09ea5c3cbd803d8956810fe8f8e",
+      "bytes": 49072,
+      "actual_recorder_cl100k_tokens": 17680,
+      "token_count_independently_rerun": false,
+      "budget_pass": false,
+      "outcome": "pass-transport-and-protocol",
+      "seconds": 0.07459328789263964
+    },
+    {
+      "sequence": 76,
+      "label": "semantic-versions",
+      "raw_sha256": "c538f6bb95a70e66fad553e31652a8e3b5dbc6f8e2d9db12e5573290220e3d0b",
+      "bytes": 203,
+      "actual_recorder_cl100k_tokens": 59,
+      "token_count_independently_rerun": false,
+      "budget_pass": true,
+      "outcome": "fail-valid-operation",
+      "seconds": 0.05178362992592156
+    }
+  ],
+  "positive_index_remove_cancel_not_credited": true,
+  "genuine_semantic_inference_not_credited": true,
+  "overall_product_acceptance": false,
+  "cleanup_as_recorded": {
+    "outer_sha256": "67b26dea715cf2fa2ac865192c7f48f2e4d8c4554302c3dc409fe0373e6f354f",
+    "permit_released": true,
+    "two_complete_empty_group_and_uid_root_scans": [
+      {
+        "sample_started_utc": "2026-10-12T20:48:37.100117+00:00",
+        "sample_finished_utc": "2026-10-12T20:48:37.122988+00:00",
+        "pgid_members": [],
+        "scoped_uid_root_members": [],
+        "complete": true
+      },
+      {
+        "sample_started_utc": "2026-10-12T20:48:37.323387+00:00",
+        "sample_finished_utc": "2026-10-12T20:48:37.365822+00:00",
+        "pgid_members": [],
+        "scoped_uid_root_members": [],
+        "complete": true
+      }
+    ]
+  }
+}
