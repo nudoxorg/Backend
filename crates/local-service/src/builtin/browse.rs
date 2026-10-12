@@ -3629,7 +3629,7 @@ fn hash_wrapper_version(hasher: &mut blake3::Hasher, version: &[u8]) {
 }
 
 fn tool_script_witness(path: &Path) -> Result<(CargoToolFileWitness, Vec<u8>), String> {
-    bounded_cargo_script_witness(path, true)
+    bounded_cargo_script_witness(path, CargoScriptPurpose::ExecutableWrapper)
 }
 
 fn nix_cargo_source_template_witness(
@@ -3640,7 +3640,7 @@ fn nix_cargo_source_template_witness(
             "Nix Cargo source template path is not an immutable Nix source file".to_owned(),
         );
     }
-    let (witness, bytes) = bounded_cargo_script_witness(path, false)?;
+    let (witness, bytes) = bounded_cargo_script_witness(path, CargoScriptPurpose::SourceTemplate)?;
     if witness.canonical_path != path
         || witness.reuse.is_none()
         || !is_supported_nix_cargo_source_template(&bytes)
@@ -3676,14 +3676,33 @@ fn lower_hex(bytes: &[u8]) -> String {
     result
 }
 
+#[derive(Clone, Copy)]
+enum CargoScriptPurpose {
+    ExecutableWrapper,
+    SourceTemplate,
+}
+
+impl CargoScriptPurpose {
+    fn label(self) -> &'static str {
+        match self {
+            Self::ExecutableWrapper => "Cargo wrapper",
+            Self::SourceTemplate => "Nix Cargo source template",
+        }
+    }
+}
+
 fn bounded_cargo_script_witness(
     path: &Path,
-    require_executable: bool,
+    purpose: CargoScriptPurpose,
 ) -> Result<(CargoToolFileWitness, Vec<u8>), String> {
     const MAX_WRAPPER_SCRIPT_BYTES: u64 = 64 * 1024;
-    let resolved = path
-        .canonicalize()
-        .map_err(|_| "Cargo wrapper path cannot be resolved".to_owned())?;
+    let resolved = path.canonicalize().map_err(|_| {
+        format!(
+            "{} path cannot be resolved: {}",
+            purpose.label(),
+            path.display()
+        )
+    })?;
     let parent = resolved
         .parent()
         .ok_or_else(|| "Cargo wrapper has no parent directory".to_owned())?;
@@ -3703,7 +3722,7 @@ fn bounded_cargo_script_witness(
         return Err("Cargo wrapper is not a bounded regular file".to_owned());
     }
     #[cfg(unix)]
-    if require_executable {
+    if matches!(purpose, CargoScriptPurpose::ExecutableWrapper) {
         use std::os::unix::fs::PermissionsExt;
         if before.permissions().mode() & 0o111 == 0 {
             return Err("Cargo wrapper script is not executable".to_owned());
@@ -8853,6 +8872,55 @@ mod tests {
         assert!(!cargo_wrapper_needs_getconf(Some(std::ffi::OsStr::new(
             "1"
         ))));
+    }
+
+    #[test]
+    fn generated_cargo_launcher_refuses_a_missing_source_without_using_embedded_bytes() {
+        const SOURCE: &[u8] =
+            include_bytes!("browse/cargo_metadata/fixtures/nix-cargo-source-legacy.sh");
+        const GENERATED: &[u8] =
+            include_bytes!("browse/cargo_metadata/fixtures/nix-cargo-generated-legacy.sh");
+        let missing = PathBuf::from(format!(
+            "/nix/store/00000000000000000000000000000000-missing-cargo-source-{}-{}/cargo-shared-cache.sh",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        assert!(!missing.exists(), "negative source fixture must be absent");
+        let generated = std::str::from_utf8(GENERATED)
+            .expect("retained launcher UTF-8")
+            .replace(
+                "/nix/store/yafcfw231y68f25akncyfr50g5lyw7xf-cargo-shared-cache.sh",
+                missing.to_str().expect("fixture path UTF-8"),
+            );
+        assert!(
+            recognized_nix_parallel_cargo(generated.as_bytes(), SOURCE).is_some(),
+            "the launcher still matches the exact retained template"
+        );
+        let error = match nix_parallel_cargo_witness(generated.as_bytes()) {
+            Err(error) => error,
+            Ok(_) => panic!("embedded source bytes cannot replace an absent runtime source"),
+        };
+        assert_eq!(
+            error,
+            format!(
+                "Nix Cargo source template path cannot be resolved: {}",
+                missing.display()
+            )
+        );
+        let error = match tool_script_witness(&missing) {
+            Err(error) => error,
+            Ok(_) => panic!("absent executable wrapper must remain inadmissible"),
+        };
+        assert_eq!(
+            error,
+            format!(
+                "Cargo wrapper path cannot be resolved: {}",
+                missing.display()
+            )
+        );
     }
 
     #[test]
