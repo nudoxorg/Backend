@@ -230,7 +230,7 @@ impl SourceAvailability {
                     .collect::<BTreeMap<_, _>>();
                 for image in activated.images() {
                     use backend_semantic::ir::{
-                        ImageProvenance, SemanticCoreReader, SemanticReader,
+                        ImageProvenance, SemanticCoreReader,
                     };
                     let view = image.reopen().ok()?;
                     let ImageProvenance::Captured {

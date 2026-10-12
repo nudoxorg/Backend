@@ -22,8 +22,7 @@ use backend_engine::application::{
     DocumentationFragment, DocumentationSession, LocalCompilerClient,
 };
 use backend_engine::builtin::{
-    ProductSemanticCaptureOutcome, ProductSemanticPublicationRecord, SemanticUnavailableReason,
-    semantic_capture_relation,
+    ProductSemanticPublicationRecord, SemanticUnavailableReason, semantic_capture_relation,
 };
 use backend_engine::{Fragment, Row, RowId, ViewRoot, product_source_file_key};
 use backend_semantic::ir::{

@@ -15,9 +15,8 @@ use super::{
 };
 use crate::compiler_trust::{TRUSTED_COMPILER_POLICY_FILE_NAME, TrustedCompilerWorkerPolicy};
 use backend_engine::builtin::{
-    PartialSemanticCoverage, ProductSemanticCaptureOutcome, ProductSemanticPublicationKey,
-    ProductSemanticPublicationRecord, SemanticPublicationClaim, SemanticPublicationCoverage,
-    semantic_capture_relation,
+    PartialSemanticCoverage, ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
+    SemanticPublicationClaim, SemanticPublicationCoverage, semantic_capture_relation,
 };
 use backend_engine::cluster_transport::EndpointId;
 use backend_extension_turso::{
@@ -30,7 +29,7 @@ use backend_extension_turso::{
     reopen_selected_compiler_metadata,
 };
 use backend_library::interface::{SemanticImageAuthority, SemanticImageSnapshot};
-use backend_semantic::ir::{ImageProvenance, SemanticCoreReader, SemanticReader};
+use backend_semantic::ir::{ImageProvenance, SemanticCoreReader};
 use backend_semantic::vocabulary::CompileRecipeFact;
 use backend_semantic::vocabulary::LanguageProfile;
 use backend_semantic::vocabulary::Stage;
@@ -989,7 +988,6 @@ fn load_selected_images(
         );
     }
     if let Some(sources) = &program_sources {
-        use backend_semantic::ir::SemanticReader as _;
         let mappings = sources
             .sources()
             .filter_map(|row| row.package_path.map(|path| (path, row.source)))
