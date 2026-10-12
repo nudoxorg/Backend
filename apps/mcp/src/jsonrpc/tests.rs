@@ -22,6 +22,8 @@ use backend_library::{
 };
 use backend_present::{domain_name, grammar_for};
 
+mod surface_fidelity;
+
 const PROJECT: &str = "/abs/polyglot";
 const MODULE: &str = "/abs/polyglot::src/lib.rs";
 const DECLARATION: &str = "/abs/polyglot::src/lib.rs:2::ferris";

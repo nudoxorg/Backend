@@ -1581,6 +1581,7 @@ dependencies = [
  "backend-client",
  "backend-engine",
  "backend-extension-trustfall",
+ "backend-frontend-python",
  "backend-library",
  "backend-platform",
  "backend-present",
