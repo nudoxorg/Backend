@@ -595,6 +595,7 @@ impl SemanticVersionsPage {
         }
         let mut items = 0usize;
         let mut next_position = None;
+        let mut previous_entry: Option<&SemanticVersionPageEntry> = None;
         for entry in &self.entries {
             if entry.version_ordinal >= u32::from(self.version_count)
                 || next_position.is_some_and(|(version, image)| {
@@ -604,6 +605,14 @@ impl SemanticVersionsPage {
                 return Err(ProductAdmissionError::SemanticVersionShape);
             }
 
+            if previous_entry.is_some_and(|previous| {
+                previous.version_ordinal == entry.version_ordinal
+                    && (previous.version != entry.version
+                        || previous.images.last().map(|image| image.history_commit)
+                            != entry.previous_commit)
+            }) {
+                return Err(ProductAdmissionError::SemanticVersionShape);
+            }
             entry.version.admit()?;
             if entry.version.package != self.package
                 || entry
@@ -673,6 +682,7 @@ impl SemanticVersionsPage {
                 if finished { 0 } else { end as u32 },
             ));
             items += entry.images.len().max(1);
+            previous_entry = Some(entry);
         }
         if let Some((version, image)) = next_position {
             match &self.next_cursor {
@@ -1073,6 +1083,63 @@ mod tests {
             )
             .is_err(),
             "Preparing cannot hide changed version metadata"
+        );
+    }
+
+    #[test]
+    fn adjacent_history_segments_require_identical_version_and_parent_edge() {
+        let record = retained_fixture(133);
+        let mut page = SemanticVersionsPage::from_versions(
+            record.package.clone(),
+            [1; 32],
+            [2; 32],
+            &[record.clone()],
+            2,
+            None,
+        )
+        .expect("owner-produced contiguous proof pair");
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries[0].images.len(), 2);
+        // Independently repartition the real factory output into two whole,
+        // contiguous segments. This is a strict-codec control, not a claim
+        // about the factory's chosen partition or native runtime authority.
+        let mut first = page.entries[0].clone();
+        let mut second = first.clone();
+        second.first_segment = false;
+        second.start_ordinal = 1;
+        second.previous_commit = Some(first.images[0].history_commit);
+        second.images = vec![first.images[1].clone()].into_boxed_slice();
+        first.images = vec![first.images[0].clone()].into_boxed_slice();
+        page.entries = vec![first, second].into_boxed_slice();
+        page.admit()
+            .expect("legitimate identical split-version records");
+        let command = SurfaceCommand::SemanticVersionsPage {
+            package: record.package,
+            limit: 2,
+            cursor: None,
+        };
+        crate::admit_surface_reply(&command, &SurfaceReply::SemanticVersionsPage(page.clone()))
+            .expect("exact split page admitted");
+        let mut changed_source = page.clone();
+        changed_source.entries[1].version.semantic_bytes += 1;
+        changed_source.entries[1]
+            .version
+            .admit()
+            .expect("source field remains individually valid");
+        assert!(
+            crate::admit_surface_reply(
+                &command,
+                &SurfaceReply::SemanticVersionsPage(changed_source)
+            )
+            .is_err(),
+            "one version cannot expose contradictory source metadata"
+        );
+        let mut changed_edge = page;
+        changed_edge.entries[1].previous_commit = Some([77; 32]);
+        changed_edge.entries[1].images[0].parent_commits = Box::new([[77; 32]]);
+        assert!(
+            changed_edge.admit().is_err(),
+            "an internally consistent segment cannot detach from its preceding segment"
         );
     }
 
