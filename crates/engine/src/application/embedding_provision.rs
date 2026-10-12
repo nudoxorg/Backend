@@ -1534,3 +1534,7 @@ sys.stdout.buffer.write(response)
         Ok(())
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "embedding_cpu_native_tests.rs"]
+mod cpu_native_tests;
