@@ -17,13 +17,12 @@ use backend_engine::application::{
     VerifierAcceptedFullWorkspaceInput, capture_full_workspace_v2_with_prior,
 };
 use backend_engine::builtin::{
-    PartialSemanticCoverage, ProductSemanticCaptureOutcome, ProductSemanticCaptureRelation,
-    ProductSemanticPublicationKey, ProductSemanticPublicationRecord, ProductSourceFileFactsRecord,
-    ProductSourceFileFactsRelation, ProductSourceFileFactsUpdate, SemanticPublicationClaim,
-    SemanticPublicationCoverage, SemanticPublicationSelection, SemanticPublicationVersion,
-    SemanticSourceCapture, product_source_file_facts_record_key,
-    product_source_file_facts_relation, product_source_file_facts_row_keys,
-    semantic_capture_relation,
+    PartialSemanticCoverage, ProductSemanticCaptureOutcome, ProductSemanticPublicationKey,
+    ProductSemanticPublicationRecord, ProductSourceFileFactsRecord, ProductSourceFileFactsRelation,
+    ProductSourceFileFactsUpdate, SemanticPublicationClaim, SemanticPublicationCoverage,
+    SemanticPublicationSelection, SemanticPublicationVersion, SemanticSourceCapture,
+    product_source_file_facts_record_key, product_source_file_facts_relation,
+    product_source_file_facts_row_keys, semantic_capture_relation,
 };
 use backend_extension_turso::SourceObservationReceipt;
 use backend_library::interface::{
@@ -37,7 +36,7 @@ use backend_semantic::ir::SemanticInputWitness;
 #[cfg(test)]
 use backend_semantic::vocabulary::Language;
 use backend_semantic::vocabulary::LanguageProfile;
-use backend_version::{Coverage, Relation as _, ScopeRoot, WorkspaceRoot};
+use backend_version::{Coverage, ScopeRoot, WorkspaceRoot};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};

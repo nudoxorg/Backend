@@ -1,0 +1,44 @@
+{
+  "scope": "Root independently rehashed the closed real read02 files and checked exact wire identities and lifecycle; no new product execution",
+  "source": "cb57fd82308af791812b5a09a6badfac2d62d836",
+  "source_tree": "ad309041fb1d716a8edd65ad9c3b1c2f342fb4e1",
+  "manifest_sha256": "cd5222c93b8c4e3a69a2775e9e79560bcb6586aa326d88b0b4ab9550708dcb4b",
+  "files": 165,
+  "file_bytes": 896649,
+  "outer_receipt_sha256": "c4e09b33954813b7af221d8baf62aa61afbab1064bc8546e2d9d83ea8bf32957",
+  "lease": "601c315a8e2748f7b7064377de25db77",
+  "raw_responses": 9,
+  "raw_response_bytes": 46029,
+  "token_counts": {
+    "sum": 9784,
+    "meaning": "retained observer actual cl100k measurements; Root did not rerun a tokenizer"
+  },
+  "advertised_tools": 17,
+  "mcp_reply_ids_match_exact_requests": true,
+  "cli_and_mcp_status_structured_contents_identical": true,
+  "source_and_installed_identity_before_after_identical": true,
+  "retained_status": {
+    "revision": "3650eaeb66bfee8fb102461e382bc0bdd523bd76affa7fa07ce3bf4b156bd87c",
+    "source": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
+    "sequence": 4,
+    "rows": 14162
+  },
+  "cold_cli_status_seconds": 11.409909192938358,
+  "same_owner_mcp_status_seconds": 0.21438024705275893,
+  "phase_attribution": "UNKNOWN; scheduled contrast does not measure replay, discovery or inference separately",
+  "lifecycle": {
+    "outer_exit": 1,
+    "child_exit": 0,
+    "stop_reason": "child-exit-with-live-original-group",
+    "exact_normal_owner_signaled": 2812342,
+    "two_complete_empty_scans": true,
+    "permit_released": true
+  },
+  "limits": [
+    "No current Go publication or all-tool invocation proof",
+    "No graph, references, active cancellation, cold cursor, genuine semantic inference or public download proof",
+    "Nested tool schemas checked only for top-level object shape; not exhaustive schema admission",
+    "Host/exclusion guard and transport MAC not independently reexecuted",
+    "Outer lifecycle RED remains distinct from nine successful reads"
+  ]
+}

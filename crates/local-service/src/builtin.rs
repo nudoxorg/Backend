@@ -72,7 +72,7 @@ mod staged_intent;
 #[path = "builtin/staged_transport.rs"]
 mod staged_transport;
 use profile::{
-    BuiltinAuthorityVerifier, BuiltinCaptureBasis, BuiltinCaptureChange, BuiltinProfile,
+    BuiltinAuthorityVerifier, BuiltinCaptureChange, BuiltinProfile,
     BuiltinSemanticChange, BuiltinSemanticRelation, BuiltinSourceChange, BuiltinSourceFactsChange,
     BuiltinValidator, BuiltinWorkspaceRelation, ProfileDescriptor, ProfileIds, builtin_dispatcher,
     capture_basis_for_snapshot, execution_manifest, execution_resources,

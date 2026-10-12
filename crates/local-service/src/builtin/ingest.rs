@@ -1,6 +1,8 @@
 //! Deterministic, parallel, content-versioned filesystem ingestion.
 
-use super::source_budget::{SourceAdmissionLedger, SourceAdmissionLimits, SourceAdmissionPolicy};
+#[cfg(test)]
+use super::source_budget::SourceAdmissionLimits;
+use super::source_budget::{SourceAdmissionLedger, SourceAdmissionPolicy};
 use super::source_frontier;
 use backend_compile::{
     DeclarationKind, InputContentSchema, SourceExcerpt, SourceLanguage, SyntaxFrontend, typed_of,

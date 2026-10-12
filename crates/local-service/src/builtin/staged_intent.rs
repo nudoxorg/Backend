@@ -6,10 +6,11 @@
 //! FileStore immutable installation, closure composition and GC leases own
 //! durability, cross-process recovery and abandoned-object reclamation.
 
+#[cfg(test)]
+use backend_store::ArtifactClosureClaim;
 use backend_store::{
-    ArtifactBudget, ArtifactClosureClaim, ArtifactSink, ClosureCompositionBudget,
-    ClosureMembershipChange, FileStore, GcPinGuard, ObjectId, PinnedStoredClosureReceipt,
-    StoreError, TypedObject, UntrustedObjectId,
+    ArtifactBudget, ArtifactSink, ClosureCompositionBudget, ClosureMembershipChange, FileStore,
+    GcPinGuard, ObjectId, PinnedStoredClosureReceipt, StoreError, TypedObject, UntrustedObjectId,
 };
 use backend_version::{ObjectKey, Schema, SchemaIdentity};
 use std::collections::BTreeSet;
