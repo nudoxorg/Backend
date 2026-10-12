@@ -1,0 +1,89 @@
+{
+  "scope": "Root independent mirrored-record audit; installed executable hashes are observer measured, not direct Root ELF measurements",
+  "source": {
+    "clean": true,
+    "commit": "e0767e71b7077f9bbd1604cbf7bb097090fbbba3",
+    "tree": "519dcf63c5b558a509f254998131f768c3f3c14e"
+  },
+  "packet_files_rehashed": 189,
+  "packet_archive_sha256": "962e4bce6bd5fba5382c8bb1fa564ce98abd17c529b761a1ad9c648a1510f593",
+  "outer_receipt_sha256": "876e686b63ddf9bc83b44265666e3e85036d43d9bfc9830e80e118de11a24182",
+  "installer": {
+    "argv": [
+      "/usr/bin/python3",
+      "/work/sol61-cli-proof/current-e076-95-01/package-e076-95/install-linux-x64.py",
+      "--candidate-directory",
+      "/work/sol61-cli-proof/current-e076-95-01/package-e076-95"
+    ],
+    "exit": 0,
+    "seconds": 5.700854019029066,
+    "finished_utc": "2026-10-12T00:42:34.100441+00:00"
+  },
+  "repeat_installer": {
+    "argv": [
+      "/usr/bin/python3",
+      "/work/sol61-cli-proof/current-e076-95-01/package-e076-95/install-linux-x64.py",
+      "--candidate-directory",
+      "/work/sol61-cli-proof/current-e076-95-01/package-e076-95"
+    ],
+    "exit": 0,
+    "seconds": 6.2510497469920665,
+    "finished_utc": "2026-10-12T00:43:02.635381+00:00"
+  },
+  "repeat_identity_unchanged": true,
+  "published": {
+    "operation_key": "f3a02c2c15e4512e245f56717ffbc7fa75add5ec01a4cb18b87fe9ef12ffae7a",
+    "request_digest": "7569a74a28b943f357f2325dba7028e89e495e12fba86714fb3265371c1b66b7",
+    "view_root": "370e04f7cf576e9f9766565cd639970abc2be09f0613eb36c2192a7564110a1a",
+    "python_files": 133,
+    "coverage": "complete"
+  },
+  "first_add_seconds": 0.8386246191803366,
+  "first_ready_search_seconds": 0.05433109705336392,
+  "first_search_semantic": {
+    "lane": "semantic",
+    "state": "unavailable",
+    "reason": "unconfigured"
+  },
+  "actual_response_count": 15,
+  "max_response_bytes": 7249,
+  "max_cl100k_tokens": 4164,
+  "copied_resolve_operands_document_faults": [
+    {
+      "slug": "not-found",
+      "operand": "/work/sol61-cli-proof/current-e076-95-01/httpie::external::symbol:5802911e8929e01282614ad86a639d88fbe592aac4e687f9f06f0c2bf11aebb3::HTTPieArgumentParser",
+      "cause": "absent",
+      "detail": "no record is published at that identity in this revision",
+      "shell": "backend search HTTPieArgumentParser",
+      "call": {
+        "name": "backend.search",
+        "arguments": {
+          "query": "HTTPieArgumentParser"
+        }
+      },
+      "answer": "fault"
+    },
+    {
+      "slug": "not-found",
+      "operand": "/work/sol61-cli-proof/current-e076-95-01/httpie::external::symbol:ba38409fbd9bf58074a3cc5b8365c16c584471b20f71d71f50b4a6fe2ddc5a1e::HTTPieArgumentParser",
+      "cause": "absent",
+      "detail": "no record is published at that identity in this revision",
+      "shell": "backend search HTTPieArgumentParser",
+      "call": {
+        "name": "backend.search",
+        "arguments": {
+          "query": "HTTPieArgumentParser"
+        }
+      },
+      "answer": "fault"
+    }
+  ],
+  "overall": "RED: two real returned external document operands fail; separate controller process-state/identity scan race ended continuation with ACK timeout",
+  "unrun": [
+    "selected MCP/source/reference/graph matrix",
+    "all17 positive lifecycle",
+    "offline/cold continuation",
+    "new integrated source regression tests"
+  ],
+  "terminal_scope_drained_and_permit_released": true
+}
