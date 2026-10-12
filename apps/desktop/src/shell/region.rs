@@ -5,7 +5,7 @@ use crate::model::AppSnapshot;
 use crate::model::pages::PageKey;
 use crate::navigation::{Intent, View};
 use crate::runtime::UiRootEntity;
-use crate::runtime::store::{Branch, DataStore, StoreEvent, Watch};
+use crate::runtime::store::{Branch, DataStore, PageRetryReceipt, StoreEvent, Watch};
 use facet::fluid::Modes;
 use facet::{ActiveFacet as _, Measure};
 use gpui::{
@@ -474,6 +474,13 @@ impl Links {
     /// Asks for a page again after a fault.
     pub(crate) fn retry(&self, key: PageKey, cx: &mut App) {
         self.store.update(cx, |store, cx| store.retry(key, cx));
+    }
+
+    /// Retry the page/owner receipt retained by a painted recovery control.
+    pub(crate) fn retry_at(&self, expected: &PageRetryReceipt, cx: &mut App) {
+        self.store.update(cx, |store, cx| {
+            store.retry_page_at(expected, cx);
+        });
     }
 }
 

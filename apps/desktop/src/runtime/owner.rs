@@ -946,7 +946,7 @@ impl OwnerGate {
 impl OwnerGate {
     /// The current state's epoch and whether it is a start still being
     /// waited for.
-    fn starting_at(&self) -> Option<Epoch> {
+    pub(crate) fn starting_at(&self) -> Option<Epoch> {
         let inner = self.lock();
         matches!(inner.state, OwnerState::Starting).then_some(inner.epoch)
     }

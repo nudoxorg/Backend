@@ -227,6 +227,14 @@ pub struct StoreStats {
     pub events: u64,
 }
 
+/// One page's painted recovery and its exact owner publication.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PageRetryReceipt {
+    key: PageKey,
+    stamp: Stamp,
+    owner: owner_link::PageRetryOwner,
+}
+
 /// The data plane entity.
 pub struct DataStore {
     snapshot: Arc<AppSnapshot>,
@@ -971,6 +979,29 @@ impl DataStore {
                 cx,
             );
             self.emit(StoreEvent::Resource(key), cx);
+        }
+    }
+
+    /// The page and owner represented by a painted local recovery control.
+    /// Recovery does not require Serving, but cannot adopt a later read or
+    /// a different attachment/failure while the old native tree is retained.
+    pub(crate) fn capture_page_retry(&self, key: &PageKey) -> Option<PageRetryReceipt> {
+        Some(PageRetryReceipt { key: key.clone(), stamp: self.stamp(key), owner: self.owner.page_retry_owner()? })
+    }
+
+    pub(crate) fn admits_page_retry(&self, expected: &PageRetryReceipt) -> bool {
+        self.stamp(&expected.key) == expected.stamp && self.owner.admits_page_retry_owner(&expected.owner)
+    }
+
+    pub(crate) fn retry_page_at(&mut self, expected: &PageRetryReceipt, cx: &mut Context<Self>) -> bool {
+        if !self.admits_page_retry(expected) { return false; }
+        // The gate can publish from its owner thread between the UI check
+        // and this update. Restart the captured failure token, never reacquire
+        // a fresh failure inside the action.
+        match &expected.owner {
+            owner_link::PageRetryOwner::Failed(retry) => self.retry_owner_at(retry, expected.key.clone(), cx),
+            owner_link::PageRetryOwner::Starting { .. } => { self.owner.hold(expected.key.clone()); true }
+            owner_link::PageRetryOwner::Serving(_) => { self.retry(expected.key.clone(), cx); true }
         }
     }
 

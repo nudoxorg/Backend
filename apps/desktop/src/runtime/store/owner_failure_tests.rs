@@ -23,6 +23,47 @@ fn root(tag: &str) -> VersionedRoot {
     )
 }
 
+#[gpui::test]
+fn page_retry_receipt_rejects_unobserved_same_root_attachment_replacement_and_preserves_starting_hold(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    let at = root("page-retry");
+    let gate = OwnerGate::ready(at, ServiceMode::Attached);
+    let store = cx.update(|cx| DataStore::install_with_owner(cx, Arc::new(AppSnapshot::empty(at)),
+        Some(ReadPool::start(1, |_| Fixture).expect("pool")), Some(gate.clone()), None));
+    until(&store, cx, "real initial retry receipt page", |store| store.health().is_loaded() && store.pool_activity().is_idle());
+    store.update(cx, |store, cx| {
+        let key = PageKey::Health;
+        let stamp = store.stamp(&key);
+        let expected = store.capture_page_retry(&key).expect("first serving recovery");
+        let submitted = store.stats().submitted;
+        gate.publish(OwnerState::Starting);
+        assert!(store.capture_page_retry(&key).is_none(), "a newly captured absence cannot mean Starting while the link still says Serving");
+        assert!(!store.retry_page_at(&expected, cx));
+        gate.publish(OwnerState::Ready { key: at, mode: ServiceMode::Attached });
+        assert_eq!(store.stamp(&key), stamp, "owner watcher has not invalidated the retained page");
+        assert!(store.capture_page_retry(&key).is_none(), "a newly captured absence cannot adopt the unadmitted replacement Ready either");
+        assert!(!store.retry_page_at(&expected, cx));
+        assert_eq!(store.stats().submitted, submitted, "a retained recovery cannot adopt this new attachment");
+    });
+    let gate = OwnerGate::starting();
+    let starting = cx.update(|cx| DataStore::install_with_owner(cx, Arc::new(AppSnapshot::empty(at)),
+        None, Some(gate.clone()), None));
+    starting.update(cx, |store, cx| {
+        let key = PageKey::Symbol(symbol("WaitingRecovery"));
+        let expected = store.capture_page_retry(&key).expect("exact current startup epoch");
+        assert!(store.retry_page_at(&expected, cx), "current local recovery can wait for startup");
+        assert_eq!(store.stats().submitted, 0);
+        gate.publish(OwnerState::Starting);
+        assert!(!store.retry_page_at(&expected, cx), "a later Starting publication cannot inherit this hold receipt");
+        gate.publish(OwnerState::Failed(OwnerFault::Host("startup refused".into())));
+        assert!(!store.retry_page_at(&expected, cx), "a later failure cannot inherit the Starting receipt");
+        let retry = store.capture_page_retry(&key).expect("live current failed recovery");
+        assert!(store.retry_page_at(&retry, cx));
+        assert!(matches!(gate.state(), OwnerState::Starting));
+        assert_eq!(store.stats().submitted, 0, "restart is not an index mutation or page pool submission");
+    });
+}
+
 type CompletedSuccess = (bool, Result<PageValue, ReadFailure>);
 
 struct BlockingSuccess {

@@ -10,11 +10,216 @@ use crate::runtime::reads::{PageReader, ReadContext, ReadPool, ReadRequest};
 use backend_library::DeclarationKind;
 use gpui::{AppContext as _, TestAppContext};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 const ERROR_TYPE: &str = "/fixture/present::errors.go:1::ErrorHandling";
 const CONTINUE: &str = "/fixture/present::errors.go:2::ContinueOnError";
+
+struct RecoveryReads(Arc<AtomicUsize>);
+impl PageReader for RecoveryReads {
+    fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+        if matches!(request, ReadRequest::Symbol(symbol) if *symbol == super::symbol("RelationLabel")) {
+            let read = self.0.fetch_add(1, Ordering::SeqCst);
+            if read < 2 {
+                return Err(ReadFailure::Fault(crate::core::ErrorValue::new(
+                    crate::core::FaultCode::Transport, "actual read fixture refused")));
+            }
+        }
+        Fixture.read(request, context)
+    }
+}
+
+#[gpui::test]
+fn retained_native_read_retry_cannot_replace_a_new_read_and_fresh_failure_recovers(cx: &mut TestAppContext) {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let client = Arc::clone(&reads);
+    let mut rig = rig_with_reads(cx, Some(super::page_route("RelationLabel")), 1440.0, 900.0,
+        ReadPool::start(1, move |_| RecoveryReads(Arc::clone(&client))).expect("pool"));
+    let shell = rig.shell.clone();
+    rig.cx.update(|window, cx| {
+        window.replace_root(cx, |window, cx| gpui_component::Root::new(shell, window, cx).bordered(false));
+        window.set_a11y_forced(true);
+    });
+    rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+    let symbol = super::symbol("RelationLabel");
+    let key = PageKey::Symbol(symbol.clone());
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+    let (target, bounds) = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed()
+        .into_iter().find(|(target, _)| target.id.starts_with("retry-")).expect("actual failure recovery");
+    let native = rig.cx.update(|window, _| window.a11y_tree().expect("failure AX").nodes.iter()
+        .find(|(_, node)| node.role() == gpui::Role::Button && node.label() == Some("Try again")
+            && node.supports_action(gpui::AccessibleAction::Click)).map(|(id, _)| *id).expect("native retry"));
+    let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+    let before = rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted);
+    let focused = rig.cx.update(|window, cx| {
+        window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+            position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left,
+            click_count: 1, first_mouse: false,
+        }), cx);
+        let focused = window.focused(cx);
+        // Another current caller starts a real pool read while this failure's
+        // native dispatch tree and held press are still committed.
+        rig.graph.store.update(cx, |store, cx| store.retry(key.clone(), cx));
+        assert!(!target.action.admits(cx));
+        target.action.run(window, cx);
+        window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+            position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1,
+        }), cx);
+        for key in ["enter", "space"] {
+            let keystroke = gpui::Keystroke::parse(key).expect("retry key");
+            window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                keystroke: keystroke.clone(), is_held: false, prefer_character_input: false,
+            }), cx);
+            window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
+        }
+        window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+            action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: native, data: None,
+        }, cx);
+        assert_eq!(rig.graph.store.read(cx).stats().submitted, before + 1);
+        assert_eq!(window.focused(cx), focused);
+        assert_eq!(window.a11y_frame_number(), frame);
+        focused
+    });
+    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted), before + 1);
+    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused);
+    assert_eq!(rig.cx.update(|window, _| window.a11y_frame_number()), frame);
+    rig.settle();
+    assert_eq!(reads.load(Ordering::SeqCst), 2);
+    rig.cx.update(|window, cx| target.action.run(window, cx));
+    rig.cx.run_until_parked();
+    assert_eq!(reads.load(Ordering::SeqCst), 2, "a new identical failure does not revive the old callback");
+    let (_, bounds) = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed()
+        .into_iter().find(|(target, _)| target.id.starts_with("retry-")).expect("new failure retry");
+    rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    rig.settle();
+    assert_eq!(reads.load(Ordering::SeqCst), 3, "fresh native recovery reaches the real worker without Back");
+    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.symbol(&symbol).is_loaded()));
+    rig.cx.update(|window, cx| target.action.run(window, cx));
+    rig.cx.run_until_parked();
+    assert_eq!(reads.load(Ordering::SeqCst), 3, "old failure cannot replace the successful current reading");
+}
+
+#[gpui::test]
+fn identical_owner_failure_retires_generic_native_retry_before_watcher_and_fresh_offline_retry_works(cx: &mut TestAppContext) {
+    let gate = crate::runtime::owner::OwnerGate::starting();
+    let mut rig = super::rig_with_engine_gate_at_root(cx, None, 1440.0, 900.0,
+        ReadPool::start(1, |_| Fixture).expect("pool"), super::RootOnly, Some(gate.clone()), crate::core::VersionedRoot::unserved());
+    let shell = rig.shell.clone();
+    rig.cx.update(|window, cx| {
+        window.replace_root(cx, |window, cx| gpui_component::Root::new(shell, window, cx).bordered(false));
+        window.set_a11y_forced(true);
+    });
+    let failure = crate::runtime::owner::OwnerFault::Host("owner unavailable".into());
+    gate.publish(crate::runtime::owner::OwnerState::Failed(failure.clone()));
+    rig.draw(); rig.repaint();
+    let (target, bounds) = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed()
+        .into_iter().find(|(target, _)| target.id.starts_with("retry-")).expect("offline recovery");
+    let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+    let native = rig.cx.update(|window, _| window.a11y_tree().expect("offline AX").nodes.iter()
+        .find(|(_, node)| node.role() == gpui::Role::Button && node.label() == Some("Try again")
+            && node.supports_action(gpui::AccessibleAction::Click)).map(|(id, _)| *id).expect("offline Retry Click"));
+    let stamp = rig.graph.store.read_with(rig.cx, |store, _| store.stamp(&PageKey::Orbit));
+    let retry = rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_retry().expect("rendered failure token"));
+    let focused = rig.cx.update(|window, cx| {
+        window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+            position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left,
+            click_count: 1, first_mouse: false,
+        }), cx);
+        let focused = window.focused(cx);
+        gate.publish(crate::runtime::owner::OwnerState::Failed(failure.clone()));
+        assert_eq!(rig.graph.store.read(cx).stamp(&PageKey::Orbit), stamp, "identical words do not provide a stamp wake");
+        assert_ne!(rig.graph.store.read(cx).current_owner_retry(), Some(retry.clone()));
+        assert!(!target.action.admits(cx));
+        target.action.run(window, cx);
+        window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+            position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1,
+        }), cx);
+        for key in ["enter", "space"] {
+            let keystroke = gpui::Keystroke::parse(key).expect("offline retry key");
+            window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                keystroke: keystroke.clone(), is_held: false, prefer_character_input: false,
+            }), cx);
+            window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
+        }
+        window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+            action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: native, data: None,
+        }, cx);
+        assert!(matches!(gate.state(), crate::runtime::owner::OwnerState::Failed(_)), "old failure cannot restart a newer failure");
+        assert_eq!(window.focused(cx), focused);
+        assert_eq!(window.a11y_frame_number(), frame);
+        focused
+    });
+    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused);
+    assert_eq!(rig.cx.update(|window, _| window.a11y_frame_number()), frame);
+    assert!(matches!(gate.state(), crate::runtime::owner::OwnerState::Failed(_)));
+    rig.settle();
+    let (_, bounds) = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed()
+        .into_iter().find(|(target, _)| target.id.starts_with("retry-")).expect("renewed offline recovery");
+    rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    assert!(matches!(gate.state(), crate::runtime::owner::OwnerState::Starting), "fresh native recovery restarts the captured current failure without a Serving owner");
+}
+
+#[gpui::test]
+fn a_new_native_failure_paint_cannot_submit_through_unobserved_starting_or_ready_owner(cx: &mut TestAppContext) {
+    for returned in [false, true] {
+        let at = crate::core::VersionedRoot::synthetic(backend_library::view_state_root(&[("shell".into(), "tests".into())]), 4);
+        let gate = crate::runtime::owner::OwnerGate::ready(at, crate::model::ServiceMode::Attached);
+        let reads = Arc::new(AtomicUsize::new(0));
+        let client = Arc::clone(&reads);
+        let mut rig = super::rig_with_engine_gate_at_root(cx, Some(super::page_route("RelationLabel")), 1440.0, 900.0,
+            ReadPool::start(1, move |_| RecoveryReads(Arc::clone(&client))).expect("pool"), super::RootOnly, Some(gate.clone()), at);
+        let shell = rig.shell.clone();
+        rig.cx.update(|window, cx| {
+            window.replace_root(cx, |window, cx| gpui_component::Root::new(shell, window, cx).bordered(false));
+            window.set_a11y_forced(true);
+        });
+        rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        let key = PageKey::Symbol(super::symbol("RelationLabel"));
+        rig.cx.update(|window, cx| {
+            let submitted = rig.graph.store.read(cx).stats().submitted;
+            let old_frame = window.a11y_frame_number();
+            gate.publish(crate::runtime::owner::OwnerState::Starting);
+            if returned { gate.publish(crate::runtime::owner::OwnerState::Ready { key: at, mode: crate::model::ServiceMode::Attached }); }
+            assert!(rig.graph.store.read(cx).capture_page_retry(&key).is_none());
+            // A real viewport change commits another native dispatch tree
+            // while this effect still withholds the async owner watcher.
+            window.resize(gpui::size(gpui::px(1000.0), gpui::px(900.0)));
+            window.bounds_changed(cx);
+            window.draw(cx).clear(cx);
+            assert!(window.a11y_frame_number() > old_frame, "the law uses newly rendered handlers, not just the old tree");
+            let (target, bounds) = rig.shell.read(cx).reader_targets(cx).placed().into_iter()
+                .find(|(target, _)| target.id.starts_with("retry-")).expect("new failure recovery paint");
+            assert!(!target.action.admits(cx), "absence is not a current Starting or Serving receipt");
+            let native = window.a11y_tree().expect("new failure AX").nodes.iter()
+                .find(|(_, node)| node.role() == gpui::Role::Button && node.label() == Some("Try again")
+                    && node.supports_action(gpui::AccessibleAction::Click)).map(|(id, _)| *id).expect("new native retry");
+            let focused = window.focused(cx);
+            target.action.run(window, cx);
+            window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left,
+                click_count: 1, first_mouse: false,
+            }), cx);
+            window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1,
+            }), cx);
+            for key in ["enter", "space"] {
+                let keystroke = gpui::Keystroke::parse(key).expect("unadmitted retry key");
+                window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                    keystroke: keystroke.clone(), is_held: false, prefer_character_input: false,
+                }), cx);
+                window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
+            }
+            window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+                action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: native, data: None,
+            }, cx);
+            assert_eq!(window.focused(cx), focused, "unadmitted current paint cannot take native focus");
+            assert_eq!(rig.graph.store.read(cx).stats().submitted, submitted, "no pool read may use a stale Serving phase");
+        });
+        rig.cx.run_until_parked();
+    }
+}
 
 #[derive(Default)]
 struct Observations {

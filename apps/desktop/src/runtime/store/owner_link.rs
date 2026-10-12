@@ -59,6 +59,27 @@ impl PartialEq for OwnerRetryAttachment {
 }
 impl Eq for OwnerRetryAttachment {}
 
+/// Exactly the owner publication a local page recovery may use. Absence is
+/// never a Starting receipt: the UI link and live gate must agree first.
+#[derive(Clone, Debug)]
+pub(super) enum PageRetryOwner {
+    Serving(OwnerAttachment),
+    Failed(OwnerRetryAttachment),
+    Starting { gate: OwnerGate, epoch: Epoch },
+}
+
+impl PartialEq for PageRetryOwner {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Serving(left), Self::Serving(right)) => left == right,
+            (Self::Failed(left), Self::Failed(right)) => left == right,
+            (Self::Starting { gate: left, epoch: a }, Self::Starting { gate: right, epoch: b }) => a == b && left.same_gate(right),
+            _ => false,
+        }
+    }
+}
+impl Eq for PageRetryOwner {}
+
 /// One Ready publication captured before the store revokes previous reads.
 pub(super) struct OwnerAnswer {
     epoch: Option<Epoch>,
@@ -157,6 +178,23 @@ impl OwnerLink {
     pub(super) fn current_retry_attachment(&self) -> Option<OwnerRetryAttachment> {
         let gate = self.gate.as_ref()?;
         Some(OwnerRetryAttachment { gate: gate.clone(), generation: gate.retry_generation()? })
+    }
+
+    pub(super) fn page_retry_owner(&self) -> Option<PageRetryOwner> {
+        if let Some(attachment) = self.current_attachment() { return Some(PageRetryOwner::Serving(attachment)); }
+        if let Some(retry) = self.current_retry_attachment() { return Some(PageRetryOwner::Failed(retry)); }
+        if self.phase != OwnerPhase::Starting { return None; }
+        let gate = self.gate.as_ref()?;
+        Some(PageRetryOwner::Starting { gate: gate.clone(), epoch: gate.starting_at()? })
+    }
+
+    pub(super) fn admits_page_retry_owner(&self, expected: &PageRetryOwner) -> bool {
+        match expected {
+            PageRetryOwner::Serving(attachment) => self.current_attachment().as_ref() == Some(attachment),
+            PageRetryOwner::Failed(retry) => self.current_retry_attachment().as_ref() == Some(retry),
+            PageRetryOwner::Starting { gate, epoch } => self.phase == OwnerPhase::Starting
+                && self.gate.as_ref().is_some_and(|current| current.same_gate(gate) && current.starting_at() == Some(*epoch)),
+        }
     }
 
     /// Records exact retry capability movement independently of words or
