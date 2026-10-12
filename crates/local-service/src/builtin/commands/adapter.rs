@@ -6900,8 +6900,10 @@ mod tests {
                     Command::Document(query)
                 };
                 let id = 0x6e00 + index as u64 * 2 + u64::from(source_read);
-                // Use the same owner proof and exact coordinate key claim that
-                // Session::document/source emit after reading the revision.
+                // Retain the same owner proof and exact coordinate key claim
+                // as Session::document/source. This fixture also requests an
+                // explicit full source basis, so prove its root with the actual
+                // selected relation bytes rather than only a commitment.
                 let certificate = crate::builtin::projection::certificate_for_snapshot_page(
                     daemon.engine().daemon().library().view(),
                     daemon.engine().daemon().library().cursor(),
@@ -6910,6 +6912,18 @@ mod tests {
                     None,
                 )
                 .expect("actual current owner proof")
+                .with_claim(WireClaim::Root {
+                    schema: backend_engine::WireSchema::ViewRelation,
+                    id: backend_engine::encode_id(root.as_bytes()),
+                    canonical: daemon
+                        .engine()
+                        .daemon()
+                        .library()
+                        .view()
+                        .canonical_relation_bytes()
+                        .expect("actual selected relation proof")
+                        .into_boxed_slice(),
+                })
                 .with_claim(WireClaim::Key {
                     schema: backend_engine::WireSchema::Symbol,
                     id: backend_engine::encode_id(
@@ -6957,7 +6971,7 @@ mod tests {
                 );
                 assert_eq!(document.facts, row.facts);
                 assert!(document.signature.is_none());
-                assert!(document.fragments.is_empty());
+                assert_eq!(document.fragments, row.document);
             }
             for coordinate in [
                 "HTTPieArgumentParser".to_owned(),
