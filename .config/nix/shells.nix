@@ -310,12 +310,21 @@ let
       "NUDOX_JAVA_CORPUS_DIR"
       "NUDOX_CSHARP_CORPUS_DIR"
       "NUDOX_CLANG_CORPUS_DIR"
+      # The legacy prebuilt Go oracle cannot prove the cgo-disabled closure.
+      # The admitted Go toolchain builds the embedded package-aware helper.
+      "NUDOX_GO_ORACLE"
+      "NUDOX_GO_ORACLE_BIN"
     ]
     // {
       packages = tools.nativeCompilers ++ [
         pkgs.python3
         pkgs.coreutils
+        pkgs.jdk25
       ];
+      # Product discovery selects java-25; the legacy corpus shell uses JDK 21.
+      COMPILER_JAVA_COMPILER = "${pkgs.jdk25}/bin/javac";
+      NUDOX_JAVAC = "${pkgs.jdk25}/bin/javac";
+      NUDOX_JDK = pkgs.jdk25.home;
     }
   );
   # Emulated test lanes: the `cross` shell plus what running a test needs that
