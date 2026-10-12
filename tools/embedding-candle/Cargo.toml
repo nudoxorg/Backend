@@ -17,6 +17,7 @@ cpu = []
 [dependencies]
 blake3.workspace = true
 candle-nn = { version = "=0.11.0", default-features = false }
+rayon = "=1.12.0"
 serde.workspace = true
 serde_json.workspace = true
 tokenizers = { version = "=0.23.1", default-features = false, features = ["fancy-regex"] }

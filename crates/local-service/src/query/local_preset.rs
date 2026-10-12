@@ -32,7 +32,16 @@ pub(super) const TOKENIZER_HASH: [u8; 32] = [
     0xd2, 0x15, 0x68, 0x34, 0xe9, 0x94, 0xa2, 0x16, 0x9f, 0x98, 0x00, 0xe4, 0xc8, 0xf2, 0x50, 0xc1,
 ];
 // These declarations describe the actual pinned helper source, not an arbitrary executable.
-const PROVIDER_OPTIONS: &[u8] = b"nudox.candle-minilm.cpu.v1\0candle=0.11.0;tokenizers=0.23.1;bert=6x384x12-vocab30522-f32;utf8=unmodified;special_tokens=true;normalizer=artifact;truncation=256-right-longest-first-stride0;export_padding=disabled;microbatch=16;dynamic_padding=right-zero-mask;pool=attended-mean-including-cls-sep;normalization=f32-l2";
+const PROVIDER_OPTIONS: &[u8] = b"nudox.candle-minilm.cpu.v1\0candle=0.11.0;tokenizers=0.23.1;cpu-execution=rayon-1.12.0-single-calling-thread;rayon_num_threads=1;bert=6x384x12-vocab30522-f32;utf8=unmodified;special_tokens=true;normalizer=artifact;truncation=256-right-longest-first-stride0;export_padding=disabled;microbatch=16;dynamic_padding=right-zero-mask;pool=attended-mean-including-cls-sep;normalization=f32-l2";
+
+// This exact environment is persisted by the engine and participates in launch identity.
+// Candle 0.11 reads RAYON_NUM_THREADS for F32 matmul; one disables its GEMM parallelism.
+fn candle_cpu_environment() -> Vec<(String, String)> {
+    vec![
+        ("BACKEND_EMBEDDING_DEVICE".into(), "cpu".into()),
+        ("RAYON_NUM_THREADS".into(), "1".into()),
+    ]
+}
 
 /// Which exact pinned source artifact refused admission.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -184,7 +193,7 @@ impl PreparedCandleSetup {
                 program: request.program,
                 arguments: Vec::new(),
                 dependencies: request.dependencies,
-                environment: vec![("BACKEND_EMBEDDING_DEVICE".into(), "cpu".into())],
+                environment: candle_cpu_environment(),
                 limits: request.limits,
                 model_bytes,
                 tokenizer_bytes,
@@ -350,6 +359,32 @@ mod tests {
             resident_credit_bytes: 1024 * 1024 * 1024,
         }
     }
+    #[test]
+    fn candle_cpu_policy_is_explicit_in_launch_and_recipe_identity() -> TestResult {
+        assert_eq!(
+            candle_cpu_environment(),
+            vec![
+                ("BACKEND_EMBEDDING_DEVICE".to_owned(), "cpu".to_owned()),
+                ("RAYON_NUM_THREADS".to_owned(), "1".to_owned()),
+            ]
+        );
+        // An old executable/environment must not reuse this serial provider's vectors.
+        let previous = PROVIDER_OPTIONS
+            .split(|byte| *byte == 0)
+            .collect::<Vec<_>>();
+        assert_eq!(previous.len(), 2);
+        let options = std::str::from_utf8(previous[1])?;
+        let old = options.replace(
+            "cpu-execution=rayon-1.12.0-single-calling-thread;rayon_num_threads=1;",
+            "",
+        );
+        let mut old_bytes = previous[0].to_vec();
+        old_bytes.push(0);
+        old_bytes.extend_from_slice(old.as_bytes());
+        assert_ne!(blake3::hash(PROVIDER_OPTIONS), blake3::hash(&old_bytes));
+        Ok(())
+    }
+
     fn fixture_helper(directory: &Path) -> Result<PathBuf, io::Error> {
         let program = directory.join("fixture-helper");
         std::fs::write(&program, b"unit identity bytes; never execute as Candle")?;

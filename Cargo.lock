@@ -1103,6 +1103,7 @@ dependencies = [
  "blake3",
  "candle-core",
  "candle-nn",
+ "rayon",
  "serde",
  "serde_json",
  "tokenizers 0.23.1",
