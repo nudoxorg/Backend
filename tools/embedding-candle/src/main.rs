@@ -16,6 +16,7 @@ use std::io::{self, Read, Write};
 use std::mem::size_of;
 use tokenizers::{Tokenizer, TruncationParams};
 
+mod cpu_execution;
 mod models;
 
 type ProviderResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -68,6 +69,9 @@ fn main() {
 
 fn run() -> ProviderResult<()> {
     let device_name = std::env::var("BACKEND_EMBEDDING_DEVICE")?;
+    if device_name == "cpu" {
+        cpu_execution::CpuExecutionPolicy::from_environment()?.initialize()?;
+    }
     let device = select_device(&device_name)?;
     let model_path = std::env::var("BACKEND_EMBEDDING_MODEL_FILE")?;
     let tokenizer_path = std::env::var("BACKEND_EMBEDDING_TOKENIZER_FILE")?;
@@ -352,6 +356,48 @@ fn hexadecimal(bytes: [u8; 32]) -> String {
         output.push(char::from(HEX[usize::from(byte & 0x0f)]));
     }
     output
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod response_tests {
+    use super::*;
+
+    #[test]
+    fn response_keeps_request_order_and_refuses_partial_or_invalid_vectors() {
+        // Protocol response law only; these vectors are not model inference.
+        let items = [
+            RequestItem {
+                identity: [7; 32],
+                text: "first".into(),
+            },
+            RequestItem {
+                identity: [9; 32],
+                text: "second".into(),
+            },
+        ];
+        let mut unit = vec![0.0; MODEL_DIMENSIONS];
+        unit[0] = 1.0;
+        let mut vectors = vec![unit.clone(), unit];
+        let response = encode_response(&items, &vectors).expect("complete normalized response");
+        assert_eq!(&response[..4], b"BEC2");
+        assert_eq!(&response[4..6], &(MODEL_DIMENSIONS as u16).to_be_bytes());
+        assert_eq!(&response[6..10], &2_u32.to_be_bytes());
+        let row_bytes = RESPONSE_ITEM_HEADER_BYTES + MODEL_DIMENSIONS * size_of::<f32>();
+        assert_eq!(response.len(), RESPONSE_HEADER_BYTES + 2 * row_bytes);
+        assert_eq!(&response[10..42], &items[0].identity);
+        assert_eq!(
+            &response[10 + row_bytes..42 + row_bytes],
+            &items[1].identity
+        );
+        assert!(encode_response(&items, &vectors[..1]).is_err());
+        vectors[1][0] = f32::NAN;
+        assert!(encode_response(&items, &vectors).is_err());
+        vectors[1][0] = 0.0;
+        assert!(encode_response(&items, &vectors).is_err());
+        vectors[1].pop();
+        assert!(encode_response(&items, &vectors).is_err());
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]

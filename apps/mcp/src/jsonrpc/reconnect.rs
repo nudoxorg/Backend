@@ -312,6 +312,11 @@ impl<E: Endpoint> Engine for Reconnecting<E> {
     }
 
     fn probe(&mut self, probe: Probe<'_>) -> Result<ReplyDto, ClientError> {
+        if matches!(&probe, Probe::Search { .. })
+            && let Some(context) = &self.request_context
+        {
+            context.begin_default_search(backend_client::CLIENT_REQUEST_TIMEOUT)?;
+        }
         let repeatable = probe_is_repeatable(&probe);
         self.attempt(repeatable, |product| product.probe(probe))
     }
@@ -321,6 +326,11 @@ impl<E: Endpoint> Engine for Reconnecting<E> {
         probe: Probe<'_>,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
+        if matches!(&probe, Probe::Search { .. })
+            && let Some(context) = &self.request_context
+        {
+            context.begin_default_search(backend_client::CLIENT_REQUEST_TIMEOUT)?;
+        }
         let repeatable = probe_is_repeatable(&probe);
         self.attempt(repeatable, |product| {
             product.probe_page(probe, continuation)

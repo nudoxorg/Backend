@@ -156,59 +156,87 @@ pub(super) fn build_tree<R: Relation, I: TreeInterner<R>>(
 /// Builds the same canonical tree while moving a caller-owned sorted run into
 /// leaf slabs. This avoids cloning payload values; a multi-leaf build still
 /// temporarily retains the source vector allocation while filling leaf slabs.
-pub(super) fn build_tree_owned<R: Relation, I: TreeInterner<R>>(
+pub(super) fn build_tree_owned_controlled<R: Relation, I: TreeInterner<R>, E: From<TreeError>>(
     items: Vec<Item<R>>,
     work: &mut TreeWork,
     interner: &I,
-) -> Result<Node<R>, TreeError> {
+    checkpoint: &mut impl FnMut() -> Result<(), E>,
+) -> Result<Node<R>, E> {
+    checkpoint()?;
     if items.is_empty() {
         let root = empty_node();
         work.rebuild_node(&root)?;
-        return checked_intern(interner, TreeNodeHandle { node: root });
+        return checked_intern(interner, TreeNodeHandle { node: root }).map_err(E::from);
     }
 
-    let boundaries = anchored_cut_points_items::<R, _>(items.iter(), DEFAULT_CUT_POLICY, 0)
-        .map_err(|_| TreeError::InvalidRoot)?;
+    let mut interrupted = None;
+    let observed_items = items.iter().scan((), |(), item| match checkpoint() {
+        Ok(()) => Some(item),
+        Err(error) => {
+            interrupted = Some(error);
+            None
+        }
+    });
+    let boundaries = anchored_cut_points_items::<R, _>(observed_items, DEFAULT_CUT_POLICY, 0);
+    if let Some(error) = interrupted {
+        return Err(error);
+    }
+    let boundaries = boundaries.map_err(|_| TreeError::InvalidRoot)?;
     if boundaries.len() == 1 {
-        return make_leaf(items, interner, work);
+        checkpoint()?;
+        return make_leaf(items, interner, work).map_err(E::from);
     }
     let mut nodes = Vec::with_capacity(boundaries.len());
     let mut rows = items.into_iter();
     let mut start = 0;
     for end in boundaries {
+        checkpoint()?;
         let leaf = rows.by_ref().take(end - start).collect();
         nodes.push(make_leaf(leaf, interner, work)?);
         start = end;
     }
     if rows.next().is_some() {
-        return Err(TreeError::InvalidRoot);
+        return Err(TreeError::InvalidRoot.into());
     }
 
     let mut level = 1u16;
     while nodes.len() > 1 {
-        if nodes.iter().any(|node| node.first_key().is_none()) {
-            return Err(TreeError::InvalidRoot);
+        for node in &nodes {
+            checkpoint()?;
+            if node.first_key().is_none() {
+                return Err(TreeError::InvalidRoot.into());
+            }
         }
-        let boundaries = anchored_cut_points_children::<R, _>(
-            nodes.iter().filter_map(|node| node.first_key()),
-            DEFAULT_CUT_POLICY,
-            level,
-        )
-        .map_err(|_| TreeError::InvalidRoot)?;
+        let mut interrupted = None;
+        let observed_keys = nodes.iter().scan((), |(), node| match checkpoint() {
+            Ok(()) => node.first_key(),
+            Err(error) => {
+                interrupted = Some(error);
+                None
+            }
+        });
+        let boundaries =
+            anchored_cut_points_children::<R, _>(observed_keys, DEFAULT_CUT_POLICY, level);
+        if let Some(error) = interrupted {
+            return Err(error);
+        }
+        let boundaries = boundaries.map_err(|_| TreeError::InvalidRoot)?;
         let previous_len = nodes.len();
         let mut parents = Vec::with_capacity(boundaries.len());
         let mut children = nodes.into_iter();
         let mut start = 0;
         for end in boundaries {
+            checkpoint()?;
             let group = children.by_ref().take(end - start).collect();
             parents.push(make_branch(level, group, interner, work)?);
             start = end;
         }
         if children.next().is_some() || parents.len() >= previous_len {
-            return Err(TreeError::InvalidRoot);
+            return Err(TreeError::InvalidRoot.into());
         }
         nodes = parents;
         level = level.checked_add(1).ok_or(TreeError::Overflow)?;
     }
-    nodes.pop().ok_or(TreeError::InvalidRoot)
+    checkpoint()?;
+    nodes.pop().ok_or_else(|| TreeError::InvalidRoot.into())
 }

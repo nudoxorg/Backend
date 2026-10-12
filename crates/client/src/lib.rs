@@ -69,12 +69,19 @@ pub use request_context::RequestCancellationReason;
 #[cfg(any(unix, windows))]
 pub use request_context::RequestContext;
 mod index_operation;
+mod index_progress;
 pub use backend_replication::SelectedGenerationStamp as SelectedStamp;
 use backend_replication::{
     LocalControlError, LocalControlLimits, ReplicationError, read_frame, write_frame,
 };
 pub use backend_runtime::{StartupFailure, StartupFailureCause, StartupRecovery};
 pub use index_operation::{index_with_journal, surface_with_index_journal};
+#[cfg(any(unix, windows))]
+pub use index_progress::read_index_progress;
+pub use index_progress::{
+    IndexObservationFingerprint, IndexProgressRead, IndexProgressReference, IndexProgressUpdate,
+    MAX_INDEX_PROGRESS_WAIT_MILLIS,
+};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{Read, Write};
@@ -347,6 +354,18 @@ pub trait CommandTransport {
         _remaining: Duration,
     ) -> Result<ReplyDto, ClientError> {
         self.request(request)
+    }
+
+    /// Uses the default search's finite admission scope. Transports without
+    /// authenticated local deferred admission retain the absolute initial budget.
+    #[cfg(any(unix, windows))]
+    fn request_with_search_admission(
+        &mut self,
+        request: CommandDto,
+        remaining: Duration,
+        _scope: &RequestContext,
+    ) -> Result<ReplyDto, ClientError> {
+        self.request_with_budget(request, remaining)
     }
 
     /// Returns a handle that can interrupt this transport's exact socket.
@@ -638,6 +657,34 @@ impl CommandTransport for UnixCommandTransport {
         admit_reply(&request, reply)
     }
 
+    fn request_with_search_admission(
+        &mut self,
+        request: CommandDto,
+        remaining: Duration,
+        scope: &RequestContext,
+    ) -> Result<ReplyDto, ClientError> {
+        let started = std::time::Instant::now();
+        if remaining.is_zero() {
+            return Err(ClientError::RemoteDeadlineExceeded);
+        }
+        configure_request_with_timeouts(
+            &self.stream,
+            &request,
+            self.io_timeout.min(remaining),
+            CLIENT_MUTATION_TIMEOUT,
+        )?;
+        let body = encode_request(&request)?;
+        let remaining = remaining.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Err(ClientError::RemoteDeadlineExceeded);
+        }
+        let body =
+            self.exchange_command_with_search_admission(&request, &body, remaining, scope)?;
+        scope.check()?;
+        let reply = self.decode(&body)?;
+        admit_reply(&request, reply)
+    }
+
     fn reconnect(&mut self) -> Result<(), ClientError> {
         let endpoint = self.endpoint.clone().ok_or_else(|| {
             ClientError::Protocol(
@@ -692,6 +739,7 @@ pub struct Session {
     endpoint: std::path::PathBuf,
     transport: Box<dyn CommandTransport + Send>,
     request_context: Option<RequestContext>,
+    search_wait_scope: Option<RequestContext>,
     next_request_id: u64,
     admitted_owner: Option<backend_library::Cursor>,
     prepared_query: Option<CommandDto>,
@@ -777,6 +825,7 @@ impl Session {
             )?),
             endpoint,
             request_context: None,
+            search_wait_scope: None,
             next_request_id: 1,
             admitted_owner: None,
             prepared_query: None,
@@ -813,6 +862,7 @@ impl Session {
             endpoint: endpoint.into(),
             transport: Box::new(transport),
             request_context: None,
+            search_wait_scope: None,
             next_request_id: 1,
             admitted_owner: None,
             prepared_query: None,
@@ -1084,18 +1134,23 @@ impl Session {
     /// # Errors
     /// Returns an error when the limit, revision, request, or reply fails admission.
     pub fn search(&mut self, text: &str, limit: u16) -> Result<ReplyDto, ClientError> {
-        let deadline = query_preparation::QueryReadDeadline::new(
-            CLIENT_REQUEST_TIMEOUT,
-            self.request_context.as_ref(),
-        )?;
-        let revision = self.revision_with_budget(deadline.remaining()?)?;
-        let limit = QueryLimit::new(limit)
-            .ok_or_else(|| ClientError::Protocol("query limit is outside its bound".to_owned()))?;
-        self.send_success_with_budget(
-            Command::Search(Query::new(text, revision.root, limit)),
-            Some(revision.certificate),
-            Some(deadline.remaining()?),
-        )
+        self.with_default_search_wait(|this| {
+            let deadline = query_preparation::QueryReadDeadline::new(
+                CLIENT_REQUEST_TIMEOUT,
+                this.search_wait_scope
+                    .as_ref()
+                    .or(this.request_context.as_ref()),
+            )?;
+            let revision = this.revision_with_budget(deadline.remaining()?)?;
+            let limit = QueryLimit::new(limit).ok_or_else(|| {
+                ClientError::Protocol("query limit is outside its bound".to_owned())
+            })?;
+            this.send_success_with_budget(
+                Command::Search(Query::new(text, revision.root, limit)),
+                Some(revision.certificate),
+                Some(deadline.remaining()?),
+            )
+        })
     }
 
     /// Reads or resumes one bounded search page at the current revision.
@@ -1110,7 +1165,21 @@ impl Session {
         limit: u16,
         continuation: Option<PageContinuation>,
     ) -> Result<ReplyDto, ClientError> {
-        self.search_page_with_budget(text, limit, continuation, CLIENT_REQUEST_TIMEOUT)
+        self.with_default_search_wait(|this| {
+            this.search_page_with_budget(text, limit, continuation, CLIENT_REQUEST_TIMEOUT)
+        })
+    }
+
+    fn with_default_search_wait<T>(
+        &mut self,
+        call: impl FnOnce(&mut Self) -> Result<T, ClientError>,
+    ) -> Result<T, ClientError> {
+        let scope = self.request_context.clone().unwrap_or_default();
+        scope.begin_default_search(CLIENT_REQUEST_TIMEOUT)?;
+        let previous = self.search_wait_scope.replace(scope);
+        let result = call(self);
+        self.search_wait_scope = previous;
+        result
     }
 
     fn search_page_with_budget(
@@ -1120,8 +1189,12 @@ impl Session {
         continuation: Option<PageContinuation>,
         budget: Duration,
     ) -> Result<ReplyDto, ClientError> {
-        let deadline =
-            query_preparation::QueryReadDeadline::new(budget, self.request_context.as_ref())?;
+        let deadline = query_preparation::QueryReadDeadline::new(
+            budget,
+            self.search_wait_scope
+                .as_ref()
+                .or(self.request_context.as_ref()),
+        )?;
         if self.prepared_query.is_some() {
             return self.resume_prepared_query_with_budget(
                 "Search",

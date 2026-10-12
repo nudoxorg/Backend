@@ -50,6 +50,8 @@ pub(super) struct PublicationWork {
     semantic_committed: bool,
     projected: bool,
     #[cfg(test)]
+    observed: Arc<TestObservation>,
+    #[cfg(test)]
     pub(super) test_hook: Option<TestHook>,
 }
 
@@ -117,6 +119,41 @@ pub(super) struct PublicationWorker {
     events: Receiver<Event>,
     settle: Sender<Settlement>,
     handle: JoinHandle<()>,
+    #[cfg(test)]
+    observed: Arc<TestObservation>,
+}
+
+// Observes the original worker without receiving its grant/completion events
+// or admitting a retry. No lock is held across any publication work.
+#[cfg(test)]
+struct TestObservation {
+    started: std::time::Instant,
+    phase: std::sync::Mutex<&'static str>,
+    granted: AtomicBool,
+}
+
+#[cfg(test)]
+impl TestObservation {
+    fn new() -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            phase: std::sync::Mutex::new("reserved"),
+            granted: AtomicBool::new(false),
+        }
+    }
+
+    fn phase(&self, phase: &'static str) {
+        *self.phase.lock().unwrap_or_else(|error| error.into_inner()) = phase;
+    }
+
+    fn snapshot(&self) -> String {
+        let phase = *self.phase.lock().unwrap_or_else(|error| error.into_inner());
+        format!(
+            "phase={phase}, elapsed={:?}, granted={}",
+            self.started.elapsed(),
+            self.granted.load(Ordering::Acquire)
+        )
+    }
 }
 
 impl PublicationWork {
@@ -171,6 +208,8 @@ impl PublicationWork {
             semantic_committed: false,
             projected: false,
             #[cfg(test)]
+            observed: Arc::new(TestObservation::new()),
+            #[cfg(test)]
             test_hook: None,
         }
     }
@@ -218,6 +257,8 @@ impl PublicationWork {
                 ));
             }
         }
+        #[cfg(test)]
+        self.observed.phase("stage-intent");
         let staged = prepare_builtin_intent_at_snapshot(
             &self.base,
             &intent,
@@ -232,9 +273,13 @@ impl PublicationWork {
                 "private publication was already selected".to_owned(),
             ));
         };
+        #[cfg(test)]
+        self.observed.phase("prepare-workspace");
         let candidate = writer
             .prepare(staged.intent.clone())
             .map_err(|e| BuiltinModelError(format!("prepare index workspace: {e}")))?;
+        #[cfg(test)]
+        self.observed.phase("open-candidate");
         let snapshot = writer
             .candidate_snapshot(&candidate)
             .map_err(|e| BuiltinModelError(format!("open index candidate: {e}")))?;
@@ -249,6 +294,8 @@ impl PublicationWork {
             .authority()
             .capture_image_loader()?;
         self.generations.install_selected_loader(loader);
+        #[cfg(test)]
+        self.observed.phase("prepare-view");
         let view = prepare_builtin_view(
             snapshot.clone(),
             self.current.clone(),
@@ -264,6 +311,8 @@ impl PublicationWork {
             workspace_root: snapshot.root(),
             source_root: view.view.basis().root,
         };
+        #[cfg(test)]
+        self.observed.phase("prepare-read-head");
         writer
             .prepare_view(
                 self.candidate.as_ref().expect("retained private candidate"),
@@ -290,6 +339,8 @@ impl PublicationWork {
             let grant_accepted = &mut self.grant_accepted;
             #[cfg(test)]
             let test_hook = &mut self.test_hook;
+            #[cfg(test)]
+            let observed = &self.observed;
             let journal = self
                 .journal
                 .as_mut()
@@ -300,6 +351,8 @@ impl PublicationWork {
             let operation_key = self.operation_key;
             let plan = self.prepared.partial_plan.clone();
             let mut busy = false;
+            #[cfg(test)]
+            observed.phase("prepare-selector");
             self.semantic.as_mut().expect("original semantic writer").authority_mut()
                 .commit_product_selection_changes(self.prepared.selected.clone(), removals, || {
                     if matches!(head, Head::Writer(_)) {
@@ -309,6 +362,8 @@ impl PublicationWork {
                             ).map_err(BuiltinModelError)? {
                             return Err(BuiltinModelError("compiler source or configuration changed before product selection".to_owned()));
                         }
+                        #[cfg(test)]
+                        observed.phase("publication-barrier");
                         prepare_publication_barrier(journal, operation_key, Some(request),
                             base_root, base_sequence, plan).map_err(|e| match e {
                                 FinishAddError::PublicationBusy => {
@@ -318,7 +373,8 @@ impl PublicationWork {
                                 FinishAddError::Failed(e) => e,
                             })?;
                     }
-                    select_head(head, candidate, events, grant_accepted, #[cfg(test)] test_hook)
+                    select_head(head, candidate, events, grant_accepted,
+                        #[cfg(test)] test_hook, #[cfg(test)] observed)
                 }).map_err(|e| if busy { FinishAddError::PublicationBusy } else { e.into() })?;
             self.semantic_committed = true;
             #[cfg(test)]
@@ -330,6 +386,8 @@ impl PublicationWork {
             .expect("exact candidate snapshot");
         let view = self.view.as_ref().expect("exact prepared view");
         if !self.projected {
+            #[cfg(test)]
+            self.observed.phase("project-sql");
             let projection = self
                 .projection
                 .as_mut()
@@ -344,6 +402,8 @@ impl PublicationWork {
             self.projected = true;
         }
         let staged = self.staged.as_ref().expect("actual request");
+        #[cfg(test)]
+        self.observed.phase("publish-receipt");
         let receipt = backend_library::IndexOperationPublicationReceipt::from_published_view(
             Some(staged.request_identity()),
             *snapshot.commit().id().as_bytes(),
@@ -631,6 +691,7 @@ fn select_head(
     events: &Sender<Event>,
     grant_accepted: &mut bool,
     #[cfg(test)] test_hook: &mut Option<TestHook>,
+    #[cfg(test)] observed: &TestObservation,
 ) -> Result<(), BuiltinModelError> {
     if matches!(head, Head::Published(_)) {
         return Ok(());
@@ -642,6 +703,8 @@ fn select_head(
             })?;
             let claim = private.claim();
             let (reply, receive) = std::sync::mpsc::sync_channel(1);
+            #[cfg(test)]
+            observed.phase("await-owner-grant");
             events.send(Event::Grant { claim, reply }).map_err(|_| {
                 BuiltinModelError("owner retired before publication grant".to_owned())
             })?;
@@ -656,6 +719,11 @@ fn select_head(
                 .map_err(|e| BuiltinModelError(format!("index publication grant refused: {e}")))?;
             *grant_accepted = true;
             #[cfg(test)]
+            {
+                observed.granted.store(true, Ordering::Release);
+                observed.phase("accepted-owner-grant");
+            }
+            #[cfg(test)]
             if test_hook
                 .as_ref()
                 .is_some_and(|hook| hook.stage == TestStage::AfterGrant)
@@ -666,6 +734,8 @@ fn select_head(
             let Head::Writer(writer) = std::mem::replace(head, Head::Moving) else {
                 unreachable!()
             };
+            #[cfg(test)]
+            observed.phase("physical-publish");
             writer.publish(private, grant)
         }
         Head::Pending(_) => {
@@ -706,6 +776,8 @@ impl PublicationWorker {
     pub(super) fn spawn(
         work: Box<PublicationWork>,
     ) -> Result<Self, (Box<PublicationWork>, std::io::Error)> {
+        #[cfg(test)]
+        let observed = Arc::clone(&work.observed);
         let (startup, receive) = std::sync::mpsc::sync_channel::<Box<PublicationWork>>(1);
         let (events, observations) = std::sync::mpsc::channel();
         let (settle, settlements) = std::sync::mpsc::channel();
@@ -726,6 +798,8 @@ impl PublicationWorker {
                     match settlements.recv() {
                         Ok(Settlement::Retry(returned)) => work = returned,
                         Ok(Settlement::Retire(returned, retired)) => {
+                            #[cfg(test)]
+                            returned.observed.phase("retire-original-payloads");
                             drop((returned, retired));
                             return;
                         }
@@ -747,6 +821,8 @@ impl PublicationWorker {
             events: observations,
             settle,
             handle,
+            #[cfg(test)]
+            observed,
         })
     }
 
@@ -773,6 +849,11 @@ impl PublicationWorker {
 
     pub(super) fn is_finished(&self) -> bool {
         self.handle.is_finished()
+    }
+
+    #[cfg(test)]
+    pub(super) fn observed_state(&self) -> String {
+        self.observed.snapshot()
     }
 
     pub(super) fn join(self) {

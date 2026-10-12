@@ -10,7 +10,8 @@ use super::projection_state::{
     Descriptor as ProjectionDescriptor, ProjectionOperation, ProjectionPin, ProjectionState,
 };
 use super::{
-    LocalAnswer, QueryCoordinator, QueryError, QueryResult, SemanticAcceleration, SemanticDocument,
+    LocalAnswer, LocalSemanticError, LocalSemanticOwner, QueryCoordinator, QueryError, QueryResult,
+    SemanticAcceleration, SemanticDocument,
 };
 use backend_compile::{
     EmbeddingArtifact, EmbeddingBatchProtocol, EmbeddingCoordinateValues, EmbeddingExecutable,
@@ -93,11 +94,18 @@ const PRODUCER_RETRY_DELAY: Duration = Duration::from_secs(5);
 fn embedding_capability_recipe(
     recipe: qdrant::EmbeddingRecipe,
 ) -> backend_engine::EmbeddingCapabilityRecipe {
+    embedding_capability_recipe_with_input(recipe, MAX_EMBEDDING_TEXT_BYTES as u32)
+}
+
+pub(super) fn embedding_capability_recipe_with_input(
+    recipe: qdrant::EmbeddingRecipe,
+    maximum: u32,
+) -> backend_engine::EmbeddingCapabilityRecipe {
     backend_engine::EmbeddingCapabilityRecipe::new(
         *recipe.model.as_bytes(),
         *recipe.tokenizer.as_bytes(),
         backend_engine::EmbeddingSource::SemanticEvidence,
-        Some(MAX_EMBEDDING_TEXT_BYTES as u32),
+        Some(maximum),
         None,
         0,
         recipe.dimensions.get(),
@@ -134,6 +142,10 @@ pub enum RemoteSemantic {
     Configured(Box<ConfiguredQdrant>),
     /// Optional configuration was malformed and local search remains usable.
     Unavailable(Box<RemoteConfigError>),
+    /// Already admitted compiler runtime and matching explicit local query semantics.
+    Local(Box<LocalSemanticOwner>),
+    /// Closed local setup/activation cause; lexical search remains usable.
+    LocalUnavailable(Box<LocalSemanticError>),
 }
 
 impl RemoteSemantic {
@@ -148,17 +160,136 @@ impl RemoteSemantic {
         }
     }
 
-    /// Whether this deployment named no embedding endpoint at all.
-    ///
-    /// An absent endpoint is terminal for the lifetime of the process: the
-    /// environment is read once at startup and no retry can supply one. Lane
-    /// coverage therefore reports it as an unavailable lane rather than as a
-    /// fraction that would tell a surface to keep waiting. A malformed
-    /// configuration is deliberately excluded here; the capability inventory
-    /// reports that separately as a dependency fault.
+    /// Selects local compiler ownership only when no explicit remote endpoint was named.
+    /// Invalid explicit remote configuration remains authoritative and never falls back.
     #[must_use]
-    pub const fn is_unconfigured(&self) -> bool {
-        matches!(self, Self::Unconfigured)
+    pub fn from_owner(
+        provision: &backend_engine::application::EmbeddingRuntimeProvision,
+        descriptor: &Path,
+    ) -> Self {
+        Self::select_owner(provision, descriptor, Self::from_environment())
+    }
+
+    pub(super) fn select_owner(
+        provision: &backend_engine::application::EmbeddingRuntimeProvision,
+        descriptor: &Path,
+        remote: Self,
+    ) -> Self {
+        if !matches!(remote, Self::Unconfigured) {
+            return remote;
+        }
+        match LocalSemanticOwner::open(provision, descriptor) {
+            Ok(local) => Self::Local(Box::new(local)),
+            Err(cause) => Self::LocalUnavailable(Box::new(cause)),
+        }
+    }
+
+    pub(super) const fn is_local(&self) -> bool {
+        matches!(self, Self::Local(_) | Self::LocalUnavailable(_))
+    }
+
+    pub(crate) fn admits_local_reply(&self) -> bool {
+        matches!(self, Self::Local(_))
+    }
+
+    pub(crate) fn admit_local_reply(
+        &self,
+        bytes: u64,
+    ) -> Result<
+        (
+            backend_compile::EmbeddingMemoryReservation,
+            std::time::Instant,
+        ),
+        LocalSemanticError,
+    > {
+        match self {
+            Self::Local(owner) => owner.admit_reply(bytes),
+            _ => Err(LocalSemanticError::CorpusEnvelope),
+        }
+    }
+
+    pub(super) fn search_local_with_cancellation(
+        &mut self,
+        coordinator: &QueryCoordinator,
+        coverage: CoverageWitness,
+        local: LocalAnswer,
+        text: &str,
+        cancelled: Option<Arc<std::sync::atomic::AtomicBool>>,
+    ) -> super::local_semantic_owner::SemanticAnswer {
+        use super::local_semantic_owner::SemanticAnswer;
+        match self {
+            Self::Local(provider) => match cancelled {
+                Some(cancelled) => provider.search(coordinator, coverage, local, text, cancelled),
+                // A synchronous fixture/caller without an owner execution context cannot start
+                // local inference under a fabricated always-false transport cancellation flag.
+                None => SemanticAnswer::lexical(local, SemanticSearchReason::NoActiveProjection),
+            },
+            Self::LocalUnavailable(error) => SemanticAnswer::lexical(local, error.reason()),
+            _ => SemanticAnswer::lexical(local, SemanticSearchReason::Unconfigured),
+        }
+    }
+
+    pub(crate) fn retain_owed_local_completion(
+        &mut self,
+        interested: impl FnMut(&QueryCoordinator, &str, &super::LocalQuery) -> bool,
+    ) {
+        if let Self::Local(owner) = self {
+            owner.retain_owed_completion(interested);
+        }
+    }
+
+    /// Advances only a finished local worker and invalidates superseded selection work.
+    pub(crate) fn poll_local(
+        &mut self,
+        workspace: backend_engine::WorkspaceRoot,
+        view: backend_library::ViewStateRoot,
+    ) {
+        if let Self::Local(owner) = self {
+            owner.poll(workspace, view);
+        }
+    }
+
+    /// Cancels and joins owned local work during owner shutdown.
+    pub(crate) fn close_local(&mut self) {
+        if let Self::Local(owner) = self {
+            owner.close();
+        }
+    }
+
+    /// Actual local preparation observation, separate from model/artifact availability.
+    #[must_use]
+    pub fn local_preparation(&self) -> Option<backend_library::QueryPreparationState> {
+        match self {
+            Self::Local(owner) => owner.preparation(),
+            _ => None,
+        }
+    }
+
+    /// Bounded actionable local setup or last whole-operation failure.
+    #[must_use]
+    pub fn local_failure(&self) -> Option<&LocalSemanticError> {
+        match self {
+            Self::Local(provider) => provider.failure(),
+            Self::LocalUnavailable(error) => Some(error),
+            _ => None,
+        }
+    }
+
+    /// Whether this deployment has no configured remote or local runtime.
+    /// The owner admits configuration once at startup. An absent setup is a terminal
+    /// unavailable lane, while malformed or activated-but-incomplete setup retains its cause.
+    #[must_use]
+    pub fn is_unconfigured(&self) -> bool {
+        match self {
+            Self::Unconfigured => true,
+            Self::LocalUnavailable(error) => matches!(
+                error.as_ref(),
+                LocalSemanticError::RuntimeUnavailable(
+                    backend_engine::application::EmbeddingRuntimeStatus::NotConfigured
+                )
+            ),
+            _ => false,
+        }
     }
 
     /// Configured provider, when every required input was admitted.
@@ -166,15 +297,22 @@ impl RemoteSemantic {
     pub fn configured(&self) -> Option<&ConfiguredQdrant> {
         match self {
             Self::Configured(configured) => Some(configured.as_ref()),
-            Self::Unconfigured | Self::Unavailable(_) => None,
+            Self::Unconfigured
+            | Self::Unavailable(_)
+            | Self::Local(_)
+            | Self::LocalUnavailable(_) => None,
         }
     }
 
     /// Exact embedding recipe identity, when configured.
     #[must_use]
     pub fn recipe(&self) -> Option<qdrant::Recipe> {
-        self.configured()
-            .map(|configured| configured.recipe.version())
+        match self {
+            Self::Local(local) => Some(local.recipe().version()),
+            _ => self
+                .configured()
+                .map(|configured| configured.recipe.version()),
+        }
     }
 
     /// Reconciles the optional semantic projection with one owner-selected
@@ -205,7 +343,10 @@ impl RemoteSemantic {
                 }
                 result
             }
-            Self::Unconfigured | Self::Unavailable(_) => Ok(()),
+            Self::Unconfigured
+            | Self::Unavailable(_)
+            | Self::Local(_)
+            | Self::LocalUnavailable(_) => Ok(()),
         }
     }
 
@@ -222,7 +363,10 @@ impl RemoteSemantic {
     ) -> QueryResult {
         match self {
             Self::Configured(configured) => configured.search(coordinator, coverage, local, text),
-            Self::Unconfigured | Self::Unavailable(_) => local.finish(),
+            Self::Unconfigured
+            | Self::Unavailable(_)
+            | Self::Local(_)
+            | Self::LocalUnavailable(_) => local.finish(),
         }
     }
 
@@ -238,6 +382,18 @@ impl RemoteSemantic {
         reconciliation_failed: bool,
     ) -> (QueryResult, SemanticSearchStatus) {
         match self {
+            Self::LocalUnavailable(error) => (
+                local.finish(),
+                SemanticSearchStatus::Unavailable {
+                    reason: error.reason(),
+                },
+            ),
+            Self::Local(_) => (
+                local.finish(),
+                SemanticSearchStatus::Unavailable {
+                    reason: SemanticSearchReason::NoActiveProjection,
+                },
+            ),
             Self::Unconfigured => (
                 local.finish(),
                 SemanticSearchStatus::Unavailable {
@@ -294,6 +450,40 @@ impl RemoteSemantic {
         &self,
         baseline: &backend_engine::CapabilityInventory,
     ) -> Result<backend_engine::CapabilityInventory, RemoteConfigError> {
+        if let Self::Local(local) = self {
+            let mut rows = baseline.as_slice().to_vec();
+            let status = local.inventory_status();
+            rows.retain(|row| row.id() != status.id());
+            rows.push(status);
+            rows.sort_unstable_by_key(backend_engine::CapabilityStatus::id);
+            return backend_engine::CapabilityInventory::try_new(rows)
+                .map_err(|_| RemoteConfigError::InvalidInventory);
+        }
+        if let Self::LocalUnavailable(error) = self {
+            let mut rows = baseline.as_slice().to_vec();
+            let id = backend_engine::CapabilityId::new(
+                *blake3::hash(b"backend/local-query/setup-unavailable").as_bytes(),
+            );
+            let reason = if matches!(
+                error.as_ref(),
+                LocalSemanticError::RuntimeUnavailable(
+                    backend_engine::application::EmbeddingRuntimeStatus::NotConfigured
+                )
+            ) {
+                backend_engine::CapabilityUnavailable::NoManifest
+            } else {
+                backend_engine::CapabilityUnavailable::MissingDependency
+            };
+            rows.retain(|row| row.id() != id);
+            rows.push(backend_engine::CapabilityStatus::unavailable(
+                id,
+                backend_engine::CapabilityFamily::Embedding { recipe: None },
+                reason,
+            ));
+            rows.sort_unstable_by_key(backend_engine::CapabilityStatus::id);
+            return backend_engine::CapabilityInventory::try_new(rows)
+                .map_err(|_| RemoteConfigError::InvalidInventory);
+        }
         let mut rows = baseline
             .as_slice()
             .iter()
@@ -306,6 +496,7 @@ impl RemoteSemantic {
             })
             .collect::<Vec<_>>();
         match self {
+            Self::Local(_) | Self::LocalUnavailable(_) => {}
             Self::Configured(configured) => {
                 let capability_recipe = embedding_capability_recipe(configured.recipe);
                 let recipe = capability_recipe.identity();
@@ -382,6 +573,11 @@ fn semantic_status_from_result(result: &QueryResult) -> Option<SemanticSearchSta
 impl fmt::Debug for RemoteSemantic {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Local(_) => formatter.write_str("RemoteSemantic::Local"),
+            Self::LocalUnavailable(error) => formatter
+                .debug_tuple("RemoteSemantic::LocalUnavailable")
+                .field(error)
+                .finish(),
             Self::Unconfigured => formatter.write_str("RemoteSemantic::Unconfigured"),
             Self::Configured(configured) => formatter
                 .debug_tuple("RemoteSemantic::Configured")
@@ -1661,7 +1857,7 @@ fn hexadecimal(bytes: [u8; 32]) -> String {
     output
 }
 
-const fn target_os() -> u8 {
+pub(super) const fn target_os() -> u8 {
     if cfg!(target_os = "macos") {
         1
     } else if cfg!(target_os = "linux") {
@@ -1673,7 +1869,7 @@ const fn target_os() -> u8 {
     }
 }
 
-const fn target_architecture() -> u8 {
+pub(super) const fn target_architecture() -> u8 {
     if cfg!(target_arch = "aarch64") {
         1
     } else if cfg!(target_arch = "x86_64") {
@@ -1879,8 +2075,8 @@ mod remote_http_fixture;
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use super::remote_http_fixture::{self, FixtureServer};
     use super::super::{CoverageBasis, Freshness, LocalQuery};
+    use super::remote_http_fixture::{self, FixtureServer};
     use super::*;
     use backend_engine::{CapabilityFamily, CapabilityLifecycle, CapabilityUnavailable, Row};
     use std::process::Command;
@@ -3625,7 +3821,8 @@ for identity in items:
     }
 
     fn serve_projection(script: ProjectionScript) -> (String, FixtureServer<Vec<String>>) {
-        let metadata = r#"{"result":{"config":{"params":{"vectors":{"size":2,"distance":"Cosine"}}}}}"#;
+        let metadata =
+            r#"{"result":{"config":{"params":{"vectors":{"size":2,"distance":"Cosine"}}}}}"#;
         remote_http_fixture::spawn(script.requests, move |connections| {
             let mut lines = Vec::with_capacity(script.requests);
             let mut captured = Vec::new();
@@ -3642,8 +3839,8 @@ for identity in items:
                 let body = if first.starts_with("GET ") {
                     metadata.to_owned()
                 } else if first.starts_with("PUT ") {
-                    let value: serde_json::Value =
-                        serde_json::from_slice(&request[body_start..]).expect("upsert request JSON");
+                    let value: serde_json::Value = serde_json::from_slice(&request[body_start..])
+                        .expect("upsert request JSON");
                     captured = value["points"]
                         .as_array()
                         .map(|points| {
@@ -3722,5 +3919,4 @@ for identity in items:
             })
             .collect()
     }
-
 }

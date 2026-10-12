@@ -359,6 +359,26 @@ def admit_typescript_sdk(directory: Path, receipt_path: Path, source: dict) -> t
         fail("TypeScript SDK Node is not the receipted executable")
     return receipt, observed, hashlib.sha256(receipt_bytes).hexdigest(), admitted_sizes
 
+def admit_embedding_helper(path: Path, receipt_path: Path, revision: str, tree: str, lock_sha: str) -> tuple[dict, str]:
+    """Optional source-bound CPU helper; absence never manufactures model availability."""
+    raw = read_regular_bytes(receipt_path, 65536, "embedding build receipt")
+    receipt = parse_json_bytes(raw, "embedding build receipt")
+    if receipt.get("schema") != "nudox.embedding-helper-build-receipt.v1" or receipt.get("preset") != "candle-minilm-cpu-v1":
+        fail("unsupported embedding helper build receipt")
+    source = receipt.get("source", {})
+    if (source.get("commit"), source.get("tree"), source.get("cargo_lock_sha256")) != (revision, tree, lock_sha):
+        fail("embedding helper and product were not built from the same exact source")
+    if type(receipt.get("exit")) is not int or receipt["exit"] != 0 or source.get("clean_before") is not True or source.get("clean_after") is not True or receipt.get("toolchain", {}).get("unchanged") is not True:
+        fail("embedding helper receipt does not attest an unchanged successful build")
+    if receipt.get("argv") != ["cargo", "build", "--release", "--locked", "--no-default-features", "--features", "cpu", "-p", "backend-embedding-candle"]:
+        fail("embedding helper receipt does not attest the fixed CPU build recipe")
+    artifact = receipt.get("artifact", {})
+    size, digest = admit_file_digest(path, MAX_BINARY_BYTES)
+    if type(artifact.get("bytes")) is not int or size != artifact["bytes"] or digest != artifact.get("sha256"):
+        fail("embedding helper differs from its exact successful build receipt")
+    return {"bytes": size, "sha256": digest}, hashlib.sha256(raw).hexdigest()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True, type=Path, help="successful source-bound Linux build manifest")
@@ -369,6 +389,8 @@ def main() -> int:
     parser.add_argument("--ldd", required=True, type=Path)
     parser.add_argument("--typescript-sdk-directory", required=True, type=Path, help="complete Node and TypeScript payload with notices")
     parser.add_argument("--typescript-sdk-receipt", required=True, type=Path, help="exact source-bound SDK payload receipt")
+    parser.add_argument("--embedding-helper", type=Path, help="optional receipted CPU Candle helper")
+    parser.add_argument("--embedding-helper-receipt", type=Path, help="exact successful helper build receipt")
     parser.add_argument("--release-tag", help="immutable checkpoint tag; defaults to today's UTC date and source revision")
     args = parser.parse_args()
 
@@ -427,12 +449,22 @@ def main() -> int:
 
     glibc_family = set(GLIBC_SONAMES)
     libraries: dict[str, dict] = {}
+    embedding_receipt_digest = None
+    if (args.embedding_helper is None) != (args.embedding_helper_receipt is None):
+        fail("embedding helper and its build receipt must be provided together")
+    if args.embedding_helper is not None:
+        helper_record, embedding_receipt_digest = admit_embedding_helper(args.embedding_helper, args.embedding_helper_receipt, revision, tree, lock_sha)
+        sources["backend-embedding-candle"] = args.embedding_helper.resolve(strict=True)
+        admitted_digests["backend-embedding-candle"] = helper_record["sha256"]
+        admitted_lengths["backend-embedding-candle"] = helper_record["bytes"]
+        (root / "share/nudox/embedding/bin").mkdir(mode=0o700, parents=True)
+
     library_total_bytes = 0
     executables: list[dict] = []
     for name, source_binary in sources.items():
-        packaged_relative = "share/nudox/typescript/node/bin/node" if name == "typescript-node" else f"bin/{name}"
+        packaged_relative = "share/nudox/typescript/node/bin/node" if name == "typescript-node" else "share/nudox/embedding/bin/backend-embedding-candle" if name == "backend-embedding-candle" else f"bin/{name}"
         packaged = root / packaged_relative
-        runtime_search = "$ORIGIN/../../../../../lib" if name == "typescript-node" else "$ORIGIN/../lib"
+        runtime_search = "$ORIGIN/../../../../../lib" if name == "typescript-node" else "$ORIGIN/../../../../lib" if name == "backend-embedding-candle" else "$ORIGIN/../lib"
         copy_admitted_file(source_binary, packaged, admitted_digests[name], admitted_lengths[name], MAX_BINARY_BYTES)
         original = elf_info(readelf, packaged)
         if not original["interpreter"]:
@@ -506,7 +538,7 @@ def main() -> int:
             fail(f"relocated SDK {label} did not reproduce its admitted version identity")
 
     node_record = next(record for record in executables if record["name"] == "typescript-node")
-    executables = [record for record in executables if record["name"] != "typescript-node"]
+    executables = [record for record in executables if record["name"] not in {"typescript-node", "backend-embedding-candle"}]
     sdk_files = {
         path.relative_to(root).as_posix(): {"kind": "file", "sha256": sha256(path), "size_bytes": path.stat().st_size}
         for path in sorted(sdk_root.rglob("*")) if path.is_file()
@@ -519,6 +551,49 @@ def main() -> int:
         "source_receipt_sha256": sdk_receipt_digest,
         "files": sdk_files,
     }
+
+    embedding_setup = None
+    if embedding_receipt_digest is not None:
+        # These are the post-relocation bytes actually shipped, not original ELF claims.
+        def setup_record(relative: str) -> dict:
+            path = root / relative
+            return {"path": relative, "sha256": sha256(path), "bytes": path.stat().st_size}
+        helper_build_bytes = read_regular_bytes(args.embedding_helper_receipt, 65536, "embedding build receipt")
+        if hashlib.sha256(helper_build_bytes).hexdigest() != embedding_receipt_digest:
+            fail("embedding build receipt changed before package publication")
+        lock_bytes = subprocess.check_output(["git", "-C", str(args.source), "show", f"{revision}:Cargo.lock"])
+        if hashlib.sha256(lock_bytes).hexdigest() != lock_sha:
+            fail("selected Cargo.lock changed before embedding receipt publication")
+        (root / "share/nudox/embedding/build-receipt.json").write_bytes(helper_build_bytes)
+        (root / "share/nudox/embedding/Cargo.lock").write_bytes(lock_bytes)
+        setup = {"schema": "nudox.local-embedding-setup.v1", "preset": "candle-minilm-cpu-v1",
+                 "source": {"commit": revision, "tree": tree, "cargo_lock_sha256": lock_sha},
+                 "cli": setup_record("bin/backend-cli"),
+                 "helper": setup_record("share/nudox/embedding/bin/backend-embedding-candle"),
+                 "dependencies": [setup_record(record["packaged_path"]) for _, record in sorted(libraries.items())],
+                 "build_receipt_sha256": embedding_receipt_digest,
+                 "build_receipt": setup_record("share/nudox/embedding/build-receipt.json"),
+                 "source_lock": setup_record("share/nudox/embedding/Cargo.lock")}
+        # The already source-receipted CLI observes the typed closure identity; this is not
+        # semantic attestation. Successful source/helper build custody above is its authority.
+        command = [str(root / "bin/backend-cli"), "--json", "embedding-setup", "inspect", "--program", str(root / setup["helper"]["path"])]
+        for dependency in setup["dependencies"]:
+            command.extend(["--dependency", str(root / dependency["path"])])
+        observed = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
+                                  env={key: value for key, value in os.environ.items() if key not in {"LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT", "NIX_LD", "NIX_LD_LIBRARY_PATH"}})
+        if observed.returncode != 0 or len(observed.stdout) > 65536 or len(observed.stderr) > 65536:
+            fail("packaged CLI could not observe its helper closure")
+        observation = parse_json_bytes(observed.stdout, "typed packaged helper identity")
+        identity = observation.get("identity")
+        if observation.get("state") != "observed-helper" or not isinstance(identity, str) or not re.fullmatch(r"[a-f0-9]{64}", identity):
+            fail("packaged helper identity observation is malformed")
+        for record in [setup["cli"], setup["helper"], *setup["dependencies"]]:
+            if setup_record(record["path"]) != record:
+                fail("packaged helper closure changed while its identity was observed")
+        setup["helper_identity"] = identity
+        setup_path = root / "share/nudox/embedding/setup.json"
+        setup_path.write_text(json.dumps(setup, indent=2, sort_keys=True) + "\n")
+        embedding_setup = {"path": "share/nudox/embedding/setup.json", "sha256": sha256(setup_path), "size_bytes": setup_path.stat().st_size}
 
     public_build = public_build_manifest(build)
     (root / "build-manifest.json").write_text(json.dumps(public_build, indent=2, sort_keys=True) + "\n")
@@ -548,6 +623,7 @@ def main() -> int:
         "executables": executables,
         "libraries": libraries,
         "typescript_sdk": sdk,
+        "embedding_setup": embedding_setup,
         "glibc_libraries_bundled": False,
         "runtime_acceptance": "external_native_qa_record_required",
     }

@@ -449,6 +449,48 @@ pub enum PrimitiveShape {
     CWideUnsignedChar = 27,
 }
 
+impl PrimitiveShape {
+    /// Child ownership belongs to the exact primitive constructor. A string
+    /// is a leaf even when it is a placeholder inside a compound template;
+    /// pointer/reference constructors retain their own ordered children.
+    const fn child_law(self) -> ChildCountLaw {
+        let count = match self {
+            Self::MutPointer
+            | Self::ConstPointer
+            | Self::Reference
+            | Self::CPointer
+            | Self::CBlockPointer
+            | Self::CxxLvalueReference
+            | Self::CxxRvalueReference => 1,
+            Self::CxxMemberPointer => 2,
+            Self::Integer
+            | Self::Float
+            | Self::Bool
+            | Self::LegacyChar
+            | Self::Str
+            | Self::Builtin
+            | Self::ArbitraryInteger
+            | Self::NativeSignedInteger
+            | Self::NativeUnsignedInteger
+            | Self::PointerAddressInteger
+            | Self::UnicodeScalar
+            | Self::Utf16CodeUnit
+            | Self::Utf32CodeUnit
+            | Self::CPlainSignedChar
+            | Self::CPlainUnsignedChar
+            | Self::CSignedChar
+            | Self::CUnsignedChar
+            | Self::CWideChar
+            | Self::CWideSignedChar
+            | Self::CWideUnsignedChar => 0,
+        };
+        ChildCountLaw {
+            min: count,
+            max: count,
+        }
+    }
+}
+
 /// Exact primitive-shape rejection retaining the observed cell.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PrimitiveShapeError {
@@ -1766,31 +1808,8 @@ impl SemanticTypeRecord<'_> {
             CellLaw::Forbidden,
             self.nominal.is_some(),
         )?;
-        let owns_child = matches!(
-            shape,
-            PrimitiveShape::MutPointer
-                | PrimitiveShape::ConstPointer
-                | PrimitiveShape::Reference
-                | PrimitiveShape::CPointer
-                | PrimitiveShape::CBlockPointer
-                | PrimitiveShape::CxxLvalueReference
-                | PrimitiveShape::CxxRvalueReference
-        );
-        let expected_children = if shape == PrimitiveShape::CxxMemberPointer {
-            2
-        } else if owns_child {
-            1
-        } else {
-            0
-        };
-        if child_count != expected_children {
-            let law = if owns_child {
-                ChildCountLaw { min: 1, max: 1 }
-            } else if shape == PrimitiveShape::CxxMemberPointer {
-                ChildCountLaw { min: 2, max: 2 }
-            } else {
-                ChildCountLaw { min: 0, max: 0 }
-            };
+        let law = shape.child_law();
+        if child_count < law.min || child_count > law.max {
             return Err(SemanticTypeFault::ChildCount {
                 tag,
                 law,
@@ -1874,6 +1893,52 @@ impl SemanticTypeRecord<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn primitive_and_template_child_ownership_remain_distinct() {
+        let mut string = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
+        string.payload0 = u32::from(PrimitiveShape::Str);
+        assert_eq!(string.validate(0), Ok(()));
+        assert_eq!(
+            string.validate(1),
+            Err(SemanticTypeFault::ChildCount {
+                tag: SemanticTypeTag::Primitive,
+                law: ChildCountLaw { min: 0, max: 0 },
+                actual: 1,
+            })
+        );
+
+        let template = SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral);
+        assert_eq!(template.validate(2), Ok(()));
+        let prefix = SemanticTypeChild {
+            target: TypeChildTarget::Text,
+            name: Some(b"on"),
+            flags: 0,
+        };
+        assert_eq!(template.validate_child(0, &prefix), Ok(()));
+        assert!(
+            string.validate_child(0, &prefix).is_err(),
+            "template text cannot become a primitive's child"
+        );
+        let placeholder = SemanticTypeChild {
+            target: TypeChildTarget::Type(TypeRef::Local(TypeId::new(0))),
+            name: None,
+            flags: 0,
+        };
+        assert_eq!(template.validate_child(1, &placeholder), Ok(()));
+
+        for (shape, count) in [
+            (PrimitiveShape::Reference, 1),
+            (PrimitiveShape::CPointer, 1),
+            (PrimitiveShape::CxxMemberPointer, 2),
+        ] {
+            let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::Primitive);
+            record.payload0 = u32::from(shape);
+            assert_eq!(record.validate(count), Ok(()));
+            assert!(record.validate(0).is_err());
+            assert!(record.validate(count + 1).is_err());
+        }
+    }
 
     #[test]
     fn c_family_forms_preserve_closed_arity_and_qualifier_placement() {

@@ -190,6 +190,23 @@ impl<R: Relation> RelationState<R> {
         })
     }
 
+    /// Consumes a complete sorted run while allowing the caller to stop CPU work.
+    /// No partially constructed state is returned after a checkpoint refusal.
+    pub fn from_sorted_entries_controlled<E: From<TreeError>>(
+        entries: Vec<(R::Key, R::Value)>,
+        coverage: CoverageWitness,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<Self, E> {
+        let (tree, _) =
+            PersistentTree::from_sorted_items_owned_controlled_with_work(entries, checkpoint)?;
+        let root = tree.root().commitment();
+        Ok(Self {
+            tree,
+            root,
+            coverage,
+        })
+    }
+
     /// Returns the exact canonical relation root.
     #[must_use]
     pub const fn root(&self) -> StateRoot<R> {

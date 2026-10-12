@@ -170,6 +170,15 @@ pub(crate) struct TypeScriptFileInput {
     pub(crate) identity: FileIdentity,
 }
 
+/// Raw candidates are witnessed without granting their dependency graph authority.
+/// Inherited options do not inherit project references from a base configuration.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum TypeScriptConfigDependencyAuthority {
+    Unselected,
+    Inheritance,
+    Program,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct TypeScriptConfigInput {
     pub(crate) path: Box<Path>,
@@ -178,6 +187,7 @@ pub(crate) struct TypeScriptConfigInput {
     pub(crate) identity: FileIdentity,
     pub(crate) project_candidate: bool,
     pub(crate) selected_build_config: bool,
+    pub(crate) dependency_authority: TypeScriptConfigDependencyAuthority,
     pub(crate) extends: Box<[Box<Path>]>,
     pub(crate) references: Box<[Box<Path>]>,
 }
@@ -2194,27 +2204,41 @@ fn collect_project_configs(
             &module_root,
         )?);
     }
-    let mut pending = paths;
+    // Preserve every discovered candidate's bounded bytes and identity. Selection
+    // depends on paths, not successful parsing of an unrelated editor config.
     let mut captured = std::collections::BTreeMap::<PathBuf, TypeScriptConfigInput>::new();
     let mut total_bytes = 0_u64;
-    while let Some(path) = pending.pop() {
-        if captured.contains_key(&path) {
-            continue;
-        }
-        if captured.len() >= MAX_PROJECT_CONFIG_FILES {
-            return Err(TypeScriptProjectHostError::ConfigFileLimit {
-                observed: captured.len().saturating_add(1),
-                maximum: MAX_PROJECT_CONFIG_FILES,
-            });
-        }
+    for path in &candidate_paths {
+        capture_project_config(
+            path,
+            &candidate_paths,
+            &selected_paths,
+            &mut captured,
+            &mut total_bytes,
+        )?;
+    }
+    let selected = select_project_config(&project_root, captured.values())?
+        .map(|config| config.path.to_path_buf());
+    let mut pending = selected
+        .into_iter()
+        .map(|path| (path, TypeScriptConfigDependencyAuthority::Program))
+        .collect::<Vec<_>>();
+    while let Some((path, authority)) = pending.pop() {
         let canonical = canonical_regular_config(&path, &workspace_root, &module_root)?;
-        if captured.contains_key(&canonical) {
+        capture_project_config(
+            &canonical,
+            &candidate_paths,
+            &selected_paths,
+            &mut captured,
+            &mut total_bytes,
+        )?;
+        let config = captured
+            .get_mut(&canonical)
+            .expect("captured config exists");
+        if config.dependency_authority >= authority {
             continue;
         }
-        let remaining = MAX_PROJECT_CONFIG_BYTES.saturating_sub(total_bytes);
-        let (snapshot, bytes) = read_regular_file(&canonical, remaining)?;
-        total_bytes = total_bytes.saturating_add(snapshot.length);
-        let value = parse_typescript_config(&canonical, &bytes)?;
+        let value = parse_typescript_config(&canonical, &config.bytes)?;
         let extends = config_paths_from_field(
             &value,
             &canonical,
@@ -2223,40 +2247,123 @@ fn collect_project_configs(
             &module_root,
             ConfigDependencyKind::Extends,
         )?;
-        let references = config_paths_from_field(
-            &value,
-            &canonical,
-            &project_root,
-            &workspace_root,
-            &module_root,
-            ConfigDependencyKind::References,
-        )?;
-        pending.extend(extends.iter().cloned());
-        pending.extend(references.iter().cloned());
-        captured.insert(
-            canonical.clone(),
-            TypeScriptConfigInput {
-                path: canonical.clone().into_boxed_path(),
-                bytes: bytes.clone().into_boxed_slice(),
-                content_id: ContentId::<SourceFactDomain>::from_canonical_bytes(&bytes),
-                identity: snapshot.identity,
-                project_candidate: candidate_paths.contains(&canonical),
-                selected_build_config: selected_paths.contains(&canonical),
-                extends: extends
-                    .into_iter()
-                    .map(PathBuf::into_boxed_path)
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-                references: references
-                    .into_iter()
-                    .map(PathBuf::into_boxed_path)
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-            },
+        let references = if authority == TypeScriptConfigDependencyAuthority::Program {
+            config_paths_from_field(
+                &value,
+                &canonical,
+                &project_root,
+                &workspace_root,
+                &module_root,
+                ConfigDependencyKind::References,
+            )?
+        } else {
+            Vec::new()
+        };
+        pending.extend(
+            extends
+                .iter()
+                .cloned()
+                .map(|path| (path, TypeScriptConfigDependencyAuthority::Inheritance)),
         );
+        pending.extend(
+            references
+                .iter()
+                .cloned()
+                .map(|path| (path, TypeScriptConfigDependencyAuthority::Program)),
+        );
+        config.dependency_authority = authority;
+        config.extends = extends
+            .into_iter()
+            .map(PathBuf::into_boxed_path)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        config.references = references
+            .into_iter()
+            .map(PathBuf::into_boxed_path)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
     }
     validate_config_graph_acyclic(&captured)?;
     Ok(captured.into_values().collect())
+}
+
+fn capture_project_config(
+    canonical: &Path,
+    candidate_paths: &std::collections::BTreeSet<PathBuf>,
+    selected_paths: &std::collections::BTreeSet<PathBuf>,
+    captured: &mut std::collections::BTreeMap<PathBuf, TypeScriptConfigInput>,
+    total_bytes: &mut u64,
+) -> Result<(), TypeScriptProjectHostError> {
+    if captured.contains_key(canonical) {
+        return Ok(());
+    }
+    if captured.len() >= MAX_PROJECT_CONFIG_FILES {
+        return Err(TypeScriptProjectHostError::ConfigFileLimit {
+            observed: captured.len().saturating_add(1),
+            maximum: MAX_PROJECT_CONFIG_FILES,
+        });
+    }
+    let remaining = MAX_PROJECT_CONFIG_BYTES.saturating_sub(*total_bytes);
+    let (snapshot, bytes) = read_regular_file(canonical, remaining)?;
+    *total_bytes = total_bytes.saturating_add(snapshot.length);
+    captured.insert(
+        canonical.to_path_buf(),
+        TypeScriptConfigInput {
+            path: snapshot.path,
+            content_id: ContentId::<SourceFactDomain>::from_canonical_bytes(&bytes),
+            identity: snapshot.identity,
+            bytes: bytes.into_boxed_slice(),
+            project_candidate: candidate_paths.contains(canonical),
+            selected_build_config: selected_paths.contains(canonical),
+            dependency_authority: TypeScriptConfigDependencyAuthority::Unselected,
+            extends: Box::new([]),
+            references: Box::new([]),
+        },
+    );
+    Ok(())
+}
+
+/// Select by the admitted Angular target or nearest containing config, using
+/// the same path-only policy before closure capture and compiler execution.
+pub(crate) fn select_project_config<'a>(
+    package_root: &Path,
+    configs: impl IntoIterator<Item = &'a TypeScriptConfigInput>,
+) -> Result<Option<&'a TypeScriptConfigInput>, TypeScriptProjectHostError> {
+    let configs = configs.into_iter().collect::<Vec<_>>();
+    let selected = configs
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.selected_build_config)
+        .collect::<Vec<_>>();
+    if selected.len() == 1 {
+        return Ok(Some(selected[0]));
+    }
+    if selected.len() > 1 {
+        return Err(TypeScriptProjectHostError::CompilerApiBridge {
+            message: "the host admitted more than one selected TypeScript build config".into(),
+        });
+    }
+    let mut candidates = configs
+        .into_iter()
+        .filter(|candidate| candidate.project_candidate)
+        .filter(|candidate| {
+            package_root.starts_with(candidate.path.parent().unwrap_or(Path::new("/")))
+        })
+        .collect::<Vec<_>>();
+    candidates
+        .sort_unstable_by_key(|candidate| std::cmp::Reverse(candidate.path.components().count()));
+    match candidates.as_slice() {
+        [only] => Ok(Some(*only)),
+        [first, second, ..]
+            if first.path.components().count() == second.path.components().count() =>
+        {
+            Err(TypeScriptProjectHostError::CompilerApiBridge {
+                message: "the nearest TypeScript project config is ambiguous".into(),
+            })
+        }
+        [first, ..] => Ok(Some(*first)),
+        [] => Ok(None),
+    }
 }
 
 fn validate_config_graph_acyclic(
@@ -4741,13 +4848,24 @@ printf 'Version 5.9.3\n'
             .expect("spec config is captured");
 
         assert!(root_input.extends.is_empty());
-        assert_eq!(root_input.references.len(), 2);
+        assert!(root_input.references.is_empty());
+        assert_eq!(
+            root_input.dependency_authority,
+            TypeScriptConfigDependencyAuthority::Inheritance,
+        );
+        assert_eq!(
+            app_input.dependency_authority,
+            TypeScriptConfigDependencyAuthority::Program,
+        );
         assert_eq!(app_input.extends.len(), 1);
         assert_eq!(app_input.extends[0].as_ref(), root.as_path());
         assert!(app_input.references.is_empty());
-        assert_eq!(spec_input.extends.len(), 1);
-        assert_eq!(spec_input.extends[0].as_ref(), root.as_path());
+        assert!(spec_input.extends.is_empty());
         assert!(spec_input.references.is_empty());
+        assert_eq!(
+            spec_input.dependency_authority,
+            TypeScriptConfigDependencyAuthority::Unselected,
+        );
         assert!(app_input.selected_build_config);
         assert_eq!(root_input.bytes.as_ref(), root_bytes);
         assert_eq!(app_input.bytes.as_ref(), app_bytes);
@@ -4949,6 +5067,249 @@ printf 'Version 5.9.3\n'
             .expect("app config is present");
         assert!(input.project_candidate);
         assert!(input.selected_build_config);
+    }
+
+    #[test]
+    fn unrelated_editor_configs_remain_raw_witnesses_without_dependency_authority() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        fs::create_dir_all(fixture.0.join("dev-docs")).expect("create editor-only docs");
+        fs::create_dir_all(fixture.0.join("examples")).expect("create unrelated example");
+        let root_bytes = br#"{"compilerOptions":{"strict":true},"include":["packages"]}"#;
+        let docs_bytes = br#"{"extends":"@tsconfig/docusaurus/tsconfig.json"}"#;
+        let malformed_bytes = br#"{"compilerOptions": }"#;
+        fs::write(fixture.0.join("tsconfig.json"), root_bytes).expect("write root project");
+        fs::write(fixture.0.join("dev-docs/tsconfig.json"), docs_bytes)
+            .expect("write unrelated missing extends");
+        fs::write(fixture.0.join("examples/tsconfig.json"), malformed_bytes)
+            .expect("write unrelated malformed candidate");
+        let module_root = fs::canonicalize(modules).expect("canonical module root");
+        let configs = collect_project_configs(&fixture.0, &fixture.0, &module_root, &[])
+            .expect("unselected editor configuration does not block the root program");
+        let root = fixture.0.join("tsconfig.json");
+        let selected = select_project_config(&fixture.0, &configs)
+            .expect("shared selector")
+            .expect("root program");
+        assert_eq!(selected.path.as_ref(), root.as_path());
+        assert_eq!(
+            selected.dependency_authority,
+            TypeScriptConfigDependencyAuthority::Program
+        );
+        assert_eq!(configs.len(), 3);
+        for (relative, expected) in [
+            ("dev-docs/tsconfig.json", docs_bytes.as_slice()),
+            ("examples/tsconfig.json", malformed_bytes.as_slice()),
+        ] {
+            let path = fixture.0.join(relative);
+            let config = configs
+                .iter()
+                .find(|config| config.path.as_ref() == path)
+                .expect("unselected candidate remains captured");
+            assert_eq!(config.bytes.as_ref(), expected);
+            assert_eq!(
+                config.content_id,
+                ContentId::<SourceFactDomain>::from_canonical_bytes(expected)
+            );
+            assert_eq!(
+                config.dependency_authority,
+                TypeScriptConfigDependencyAuthority::Unselected
+            );
+            assert!(config.extends.is_empty());
+            assert!(config.references.is_empty());
+        }
+    }
+
+    #[test]
+    fn selected_and_transitive_missing_config_dependencies_remain_refusals() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let module_root = fs::canonicalize(modules).expect("canonical module root");
+        fs::create_dir_all(fixture.0.join("configs")).expect("create config directory");
+        for bytes in [
+            r#"{"extends":"@tsconfig/absent/tsconfig.json"}"#,
+            r#"{"references":[{"path":"./missing-project"}]}"#,
+            r#"{"extends":"./configs/base"}"#,
+            r#"{"references":[{"path":"./configs/base.json"}]}"#,
+        ] {
+            fs::write(fixture.0.join("tsconfig.json"), bytes).expect("write selected dependency");
+            fs::write(
+                fixture.0.join("configs/base.json"),
+                r#"{"extends":"./absent"}"#,
+            )
+            .expect("write missing transitive inheritance");
+            assert!(matches!(
+                collect_project_configs(&fixture.0, &fixture.0, &module_root, &[]),
+                Err(TypeScriptProjectHostError::ConfigMissing { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn angular_build_does_not_inherit_solution_references_or_select_a_broken_spec() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let module_root = fs::canonicalize(modules).expect("canonical module root");
+        fs::write(fixture.0.join("angular.json"),
+            r#"{"projects":{"app":{"architect":{"build":{"options":{"tsConfig":"tsconfig.app.json"}}}}}}"#)
+            .expect("write selected Angular build");
+        fs::write(
+            fixture.0.join("tsconfig.app.json"),
+            r#"{"extends":"./tsconfig.json"}"#,
+        )
+        .expect("write selected app inheritance");
+        fs::write(
+            fixture.0.join("tsconfig.json"),
+            r#"{"references":[{"path":"./missing-spec"}]}"#,
+        )
+        .expect("write non-inherited solution references");
+        fs::write(fixture.0.join("tsconfig.spec.json"), r#"{"extends": 17}"#)
+            .expect("write unselected invalid spec configuration");
+        let (selected, _) =
+            angular_build_config_paths(&fixture.0, &module_root).expect("selected app path");
+        let configs = collect_project_configs(&fixture.0, &fixture.0, &module_root, &selected)
+            .expect("only actual app authority is expanded");
+        let selected = select_project_config(&fixture.0, &configs)
+            .expect("select app")
+            .expect("app");
+        assert!(selected.path.ends_with("tsconfig.app.json"));
+        assert_eq!(
+            selected.dependency_authority,
+            TypeScriptConfigDependencyAuthority::Program
+        );
+        assert!(selected.references.is_empty());
+        let root = fixture.0.join("tsconfig.json");
+        let base = configs
+            .iter()
+            .find(|config| config.path.as_ref() == root)
+            .expect("base");
+        assert_eq!(
+            base.dependency_authority,
+            TypeScriptConfigDependencyAuthority::Inheritance
+        );
+        assert!(base.references.is_empty());
+        assert!(
+            matches!(
+                collect_project_configs(&fixture.0, &fixture.0, &module_root, &[root]),
+                Err(TypeScriptProjectHostError::ConfigMissing { .. })
+            ),
+            "the same root references are strict when the root is selected as a program"
+        );
+    }
+
+    #[test]
+    fn inherited_config_upgrades_to_program_when_reached_by_an_actual_reference() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let module_root = fs::canonicalize(modules).expect("canonical module root");
+        fs::create_dir_all(fixture.0.join("left")).expect("create left project");
+        fs::create_dir_all(fixture.0.join("right")).expect("create right project");
+        fs::create_dir_all(fixture.0.join("configs")).expect("create inheritance");
+        fs::write(
+            fixture.0.join("tsconfig.json"),
+            r#"{"references":[{"path":"./left"},{"path":"./right"}]}"#,
+        )
+        .expect("write solution");
+        fs::write(
+            fixture.0.join("right/tsconfig.json"),
+            r#"{"extends":"../configs/base.json"}"#,
+        )
+        .expect("base is inherited first by LIFO traversal");
+        fs::write(
+            fixture.0.join("left/tsconfig.json"),
+            r#"{"references":[{"path":"../configs/base.json"}]}"#,
+        )
+        .expect("later actual reference");
+        fs::write(
+            fixture.0.join("configs/base.json"),
+            r#"{"references":[{"path":"./missing"}]}"#,
+        )
+        .expect("base's own reference");
+        assert!(
+            matches!(
+                collect_project_configs(&fixture.0, &fixture.0, &module_root, &[]),
+                Err(TypeScriptProjectHostError::ConfigMissing { .. })
+            ),
+            "program authority must upgrade the previously inherited base and check its references"
+        );
+    }
+
+    #[test]
+    fn ambiguous_path_selection_refuses_before_expanding_unselected_configs() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let module_root = fs::canonicalize(modules).expect("canonical module root");
+        fs::write(fixture.0.join("tsconfig.json"), "{}").expect("write first candidate");
+        fs::write(fixture.0.join("tsconfig.app.json"), "{}").expect("write second candidate");
+        for selected in [
+            Vec::new(),
+            vec![
+                fixture.0.join("tsconfig.json"),
+                fixture.0.join("tsconfig.app.json"),
+            ],
+        ] {
+            assert!(matches!(
+                collect_project_configs(&fixture.0, &fixture.0, &module_root, &selected),
+                Err(TypeScriptProjectHostError::CompilerApiBridge { .. })
+            ));
+        }
+        let selected = [fixture.0.join("tsconfig.app.json")];
+        assert!(collect_project_configs(&fixture.0, &fixture.0, &module_root, &selected).is_ok());
+    }
+
+    #[test]
+    fn unselected_candidate_changes_additions_and_removals_invalidate_the_project_witness() {
+        for mutation in ["content", "addition", "removal"] {
+            let fixture = Fixture::new();
+            fixture.install("5.9.3");
+            fs::write(fixture.0.join("tsconfig.json"), "{}").expect("write selected root");
+            fs::create_dir_all(fixture.0.join("dev-docs")).expect("create docs");
+            let docs = fixture.0.join("dev-docs/tsconfig.json");
+            fs::write(&docs, r#"{"extends":"@tsconfig/absent"}"#).expect("raw unselected docs");
+            let ProjectTypeScriptSearch::Found(project) =
+                find_project_typescript(&fixture.0).expect("discover project TypeScript")
+            else {
+                panic!("project installation required")
+            };
+            let node = fixture.0.join("node");
+            fs::write(&node, b"node witness").expect("write identity-only Node bytes");
+            let package_root = fs::canonicalize(project.module_root.join("typescript"))
+                .expect("canonical compiler package");
+            let witness = TypeScriptProjectWitness::capture(
+                &fixture.0,
+                None,
+                &project,
+                &project.compiler,
+                &node,
+                &project.module_root,
+                &package_root,
+                project.workspace.as_ref(),
+            )
+            .expect("capture witness without running Node or compiler");
+            witness
+                .validate_current()
+                .expect("unchanged raw candidate is witnessed");
+            match mutation {
+                "content" => fs::write(&docs, r#"{"extends":"@tsconfig/changed-absent"}"#)
+                    .expect("change raw docs"),
+                "addition" => {
+                    fs::create_dir_all(fixture.0.join("examples")).expect("create example");
+                    fs::write(
+                        fixture.0.join("examples/tsconfig.json"),
+                        "invalid raw config",
+                    )
+                    .expect("add unselected candidate");
+                }
+                "removal" => fs::remove_file(&docs).expect("remove unselected candidate"),
+                _ => unreachable!(),
+            }
+            assert!(
+                matches!(
+                    witness.validate_current(),
+                    Err(TypeScriptProjectHostError::WitnessChanged { .. })
+                ),
+                "unselected {mutation} still changes the admission witness"
+            );
+        }
     }
 
     #[test]

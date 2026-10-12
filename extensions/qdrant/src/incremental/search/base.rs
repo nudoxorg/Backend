@@ -34,20 +34,42 @@ impl AnnBase {
         quality: SearchQuality,
         limits: Limits,
     ) -> Result<Self, Error> {
+        Self::from_facts_controlled(facts, quality, limits, &mut || Ok(()))
+    }
+
+    /// Admits immutable base metadata with a fallible checkpoint per identity.
+    pub fn from_facts_controlled<E: From<Error>>(
+        facts: &VectorFacts,
+        quality: SearchQuality,
+        limits: Limits,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<Self, E> {
+        checkpoint()?;
         let limits = limits.validate()?;
         if !matches!(
             facts.coverage(),
             CoverageWitness::Complete(_) | CoverageWitness::Closed(_)
         ) {
-            return Err(Error::IncompleteCoverage);
+            return Err(Error::IncompleteCoverage.into());
         }
         if !quality_valid(quality, facts.binding().recipe, facts.model()) {
-            return Err(Error::ApproximationMismatch);
+            return Err(Error::ApproximationMismatch.into());
         }
-        let ids = facts.ids().collect::<Vec<_>>();
-        if ids.len() > limits.max_candidates {
-            return Err(Error::SizeLimit);
+        let mut count = 0usize;
+        for _ in facts.ids() {
+            checkpoint()?;
+            if count == limits.max_candidates {
+                return Err(Error::SizeLimit.into());
+            }
+            count += 1;
         }
+        let mut ids = Vec::new();
+        ids.try_reserve_exact(count).map_err(|_| Error::SizeLimit)?;
+        for id in facts.ids() {
+            checkpoint()?;
+            ids.push(id);
+        }
+        checkpoint()?;
         Ok(Self {
             binding: facts.binding(),
             coverage: facts.coverage(),

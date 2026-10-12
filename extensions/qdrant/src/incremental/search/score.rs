@@ -83,6 +83,46 @@ pub(super) fn score_admitted(
     }
 }
 
+/// Ordered scalar metric math with a checkpoint at most every 256 coordinates.
+/// Accumulators retain the original f32 order; chunks do not create partial sums.
+pub(super) fn score_admitted_controlled<E>(
+    metric: Metric,
+    query: &[f32],
+    point: &AdmittedEncodedPoint<'_>,
+    checkpoint: &mut impl FnMut() -> Result<(), E>,
+) -> Result<f32, E> {
+    // Rust Sum uses -0.0; cosine originally used an explicit +0.0 fold.
+    let mut total = if metric == Metric::CosineDistance {
+        0.0_f32
+    } else {
+        -0.0_f32
+    };
+    let (mut query_norm, mut point_norm) = (0.0_f32, 0.0_f32);
+    for (index, (query, point)) in query.iter().zip(point.coordinates()).enumerate() {
+        if index % 256 == 0 {
+            checkpoint()?;
+        }
+        match metric {
+            Metric::EuclideanSquared => {
+                let difference = query - point;
+                total += difference * difference;
+            }
+            Metric::CosineDistance => {
+                total += query * point;
+                query_norm += query * query;
+                point_norm += point * point;
+            }
+            Metric::NegativeDot => total += query * point,
+        }
+    }
+    Ok(match metric {
+        Metric::EuclideanSquared => total,
+        Metric::CosineDistance if query_norm == 0.0 || point_norm == 0.0 => 1.0,
+        Metric::CosineDistance => 1.0 - total / (query_norm.sqrt() * point_norm.sqrt()),
+        Metric::NegativeDot => -total,
+    })
+}
+
 /// Scores one admitted canonical point payload without materializing a
 /// coordinate vector. The four-byte dimension and each coordinate are read
 /// as big-endian integers, so the payload may begin at any byte alignment and

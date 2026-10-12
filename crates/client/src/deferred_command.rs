@@ -12,7 +12,7 @@ impl UnixCommandTransport {
         request: &CommandDto,
         original: &[u8],
     ) -> Result<Vec<u8>, ClientError> {
-        self.exchange_command_bounded(request, original, None)
+        self.exchange_command_bounded(request, original, None, None)
     }
 
     pub(super) fn exchange_command_with_budget(
@@ -21,7 +21,17 @@ impl UnixCommandTransport {
         original: &[u8],
         remaining: std::time::Duration,
     ) -> Result<Vec<u8>, ClientError> {
-        self.exchange_command_bounded(request, original, Some(remaining))
+        self.exchange_command_bounded(request, original, Some(remaining), None)
+    }
+
+    pub(super) fn exchange_command_with_search_admission(
+        &mut self,
+        request: &CommandDto,
+        original: &[u8],
+        remaining: std::time::Duration,
+        scope: &super::RequestContext,
+    ) -> Result<Vec<u8>, ClientError> {
+        self.exchange_command_bounded(request, original, Some(remaining), Some(scope))
     }
 
     fn exchange_command_bounded(
@@ -29,6 +39,7 @@ impl UnixCommandTransport {
         request: &CommandDto,
         original: &[u8],
         ceiling: Option<std::time::Duration>,
+        search_scope: Option<&super::RequestContext>,
     ) -> Result<Vec<u8>, ClientError> {
         let started = Instant::now();
         let initial = self
@@ -78,7 +89,13 @@ impl UnixCommandTransport {
             // An ACK never renews its budget: both phases share the original
             // request start, and even byte-by-byte reads consume that deadline.
             let admitted = budget.min(MAX_DEFERRED_COMMAND_WAIT);
-            let deadline = started + ceiling.map_or(admitted, |remaining| admitted.min(remaining));
+            let absolute = started + ceiling.map_or(admitted, |remaining| admitted.min(remaining));
+            let deadline = match search_scope {
+                Some(scope) => scope
+                    .admit_deferred_search(started, admitted)?
+                    .unwrap_or(absolute),
+                None => absolute,
+            };
             body = read_before(&mut self.stream, deadline)?;
             if body.starts_with(&DEFERRED_COMMAND_ACK_MAGIC) {
                 return Err(ClientError::Protocol(
@@ -292,6 +309,14 @@ mod tests {
         case: &str,
         wait: Duration,
     ) -> (Result<backend_library::ReplyDto, ClientError>, Duration) {
+        exchange_with_scope(case, wait, None)
+    }
+
+    fn exchange_with_scope(
+        case: &str,
+        wait: Duration,
+        scope: Option<&super::super::RequestContext>,
+    ) -> (Result<backend_library::ReplyDto, ClientError>, Duration) {
         let socket_dir = PrivateSocketDir::new();
         let path = socket_dir.socket_path();
         assert!(
@@ -377,7 +402,9 @@ mod tests {
             drop(listener);
         });
         let started = Instant::now();
-        let result = if budgeted {
+        let result = if let Some(scope) = scope {
+            client.request_with_search_admission(request(), wait, scope)
+        } else if budgeted {
             client.request_with_budget(request(), wait)
         } else {
             client.request(request())
@@ -397,15 +424,72 @@ mod tests {
         assert_eq!(reply.request_id, 7);
         assert!(elapsed >= Duration::from_millis(150));
         let (result, _) = exchange("wrong-final-id", Duration::from_millis(60));
-        assert!(matches!(
-            result,
-            Err(ClientError::RequestMismatch {
-                expected: 7,
-                observed: 8
-            })
-        ), "wrong-final-id returned: {result:?}");
+        assert!(
+            matches!(
+                result,
+                Err(ClientError::RequestMismatch {
+                    expected: 7,
+                    observed: 8
+                })
+            ),
+            "wrong-final-id returned: {result:?}"
+        );
         let (result, _) = exchange("bad-final", Duration::from_millis(60));
         assert!(matches!(result, Err(ClientError::Protocol(_))));
+    }
+
+    #[test]
+    fn default_search_scope_adopts_only_exact_ack_and_explicit_budget_remains_absolute() {
+        let scope = crate::RequestContext::new();
+        scope
+            .begin_default_search(Duration::from_millis(60))
+            .expect("default initial admission");
+        let (result, elapsed) =
+            exchange_with_scope("valid", Duration::from_millis(60), Some(&scope));
+        assert_eq!(
+            result
+                .expect("one ordinary search terminal past initial budget")
+                .request_id,
+            7
+        );
+        assert!(elapsed >= Duration::from_millis(150));
+        scope
+            .check()
+            .expect("admitted finite owner lease remains active");
+
+        let explicit = crate::RequestContext::new();
+        let absolute = explicit
+            .read_deadline(Duration::from_millis(60))
+            .expect("explicit absolute deadline");
+        explicit
+            .begin_default_search(Duration::from_secs(30))
+            .expect("cannot replace explicit budget");
+        let (result, elapsed) =
+            exchange_with_scope("valid", Duration::from_millis(60), Some(&explicit));
+        assert!(matches!(result, Err(ClientError::Disconnected(_))));
+        assert!(elapsed < Duration::from_millis(150));
+        assert!(Instant::now() >= absolute);
+
+        for case in [
+            "wrong-request",
+            "replayed-nonce",
+            "foreign-owner",
+            "unbounded",
+            "retired-owner",
+            "repeated",
+        ] {
+            let scope = crate::RequestContext::new();
+            scope
+                .begin_default_search(Duration::from_millis(60))
+                .expect("initial lease");
+            let (result, elapsed) =
+                exchange_with_scope(case, Duration::from_millis(60), Some(&scope));
+            assert!(
+                matches!(result, Err(ClientError::Protocol(_))),
+                "{case}: {result:?}"
+            );
+            assert!(elapsed < Duration::from_millis(150));
+        }
     }
 
     #[test]
@@ -477,8 +561,10 @@ mod tests {
         let unverified = transport.request(request());
         release_peer.send(()).expect("release untrusted peer");
         worker.join().expect("retire peer");
-        assert!(matches!(unverified, Err(ClientError::Protocol(_))),
-            "unverified stream returned: {unverified:?}");
+        assert!(
+            matches!(unverified, Err(ClientError::Protocol(_))),
+            "unverified stream returned: {unverified:?}"
+        );
 
         let (mut raw, mut peer) = backend_replication::LocalStream::pair().expect("trickle pair");
         let worker = std::thread::spawn(move || {

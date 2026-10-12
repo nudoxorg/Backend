@@ -1,4 +1,4 @@
-use super::build::{build_tree, build_tree_owned, empty_node};
+use super::build::{build_tree, build_tree_owned_controlled, empty_node};
 use super::update::{
     apply_structural, collect_target_range, find_node, get_node, replace_existing,
     replacement_keeps_encoded_width, target_shape,
@@ -107,11 +107,24 @@ impl<R: Relation> PersistentTree<R, NoInterner> {
     pub fn from_sorted_items_owned_with_work(
         items: Vec<(R::Key, R::Value)>,
     ) -> Result<(Self, TreeWork), TreeError> {
-        if items.windows(2).any(|window| window[0].0 >= window[1].0) {
-            return Err(TreeError::UnsortedOrDuplicate);
+        Self::from_sorted_items_owned_controlled_with_work(items, &mut || Ok(()))
+    }
+
+    /// Consumes sorted input with a fallible checkpoint before each input and
+    /// canonical node. Interruption drops the entire unpublished tree, never a prefix.
+    /// Each uninterruptible encoding unit is one canonically bounded node/value.
+    pub fn from_sorted_items_owned_controlled_with_work<E: From<TreeError>>(
+        items: Vec<(R::Key, R::Value)>,
+        checkpoint: &mut impl FnMut() -> Result<(), E>,
+    ) -> Result<(Self, TreeWork), E> {
+        for window in items.windows(2) {
+            checkpoint()?;
+            if window[0].0 >= window[1].0 {
+                return Err(TreeError::UnsortedOrDuplicate.into());
+            }
         }
         let mut work = TreeWork::default();
-        let root = build_tree_owned(items, &mut work, &NoInterner)?;
+        let root = build_tree_owned_controlled(items, &mut work, &NoInterner, checkpoint)?;
         Ok((
             Self {
                 root,

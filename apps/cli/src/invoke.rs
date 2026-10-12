@@ -160,6 +160,7 @@ pub fn help() -> String {
     out.push_str("\nquick start (installed command name: nudox)\n");
     out.push_str(concat!(
         "  nudox add .  Start indexing; poll the returned operation for its terminal receipt\n",
+        "  nudox embedding-setup  Install the bundled local semantic preset; then reopen and reindex\n",
         "  nudox search \"error handling\"  Find declarations at the published revision\n",
         "  Claude Code: claude mcp add --scope user --transport stdio nudox -- \"$(command -v backend-mcp)\" --project '${CLAUDE_PROJECT_DIR:-.}'\n",
     ));

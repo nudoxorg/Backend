@@ -73,7 +73,7 @@ pub use embedding::{
 pub use embedding_cache::EmbeddingCacheSession;
 pub use embedding_memory::{
     EmbeddingCoordinateValues, EmbeddingMemoryBudget, EmbeddingMemoryError,
-    EmbeddingMemoryReservation,
+    EmbeddingMemoryReclaimer, EmbeddingMemoryReservation,
 };
 pub use errors::{FrameError, PoolError, ProcessError, UnsupportedLimit};
 pub use facts::{

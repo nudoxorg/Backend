@@ -149,10 +149,10 @@ mod diagnostic;
 #[path = "builtin/registry.rs"]
 mod registry;
 use registry::RegistryGateway;
-#[path = "builtin/workspace_admission.rs"]
-mod workspace_admission;
 #[path = "builtin/forge_gateway.rs"]
 mod forge_gateway;
+#[path = "builtin/workspace_admission.rs"]
+mod workspace_admission;
 use crate::discovery::DiscoveryGateway;
 use forge_gateway::ForgeGateway;
 
@@ -1909,7 +1909,10 @@ pub(crate) fn compose_owner(
     // never delay the local owner or its lexical query path. The classification
     // is read before the first view publication because the published view
     // root, not the reply, is where an unconfigured lane must be recorded.
-    let remote_semantic = query::RemoteSemantic::from_environment();
+    let remote_semantic = query::RemoteSemantic::from_owner(
+        &embedding,
+        &compiler_root.join("embedding-query.config"),
+    );
     let semantic_deployment = SemanticDeployment::from_remote(&remote_semantic);
     let view_path = config.workspace.join("view.journal");
     let view_journal = ViewJournal::open(&view_path).map_err(ProcessError::Profile)?;

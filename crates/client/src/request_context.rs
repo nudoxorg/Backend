@@ -47,8 +47,30 @@ mod native {
         interrupt: Mutex<Option<TransportInterrupt>>,
         changed: tokio::sync::Notify,
         started: std::time::Instant,
-        read_deadline: OnceLock<std::time::Instant>,
+        read_deadline: OnceLock<ReadScope>,
         progress: Mutex<Option<std::sync::mpsc::SyncSender<crate::QueryPreparationProgress>>>,
+    }
+
+    struct ReadScope {
+        initial: std::time::Instant,
+        // Explicit scopes remain absolute. Default search scopes can adopt
+        // one authenticated owner deadline and can subsequently only shorten it.
+        policy: ReadPolicy,
+    }
+    enum ReadPolicy {
+        Absolute,
+        DefaultSearch(Mutex<Option<std::time::Instant>>),
+    }
+    impl ReadScope {
+        fn deadline(&self) -> std::time::Instant {
+            match &self.policy {
+                ReadPolicy::Absolute => self.initial,
+                ReadPolicy::DefaultSearch(owner) => owner
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .unwrap_or(self.initial),
+            }
+        }
     }
 
     impl Default for RequestContext {
@@ -114,7 +136,7 @@ mod native {
                 .0
                 .read_deadline
                 .get()
-                .is_some_and(|deadline| std::time::Instant::now() >= *deadline)
+                .is_some_and(|scope| std::time::Instant::now() >= scope.deadline())
             {
                 return Err(ClientError::RemoteDeadlineExceeded);
             }
@@ -129,9 +151,52 @@ mod native {
             &self,
             budget: std::time::Duration,
         ) -> Result<std::time::Instant, ClientError> {
-            let deadline = *self.0.read_deadline.get_or_init(|| self.0.started + budget);
+            let deadline = self
+                .0
+                .read_deadline
+                .get_or_init(|| ReadScope {
+                    initial: self.0.started + budget,
+                    policy: ReadPolicy::Absolute,
+                })
+                .deadline();
             self.check()?;
             Ok(deadline)
+        }
+
+        /// Starts the default search's initial admission budget. Only an exact
+        /// authenticated local deferred ACK can change its reply deadline once.
+        /// A caller's previously installed explicit read_deadline remains absolute.
+        /// # Errors
+        /// Returns cancellation or exhaustion of the original admission budget.
+        pub fn begin_default_search(&self, budget: std::time::Duration) -> Result<(), ClientError> {
+            self.0.read_deadline.get_or_init(|| ReadScope {
+                initial: self.0.started + budget,
+                policy: ReadPolicy::DefaultSearch(Mutex::new(None)),
+            });
+            self.check()
+        }
+
+        // Called only after transport proof admission of the exact wrapped request.
+        // The budget is rooted at the original exchange start, never at ACK receipt.
+        pub(crate) fn admit_deferred_search(
+            &self,
+            started: std::time::Instant,
+            budget: std::time::Duration,
+        ) -> Result<Option<std::time::Instant>, ClientError> {
+            self.check()?;
+            let Some(scope) = self.0.read_deadline.get() else {
+                return Ok(None);
+            };
+            let ReadPolicy::DefaultSearch(owner) = &scope.policy else {
+                return Ok(None);
+            };
+            let mut admitted = owner.lock().unwrap_or_else(PoisonError::into_inner);
+            let proposed = (started + budget.min(backend_replication::MAX_DEFERRED_COMMAND_WAIT))
+                .min(self.0.started + backend_replication::MAX_DEFERRED_COMMAND_WAIT);
+            let deadline = admitted.get_or_insert(proposed);
+            // A later exchange can shorten the shared scope, never renew admission.
+            *deadline = (*deadline).min(proposed);
+            Ok(Some(*deadline))
         }
 
         /// Returns the existing read scope's remaining exchange budget.
@@ -140,11 +205,11 @@ mod native {
         /// Returns cancellation or expiration of an already activated scope.
         pub fn remaining_read_budget(&self) -> Result<Option<std::time::Duration>, ClientError> {
             self.check()?;
-            Ok(self
-                .0
-                .read_deadline
-                .get()
-                .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now())))
+            Ok(self.0.read_deadline.get().map(|scope| {
+                scope
+                    .deadline()
+                    .saturating_duration_since(std::time::Instant::now())
+            }))
         }
 
         /// Installs a bounded progress sink; sending never waits for stderr.
@@ -358,6 +423,79 @@ mod tests {
             started.elapsed() < Duration::from_millis(40),
             "full progress channel never waits"
         );
+    }
+
+    #[test]
+    fn default_search_admission_is_once_and_does_not_change_explicit_or_sibling_reads() {
+        let scope = RequestContext::new();
+        scope
+            .begin_default_search(Duration::from_millis(60))
+            .expect("initial default search");
+        let started = Instant::now();
+        let admitted = scope
+            .admit_deferred_search(started, Duration::from_secs(1))
+            .expect("exact admitted ACK")
+            .expect("default scope");
+        assert_eq!(
+            scope
+                .read_deadline(Duration::from_secs(30))
+                .expect("shared request deadline"),
+            admitted
+        );
+        assert_eq!(
+            scope
+                .admit_deferred_search(Instant::now(), Duration::from_secs(2))
+                .expect("later exchange")
+                .expect("same admission"),
+            admitted
+        );
+        let shorter = scope
+            .admit_deferred_search(started, Duration::from_millis(100))
+            .expect("shorter exchange")
+            .expect("bounded");
+        assert!(shorter < admitted);
+        let sibling = RequestContext::new();
+        let absolute = sibling
+            .read_deadline(Duration::from_secs(30))
+            .expect("health/other read");
+        assert!(
+            sibling
+                .admit_deferred_search(started, Duration::from_secs(60))
+                .expect("absolute policy")
+                .is_none()
+        );
+        assert_eq!(
+            sibling
+                .read_deadline(Duration::from_secs(60))
+                .expect("unchanged sibling"),
+            absolute
+        );
+        let explicit = RequestContext::new();
+        let original = explicit
+            .read_deadline(Duration::from_millis(60))
+            .expect("caller budget");
+        explicit
+            .begin_default_search(Duration::from_secs(30))
+            .expect("explicit first policy wins");
+        assert!(
+            explicit
+                .admit_deferred_search(started, Duration::from_secs(1))
+                .expect("no adoption")
+                .is_none()
+        );
+        assert_eq!(
+            explicit
+                .read_deadline(Duration::from_secs(30))
+                .expect("original absolute"),
+            original
+        );
+        scope.cancel(RequestCancellationReason::Explicit);
+        assert!(matches!(
+            scope.check(),
+            Err(ClientError::RequestCancelled(
+                RequestCancellationReason::Explicit
+            ))
+        ));
     }
 
     #[tokio::test]

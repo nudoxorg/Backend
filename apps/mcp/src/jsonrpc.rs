@@ -44,6 +44,7 @@ use std::io::{self, BufRead, Write};
 
 mod codec;
 mod cursor_authority;
+mod index_progress;
 pub(super) use codec::{ResponseTransport, encode_response, finalize_response};
 pub(super) use cursor_authority::CursorAuthority;
 mod reconnect;
@@ -458,6 +459,7 @@ pub(super) struct Server<P> {
     protocol: &'static str,
     opener: Option<TreeOpener>,
     cursor_secret: CursorAuthority,
+    request_context: Option<RequestContext>,
 }
 
 /// MCP's initialization handshake is a protocol state, not a boolean.
@@ -495,6 +497,7 @@ impl<P: Product> Server<P> {
             protocol: MCP_PROTOCOL_VERSION,
             opener: None,
             cursor_secret: cursor_secret.into(),
+            request_context: None,
         }
     }
 
@@ -532,7 +535,9 @@ impl<P: Product> Server<P> {
                 Some(json!({"detail": error.to_string()})),
             ));
         }
+        self.request_context = context.clone();
         let reply = self.handle_inner(value);
+        self.request_context = None;
         let _ = self.product.set_request_context(None);
         context
             .as_ref()
@@ -995,7 +1000,14 @@ impl<P: Product> Server<P> {
             INDEX_PROGRESS_TOOL => {
                 no_extra(
                     arguments,
-                    &["ticket", "after_sequence", "operation_key", "detail"],
+                    &[
+                        "ticket",
+                        "after_sequence",
+                        "operation_key",
+                        "after_observation",
+                        "wait_millis",
+                        "detail",
+                    ],
                 )?;
                 if let Some(key) = arguments.get("operation_key") {
                     if arguments.contains_key("ticket") || arguments.contains_key("after_sequence")
@@ -1008,6 +1020,11 @@ impl<P: Product> Server<P> {
                         serde_json::from_value::<backend_library::IndexOperationKey>(key.clone())
                             .map_err(|error| RpcError::invalid(format!("operation_key: {error}")))?;
                     let command = SurfaceCommand::IndexOperationStatus { operation_key };
+                    if let Some(result) =
+                        self.conditional_index_progress(arguments, &command, detail, context)?
+                    {
+                        return Ok(result);
+                    }
                     let reply = self.product.surface(command.clone()).map_err(|error| {
                         RpcError::from_fault(&Fault::from_client_error(
                             &error,
@@ -1023,10 +1040,16 @@ impl<P: Product> Server<P> {
                         RpcError::invalid("after_sequence must be a non-negative integer")
                     })?,
                 };
-                SurfaceCommand::IndexProgress {
+                let command = SurfaceCommand::IndexProgress {
                     ticket,
                     after_sequence,
+                };
+                if let Some(result) =
+                    self.conditional_index_progress(arguments, &command, detail, context)?
+                {
+                    return Ok(result);
                 }
+                command
             }
             INDEX_CANCEL_TOOL => {
                 no_extra(arguments, &["ticket", "detail"])?;
@@ -1054,6 +1077,16 @@ impl<P: Product> Server<P> {
         context: &[u8],
     ) -> Result<Value, RpcError> {
         let view = backend_present::product_view_for_command(command, reply);
+        let view = if detail == Detail::Full {
+            view
+        } else {
+            view.with_bounded_index_poll().map_err(|error| {
+                RpcError::from_fault(&Fault::from_client_error(
+                    &error,
+                    surface_error_operand(command),
+                ))
+            })?
+        };
         let view = match view.cursor_family().cloned() {
             Some(cursor) => {
                 let token = self.issue_cursor(cursor, context)?;
@@ -1333,9 +1366,29 @@ impl<P: Product> Server<P> {
             .map(|cursor| self.issue_cursor(cursor, context))
             .transpose()?;
         let projected_product = match (answer, next.as_deref()) {
-            (Answer::Product(product), Some(token)) => Some(Answer::Product(Box::new(
-                (**product).clone().project_cursor(token, cursor_target),
-            ))),
+            (Answer::Product(product), None)
+                if detail == Detail::Full
+                    || (product.index_operation().is_none() && product.index_job().is_none()) =>
+            {
+                None
+            }
+            (Answer::Product(product), token) => {
+                let product = match token {
+                    Some(token) => (**product).clone().project_cursor(token, cursor_target),
+                    None => (**product).clone(),
+                };
+                let product = if detail == Detail::Full {
+                    product
+                } else {
+                    product.with_bounded_index_poll().map_err(|error| {
+                        RpcError::from_fault(&Fault::from_client_error(
+                            &error,
+                            backend_present::Operand::Whole,
+                        ))
+                    })?
+                };
+                Some(Answer::Product(Box::new(product)))
+            }
             _ => None,
         };
         let answer = projected_product.as_ref().unwrap_or(answer);

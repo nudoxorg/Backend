@@ -941,6 +941,7 @@ dependencies = [
  "rustix 1.1.4",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -1102,6 +1103,7 @@ dependencies = [
  "blake3",
  "candle-core",
  "candle-nn",
+ "rayon",
  "serde",
  "serde_json",
  "tokenizers 0.23.1",
@@ -1580,6 +1582,7 @@ dependencies = [
  "backend-client",
  "backend-engine",
  "backend-extension-trustfall",
+ "backend-frontend-python",
  "backend-library",
  "backend-platform",
  "backend-present",

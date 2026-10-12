@@ -96,7 +96,7 @@ fn profile_worker_state(worker: &ProfileWorker) -> String {
 // admit an explicit retry and could hide the attempt that missed this barrier.
 fn after_grant_state(
     fixture: &mut AdapterFixture,
-    operation: backend_library::IndexOperationKey,
+    operation: Option<backend_library::IndexOperationKey>,
     ticket: &backend_library::IndexJobTicket,
 ) -> String {
     let (adapter, daemon) = fixture.parts();
@@ -132,15 +132,17 @@ fn after_grant_state(
                     )
                 });
                 format!(
-                    "PublicationWorker(finished={:?}, blocked={}, completion={completed:?})",
+                    "PublicationWorker(finished={:?}, blocked={}, observation={:?}, completion={completed:?})",
                     worker.as_ref().map(|worker| worker.is_finished()),
-                    blocked.is_some()
+                    blocked.is_some(),
+                    worker.as_ref().map(|worker| worker.observed_state())
                 )
             }
             IndexJobWork::PublicationRetiring { worker, outcome } => {
                 format!(
-                    "PublicationRetiring(finished={}, outcome={outcome:?})",
-                    worker.is_finished()
+                    "PublicationRetiring(finished={}, observation={}, outcome={outcome:?})",
+                    worker.is_finished(),
+                    worker.observed_state()
                 )
             }
             IndexJobWork::Transition => "Transition".to_owned(),
@@ -169,13 +171,16 @@ fn after_grant_state(
             backend_semantic::vocabulary::PythonVersion::Python314,
         ))
         .state();
-    let receipt = match adapter.index_operations.entry(operation) {
-        Ok(Some(JournalEntry::Retained(entry))) => format!("Retained({entry:?})"),
-        Ok(Some(JournalEntry::OutsideReceiptWindow { request_digest })) => {
-            format!("OutsideReceiptWindow(request_digest={request_digest:?})")
-        }
-        Ok(None) => "Missing".to_owned(),
-        Err(error) => format!("ReadRefused({error})"),
+    let receipt = match operation {
+        Some(operation) => match adapter.index_operations.entry(operation) {
+            Ok(Some(JournalEntry::Retained(entry))) => format!("Retained({entry:?})"),
+            Ok(Some(JournalEntry::OutsideReceiptWindow { request_digest })) => {
+                format!("OutsideReceiptWindow(request_digest={request_digest:?})")
+            }
+            Ok(None) => "Missing".to_owned(),
+            Err(error) => format!("ReadRefused({error})"),
+        },
+        None => "NotRequested(ticket-only publication)".to_owned(),
     };
     format!(
         "expected_ticket={ticket:?}, operation={operation:?}, active={work:?}, terminal={terminal:?}, \
@@ -217,7 +222,7 @@ fn await_after_grant(
         if let Some(reason) = reason {
             return Err(format!(
                 "AfterGrant was not observed: {reason}; {}",
-                after_grant_state(fixture, operation, ticket)
+                after_grant_state(fixture, Some(operation), ticket)
             ));
         }
         std::thread::sleep(Duration::from_millis(1));
@@ -355,9 +360,36 @@ fn assert_old_read(
 }
 
 fn published(fixture: &mut AdapterFixture, ticket: &backend_library::IndexJobTicket) {
-    until(fixture, |adapter, _| {
-        adapter.index_terminals.iter().any(|t| &t.ticket == ticket)
-    });
+    let operation = fixture
+        .adapter
+        .as_ref()
+        .expect("adapter")
+        .indexing
+        .as_ref()
+        .filter(|job| &job.owner_ticket == ticket)
+        .and_then(|job| job.operation_key);
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(30);
+    loop {
+        tick(fixture);
+        if fixture
+            .adapter
+            .as_ref()
+            .expect("adapter")
+            .index_terminals
+            .iter()
+            .any(|terminal| &terminal.ticket == ticket)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "actual publication terminal was not observed in30s (elapsed={:?}); {}",
+            started.elapsed(),
+            after_grant_state(fixture, operation, ticket)
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
     let terminal = fixture
         .adapter
         .as_ref()
@@ -414,6 +446,16 @@ fn index_publication_worker_selected_write_keeps_old_queries_and_late_cancel_los
     let (entered, mut release) = block_at(&mut fixture, TestStage::AfterSelection);
     let (package, ticket, _, journal_path) = start(&mut fixture, false, false);
     until(&mut fixture, |_, _| entered.try_recv().is_ok());
+    assert_old_read(&mut fixture, &old, &view, cursor, package);
+    let observed = after_grant_state(&mut fixture, None, &ticket);
+    assert!(
+        observed.contains(&format!("expected_ticket={ticket:?}"))
+            && observed.contains("PublicationWorker(finished=Some(false), blocked=false")
+            && observed.contains("phase=physical-publish")
+            && observed.contains("granted=true")
+            && observed.contains("readonly_receipt=NotRequested(ticket-only publication)"),
+        "read-only diagnostics must identify the original held ticket-only worker: {observed}"
+    );
     assert_old_read(&mut fixture, &old, &view, cursor, package);
     {
         let (adapter, daemon) = fixture.parts();

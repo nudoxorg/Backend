@@ -25,6 +25,7 @@ backend-runtime = { path = "../../crates/runtime" }
 backend-semantic = { path = "../../crates/semantic" }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 blake3.workspace = true

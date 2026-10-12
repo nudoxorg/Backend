@@ -1,0 +1,242 @@
+{
+  "source": "Go05 installed e076; captured states/times replay only, not a current benchmark",
+  "poll_count": 800,
+  "response_bytes": 2337669,
+  "cl100k_tokens": 853837,
+  "runs": [
+    {
+      "first_poll": 1,
+      "at_millis": 0,
+      "reply": {
+        "result": "index-operation-status",
+        "data": {
+          "state": "known",
+          "detail": {
+            "operation_key": "40e344506cc2907f72fa0db3c3c60aaf5b9d252a959545425e312bd78067b130",
+            "request_digest": "91be2d1c8397864b2d12c94f9e6b95ee429a84869898b77219b93691f9b104d9",
+            "package": {
+              "kind": "local",
+              "value": "/work/sol61-go-app-proof/current-e076-95-pocketbase-01/pocketbase"
+            },
+            "execution_intent": "interactive",
+            "state": {
+              "state": "active",
+              "detail": {
+                "ticket": {
+                  "id": 1,
+                  "owner_epoch": [
+                    131,
+                    221,
+                    116,
+                    72,
+                    235,
+                    187,
+                    103,
+                    141,
+                    13,
+                    83,
+                    193,
+                    175,
+                    146,
+                    163,
+                    49,
+                    214
+                  ],
+                  "package": {
+                    "kind": "local",
+                    "value": "/work/sol61-go-app-proof/current-e076-95-pocketbase-01/pocketbase"
+                  }
+                },
+                "stage": "scanning"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "first_poll": 6,
+      "at_millis": 2536,
+      "reply": {
+        "result": "index-operation-status",
+        "data": {
+          "state": "known",
+          "detail": {
+            "operation_key": "40e344506cc2907f72fa0db3c3c60aaf5b9d252a959545425e312bd78067b130",
+            "request_digest": "91be2d1c8397864b2d12c94f9e6b95ee429a84869898b77219b93691f9b104d9",
+            "package": {
+              "kind": "local",
+              "value": "/work/sol61-go-app-proof/current-e076-95-pocketbase-01/pocketbase"
+            },
+            "execution_intent": "interactive",
+            "state": {
+              "state": "active",
+              "detail": {
+                "ticket": {
+                  "id": 1,
+                  "owner_epoch": [
+                    131,
+                    221,
+                    116,
+                    72,
+                    235,
+                    187,
+                    103,
+                    141,
+                    13,
+                    83,
+                    193,
+                    175,
+                    146,
+                    163,
+                    49,
+                    214
+                  ],
+                  "package": {
+                    "kind": "local",
+                    "value": "/work/sol61-go-app-proof/current-e076-95-pocketbase-01/pocketbase"
+                  }
+                },
+                "stage": "compiling"
+              }
+            },
+            "source_capture": {
+              "operation_key": "40e344506cc2907f72fa0db3c3c60aaf5b9d252a959545425e312bd78067b130",
+              "commit_identity": "e1beb40fb4dfa6332f99abdad3bf8e6be50f2d79e878c49ecd37f121a0ac950f",
+              "workspace_root": "45187b22a8469047a675924d85b6e2225d92f76ad3bf1c17312907c9f875647a",
+              "workspace_sequence": 4,
+              "profiles": [
+                {
+                  "profile": [
+                    1,
+                    0
+                  ],
+                  "source_version": "8dd75e44f3639b9daa7be452e46f793b23c1cf5d7d34dcacddfb1802801e352b",
+                  "input_digest": "5fcf907bd3641b547f1410556d06d28dc1d0c1573571467f0d2976abf3217811",
+                  "observation_sequence": 1,
+                  "source_count": 45,
+                  "state": {
+                    "state": "pending",
+                    "detail": {
+                      "prior": null
+                    }
+                  }
+                },
+                {
+                  "profile": [
+                    3,
+                    3
+                  ],
+                  "source_version": "8dd75e44f3639b9daa7be452e46f793b23c1cf5d7d34dcacddfb1802801e352b",
+                  "input_digest": "6c2c0edbbe20a24f0d2e120a87241dbbfd16ca2b79932937f58c78af9b73e265",
+                  "observation_sequence": 1,
+                  "source_count": 433,
+                  "state": {
+                    "state": "pending",
+                    "detail": {
+                      "prior": null
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "first_poll": 800,
+      "at_millis": 418061,
+      "reply": {
+        "result": "index-operation-status",
+        "data": {
+          "state": "known",
+          "detail": {
+            "operation_key": "40e344506cc2907f72fa0db3c3c60aaf5b9d252a959545425e312bd78067b130",
+            "request_digest": "91be2d1c8397864b2d12c94f9e6b95ee429a84869898b77219b93691f9b104d9",
+            "package": {
+              "kind": "local",
+              "value": "/work/sol61-go-app-proof/current-e076-95-pocketbase-01/pocketbase"
+            },
+            "execution_intent": "interactive",
+            "state": {
+              "state": "failed",
+              "detail": {
+                "reason": "refused",
+                "detail": "every language profile was refused; inspect package-profile for the retained outcomes",
+                "compiler_failure": {
+                  "relative_path": "plugins/jsvm/internal/types/generated/types.d.ts",
+                  "source_identity": "content:0e987495021acb48e58720f42c33490324425caf2abde1fc66e6c2836b6a4a9a",
+                  "source_byte_len": 766861,
+                  "recipe_identity": "content:118441098bac5cd2db1fbfe73be28ff020df1aa102c067b40bbfec44c3b41af2",
+                  "phase": "lowering",
+                  "kind_tag": "lowering_projection_child_count",
+                  "cause": {
+                    "family": "lowering",
+                    "fault": {
+                      "kind": "fact_rejected",
+                      "fact": 0,
+                      "name_len": 0,
+                      "cause": {
+                        "fault": "type_record",
+                        "cause": {
+                          "fault": "child_count",
+                          "tag": "primitive",
+                          "min": 0,
+                          "max": 0,
+                          "actual": 1
+                        }
+                      }
+                    }
+                  },
+                  "detail": "lowering fault: lowering projection child count",
+                  "detail_truncated": false
+                }
+              }
+            },
+            "source_capture": {
+              "operation_key": "40e344506cc2907f72fa0db3c3c60aaf5b9d252a959545425e312bd78067b130",
+              "commit_identity": "e1beb40fb4dfa6332f99abdad3bf8e6be50f2d79e878c49ecd37f121a0ac950f",
+              "workspace_root": "45187b22a8469047a675924d85b6e2225d92f76ad3bf1c17312907c9f875647a",
+              "workspace_sequence": 4,
+              "profiles": [
+                {
+                  "profile": [
+                    1,
+                    0
+                  ],
+                  "source_version": "8dd75e44f3639b9daa7be452e46f793b23c1cf5d7d34dcacddfb1802801e352b",
+                  "input_digest": "5fcf907bd3641b547f1410556d06d28dc1d0c1573571467f0d2976abf3217811",
+                  "observation_sequence": 1,
+                  "source_count": 45,
+                  "state": {
+                    "state": "unavailable",
+                    "detail": {
+                      "reason": "rejected"
+                    }
+                  }
+                },
+                {
+                  "profile": [
+                    3,
+                    3
+                  ],
+                  "source_version": "8dd75e44f3639b9daa7be452e46f793b23c1cf5d7d34dcacddfb1802801e352b",
+                  "input_digest": "6c2c0edbbe20a24f0d2e120a87241dbbfd16ca2b79932937f58c78af9b73e265",
+                  "observation_sequence": 1,
+                  "source_count": 433,
+                  "state": {
+                    "state": "unavailable",
+                    "detail": {
+                      "reason": "rejected"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

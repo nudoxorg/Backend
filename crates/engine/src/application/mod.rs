@@ -68,7 +68,8 @@ pub use self::embedding_provision::{
     EmbeddingRuntimeError, EmbeddingRuntimeInstall, EmbeddingRuntimeIoPhase,
     EmbeddingRuntimeLimits, EmbeddingRuntimeProvision, EmbeddingRuntimeStatus,
     EmbeddingRuntimeSummary, EmbeddingUnavailableReason, embedding_runtime_resident_credit_bytes,
-    inspect_embedding_runtime, install_embedding_runtime, remove_embedding_runtime,
+    inspect_embedding_runtime, install_embedding_runtime, install_embedding_runtime_with_identity,
+    remove_embedding_runtime,
 };
 pub use self::host::{
     CapturedLocalHostEnvironment,

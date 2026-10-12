@@ -243,8 +243,13 @@ fn native_history_target_retains_exact_hard_row_ceiling() {
 #[test]
 fn native_history_target_verifies_all_families_without_promoting_input() {
     let directory = tempfile::tempdir().expect("isolated CAS fixture");
-    let store = backend_store::FileStore::open(directory.path(), 8 * 1024 * 1024)
-        .expect("bounded real FileStore");
+    crate::test_support::make_private(directory.path()).expect("private CAS fixture root");
+    let root = directory
+        .path()
+        .canonicalize()
+        .expect("canonical CAS fixture root");
+    let store =
+        backend_store::FileStore::open(&root, 8 * 1024 * 1024).expect("bounded real FileStore");
     let policy = native_history_boundary_policy().expect("production boundary policy");
     let policies = backend_replication::SemanticTypedPlaneBoundaryPoliciesV3::new(
         policy, policy, policy, policy, policy, policy, policy,

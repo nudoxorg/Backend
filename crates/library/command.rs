@@ -29,6 +29,30 @@ pub enum SemanticSearchReason {
     ModelUnavailable,
 }
 
+impl SemanticSearchReason {
+    /// Actionable ordinary local setup/readiness guidance, without changing wire status variants.
+    #[must_use]
+    pub const fn setup_instruction(self) -> &'static str {
+        match self {
+            Self::Unconfigured => {
+                "Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex."
+            }
+            Self::InvalidConfiguration | Self::ModelUnavailable => {
+                "Inspect nudox embedding-setup --help and the retained runtime refusal; install matching artifacts, reopen the owner and reindex."
+            }
+            Self::NoActiveProjection => {
+                "Semantic projection is not ready for this selected view; retry search after preparation, or reindex after setup with nudox add ."
+            }
+            Self::StaleProjection => {
+                "Retry search against the current published view; its complete semantic projection must finish preparation."
+            }
+            Self::ProviderUnavailable => {
+                "Inspect the retained provider refusal and available resource credits before retrying; lexical results remain available."
+            }
+        }
+    }
+}
+
 /// Per-query result from the optional semantic retrieval lane.
 ///
 /// Search snapshots remain complete lexical results when this status is not

@@ -670,3 +670,196 @@ fn full_recipe_proof_survives_overlay_and_rebuild_and_cannot_be_downgraded() {
         );
     }
 }
+
+#[derive(Debug)]
+enum CpuRefusal {
+    Vector(Error),
+    Interrupted(usize),
+}
+impl From<Error> for CpuRefusal {
+    fn from(error: Error) -> Self {
+        Self::Vector(error)
+    }
+}
+
+#[test]
+fn controlled_exact_search_preserves_full_scalar_bits_and_stops_coordinate_work() {
+    // 769 dimensions cross three checkpoint chunks; all scores retain scalar order.
+    for metric in [
+        Metric::EuclideanSquared,
+        Metric::CosineDistance,
+        Metric::NegativeDot,
+    ] {
+        let recipe = recipe(metric, 769);
+        let points = (1..=31)
+            .map(|id| {
+                (
+                    id,
+                    (0..769)
+                        .map(|coordinate| ((coordinate * 17 + id as usize * 13) % 89) as f32 / 97.0)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let (_, index) = fixture(recipe, &points);
+        let query_values = (0..769)
+            .map(|coordinate| ((coordinate * 7) % 71) as f32 / 79.0)
+            .collect::<Vec<_>>();
+        let query = QueryVector::new(recipe, query_values.clone()).expect("query");
+        let mut full_visits = 0usize;
+        let complete = index
+            .search_exact_embedding_controlled(
+                index.binding(),
+                &query,
+                5,
+                Limits::default(),
+                &mut || {
+                    full_visits += 1;
+                    Ok::<(), Error>(())
+                },
+            )
+            .expect("complete");
+        let expected = oracle(metric, &query_values, &points, 5);
+        assert_eq!(complete.candidates.len(), expected.len());
+        for (actual, (id, score)) in complete.candidates.iter().zip(expected) {
+            assert_eq!(actual.id, id);
+            assert_eq!(actual.score.to_bits(), score.to_bits());
+        }
+        for stop_at in [1, 5, points.len() + 3, points.len() + 5, full_visits - 1] {
+            let mut visits = 0;
+            let stopped = index.search_exact_embedding_controlled(
+                index.binding(),
+                &query,
+                5,
+                Limits::default(),
+                &mut || {
+                    visits += 1;
+                    if visits == stop_at {
+                        Err(CpuRefusal::Interrupted(visits))
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            assert!(matches!(stopped, Err(CpuRefusal::Interrupted(at)) if at == stop_at));
+            assert_eq!(visits, stop_at);
+        }
+    }
+}
+
+#[test]
+fn controlled_fact_base_source_admission_refuses_inside_complete_runs() {
+    let recipe = recipe(Metric::EuclideanSquared, 769);
+    let points = (1..=9).map(|id| (id, vec![1.0; 769])).collect::<Vec<_>>();
+    let (state, _) = fixture(recipe, &points);
+    let mut visited = 0;
+    let refused = VectorFacts::from_recipe_controlled(state.clone(), recipe, &mut || {
+        visited += 1;
+        if visited == 5 {
+            Err(CpuRefusal::Interrupted(visited))
+        } else {
+            Ok(())
+        }
+    });
+    assert!(matches!(refused, Err(CpuRefusal::Interrupted(5))));
+    assert_eq!(
+        visited, 5,
+        "finite-coordinate admission stops inside the first payload"
+    );
+    let facts = VectorFacts::from_recipe(state.clone(), recipe).expect("facts");
+    let mut visited = 0;
+    let refused = AnnBase::from_facts_controlled(
+        &facts,
+        SearchQuality::Exact,
+        Limits::default(),
+        &mut || {
+            visited += 1;
+            if visited == 4 {
+                Err(CpuRefusal::Interrupted(visited))
+            } else {
+                Ok(())
+            }
+        },
+    );
+    assert!(matches!(refused, Err(CpuRefusal::Interrupted(4))));
+    assert_eq!(visited, 4);
+    let mut visited = 0;
+    let refused = MemorySource::from_sorted_ids_controlled(
+        state.binding(),
+        state.coverage(),
+        facts.ids().collect(),
+        Limits::default(),
+        &mut || {
+            visited += 1;
+            if visited == 4 {
+                Err(CpuRefusal::Interrupted(visited))
+            } else {
+                Ok(())
+            }
+        },
+    );
+    assert!(matches!(refused, Err(CpuRefusal::Interrupted(4))));
+    assert_eq!(visited, 4);
+    let malformed = MemorySource::from_sorted_ids_controlled(
+        state.binding(),
+        state.coverage(),
+        vec![CandidateId(2), CandidateId(1)],
+        Limits::default(),
+        &mut || Ok::<(), CpuRefusal>(()),
+    );
+    assert!(matches!(
+        malformed,
+        Err(CpuRefusal::Vector(Error::MalformedInput))
+    ));
+}
+
+#[test]
+fn controlled_full_recipe_normalization_stops_inside_coordinates() {
+    let mut unit_recipe = recipe(Metric::CosineDistance, 769);
+    unit_recipe.normalization = EmbeddingNormalization::UnitL2;
+    let value = 1.0 / 769.0_f32.sqrt();
+    let points = (1..=9).map(|id| (id, vec![value; 769])).collect::<Vec<_>>();
+    let (state, _) = fixture(unit_recipe, &points);
+    let mut shape_recipe = unit_recipe;
+    shape_recipe.normalization = EmbeddingNormalization::None;
+    let shape_state = rebind_recipe(&state, shape_recipe);
+    let mut shape_visits = 0;
+    VectorFacts::from_recipe_controlled(shape_state, shape_recipe, &mut || {
+        shape_visits += 1;
+        Ok::<(), Error>(())
+    })
+    .expect("shape");
+    let stop_at = shape_visits + 3;
+    let mut visits = 0;
+    let refused = VectorFacts::from_recipe_controlled(state, unit_recipe, &mut || {
+        visits += 1;
+        if visits == stop_at {
+            Err(CpuRefusal::Interrupted(visits))
+        } else {
+            Ok(())
+        }
+    });
+    assert!(matches!(refused, Err(CpuRefusal::Interrupted(at)) if at == stop_at));
+    assert_eq!(visits, stop_at);
+}
+
+#[test]
+fn checkpointed_negative_dot_preserves_sum_signed_zero() {
+    let recipe = recipe(Metric::NegativeDot, 769);
+    let points = vec![(1, vec![-0.0; 769])];
+    let (_, index) = fixture(recipe, &points);
+    let query = QueryVector::new(recipe, vec![1.0; 769]).expect("query");
+    let result = index
+        .search_exact_embedding_controlled(
+            index.binding(),
+            &query,
+            1,
+            Limits::default(),
+            &mut || Ok::<(), Error>(()),
+        )
+        .expect("exact");
+    // Original Iterator::sum starts at -0.0, then NegativeDot negates the sum.
+    let expected = -points[0].1.iter().map(|point| 1.0_f32 * point).sum::<f32>();
+    assert_eq!(result.candidates[0].score.to_bits(), expected.to_bits());
+    assert_eq!(expected.to_bits(), 0.0_f32.to_bits());
+}

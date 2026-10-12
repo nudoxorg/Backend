@@ -9513,35 +9513,27 @@ fn intern_computed_tree<'source>(
                     text_parts[position] = Some(source_text);
                 }
             }
-            let record = SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral);
+            let mut staged = Vec::with_capacity(parts.len());
             for (position, part) in parts.iter().enumerate() {
-                match part {
+                staged.push(match part {
                     TemplatePart::Text { .. } => {
-                        let text = text_parts[position].ok_or_else(|| {
+                        ComputedTemplatePart::Text(text_parts[position].ok_or_else(|| {
                             computed_fault(registry, owner, FactFault::TypeChildCapacity)
-                        })?;
-                        facts
-                            .computed_type_text_child(text)
-                            .map_err(|cause| computed_fault(registry, owner, cause))?;
+                        })?)
                     }
                     TemplatePart::Type { r#type } => {
-                        let child = intern_computed_tree(
+                        ComputedTemplatePart::Type(intern_computed_tree(
                             registry,
                             facts,
                             r#type,
                             owner,
                             depth.saturating_add(1),
                             spell,
-                        )?;
-                        facts
-                            .computed_type_child(child, None, 0)
-                            .map_err(|cause| computed_fault(registry, owner, cause))?;
+                        )?)
                     }
-                }
+                });
             }
-            facts
-                .intern_computed_type_row(owner, record)
-                .map_err(|cause| computed_fault(registry, owner, cause))
+            intern_computed_template(registry, facts, owner, &staged)
         }
         TypeTree::Tuple { elements } => {
             let children =
@@ -9980,20 +9972,15 @@ fn intern_native_tsz_type_inner<'source>(
                     text_parts.push(None);
                 }
             }
-            let mut record = SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral);
+            let mut staged = Vec::with_capacity(parts.len());
             for (part, text) in parts.iter().zip(text_parts) {
-                match (part, text) {
-                    (TemplateSpan::Text(_), Some(text)) => facts
-                        .computed_type_text_child(text)
-                        .map_err(|cause| computed_fault(registry, owner, cause))?,
+                staged.push(match (part, text) {
+                    (TemplateSpan::Text(_), Some(text)) => ComputedTemplatePart::Text(text),
                     (TemplateSpan::Type(part_type), None) => {
-                        let child = intern_native_tsz_type(
+                        ComputedTemplatePart::Type(intern_native_tsz_type(
                             registry, facts, checker, database, *part_type, owner, next_depth,
                             active,
-                        )?;
-                        facts
-                            .computed_type_child(child, None, 0)
-                            .map_err(|cause| computed_fault(registry, owner, cause))?;
+                        )?)
                     }
                     _ => {
                         return intern_computed_leaf(
@@ -10002,11 +9989,9 @@ fn intern_native_tsz_type_inner<'source>(
                             owner,
                         );
                     }
-                }
+                });
             }
-            facts
-                .intern_computed_type_row(owner, record)
-                .map_err(|cause| computed_fault(registry, owner, cause))
+            intern_computed_template(registry, facts, owner, &staged)
         }
         TypeData::TypeParameter(parameter) | TypeData::Infer(parameter) => {
             intern_native_tsz_type_parameter(registry, facts, database, parameter, owner)
@@ -10913,6 +10898,37 @@ fn intern_computed_row<'source>(
         .map_err(|cause| computed_fault(registry, owner, cause))
 }
 
+/// A fully lowered template segment. Type coordinates already own committed
+/// rows; text borrows the exact source lease. No recursion may run while a
+/// template's pooled child run is pending, because the next computed row
+/// consumes that run regardless of its constructor.
+#[derive(Clone, Copy)]
+enum ComputedTemplatePart<'source> {
+    Text(&'source [u8]),
+    Type(u32),
+}
+
+fn intern_computed_template<'source>(
+    registry: &FactRegistry<'_, 'source>,
+    facts: &mut FactSet<'source>,
+    owner: u32,
+    parts: &[ComputedTemplatePart<'source>],
+) -> Result<u32, TypeScriptCollectError> {
+    for part in parts {
+        match part {
+            ComputedTemplatePart::Text(text) => facts.computed_type_text_child(text),
+            ComputedTemplatePart::Type(target) => facts.computed_type_child(*target, None, 0),
+        }
+        .map_err(|cause| computed_fault(registry, owner, cause))?;
+    }
+    facts
+        .intern_computed_type_row(
+            owner,
+            SemanticTypeRecord::leaf(SemanticTypeTag::TemplateLiteral),
+        )
+        .map_err(|cause| computed_fault(registry, owner, cause))
+}
+
 fn intern_computed_leaf<'source>(
     facts: &mut FactSet<'source>,
     record: SemanticTypeRecord<'source>,
@@ -11282,6 +11298,13 @@ mod lane_tests {
     /// Runs a real in-process TSZ project over the exact fixture bytes and
     /// lowers its native checker facts through the canonical TypeScript lane.
     fn owned_tsz_ir(source: &str) -> Result<backend_semantic::ir::Ir, LaneError> {
+        owned_tsz_ir_at_path(source, "input.ts")
+    }
+
+    fn owned_tsz_ir_at_path(
+        source: &str,
+        path: &str,
+    ) -> Result<backend_semantic::ir::Ir, LaneError> {
         let mut checker = TszCheckerOptions::default();
         checker.no_lib = true;
         let options = TszProjectOptions {
@@ -11295,7 +11318,7 @@ mod lane_tests {
         authority
             .update(
                 vec![TszFileInput {
-                    path: "input.ts".to_owned(),
+                    path: path.to_owned(),
                     source: source.to_owned(),
                 }],
                 options,
@@ -11310,7 +11333,7 @@ mod lane_tests {
             TypeScriptSource::TypeScript,
             source.as_bytes(),
             project,
-            "input.ts",
+            path,
             &mut facts,
         )
         .map_err(LaneError::from)?;
@@ -12485,6 +12508,214 @@ describe('suite', () => {\n\
             assert_eq!(project.property_name_source_from_owner(owner, "foreignOnly"), None);
             Ok(())
         }).map_err(|_| LaneError::Missing("checked owner query"))?
+    }
+
+    fn observed_template_parts<'ir>(
+        ir: &'ir backend_semantic::ir::Ir,
+        name: &[u8],
+    ) -> Result<&'ir [backend_semantic::ir::TemplatePart], LaneError> {
+        let (_, observed) = native_observation(ir, name)
+            .ok_or(LaneError::Missing("template checker observation"))?;
+        let TypeExpr::Computed(ComputedType::TemplateLiteral(parts)) = observed else {
+            return Err(LaneError::Missing("computed template constructor"));
+        };
+        ir.template_parts(parts)
+            .ok_or(LaneError::Missing("ordered template parts"))
+    }
+
+    #[test]
+    fn native_tsz_template_children_are_committed_after_primitive_substitutions()
+    -> Result<(), LaneError> {
+        use backend_semantic::ir::{BuiltinType, ConcreteType, TemplatePart};
+        let source = concat!(
+            "export type Hook = `on${string}Changed`;\n",
+            "export type Multi = `pre${number}mid${string}post`;\n",
+        );
+        let ir = owned_tsz_ir(source)?;
+        let [
+            TemplatePart::Bytes(prefix),
+            TemplatePart::Placeholder(string),
+            TemplatePart::Bytes(suffix),
+        ] = observed_template_parts(&ir, b"Hook")?
+        else {
+            return Err(LaneError::Missing("text/string/text template ordering"));
+        };
+        assert_eq!(ir.atom(*prefix), Some(b"on".as_slice()));
+        assert_eq!(ir.atom(*suffix), Some(b"Changed".as_slice()));
+        assert_eq!(
+            ir.ty(*string),
+            Some(TypeExpr::Concrete(ConcreteType::Builtin(
+                BuiltinType::String
+            )))
+        );
+        let [
+            TemplatePart::Bytes(pre),
+            TemplatePart::Placeholder(number),
+            TemplatePart::Bytes(mid),
+            TemplatePart::Placeholder(second_string),
+            TemplatePart::Bytes(post),
+        ] = observed_template_parts(&ir, b"Multi")?
+        else {
+            return Err(LaneError::Missing(
+                "two recursively lowered substitutions remain source-ordered",
+            ));
+        };
+        assert_eq!(ir.atom(*pre), Some(b"pre".as_slice()));
+        assert_eq!(ir.atom(*mid), Some(b"mid".as_slice()));
+        assert_eq!(ir.atom(*post), Some(b"post".as_slice()));
+        assert_eq!(ir.ty(*second_string), ir.ty(*string));
+        assert_ne!(
+            ir.ty(*number),
+            ir.ty(*string),
+            "primitive identity survives template staging"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_nested_template_under_compound_substitution_keeps_its_constructor()
+    -> Result<(), LaneError> {
+        use backend_semantic::ir::{ConcreteType, TemplatePart};
+        let source =
+            "export type Nested = `pre${string & { readonly brand: `kind${number}Tail` }}post`;";
+        let ir = owned_tsz_ir(source)?;
+        let [
+            TemplatePart::Bytes(pre),
+            TemplatePart::Placeholder(compound),
+            TemplatePart::Bytes(post),
+        ] = observed_template_parts(&ir, b"Nested")?
+        else {
+            return Err(LaneError::Missing("outer template source ordering"));
+        };
+        assert_eq!(ir.atom(*pre), Some(b"pre".as_slice()));
+        assert_eq!(ir.atom(*post), Some(b"post".as_slice()));
+        assert!(
+            matches!(
+                ir.ty(*compound),
+                Some(TypeExpr::Concrete(ConcreteType::Intersection(_)))
+            ),
+            "the compound placeholder cannot become its recursive string primitive: {:?}",
+            ir.ty(*compound)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn checker_template_children_preserve_nested_templates_and_order() -> Result<(), LaneError> {
+        use backend_frontend_typescript::legacy::{Declaration, Origin, TemplatePart, TypeTree};
+        use backend_semantic::ir::{BuiltinType, ConcreteType, TemplatePart as IrPart};
+        let source = "export type Nested = `pre${`inner${string}tail`}post`;";
+        let nested = TypeTree::TemplateLiteral {
+            parts: vec![
+                TemplatePart::Text {
+                    text: "inner".to_owned(),
+                },
+                TemplatePart::Type {
+                    r#type: Box::new(TypeTree::Primitive {
+                        name: "string".to_owned(),
+                    }),
+                },
+                TemplatePart::Text {
+                    text: "tail".to_owned(),
+                },
+            ],
+        };
+        let mut checker = report(source, Vec::new());
+        let start = u32::try_from(
+            source
+                .find("Nested")
+                .ok_or(LaneError::Missing("alias name"))?,
+        )?;
+        checker.declarations = vec![Declaration {
+            name_start: start,
+            name_end: start + 6,
+            origin: Origin::Computed,
+            overload_index: None,
+            r#type: Some(TypeTree::TemplateLiteral {
+                parts: vec![
+                    TemplatePart::Text {
+                        text: "pre".to_owned(),
+                    },
+                    TemplatePart::Type {
+                        r#type: Box::new(nested),
+                    },
+                    TemplatePart::Text {
+                        text: "post".to_owned(),
+                    },
+                ],
+            }),
+        }]
+        .into_boxed_slice();
+        let ir = owned_ir(source, Some(&checker))?;
+        let [
+            IrPart::Bytes(pre),
+            IrPart::Placeholder(inner),
+            IrPart::Bytes(post),
+        ] = observed_template_parts(&ir, b"Nested")?
+        else {
+            return Err(LaneError::Missing("outer template ordering"));
+        };
+        assert_eq!(ir.atom(*pre), Some(b"pre".as_slice()));
+        assert_eq!(ir.atom(*post), Some(b"post".as_slice()));
+        let Some(TypeExpr::Computed(ComputedType::TemplateLiteral(inner_parts))) = ir.ty(*inner)
+        else {
+            return Err(LaneError::Missing(
+                "nested template keeps its compound constructor",
+            ));
+        };
+        let Some(
+            [
+                IrPart::Bytes(prefix),
+                IrPart::Placeholder(string),
+                IrPart::Bytes(suffix),
+            ],
+        ) = ir.template_parts(inner_parts)
+        else {
+            return Err(LaneError::Missing("inner text/string/text ordering"));
+        };
+        assert_eq!(ir.atom(*prefix), Some(b"inner".as_slice()));
+        assert_eq!(ir.atom(*suffix), Some(b"tail".as_slice()));
+        assert_eq!(
+            ir.ty(*string),
+            Some(TypeExpr::Concrete(ConcreteType::Builtin(
+                BuiltinType::String
+            )))
+        );
+        assert_ne!(
+            *inner, *string,
+            "compound and primitive coordinates stay distinct"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_tsz_lowers_whole_pocketbase_generated_declaration_file() -> Result<(), LaneError> {
+        use sha2::{Digest, Sha256};
+        let source =
+            include_str!("../../../tests/fixtures/typescript/pocketbase-52a53b5/types.d.ts");
+        assert_eq!(source.len(), 766_861);
+        assert_eq!(
+            format!("{:x}", Sha256::digest(source.as_bytes())),
+            "a1bf4dfbb780099a2605764f3899234b7b47335f27f3f4e2600f9ecdbfbee098"
+        );
+        assert!(source.contains("Exclude<Property, `on${string}`|'cron'>"));
+        let ir = owned_tsz_ir_at_path(source, "plugins/jsvm/internal/types/generated/types.d.ts")?;
+        for name in [
+            b"cronAdd".as_slice(),
+            b"cronRemove".as_slice(),
+            b"excludeHooks".as_slice(),
+        ] {
+            assert!(
+                ir.items().any(|item| item.name() == name),
+                "full generated source retains {:?}",
+                name
+            );
+        }
+        assert!(
+            ir.items().count() > 100,
+            "whole source lowered, not the extracted reproducer"
+        );
+        Ok(())
     }
 
     #[test]

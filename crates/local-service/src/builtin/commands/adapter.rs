@@ -327,6 +327,7 @@ pub(in crate::builtin) struct CommandAdapter {
     )>,
     remote_semantic: super::super::query::RemoteSemantic,
     pending_semantic_search: Option<backend_library::SemanticSearchStatus>,
+    semantic_search_replies: std::collections::VecDeque<PendingSemanticSearchReply>,
     published: Option<super::super::view_publish::PublishedRoots>,
     manifests: super::super::local_manifest::LocalManifestResidence,
     project_roots: super::super::project_root_residence::ProjectRootResidence,
@@ -552,6 +553,20 @@ pub(in crate::builtin) enum Executed {
     Deferred,
 }
 
+/// One admitted transport reply. The original command/certificate and generation remain
+/// immutable until final certification. Shared credits bound all retained request bytes;
+/// a disconnect drops this waiter, never the selected owner's inference lifetime.
+struct PendingSemanticSearchReply {
+    ticket: u64,
+    request_id: u64,
+    body: Vec<u8>,
+    query: backend_engine::Query,
+    workspace: backend_engine::WorkspaceRoot,
+    basis: backend_library::ViewRevision,
+    deadline: std::time::Instant,
+    _memory: backend_compile::EmbeddingMemoryReservation,
+}
+
 struct ResidentDependencies {
     catalog: ResidentCatalog,
     graph: ResidentPackageGraph,
@@ -717,6 +732,7 @@ impl CommandAdapter {
             search_preparation_failure: None,
             remote_semantic,
             pending_semantic_search: None,
+            semantic_search_replies: std::collections::VecDeque::new(),
             published,
             manifests: super::super::local_manifest::LocalManifestResidence::default(),
             project_roots: super::super::project_root_residence::ProjectRootResidence::default(),
@@ -1031,6 +1047,55 @@ impl CommandAdapter {
                 )
                 .map(Executed::Reply),
             };
+        }
+        if let Command::Search(query) = &request.command
+            && self.remote_semantic.admits_local_reply()
+            && query.basis() == daemon.engine().daemon().library().view().root()
+        {
+            let bytes = body
+                .len()
+                .checked_mul(2) // Raw request plus its retained typed query text/cursor.
+                .and_then(|bytes| {
+                    bytes.checked_add(std::mem::size_of::<PendingSemanticSearchReply>())
+                })
+                .and_then(|bytes| bytes.checked_add(1024))
+                .and_then(|bytes| u64::try_from(bytes).ok())
+                .ok_or_else(|| BuiltinModelError("semantic reply extent overflow".to_owned()))?;
+            let (memory, deadline) = match self.remote_semantic.admit_local_reply(bytes) {
+                Ok(admission) => admission,
+                Err(error) => {
+                    return Self::encode(
+                        daemon,
+                        request.request_id,
+                        (
+                            CommandReply::Failed(backend_library::CommandFailure::InvalidQuery(
+                                format!("local_semantic_reply_admission_refused: {error}"),
+                            )),
+                            None,
+                        ),
+                        None,
+                    )
+                    .map(Executed::Reply);
+                }
+            };
+            let mut retained = Vec::new();
+            retained
+                .try_reserve_exact(body.len())
+                .map_err(|error| BuiltinModelError(error.to_string()))?;
+            retained.extend_from_slice(body);
+            self.semantic_search_replies
+                .push_back(PendingSemanticSearchReply {
+                    ticket: transport_ticket,
+                    request_id: request.request_id,
+                    body: retained,
+                    query: query.clone(),
+                    workspace: daemon.engine().daemon().owner().snapshot().root(),
+                    basis: query.basis(),
+                    deadline,
+                    _memory: memory,
+                });
+            self.retain_live_semantic_completion();
+            return Ok(Executed::Deferred);
         }
         self.execute(daemon, body).map(Executed::Reply)
     }
@@ -1781,8 +1846,10 @@ impl CommandAdapter {
     }
 
     pub(in crate::builtin) fn close(&mut self) {
+        self.semantic_search_replies.clear();
         self.journal_readiness.close();
         self.search_lane.close();
+        self.remote_semantic.close_local();
         self.search_preparation_failure = None;
         self.browse_lane.close();
         if let Some(indexing) = self.indexing.as_mut() {
@@ -3358,7 +3425,10 @@ impl CommandAdapter {
         daemon: &mut ProductDaemon,
         mut ready: Vec<(u64, Result<Vec<u8>, BuiltinModelError>)>,
     ) -> Vec<(u64, Result<Vec<u8>, BuiltinModelError>)> {
+        self.retain_live_semantic_completion();
         ready.extend(self.search_completions(daemon));
+        ready.extend(self.semantic_search_completion(daemon));
+        self.retain_live_semantic_completion();
         self.with_browse_completions(daemon, ready)
     }
 
@@ -3373,6 +3443,9 @@ impl CommandAdapter {
     }
 
     fn abandon_active_reply(&mut self, ticket: u64) {
+        self.semantic_search_replies
+            .retain(|pending| pending.ticket != ticket);
+        self.retain_live_semantic_completion();
         if let Some(indexing) = &mut self.indexing {
             if indexing
                 .legacy_add
@@ -3385,6 +3458,24 @@ impl CommandAdapter {
                 .retain(|(transport_ticket, _)| *transport_ticket != ticket);
         }
         self.browse_lane.abandon_reply(ticket);
+    }
+
+    /// Only an exact, live, admitted ticket protects a first completion from
+    /// optional cache reclamation. Called outside the active popped-ticket dispatch
+    /// so internal prepare/search polling cannot accidentally abandon that reply.
+    fn retain_live_semantic_completion(&mut self) {
+        let now = std::time::Instant::now();
+        let waiters = &self.semantic_search_replies;
+        self.remote_semantic
+            .retain_owed_local_completion(|coordinator, text, local| {
+                waiters.iter().any(|pending| {
+                    pending.deadline > now
+                        && pending.workspace == coordinator.workspace_root()
+                        && pending.basis == pending.query.basis()
+                        && pending.query.text() == text
+                        && coordinator.matches_local_page_shape(local, &pending.query)
+                })
+            });
     }
 
     /// Checks the current owner after index publication and queued writers,
@@ -4764,6 +4855,7 @@ impl CommandAdapter {
         let workspace = daemon.engine().daemon().owner().snapshot().root();
         let view = daemon.engine().daemon().library().view().root();
         self.search_lane.invalidate(workspace, view);
+        self.remote_semantic.poll_local(workspace, view);
         if let Some(completion) = self.search_lane.drain(workspace, view) {
             let succeeded = completion.current && completion.result.is_ok();
             if completion.current {
@@ -4781,6 +4873,95 @@ impl CommandAdapter {
         // All requests already received a typed readiness answer. Polling only
         // installs a completed immutable projection; it owes no delayed reply.
         Vec::new()
+    }
+
+    /// Deliver at most one owed semantic search per owner poll. Native work remains on
+    /// the exclusive query worker; the normal transport keeps awaiting this same ticket.
+    fn semantic_search_completion(
+        &mut self,
+        daemon: &ProductDaemon,
+    ) -> Vec<(u64, Result<Vec<u8>, BuiltinModelError>)> {
+        let Some(pending) = self.semantic_search_replies.pop_front() else {
+            return Vec::new();
+        };
+        let workspace = daemon.engine().daemon().owner().snapshot().root();
+        let basis = daemon.engine().daemon().library().view().root();
+        let refusal = if pending.basis != basis {
+            Some(backend_library::CommandFailure::WrongBasis {
+                expected: basis.into(),
+                observed: pending.basis,
+            })
+        } else if pending.workspace != workspace {
+            Some(backend_library::CommandFailure::IncoherentView(
+                "semantic search generation changed while its reply was pending".to_owned(),
+            ))
+        } else if std::time::Instant::now() >= pending.deadline {
+            Some(backend_library::CommandFailure::InvalidQuery(
+                "local_semantic_reply_deadline: configured operation wall budget expired; the shared selected worker is retained".to_owned()))
+        } else {
+            None
+        };
+        if let Some(failure) = refusal {
+            return vec![(
+                pending.ticket,
+                Self::encode(
+                    daemon,
+                    pending.request_id,
+                    (CommandReply::Failed(failure), None),
+                    None,
+                ),
+            )];
+        }
+        let request = match backend_engine::decode_command_dto_for_owner(
+            &pending.body,
+            daemon.engine().daemon().library().cursor(),
+        ) {
+            Ok(request) => request,
+            Err(error) => return vec![(pending.ticket, Err(BuiltinModelError(error)))],
+        };
+        let certificate = request.certificate().cloned();
+        let Command::Search(query) = request.command else {
+            return vec![(
+                pending.ticket,
+                Err(BuiltinModelError(
+                    "pending semantic command changed".to_owned(),
+                )),
+            )];
+        };
+        match self.prepare_query(daemon, query.basis()) {
+            Ok(Some(backend_library::CommandFailure::QueryPreparation { .. })) => {
+                self.semantic_search_replies.push_front(pending);
+                return Vec::new();
+            }
+            Ok(Some(failure)) => {
+                return vec![(
+                    pending.ticket,
+                    Self::encode(
+                        daemon,
+                        pending.request_id,
+                        (CommandReply::Failed(failure), None),
+                        None,
+                    ),
+                )];
+            }
+            Err(error) => return vec![(pending.ticket, Err(error))],
+            Ok(None) => {}
+        }
+        if self.remote_semantic.local_preparation().is_some() {
+            self.semantic_search_replies.push_front(pending);
+            return Vec::new();
+        }
+        self.pending_semantic_search = None;
+        let reply = self.search(daemon, &query, certificate);
+        let status = self.pending_semantic_search.take();
+        if reply.is_ok() && self.remote_semantic.local_preparation().is_some() {
+            self.semantic_search_replies.push_front(pending);
+            return Vec::new();
+        }
+        vec![(
+            pending.ticket,
+            reply.and_then(|reply| Self::encode(daemon, pending.request_id, reply, status)),
+        )]
     }
 
     fn search(
@@ -4807,7 +4988,7 @@ impl CommandAdapter {
         }
         let workspace = daemon.engine().daemon().owner().snapshot().root();
         let view = daemon.engine().daemon().library().view().root();
-        let Some(_cancelled) = self.search_lane.selected_cancellation(workspace, view) else {
+        let Some(cancelled) = self.search_lane.selected_cancellation(workspace, view) else {
             return Self::certify(
                 daemon,
                 &command,
@@ -4825,6 +5006,7 @@ impl CommandAdapter {
             &mut self.generations,
             &mut self.image_rows,
             query,
+            cancelled,
         )
         .map_or_else(
             |error| (CommandReply::Error(error.to_string()), None),
@@ -6198,6 +6380,14 @@ mod tests {
 
     #[path = "public_coordinate_alias.rs"]
     mod public_coordinate_alias_tests;
+
+    #[cfg(unix)]
+    #[path = "local_semantic_transport.rs"]
+    mod local_semantic_transport_tests;
+
+    #[cfg(unix)]
+    #[path = "local_semantic_memory.rs"]
+    mod local_semantic_memory_tests;
 
     #[path = "selected_read.rs"]
     mod selected_read_tests;
@@ -10209,6 +10399,214 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn local_semantic_first_reply_awaits_worker_and_alternating_queries_reuse_exact_cache() {
+        // This is an executed BEM2 protocol fixture, never a genuine model claim.
+        let producer =
+            crate::builtin::query::local_semantic::tests::fixture_with_mode(4096, "gate-query")
+                .expect("protocol fixture activation");
+        let runtime = producer.provision.runtime().expect("shared runtime");
+        let mut fixture = AdapterFixture::new();
+        let (adapter, daemon) = fixture.parts();
+        adapter.remote_semantic = crate::builtin::query::RemoteSemantic::select_owner(
+            &producer.provision,
+            &producer.descriptor,
+            crate::builtin::query::RemoteSemantic::Unconfigured,
+        );
+        let baseline = runtime.memory_budget().used();
+        for (id, text) in [
+            (1601, "first intent"),
+            (1602, "second intent"),
+            (1603, "abandoned intent"),
+        ] {
+            let body = search_body(daemon, id, text);
+            assert!(matches!(
+                adapter.execute_or_defer(daemon, &body, id + 1000),
+                Ok(Executed::Deferred)
+            ));
+        }
+        let before_abandon = runtime.memory_budget().used();
+        assert!(before_abandon > baseline);
+        adapter.abandon_reply(2603);
+        assert!(runtime.memory_budget().used() < before_abandon);
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while !producer.entered.exists() {
+            assert!(adapter.poll_deferred(daemon).is_empty());
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let workspace = daemon.engine().daemon().owner().snapshot().root();
+        let view = daemon.engine().daemon().library().view().root();
+        let selected = adapter
+            .search_lane
+            .selected_cancellation(workspace, view)
+            .expect("real selection lifetime");
+        assert!(!selected.load(Ordering::Acquire));
+        let duplicate = search_body(daemon, 1604, "first intent");
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &duplicate, 2604),
+            Ok(Executed::Deferred)
+        ));
+        adapter.abandon_reply(2604);
+        assert!(
+            adapter.remote_semantic.local_preparation().is_some(),
+            "abandoning a duplicate waiter retains the actual held worker"
+        );
+        assert!(!selected.load(Ordering::Acquire));
+        let health = serde_json::to_vec(&backend_engine::CommandDto::new(1700, Command::Health))
+            .expect("health");
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &health, 2700),
+            Ok(Executed::Reply(_))
+        ));
+        assert!(
+            adapter.poll_deferred(daemon).is_empty(),
+            "held inference owes no premature lexical reply"
+        );
+        fs::write(&producer.release, b"release exact fixture inference").expect("release");
+        let mut replies = Vec::new();
+        while replies.len() < 2 {
+            replies.extend(adapter.poll_deferred(daemon));
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(
+            replies
+                .iter()
+                .map(|(ticket, _)| *ticket)
+                .collect::<Vec<_>>(),
+            [2601, 2602]
+        );
+        for (_, reply) in replies {
+            let wire: serde_json::Value =
+                serde_json::from_slice(&reply.expect("owed reply")).expect("wire");
+            assert_eq!(wire["reply"]["kind"], "search");
+            assert_eq!(wire["semantic_search"]["status"], "available");
+        }
+        let log = fs::read_to_string(&producer.log).expect("actual protocol input custody");
+        let held = runtime.memory_budget().used();
+        for (id, text) in [
+            (1801, "first intent"),
+            (1802, "second intent"),
+            (1803, "first intent"),
+        ] {
+            let body = search_body(daemon, id, text);
+            assert!(matches!(
+                adapter.execute_or_defer(daemon, &body, id + 1000),
+                Ok(Executed::Deferred)
+            ));
+            let replies = adapter.poll_deferred(daemon);
+            assert_eq!(
+                replies.len(),
+                1,
+                "warm query completes in its next normal poll"
+            );
+            let wire: serde_json::Value =
+                serde_json::from_slice(&replies.into_iter().next().unwrap().1.expect("warm reply"))
+                    .expect("wire");
+            assert_eq!(wire["request_id"], id);
+            assert_eq!(wire["semantic_search"]["status"], "available");
+            assert!(adapter.remote_semantic.local_preparation().is_none());
+            assert_eq!(
+                runtime.memory_budget().used(),
+                held,
+                "waiter and copy credits retire after actual encode"
+            );
+        }
+        assert_eq!(fs::read_to_string(&producer.log).expect("log"), log);
+        assert!(
+            !selected.load(Ordering::Acquire),
+            "abandonment and warm requests do not cancel shared work"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_semantic_deferred_reply_refuses_stale_generation_deadline_and_credit_pressure() {
+        let producer =
+            crate::builtin::query::local_semantic::tests::fixture_with_mode(4096, "plain")
+                .expect("protocol fixture activation");
+        let runtime = producer.provision.runtime().expect("runtime");
+        let mut fixture = AdapterFixture::new();
+        let (changed_package, changed_label) = fixture.add_target();
+        let (adapter, daemon) = fixture.parts();
+        adapter.remote_semantic = crate::builtin::query::RemoteSemantic::select_owner(
+            &producer.provision,
+            &producer.descriptor,
+            crate::builtin::query::RemoteSemantic::Unconfigured,
+        );
+        let baseline = runtime.memory_budget().used();
+        let body = search_body(daemon, 1901, "intent");
+        let pressure = runtime
+            .memory_budget()
+            .reserve(runtime.memory_budget().capacity() - baseline)
+            .expect("pressure");
+        let Executed::Reply(refused) = adapter
+            .execute_or_defer(daemon, &body, 2901)
+            .expect("typed credit refusal")
+        else {
+            panic!("no credit means no retained waiter");
+        };
+        let wire: serde_json::Value = serde_json::from_slice(&refused).expect("refusal wire");
+        assert_eq!(wire["reply"]["data"]["kind"], "invalid_query");
+        assert!(adapter.semantic_search_replies.is_empty());
+        drop(pressure);
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &body, 2901),
+            Ok(Executed::Deferred)
+        ));
+        adapter
+            .semantic_search_replies
+            .front_mut()
+            .expect("waiter")
+            .deadline = std::time::Instant::now();
+        let replies = adapter.poll_deferred(daemon);
+        assert_eq!(replies.len(), 1);
+        let wire: serde_json::Value = serde_json::from_slice(
+            &replies
+                .into_iter()
+                .next()
+                .unwrap()
+                .1
+                .expect("deadline reply"),
+        )
+        .expect("wire");
+        assert_eq!(wire["reply"]["data"]["kind"], "invalid_query");
+        assert_eq!(
+            runtime.memory_budget().used(),
+            baseline,
+            "expired waiter released without inference"
+        );
+        let stale_body = search_body(daemon, 1902, "intent");
+        assert!(matches!(
+            adapter.execute_or_defer(daemon, &stale_body, 2902),
+            Ok(Executed::Deferred)
+        ));
+        let stale_workspace = adapter
+            .semantic_search_replies
+            .front()
+            .expect("receipt")
+            .workspace;
+        let changed = BuiltinIntent::add(changed_package, changed_label).expect("change");
+        super::commit_builtin_intent(daemon, 1903, &changed).expect("new source generation");
+        adapter
+            .publish_view(daemon, Some(&changed))
+            .expect("new view");
+        assert_ne!(
+            daemon.engine().daemon().owner().snapshot().root(),
+            stale_workspace
+        );
+        let replies = adapter.poll_deferred(daemon);
+        assert_eq!(replies.len(), 1);
+        let wire: serde_json::Value =
+            serde_json::from_slice(&replies.into_iter().next().unwrap().1.expect("stale reply"))
+                .expect("wire");
+        assert_eq!(wire["reply"]["data"]["kind"], "wrong_basis");
+        assert!(adapter.semantic_search_replies.is_empty());
+        assert_eq!(runtime.memory_budget().used(), baseline);
+    }
+
     #[test]
     fn preparation_cold_search_owner_superseded_view_rejects_stale_preparation() {
         let mut fixture = AdapterFixture::new();
@@ -10535,8 +10933,38 @@ mod tests {
         );
         let owner = daemon.engine().daemon().library().cursor();
         let source = daemon.engine().daemon().library().view().basis().object;
+        let capability = daemon
+            .engine()
+            .daemon()
+            .library()
+            .view()
+            .capability()
+            .expect("actual selected producer coverage");
+        let workspace = daemon.engine().daemon().owner().snapshot();
+        assert_eq!(
+            capability,
+            crate::builtin::builtin_view_capability_for_workspace(&workspace)
+                .expect("actual workspace producer admission"),
+            "the selected view must retain this workspace's admitted observation"
+        );
         let cancelled = query.cancelled();
         let body = owner_query_body(daemon, 803, Command::GraphQuery(cancelled.clone()));
+        let request_wire: serde_json::Value = serde_json::from_slice(&body).expect("request");
+        let certificate: WireCertificate =
+            serde_json::from_value(request_wire["certificate"].clone())
+                .expect("actual owner request certificate");
+        assert!(
+            certificate.claims.iter().any(|claim| matches!(
+                claim,
+                WireClaim::Coverage { scope, observed, producer, context, evidence }
+                    if scope == &backend_engine::encode_id(source.as_bytes())
+                        && observed == scope
+                        && producer == &backend_engine::encode_id(&capability.producer_identity())
+                        && context == &backend_engine::encode_id(&capability.context())
+                        && evidence.as_ref() == capability.evidence()
+            )),
+            "an empty row projection still carries the exact producer coverage claim"
+        );
         let Executed::Reply(bytes) = adapter
             .execute_or_defer(daemon, &body, 1803)
             .expect("immediate cancel")
@@ -10545,7 +10973,12 @@ mod tests {
         };
         let wire: serde_json::Value = serde_json::from_slice(&bytes).expect("cancel reply");
         assert_eq!(wire["reply"]["kind"], "graph_query_page");
-        let reply = backend_engine::decode_reply_dto(&bytes).expect("strict cancelled page");
+        assert!(
+            backend_engine::decode_reply_dto(&bytes).is_err(),
+            "an unauthenticated decoder cannot admit the producer's graph page"
+        );
+        let reply = backend_library::ReplyDto::decode_with_certificate(&bytes, Some(capability))
+            .expect("strict cancelled page with actual selected producer coverage");
         assert_eq!(reply.request_id, 803);
         let backend_library::CommandReply::GraphQueryPage(page) = reply.reply else {
             panic!("cancellation must return its typed page");

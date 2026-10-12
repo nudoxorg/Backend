@@ -331,6 +331,12 @@ pub enum Affordance {
         /// Exact operation identity returned by the owner.
         operation_key: backend_library::IndexOperationKey,
     },
+    /// Bounded MCP observation of changes to an actual pending receipt.
+    /// The CLI remains a single immediate observation of the same identity.
+    ObserveIndexChanges {
+        /// Same admitted owner/key or ticket/sequence, never mutation authority.
+        reference: backend_client::IndexProgressReference,
+    },
     /// Nothing the reader can do changes the outcome.
     None,
 }
@@ -407,6 +413,23 @@ impl Affordance {
             Self::PollIndexOperation { operation_key } => Some(format!(
                 "nudox index_progress --operation-key {operation_key}"
             )),
+            Self::ObserveIndexChanges { reference } => match reference {
+                backend_client::IndexProgressReference::Operation { operation_key, .. } => {
+                    Self::PollIndexOperation {
+                        operation_key: *operation_key,
+                    }
+                    .shell()
+                }
+                backend_client::IndexProgressReference::Ticket {
+                    ticket,
+                    after_sequence,
+                    ..
+                } => Self::PollIndex {
+                    ticket: ticket.clone(),
+                    after_sequence: *after_sequence,
+                }
+                .shell(),
+            },
             Self::None => None,
         }
     }
@@ -461,6 +484,31 @@ impl Affordance {
                 "name": "backend.index_progress",
                 "arguments": { "operation_key": operation_key }
             })),
+            Self::ObserveIndexChanges { reference } => {
+                let arguments = match reference {
+                    backend_client::IndexProgressReference::Operation {
+                        operation_key,
+                        after_observation,
+                        ..
+                    } => serde_json::json!({
+                        "operation_key": operation_key,
+                        "after_observation": after_observation,
+                        "wait_millis": backend_client::MAX_INDEX_PROGRESS_WAIT_MILLIS,
+                    }),
+                    backend_client::IndexProgressReference::Ticket {
+                        ticket,
+                        after_sequence,
+                        ..
+                    } => serde_json::json!({
+                        "ticket": ticket,
+                        "after_sequence": after_sequence,
+                        "wait_millis": backend_client::MAX_INDEX_PROGRESS_WAIT_MILLIS,
+                    }),
+                };
+                Some(
+                    serde_json::json!({ "name": "backend.index_progress", "arguments": arguments }),
+                )
+            }
         }
     }
 }
