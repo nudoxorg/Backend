@@ -264,14 +264,14 @@ impl reconnect::Endpoint for SessionEndpoint {
             match backend_runtime::ensure_locald_cancellable(&self.paths, read_budget, || {
                 self.request_context
                     .as_ref()
-                    .is_none_or(|context| context.check().is_ok())
+                    .is_none_or(|context| context.cancellation_reason().is_none())
             }) {
                 Ok(endpoint) => endpoint,
                 Err(error) => {
-                    if let Some(context) = &self.request_context {
-                        context.check()?;
-                    }
-                    return Err(map_runtime_connect_error(error));
+                    return Err(map_runtime_startup_error(
+                        error,
+                        self.request_context.as_ref(),
+                    ));
                 }
             };
         let connected = match &self.request_context {
@@ -321,6 +321,30 @@ fn map_runtime_connect_error(error: backend_runtime::RuntimeError) -> ClientErro
     } else {
         ClientError::from(error)
     }
+}
+
+/// A dispatched owner may still be starting when this caller's read budget
+/// ends. Preserve that actual observation without extending the request or
+/// submitting its command. Explicit cancellation always takes precedence.
+fn map_runtime_startup_error(
+    error: backend_runtime::RuntimeError,
+    context: Option<&RequestContext>,
+) -> ClientError {
+    if let Some(context) = context {
+        if let Some(reason) = context.cancellation_reason() {
+            return ClientError::RequestCancelled(reason);
+        }
+        #[cfg(unix)]
+        if matches!(&error, backend_runtime::RuntimeError::StartupPending(pending)
+            if pending.candidate_pid().is_some())
+        {
+            return map_runtime_connect_error(error);
+        }
+        if let Err(error) = context.check() {
+            return error;
+        }
+    }
+    map_runtime_connect_error(error)
 }
 
 /// Runs newline-delimited MCP stdio until the client closes stdin.

@@ -3724,6 +3724,76 @@ fn an_unknown_coordinate_is_refused_with_the_operand_and_a_next_tool_call() {
 }
 
 #[test]
+#[cfg(unix)]
+fn startup_wait_never_promotes_undispatched_budget_expiry_or_user_cancellation() {
+    let fixture = LazyAuthorityFixture::new();
+    let expired = RequestContext::new();
+    assert_eq!(
+        expired.read_deadline(std::time::Duration::ZERO),
+        Err(ClientError::RemoteDeadlineExceeded)
+    );
+    assert_eq!(expired.cancellation_reason(), None);
+    // Zero budget is a genuine runtime observation before any process exists.
+    // The live-candidate branch requires the separate owned-child and installed
+    // cold-start controls; this fixture does not manufacture a PID observation.
+    let startup = backend_runtime::ensure_locald_cancellable(
+        &fixture.paths,
+        Some(std::time::Duration::ZERO),
+        || expired.cancellation_reason().is_none(),
+    )
+    .expect_err("no startup dispatch within exhausted budget");
+    let backend_runtime::RuntimeError::StartupPending(pending) = &startup else {
+        panic!("actual undispatched pending observation required");
+    };
+    assert_eq!(pending.candidate_pid(), None);
+    assert_eq!(
+        map_runtime_startup_error(startup, Some(&expired)),
+        ClientError::RemoteDeadlineExceeded
+    );
+    assert!(!fixture.paths.data().exists());
+    assert!(!fixture.paths.endpoint().exists());
+    for reason in [
+        RequestCancellationReason::Explicit,
+        RequestCancellationReason::ClientDisconnected,
+        RequestCancellationReason::Shutdown,
+    ] {
+        let context = RequestContext::new();
+        context
+            .read_deadline(std::time::Duration::ZERO)
+            .expect_err("original deadline");
+        context.cancel(reason);
+        let startup = backend_runtime::ensure_locald_cancellable(
+            &fixture.paths,
+            Some(std::time::Duration::ZERO),
+            || true,
+        )
+        .expect_err("no dispatch");
+        assert_eq!(
+            map_runtime_startup_error(startup, Some(&context)),
+            ClientError::RequestCancelled(reason)
+        );
+    }
+    assert_eq!(
+        map_runtime_startup_error(
+            backend_runtime::RuntimeError::StartTimeout("/fixture/socket".into()),
+            Some(&expired)
+        ),
+        ClientError::RemoteDeadlineExceeded
+    );
+    let active = RequestContext::new();
+    let error = backend_runtime::RuntimeError::MissingExecutable("/fixture/backend-locald".into());
+    let diagnostic = error.to_string();
+    let ClientError::Startup(failure) = map_runtime_startup_error(error, Some(&active)) else {
+        panic!("active startup retains typed cause");
+    };
+    assert_eq!(failure.detail(), diagnostic);
+    assert_eq!(
+        failure.cause(),
+        backend_client::StartupFailureCause::MissingCompanion
+    );
+}
+
+#[test]
 fn typed_startup_failures_preserve_recovery_and_original_diagnostic_in_mcp() {
     use backend_runtime::RuntimeError;
     use std::io::{Error, ErrorKind};
