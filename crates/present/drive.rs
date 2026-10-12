@@ -522,13 +522,7 @@ fn source(engine: &mut dyn Engine, coordinate: &str) -> Result<Answer, Fault> {
     let (CommandReply::Document(document) | CommandReply::Page(document)) = reply.reply else {
         return Err(shape("source"));
     };
-    let page = page_from_document(
-        coordinate,
-        &document,
-        &[],
-        &[],
-        Vec::new(),
-    );
+    let page = page_from_document(coordinate, &document, &[], &[], Vec::new());
     // Unlike a document page, this request asks specifically for source.
     // Retain the exact typed reason when no captured text can be supplied.
     if let Some(fault) = page.source().fault() {

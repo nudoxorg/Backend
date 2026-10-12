@@ -59,8 +59,6 @@ mod call;
 mod client_fault_tests;
 #[cfg(test)]
 mod compiler_fault_tests;
-#[cfg(test)]
-mod readiness_tests;
 mod coverage;
 mod drive;
 mod dto;
@@ -77,12 +75,14 @@ mod product;
 mod projection;
 #[cfg(test)]
 mod projection_tests;
+#[cfg(test)]
+mod readiness_tests;
 mod record;
 mod render;
 mod sections;
 mod shelf;
-mod signature;
 mod shell;
+mod signature;
 mod status;
 mod token_count;
 
@@ -112,8 +112,9 @@ pub use dto::{
     CapabilitiesDto, CompilerToolRequirementDto, CoverageDto, FaultDto, IdentityDto,
     IdentitySemanticData, IndexPollDto, LanguageCountDto, MemberGroupDto, OutlineDto,
     OutlineNodeDto, OutlinePageDto, PageDto, ProductDto, ProductIndexSearchPageDto,
-    ProductRecordDto, ReasonDto, RecordDto, RecordListDto, RelationGroupDto, SelectedSymbolIdDto, ShelfDto, ShelfEntryDto,
-    SignatureTokenDto, SourceDto, StatusDto, SummaryPageDto, answer_value, fault_value,
+    ProductRecordDto, ReasonDto, RecordDto, RecordListDto, RelationGroupDto, SelectedSymbolIdDto,
+    ShelfDto, ShelfEntryDto, SignatureTokenDto, SourceDto, StatusDto, SummaryPageDto, answer_value,
+    fault_value,
 };
 pub use fault::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand, OwnerContext};
 pub use glyph::{KindGlyph, LanguageGlyph, RelationDirection, RelationLabel, relation_label};
