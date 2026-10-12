@@ -295,7 +295,7 @@ def safe_extract(archive: Path, destination: Path) -> None:
                 source = bundle.extractfile(member)
                 if source is None:
                     raise InstallError(f"archive member could not be read: {member.name!r}")
-                mode = 0o755 if relative in allowed_bin or relative == "share/nudox/typescript/node/bin/node" else 0o644
+                mode = 0o755 if relative in allowed_bin or relative in {"share/nudox/typescript/node/bin/node", "share/nudox/embedding/bin/backend-embedding-candle"} else 0o644
                 flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
                 descriptor = os.open(target, flags, mode)
                 with os.fdopen(descriptor, "wb") as output, source:
@@ -507,6 +507,48 @@ def verify_typescript_sdk(root: Path, package: dict) -> None:
                                      f"reported version={_bounded_probe_text(actual)}")
 
 
+def verify_embedding_setup(root: Path, package: dict) -> None:
+    """Optional recipe verifies installed closure; does not launch or claim inference."""
+    setup = package.get("embedding_setup")
+    if setup is None:
+        return
+    if not isinstance(setup, dict) or setup.get("path") != "share/nudox/embedding/setup.json":
+        raise InstallError("invalid local embedding setup receipt path")
+    path = _verified_package_path(root, setup["path"])
+    if path.stat().st_size > 65536 or _file_sha256(path) != setup.get("sha256"):
+        raise InstallError("local embedding setup receipt differs from the immutable package")
+    try:
+        receipt = json.loads(path.read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise InstallError("local embedding setup receipt is unreadable") from error
+    if not isinstance(receipt, dict) or receipt.get("schema") != "nudox.local-embedding-setup.v1" or receipt.get("preset") != "candle-minilm-cpu-v1":
+        raise InstallError("unsupported local embedding setup recipe")
+    if not isinstance(receipt.get("helper_identity"), str) or not re.fullmatch(r"[a-f0-9]{64}", receipt["helper_identity"]):
+        raise InstallError("local embedding receipt omits its typed helper closure identity")
+    source = receipt.get("source", {})
+    if not isinstance(source, dict):
+        raise InstallError("local embedding receipt has no source identity")
+    if source.get("commit") != package.get("source", {}).get("commit") or source.get("tree") != package.get("source", {}).get("tree"):
+        raise InstallError("local embedding helper belongs to another product source")
+    if not isinstance(receipt.get("dependencies"), list) or len(receipt["dependencies"]) > 64:
+        raise InstallError("local embedding dependency closure exceeds its member bound")
+    records = [receipt.get("cli"), receipt.get("helper"), *receipt["dependencies"]]
+    required = ["bin/backend-cli", "share/nudox/embedding/bin/backend-embedding-candle"]
+    seen = set()
+    for index, record in enumerate(records):
+        if not isinstance(record, dict) or not isinstance(record.get("path"), str):
+            raise InstallError("invalid local embedding artifact record")
+        relative = record["path"]
+        if index < 2 and relative != required[index] or index >= 2 and not relative.startswith("lib/") or relative in seen:
+            raise InstallError("invalid or duplicate local embedding closure member")
+        seen.add(relative)
+        artifact = _verified_package_path(root, relative)
+        if type(record.get("bytes")) is not int or not 0 < record["bytes"] <= MAX_ARCHIVE_BYTES or artifact.stat().st_size != record["bytes"] or _file_sha256(artifact) != record.get("sha256"):
+            raise InstallError("local embedding artifact differs from its package receipt")
+    if not os.access(root / required[1], os.X_OK):
+        raise InstallError("local embedding helper is not executable")
+
+
 def verify_package(root: Path, entry: dict, manifest: dict) -> None:
     _verified_package_path(root, "", directory=True)
     for relative in ("build-manifest.json", "packaging-manifest.json", *("bin/" + name for name in REQUIRED_BINARIES)):
@@ -567,6 +609,7 @@ def verify_package(root: Path, entry: dict, manifest: dict) -> None:
         if not binary.is_file() or not os.access(binary, os.X_OK):
             raise InstallError(f"package omits executable {name}")
     verify_typescript_sdk(root, package)
+    verify_embedding_setup(root, package)
     # Run harmless entrypoint checks with build-machine loader overrides removed.
     clean_env = {key: value for key, value in os.environ.items() if key not in {"LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT", "NIX_LD", "NIX_LD_LIBRARY_PATH"}}
     for name, args in (("backend-cli", ["--version"]), ("backend-mcp", ["--help"])):

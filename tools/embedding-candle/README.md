@@ -11,7 +11,25 @@ The helper is pinned to the Apache-2.0 `sentence-transformers/all-MiniLM-L6-v2` 
 
 The model produces 384 coordinates. The helper clears the tokenizer JSON's fixed export padding and pads dynamically within each bounded microbatch. It truncates to 256 wordpieces, applies the tokenizer's normalizer and special-token template, sends attention masks into BERT, mean-pools all attended tokens (including `[CLS]` and `[SEP]`), and L2-normalizes. It validates all artifacts and frame identities before inference, processes at most 16 inputs per tensor microbatch and 256 per BEM2 invocation, and emits a response only after all vectors pass shape, finite-value, and norm checks. There is no generated or hash-based vector fallback.
 
-Download only those two files from the pinned revision, then build the helper for the current host:
+A matched Linux package may carry this helper and its source-bound build receipt. Its ordinary local setup command is:
+
+```sh
+nudox embedding-setup
+```
+
+The command verifies the installed CLI, helper and dependency closure against the package receipt before fetching either artifact. It streams the two pinned files into private staging, checks their exact lengths and BLAKE3 hashes, then atomically publishes the runtime configuration and matching local query descriptor. It reports installation separately from activation: reopen the owner and run `nudox add .` to reindex. Query inference uses the already activated owner runtime and does not download a model. Search continues to return its complete lexical result while the exact selected semantic projection is being prepared.
+
+The fixed CPU preset reserves 2 GiB of shared owner credits, a 1 GiB supervised child memory ceiling and a 120-second operation deadline. `--limits /absolute/limits.json` is an explicit override using the existing runtime admission rules. Packages without a successfully built, matched helper refuse setup before downloading; a byte inspection alone does not attest model semantics. Native helper execution and model quality require separate real inference evidence.
+
+The Linux packager accepts `--embedding-helper` and `--embedding-helper-receipt` together. The `nudox.embedding-helper-build-receipt.v1` must attest successful integer exit zero, unchanged clean source before/after, unchanged toolchain, the same product commit/tree/Cargo.lock hash, and exact helper SHA-256/byte length. Its literal CPU build argv is:
+
+```sh
+cargo build --release --locked --no-default-features --features cpu -p backend-embedding-candle
+```
+
+The packager relocates the helper through its existing ELF closure, records the post-relocation bytes and typed closure identity, and binds the setup receipt into immutable package metadata. Optional helper packaging is not runtime or inference acceptance.
+
+Advanced external-producer configuration remains available. Download only those two files from the pinned revision, then build the helper for the current host:
 
 ```sh
 curl --fail --location \
