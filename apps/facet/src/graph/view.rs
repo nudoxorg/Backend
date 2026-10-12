@@ -304,6 +304,7 @@ pub struct GraphView {
     focus_scroll: ScrollHandle,
     hint_metrics: Rc<std::cell::Cell<hints::Metrics>>,
     chain_scroll: ScrollHandle,
+    chain_focus: Vec<FocusHandle>,
     tour_scroll: ScrollHandle,
     tour_focus: Vec<FocusHandle>,
     find_bounds: Option<Bounds<Pixels>>,
@@ -443,6 +444,7 @@ impl GraphView {
             focus_scroll: ScrollHandle::new(),
             hint_metrics: Rc::new(std::cell::Cell::new(hints::Metrics::default())),
             chain_scroll: ScrollHandle::new(),
+            chain_focus: (0..crate::semantics::recipes::chain::MAX_STEPS).map(|_| cx.focus_handle().tab_stop(true)).collect(),
             tour_scroll: ScrollHandle::new(),
             tour_focus: (0..=tour::MAX_STOPS).map(|_| cx.focus_handle().tab_stop(true)).collect(),
             find_bounds: None,
@@ -524,9 +526,9 @@ impl GraphView {
         self.interaction_admission.as_ref().is_none_or(|admit| admit(InteractionPhase::LocalFocus, cx))
     }
 
-    /// A retained tour moves only through this immutable scene. Its native
-    /// controls cannot borrow declaration activation or a later reading visit.
-    fn local_tour_admission(&self, cx: &Context<Self>, current: impl Fn(&Self) -> bool + 'static) -> crate::controls::button::ActivationAdmission {
+    /// A retained scene control cannot borrow declaration activation or a
+    /// later reading visit. Tours and local road dismissal share this guard.
+    fn local_scene_admission(&self, cx: &Context<Self>, current: impl Fn(&Self) -> bool + 'static) -> crate::controls::button::ActivationAdmission {
         let owner = cx.entity().downgrade();
         let producer = self.interaction_admission.clone();
         let scene = self.scene.clone();
@@ -583,6 +585,9 @@ impl GraphView {
             handles.extend(self.declaration_focus.iter().skip(super::discovery::ROWS).take(self.search.chains.len().min(super::discovery::CHAINS)).cloned());
         }
         if painted.controls.resources_enabled && !self.state.find_open {
+            if let Some(chain) = self.state.exploration.chain() {
+                handles.extend(self.chain_focus.iter().take(chain.steps.len()).cloned());
+            }
             handles.push(self.declaration_focus[32].clone());
             if self.declarations_open {
                 let start = self.declaration_page.saturating_mul(32);
@@ -637,7 +642,7 @@ impl GraphView {
         if !self.painted_labels.as_ref()?.controls.resources_enabled { return None; }
         let origin = window.focused(cx)?;
         (window.is_focus_handle_mounted(&origin) && self.focus_handle.contains(&origin, window)
-            && (self.declaration_focus.contains(&origin) || origin == self.status_focus))
+            && (self.declaration_focus.contains(&origin) || self.chain_focus.contains(&origin) || origin == self.status_focus))
             .then_some(origin)
     }
 
@@ -2675,7 +2680,7 @@ impl GraphView {
             line = line.child(div().ml(px(8.0)).child(graph_text("graph-where-level", altitude.word(), ty::STATUS, &measure, palette.ink2, crate::probe::TextOverflow::Clip)));
             if self.state.exploration.tour().is_none() {
                 if let Some(package) = self.tour_package().filter(|&package| self.discovery.as_ref().and_then(|discovery| discovery.package_tour(package)).is_some_and(Tour::shown)) {
-                    let admission = self.local_tour_admission(cx, move |graph|
+                    let admission = self.local_scene_admission(cx, move |graph|
                         !graph.state.find_open && graph.state.exploration.tour().is_none() && graph.tour_package() == Some(package));
                     let start = div().id("graph-start-here").role(gpui::Role::Button)
                         .aria_label(format!("Start a guided tour of {}", self.world.packages[package as usize].name))
@@ -2842,12 +2847,42 @@ impl GraphView {
         for (n, step) in chain.steps.iter().enumerate() {
             if n > 0 { rail = rail.child(div().text_color(palette.ink4.hsla()).child("→")); }
             let node = step.node;
-            rail = rail.child(div().id(("graph-chain-step", n)).cursor_pointer().px(px(8.0)).py(px(8.0))
+            let generation = self.state.generation;
+            let admission = self.control_admission(cx, move |graph| graph.state.generation == generation
+                && graph.state.exploration.chain().is_some_and(|chain| chain.steps.get(n).is_some_and(|step| step.node == node)));
+            let local_admission = self.local_scene_admission(cx, move |graph|
+                graph.state.exploration.chain().is_some_and(|chain| chain.steps.get(n).is_some_and(|step| step.node == node)));
+            // Keep authored focus stable, but never let GPUI's pending press
+            // state for a previous local road migrate to this generation.
+            // The host's inherited NativeActivationScope fences producer changes.
+            let mut link = div().id(gpui::ElementId::named_usize(format!("graph-chain-step-{generation}"), n)).role(gpui::Role::Button)
+                .aria_label(format!("Select {}. Road step {} of {}", step.verb, n + 1, chain.steps.len()))
+                .cursor_pointer().px(px(8.0)).py(px(8.0))
                 .border_b_1().border_color(palette.peri.base.hsla()).set(ty::MONO_ROW, measure).text_color(palette.ink0.hsla())
                 .child(step.verb.clone())
                 .children(step.fails.then(|| div().set(ty::SMALL, measure).text_color(palette.ink3.hsla()).child("or fails")))
-                .children(step.maybe.then(|| div().set(ty::SMALL, measure).text_color(palette.ink3.hsla()).child("maybe")))
-                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _, window, cx| { window.focus(&this.focus_handle, cx); this.set_focus(Some(node), true, cx); })));
+                .children(step.maybe.then(|| div().set(ty::SMALL, measure).text_color(palette.ink3.hsla()).child("maybe")));
+            if let Some(focus) = self.chain_focus.get(n).filter(|_| self.admits_control_render(cx)) {
+                let owner = cx.entity().downgrade();
+                link = crate::controls::button::capture_activation_admission(link, admission.clone());
+                link = crate::controls::button::native_button(link, focus, move |window, cx| {
+                    if !admission(cx) { return; }
+                    let _ = owner.update(cx, |graph, cx| {
+                        window.focus(&graph.focus_handle, cx);
+                        graph.set_focus(Some(node), true, cx);
+                    });
+                });
+                let owner = cx.entity().downgrade();
+                link = link.on_key_down(move |event: &KeyDownEvent, window, cx| {
+                    if event.keystroke.key != "escape" || event.keystroke.modifiers.modified() || !local_admission(cx) { return; }
+                    let _ = owner.update(cx, |graph, cx| {
+                        window.focus(&graph.focus_handle, cx);
+                        graph.escape(window, cx);
+                    });
+                    cx.stop_propagation();
+                });
+            } else { link = link.aria_disabled(true); }
+            rail = rail.child(link);
             for rider in &step.riders {
                 rail = rail.child(div().set(ty::SMALL, measure).text_color(palette.ink4.hsla()).child(format!("+ {rider}")));
             }
@@ -2879,7 +2914,7 @@ impl GraphView {
         let mut strip = div().flex().flex_wrap().gap(px(8.0));
         for (n, stop) in tour.stops.iter().enumerate() {
             let data = tour.clone();
-            let admission = self.local_tour_admission(cx, move |graph|
+            let admission = self.local_scene_admission(cx, move |graph|
                 graph.state.exploration.tour().is_some_and(|(now, now_at)| *now == data && now_at == at));
             let chip = div().id(("graph-tour-stop", n)).role(gpui::Role::Button)
                 .aria_label(format!("Tour stop {}: {}", n + 1, self.world.name_of(stop.node)))
@@ -2957,7 +2992,7 @@ impl GraphView {
             let focus = self.declaration_focus.get(n);
             let owner = cx.entity().downgrade();
             let mut row = div()
-                .id(("graph-result", i as usize)).role(gpui::Role::Button)
+                .id(gpui::ElementId::named_usize(format!("graph-result-{}", self.state.generation), i as usize)).role(gpui::Role::Button)
                 .aria_label(format!("Select {}", self.search.rows[n].label))
                 .flex()
                 .items_center()
@@ -3007,7 +3042,7 @@ impl GraphView {
                 let admission = self.find_result_admission(cx);
                 let owner = cx.entity().downgrade();
                 let focus = self.declaration_focus.get(super::discovery::ROWS + n);
-                let mut row = div().id(("graph-chain-result", n)).role(gpui::Role::Button)
+                let mut row = div().id(gpui::ElementId::named_usize(format!("graph-chain-result-{}", self.state.generation), n)).role(gpui::Role::Button)
                     .aria_label(format!("Select {}", chain.brief)).px(px(8.0)).py(px(8.0)).cursor_pointer().when_selected(selected, palette)
                     .flex().items_start().gap(px(8.0)).set(ty::MONO_SMALL, measure).text_color(palette.ink1.hsla())
                     .child(graph_text(format!("graph-chain-calls-{n}"), "◆".repeat(chain.steps.len()), ty::SMALL, measure, palette.peri.base, crate::probe::TextOverflow::Wrap))
@@ -3186,7 +3221,7 @@ pub fn backed_out(scene: &Scene, view: &View, i: NodeId) -> Camera {
 
 #[cfg(test)]
 mod tests {
-    use super::{Camera, GraphView, GraphWorkStatus, Start};
+    use super::{Camera, Chain, GraphView, GraphWorkStatus, InteractionPhase, NativeFocusStep, NodeId, RoadStop, Start};
     use crate::graph::camera::View;
     use crate::graph::layout::Layout;
     use crate::graph::layout::tests_support::synthetic;
@@ -3194,6 +3229,8 @@ mod tests {
     use crate::graph::scene::Scene;
     use crate::theme::{Facet, set_facet};
     use gpui::{Focusable, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
+    use std::cell::Cell;
+    use std::rc::Rc;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -4226,93 +4263,173 @@ mod tests {
     fn find_result_native_input_retires_before_query_observation_or_same_query_return(cx: &mut TestAppContext) {
         cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Default::default() }, cx); });
         for return_to_same_query in [false, true] {
+            for transport in ["pointer", "enter", "space", "ax"] {
+                let world = Arc::new(crate::graph::model::tests::tiny());
+                let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+                let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::World, window, cx));
+                cx.update(|window, _| window.set_a11y_forced(true));
+                frames(cx, 30);
+                cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
+                cx.simulate_keystrokes("/"); cx.simulate_input("Page"); frames(cx, 30);
+                let input = view.read_with(cx, |graph, _| graph.find.clone());
+                let label = view.read_with(cx, |graph, _| {
+                    assert_eq!(graph.results.first(), Some(&0), "the ordinary query worker supplied the actual Page result");
+                    format!("Select {}", graph.search.rows[0].label)
+                });
+                // Arm an actual mounted result BEFORE replacing its query or
+                // visit. A new KeyDown after replacement may paint and lawfully
+                // target a new control; it is not a retained input receipt.
+                cx.update(|window, cx| view.read(cx).declaration_focus[0].clone().focus(window, cx));
+                frames(cx, 1);
+                let (node, at) = cx.update(|window, _| {
+                    let node = window.a11y_tree().expect("committed Find tree").nodes.iter().find(|(_, node)|
+                        node.role() == gpui::Role::Button && node.label() == Some(label.as_str())
+                            && node.supports_action(gpui::AccessibleAction::Click)).map(|(id, _)| *id).expect("native result Click");
+                    (node, window.a11y_node_bounds(node).expect("native result bounds").center())
+                });
+                let (focus, armed_frame) = cx.update(|window, cx| {
+                    if transport == "pointer" {
+                        window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                            position: at, modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1, first_mouse: false,
+                        }), cx);
+                    } else if transport != "ax" {
+                        window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                            keystroke: gpui::Keystroke::parse(transport).expect("original result press"), is_held: false, prefer_character_input: false,
+                        }), cx);
+                    }
+                    assert_eq!(view.read(cx).focused(), None, "press alone cannot choose a result");
+                    let armed_frame = window.a11y_frame_number();
+                    if return_to_same_query {
+                        view.update(cx, |graph, cx| { graph.close_find(window, cx); graph.open_find(window, cx); });
+                    } else {
+                        input.update(cx, |input, cx| input.replace_all("from_str", window, cx));
+                        assert_eq!(view.read(cx).search_query, "Page", "the Change observer has not run");
+                    }
+                    let editor = input.read(cx).focus_handle(cx);
+                    editor.focus(window, cx);
+                    if transport == "pointer" {
+                        window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                            position: at, modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1,
+                        }), cx);
+                        window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                            position: at, modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1, first_mouse: false,
+                        }), cx);
+                        window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                            position: at, modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1,
+                        }), cx);
+                    } else if transport == "ax" {
+                        window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+                            action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: node, data: None,
+                        }, cx);
+                    }
+                    assert!(editor.is_focused(window), "retired pointer and AX cannot steal editor focus");
+                    assert_eq!(view.read(cx).focused(), None);
+                    assert!(view.read(cx).state.find_open);
+                    assert_eq!(window.a11y_frame_number(), armed_frame, "old pointer/AX and held keys precede replacement paint");
+                    (window.focused(cx), armed_frame)
+                });
+                assert_eq!(cx.update(|window, cx| window.focused(cx)), focus, "effects cannot refocus the retired result");
+                assert_eq!(cx.update(|window, _| window.a11y_frame_number()), armed_frame);
+                frames(cx, 30);
+                let committed = cx.update(|window, _| window.a11y_frame_number());
+                assert!(committed > armed_frame, "ordinary query/visit renewal painted before pending key release");
+                if matches!(transport, "enter" | "space") {
+                    // close/open or the editor reclaim interrupted physical
+                    // focus. This case proves that cancellation; the separate
+                    // same-node held-key law below keeps focus uninterrupted.
+                    cx.update(|window, cx| {
+                        window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
+                            keystroke: gpui::Keystroke::parse(transport).expect("old pending result release"),
+                        }), cx);
+                        assert_eq!(window.a11y_frame_number(), committed);
+                        assert_eq!(window.focused(cx), focus);
+                        assert_eq!(view.read(cx).focused(), None, "the old press cannot activate a replacement native result");
+                        assert!(view.read(cx).state.find_open);
+                    });
+                    cx.run_until_parked();
+                }
+                assert_eq!(view.read_with(cx, |graph, _| graph.focused()), None);
+                let expected = if return_to_same_query { 0 } else { 3 };
+                let label = view.read_with(cx, |graph, _| {
+                    assert_eq!(graph.results.first(), Some(&expected), "ordinary search renewal supplies the fresh exact node");
+                    format!("Select {}", graph.search.rows[0].label)
+                });
+                let (fresh, at) = cx.update(|window, _| {
+                    let node = window.a11y_tree().expect("renewed tree").nodes.iter().find(|(_, node)|
+                        node.role() == gpui::Role::Button && node.label() == Some(label.as_str())).map(|(id, _)| *id).expect("fresh result");
+                    (node, window.a11y_node_bounds(node).expect("fresh native bounds").center())
+                });
+                if transport == "ax" {
+                    cx.update(|window, cx| window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+                        action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: fresh, data: None,
+                    }, cx));
+                } else if matches!(transport, "enter" | "space") {
+                    cx.update(|window, cx| view.read(cx).declaration_focus[0].clone().focus(window, cx));
+                    frames(cx, 1);
+                    road_key_click(cx, transport);
+                } else { cx.simulate_click(at, Modifiers::none()); }
+                frames(cx, 30);
+                assert_eq!(view.read_with(cx, |graph, _| graph.focused()), Some(expected), "fresh native query controls remain usable");
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn find_result_held_key_cannot_transfer_to_a_new_query_with_the_same_node_and_native_focus(cx: &mut TestAppContext) {
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Default::default() }, cx); });
+        for key in ["enter", "space"] {
             let world = Arc::new(crate::graph::model::tests::tiny());
             let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
-            let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::World, window, cx));
-            cx.update(|window, _| window.set_a11y_forced(true));
-            frames(cx, 30);
-            cx.update(|window, cx| window.focus(&view.focus_handle(cx), cx));
-            cx.simulate_keystrokes("/");
-            cx.simulate_input("Page");
-            frames(cx, 30);
-            let input = view.read_with(cx, |graph, _| graph.find.clone());
-            let label = view.read_with(cx, |graph, _| {
-                assert_eq!(graph.results.first(), Some(&0), "the ordinary query worker supplied the actual Page result");
-                format!("Select {}", graph.search.rows[0].label)
+            let (graph, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::World, window, cx));
+            cx.update(|window, _| window.set_a11y_forced(true)); frames(cx, 30);
+            cx.update(|window, cx| window.focus(&graph.focus_handle(cx), cx));
+            cx.simulate_keystrokes("/"); cx.simulate_input("Page"); frames(cx, 30);
+            let (result, search) = graph.read_with(cx, |graph, _| {
+                assert_eq!(graph.results.first(), Some(&0)); (graph.declaration_focus[0].clone(), graph.search.clone())
             });
-            let (node, at, frame) = cx.update(|window, _| {
-                let node = window.a11y_tree().expect("committed Find tree").nodes.iter().find(|(_, node)|
-                    node.role() == gpui::Role::Button && node.label() == Some(label.as_str())
-                        && node.supports_action(gpui::AccessibleAction::Click)).map(|(id, _)| *id).expect("native result Click");
-                (node, window.a11y_node_bounds(node).expect("native result bounds").center(), window.a11y_frame_number())
-            });
-            let focus = cx.update(|window, cx| {
-                window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
-                    position: at, modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1, first_mouse: false,
+            cx.update(|window, cx| result.focus(window, cx)); frames(cx, 1);
+            let (armed, focus_epoch, generation) = cx.update(|window, cx| {
+                assert!(result.is_focused(window) && window.is_focus_handle_mounted(&result));
+                window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                    keystroke: gpui::Keystroke::parse(key).expect("old result key"), is_held: false, prefer_character_input: false,
                 }), cx);
-                assert!(view.read(cx).declaration_focus[0].is_focused(window), "the current native press owns the result handle");
-                if return_to_same_query {
-                    view.update(cx, |graph, cx| { graph.close_find(window, cx); graph.open_find(window, cx); });
-                } else {
-                    input.update(cx, |input, cx| input.replace_all("from_str", window, cx));
-                    assert_eq!(view.read(cx).search_query, "Page", "the Change observer has not run");
-                }
-                window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
-                    position: at, modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1,
-                }), cx);
-                // Deliver real native key releases and AccessKit to the retained
-                // result, without giving its query watcher a redraw first.
-                let result = view.read(cx).declaration_focus[0].clone();
-                result.focus(window, cx);
-                for key in ["enter", "space"] {
-                    let keystroke = gpui::Keystroke::parse(key).expect("native result key");
-                    window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent { keystroke: keystroke.clone(), is_held: false, prefer_character_input: false }), cx);
-                    window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
-                }
-                window.simulate_a11y_action(gpui::accesskit::ActionRequest {
-                    action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: node, data: None,
-                }, cx);
-                let escape = gpui::Keystroke::parse("escape").expect("native stale result Escape");
-                window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent { keystroke: escape.clone(), is_held: false, prefer_character_input: false }), cx);
-                window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke: escape }), cx);
-                assert!(view.read(cx).state.find_open, "a retired result cannot close the replacement Find visit");
-                let editor = input.read(cx).focus_handle(cx);
-                editor.focus(window, cx);
-                for key in ["tab", "shift-tab"] {
-                    let keystroke = gpui::Keystroke::parse(key).expect("native stale result Tab");
-                    window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent { keystroke: keystroke.clone(), is_held: false, prefer_character_input: false }), cx);
-                    window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
-                    assert!(editor.is_focused(window), "stale painted results cannot admit a native Tab transfer");
-                }
-                window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
-                    position: at, modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1, first_mouse: false,
-                }), cx);
-                window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
-                    position: at, modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1,
-                }), cx);
-                assert!(editor.is_focused(window), "retired native pointer input cannot steal editor focus");
-                assert_eq!(view.read(cx).focused(), None, "held release, key, AX and new stale pointer never choose the old node");
-                assert!(view.read(cx).state.find_open);
-                assert_eq!(window.a11y_frame_number(), frame, "the actual committed old listeners are still mounted");
-                window.focused(cx)
+                assert_eq!(graph.read(cx).focused(), None);
+                let generation = graph.read(cx).state.generation;
+                let input = graph.read(cx).find.clone();
+                // Programmatic editor publication keeps the physical result
+                // focused. The new query resolves the SAME semantic node and
+                // row, so focus loss or a changed node cannot mask admission.
+                input.update(cx, |input, cx| input.replace_all("Page ", window, cx));
+                assert_eq!(graph.read(cx).search_query, "Page", "the real Change subscriber is still queued");
+                assert!(result.is_focused(window));
+                (window.a11y_frame_number(), window.focus_epoch(), generation)
             });
-            assert_eq!(cx.update(|window, cx| window.focused(cx)), focus, "effects cannot refocus the retired native result");
-            assert_eq!(cx.update(|window, _| window.a11y_frame_number()), frame);
             frames(cx, 30);
-            assert_eq!(view.read_with(cx, |graph, _| graph.focused()), None);
-            let expected = if return_to_same_query { 0 } else { 3 };
-            let label = view.read_with(cx, |graph, _| {
-                assert_eq!(graph.results.first(), Some(&expected), "ordinary search renewal supplies the fresh exact node");
-                format!("Select {}", graph.search.rows[0].label)
+            let replacement = cx.update(|window, cx| {
+                let graph = graph.read(cx);
+                assert_eq!(graph.search_query, "Page ");
+                assert_eq!(graph.results.first(), Some(&0), "ordinary query renewal retained the exact same declaration");
+                assert!(Rc::ptr_eq(&graph.search, &search), "trimmed query renewal reuses the exact cached Search receipt");
+                assert!(graph.state.generation > generation && graph.state.find_open);
+                assert!(result.is_focused(window) && window.is_focus_handle_mounted(&result));
+                assert_eq!(window.focus_epoch(), focus_epoch, "the native result's focus generation stayed uninterrupted");
+                assert!(window.a11y_frame_number() > armed, "the new query's native control actually committed while the key was held");
+                window.a11y_frame_number()
             });
-            let at = cx.update(|window, _| {
-                let node = window.a11y_tree().expect("renewed tree").nodes.iter().find(|(_, node)|
-                    node.role() == gpui::Role::Button && node.label() == Some(label.as_str())).map(|(id, _)| *id).expect("fresh result");
-                window.a11y_node_bounds(node).expect("fresh native bounds").center()
+            cx.update(|window, cx| {
+                window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
+                    keystroke: gpui::Keystroke::parse(key).expect("old result release"),
+                }), cx);
+                assert_eq!(window.a11y_frame_number(), replacement);
+                assert!(result.is_focused(window));
+                assert_eq!(window.focus_epoch(), focus_epoch);
+                assert_eq!(graph.read(cx).focused(), None, "the new callback must not inherit the old query's pending {key}");
+                assert!(graph.read(cx).state.find_open);
             });
-            cx.simulate_click(at, Modifiers::none());
-            frames(cx, 30);
-            assert_eq!(view.read_with(cx, |graph, _| graph.focused()), Some(expected), "fresh native query controls remain usable");
+            cx.run_until_parked();
+            assert_eq!(graph.read_with(cx, |graph, _| graph.focused()), None);
+            road_key_click(cx, key); frames(cx, 30);
+            assert_eq!(graph.read_with(cx, |graph, _| graph.focused()), Some(0), "fresh full native input still selects the exact current node");
         }
     }
 
@@ -4375,11 +4492,303 @@ mod tests {
                 cx.update(|window, cx| window.simulate_a11y_action(gpui::accesskit::ActionRequest {
                     action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: node, data: None,
                 }, cx));
-            } else { cx.simulate_keystrokes(activation); }
+            } else {
+                // Native buttons own matching Down+Up, unlike the text-only
+                // simulate_keystrokes helper which emits just KeyDown.
+                let keystroke = gpui::Keystroke::parse(activation).expect("native result activation");
+                cx.update(|window, cx| {
+                    window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                        keystroke: keystroke.clone(), is_held: false, prefer_character_input: false,
+                    }), cx);
+                    window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }), cx);
+                });
+                cx.run_until_parked();
+            }
             frames(cx, 30);
             assert_eq!(graph.read_with(cx, |graph, _| graph.focused()), (activation != "escape").then_some(3));
             assert!(!graph.read_with(cx, |graph, _| graph.state.find_open));
             assert!(cx.update(|window, cx| graph.focus_handle(cx).is_focused(window)), "current result activation or Escape returns native canvas focus");
+        }
+    }
+
+    fn native_road_fixture(nodes: &[NodeId]) -> Chain {
+        Chain { cost: 1.0, from: "#0".into(), output: "text".into(), via: None,
+            steps: nodes.iter().map(|&node| super::super::discovery::ChainStep {
+                node, verb: if node == 2 { "new".into() } else { "from_str".into() }, input: "#0".into(), output: "text".into(),
+                riders: vec![], fails: false, maybe: false,
+            }).collect(), path: nodes.to_vec(), stops: nodes.iter().map(|&node| RoadStop {
+                node, label: "Observed road step".into(), calls: vec![node], yours: false,
+            }).collect(), brief: "Observed road".into(), rail: "Observed calls".into(), code: "page.new()".into() }
+    }
+
+    struct NativeRoadHost { graph: gpui::Entity<GraphView>, producer: Rc<Cell<Option<u64>>> }
+    impl gpui::Render for NativeRoadHost {
+        fn render(&mut self, _: &mut gpui::Window, cx: &mut gpui::Context<Self>) -> impl gpui::IntoElement {
+            // The production Shell supplies this existing native producer scope.
+            // This fixture tests its actual GPUI press bookkeeping, not a live owner.
+            gpui::native_activation_scope(gpui::NativeActivationScope::new(cx.entity_id(), self.producer.get()), self.graph.clone())
+        }
+    }
+
+    #[gpui::test]
+    fn native_road_held_press_cannot_transfer_to_a_repainted_navigation_or_producer(cx: &mut TestAppContext) {
+        use gpui::AppContext;
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Default::default() }, cx); });
+        for press in ["mouse", "enter", "space"] {
+            for interruption in ["navigation", "retirement", "replacement"] {
+                let world = Arc::new(crate::graph::model::tests::tiny());
+                let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+                let producer = Rc::new(Cell::new(Some(1_u64)));
+                let mut graph = None;
+                let (host, cx) = cx.add_window_view(|window, cx| {
+                    let view = cx.new(|cx| GraphView::with_scene(scene.clone(), Start::World, window, cx));
+                    graph = Some(view.clone());
+                    NativeRoadHost { graph: view, producer: producer.clone() }
+                });
+                let graph = graph.expect("mounted graph"); let captured = producer.clone();
+                graph.update(cx, |graph, cx| {
+                    graph.on_interaction_admission(Rc::new(move |phase, _| phase != InteractionPhase::Activate || captured.get() == Some(1)));
+                    graph.hold_chain(native_road_fixture(&[2]), cx);
+                });
+                cx.update(|window, _| window.set_a11y_forced(true)); frames(cx, 30);
+                let at = cx.update(|window, _| {
+                    let node = window.a11y_tree().expect("old native road").nodes.iter().find(|(_, node)|
+                        node.role() == gpui::Role::Button && node.label() == Some("Select new. Road step 1 of 1"))
+                        .map(|(id, _)| *id).expect("actual old road button");
+                    window.a11y_node_bounds(node).expect("old bounds").center()
+                });
+                // Paint the actual focused receiver before its keydown, so the
+                // native pending-key state is armed rather than merely testing a callback.
+                cx.update(|window, cx| { let focus = graph.read(cx).chain_focus[0].clone(); focus.focus(window, cx); }); frames(cx, 1);
+                let armed_frame = cx.update(|window, cx| {
+                    if press == "mouse" { window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                        position: at, modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1, first_mouse: false,
+                    }), cx); }
+                    else { window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                        keystroke: gpui::Keystroke::parse(press).expect("activation key"), is_held: false, prefer_character_input: false,
+                    }), cx); }
+                    window.a11y_frame_number()
+                });
+                match interruption {
+                    "navigation" => graph.update(cx, |graph, cx| graph.hold_chain(native_road_fixture(&[3]), cx)),
+                    "retirement" => producer.set(None),
+                    "replacement" => {
+                        producer.set(Some(2)); let current = producer.clone();
+                        graph.update(cx, |graph, _| graph.on_interaction_admission(Rc::new(move |phase, _|
+                            phase != InteractionPhase::Activate || current.get() == Some(2))));
+                    }
+                    _ => unreachable!(),
+                }
+                // The external producer Cell alone does not invalidate this
+                // host. Publish its actual scope replacement before committing
+                // the next frame while the original native press is held.
+                host.update(cx, |_, cx| cx.notify());
+                frames(cx, 30);
+                assert_eq!(graph.read_with(cx, |graph, _| graph.focused()), None);
+                let committed = cx.update(|window, _| window.a11y_frame_number());
+                assert!(committed > armed_frame, "the replacement native scope was painted before release");
+                cx.update(|window, cx| {
+                    if press == "mouse" { window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                        position: at, modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1,
+                    }), cx); }
+                    else { window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
+                        keystroke: gpui::Keystroke::parse(press).expect("activation key"),
+                    }), cx); }
+                    assert_eq!(graph.read(cx).focused(), None, "new native callback must not adopt the old held {press} after {interruption}");
+                    assert_eq!(window.a11y_frame_number(), committed);
+                });
+                cx.run_until_parked();
+                assert_eq!(graph.read_with(cx, |graph, _| graph.focused()), None);
+                assert_eq!(graph.read_with(cx, |graph, _| graph.held_chain().map(|nodes| nodes.to_vec())),
+                    Some(vec![if interruption == "navigation" { 3 } else { 2 }]));
+                producer.set(Some(2)); let current = producer.clone();
+                graph.update(cx, |graph, _| graph.on_interaction_admission(Rc::new(move |phase, _|
+                    phase != InteractionPhase::Activate || current.get() == Some(2)))); frames(cx, 30);
+                if press == "mouse" {
+                    let label = if interruption == "navigation" { "Select from_str. Road step 1 of 1" } else { "Select new. Road step 1 of 1" };
+                    let at = cx.update(|window, _| {
+                        let node = window.a11y_tree().expect("current native road").nodes.iter().find(|(_, node)|
+                            node.role() == gpui::Role::Button && node.label() == Some(label)).map(|(id, _)| *id).expect("fresh road");
+                        window.a11y_node_bounds(node).expect("fresh bounds").center()
+                    }); cx.simulate_click(at, Modifiers::none());
+                } else {
+                    cx.update(|window, cx| { let focus = graph.read(cx).chain_focus[0].clone(); focus.focus(window, cx); }); frames(cx, 1);
+                    road_key_click(cx, press);
+                }
+                frames(cx, 30);
+                assert_eq!(graph.read_with(cx, |graph, _| graph.focused()), Some(if interruption == "navigation" { 3 } else { 2 }), "fresh native input remains usable");
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn native_road_steps_reject_retained_navigation_and_retired_or_replaced_producers_before_focus(cx: &mut TestAppContext) {
+        use gpui::AppContext;
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Default::default() }, cx); });
+        for interruption in ["navigation", "retirement", "replacement"] {
+            for transport in ["mouse", "enter", "space", "accessibility"] {
+                let world = Arc::new(crate::graph::model::tests::tiny());
+                let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+                let producer = Rc::new(Cell::new(Some(1_u64)));
+                let mut view = None;
+                let (host, cx) = cx.add_window_view(|window, cx| {
+                    let graph = cx.new(|cx| GraphView::with_scene(scene.clone(), Start::World, window, cx));
+                    view = Some(graph.clone());
+                    NativeRoadHost { graph, producer: producer.clone() }
+                });
+                let view = view.expect("mounted road"); let captured = producer.clone();
+                view.update(cx, |graph, cx| {
+                    graph.on_interaction_admission(Rc::new(move |phase, _| phase != InteractionPhase::Activate || captured.get() == Some(1)));
+                    graph.hold_chain(native_road_fixture(&[2]), cx);
+                });
+                cx.update(|window, _| window.set_a11y_forced(true)); frames(cx, 30);
+                cx.update(|window, cx| { let old = view.read(cx).chain_focus[0].clone(); old.focus(window, cx); }); frames(cx, 1);
+                let (node, at, frame) = cx.update(|window, _| {
+                    let node = window.a11y_tree().expect("committed road").nodes.iter().find(|(_, n)|
+                        n.role() == gpui::Role::Button && n.label() == Some("Select new. Road step 1 of 1")
+                            && n.supports_action(gpui::AccessibleAction::Click)).map(|(id, _)| *id).expect("native road Click");
+                    (node, window.a11y_node_bounds(node).expect("native road bounds").center(), window.a11y_frame_number())
+                });
+                let armed_frame = cx.update(|window, cx| {
+                    // Arm the original receiver BEFORE changing its navigation or producer.
+                    if transport == "mouse" {
+                        window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                            position: at, modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1, first_mouse: false,
+                        }), cx);
+                    } else if transport != "accessibility" {
+                        window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                            keystroke: gpui::Keystroke::parse(transport).expect("road native key"), is_held: false, prefer_character_input: false,
+                        }), cx);
+                    }
+                    assert_eq!(view.read(cx).focused(), None, "press alone is not selection");
+                    let armed_frame = window.a11y_frame_number();
+                    match interruption {
+                        "navigation" => view.update(cx, |graph, cx| graph.hold_chain(native_road_fixture(&[3]), cx)),
+                        "retirement" => producer.set(None),
+                        "replacement" => {
+                            producer.set(Some(2)); let current = producer.clone();
+                            view.update(cx, |graph, _| graph.on_interaction_admission(Rc::new(move |phase, _|
+                                phase != InteractionPhase::Activate || current.get() == Some(2))));
+                        }
+                        _ => unreachable!(),
+                    }
+                    // The real Shell owner publication invalidates its host. Model
+                    // that notification explicitly instead of assuming a Cell write
+                    // caused a paint or forcing Window.draw in this retained batch.
+                    if matches!(transport, "enter" | "space") { host.update(cx, |_, cx| cx.notify()); }
+                    if transport == "mouse" {
+                        window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                            position: at, modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1,
+                        }), cx);
+                    } else if transport == "accessibility" {
+                        // No key intervenes: this is genuinely the old committed action tree.
+                        assert_eq!(window.a11y_frame_number(), frame);
+                        window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+                            action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: node, data: None,
+                        }, cx);
+                    }
+                    // Key release is deliberately withheld until the explicit
+                    // replacement frame below. A Cell update alone need not dirty
+                    // the window, and key dispatch may itself redraw a dirty one.
+                    assert_eq!(view.read(cx).focused(), None, "old {transport} cannot adopt {interruption}");
+                    assert_eq!(view.read(cx).held_chain(), Some(if interruption == "navigation" { &[3][..] } else { &[2][..] }));
+                    if matches!(transport, "mouse" | "accessibility") {
+                        assert_eq!(window.a11y_frame_number(), frame, "pointer/AX refusal really precedes replacement paint");
+                        let canvas = view.focus_handle(cx); canvas.focus(window, cx);
+                        window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                            position: at, modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1, first_mouse: false,
+                        }), cx);
+                        window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                            position: at, modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1,
+                        }), cx);
+                        assert!(canvas.is_focused(window), "stale pointer refuses before native focus");
+                        assert_eq!(view.read(cx).focused(), None);
+                        assert_eq!(window.a11y_frame_number(), frame);
+                    }
+                    armed_frame
+                });
+                if matches!(transport, "enter" | "space") {
+                    cx.update(|window, cx| {
+                        // The host notification above dirties the window. GPUI's
+                        // production dispatch now commits it before key release.
+                        window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
+                            keystroke: gpui::Keystroke::parse(transport).expect("road release"),
+                        }), cx);
+                        assert!(window.a11y_frame_number() > armed_frame, "the held key spans an observed host-notified replacement frame");
+                        assert_eq!(view.read(cx).focused(), None, "replacement must not adopt the earlier key-down");
+                        assert_eq!(view.read(cx).held_chain(), Some(if interruption == "navigation" { &[3][..] } else { &[2][..] }));
+                    });
+                }
+                cx.run_until_parked();
+                assert_eq!(view.read_with(cx, |graph, _| graph.focused()), None, "deferred effects cannot select the old road");
+                producer.set(Some(2)); let current = producer.clone();
+                view.update(cx, |graph, _| graph.on_interaction_admission(Rc::new(move |phase, _|
+                    phase != InteractionPhase::Activate || current.get() == Some(2)))); frames(cx, 30);
+                let expected = if interruption == "navigation" { 3 } else { 2 };
+                let label = if expected == 3 { "Select from_str. Road step 1 of 1" } else { "Select new. Road step 1 of 1" };
+                let (fresh, at) = cx.update(|window, _| {
+                    let node = window.a11y_tree().expect("renewed road").nodes.iter().find(|(_, n)| n.role() == gpui::Role::Button && n.label() == Some(label))
+                        .map(|(id, _)| *id).expect("fresh road control"); (node, window.a11y_node_bounds(node).expect("fresh bounds").center())
+                });
+                if transport == "accessibility" {
+                    // This freshly observed node is a CURRENT AX capability, unlike the request above.
+                    cx.update(|window, cx| window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+                        action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: fresh, data: None,
+                    }, cx));
+                } else if transport == "mouse" { cx.simulate_click(at, Modifiers::none()); }
+                else {
+                    cx.update(|window, cx| { let focus = view.read(cx).chain_focus[0].clone(); focus.focus(window, cx); }); frames(cx, 1);
+                    road_key_click(cx, transport);
+                }
+                frames(cx, 30);
+                assert_eq!(view.read_with(cx, |graph, _| graph.focused()), Some(expected), "fresh {transport} still selects its exact current step");
+            }
+        }
+    }
+
+    fn road_key_click(cx: &mut VisualTestContext, key: &str) {
+        cx.update(|window, cx| {
+            let key = gpui::Keystroke::parse(key).expect("native key");
+            window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                keystroke: key.clone(), is_held: false, prefer_character_input: false,
+            }), cx);
+            window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke: key }), cx);
+        });
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn native_road_keyboard_and_ax_select_exact_steps_and_escape_remains_local(cx: &mut TestAppContext) {
+        cx.update(|cx| { gpui_component::init(cx); set_facet(Facet { reduced_motion: true, ..Default::default() }, cx); });
+        for activation in ["enter", "space", "ax", "escape-offline"] {
+            let world = Arc::new(crate::graph::model::tests::tiny());
+            let scene = Arc::new(Scene::new(world.clone(), Arc::new(Layout::compute(&world))));
+            let (view, cx) = cx.add_window_view(|window, cx| GraphView::with_scene(scene.clone(), Start::World, window, cx));
+            let available = Rc::new(Cell::new(true)); let current = available.clone();
+            view.update(cx, |graph, cx| {
+                graph.on_interaction_admission(Rc::new(move |phase, _| phase != InteractionPhase::Activate || current.get()));
+                graph.hold_chain(native_road_fixture(&[2, 3]), cx);
+            });
+            cx.update(|window, _| window.set_a11y_forced(true)); frames(cx, 30);
+            cx.update(|window, cx| view.update(cx, |graph, cx| {
+                assert_eq!(graph.chain_focus.len(), crate::semantics::recipes::chain::MAX_STEPS, "bounded authored focus memory");
+                graph.declaration_focus[32].focus(window, cx);
+                assert_eq!(graph.step_native(false, window, cx), NativeFocusStep::Moved, "existing native walk reaches the last road step");
+                assert!(graph.chain_focus[1].is_focused(window));
+            }));
+            if activation == "escape-offline" { available.set(false); cx.simulate_keystrokes("escape"); }
+            else if activation == "ax" {
+                let node = cx.update(|window, _| window.a11y_tree().expect("road tree").nodes.iter().find(|(_, n)|
+                    n.role() == gpui::Role::Button && n.label() == Some("Select from_str. Road step 2 of 2")
+                        && n.supports_action(gpui::AccessibleAction::Click)).map(|(id, _)| *id).expect("exact native second step"));
+                cx.update(|window, cx| window.simulate_a11y_action(gpui::accesskit::ActionRequest {
+                    action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: node, data: None,
+                }, cx));
+            } else { road_key_click(cx, activation); }
+            frames(cx, 30);
+            assert_eq!(view.read_with(cx, |graph, _| graph.focused()), (activation != "escape-offline").then_some(3));
+            assert!(view.read_with(cx, |graph, _| graph.held_chain().is_none()));
+            assert!(cx.update(|window, cx| view.focus_handle(cx).is_focused(window)), "selection or local dismissal restores the actual canvas receiver");
         }
     }
 
