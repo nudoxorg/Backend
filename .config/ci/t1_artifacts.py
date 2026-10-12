@@ -137,6 +137,7 @@ def main() -> None:
     consumer.add_argument("artifact", type=Path)
     consumer.add_argument("--source-sha", required=True)
     consumer.add_argument("--target", default=TARGET)
+    consumer.add_argument("--import-runtime", action="store_true", help="verify and import runtime without launching smoke (for T2 consumers)")
     consumer.add_argument("--smoke", action="store_true", help="import runtime closure and smoke the exact published binaries")
     args = parser.parse_args()
     if args.action == "publish":
@@ -145,9 +146,10 @@ def main() -> None:
     # Smoke launches binaries from a private cwd; keep artifact paths absolute.
     args.artifact = args.artifact.absolute()
     manifest = verify(args.artifact, args.source_sha, args.target)
-    if args.smoke:
+    if args.smoke or args.import_runtime:
         with (args.artifact / "runtime.nar").open("rb") as stream:
             subprocess.run(["nix-store", "--import"], stdin=stream, check=True, timeout=300)
+    if args.smoke:
         env = {**manifest["runtime_env"], "LANG": "C.UTF-8"}
         for surface in ("cli", "mcp", "gui"):
             subprocess.run([manifest["python"], str(args.artifact / "smoke.py"), surface,

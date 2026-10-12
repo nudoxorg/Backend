@@ -33,7 +33,10 @@ exclude compiler subprocesses and CLI/MCP resource use. Linux `/proc` is require
 The initial ratios and noise floors in `surface.py` are provisional and need
 repeated measurements before this becomes a required performance gate. Compiler
 shell acquisition is infrastructure setup, outside those operation measurements.
-T2 remains advisory in the producer until its separate job is available.
+CI_T2_EXTERNAL=1 delegates T2 to an isolated parallel consumer. Local T1
+commands retain the advisory integration step by default. Consumers verify and
+import the exact artifact runtime before entering the pinned surface shell;
+their checkout provides harness/configuration only, with no product build.
 
 ## Initial snapshot review
 
