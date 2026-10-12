@@ -1,5 +1,6 @@
 """Artifact consumers must reject wrong identities and damaged/unsafe payloads."""
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -91,6 +92,16 @@ class ArtifactTests(unittest.TestCase):
         self.manifest["python"] = "/nix/store/" + "c" * 32 + "-other/bin/python3"
         self.save()
         self.reject()
+
+    def test_relative_consumer_paths_survive_private_smoke_cwd(self):
+        relative = os.path.relpath(self.root)
+        with patch("sys.argv", ["t1_artifacts.py", "verify", relative, "--source-sha", SHA, "--smoke"]), patch.object(t1_artifacts.subprocess, "run") as run:
+            t1_artifacts.main()
+        self.assertEqual(run.call_count, 4)
+        for call in run.call_args_list[1:]:
+            argv = call.args[0]
+            self.assertTrue(Path(argv[1]).is_absolute())
+            self.assertTrue(Path(argv[-1]).is_absolute())
 
     def test_invalid_runtime_root_rejected(self):
         self.manifest["runtime_roots"] = ["/tmp/runtime"]

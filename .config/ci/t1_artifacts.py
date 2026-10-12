@@ -140,6 +140,8 @@ def main() -> None:
     if args.action == "publish":
         publish(args.bin_dir, args.output)
         return
+    # Smoke launches binaries from a private cwd; keep artifact paths absolute.
+    args.artifact = args.artifact.absolute()
     manifest = verify(args.artifact, args.source_sha, args.target)
     if args.smoke:
         with (args.artifact / "runtime.nar").open("rb") as stream:
