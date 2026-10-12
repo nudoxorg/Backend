@@ -28,7 +28,7 @@ pub fn parse(args: &[String], default_limit: Option<&str>) -> Result<Invocation,
     let Some(spelling) = args.first().map(String::as_str) else {
         return Err(Fault::usage(
             "command",
-            "name a command; run `backend --help` for the whole vocabulary",
+            "name a command; run `nudox --help` for the whole vocabulary",
         ));
     };
     let grammar = grammar_for(spelling).ok_or_else(|| unknown_command(spelling))?;
@@ -90,7 +90,7 @@ fn unknown_command(spelling: &str) -> Fault {
         nearest.map_or_else(
             || {
                 format!(
-                    "`{spelling}` is not a command; run `backend --help` for the whole vocabulary"
+                    "`{spelling}` is not a command; run `nudox --help` for the whole vocabulary"
                 )
             },
             |nearest| format!("`{spelling}` is not a command; did you mean `{nearest}`?"),
@@ -154,13 +154,13 @@ fn distance(left: &str, right: &str) -> usize {
 #[must_use]
 pub fn help() -> String {
     let mut out = String::from(
-        "backend — local-first, versioned code intelligence\n\n\
-         Usage: backend [OPTIONS] <COMMAND> [OPERANDS]\n",
+        "nudox — local-first, versioned code intelligence\n\n\
+         Usage: nudox [OPTIONS] <COMMAND> [OPERANDS]\n",
     );
     out.push_str("\nquick start (installed command name: nudox)\n");
     out.push_str(concat!(
+        "  nudox embedding-setup  Optional Linux semantic setup, before starting the local owner\n",
         "  nudox add .  Start indexing; poll the returned operation for its terminal receipt\n",
-        "  nudox embedding-setup  Install the bundled local semantic preset; then reopen and reindex\n",
         "  nudox search \"error handling\"  Find declarations at the published revision\n",
         "  Claude Code: claude mcp add --scope user --transport stdio nudox -- \"$(command -v backend-mcp)\" --project '${CLAUDE_PROJECT_DIR:-.}'\n",
     ));
@@ -191,7 +191,7 @@ fn help_line(grammar: CommandGrammar) -> String {
 /// Renders the long help for one command, including when to reach for it.
 #[must_use]
 pub fn help_for(grammar: CommandGrammar) -> String {
-    let mut out = format!("backend {}\n\n", grammar.usage());
+    let mut out = format!("{}\n\n", grammar.installed_usage());
     let _ = writeln!(out, "{}", grammar.description());
     if !grammar.positional().is_empty() {
         out.push_str("\noperands\n");

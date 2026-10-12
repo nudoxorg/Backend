@@ -16,6 +16,50 @@ fn ticket() -> IndexJobTicket {
 }
 
 #[test]
+fn readiness_guidance_is_an_installed_observation_without_a_ready_claim() {
+    let fault =
+        Fault::from_client_error(&backend_client::ClientError::IncoherentView, Operand::Whole);
+    assert_eq!(fault.slug(), FaultSlug::IncoherentView);
+    assert_eq!(fault.affordance(), &Affordance::WaitForReadiness);
+    assert_eq!(fault.affordance().shell().as_deref(), Some("nudox health"));
+    let expected_call = serde_json::json!({"name":"backend.status", "arguments":{}});
+    assert_eq!(fault.affordance().tool_call(), Some(expected_call.clone()));
+    for text in [text::fault(&fault, Theme::plain()), markdown::fault(&fault)] {
+        assert!(text.contains("nudox health"));
+        assert!(!text.contains("backend health"));
+        assert!(!text.contains("wait for ~lanes to read ready"));
+        assert!(text.contains(fault.cause().sentence()));
+    }
+    for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+        let payload = encode_serializable(
+            "fault",
+            detail,
+            None,
+            FaultDto::new(&fault),
+            DEFAULT_RESPONSE_BUDGET_BYTES,
+        )
+        .expect("bounded readiness fault");
+        let value: serde_json::Value = serde_json::from_slice(&payload.bytes).expect("JSON");
+        assert_eq!(value["slug"], "incoherent-view");
+        assert_eq!(value["shell"], "nudox health");
+        assert_eq!(value["call"], expected_call);
+        assert_eq!(value["detail"], fault.cause().sentence());
+    }
+    let alias = Affordance::UseCommand {
+        name: "status",
+        args: Box::new([]),
+    };
+    assert_eq!(alias.shell().as_deref(), Some("nudox health"));
+    assert_eq!(alias.tool_call(), Some(expected_call));
+    let absent = Affordance::UseCommand {
+        name: "not-a-registered-command",
+        args: Box::new([]),
+    };
+    assert!(absent.shell().is_none());
+    assert!(absent.tool_call().is_none());
+}
+
+#[test]
 fn copied_ticket_objects_and_strings_share_strict_admission_and_guidance() {
     let ticket = ticket();
     let object = serde_json::to_value(&ticket).expect("ticket object");

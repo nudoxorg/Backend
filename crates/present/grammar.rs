@@ -417,6 +417,12 @@ impl CommandGrammar {
         }
         line
     }
+
+    /// Returns a usage line for the installed public command.
+    #[must_use]
+    pub fn installed_usage(self) -> String {
+        format!("nudox {}", self.usage())
+    }
 }
 
 /// Finds the grammar for one registry row name or CLI alias.

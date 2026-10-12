@@ -463,7 +463,7 @@ fn accepted_view(heading: &str, path: &str, intent: IntentId) -> ProductView {
             vec![
                 format!("intent {}", KeyTag::from_key(intent.as_bytes())),
                 "pending".to_owned(),
-                "read `backend health` for readiness".to_owned(),
+                "read `nudox health` for the current readiness observation".to_owned(),
             ],
         )],
     )

@@ -1,4 +1,16 @@
 //! Exact POSIX shell operands for executable presentation affordances.
+/// Renders a registered command using the installed public executable and
+/// canonical CLI spelling. Unknown command names cannot produce guidance.
+pub(crate) fn command(name: &str, arguments: &[String]) -> Option<String> {
+    let grammar = crate::grammar_for(name)?;
+    let mut line = format!("nudox {}", grammar.name());
+    for argument in arguments {
+        line.push(' ');
+        line.push_str(&quote_argument(argument));
+    }
+    Some(line)
+}
+
 /// Quotes one complete operand. Only shell-inert ASCII bytes stay unquoted;
 /// JSON, Unicode and metacharacters are protected as a single literal argv.
 pub(crate) fn quote_argument(value: &str) -> String {

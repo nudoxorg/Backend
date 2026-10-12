@@ -127,7 +127,7 @@ impl Invocation {
         if too_few || too_many {
             return Err(Fault::usage(
                 self.grammar.name(),
-                format!("usage: backend {}", self.grammar.usage()),
+                format!("usage: {}", self.grammar.installed_usage()),
             ));
         }
         Ok(())
