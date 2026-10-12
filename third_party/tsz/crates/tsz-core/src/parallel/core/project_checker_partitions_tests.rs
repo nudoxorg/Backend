@@ -3401,10 +3401,21 @@ fn selected_import_equals_keeps_exact_type_only_export_assignment() {
                     selected_external("dep"),
                 ),
             ];
-            assert_cold_selected_diagnostics(
+            if !runtime {
+                // Keep the original illegal module-format case as a negative
+                // control instead of suppressing its genuine TS1202.
+                assert_cold_selected_diagnostics(files.clone(), &resolutions, &[1202]);
+            }
+            assert_cold_selected_diagnostics_with_options(
                 files,
                 &resolutions,
                 if runtime { &[1361] } else { &[] },
+                CheckerOptions {
+                    // Genuine TS5.9.3 emits TS1202 for this import-equals
+                    // syntax under ESNext, but accepts its type query in CJS.
+                    module: tsz_common::common::ModuleKind::CommonJS,
+                    ..CheckerOptions::default()
+                },
             );
         }
     }
@@ -3517,11 +3528,24 @@ fn assert_cold_selected_diagnostics(
     resolutions: &[ProjectModuleResolution],
     codes: &[u32],
 ) {
+    assert_cold_selected_diagnostics_with_options(
+        files,
+        resolutions,
+        codes,
+        CheckerOptions {
+            module: tsz_common::common::ModuleKind::ESNext,
+            ..CheckerOptions::default()
+        },
+    );
+}
+
+fn assert_cold_selected_diagnostics_with_options(
+    files: Vec<(String, String)>,
+    resolutions: &[ProjectModuleResolution],
+    codes: &[u32],
+    options: CheckerOptions,
+) {
     let program = compile_files_with_libs(files, &[]);
-    let options = CheckerOptions {
-        module: tsz_common::common::ModuleKind::ESNext,
-        ..CheckerOptions::default()
-    };
     let plan = ParallelCheckPlan::build(
         &program,
         &options,

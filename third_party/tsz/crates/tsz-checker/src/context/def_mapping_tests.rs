@@ -1324,3 +1324,190 @@ fn reconcile_uses_missing_entry_probe_not_overlay_repair() {
         "file preparation must replay deferred flow-env writes before reconcile assertions"
     );
 }
+
+#[test]
+fn project_symbol_reads_distinguish_source_and_selected_owner_with_real_colliding_binders() {
+    fn bind(
+        file: &str,
+        source: &str,
+    ) -> (
+        Arc<tsz_parser::parser::node::NodeArena>,
+        Arc<BinderState>,
+        tsz_binder::SymbolId,
+    ) {
+        let mut parser = ParserState::new(file.to_owned(), source.to_owned());
+        let root = parser.parse_source_file();
+        let mut binder = BinderState::new();
+        binder.bind_source_file(parser.get_arena(), root);
+        let id = *binder
+            .get_symbols()
+            .find_all_by_name("value")
+            .first()
+            .unwrap();
+        (Arc::new(parser.get_arena().clone()), Arc::new(binder), id)
+    }
+    let (local_arena, local, local_id) = bind("local.ts", "export const value: number = 1;");
+    let (remote_arena, remote, remote_id) = bind("remote.ts", "import type { value } from 'dep';");
+    assert_eq!(
+        local_id, remote_id,
+        "independent binders genuinely allocate overlapping ids"
+    );
+    assert!(!local.get_symbol(local_id).unwrap().is_type_only);
+    assert!(remote.get_symbol(remote_id).unwrap().is_type_only);
+    let types = TypeInterner::new();
+    let mut ctx = CheckerContext::new(
+        local_arena.as_ref(),
+        local.as_ref(),
+        &types,
+        "local.ts".to_owned(),
+        CheckerOptions::default(),
+    );
+    ctx.all_binders = Some(Arc::new(vec![Arc::clone(&local), Arc::clone(&remote)]));
+    ctx.all_arenas = Some(Arc::new(vec![
+        Arc::clone(&local_arena),
+        Arc::clone(&remote_arena),
+    ]));
+    ctx.global_symbol_file_index = Some(Arc::new([(remote_id, 1)].into_iter().collect()));
+    ctx.register_symbol_file_target(remote_id, 0);
+    assert!(std::ptr::eq(
+        ctx.project_source_symbol(remote_id).unwrap(),
+        remote.get_symbol(remote_id).unwrap()
+    ));
+    assert!(std::ptr::eq(
+        ctx.project_resolved_symbol(remote_id).unwrap(),
+        local.get_symbol(local_id).unwrap()
+    ));
+    let (symbol, arena) = ctx.project_resolved_symbol_and_arena(remote_id).unwrap();
+    assert!(std::ptr::eq(symbol, local.get_symbol(local_id).unwrap()));
+    assert!(std::ptr::eq(arena, local_arena.as_ref()));
+    ctx.global_symbol_file_index = None;
+    *ctx.cross_file_symbol_targets.borrow_mut() = Default::default();
+    assert!(
+        ctx.project_source_symbol(remote_id).is_none(),
+        "same-id local value is not an owner proof"
+    );
+    assert!(ctx.project_resolved_symbol(remote_id).is_none());
+    assert!(ctx.project_resolved_symbol_and_arena(remote_id).is_none());
+    ctx.global_symbol_file_index = Some(Arc::new([(remote_id, 2)].into_iter().collect()));
+    assert!(
+        ctx.project_source_symbol(remote_id).is_none(),
+        "invalid declared owner cannot fall through to local"
+    );
+    assert!(ctx.project_resolved_symbol(remote_id).is_none());
+}
+
+#[test]
+fn delegated_library_local_alias_keeps_exact_retained_target_and_shared_stop() {
+    use crate::state::CheckerState;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tsz_binder::{LibContext, symbol_flags};
+    use tsz_solver::construction::QueryCache;
+
+    struct Stop(AtomicBool);
+    impl tsz_common::ExecutionCheckpoint for Stop {
+        fn checkpoint(&self, _work: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+            if self.0.load(Ordering::Acquire) {
+                Err(tsz_common::ProjectExecutionStop::Cancelled)
+            } else {
+                Ok(())
+            }
+        }
+    }
+    let mut parser = ParserState::new(
+        "lib.fixture.d.ts".to_owned(),
+        "declare namespace Library { const value: number; } import Alias = Library;".to_owned(),
+    );
+    let root = parser.parse_source_file();
+    let mut binder = BinderState::new();
+    binder.bind_source_file(parser.get_arena(), root);
+    let alias = *binder
+        .get_symbols()
+        .find_all_by_name("Alias")
+        .first()
+        .unwrap();
+    let target = *binder
+        .get_symbols()
+        .find_all_by_name("Library")
+        .first()
+        .unwrap();
+    assert!(
+        binder
+            .get_symbol(alias)
+            .unwrap()
+            .has_any_flags(symbol_flags::ALIAS)
+    );
+    let arena = Arc::new(parser.get_arena().clone());
+    let binder = Arc::new(binder);
+    let types = TypeInterner::new();
+    let stop = Stop(AtomicBool::new(false));
+    let queries = QueryCache::new(&types).with_execution_checkpoint(&stop);
+    let mut checker = CheckerState::new(
+        arena.as_ref(),
+        binder.as_ref(),
+        &queries,
+        "lib.fixture.d.ts".to_owned(),
+        CheckerOptions::default(),
+    );
+    checker.ctx.project_module_resolution_outcomes = Some(Arc::new(Default::default()));
+    checker.ctx.lib_contexts = Arc::new(vec![LibContext {
+        arena: Arc::clone(&arena),
+        binder: Arc::clone(&binder),
+    }]);
+    // This is the actual lib-local delegation contract: neither program owner
+    // map is retained; source and followed target live in the same exact lib.
+    assert!(checker.ctx.global_symbol_file_index.is_none());
+    assert!(
+        checker
+            .ctx
+            .resolve_dynamic_symbol_file_index(alias)
+            .is_none()
+    );
+    assert_eq!(checker.runtime_namespace_alias_target(alias), Some(target));
+    let (resolved, resolved_arena) = checker
+        .ctx
+        .project_resolved_symbol_and_arena(target)
+        .unwrap();
+    assert!(std::ptr::eq(resolved, binder.get_symbol(target).unwrap()));
+    assert!(std::ptr::eq(resolved_arena, arena.as_ref()));
+
+    // Even an equivalent arena clone cannot attest this retained binder pair.
+    checker.ctx.lib_contexts = Arc::new(vec![LibContext {
+        arena: Arc::new(arena.as_ref().clone()),
+        binder: Arc::clone(&binder),
+    }]);
+    assert!(checker.ctx.project_resolved_symbol(target).is_none());
+    assert!(checker.runtime_namespace_alias_target(alias).is_none());
+    checker.ctx.lib_contexts = Arc::new(vec![LibContext {
+        arena: Arc::clone(&arena),
+        binder: Arc::clone(&binder),
+    }]);
+    checker.ctx.register_symbol_file_target(target, 99);
+    assert!(
+        checker.ctx.project_resolved_symbol(target).is_none(),
+        "an invalid selected owner cannot fall through to library-local proof"
+    );
+    *checker.ctx.cross_file_symbol_targets.borrow_mut() = Default::default();
+    assert!(checker.ctx.resolve_symbol_file_index(target).is_none());
+    assert_eq!(
+        checker.runtime_namespace_alias_target(alias),
+        Some(target),
+        "the valid alias recovers after removing the invalid owner"
+    );
+    stop.0.store(true, Ordering::Release);
+    assert!(checker.ctx.project_resolved_symbol(target).is_none());
+    stop.0.store(false, Ordering::Release);
+    assert_eq!(
+        tsz_common::ExecutionCheckpoint::checkpoint(&stop, 0),
+        Ok(()),
+        "the underlying checkpoint has recovered"
+    );
+    assert_eq!(
+        tsz_solver::construction::TypeExecutionCheckpoint::execution_checkpoint(&queries, 0),
+        Err(tsz_common::ProjectExecutionStop::Cancelled),
+        "QueryCache retains the exact earlier stop independently of alias ownership"
+    );
+    assert!(
+        checker.runtime_namespace_alias_target(alias).is_none(),
+        "the shared checkpoint remains latched after the one stop"
+    );
+}

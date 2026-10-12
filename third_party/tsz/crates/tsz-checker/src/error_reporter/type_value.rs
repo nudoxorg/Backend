@@ -658,6 +658,40 @@ impl<'a> CheckerState<'a> {
         // upstream in /a.ts) before reaching C-c, even though C-c is closer
         // to the use-site and carries the more direct marker.
         for alias_sym_id in &visited {
+            if self.ctx.project_module_resolution_outcomes.is_some() {
+                let Some(owner) = self.ctx.resolve_symbol_declaring_file_index(alias_sym_id) else {
+                    continue;
+                };
+                let Some(binder) = self.ctx.get_binder_for_file(owner) else {
+                    continue;
+                };
+                let Some(symbol) = binder.get_symbol(alias_sym_id) else {
+                    continue;
+                };
+                if !symbol.has_any_flags(symbol_flags::ALIAS)
+                    || !symbol.is_type_only
+                    || symbol.declarations.len() != symbol.stable_declarations.len()
+                {
+                    continue;
+                }
+                let arena = self.ctx.get_arena_for_file(owner as u32);
+                for (&decl, stable) in symbol.declarations.iter().zip(&symbol.stable_declarations) {
+                    if self.ctx.types.execution_checkpoint(1).is_err() {
+                        return None;
+                    }
+                    let Some(node) = arena.get(decl) else {
+                        continue;
+                    };
+                    if stable.file_idx as usize == owner
+                        && (node.pos, node.end) == (stable.pos, stable.end)
+                        && binder.node_symbols.get(&decl.0) == Some(&alias_sym_id)
+                        && let Some(kind) = Self::find_direct_type_only_marker(arena, decl)
+                    {
+                        return Some(kind);
+                    }
+                }
+                continue;
+            }
             let Some(symbol) = self.get_symbol_from_any_binder(alias_sym_id) else {
                 continue;
             };

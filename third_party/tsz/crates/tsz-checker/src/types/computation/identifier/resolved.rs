@@ -725,7 +725,9 @@ impl CheckerState<'_> {
                             sid != sym_id
                                 && (s.has_any_flags(tsz_binder::symbol_flags::VALUE)
                                     || (s.has_any_flags(tsz_binder::symbol_flags::ALIAS)
-                                        && !s.is_type_only))
+                                        && !s.is_type_only
+                                        && (self.ctx.project_module_resolution_outcomes.is_none()
+                                            || self.selected_import_alias_has_runtime_value(sid))))
                         })
                 })
                 .is_some();

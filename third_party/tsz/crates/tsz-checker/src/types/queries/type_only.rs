@@ -778,7 +778,13 @@ impl<'a> CheckerState<'a> {
     /// (has TYPE flag but not VALUE flag).
     pub(crate) fn alias_resolves_to_type_only(&self, sym_id: SymbolId) -> bool {
         let lib_binders = self.get_lib_binders();
-        let symbol = match self.ctx.binder.get_symbol_with_libs(sym_id, &lib_binders) {
+        let configured = self.ctx.project_module_resolution_outcomes.is_some();
+        let source = if configured {
+            self.ctx.project_source_symbol(sym_id)
+        } else {
+            self.ctx.binder.get_symbol_with_libs(sym_id, &lib_binders)
+        };
+        let symbol = match source {
             Some(symbol) => symbol,
             None => return false,
         };
@@ -859,17 +865,22 @@ impl<'a> CheckerState<'a> {
         // If any intermediate alias in the chain was marked type-only
         // (e.g. `export type { A }`), then the resolved symbol is type-only.
         for alias_sym_id in &visited {
-            if let Some(alias_sym) = self
-                .ctx
-                .binder
-                .get_symbol_with_libs(alias_sym_id, &lib_binders)
-                && alias_sym.is_type_only
-            {
+            let alias = if configured {
+                self.ctx.project_source_symbol(alias_sym_id)
+            } else {
+                self.ctx.binder.get_symbol_with_libs(alias_sym_id, &lib_binders)
+            };
+            if alias.is_some_and(|alias| alias.is_type_only) {
                 return true;
             }
         }
 
-        let target_symbol = match self.ctx.binder.get_symbol_with_libs(target, &lib_binders) {
+        let target_symbol = if configured {
+            self.ctx.project_resolved_symbol(target)
+        } else {
+            self.ctx.binder.get_symbol_with_libs(target, &lib_binders)
+        };
+        let target_symbol = match target_symbol {
             Some(target_symbol) => target_symbol,
             None => return false,
         };
@@ -993,7 +1004,12 @@ impl<'a> CheckerState<'a> {
     ) -> bool {
         use tsz_parser::parser::syntax_kind_ext;
 
-        let (symbol, arena) = if let Some(found) = self.lookup_symbol_with_name(sym_id, name_hint) {
+        let (symbol, arena) = if self.ctx.project_module_resolution_outcomes.is_some() {
+            let Some(found) = self.ctx.project_resolved_symbol_and_arena(sym_id) else {
+                return true; // unavailable owner cannot prove a runtime member
+            };
+            found
+        } else if let Some(found) = self.lookup_symbol_with_name(sym_id, name_hint) {
             found
         } else if name_hint.is_some() {
             match self.lookup_symbol_with_name(sym_id, None) {

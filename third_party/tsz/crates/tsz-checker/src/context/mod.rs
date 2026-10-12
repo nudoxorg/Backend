@@ -71,7 +71,7 @@ mod program_context;
 pub use program_context::ProgramContext;
 mod request_cache;
 mod resolver;
-pub(crate) use resolver::{BoundModuleRequest, SelectedModuleRequest};
+pub(crate) use resolver::{BoundModuleRequest, SelectedModuleRequest, SourceModuleAliasKind};
 mod source_file_symbol_type_cache_scope;
 pub(crate) mod speculation;
 mod strict_mode;

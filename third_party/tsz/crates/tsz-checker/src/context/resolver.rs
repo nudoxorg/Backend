@@ -52,6 +52,14 @@ thread_local! {
         std::cell::RefCell::new(rustc_hash::FxHashSet::default());
 }
 
+/// Source classification only; successful module admission remains separate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SourceModuleAliasKind {
+    Import,
+    FileReexport,
+    ModuleReexport,
+}
+
 /// Borrowed syntactic provenance for one retained module request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BoundModuleRequest<'source> {
@@ -359,6 +367,76 @@ impl<'a> CheckerContext<'a> {
             });
         }
         None
+    }
+
+    /// Classify a source alias without admitting its module request. Refused
+    /// named reexports must not become direct declarations in public tables.
+    pub(crate) fn source_module_alias_kind(
+        &self,
+        symbol: tsz_binder::SymbolId,
+    ) -> Option<SourceModuleAliasKind> {
+        let importer = self.resolve_symbol_declaring_file_index(symbol)?;
+        let binder = self.get_binder_for_file(importer)?;
+        let alias = binder.get_symbol(symbol)?;
+        let arena = self.all_arenas.as_ref()?.get(importer)?;
+        if alias.declarations.is_empty()
+            || alias.declarations.len() != alias.stable_declarations.len()
+        {
+            return None;
+        }
+        let mut classification = None;
+        for (&declaration, stable) in alias.declarations.iter().zip(&alias.stable_declarations) {
+            let node = arena.get(declaration)?;
+            if stable.file_idx as usize != importer
+                || (node.pos, node.end) != (stable.pos, stable.end)
+                || binder.node_symbols.get(&declaration.0) != Some(&symbol)
+            {
+                return None;
+            }
+            let mut ancestor = declaration;
+            let mut found = None;
+            for _ in 0..arena.len() {
+                self.types.execution_checkpoint(1).ok()?;
+                let node = arena.get(ancestor)?;
+                if let Some(export) = arena.get_export_decl(node) {
+                    let source = arena.get_literal_text(export.module_specifier);
+                    if source != alias.import_module() {
+                        return None;
+                    }
+                    source?;
+                    let mut owner_node = arena.parent_of(ancestor)?;
+                    for _ in 0..arena.len() {
+                        self.types.execution_checkpoint(1).ok()?;
+                        let owner = arena.get(owner_node)?;
+                        if let Some(module) = arena.get_module(owner) {
+                            found = Some(if arena.get_literal_text(module.name).is_some() {
+                                SourceModuleAliasKind::ModuleReexport
+                            } else {
+                                SourceModuleAliasKind::FileReexport
+                            });
+                            break;
+                        }
+                        if owner.kind == tsz_parser::parser::syntax_kind_ext::SOURCE_FILE {
+                            found = Some(SourceModuleAliasKind::FileReexport);
+                            break;
+                        }
+                        owner_node = arena.parent_of(owner_node)?;
+                    }
+                    break;
+                }
+                if arena.get_import_decl(node).is_some() {
+                    found = Some(SourceModuleAliasKind::Import);
+                    break;
+                }
+                ancestor = arena.parent_of(ancestor)?;
+            }
+            let found = found?;
+            if classification.is_some_and(|previous| previous != found) {
+                return None;
+            }
+            classification = Some(found);
+        }
+        classification
     }
 
     /// Recover an alias request from its real file/range and bound declaration.

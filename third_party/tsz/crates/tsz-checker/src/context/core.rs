@@ -246,6 +246,80 @@ impl<'a> CheckerContext<'a> {
             .and_then(|map| map.get(&sym_id).copied())
     }
 
+    /// Read a source symbol from its declaring owner, or an exact retained
+    /// library identity. Missing owners never trigger a same-id binder scan.
+    pub(crate) fn project_source_symbol(&self, symbol: SymbolId) -> Option<&tsz_binder::Symbol> {
+        if let Some(owner) = self
+            .resolve_symbol_declaring_file_index(symbol)
+            .or_else(|| self.resolve_dynamic_symbol_file_index(symbol))
+        {
+            return self.get_binder_for_file(owner)?.get_symbol(symbol);
+        }
+        if let Some((symbol, _)) = self.project_library_symbol_and_arena(symbol) {
+            return Some(symbol);
+        }
+        self.current_library_symbol_and_arena(symbol)
+            .map(|(symbol, _)| symbol)
+    }
+
+    /// A followed target uses the selected resolution owner, which can differ
+    /// from the source alias owner. Preserve that distinction for flag reads.
+    pub(crate) fn project_resolved_symbol(&self, symbol: SymbolId) -> Option<&tsz_binder::Symbol> {
+        if let Some(owner) = self.resolve_symbol_file_index(symbol) {
+            return self.get_binder_for_file(owner)?.get_symbol(symbol);
+        }
+        self.project_library_symbol_and_arena(symbol)
+            .or_else(|| self.current_library_symbol_and_arena(symbol))
+            .map(|(symbol, _)| symbol)
+    }
+
+    pub(crate) fn project_resolved_symbol_and_arena(
+        &self,
+        symbol: SymbolId,
+    ) -> Option<(&tsz_binder::Symbol, &NodeArena)> {
+        if let Some(owner) = self.resolve_symbol_file_index(symbol) {
+            let symbol = self.get_binder_for_file(owner)?.get_symbol(symbol)?;
+            let arena = self.all_arenas.as_ref()?.get(owner)?.as_ref();
+            return Some((symbol, arena));
+        }
+        self.project_library_symbol_and_arena(symbol)
+            .or_else(|| self.current_library_symbol_and_arena(symbol))
+    }
+
+    fn current_library_symbol_and_arena(
+        &self,
+        symbol: SymbolId,
+    ) -> Option<(&tsz_binder::Symbol, &NodeArena)> {
+        // Lib delegation clears both program owner maps and enters this
+        // retained binder's LOCAL id space. Both pointers must match; a
+        // same-id symbol in another binder or arena is not ownership proof.
+        for lib in self.lib_contexts.iter() {
+            self.types.execution_checkpoint(1).ok()?;
+            if std::ptr::eq(lib.binder.as_ref(), self.binder)
+                && std::ptr::eq(lib.arena.as_ref(), self.arena)
+            {
+                return Some((lib.binder.get_symbol(symbol)?, lib.arena.as_ref()));
+            }
+        }
+        None
+    }
+
+    fn project_library_symbol_and_arena(
+        &self,
+        symbol: SymbolId,
+    ) -> Option<(&tsz_binder::Symbol, &NodeArena)> {
+        // This is the existing lib-MERGED -> retained lib-LOCAL identity;
+        // pointer equality proves the owning binder, not a spelling match.
+        let &(binder_ptr, local_id) = self.binder.lib_symbol_reverse_remap.get(&symbol)?;
+        for lib in self.lib_contexts.iter() {
+            self.types.execution_checkpoint(1).ok()?;
+            if Arc::as_ptr(&lib.binder) as usize == binder_ptr {
+                return Some((lib.binder.get_symbol(local_id)?, lib.arena.as_ref()));
+            }
+        }
+        None
+    }
+
     /// Resolve a `SymbolId` to a *stable* owning file index for overlay writes.
     ///
     /// Prefers the order-independent declaring-file index; falls back to the

@@ -560,6 +560,20 @@ impl<'a> CheckerState<'a> {
                 self.ctx.register_symbol_file_target(symbol, owner);
                 return Some(symbol);
             }
+            if let Some(symbol) = symbol
+                && self.ctx.project_module_resolution_outcomes.is_some()
+                && binder
+                    .get_symbol(symbol)
+                    .is_some_and(|alias| alias.escaped_name == name)
+                && self.ctx.source_module_alias_kind(symbol)
+                    == Some(crate::context::SourceModuleAliasKind::FileReexport)
+                && self.ctx.bound_module_request_for_alias(symbol).is_none()
+            {
+                // The actual file declaration still publishes this explicit
+                // name. Its refused request is not a target proof: retain the
+                // source alias, whose selected type walk remains unresolved.
+                return Some(symbol);
+            }
             if !default_skips_export_equals
                 && let Some(symbol) = exports.get("export=").and_then(|id| binder.get_symbol(id))
             {
@@ -592,6 +606,16 @@ impl<'a> CheckerState<'a> {
         let Some(alias) = binder.get_symbol(symbol) else {
             return false;
         };
+        if self.ctx.project_module_resolution_outcomes.is_some()
+            && alias.has_any_flags(tsz_binder::symbol_flags::ALIAS)
+            && alias.import_module().is_some()
+        {
+            // Classification is source-owned, independent of successful
+            // request admission. Missing proof cannot promote an alias into
+            // the direct declaration tier; the named phase still admits it.
+            return self.ctx.source_module_alias_kind(symbol)
+                != Some(crate::context::SourceModuleAliasKind::Import);
+        }
         alias.has_any_flags(tsz_binder::symbol_flags::ALIAS)
             && self.ctx.bound_module_request_for_alias(symbol).is_some_and(|request| {
                 request.kind == crate::context::ResolutionRequestKind::EsmReExport

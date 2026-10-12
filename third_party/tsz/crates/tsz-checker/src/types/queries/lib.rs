@@ -629,7 +629,12 @@ impl<'a> CheckerState<'a> {
     /// Selected requests never substitute another binder or unresolved alias.
     pub(crate) fn runtime_namespace_alias_target(&self, member: SymbolId) -> Option<SymbolId> {
         let lib_binders = self.get_lib_binders();
-        let symbol = self.ctx.binder.get_symbol_with_libs(member, &lib_binders)?;
+        let configured = self.ctx.project_module_resolution_outcomes.is_some();
+        let symbol = if configured {
+            self.ctx.project_source_symbol(member)?
+        } else {
+            self.ctx.binder.get_symbol_with_libs(member, &lib_binders)?
+        };
         if symbol.is_type_only {
             return None;
         }
@@ -639,14 +644,35 @@ impl<'a> CheckerState<'a> {
         let mut visited = AliasCycleTracker::new();
         let resolved = self.resolve_alias_symbol(member, &mut visited);
         for alias in &visited {
-            if self
-                .ctx
-                .binder
-                .get_symbol_with_libs(alias, &lib_binders)
-                .is_some_and(|symbol| symbol.is_type_only)
-            {
+            let refused = if configured {
+                self.ctx
+                    .project_source_symbol(alias)
+                    .is_none_or(|symbol| symbol.is_type_only)
+            } else {
+                self.ctx
+                    .binder
+                    .get_symbol_with_libs(alias, &lib_binders)
+                    .is_some_and(|symbol| symbol.is_type_only)
+            };
+            if refused {
                 return None;
             }
+        }
+        // Local export-type clones retain their concrete value flags. They
+        // can terminate an alias chain without appearing in the alias tracker.
+        if resolved.is_some_and(|target| {
+            if configured {
+                self.ctx
+                    .project_resolved_symbol(target)
+                    .is_none_or(|symbol| symbol.is_type_only)
+            } else {
+                self.ctx
+                    .binder
+                    .get_symbol_with_libs(target, &lib_binders)
+                    .is_some_and(|symbol| symbol.is_type_only)
+            }
+        }) {
+            return None;
         }
         resolved.or_else(|| {
             self.ctx

@@ -1104,11 +1104,21 @@ impl<'a> CheckerState<'a> {
         let Some(alias) = self.resolve_identifier_symbol_without_tracking(binding) else {
             return false;
         };
+        self.selected_import_alias_has_runtime_value(alias)
+    }
+
+    pub(crate) fn selected_import_alias_has_runtime_value(&self, alias: SymbolId) -> bool {
         if self.alias_resolves_to_type_only(alias) {
             return false;
         }
         let lib_binders = self.get_lib_binders();
-        let Some(symbol) = self.ctx.binder.get_symbol_with_libs(alias, &lib_binders) else {
+        let configured = self.ctx.project_module_resolution_outcomes.is_some();
+        let symbol = if configured {
+            self.ctx.project_source_symbol(alias)
+        } else {
+            self.ctx.binder.get_symbol_with_libs(alias, &lib_binders)
+        };
+        let Some(symbol) = symbol else {
             return false;
         };
         if symbol.import_module().is_some() && symbol.import_name().is_none_or(|name| name == "*") {
@@ -1123,10 +1133,12 @@ impl<'a> CheckerState<'a> {
         let Some(target) = self.runtime_namespace_alias_target(alias) else {
             return false; // unresolved, refused, cyclic or type-only chain
         };
-        self.ctx
-            .binder
-            .get_symbol_with_libs(target, &lib_binders)
-            .is_some_and(|symbol| symbol.has_any_flags(symbol_flags::VALUE))
+        let symbol = if configured {
+            self.ctx.project_resolved_symbol(target)
+        } else {
+            self.ctx.binder.get_symbol_with_libs(target, &lib_binders)
+        };
+        symbol.is_some_and(|symbol| symbol.has_any_flags(symbol_flags::VALUE))
             && !self.export_symbol_has_no_value(target)
     }
 
