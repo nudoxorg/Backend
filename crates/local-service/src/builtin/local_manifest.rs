@@ -981,6 +981,8 @@ fn read_go_manifest(project_root: &Path) -> Result<Option<LocalPackageManifest>,
     let text = std::str::from_utf8(&bytes)
         .map_err(|_| format!("local manifest {} is not UTF-8", path.display()))?;
     let module_path = go_module_path(text)?;
+    let release =
+        go_release(text).map_err(|error| format!("local manifest {}: {error}", path.display()))?;
     let Some(version) = directory_version(project_root) else {
         return Ok(None);
     };
@@ -1002,7 +1004,7 @@ fn read_go_manifest(project_root: &Path) -> Result<Option<LocalPackageManifest>,
         &bytes,
     )?;
     Ok(Some(LocalPackageManifest {
-        profile: LanguageProfile::Go(go_release(text)),
+        profile: LanguageProfile::Go(release),
         record,
     }))
 }
@@ -1047,37 +1049,106 @@ fn directory_version(directory: &Path) -> Option<String> {
     None
 }
 
-fn go_release(text: &str) -> GoVersion {
-    for raw in text.lines() {
-        let line = strip_line_comment(raw).trim();
-        let Some(rest) = line.strip_prefix("go ") else {
-            continue;
-        };
-        let Some(token) = rest.split_whitespace().next() else {
-            continue;
-        };
-        return classify_go(token);
-    }
-    GoVersion::Go125
+#[derive(Debug, Eq, PartialEq)]
+enum GoReleaseError<'source> {
+    UnsupportedVersion(&'source str),
+    InvalidVersion(&'source str),
+    InvalidDirective(&'source str),
 }
 
-fn classify_go(token: &str) -> GoVersion {
-    let mut parts = token.split('.');
-    let major = decimal_prefix(parts.next().unwrap_or(""));
-    let minor = decimal_prefix(parts.next().unwrap_or(""));
-    if major != 1 {
-        return if major > 1 {
-            GoVersion::Go125
-        } else {
-            GoVersion::Go122
-        };
+impl std::fmt::Display for GoReleaseError<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedVersion(version) => write!(
+                formatter,
+                "go.mod declares unsupported Go language version {version:?}; the newest supported language profile is 1.25"
+            ),
+            Self::InvalidVersion(version) => {
+                write!(
+                    formatter,
+                    "go.mod declares invalid Go language version {version:?}"
+                )
+            }
+            Self::InvalidDirective(directive) => {
+                write!(
+                    formatter,
+                    "go.mod has an invalid go directive {directive:?}"
+                )
+            }
+        }
     }
-    match minor {
+}
+
+fn go_release(text: &str) -> Result<GoVersion, GoReleaseError<'_>> {
+    let mut release = None;
+    for raw in text.lines() {
+        let line = strip_line_comment(raw).trim();
+        let mut fields = line.split_whitespace();
+        if fields.next() != Some("go") {
+            continue;
+        }
+        let token = fields
+            .next()
+            .ok_or(GoReleaseError::InvalidDirective(line))?;
+        if fields.next().is_some() || release.is_some() {
+            return Err(GoReleaseError::InvalidDirective(line));
+        }
+        release = Some(classify_go(token)?);
+    }
+    // Preserve the established fallback for manifests without a go directive.
+    // A toolchain directive selects an executable, not a language profile.
+    Ok(release.unwrap_or(GoVersion::Go125))
+}
+
+fn classify_go(token: &str) -> Result<GoVersion, GoReleaseError<'_>> {
+    let (major, minor) = go_version_parts(token).ok_or(GoReleaseError::InvalidVersion(token))?;
+    // Canonical decimal components can be arbitrarily large. Compare before
+    // conversion so overflow cannot invent an older supported language.
+    if major != "1" || minor.len() > 2 || (minor.len() == 2 && minor > "25") {
+        return Err(GoReleaseError::UnsupportedVersion(token));
+    }
+    Ok(match decimal_prefix(minor) {
         23 => GoVersion::Go123,
         24 => GoVersion::Go124,
-        25.. => GoVersion::Go125,
+        25 => GoVersion::Go125,
         _ => GoVersion::Go122,
+    })
+}
+
+// The strict go.mod GoVersionRE in Go1.26.0's cmd-vendored x/mod/modfile
+// accepts major.minor[.patch][lowercase-prerelease+digits]. Major is nonzero;
+// minor and patch forbid redundant leading zeroes. Validate the whole token.
+fn go_version_parts(token: &str) -> Option<(&str, &str)> {
+    fn decimal(text: &str, allow_zero: bool) -> bool {
+        !text.is_empty()
+            && text.bytes().all(|byte| byte.is_ascii_digit())
+            && (text == "0" && allow_zero || !text.starts_with('0'))
     }
+    fn digits_prefix(text: &str) -> (&str, &str) {
+        let end = text.bytes().take_while(u8::is_ascii_digit).count();
+        text.split_at(end)
+    }
+    let (major, rest) = token.split_once('.')?;
+    let (minor, mut rest) = digits_prefix(rest);
+    if !decimal(major, false) || !decimal(minor, true) {
+        return None;
+    }
+    if let Some(patch) = rest.strip_prefix('.') {
+        let (patch, suffix) = digits_prefix(patch);
+        if !decimal(patch, true) {
+            return None;
+        }
+        rest = suffix;
+    }
+    if !rest.is_empty() {
+        let end = rest.bytes().take_while(u8::is_ascii_lowercase).count();
+        let (kind, number) = rest.split_at(end);
+        if kind.is_empty() || number.is_empty() || !number.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return None;
+        }
+    }
+    Some((major, minor))
 }
 
 fn decimal_prefix(text: &str) -> u32 {
@@ -1657,14 +1728,138 @@ mod tests {
 
         let newer = root.join("mod@v1.2.3");
         write(&newer.join("go.mod"), "module example.com/mod\n\ngo 1.26\n");
-        let newer_manifest = read_local_manifest(&newer)
-            .expect("newer")
-            .expect("identity");
-        assert_eq!(
-            newer_manifest.profile,
-            LanguageProfile::Go(GoVersion::Go125)
+        assert!(
+            read_local_manifest(&newer)
+                .unwrap_err()
+                .contains("unsupported Go language version \"1.26\""),
+            "a future language requirement must not acquire the 1.25 profile"
         );
         assert!(directory_version(&bare).is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_manifest_go_future_language_requirement_is_refused_with_exact_source() {
+        let root = fixture("go-future-language");
+        let package = root.join("caddy@v2.11.7");
+        for version in [
+            "1.26.0",
+            "1.26rc1",
+            "1.27.2",
+            "2.0.0",
+            "1.4294967296",
+            "4294967296.0",
+        ] {
+            let text = format!(
+                "module github.com/caddyserver/caddy/v2\n\ngo\t{version} // required language\ntoolchain go1.25.0\n"
+            );
+            write(&package.join("go.mod"), &text);
+            assert_eq!(
+                super::go_release(&text),
+                Err(super::GoReleaseError::UnsupportedVersion(version))
+            );
+            assert_eq!(
+                read_local_manifest(&package).unwrap_err(),
+                format!(
+                    "local manifest {}: go.mod declares unsupported Go language version {version:?}; the newest supported language profile is 1.25",
+                    package.join("go.mod").display()
+                ),
+                "an unsupported source requirement must retain its exact path and version"
+            );
+        }
+        let bare = root.join("caddy");
+        write(
+            &bare.join("go.mod"),
+            "module github.com/caddyserver/caddy/v2\n\ngo 1.26.0\n",
+        );
+        assert!(
+            read_local_manifest(&bare).is_err(),
+            "an unavailable registry version must not hide an unsupported language requirement"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_manifest_go_language_requirement_is_not_the_suggested_toolchain() {
+        let root = fixture("go-language-toolchain");
+        let package = root.join("mod@v1.2.3");
+        for (version, expected) in [
+            ("1.18", GoVersion::Go122),
+            ("1.19.13", GoVersion::Go122),
+            ("1.20", GoVersion::Go122),
+            ("1.21.3", GoVersion::Go122),
+            ("1.22.9", GoVersion::Go122),
+            ("1.23.0", GoVersion::Go123),
+            ("1.24.3", GoVersion::Go124),
+            ("1.24rc1", GoVersion::Go124),
+            ("1.25beta2", GoVersion::Go125),
+            ("1.25.0", GoVersion::Go125),
+        ] {
+            write(
+                &package.join("go.mod"),
+                &format!("module example.com/mod\n\ngo {version}\ntoolchain go1.26.0\n"),
+            );
+            assert_eq!(
+                read_local_manifest(&package).unwrap().unwrap().profile,
+                LanguageProfile::Go(expected),
+                "the suggested executable cannot promote the module's language profile"
+            );
+        }
+        assert_eq!(
+            super::go_release("module example.com/mod\ntoolchain go1.26.0\n"),
+            Ok(GoVersion::Go125),
+            "preserve the established no-go fallback without borrowing the toolchain version"
+        );
+        for text in [
+            "module example.com/mod\ngo\n",
+            "module example.com/mod\ngo 1.25 extra\n",
+            "module example.com/mod\ngo 1.24\ngo 1.25\n",
+        ] {
+            assert!(matches!(
+                super::go_release(text),
+                Err(super::GoReleaseError::InvalidDirective(_))
+            ));
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_manifest_go_malformed_version_is_not_a_supported_or_future_profile() {
+        let root = fixture("go-malformed-version");
+        let package = root.join("mod@v1.2.3");
+        for version in [
+            "banana",
+            "1.foo",
+            "1.25junk",
+            "1.25.0.1",
+            "0.0",
+            "01.25",
+            "1.025",
+            "1.25.00",
+            "1.25rc",
+            "1.25RC1",
+            "1.26junk",
+            "1.26.0.1",
+            "1.25-rc1",
+            "1.25.0+build",
+            "1.２５",
+            "1.25rc1x",
+            "2.foo",
+        ] {
+            let text = format!("module example.com/mod\n\ngo {version}\n");
+            write(&package.join("go.mod"), &text);
+            assert_eq!(
+                super::go_release(&text),
+                Err(super::GoReleaseError::InvalidVersion(version))
+            );
+            assert_eq!(
+                read_local_manifest(&package).unwrap_err(),
+                format!(
+                    "local manifest {}: go.mod declares invalid Go language version {version:?}",
+                    package.join("go.mod").display()
+                )
+            );
+        }
         let _ = fs::remove_dir_all(root);
     }
 

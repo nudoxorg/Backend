@@ -432,6 +432,32 @@ mod tests {
     }
 
     #[test]
+    fn go_profile_codes_remain_stable_and_future_versions_remain_closed() {
+        let language = u8::from(Language::Go);
+        for (version, code) in [
+            (GoVersion::Go122, 0),
+            (GoVersion::Go123, 1),
+            (GoVersion::Go124, 2),
+            (GoVersion::Go125, 3),
+        ] {
+            let profile = LanguageProfile::Go(version);
+            assert_eq!(<[u8; 2]>::from(profile), [language, code]);
+            assert_eq!(LanguageProfile::try_from([language, code]), Ok(profile));
+        }
+        for code in 4..=u8::MAX {
+            assert_eq!(
+                LanguageProfile::try_from([language, code]),
+                Err(UnknownLanguageProfile {
+                    code: [language, code]
+                })
+            );
+        }
+        for spelling in ["go-1.26", "go-1.27", "go-2.0"] {
+            assert_eq!(LanguageProfile::try_from(spelling), Err(spelling));
+        }
+    }
+
+    #[test]
     fn incompatible_and_unknown_pairs_retain_both_bytes() {
         for code in [[7, 0], [0, 4], [1, 2], [6, 3], [6, 0x84]] {
             assert_eq!(
