@@ -369,7 +369,17 @@ fn wait_operation_with_clock(
                     )),
                 });
             }
-            Ok(IndexProgressUpdate::Unchanged(_)) => continue,
+            Ok(IndexProgressUpdate::Unchanged(_)) => {
+                // The preceding slice already read this exact boundary.
+                // Retain the existing cadence before opening the next slice.
+                if let Err(error) = clock.wait(PROBE_INTERVAL, context) {
+                    return Ok(IndexOperationWaitResult::Stopped {
+                        observation,
+                        reason: IndexOperationWaitStop::Client(error),
+                    });
+                }
+                continue;
+            }
             Err(error) => {
                 return Ok(IndexOperationWaitResult::Stopped {
                     observation,
@@ -565,7 +575,7 @@ mod tests {
         );
         assert_eq!(now.get(), Duration::from_secs(21));
         assert_eq!(
-            reads, 45,
+            reads, 43,
             "each later conditional slice retains bounded 500ms pacing"
         );
         assert_eq!(progress.last(), Some(expected));

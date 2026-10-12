@@ -69,6 +69,8 @@ pub enum ArgumentKind {
     SemanticShapeRequest,
     /// A non-negative progress event sequence.
     Sequence,
+    /// A caller observation duration expressed in whole seconds.
+    DurationSeconds,
 }
 
 impl ArgumentKind {
@@ -95,6 +97,7 @@ impl ArgumentKind {
             Self::PackageSourceMembershipRequest => "MEMBERSHIP_REQUEST_JSON",
             Self::SemanticShapeRequest => "SHAPE_REQUEST_JSON",
             Self::Sequence => "SEQUENCE",
+            Self::DurationSeconds => "SECONDS",
             Self::Generation => "GENERATION",
             Self::GraphDirection => "DIRECTION",
             Self::Limit => "COUNT",
@@ -107,7 +110,7 @@ impl ArgumentKind {
     #[must_use]
     pub const fn json_type(self) -> &'static str {
         match self {
-            Self::NodeId | Self::Limit | Self::Sequence => "integer",
+            Self::NodeId | Self::Limit | Self::Sequence | Self::DurationSeconds => "integer",
             Self::Flag => "boolean",
             Self::IndexJobTicket
             | Self::CargoPackageReadmeOrigin
@@ -295,7 +298,7 @@ impl CommandGrammar {
                 ),
                 ArgumentSpec::optional(
                     "wait-timeout",
-                    ArgumentKind::Sequence,
+                    ArgumentKind::DurationSeconds,
                     "With --wait, bound observation to 0–900 seconds after acceptance (default 900). Timeout retains the operation; resume with the returned index_progress command.",
                 ),
             ]

@@ -9,10 +9,11 @@ product argument schema and lowering do not falsely advertise a wait flag.
 
 Observation starts after the admitted Add reply, under one absolute caller
 context. Its default/max bound is 15 minutes, using the existing durable
-work lease duration; `--wait-timeout SEQUENCE` chooses 0–900 seconds. Every
+work lease duration; `--wait-timeout SECONDS` chooses 0–900 seconds. Every
 conditional read uses the existing exact-status fingerprint policy, at most
 500 ms probes within 10-second slices. Slices measure their own start relative
 to the retained clock; a later slice cannot become an unpaced poll loop.
+The same 500 ms cadence separates slices, avoiding a duplicate boundary read.
 Neither a new slice nor an owner reply renews the overall context.
 
 Only Published/PartiallyPublished/Failed is terminal. Every changed reply
@@ -34,7 +35,7 @@ reporter; redirected stderr cannot delay the operation budget. Generic client
 callbacks are not claimed to be preemptable.
 
 Four client controls retain the original waveform identity through a 21-second
-virtual-clock wait, count 45 bounded reads, refuse a foreign same-key request,
+virtual-clock wait, count 43 bounded reads, refuse a foreign same-key request,
 retain last evidence on caller stops, and accept immediate terminal evidence.
 Four CLI controls execute the production plan/driver/session/caller journal
 with admitted constructed owner replies. They check later failure/exit 2,

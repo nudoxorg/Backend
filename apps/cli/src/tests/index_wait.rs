@@ -228,6 +228,7 @@ fn cli_wait_uses_shared_grammar_without_advertising_product_wait_arguments() {
     let help = invoke::help_for(grammar);
     assert!(help.contains("--wait"));
     assert!(help.contains("--wait-timeout"));
+    assert!(help.contains("--wait-timeout SECONDS"));
     assert!(help.contains("terminal receipt"));
 }
 
