@@ -356,3 +356,46 @@ fn relative_member_lookup_uses_retained_parents_and_keeps_cold_cursor_proofs() {
         .expect("all named facts remain discoverable");
     assert_eq!(unqualified.root.row_count(), 4);
 }
+
+#[test]
+fn unscoped_relative_members_cannot_borrow_an_owner_from_another_project_root() {
+    let (root, object) = source();
+    let basis = Basis::new(root, object);
+    let owner = symbol_key("unscoped-gymbro-auth");
+    let member = symbol_key("unscoped-foreign-current-user");
+    let library = projection(vec![
+        Row::new(
+            RowId::Symbol(owner),
+            basis,
+            "/gymbro::semantic::owner::AuthService",
+        )
+        .with_kind(DeclarationKind::Class),
+        Row::new(
+            RowId::Symbol(member),
+            basis,
+            "/foreign::semantic::member::currentUser",
+        )
+        .with_parent(owner),
+    ]);
+    for spelling in ["AuthService.currentUser", "AuthService::currentUser"] {
+        let page = library
+            .names(&NameQuery::new(
+                spelling,
+                library.revision_root(),
+                QueryLimit::default(),
+            ))
+            .expect("relative query");
+        assert!(
+            page.root.rows().is_empty(),
+            "an absent package cannot prove common ownership"
+        );
+    }
+    let direct = library
+        .names(&NameQuery::new(
+            "currentUser",
+            library.revision_root(),
+            QueryLimit::default(),
+        ))
+        .expect("legacy unqualified lookup");
+    assert_eq!(ordered_ids(&direct), [RowId::Symbol(member)]);
+}

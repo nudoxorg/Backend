@@ -299,7 +299,9 @@ impl Library {
             return None;
         }
         let exact = normalized_name == normalized_leaf;
-        let package = row.package;
+        // An absent owner is not a shared scope. Legacy unscoped labels
+        // retain direct-label matching, but cannot lend relative ancestry.
+        let package = row.package?;
         let mut seen = BTreeSet::from([row.id]);
         loop {
             let (remaining, owner) = crate::command::relative_name_tail(owners)
@@ -312,7 +314,7 @@ impl Library {
                 return None;
             }
             row = self.view.row_ref(RowId::Symbol(row.parent?))?;
-            if row.package != package
+            if row.package != Some(package)
                 || !seen.insert(row.id)
                 || row.label.rsplit("::").next()?.to_lowercase() != owner.to_lowercase()
             {
