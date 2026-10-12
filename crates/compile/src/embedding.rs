@@ -156,6 +156,26 @@ impl EmbeddingArtifact {
         Self { identity, bytes }
     }
 
+    /// Hashes immutable bytes with bounded checkpoints from the accepted owner transition.
+    ///
+    /// # Errors
+    /// Returns cancellation or the original absolute deadline.
+    pub fn new_until(
+        bytes: Arc<[u8]>,
+        control: EmbeddingActivationControl<'_>,
+    ) -> Result<Self, EmbeddingExecutableError> {
+        control.checkpoint()?;
+        let mut hasher = blake3::Hasher::new();
+        for chunk in bytes.chunks(64 * 1024) {
+            control.checkpoint()?;
+            hasher.update(chunk);
+        }
+        control.checkpoint()?;
+        let identity = EmbeddingArtifactId(*hasher.finalize().as_bytes());
+        control.checkpoint()?;
+        Ok(Self { identity, bytes })
+    }
+
     /// Exact byte identity.
     #[must_use]
     pub const fn identity(&self) -> EmbeddingArtifactId {
@@ -699,6 +719,69 @@ impl EmbeddingExecutionIdentity {
     }
 }
 
+/// Owned inputs for one admitted activation. Construction does not prove readiness;
+/// activation validates the complete closure and consumes the affine memory admission.
+pub struct EmbeddingActivationInput {
+    /// Exact portable runtime contract.
+    pub spec: EmbeddingRuntimeSpecV1,
+    /// Selected helper executable path.
+    pub program: PathBuf,
+    /// Explicit helper arguments.
+    pub arguments: Vec<String>,
+    /// Private runtime workspace.
+    pub workspace: PathBuf,
+    /// Closed process environment.
+    pub environment: ProcessEnvironment,
+    /// Admitted process bounds.
+    pub process_limits: ProcessLimits,
+    /// Captured helper and dependency identity.
+    pub executable: ToolchainArtifact,
+    /// Exact immutable model bytes.
+    pub model: EmbeddingArtifact,
+    /// Exact immutable tokenizer bytes.
+    pub tokenizer: EmbeddingArtifact,
+    /// Affine resident memory credit acquired before materializing artifacts.
+    pub memory: EmbeddingMemoryAdmission,
+}
+
+/// The original owner transition cancellation and absolute deadline.
+#[derive(Clone, Copy)]
+pub struct EmbeddingActivationControl<'a> {
+    cancelled: &'a AtomicBool,
+    deadline: Instant,
+}
+
+impl<'a> EmbeddingActivationControl<'a> {
+    /// Binds activation to its accepted owner transition; the deadline is never renewed.
+    #[must_use]
+    pub const fn new(cancelled: &'a AtomicBool, deadline: Instant) -> Self {
+        Self {
+            cancelled,
+            deadline,
+        }
+    }
+
+    /// Checks cancellation before the absolute deadline.
+    ///
+    /// # Errors
+    /// Returns the original cancellation or deadline cause.
+    pub fn checkpoint(self) -> Result<(), EmbeddingExecutableError> {
+        check_request_deadline(Some(self.cancelled), self.deadline)
+    }
+
+    /// The original cancellation flag.
+    #[must_use]
+    pub const fn cancelled(self) -> &'a AtomicBool {
+        self.cancelled
+    }
+
+    /// The original absolute deadline.
+    #[must_use]
+    pub const fn deadline(self) -> Instant {
+        self.deadline
+    }
+}
+
 struct EmbeddingArtifactWorkspace {
     name: String,
     model_path: PathBuf,
@@ -714,9 +797,10 @@ impl EmbeddingArtifactWorkspace {
         workspace: &Path,
         model: &EmbeddingArtifact,
         tokenizer: &EmbeddingArtifact,
+        cancelled: Option<&AtomicBool>,
         deadline: Instant,
     ) -> Result<Self, EmbeddingExecutableError> {
-        check_request_deadline(None, deadline)?;
+        check_request_deadline(cancelled, deadline)?;
         if model.bytes().len() > MAX_EMBEDDING_MODEL_BYTES {
             return Err(EmbeddingExecutableError::ArtifactLimit {
                 artifact: "model",
@@ -747,7 +831,7 @@ impl EmbeddingArtifactWorkspace {
         );
         let directory = workspace.join(&name);
 
-        check_request_deadline(None, deadline)?;
+        check_request_deadline(cancelled, deadline)?;
         let parent = backend_platform::DirectoryCapability::open(workspace)
             .map_err(EmbeddingExecutableError::ArtifactWorkspace)?;
         let directory_handle = parent
@@ -763,22 +847,22 @@ impl EmbeddingArtifactWorkspace {
             parent,
             directory_handle,
         };
-        check_request_deadline(None, deadline)?;
-        artifacts.write_artifact(MODEL_FILE_NAME, model.bytes(), deadline)?;
-        check_request_deadline(None, deadline)?;
-        artifacts.write_artifact(TOKENIZER_FILE_NAME, tokenizer.bytes(), deadline)?;
+        check_request_deadline(cancelled, deadline)?;
+        artifacts.write_artifact(MODEL_FILE_NAME, model.bytes(), cancelled, deadline)?;
+        check_request_deadline(cancelled, deadline)?;
+        artifacts.write_artifact(TOKENIZER_FILE_NAME, tokenizer.bytes(), cancelled, deadline)?;
         artifacts.verify_artifact(
             MODEL_FILE_NAME,
             model.identity,
             model.bytes().len(),
-            None,
+            cancelled,
             deadline,
         )?;
         artifacts.verify_artifact(
             TOKENIZER_FILE_NAME,
             tokenizer.identity,
             tokenizer.bytes().len(),
-            None,
+            cancelled,
             deadline,
         )?;
         Ok(artifacts)
@@ -788,12 +872,14 @@ impl EmbeddingArtifactWorkspace {
         &self,
         name: &str,
         bytes: &[u8],
+        cancelled: Option<&AtomicBool>,
         deadline: Instant,
     ) -> Result<(), EmbeddingExecutableError> {
         write_private_artifact_atomic(
             &self.directory_handle,
             name,
             bytes,
+            cancelled,
             deadline,
             |file, chunk| {
                 use std::io::Write as _;
@@ -919,10 +1005,11 @@ fn write_private_artifact_atomic(
     directory: &backend_platform::DirectoryCapability,
     name: &str,
     bytes: &[u8],
+    cancelled: Option<&AtomicBool>,
     deadline: Instant,
     mut write_chunk: impl FnMut(&mut File, &[u8]) -> io::Result<()>,
 ) -> Result<(), EmbeddingExecutableError> {
-    check_request_deadline(None, deadline)?;
+    check_request_deadline(cancelled, deadline)?;
     let sequence = ARTIFACT_WORKSPACE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let temporary = format!(".{name}-{sequence}.tmp");
     let mut file = directory
@@ -930,13 +1017,13 @@ fn write_private_artifact_atomic(
         .map_err(EmbeddingExecutableError::ArtifactWorkspace)?;
     let write_result = (|| {
         for chunk in bytes.chunks(64 * 1024) {
-            check_request_deadline(None, deadline)?;
+            check_request_deadline(cancelled, deadline)?;
             write_chunk(&mut file, chunk).map_err(EmbeddingExecutableError::ArtifactWorkspace)?;
         }
-        check_request_deadline(None, deadline)?;
+        check_request_deadline(cancelled, deadline)?;
         file.sync_all()
             .map_err(EmbeddingExecutableError::ArtifactWorkspace)?;
-        check_request_deadline(None, deadline)?;
+        check_request_deadline(cancelled, deadline)?;
         directory
             .rename_with_outcome(&temporary, name, true)
             .map_err(|error| EmbeddingExecutableError::ArtifactWorkspace(error.into_io_error()))
@@ -1441,6 +1528,7 @@ impl EmbeddingExecutable {
             model,
             tokenizer,
             None,
+            None,
         )
     }
 
@@ -1547,6 +1635,53 @@ impl EmbeddingExecutable {
         tokenizer: EmbeddingArtifact,
         memory: EmbeddingMemoryAdmission,
     ) -> Result<Self, EmbeddingExecutableError> {
+        Self::activate_with_spec_and_memory_admission_controlled(
+            EmbeddingActivationInput {
+                spec,
+                program,
+                arguments,
+                workspace,
+                environment,
+                process_limits,
+                executable,
+                model,
+                tokenizer,
+                memory,
+            },
+            None,
+        )
+    }
+
+    /// Consumes the activation closure under the original owner transition lifetime.
+    ///
+    /// # Errors
+    /// Returns exact cancellation/deadline or the bounded activation refusal.
+    pub fn activate_admitted_until(
+        input: EmbeddingActivationInput,
+        control: &EmbeddingActivationControl<'_>,
+    ) -> Result<Self, EmbeddingExecutableError> {
+        Self::activate_with_spec_and_memory_admission_controlled(input, Some(*control))
+    }
+
+    fn activate_with_spec_and_memory_admission_controlled(
+        input: EmbeddingActivationInput,
+        control: Option<EmbeddingActivationControl<'_>>,
+    ) -> Result<Self, EmbeddingExecutableError> {
+        let EmbeddingActivationInput {
+            spec,
+            program,
+            arguments,
+            workspace,
+            environment,
+            process_limits,
+            executable,
+            model,
+            tokenizer,
+            memory,
+        } = input;
+        if let Some(control) = control {
+            control.checkpoint()?;
+        }
         let observed_static = [
             ("model", spec.model == model.identity.as_bytes()),
             ("tokenizer", spec.tokenizer == tokenizer.identity.as_bytes()),
@@ -1580,9 +1715,13 @@ impl EmbeddingExecutable {
             model,
             tokenizer,
             Some(memory),
+            control,
         )?;
         spec.validate_execution_identity(runtime.execution_identity())
             .map_err(EmbeddingExecutableError::Spec)?;
+        if let Some(control) = control {
+            control.checkpoint()?;
+        }
         Ok(runtime)
     }
 
@@ -1606,13 +1745,18 @@ impl EmbeddingExecutable {
         model: EmbeddingArtifact,
         tokenizer: EmbeddingArtifact,
         memory: Option<EmbeddingMemoryAdmission>,
+        control: Option<EmbeddingActivationControl<'_>>,
     ) -> Result<Self, EmbeddingExecutableError> {
         // Activation construction, artifact verification, and the initial readiness self-test
         // share one explicit budget. This is separate from later inference-call deadlines.
         let activation_deadline = Instant::now()
             .checked_add(process_limits.wall_time())
             .ok_or(EmbeddingExecutableError::Process(ProcessError::Deadline))?;
-        check_request_deadline(None, activation_deadline)?;
+        let activation_deadline = control.map_or(activation_deadline, |control| {
+            activation_deadline.min(control.deadline)
+        });
+        let cancelled = control.map(|control| control.cancelled);
+        check_request_deadline(cancelled, activation_deadline)?;
         SupervisedCommand::validate_launch_inputs(&program, &arguments, &workspace)
             .map_err(EmbeddingExecutableError::Process)?;
         if maximum_text_bytes == 0 {
@@ -1622,9 +1766,13 @@ impl EmbeddingExecutable {
             .map_err(|_| EmbeddingExecutableError::RequestExtent)?;
         let uncancelled = AtomicBool::new(false);
         executable
-            .verify_path_until(&program, &uncancelled, activation_deadline)
+            .verify_path_until(
+                &program,
+                cancelled.unwrap_or(&uncancelled),
+                activation_deadline,
+            )
             .map_err(EmbeddingExecutableError::Process)?;
-        check_request_deadline(None, activation_deadline)?;
+        check_request_deadline(cancelled, activation_deadline)?;
         if model.bytes().is_empty() || tokenizer.bytes().is_empty() {
             return Err(EmbeddingExecutableError::EmptyArtifact);
         }
@@ -1675,9 +1823,10 @@ impl EmbeddingExecutable {
             &workspace,
             &model,
             &tokenizer,
+            cancelled,
             activation_deadline,
         )?;
-        check_request_deadline(None, activation_deadline)?;
+        check_request_deadline(cancelled, activation_deadline)?;
         let environment = embedding_environment(&environment, &artifact_workspace)?;
         let mut runtime = Self {
             program,
@@ -1704,10 +1853,11 @@ impl EmbeddingExecutable {
             batch_protocol: EmbeddingBatchProtocol::SingleV1,
             active: true,
         };
-        if let Err(error) = runtime.probe_ready_until(activation_deadline) {
+        if let Err(error) = runtime.probe_ready_until(cancelled, activation_deadline) {
             runtime.active = false;
             return Err(error);
         }
+        check_request_deadline(cancelled, activation_deadline)?;
         Ok(runtime)
     }
 
@@ -1719,16 +1869,20 @@ impl EmbeddingExecutable {
     /// process/protocol/output validation failure.
     pub fn probe_ready(&mut self) -> Result<(), EmbeddingExecutableError> {
         let deadline = self.request_deadline()?;
-        self.probe_ready_until(deadline)
+        self.probe_ready_until(None, deadline)
     }
 
-    fn probe_ready_until(&mut self, deadline: Instant) -> Result<(), EmbeddingExecutableError> {
+    fn probe_ready_until(
+        &mut self,
+        cancelled: Option<&AtomicBool>,
+        deadline: Instant,
+    ) -> Result<(), EmbeddingExecutableError> {
         let _scratch = self.reserve_inference_scratch(2)?;
-        check_request_deadline(None, deadline)?;
+        check_request_deadline(cancelled, deadline)?;
         if !self.active {
             return Err(EmbeddingExecutableError::Revoked);
         }
-        let _permit = self.inference_gate.acquire(None, deadline)?;
+        let _permit = self.inference_gate.acquire(cancelled, deadline)?;
         let probe = EmbeddingInvocation {
             purpose: EmbeddingPurpose::Query,
             text: "backend embedding readiness",
@@ -1747,23 +1901,23 @@ impl EmbeddingExecutable {
                 },
             ];
             for invocation in persistent_probes {
-                check_request_deadline(None, deadline)?;
+                check_request_deadline(cancelled, deadline)?;
                 let batch = [(
                     EmbeddingInputIdentity::new_until(
                         self.execution_identity(),
                         invocation,
-                        None,
+                        cancelled,
                         deadline,
                     )?,
                     invocation.text,
                 )];
-                if !self.batch_request_fits_until(&batch, None, deadline)? {
+                if !self.batch_request_fits_until(&batch, cancelled, deadline)? {
                     return Err(EmbeddingExecutableError::BatchRequestExtent);
                 }
                 let coordinates = self.run_persistent_batch_v2_admitted(
                     &batch,
                     invocation.purpose,
-                    None,
+                    cancelled,
                     deadline,
                 )?;
                 if coordinates.len() != 1 || coordinates[0].purpose() != invocation.purpose {
@@ -1771,25 +1925,27 @@ impl EmbeddingExecutable {
                 }
             }
             self.batch_protocol = EmbeddingBatchProtocol::PersistentBatchV2;
+            check_request_deadline(cancelled, deadline)?;
             return Ok(());
         }
         let mut batch = Vec::with_capacity(probes.len());
         for invocation in probes {
-            check_request_deadline(None, deadline)?;
+            check_request_deadline(cancelled, deadline)?;
             batch.push((
                 EmbeddingInputIdentity::new_until(
                     self.execution_identity(),
                     invocation,
-                    None,
+                    cancelled,
                     deadline,
                 )?,
                 invocation.text,
             ));
         }
         if batch_single_request_fits(self.maximum_text_bytes, self.process_limits.input_bytes()) {
-            match self.run_batch_v2_admitted(&batch, probe.purpose, None, deadline) {
+            match self.run_batch_v2_admitted(&batch, probe.purpose, cancelled, deadline) {
                 Ok(coordinates) if coordinates.len() == probes.len() => {
                     self.batch_protocol = EmbeddingBatchProtocol::BatchV2;
+                    check_request_deadline(cancelled, deadline)?;
                     return Ok(());
                 }
                 Err(error)
@@ -1806,8 +1962,8 @@ impl EmbeddingExecutable {
             }
         }
         self.batch_protocol = EmbeddingBatchProtocol::SingleV1;
-        self.infer_inner_admitted(probe, false, None, deadline)
-            .map(|_| ())
+        self.infer_inner_admitted(probe, false, cancelled, deadline)?;
+        check_request_deadline(cancelled, deadline)
     }
 
     /// Executes one supervised, recipe-bound embedding request.
@@ -4961,6 +5117,166 @@ while True:
     }
 
     #[test]
+    fn owner_artifact_capture_matches_canonical_hash_and_checks_original_deadline() {
+        let bytes: Arc<[u8]> = Arc::from(vec![0xA5; 3 * 64 * 1024 + 11]);
+        let cancelled = AtomicBool::new(false);
+        let control =
+            EmbeddingActivationControl::new(&cancelled, Instant::now() + Duration::from_secs(2));
+        let captured = EmbeddingArtifact::new_until(Arc::clone(&bytes), control);
+        assert!(
+            captured.is_ok_and(|artifact| artifact == EmbeddingArtifact::new(Arc::clone(&bytes)))
+        );
+        let expired = EmbeddingActivationControl::new(&cancelled, Instant::now());
+        assert!(matches!(
+            EmbeddingArtifact::new_until(Arc::clone(&bytes), expired),
+            Err(EmbeddingExecutableError::Process(ProcessError::Deadline))
+        ));
+        cancelled.store(true, Ordering::Release);
+        assert!(matches!(
+            EmbeddingArtifact::new_until(bytes, expired),
+            Err(EmbeddingExecutableError::Process(ProcessError::Cancelled))
+        ));
+    }
+
+    #[test]
+    fn owner_activation_staging_cancellation_removes_partial_file()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (root, _) = fixture()?;
+        let directory = backend_platform::DirectoryCapability::open(&root)?;
+        let cancelled = AtomicBool::new(false);
+        let mut chunks = 0;
+        let result = write_private_artifact_atomic(
+            &directory,
+            "model.bin",
+            &vec![0x5A; 3 * 64 * 1024],
+            Some(&cancelled),
+            Instant::now() + Duration::from_secs(2),
+            |file, chunk| {
+                use std::io::Write as _;
+                file.write_all(chunk)?;
+                chunks += 1;
+                cancelled.store(true, Ordering::Release);
+                Ok(())
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(EmbeddingExecutableError::Process(ProcessError::Cancelled))
+        ));
+        assert_eq!(
+            chunks, 1,
+            "no later chunk may be written after cancellation"
+        );
+        assert_eq!(
+            directory.entries(8)?.len(),
+            1,
+            "only the original fixture remains"
+        );
+        assert!(!root.join("model.bin").exists());
+        drop(directory);
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn owner_activation_cancels_the_actual_gated_self_test_and_releases_credits()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (root, program) = fixture()?;
+        let script =
+            fs::read_to_string(&program)?.replace("if call_index == 2:", "if call_index == 1:");
+        fs::write(&program, script)?;
+        let gate = root.join("activation-gate");
+        let counter = root.join("activation-calls");
+        let environment = ProcessEnvironment::new(vec![
+            ("PATH".into(), "/usr/bin:/bin".into()),
+            (
+                "BACKEND_EMBEDDING_CALL_COUNTER".into(),
+                counter.to_str().ok_or("counter path")?.into(),
+            ),
+            (
+                "BACKEND_EMBEDDING_BATCH_GATE".into(),
+                gate.to_str().ok_or("gate path")?.into(),
+            ),
+        ])?;
+        let limits = ProcessLimits::new(256, 64, Duration::from_secs(5), 256)?
+            .with_input_bytes_limit(2_048)?;
+        let executable = ToolchainArtifact::from_path(&program, Vec::new())?;
+        let model = EmbeddingArtifact::new(Arc::from(MODEL_BYTES));
+        let tokenizer = EmbeddingArtifact::new(Arc::from(TOKENIZER_BYTES));
+        let spec = EmbeddingRuntimeSpecV1::new(
+            model.identity().as_bytes(),
+            [7; 32],
+            tokenizer.identity().as_bytes(),
+            executable.identity().to_bytes(),
+            NonZeroU16::new(2).ok_or("dimensions")?,
+            EmbeddingNormalization::L2,
+            NonZeroU32::new(128).ok_or("text limit")?,
+            [0xA5; 32],
+        );
+        let memory = EmbeddingMemoryAdmission::new(
+            default_memory_credits(model.bytes().len(), tokenizer.bytes().len(), limits)?,
+            model.bytes().len(),
+            tokenizer.bytes().len(),
+            limits,
+        )?;
+        let account = memory.budget().clone();
+        let cancelled = AtomicBool::new(false);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let result = std::thread::scope(|scope| {
+            let runtime_root = root.clone();
+            let cancellation = &cancelled;
+            let worker = scope.spawn(move || {
+                EmbeddingExecutable::activate_admitted_until(
+                    EmbeddingActivationInput {
+                        spec,
+                        program,
+                        arguments: Vec::new(),
+                        workspace: runtime_root,
+                        environment,
+                        process_limits: limits,
+                        executable,
+                        model,
+                        tokenizer,
+                        memory,
+                    },
+                    &EmbeddingActivationControl::new(cancellation, deadline),
+                )
+            });
+            while !gate.with_extension("started").exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let reached = gate.with_extension("started").exists();
+            cancelled.store(true, Ordering::Release);
+            let result = worker.join().map_err(|_| "activation worker panicked")?;
+            assert!(reached, "actual supervised self-test must enter the gate");
+            Ok::<_, Box<dyn std::error::Error>>(result)
+        })?;
+        assert!(matches!(
+            result,
+            Err(EmbeddingExecutableError::Process(ProcessError::Cancelled))
+        ));
+        assert_eq!(
+            account.used(),
+            0,
+            "cancelled activation retains no artifact/scratch admission"
+        );
+        assert!(!gate.with_extension("release").exists());
+        assert_eq!(
+            fs::read_to_string(counter)?.lines().count(),
+            1,
+            "cancellation cannot fall back to another protocol"
+        );
+        assert!(fs::read_dir(&root)?.all(|entry| entry.is_ok_and(|entry| {
+            !entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".embedding-runtime-")
+        })));
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
     fn artifact_staging_checks_deadline_and_removes_partial_file()
     -> Result<(), Box<dyn std::error::Error>> {
         let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
@@ -4978,6 +5294,7 @@ while True:
             &directory,
             "model.bin",
             &bytes,
+            None,
             deadline,
             |file, chunk| {
                 use std::io::Write as _;
@@ -5332,6 +5649,7 @@ while True:
             &workspace,
             &model,
             &tokenizer,
+            None,
             Instant::now() - Duration::from_millis(1),
         );
 

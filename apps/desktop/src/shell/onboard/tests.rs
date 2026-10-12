@@ -1170,7 +1170,10 @@ fn retained_add_path_enter_cannot_submit_after_an_unpainted_cover_return(cx: &mu
             assert_eq!(window.a11y_frame_number(), frame);
             (form, work, frame, focus)
         });
-        assert_eq!(presses.get(), u64::from(emitted_before_cover), "the event oracle distinguishes a queued PressEnter from a denied retained key");
+        // GPUI dispatches the InputState's bound Enter action before raw
+        // capture_key_down. Both orders emit one notification; submission is
+        // admitted by the parent action's captured visit, not by that event.
+        assert_eq!(presses.get(), 1, "the input notification carries no submission authority");
         assert_eq!(state.0.read_with(rig.cx, |form, _| form.work_state()), state.1,
             "deferred InputState PressEnter cannot start a retired admission");
         assert_eq!(root.read_with(rig.cx, |root, _| root.reduced()), before + 2);
@@ -1179,7 +1182,7 @@ fn retained_add_path_enter_cannot_submit_after_an_unpainted_cover_return(cx: &mu
         rig.settle();
         assert!(snapshot(&mut rig).workspace().projects.is_empty());
         rig.keys("enter");
-        assert_eq!(presses.get(), u64::from(emitted_before_cover) + 1, "current native input emits one actual PressEnter");
+        assert_eq!(presses.get(), 2, "current native input emits its own actual PressEnter");
         assert_eq!(snapshot(&mut rig).workspace().projects.len(), 1, "fresh mounted input still admits the real folder");
         assert_eq!(snapshot(&mut rig).workspace().projects[0].id, crate::core::LocalProjectId::from_path(&folder).expect("project"));
         std::fs::remove_dir_all(parent).expect("remove owned fixture");
@@ -1212,5 +1215,50 @@ fn released_folder_answer_keeps_its_original_visit_through_a_coalesced_return(cx
     assert_eq!(overlay(&mut rig), Some(Overlay::AddProject));
     rig.keys("enter");
     assert_eq!(snapshot(&mut rig).workspace().projects.len(), 1, "a fresh current submission remains available");
+    std::fs::remove_dir_all(parent).expect("remove owned fixture");
+}
+
+#[gpui::test]
+fn queued_path_enter_keeps_its_emitting_visit_across_a_native_replacement_paint(cx: &mut TestAppContext) {
+    let (parent, folder) = project("queued-enter-repaint");
+    let mut rig = first_run(cx, 1440.0);
+    rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+    rig.go(Intent::OpenAddProject);
+    type_in(&mut rig, folder.to_str().expect("folder"));
+    let root = rig.graph.root.clone();
+    let (form, started) = rig.cx.update(|window, cx| {
+        let form = super::form(window, cx).expect("mounted original Add");
+        let input = form.read(cx).input().clone();
+        assert!(input.read(cx).focus_handle(cx).is_focused(window));
+        let started = form.read(cx).work_state().0;
+        // Emit through the real native InputState while its original visit is
+        // admitted. Its subscription cannot run until this outer update ends.
+        let key = gpui::Keystroke::parse("enter").expect("native Enter");
+        window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+            keystroke: key.clone(), is_held: false, prefer_character_input: false,
+        }), cx);
+        assert_eq!(form.read(cx).work_state().0, started, "the emitted input is still queued");
+        root.update(cx, |root, cx| {
+            root.dispatch(Intent::OpenSettings(crate::navigation::SettingsPage::Appearance), cx);
+            root.dispatch(Intent::DismissOverlay, cx);
+        });
+        assert_eq!(root.read(cx).snapshot().overlay(), Some(Overlay::AddProject));
+        let before_replacement = window.a11y_frame_number();
+        // A real viewport event dirties the window. Production key dispatch
+        // commits this new Add visit before the earlier InputEvent is delivered.
+        window.resize(gpui::size(gpui::px(1000.0), gpui::px(900.0)));
+        window.bounds_changed(cx);
+        window.dispatch_event(gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke: key }), cx);
+        assert!(window.a11y_frame_number() > before_replacement, "a native replacement really committed before event delivery");
+        assert_eq!(form.read(cx).work_state().0, started, "the old Enter subscription is still queued during paint");
+        (form, started)
+    });
+    assert_eq!(form.read_with(rig.cx, |form, _| form.work_state().0), started,
+        "a queued old Enter cannot borrow the newly painted Add visit to start filesystem admission");
+    rig.settle();
+    assert!(snapshot(&mut rig).workspace().projects.is_empty());
+    rig.keys("enter");
+    assert_eq!(snapshot(&mut rig).workspace().projects.len(), 1, "the newly mounted native Enter still adds the exact real folder");
+    assert_eq!(snapshot(&mut rig).workspace().projects[0].id, crate::core::LocalProjectId::from_path(&folder).expect("project"));
     std::fs::remove_dir_all(parent).expect("remove owned fixture");
 }

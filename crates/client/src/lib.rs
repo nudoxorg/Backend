@@ -76,12 +76,13 @@ use backend_replication::{
 };
 pub use backend_runtime::{StartupFailure, StartupFailureCause, StartupRecovery};
 pub use index_operation::{index_with_journal, surface_with_index_journal};
-#[cfg(any(unix, windows))]
-pub use index_progress::read_index_progress;
 pub use index_progress::{
-    IndexObservationFingerprint, IndexProgressRead, IndexProgressReference, IndexProgressUpdate,
+    IndexObservationFingerprint, IndexOperationWaitResult, IndexOperationWaitStop,
+    IndexProgressRead, IndexProgressReference, IndexProgressUpdate, MAX_INDEX_OPERATION_WAIT,
     MAX_INDEX_PROGRESS_WAIT_MILLIS,
 };
+#[cfg(any(unix, windows))]
+pub use index_progress::{read_index_progress, wait_index_operation};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{Read, Write};

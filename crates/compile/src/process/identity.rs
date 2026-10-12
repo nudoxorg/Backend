@@ -177,12 +177,15 @@ impl ExecutableIdentity {
         }
     }
 
-    pub(crate) fn verify_path_until<C: CancellationObserver + ?Sized>(
-        &self,
+    /// Captures the complete executable identity under the original cancellation/deadline.
+    ///
+    /// # Errors
+    /// Returns cancellation, deadline, extent, file drift, or read failure.
+    pub fn from_path_until<C: CancellationObserver + ?Sized>(
         path: &Path,
         cancellation: &C,
         deadline: std::time::Instant,
-    ) -> Result<(), ProcessError> {
+    ) -> Result<Self, ProcessError> {
         process_checkpoint(cancellation, deadline)?;
         let mut file = open_executable_file(path)?;
         let before = file
@@ -206,12 +209,9 @@ impl ExecutableIdentity {
             if before_stamp != FileStamp::from_metadata(&after) {
                 return Err(ProcessError::ExecutableDrift);
             }
+            process_checkpoint(cancellation, deadline)?;
             if sample_matches {
-                return if cached.identity == *self {
-                    Ok(())
-                } else {
-                    Err(ProcessError::ExecutableDrift)
-                };
+                return Ok(cached.identity);
             }
         }
         file.seek(SeekFrom::Start(0))
@@ -260,10 +260,26 @@ impl ExecutableIdentity {
         let digest = hasher
             .finish_version::<crate::ToolchainSchema>()
             .map_err(|_| ProcessError::ExecutableDrift)?;
-        if digest != self.digest {
-            return Err(ProcessError::ExecutableDrift);
+        process_checkpoint(cancellation, deadline)?;
+        Ok(Self {
+            digest,
+            stamp: before_stamp,
+        })
+    }
+
+    pub(crate) fn verify_path_until<C: CancellationObserver + ?Sized>(
+        &self,
+        path: &Path,
+        cancellation: &C,
+        deadline: std::time::Instant,
+    ) -> Result<(), ProcessError> {
+        // Full revalidation admits byte-identical replacement. A launch witness retains
+        // its own exact file stamp; executable identity validation is content-based.
+        if Self::from_path_until(path, cancellation, deadline)?.digest == self.digest {
+            Ok(())
+        } else {
+            Err(ProcessError::ExecutableDrift)
         }
-        Ok(())
     }
 }
 
@@ -944,6 +960,70 @@ mod tests {
                 "canonical byte-slice identity at {length} bytes"
             );
         }
+    }
+
+    #[test]
+    fn owner_executable_capture_preserves_full_identity_and_original_stop_cause()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = scratch_directory("owner-capture")?;
+        let path = directory.join("image");
+        let bytes = vec![0xA5; 3 * 64 * 1024 + 11];
+        fs::write(&path, &bytes)?;
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let captured = ExecutableIdentity::from_path_until(&path, &cancelled, deadline)?;
+        assert_eq!(
+            captured.digest(),
+            typed_of::<crate::ToolchainSchema>(&bytes)
+        );
+        assert_eq!(captured, ExecutableIdentity::from_path(&path)?);
+        cancelled.store(true, std::sync::atomic::Ordering::Release);
+        assert!(matches!(
+            ExecutableIdentity::from_path_until(&path, &cancelled, std::time::Instant::now()),
+            Err(ProcessError::Cancelled)
+        ));
+        cancelled.store(false, std::sync::atomic::Ordering::Release);
+        assert!(matches!(
+            ExecutableIdentity::from_path_until(
+                &directory.join("missing"),
+                &cancelled,
+                std::time::Instant::now()
+            ),
+            Err(ProcessError::Deadline)
+        ));
+        fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[test]
+    fn owner_executable_verification_accepts_revalidated_identical_replacement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = scratch_directory("identical-replacement")?;
+        let path = directory.join("image");
+        fs::write(&path, b"original executable content")?;
+        let held_original = fs::File::open(&path)?;
+        let admitted = ExecutableIdentity::from_path(&path)?;
+        let replacement = directory.join("replacement");
+        fs::write(&replacement, b"original executable content")?;
+        fs::rename(&replacement, &path)?;
+        let cancellation = std::sync::atomic::AtomicBool::new(false);
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let current = ExecutableIdentity::from_path_until(&path, &cancellation, deadline)?;
+        assert_ne!(
+            admitted.stamp, current.stamp,
+            "replacement must have a distinct held file identity"
+        );
+        assert_eq!(admitted.digest, current.digest);
+        admitted.verify_path_until(&path, &cancellation, deadline)?;
+        fs::write(&replacement, b"different executable content")?;
+        fs::rename(&replacement, &path)?;
+        assert!(matches!(
+            admitted.verify_path_until(&path, &cancellation, deadline),
+            Err(ProcessError::ExecutableDrift)
+        ));
+        drop(held_original);
+        fs::remove_dir_all(directory)?;
+        Ok(())
     }
 
     #[test]

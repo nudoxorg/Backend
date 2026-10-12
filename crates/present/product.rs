@@ -614,6 +614,45 @@ impl ProductView {
         self.index_operation.as_ref()
     }
 
+    /// Retains the last admitted operation while reporting a caller wait stop.
+    /// This does not rewrite the owner's state or imply that work was cancelled.
+    #[must_use]
+    pub fn with_index_wait_stop(mut self, reason: &backend_client::IndexOperationWaitStop) -> Self {
+        let Some(observation) = &self.index_operation else {
+            return self;
+        };
+        let key = match observation {
+            backend_library::IndexOperationObservation::Known(status) => status.operation_key,
+            backend_library::IndexOperationObservation::Unknown { operation_key }
+            | backend_library::IndexOperationObservation::OutsideReceiptWindow {
+                operation_key,
+                ..
+            } => *operation_key,
+        };
+        let operand = Operand::Text(key.to_hex());
+        let affordance = crate::Affordance::PollIndexOperation { operation_key: key };
+        self.fault = Some(match reason {
+            backend_client::IndexOperationWaitStop::Client(error) => {
+                Fault::from_client_error(error, operand).with_affordance(affordance)
+            }
+            backend_client::IndexOperationWaitStop::Uncertain => Fault::new(
+                crate::FaultSlug::Rejected,
+                operand,
+                crate::Cause::new(
+                    crate::CauseSlug::Unproven,
+                    "the durable observation does not establish a terminal outcome; the exact operation is retained for reconciliation",
+                ),
+                affordance,
+            ),
+        });
+        let explanation = "Waiting ended without a terminal receipt. The operation below is the last admitted observation; no cancellation or new index request was sent.";
+        self.note = Some(self.note.map_or_else(
+            || explanation.to_owned(),
+            |note| format!("{note}\n{explanation}"),
+        ));
+        self
+    }
+
     /// Exact next observation of accepted work, without inferring active work
     /// from unknown, unresolved, expired, or terminal publication evidence.
     ///

@@ -1567,6 +1567,8 @@ mod queued_acquisition_tests {
 
     #[gpui::test]
     fn deferred_add_keeps_its_original_producer_and_owner_attachment(cx: &mut gpui::TestAppContext) {
+        // The fresh-success branch dispatches a real acquisition worker thread.
+        cx.executor().allow_parking();
         let basis = crate::core::VersionedRoot::synthetic(backend_library::view_state_root(&[("queued".into(), "owner".into())]), 1);
         let gate = super::super::owner::OwnerGate::ready(basis, crate::model::ServiceMode::Attached);
         let snapshot = AppSnapshot::empty(basis);

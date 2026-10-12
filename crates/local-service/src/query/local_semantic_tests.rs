@@ -1424,7 +1424,7 @@ fn recipe_addressed_descriptor_selects_exact_runtime_and_never_falls_back_on_cor
     backend_platform::durable::write_private_atomic(&selected, &correct)?;
     backend_platform::durable::write_private_atomic(&fixture.descriptor, &[0; 214])?;
     let owner = LocalSemantic::open(&fixture.provision, &fixture.descriptor)?;
-    assert!(Arc::ptr_eq(owner.admitted_runtime(), &runtime));
+    assert!(Arc::ptr_eq(owner.admitted().runtime(), &runtime));
     backend_platform::durable::write_private_atomic(&fixture.descriptor, &correct)?;
     backend_platform::durable::write_private_atomic(&selected, &[0; 214])?;
     assert!(matches!(

@@ -8,7 +8,8 @@
 //!
 //! Startup can return a typed pending observation before any command is sent.
 //! `index` returns the owner's exact acceptance and progress identity. The
-//! client does not hold that acknowledgement until global readiness settles.
+//! client holds it for its exact terminal receipt only with explicit --wait;
+//! global retrieval readiness is a separate observation.
 
 use crate::invoke::{self, SURFACE_VERB};
 use crate::options::{self, Options};
@@ -119,7 +120,7 @@ fn help_output(args: &[String]) -> Option<String> {
 fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), Fault> {
     let workspace = workspace(options)?;
     let project = workspace.project().to_string_lossy().into_owned();
-    let request = plan(words, options, &project)?;
+    let plan = plan(words, options, &project)?;
     let endpoint_result = if options.passive() {
         backend_runtime::connect_existing_locald(&workspace)
     } else {
@@ -192,9 +193,8 @@ fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), 
     });
     // Startup is a single bounded wait; the planned command is submitted once,
     // only after an endpoint connection succeeded.
-    let answer = run::execute_in_workspace(&mut session, &request, &workspace)?;
-    render_admitted_answer(&session, &answer, options)
-        .map(|output| (output, render::answer_exit_code(&answer)))
+    let (answer, outcome) = execute_plan(&mut session, &plan, &workspace)?;
+    render_admitted_answer(&session, &answer, options).map(|output| (output, outcome))
 }
 
 #[cfg(unix)]
@@ -272,7 +272,30 @@ pub(crate) fn render_admitted_answer(
     render::try_answer_with_cursor(answer, options, cursor.as_deref())
 }
 
-fn plan(words: &[String], options: &Options, project: &str) -> Result<Request, Fault> {
+struct Plan {
+    request: Request,
+    wait: Option<crate::index_wait::IndexWaitPolicy>,
+}
+
+#[cfg(all(test, unix))]
+#[path = "tests/index_wait.rs"]
+mod index_wait_tests;
+
+fn execute_plan(
+    session: &mut Session,
+    plan: &Plan,
+    workspace: &backend_runtime::WorkspacePaths,
+) -> Result<(Answer, ExitCode), Fault> {
+    let answer = run::execute_in_workspace(session, &plan.request, workspace)?;
+    let (answer, override_exit) = match plan.wait {
+        Some(policy) => crate::index_wait::finish(session, workspace, answer, policy)?,
+        None => (answer, None),
+    };
+    let exit = override_exit.map_or_else(|| render::answer_exit_code(&answer), ExitCode::from);
+    Ok((answer, exit))
+}
+
+fn plan(words: &[String], options: &Options, project: &str) -> Result<Plan, Fault> {
     if words.first().is_some_and(|word| word == SURFACE_VERB) {
         let encoded = words.get(1).ok_or_else(|| {
             Fault::usage(
@@ -280,10 +303,14 @@ fn plan(words: &[String], options: &Options, project: &str) -> Result<Request, F
                 "surface takes exactly one tagged SurfaceCommand JSON object",
             )
         })?;
-        return lower_surface_json(encoded);
+        return lower_surface_json(encoded).map(|request| Plan {
+            request,
+            wait: None,
+        });
     }
     let invocation = invoke::parse(words, options.limit())?;
-    lower(&invocation, project)
+    let wait = crate::index_wait::IndexWaitPolicy::from_invocation(&invocation)?;
+    lower(&invocation, project).map(|request| Plan { request, wait })
 }
 
 fn workspace(options: &Options) -> Result<backend_runtime::WorkspacePaths, Fault> {
@@ -355,8 +382,14 @@ pub fn answer_with_session(
         .unwrap_or_else(|| PathBuf::from("."))
         .to_string_lossy()
         .into_owned();
-    let request = plan(words, options, &project)?;
-    run::execute(session, &request)
+    let plan = plan(words, options, &project)?;
+    if plan.wait.is_some() {
+        return Err(Fault::usage(
+            "--wait",
+            "this session-only API has no durable caller journal; use the workspace CLI route to wait for Add",
+        ));
+    }
+    run::execute(session, &plan.request)
 }
 
 #[cfg(test)]

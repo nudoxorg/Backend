@@ -62,7 +62,7 @@ pub fn parse(args: &[String], default_limit: Option<&str>) -> Result<Invocation,
     }
     if let Err(fault) = invocation.check() {
         if fault.slug().is_usage() && grammar.aliases().contains(&spelling) {
-            let canonical_usage = grammar.usage();
+            let canonical_usage = grammar.cli_usage();
             if let Some(operands) = canonical_usage.strip_prefix(grammar.name()) {
                 return Err(Fault::usage(
                     spelling,
@@ -79,6 +79,7 @@ fn option_named(grammar: CommandGrammar, name: &str) -> Option<ArgumentSpec> {
     grammar
         .options()
         .iter()
+        .chain(grammar.cli_options())
         .copied()
         .find(|option| option.name() == name)
 }
@@ -102,6 +103,7 @@ fn unknown_option(grammar: CommandGrammar, name: &str) -> Fault {
     let known = grammar
         .options()
         .iter()
+        .chain(grammar.cli_options())
         .map(|option| format!("--{}", option.name()))
         .collect::<Vec<_>>();
     Fault::usage(
@@ -160,7 +162,7 @@ pub fn help() -> String {
     out.push_str("\nquick start (installed command name: nudox)\n");
     out.push_str(concat!(
         "  nudox embedding-setup  Optional Linux semantic setup, before starting the local owner\n",
-        "  nudox add .  Start indexing; poll the returned operation for its terminal receipt\n",
+        "  nudox add . --wait  Wait for the exact operation; inspect its terminal receipt before searching\n",
         "  nudox search \"error handling\"  Find declarations at the published revision\n",
         "  Claude Code: claude mcp add --scope user --transport stdio nudox -- \"$(command -v backend-mcp)\" --project '${CLAUDE_PROJECT_DIR:-.}'\n",
     ));
@@ -185,7 +187,7 @@ pub fn help() -> String {
 /// description; reprinting both here would make `--help` a page nobody reads.
 fn help_line(grammar: CommandGrammar) -> String {
     let description = grammar.spec().map_or("", |spec| spec.description);
-    format!("  {:<38}  {description}\n", grammar.usage())
+    format!("  {:<38}  {description}\n", grammar.cli_usage())
 }
 
 /// Renders the long help for one command, including when to reach for it.
@@ -199,9 +201,9 @@ pub fn help_for(grammar: CommandGrammar) -> String {
             let _ = writeln!(out, "  {:<14}  {}", spec.kind().metavar(), spec.help());
         }
     }
-    if !grammar.options().is_empty() {
+    if !grammar.options().is_empty() || !grammar.cli_options().is_empty() {
         out.push_str("\noptions\n");
-        for spec in grammar.options() {
+        for spec in grammar.options().iter().chain(grammar.cli_options()) {
             let _ = writeln!(out, "  --{:<12}  {}", spec.name(), spec.help());
         }
     }

@@ -16,6 +16,8 @@ use std::time::Instant;
 
 /// Maximum duration of one conditional observation, within its original read scope.
 pub const MAX_INDEX_PROGRESS_WAIT_MILLIS: u64 = 10_000;
+/// Caller observation ceiling for a durable operation, separate from owner work.
+pub const MAX_INDEX_OPERATION_WAIT: Duration = crate::CLIENT_MUTATION_TIMEOUT;
 const PROBE_INTERVAL: Duration = Duration::from_millis(500);
 const CANCELLATION_INTERVAL: Duration = Duration::from_millis(25);
 
@@ -241,6 +243,191 @@ pub enum IndexProgressUpdate {
     Unchanged(IndexProgressReference),
 }
 
+/// Why an exact-operation wait ended without an admitted terminal receipt.
+#[derive(Debug)]
+pub enum IndexOperationWaitStop {
+    /// Unknown, unresolved or expired evidence cannot establish completion.
+    Uncertain,
+    /// The original caller deadline, cancellation, transport or proof failed.
+    Client(ClientError),
+}
+
+/// The last complete admitted observation remains available on every exit.
+#[derive(Debug)]
+pub enum IndexOperationWaitResult {
+    /// Published, partially published or failed; never global readiness.
+    Terminal(IndexOperationObservation),
+    /// Waiting ended without changing the durable operation's outcome.
+    Stopped {
+        /// Last admitted evidence for the original exact request.
+        observation: IndexOperationObservation,
+        /// Caller failure or uncertain owner evidence, not an index failure.
+        reason: IndexOperationWaitStop,
+    },
+}
+
+/// Observes only the exact durable request accepted by the original reply.
+/// Uses the existing conditional reader and caller's absolute context; it
+/// never starts, reconnects, cancels or replaces an index operation. Observers
+/// should be nonblocking; arbitrary callbacks cannot be preempted.
+/// # Errors
+/// Refuses an initial observation that fails typed reply admission.
+#[cfg(any(unix, windows))]
+pub fn wait_index_operation(
+    initial: IndexOperationObservation,
+    context: &RequestContext,
+    observe: impl FnMut(SurfaceCommand) -> Result<SurfaceReply, ClientError>,
+    progress: impl FnMut(&IndexOperationObservation),
+) -> Result<IndexOperationWaitResult, ClientError> {
+    wait_operation_with_clock(
+        initial,
+        context,
+        observe,
+        progress,
+        &mut WallClock(Instant::now()),
+    )
+}
+
+#[cfg(any(unix, windows))]
+fn wait_operation_with_clock(
+    mut observation: IndexOperationObservation,
+    context: &RequestContext,
+    mut observe: impl FnMut(SurfaceCommand) -> Result<SurfaceReply, ClientError>,
+    mut progress: impl FnMut(&IndexOperationObservation),
+    clock: &mut impl ProgressClock,
+) -> Result<IndexOperationWaitResult, ClientError> {
+    SurfaceReply::IndexOperationStatus(observation.clone())
+        .admit(backend_library::CommandId::IndexProgress)
+        .map_err(|error| ClientError::Protocol(error.to_string()))?;
+    let identity = match &observation {
+        IndexOperationObservation::Known(status) => Some((
+            status.operation_key,
+            status.package.clone(),
+            status.execution_intent,
+            status.request_digest,
+        )),
+        _ => None,
+    };
+    loop {
+        progress(&observation);
+        let status = match &observation {
+            IndexOperationObservation::Known(status) => status,
+            _ => {
+                return Ok(IndexOperationWaitResult::Stopped {
+                    observation,
+                    reason: IndexOperationWaitStop::Uncertain,
+                });
+            }
+        };
+        match status.state {
+            IndexOperationState::Published(_)
+            | IndexOperationState::PartiallyPublished { .. }
+            | IndexOperationState::Failed { .. } => {
+                return Ok(IndexOperationWaitResult::Terminal(observation));
+            }
+            IndexOperationState::Unresolved { .. } => {
+                return Ok(IndexOperationWaitResult::Stopped {
+                    observation,
+                    reason: IndexOperationWaitStop::Uncertain,
+                });
+            }
+            IndexOperationState::Accepted | IndexOperationState::Active { .. } => {}
+        }
+        // A preinstalled shorter absolute scope wins; this never renews it.
+        // An already admitted terminal receipt needs no further waiting.
+        if let Err(error) = context.read_deadline(MAX_INDEX_OPERATION_WAIT) {
+            return Ok(IndexOperationWaitResult::Stopped {
+                observation,
+                reason: IndexOperationWaitStop::Client(error),
+            });
+        }
+        let after = IndexObservationFingerprint::active(status)?;
+        let accepted = matches!(status.state, IndexOperationState::Accepted);
+        let query = IndexProgressRead::new(
+            SurfaceCommand::IndexOperationStatus {
+                operation_key: status.operation_key,
+            },
+            after,
+            if accepted {
+                0
+            } else {
+                MAX_INDEX_PROGRESS_WAIT_MILLIS
+            },
+        )?;
+        // Install no new deadline: the caller must retain one absolute wait
+        // scope, including all conditional probes and replacement connections.
+        let result = read_with_clock(&query, context, &mut observe, clock);
+        let changed = match result {
+            Ok(IndexProgressUpdate::Changed(SurfaceReply::IndexOperationStatus(changed))) => {
+                changed
+            }
+            Ok(IndexProgressUpdate::Changed(_)) => {
+                return Ok(IndexOperationWaitResult::Stopped {
+                    observation,
+                    reason: IndexOperationWaitStop::Client(ClientError::Protocol(
+                        "operation wait reply changed shape".to_owned(),
+                    )),
+                });
+            }
+            Ok(IndexProgressUpdate::Unchanged(_)) => {
+                // The preceding slice already read this exact boundary.
+                // Retain the existing cadence before opening the next slice.
+                if let Err(error) = clock.wait(PROBE_INTERVAL, context) {
+                    return Ok(IndexOperationWaitResult::Stopped {
+                        observation,
+                        reason: IndexOperationWaitStop::Client(error),
+                    });
+                }
+                continue;
+            }
+            Err(error) => {
+                return Ok(IndexOperationWaitResult::Stopped {
+                    observation,
+                    reason: IndexOperationWaitStop::Client(error),
+                });
+            }
+        };
+        let same = match (&changed, &identity) {
+            (IndexOperationObservation::Known(status), Some((key, package, intent, digest))) => {
+                status.operation_key == *key
+                    && status.package == *package
+                    && status.execution_intent == *intent
+                    && status.request_digest == *digest
+            }
+            (IndexOperationObservation::Unknown { operation_key }, Some((key, ..))) => {
+                operation_key == key
+            }
+            (
+                IndexOperationObservation::OutsideReceiptWindow {
+                    operation_key,
+                    request_digest,
+                },
+                Some((key, _, _, digest)),
+            ) => operation_key == key && request_digest == digest,
+            _ => false,
+        };
+        if !same {
+            return Ok(IndexOperationWaitResult::Stopped {
+                observation,
+                reason: IndexOperationWaitStop::Client(ClientError::Protocol(
+                    "operation wait evidence changed its original request identity".to_owned(),
+                )),
+            });
+        }
+        observation = changed;
+        if accepted
+            && matches!(&observation, IndexOperationObservation::Known(status) if matches!(status.state, IndexOperationState::Accepted))
+        {
+            if let Err(error) = clock.wait(PROBE_INTERVAL, context) {
+                return Ok(IndexOperationWaitResult::Stopped {
+                    observation,
+                    reason: IndexOperationWaitStop::Client(error),
+                });
+            }
+        }
+    }
+}
+
 #[cfg(any(unix, windows))]
 trait ProgressClock {
     fn elapsed(&self) -> Duration;
@@ -289,6 +476,7 @@ fn read_with_clock(
     mut observe: impl FnMut(SurfaceCommand) -> Result<SurfaceReply, ClientError>,
     clock: &mut impl ProgressClock,
 ) -> Result<IndexProgressUpdate, ClientError> {
+    let started = clock.elapsed();
     loop {
         context.check()?;
         let result = observe(query.command.clone());
@@ -297,7 +485,9 @@ fn read_with_clock(
         let Some(reference) = query.unchanged(&reply)? else {
             return Ok(IndexProgressUpdate::Changed(reply));
         };
-        let remaining = query.wait.saturating_sub(clock.elapsed());
+        let remaining = query
+            .wait
+            .saturating_sub(clock.elapsed().saturating_sub(started));
         if remaining.is_zero() {
             return Ok(IndexProgressUpdate::Unchanged(reference));
         }
@@ -356,6 +546,174 @@ mod tests {
             panic!("actual known receipt")
         };
         status
+    }
+
+    #[test]
+    fn durable_wait_observes_one_exact_request_through_later_terminal_failure() {
+        let status = active();
+        let terminal: SurfaceReply = serde_json::from_value(waveform()["runs"][2]["reply"].clone())
+            .expect("retained exact refusal");
+        let SurfaceReply::IndexOperationStatus(expected) = &terminal else {
+            panic!("terminal operation");
+        };
+        let now = Rc::new(Cell::new(Duration::ZERO));
+        let mut reads = 0;
+        let mut progress = Vec::new();
+        let result = wait_operation_with_clock(
+            IndexOperationObservation::Known(status.clone()),
+            &RequestContext::new(),
+            |command| {
+                assert!(matches!(command, SurfaceCommand::IndexOperationStatus { operation_key } if operation_key == status.operation_key));
+                reads += 1;
+                Ok(if now.get() >= Duration::from_secs(21) { terminal.clone() } else { keyed_reply(status.clone()) })
+            },
+            |observation| progress.push(observation.clone()),
+            &mut Clock::new(now.clone()),
+        ).expect("admitted wait");
+        assert!(
+            matches!(result, IndexOperationWaitResult::Terminal(actual) if &actual == expected)
+        );
+        assert_eq!(now.get(), Duration::from_secs(21));
+        assert_eq!(
+            reads, 43,
+            "each later conditional slice retains bounded 500ms pacing"
+        );
+        assert_eq!(progress.last(), Some(expected));
+        assert!(progress.iter().all(|observation| matches!(observation, IndexOperationObservation::Known(actual) if actual.operation_key == status.operation_key && actual.request_digest == status.request_digest)));
+    }
+
+    #[test]
+    fn durable_wait_stop_retains_last_admitted_identity_without_mutation() {
+        let status = active();
+        for error in [
+            ClientError::Disconnected(std::io::ErrorKind::ConnectionReset),
+            ClientError::RemoteDeadlineExceeded,
+        ] {
+            let mut error = Some(error);
+            let mut reads = 0;
+            let result = wait_index_operation(
+                IndexOperationObservation::Known(status.clone()),
+                &RequestContext::new(),
+                |_| {
+                    reads += 1;
+                    Err(error.take().expect("one exact read"))
+                },
+                |_| {},
+            )
+            .expect("initial admission");
+            assert!(
+                matches!(result, IndexOperationWaitResult::Stopped { observation: IndexOperationObservation::Known(actual), reason: IndexOperationWaitStop::Client(_) } if actual == status)
+            );
+            assert_eq!(reads, 1);
+        }
+        for reason in [
+            RequestCancellationReason::Explicit,
+            RequestCancellationReason::ClientDisconnected,
+            RequestCancellationReason::Shutdown,
+        ] {
+            let context = RequestContext::new();
+            context.cancel(reason);
+            let result = wait_index_operation(
+                IndexOperationObservation::Known(status.clone()),
+                &context,
+                |_| panic!("cancelled wait cannot read or start"),
+                |_| {},
+            )
+            .expect("initial admission");
+            assert!(
+                matches!(result, IndexOperationWaitResult::Stopped { observation: IndexOperationObservation::Known(actual), reason: IndexOperationWaitStop::Client(ClientError::RequestCancelled(actual_reason)) } if actual == status && actual_reason == reason)
+            );
+        }
+        let context = RequestContext::new();
+        assert!(context.read_deadline(Duration::ZERO).is_err());
+        let result = wait_index_operation(
+            IndexOperationObservation::Known(status.clone()),
+            &context,
+            |_| panic!("expired scope cannot renew"),
+            |_| {},
+        )
+        .expect("initial admission");
+        assert!(
+            matches!(result, IndexOperationWaitResult::Stopped { observation: IndexOperationObservation::Known(actual), reason: IndexOperationWaitStop::Client(ClientError::RemoteDeadlineExceeded) } if actual == status)
+        );
+    }
+
+    #[test]
+    fn durable_wait_refuses_foreign_same_key_request_and_stops_on_uncertain_evidence() {
+        let status = active();
+        let other =
+            backend_library::PackageReference::parse("/work/unrelated").expect("other project");
+        let foreign = IndexOperationStatus::new(
+            status.operation_key,
+            other.clone(),
+            status.execution_intent,
+            IndexOperationState::Active {
+                ticket: IndexJobTicket::new(std::num::NonZeroU64::MIN, [9; 16], other),
+                stage: IndexJobStage::Compiling,
+            },
+        );
+        let result = wait_index_operation(
+            IndexOperationObservation::Known(status.clone()),
+            &RequestContext::new(),
+            |_| Ok(keyed_reply(foreign.clone())),
+            |_| {},
+        )
+        .expect("initial admission");
+        assert!(
+            matches!(result, IndexOperationWaitResult::Stopped { observation: IndexOperationObservation::Known(actual), reason: IndexOperationWaitStop::Client(ClientError::Protocol(_)) } if actual == status)
+        );
+        let mut unresolved = status.clone();
+        unresolved.state = IndexOperationState::Unresolved {
+            reason: backend_library::IndexOperationUnresolvedReason::WorkspaceEvidenceMismatch,
+            detail: backend_library::ProductText::from_static("exact publication cannot be proven"),
+        };
+        for uncertain in [
+            IndexOperationObservation::Known(unresolved),
+            IndexOperationObservation::Unknown {
+                operation_key: status.operation_key,
+            },
+            IndexOperationObservation::OutsideReceiptWindow {
+                operation_key: status.operation_key,
+                request_digest: status.request_digest,
+            },
+        ] {
+            let mut reads = 0;
+            let result = wait_index_operation(
+                IndexOperationObservation::Known(status.clone()),
+                &RequestContext::new(),
+                |_| {
+                    reads += 1;
+                    Ok(SurfaceReply::IndexOperationStatus(uncertain.clone()))
+                },
+                |_| {},
+            )
+            .expect("exact uncertainty");
+            assert!(
+                matches!(result, IndexOperationWaitResult::Stopped { observation, reason: IndexOperationWaitStop::Uncertain } if observation == uncertain)
+            );
+            assert_eq!(reads, 1, "uncertainty cannot authorize any implicit start");
+        }
+    }
+
+    #[test]
+    fn durable_wait_accepts_already_admitted_terminal_at_zero_wait_budget() {
+        let terminal: SurfaceReply = serde_json::from_value(waveform()["runs"][2]["reply"].clone())
+            .expect("actual terminal refusal");
+        let SurfaceReply::IndexOperationStatus(observation) = terminal else {
+            panic!("operation");
+        };
+        let context = RequestContext::new();
+        assert!(context.read_deadline(Duration::ZERO).is_err());
+        let result = wait_index_operation(
+            observation.clone(),
+            &context,
+            |_| panic!("terminal needs no exchange"),
+            |_| {},
+        )
+        .expect("admitted terminal");
+        assert!(
+            matches!(result, IndexOperationWaitResult::Terminal(actual) if actual == observation)
+        );
     }
     fn query(status: &IndexOperationStatus, wait: u64) -> IndexProgressRead {
         IndexProgressRead::new(
