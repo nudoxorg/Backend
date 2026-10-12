@@ -2218,3 +2218,211 @@ fn actual_exclusive_worker_consumes_initial_seed_without_a_second_rank_scan() ->
     );
     Ok(())
 }
+
+#[cfg(unix)]
+#[test]
+fn owner_query_recipe_retirement_preserves_lexical_rows_and_shared_runtime_account() -> TestResult {
+    let (coordinator, library, view) = selected_many(30, false)?;
+    let fixture = fixture_with_mode(4096, "plain")?;
+    let runtime = fixture
+        .provision
+        .runtime()
+        .ok_or("actual protocol runtime")?;
+    let account = runtime.memory_budget().clone();
+    let baseline = account.used();
+    let mut provider = crate::builtin::query::RemoteSemantic::select_owner(
+        &fixture.provision,
+        &fixture.descriptor,
+        crate::builtin::query::RemoteSemantic::Unconfigured,
+    );
+    let flag = Arc::new(AtomicBool::new(false));
+    let request = backend_engine::Query::new(
+        "first intent",
+        view.root(),
+        backend_engine::QueryLimit::new(3)?,
+    );
+    let (_, status) = settle_page(
+        &coordinator,
+        &library,
+        &mut provider,
+        &request,
+        Arc::clone(&flag),
+    )?;
+    assert_eq!(
+        status,
+        SemanticSearchStatus::Available,
+        "the old actual fixture contributed coordinates"
+    );
+    assert!(account.used() > baseline);
+    let local = coordinator.search_local_page(&request)?;
+    let expected = local
+        .finish()
+        .rows
+        .into_iter()
+        .map(|row| row.row.id)
+        .collect::<Vec<_>>();
+    let mut retired = provider
+        .take_local_for_retirement()
+        .ok_or("owned local mode required")?;
+    assert_eq!(
+        provider.local_preparation(),
+        Some(backend_library::QueryPreparationState::Retiring)
+    );
+    assert!(!provider.admits_local_reply());
+    assert!(
+        provider.take_local_for_retirement().is_none(),
+        "the same owner is moved only once"
+    );
+    let local = coordinator.search_local_page(&request)?;
+    let answer = provider.search_local_with_cancellation(
+        &coordinator,
+        crate::builtin::admitted_coverage()?,
+        local,
+        request.text(),
+        Some(Arc::clone(&flag)),
+    );
+    assert_eq!(
+        answer.status,
+        SemanticSearchStatus::Unavailable {
+            reason: backend_library::SemanticSearchReason::NoActiveProjection
+        }
+    );
+    assert_eq!(
+        answer
+            .result
+            .rows
+            .iter()
+            .map(|row| row.row.id)
+            .collect::<Vec<_>>(),
+        expected
+    );
+    drop(answer);
+    let worker = std::thread::spawn(move || {
+        retired.close_local();
+        drop(retired);
+    });
+    worker
+        .join()
+        .map_err(|_| "retirement fixture worker panicked")?;
+    assert_eq!(
+        account.used(),
+        baseline,
+        "all old projection/cache/query credits retire before replacement"
+    );
+    let control = backend_compile::EmbeddingActivationControl::new(
+        &flag,
+        Instant::now() + Duration::from_secs(5),
+    );
+    let config = fixture
+        .descriptor
+        .parent()
+        .ok_or("compiler root")?
+        .join("embedding.config");
+    let prepared =
+        backend_engine::application::PreparedEmbeddingRuntime::capture_until(&config, &control)?
+            .ok_or("configured fixture")?;
+    let recipe = super::super::PreparedLocalQueryRecipe::capture_until(
+        &fixture.descriptor,
+        prepared.spec(),
+        &control,
+    )?;
+    let admitted = recipe.admit_until(Arc::clone(&runtime), &control)?;
+    assert!(Arc::ptr_eq(admitted.runtime(), &runtime));
+    provider.install_local_admitted(admitted)?;
+    assert!(provider.local_preparation().is_none());
+    assert!(provider.admits_local_reply());
+    assert_eq!(
+        account.used(),
+        baseline,
+        "installing a declared recipe never fabricates vector coverage"
+    );
+    let local = coordinator.search_local_page(&request)?;
+    let answer = provider.search_with_status(
+        &coordinator,
+        crate::builtin::admitted_coverage()?,
+        local,
+        request.text(),
+        false,
+    );
+    assert_eq!(
+        answer.1,
+        SemanticSearchStatus::Unavailable {
+            reason: backend_library::SemanticSearchReason::NoActiveProjection
+        }
+    );
+    drop(provider);
+    assert_eq!(account.used(), baseline);
+    let mut explicit = crate::builtin::query::RemoteSemantic::Unconfigured;
+    assert!(explicit.take_local_for_retirement().is_none());
+    assert!(matches!(
+        explicit,
+        crate::builtin::query::RemoteSemantic::Unconfigured
+    ));
+    let mut explicit_remote = crate::builtin::query::RemoteSemantic::Unavailable(Box::new(
+        crate::builtin::query::RemoteConfigError::InvalidValue(
+            crate::builtin::query::QDRANT_ENDPOINT_ENV,
+        ),
+    ));
+    assert!(explicit_remote.take_local_for_retirement().is_none());
+    assert!(matches!(
+        explicit_remote.finish_local_refusal(LocalSemanticError::RecipeNotConfigured),
+        Err(LocalSemanticError::OwnerNotRetiring)
+    ));
+    let exact = LocalSemantic::open(&fixture.provision, &fixture.descriptor)?.admitted();
+    assert!(matches!(
+        explicit_remote.install_local_admitted(exact),
+        Err(LocalSemanticError::OwnerNotRetiring)
+    ));
+    assert!(
+        matches!(
+            explicit_remote,
+            crate::builtin::query::RemoteSemantic::Unavailable(_)
+        ),
+        "invalid explicit remote authority never silently falls back"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+pub(crate) fn selected_owner_many(
+    count: usize,
+) -> Result<
+    (
+        super::super::SearchSnapshotOwner,
+        backend_library::Library,
+        backend_engine::ViewRoot,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let (coordinator, library, view) = selected_many(count, false)?;
+    let workspace = coordinator.workspace_root();
+    let evidence = super::super::tests::semantic_evidence(workspace, &view);
+    let mut owner = super::super::SearchSnapshotOwner::default();
+    owner.select(
+        workspace,
+        view.clone(),
+        view.capability().ok_or("view capability")?,
+        crate::builtin::admitted_coverage()?,
+        evidence,
+    )?;
+    Ok((owner, library, view))
+}
+
+#[test]
+fn local_setup_refusal_names_registered_refresh_without_claiming_activation() {
+    let registered = backend_library::command_spec(backend_library::CommandId::EmbeddingRefresh);
+    assert_eq!(registered.name, "embedding-refresh");
+    for cause in [
+        LocalSemanticError::RuntimeUnavailable(
+            backend_engine::application::EmbeddingRuntimeStatus::NotConfigured,
+        ),
+        LocalSemanticError::RecipeNotConfigured,
+    ] {
+        let guidance = cause.setup_instruction();
+        assert!(guidance.contains("nudox embedding-setup"));
+        assert!(guidance.contains("nudox embedding-refresh"));
+        assert!(guidance.contains("ticket"));
+        assert!(!guidance.contains("reopen"));
+        assert!(!guidance.contains("semantic search available"));
+    }
+}

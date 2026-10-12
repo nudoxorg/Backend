@@ -8,11 +8,11 @@
 
 use super::compiler::{EmbeddingProvisioningFailure, EmbeddingRequirement};
 use backend_compile::{
-    EmbeddingArtifact, EmbeddingExecutable, EmbeddingMemoryAdmission, EmbeddingNormalization,
-    EmbeddingRuntimeSpecV1, ExecutableIdentity, MAX_EMBEDDING_BATCH_COORDINATE_BYTES,
-    MAX_EMBEDDING_BATCH_METADATA_BYTES, MAX_EMBEDDING_CACHE_COORDINATE_BYTES,
-    MAX_EMBEDDING_MODEL_BYTES, MAX_EMBEDDING_TOKENIZER_BYTES, ProcessEnvironment, ProcessLimits,
-    ToolchainArtifact,
+    EmbeddingActivationControl, EmbeddingActivationInput, EmbeddingArtifact, EmbeddingExecutable,
+    EmbeddingMemoryAdmission, EmbeddingNormalization, EmbeddingRuntimeSpecV1, ExecutableIdentity,
+    MAX_EMBEDDING_BATCH_COORDINATE_BYTES, MAX_EMBEDDING_BATCH_METADATA_BYTES,
+    MAX_EMBEDDING_CACHE_COORDINATE_BYTES, MAX_EMBEDDING_MODEL_BYTES, MAX_EMBEDDING_TOKENIZER_BYTES,
+    ProcessEnvironment, ProcessLimits, ToolchainArtifact,
 };
 use std::fs;
 use std::io::Read;
@@ -233,6 +233,10 @@ pub enum EmbeddingUnavailableReason {
     UnsupportedResourceLimit,
     /// This platform cannot create or protect the private inference workspace.
     PlatformUnsupported,
+    /// Original owner cancellation stopped activation before it committed.
+    ActivationCancelled,
+    /// The original absolute activation deadline expired before it committed.
+    ActivationDeadline,
     /// The external program failed the bounded BEM1/BEC1 or BEM2/BEC2 activation self-test.
     ActivationFailed,
 }
@@ -251,12 +255,269 @@ pub enum EmbeddingRuntimeStatus {
     Unavailable(EmbeddingUnavailableReason),
 }
 
+/// Identity of the complete persisted launch/configuration bytes, including environment,
+/// requirement and resource bounds. A portable recipe alone is insufficient for refresh reuse.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EmbeddingRuntimeConfigIdentity([u8; 32]);
+
+impl EmbeddingRuntimeConfigIdentity {
+    /// Full persisted configuration identity.
+    #[must_use]
+    pub const fn as_bytes(self) -> [u8; 32] {
+        self.0
+    }
+}
+
+/// Complete config identity with its original private path, retained through actor commit.
+/// It carries no filesystem writer, executable or model activation authority.
+#[derive(Clone)]
+pub struct EmbeddingRuntimeConfigWitness {
+    path: PathBuf,
+    identity: EmbeddingRuntimeConfigIdentity,
+}
+impl std::fmt::Debug for EmbeddingRuntimeConfigWitness {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("EmbeddingRuntimeConfigWitness")
+            .field("identity", &self.identity)
+            .finish_non_exhaustive()
+    }
+}
+impl EmbeddingRuntimeConfigWitness {
+    /// Complete persisted-byte identity.
+    #[must_use]
+    pub const fn identity(&self) -> EmbeddingRuntimeConfigIdentity {
+        self.identity
+    }
+
+    /// Revalidates actual contents under the original absolute control.
+    ///
+    /// # Errors
+    /// Returns original control, private config access/decoding or changed-content refusal.
+    pub fn verify_current_until(
+        &self,
+        control: &EmbeddingActivationControl<'_>,
+    ) -> Result<(), EmbeddingRuntimeError> {
+        let current = read_private_config_controlled(&self.path, Some(control))?
+            .ok_or(EmbeddingRuntimeError::InvalidConfig)?;
+        if current.0 != self.identity {
+            return Err(EmbeddingRuntimeError::InvalidConfig);
+        }
+        control.checkpoint()?;
+        Ok(())
+    }
+}
+
+/// Bounded, decoded configuration capture. It owns no model residency or process authority.
+pub struct PreparedEmbeddingRuntime {
+    path: PathBuf,
+    identity: EmbeddingRuntimeConfigIdentity,
+    config: PersistedEmbeddingRuntimeConfig,
+}
+
+impl PreparedEmbeddingRuntime {
+    /// Captures exact private configuration bytes before any old generation is retired.
+    ///
+    /// # Errors
+    /// Returns the original cancellation/deadline or private config admission failure.
+    pub fn capture_until(
+        path: &Path,
+        control: &EmbeddingActivationControl<'_>,
+    ) -> Result<Option<Self>, EmbeddingRuntimeError> {
+        let Some((identity, config)) = read_private_config_controlled(path, Some(control))? else {
+            return Ok(None);
+        };
+        config.limits.validate(
+            config.model_bytes,
+            config.tokenizer_bytes,
+            config.spec.dimension(),
+            config.spec.maximum_text_bytes(),
+        )?;
+        config.limits.validate_platform()?;
+        let workspace = path
+            .parent()
+            .ok_or(EmbeddingRuntimeError::InvalidConfig)?
+            .join("embedding-runtime-work");
+        EmbeddingExecutable::validate_launch_inputs(
+            &config.program,
+            &config.arguments,
+            &workspace,
+        )?;
+        ProcessEnvironment::new(config.environment.clone())?;
+        control.checkpoint()?;
+        Ok(Some(Self {
+            path: path.to_owned(),
+            identity,
+            config,
+        }))
+    }
+
+    /// Exact persisted configuration, distinct from the portable recipe identity.
+    #[must_use]
+    pub const fn identity(&self) -> EmbeddingRuntimeConfigIdentity {
+        self.identity
+    }
+
+    /// Portable contract needed to admit the exact local query descriptor before retirement.
+    #[must_use]
+    pub const fn spec(&self) -> EmbeddingRuntimeSpecV1 {
+        self.config.spec
+    }
+
+    /// Optional/Required policy captured with the configuration.
+    #[must_use]
+    pub const fn requirement(&self) -> EmbeddingRequirement {
+        self.config.requirement
+    }
+
+    /// Revalidates the exact persisted bytes before an owner commits replacement.
+    /// A byte-identical file replacement remains acceptable; path/inode stamps are not identity.
+    ///
+    /// # Errors
+    /// Returns original cancellation/deadline, config access/decoding failure, or changed bytes.
+    pub fn verify_current_until(
+        &self,
+        control: &EmbeddingActivationControl<'_>,
+    ) -> Result<(), EmbeddingRuntimeError> {
+        EmbeddingRuntimeConfigWitness {
+            path: self.path.clone(),
+            identity: self.identity,
+        }
+        .verify_current_until(control)
+    }
+
+    /// Original full config proof, without re-reading or re-binding its path.
+    #[must_use]
+    pub fn configuration_witness(&self) -> EmbeddingRuntimeConfigWitness {
+        EmbeddingRuntimeConfigWitness {
+            path: self.path.clone(),
+            identity: self.identity,
+        }
+    }
+
+    /// Consumes this capture only after the owner has proven exclusive residency admission.
+    /// A successful real self-test proves runtime activation, never corpus vector coverage.
+    ///
+    /// # Errors
+    /// Returns the original typed activation cause and its existing provisioning classification.
+    pub fn activate_until(
+        self,
+        control: &EmbeddingActivationControl<'_>,
+    ) -> Result<EmbeddingRuntimeProvision, EmbeddingRuntimeActivationFailure> {
+        self.activate_until_checked(control, |_| {})
+    }
+
+    fn activate_until_checked(
+        self,
+        control: &EmbeddingActivationControl<'_>,
+        before_commit: impl FnOnce(&EmbeddingExecutable),
+    ) -> Result<EmbeddingRuntimeProvision, EmbeddingRuntimeActivationFailure> {
+        let configuration = self.configuration_witness();
+        let runtime = activate_config_controlled(&self.path, &self.config, Some(control)).map_err(
+            |failure| EmbeddingRuntimeActivationFailure {
+                failure,
+                configuration: configuration.clone(),
+            },
+        )?;
+        before_commit(&runtime);
+        self.verify_current_until(control)
+            .map_err(|error| EmbeddingRuntimeActivationFailure {
+                failure: activation_failure(EmbeddingUnavailableReason::ActivationFailed, error),
+                configuration: configuration.clone(),
+            })?;
+        Ok(EmbeddingRuntimeProvision {
+            runtime: Some(Arc::new(runtime)),
+            requirement: self.config.requirement,
+            status: EmbeddingRuntimeStatus::Available {
+                recipe: self.config.spec.recipe_identity(),
+            },
+            resident_credit_bytes: self.config.limits.resident_credit_bytes,
+            configuration: Some(EmbeddingRuntimeConfigWitness {
+                path: self.path,
+                identity: self.identity,
+            }),
+        })
+    }
+}
+
+/// Refused owned activation with its intrinsic original full configuration proof.
+#[derive(Debug, Error)]
+#[error("{failure}")]
+pub struct EmbeddingRuntimeActivationFailure {
+    #[source]
+    failure: EmbeddingActivationFailure,
+    configuration: EmbeddingRuntimeConfigWitness,
+}
+impl EmbeddingRuntimeActivationFailure {
+    /// Actual closed activation/control reason.
+    #[must_use]
+    pub const fn reason(&self) -> EmbeddingUnavailableReason {
+        self.failure.reason
+    }
+    /// Original typed cause; no clone or string classification.
+    #[must_use]
+    pub const fn cause(&self) -> &EmbeddingRuntimeError {
+        &self.failure.source
+    }
+    /// Proof required before resuming this exact unavailable configuration.
+    #[must_use]
+    pub fn configuration_witness(&self) -> EmbeddingRuntimeConfigWitness {
+        self.configuration.clone()
+    }
+}
+
+/// Exact activation error retained with the existing closed provisioning classification.
+#[derive(Debug, Error)]
+#[error("embedding runtime activation refused ({reason:?}): {source}")]
+struct EmbeddingActivationFailure {
+    reason: EmbeddingUnavailableReason,
+    #[source]
+    source: EmbeddingRuntimeError,
+}
+
+impl EmbeddingActivationFailure {
+    /// Existing provisioning classification; the original cause remains the error source.
+    #[must_use]
+    pub const fn reason(&self) -> EmbeddingUnavailableReason {
+        self.reason
+    }
+
+    /// Original typed cause, including cancellation/deadline and operating-system error kind.
+    #[must_use]
+    pub const fn cause(&self) -> &EmbeddingRuntimeError {
+        &self.source
+    }
+}
+
+fn activation_failure(
+    reason: EmbeddingUnavailableReason,
+    source: EmbeddingRuntimeError,
+) -> EmbeddingActivationFailure {
+    let reason = match &source {
+        EmbeddingRuntimeError::Activation(EmbeddingExecutableError::Process(
+            backend_compile::ProcessError::Cancelled,
+        ))
+        | EmbeddingRuntimeError::Process(backend_compile::ProcessError::Cancelled) => {
+            EmbeddingUnavailableReason::ActivationCancelled
+        }
+        EmbeddingRuntimeError::Activation(EmbeddingExecutableError::Process(
+            backend_compile::ProcessError::Deadline,
+        ))
+        | EmbeddingRuntimeError::Process(backend_compile::ProcessError::Deadline) => {
+            EmbeddingUnavailableReason::ActivationDeadline
+        }
+        _ => reason,
+    };
+    EmbeddingActivationFailure { reason, source }
+}
+
 /// Activated runtime and its typed Optional/Required provisioning status.
 pub struct EmbeddingRuntimeProvision {
     runtime: Option<Arc<EmbeddingExecutable>>,
     requirement: EmbeddingRequirement,
     status: EmbeddingRuntimeStatus,
     resident_credit_bytes: u64,
+    configuration: Option<EmbeddingRuntimeConfigWitness>,
 }
 
 impl std::fmt::Debug for EmbeddingRuntimeProvision {
@@ -267,6 +528,7 @@ impl std::fmt::Debug for EmbeddingRuntimeProvision {
             .field("requirement", &self.requirement)
             .field("status", &self.status)
             .field("resident_credit_bytes", &self.resident_credit_bytes)
+            .field("configuration", &self.configuration_identity())
             .finish()
     }
 }
@@ -275,14 +537,15 @@ impl EmbeddingRuntimeProvision {
     /// Loads and activates a persisted runtime, or returns no-config/unavailable state.
     pub fn open(config_path: impl AsRef<Path>) -> Result<Self, EmbeddingRuntimeError> {
         let path = config_path.as_ref();
-        let config = match read_private_config(path) {
-            Ok(Some(config)) => config,
+        let (identity, config) = match read_private_config_controlled(path, None) {
+            Ok(Some(captured)) => captured,
             Ok(None) => {
                 return Ok(Self {
                     runtime: None,
                     requirement: EmbeddingRequirement::Optional,
                     status: EmbeddingRuntimeStatus::NotConfigured,
                     resident_credit_bytes: 0,
+                    configuration: None,
                 });
             }
             Err(error) => return Err(error),
@@ -294,7 +557,7 @@ impl EmbeddingRuntimeProvision {
             config.spec.maximum_text_bytes(),
         )?;
         let resident_credit_bytes = config.limits.resident_credit_bytes;
-        match activate_config(path, &config) {
+        match activate_config_controlled(path, &config, None) {
             Ok(runtime) => Ok(Self {
                 runtime: Some(Arc::new(runtime)),
                 requirement: config.requirement,
@@ -302,20 +565,49 @@ impl EmbeddingRuntimeProvision {
                     recipe: config.spec.recipe_identity(),
                 },
                 resident_credit_bytes,
+                configuration: Some(EmbeddingRuntimeConfigWitness {
+                    path: path.to_owned(),
+                    identity,
+                }),
             }),
-            Err(reason) => Ok(Self {
+            Err(failure) => Ok(Self {
                 runtime: None,
                 requirement: config.requirement,
-                status: EmbeddingRuntimeStatus::Unavailable(reason),
+                status: EmbeddingRuntimeStatus::Unavailable(failure.reason),
                 resident_credit_bytes,
+                configuration: Some(EmbeddingRuntimeConfigWitness {
+                    path: path.to_owned(),
+                    identity,
+                }),
             }),
         }
+    }
+
+    /// Full persisted configuration captured by this provision, when present.
+    #[must_use]
+    pub const fn configuration_identity(&self) -> Option<EmbeddingRuntimeConfigIdentity> {
+        match &self.configuration {
+            Some(witness) => Some(witness.identity),
+            None => None,
+        }
+    }
+
+    /// Original config proof transferred with this actual activation, without recapture.
+    #[must_use]
+    pub fn configuration_witness(&self) -> Option<EmbeddingRuntimeConfigWitness> {
+        self.configuration.clone()
     }
 
     /// Returns the active shared embedding executable, if activation succeeded.
     #[must_use]
     pub fn runtime(&self) -> Option<Arc<EmbeddingExecutable>> {
         self.runtime.as_ref().map(Arc::clone)
+    }
+
+    /// Transfers the exact activated runtime out of the provision without cloning it.
+    #[must_use]
+    pub fn into_runtime(self) -> Option<Arc<EmbeddingExecutable>> {
+        self.runtime
     }
 
     /// Returns the exact Optional/Required engine policy.
@@ -361,9 +653,11 @@ impl EmbeddingRuntimeProvision {
             EmbeddingRuntimeStatus::Unavailable(
                 EmbeddingUnavailableReason::PlatformUnsupported,
             ) => Some(EmbeddingProvisioningFailure::PlatformUnsupported),
-            EmbeddingRuntimeStatus::Unavailable(EmbeddingUnavailableReason::ActivationFailed) => {
-                Some(EmbeddingProvisioningFailure::ActivationRejected)
-            }
+            EmbeddingRuntimeStatus::Unavailable(
+                EmbeddingUnavailableReason::ActivationFailed
+                | EmbeddingUnavailableReason::ActivationCancelled
+                | EmbeddingUnavailableReason::ActivationDeadline,
+            ) => Some(EmbeddingProvisioningFailure::ActivationRejected),
             EmbeddingRuntimeStatus::NotConfigured | EmbeddingRuntimeStatus::Available { .. } => {
                 None
             }
@@ -584,138 +878,241 @@ struct PersistedEmbeddingRuntimeConfig {
     tokenizer_bytes: u64,
 }
 
-fn activate_config(
+fn activate_config_controlled(
     config_path: &Path,
     config: &PersistedEmbeddingRuntimeConfig,
-) -> Result<EmbeddingExecutable, EmbeddingUnavailableReason> {
+    control: Option<&EmbeddingActivationControl<'_>>,
+) -> Result<EmbeddingExecutable, EmbeddingActivationFailure> {
+    activate_config_with_artifact_reader(config_path, config, control, |path, length, maximum| {
+        read_private_artifact_controlled(path, length, maximum, control)
+    })
+}
+
+fn activate_config_with_artifact_reader(
+    config_path: &Path,
+    config: &PersistedEmbeddingRuntimeConfig,
+    control: Option<&EmbeddingActivationControl<'_>>,
+    mut reader: impl FnMut(&Path, u64, u64) -> Result<Vec<u8>, EmbeddingRuntimeError>,
+) -> Result<EmbeddingExecutable, EmbeddingActivationFailure> {
+    let checkpoint = || {
+        provision_checkpoint(control).map_err(|error| {
+            activation_failure(EmbeddingUnavailableReason::ActivationFailed, error)
+        })
+    };
+    checkpoint()?;
     let process_limits = config
         .limits
         .process_limits()
-        .map_err(|error| match error {
-            EmbeddingRuntimeError::Process(backend_compile::ProcessError::UnsupportedLimit(_)) => {
-                EmbeddingUnavailableReason::UnsupportedResourceLimit
-            }
-            _ => EmbeddingUnavailableReason::ActivationFailed,
-        })?;
-    if process_limits.unsupported_limit().is_some() {
-        return Err(EmbeddingUnavailableReason::UnsupportedResourceLimit);
+        .map_err(|error| activation_failure(EmbeddingUnavailableReason::ActivationFailed, error))?;
+    if let Some(limit) = process_limits.unsupported_limit() {
+        return Err(activation_failure(
+            EmbeddingUnavailableReason::UnsupportedResourceLimit,
+            backend_compile::ProcessError::UnsupportedLimit(limit).into(),
+        ));
     }
+    let model_len = usize::try_from(config.model_bytes).map_err(|_| {
+        activation_failure(
+            EmbeddingUnavailableReason::ActivationFailed,
+            EmbeddingRuntimeError::InvalidConfig,
+        )
+    })?;
+    let tokenizer_len = usize::try_from(config.tokenizer_bytes).map_err(|_| {
+        activation_failure(
+            EmbeddingUnavailableReason::ActivationFailed,
+            EmbeddingRuntimeError::InvalidConfig,
+        )
+    })?;
     let memory = EmbeddingMemoryAdmission::new(
         config.limits.resident_credit_bytes,
-        usize::try_from(config.model_bytes)
-            .map_err(|_| EmbeddingUnavailableReason::ActivationFailed)?,
-        usize::try_from(config.tokenizer_bytes)
-            .map_err(|_| EmbeddingUnavailableReason::ActivationFailed)?,
+        model_len,
+        tokenizer_len,
         process_limits,
     )
-    .map_err(|_| EmbeddingUnavailableReason::ActivationFailed)?;
-    // Vec -> Arc materialization can temporarily own both buffers. Reserve that peak before reads.
-    let materialization_bytes = config.model_bytes.max(config.tokenizer_bytes);
+    .map_err(|error| {
+        activation_failure(EmbeddingUnavailableReason::ActivationFailed, error.into())
+    })?;
     let materialization = memory
         .budget()
-        .reserve(materialization_bytes)
-        .map_err(|_| EmbeddingUnavailableReason::ActivationFailed)?;
+        .reserve(config.model_bytes.max(config.tokenizer_bytes))
+        .map_err(|error| {
+            activation_failure(
+                EmbeddingUnavailableReason::ActivationFailed,
+                backend_compile::EmbeddingExecutableError::Memory(error).into(),
+            )
+        })?;
     let model_path = artifact_path(config_path, config.spec.model(), "model");
     let tokenizer_path = artifact_path(config_path, config.spec.tokenizer(), "tokenizer");
-    let model_bytes =
-        read_private_artifact(&model_path, config.model_bytes, MAX_EMBEDDING_MODEL_BYTES).map_err(
-            |error| {
-                artifact_read_failure(error, EmbeddingUnavailableReason::ModelArtifactUnavailable)
-            },
-        )?;
-    let tokenizer_bytes = read_private_artifact(
+    let mut read_artifact = |path: &Path, length, maximum, missing| {
+        reader(path, length, maximum).map_err(|error| {
+            let reason = match &error {
+                EmbeddingRuntimeError::Io(error)
+                    if error.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    missing
+                }
+                _ => EmbeddingUnavailableReason::ArtifactIdentityMismatch,
+            };
+            activation_failure(reason, error)
+        })
+    };
+    let model_bytes = read_artifact(
+        &model_path,
+        config.model_bytes,
+        MAX_EMBEDDING_MODEL_BYTES,
+        EmbeddingUnavailableReason::ModelArtifactUnavailable,
+    )?;
+    let model = controlled_artifact(Arc::from(model_bytes), control)
+        .map_err(|error| activation_failure(EmbeddingUnavailableReason::ActivationFailed, error))?;
+    let tokenizer_bytes = read_artifact(
         &tokenizer_path,
         config.tokenizer_bytes,
         MAX_EMBEDDING_TOKENIZER_BYTES,
-    )
-    .map_err(|error| {
-        artifact_read_failure(
-            error,
-            EmbeddingUnavailableReason::TokenizerArtifactUnavailable,
-        )
-    })?;
-    let model = EmbeddingArtifact::new(Arc::from(model_bytes));
-    let tokenizer = EmbeddingArtifact::new(Arc::from(tokenizer_bytes));
+        EmbeddingUnavailableReason::TokenizerArtifactUnavailable,
+    )?;
+    let tokenizer = controlled_artifact(Arc::from(tokenizer_bytes), control)
+        .map_err(|error| activation_failure(EmbeddingUnavailableReason::ActivationFailed, error))?;
     drop(materialization);
     if model.identity().as_bytes() != config.spec.model()
         || tokenizer.identity().as_bytes() != config.spec.tokenizer()
     {
-        return Err(EmbeddingUnavailableReason::ArtifactIdentityMismatch);
+        return Err(activation_failure(
+            EmbeddingUnavailableReason::ArtifactIdentityMismatch,
+            EmbeddingRuntimeError::Corrupt,
+        ));
     }
+    let capture_executable = |path: &Path| {
+        let captured = match control {
+            Some(control) => {
+                ExecutableIdentity::from_path_until(path, control.cancelled(), control.deadline())
+            }
+            None => ExecutableIdentity::from_path(path),
+        };
+        captured.map_err(|error| {
+            let reason = match error {
+                backend_compile::ProcessError::ExecutableUnavailable => {
+                    EmbeddingUnavailableReason::ExecutableUnavailable
+                }
+                _ => EmbeddingUnavailableReason::ExecutableIdentityChanged,
+            };
+            activation_failure(reason, error.into())
+        })
+    };
     let mut dependency_ids = Vec::with_capacity(config.dependencies.len());
     for (path, expected) in &config.dependencies {
-        let identity = ExecutableIdentity::from_path(path).map_err(|error| match error {
-            backend_compile::ProcessError::ExecutableUnavailable => {
-                EmbeddingUnavailableReason::ExecutableUnavailable
-            }
-            _ => EmbeddingUnavailableReason::ExecutableIdentityChanged,
-        })?;
-        let observed = identity.digest().to_bytes();
-        if observed != *expected {
-            return Err(EmbeddingUnavailableReason::ArtifactIdentityMismatch);
+        checkpoint()?;
+        let identity = capture_executable(path)?;
+        if identity.digest().to_bytes() != *expected {
+            return Err(activation_failure(
+                EmbeddingUnavailableReason::ArtifactIdentityMismatch,
+                EmbeddingRuntimeError::ExecutableIdentityMismatch,
+            ));
         }
         dependency_ids.push(identity.digest());
     }
-    let executable_identity =
-        ExecutableIdentity::from_path(&config.program).map_err(|error| match error {
-            backend_compile::ProcessError::ExecutableUnavailable => {
-                EmbeddingUnavailableReason::ExecutableUnavailable
-            }
-            _ => EmbeddingUnavailableReason::ExecutableIdentityChanged,
-        })?;
-    let executable = ToolchainArtifact::new(executable_identity, dependency_ids);
+    let executable = ToolchainArtifact::new(capture_executable(&config.program)?, dependency_ids);
     if executable.identity().to_bytes() != config.spec.executable() {
-        return Err(EmbeddingUnavailableReason::ArtifactIdentityMismatch);
+        return Err(activation_failure(
+            EmbeddingUnavailableReason::ArtifactIdentityMismatch,
+            EmbeddingRuntimeError::ExecutableIdentityMismatch,
+        ));
     }
-    let environment = ProcessEnvironment::new(config.environment.clone())
-        .map_err(|_| EmbeddingUnavailableReason::ActivationFailed)?;
+    let environment = ProcessEnvironment::new(config.environment.clone()).map_err(|error| {
+        activation_failure(EmbeddingUnavailableReason::ActivationFailed, error.into())
+    })?;
     let workspace = config_path
         .parent()
-        .ok_or(EmbeddingUnavailableReason::ActivationFailed)?
+        .ok_or_else(|| {
+            activation_failure(
+                EmbeddingUnavailableReason::ActivationFailed,
+                EmbeddingRuntimeError::InvalidConfig,
+            )
+        })?
         .join("embedding-runtime-work");
+    checkpoint()?;
     backend_platform::durable::ensure_private_directory(&workspace).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::Unsupported {
+        let reason = if error.kind() == std::io::ErrorKind::Unsupported {
             EmbeddingUnavailableReason::PlatformUnsupported
         } else {
             EmbeddingUnavailableReason::ActivationFailed
-        }
+        };
+        activation_failure(reason, error.into())
     })?;
-    let runtime = EmbeddingExecutable::activate_with_spec_and_memory_admission(
-        config.spec,
-        config.program.clone(),
-        config.arguments.clone(),
-        workspace,
-        environment,
-        process_limits,
-        executable,
-        model,
-        tokenizer,
-        memory,
-    )
-    .map_err(|_| EmbeddingUnavailableReason::ActivationFailed)?;
+    checkpoint()?;
+    let runtime = match control {
+        Some(control) => EmbeddingExecutable::activate_admitted_until(
+            EmbeddingActivationInput {
+                spec: config.spec,
+                program: config.program.clone(),
+                arguments: config.arguments.clone(),
+                workspace,
+                environment,
+                process_limits,
+                executable,
+                model,
+                tokenizer,
+                memory,
+            },
+            control,
+        ),
+        None => EmbeddingExecutable::activate_with_spec_and_memory_admission(
+            config.spec,
+            config.program.clone(),
+            config.arguments.clone(),
+            workspace,
+            environment,
+            process_limits,
+            executable,
+            model,
+            tokenizer,
+            memory,
+        ),
+    }
+    .map_err(|error| {
+        activation_failure(EmbeddingUnavailableReason::ActivationFailed, error.into())
+    })?;
     config
         .spec
         .validate_execution_identity(runtime.execution_identity())
-        .map_err(|_| EmbeddingUnavailableReason::ActivationFailed)?;
+        .map_err(|error| {
+            activation_failure(
+                EmbeddingUnavailableReason::ActivationFailed,
+                backend_compile::EmbeddingExecutableError::Spec(error).into(),
+            )
+        })?;
     let resident_bytes = config
         .model_bytes
         .checked_add(config.tokenizer_bytes)
         .and_then(|bytes| bytes.checked_add(runtime.maximum_inference_scratch_bytes() as u64))
-        .ok_or(EmbeddingUnavailableReason::ActivationFailed)?;
+        .ok_or_else(|| {
+            activation_failure(
+                EmbeddingUnavailableReason::ActivationFailed,
+                EmbeddingRuntimeError::InvalidConfig,
+            )
+        })?;
     if resident_bytes > config.limits.resident_credit_bytes {
-        return Err(EmbeddingUnavailableReason::ActivationFailed);
+        return Err(activation_failure(
+            EmbeddingUnavailableReason::ActivationFailed,
+            EmbeddingRuntimeError::InvalidConfig,
+        ));
     }
+    checkpoint()?;
     Ok(runtime)
 }
 
-fn artifact_read_failure(
-    error: EmbeddingRuntimeError,
-    missing: EmbeddingUnavailableReason,
-) -> EmbeddingUnavailableReason {
-    match error {
-        EmbeddingRuntimeError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => missing,
-        _ => EmbeddingUnavailableReason::ArtifactIdentityMismatch,
+fn controlled_artifact(
+    bytes: Arc<[u8]>,
+    control: Option<&EmbeddingActivationControl<'_>>,
+) -> Result<EmbeddingArtifact, EmbeddingRuntimeError> {
+    match control {
+        Some(control) => EmbeddingArtifact::new_until(bytes, *control).map_err(Into::into),
+        None => Ok(EmbeddingArtifact::new(bytes)),
     }
+}
+
+fn provision_checkpoint(
+    control: Option<&EmbeddingActivationControl<'_>>,
+) -> Result<(), EmbeddingRuntimeError> {
+    control.map_or(Ok(()), |control| control.checkpoint().map_err(Into::into))
 }
 
 fn encode_config(
@@ -871,6 +1268,20 @@ fn decode_config(bytes: &[u8]) -> Result<PersistedEmbeddingRuntimeConfig, Embedd
 fn read_private_config(
     path: &Path,
 ) -> Result<Option<PersistedEmbeddingRuntimeConfig>, EmbeddingRuntimeError> {
+    read_private_config_controlled(path, None).map(|captured| captured.map(|(_, config)| config))
+}
+
+fn read_private_config_controlled(
+    path: &Path,
+    control: Option<&EmbeddingActivationControl<'_>>,
+) -> Result<
+    Option<(
+        EmbeddingRuntimeConfigIdentity,
+        PersistedEmbeddingRuntimeConfig,
+    )>,
+    EmbeddingRuntimeError,
+> {
+    provision_checkpoint(control)?;
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -898,6 +1309,7 @@ fn read_private_config(
                     error,
                 )
             })?;
+            provision_checkpoint(control)?;
             return Ok(None);
         }
         Err(error) => {
@@ -919,14 +1331,22 @@ fn read_private_config(
     bytes
         .try_reserve_exact(metadata.len() as usize)
         .map_err(|_| EmbeddingRuntimeError::Corrupt)?;
-    file.by_ref()
-        .take((MAX_CONFIG_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|error| config_io_error(path, path, EmbeddingRuntimeIoPhase::ConfigRead, error))?;
+    read_bounded_controlled(&mut file, &mut bytes, metadata.len(), control).map_err(|error| {
+        match error {
+            EmbeddingRuntimeError::Io(error) => {
+                config_io_error(path, path, EmbeddingRuntimeIoPhase::ConfigRead, error)
+            }
+            error => error,
+        }
+    })?;
     if bytes.len() as u64 != metadata.len() {
         return Err(EmbeddingRuntimeError::Corrupt);
     }
-    decode_config(&bytes).map(Some)
+    let config = decode_config(&bytes)?;
+    provision_checkpoint(control)?;
+    let identity = EmbeddingRuntimeConfigIdentity(*blake3::hash(&bytes).as_bytes());
+    provision_checkpoint(control)?;
+    Ok(Some((identity, config)))
 }
 
 fn read_private_artifact(
@@ -934,6 +1354,16 @@ fn read_private_artifact(
     expected_length: u64,
     maximum: usize,
 ) -> Result<Vec<u8>, EmbeddingRuntimeError> {
+    read_private_artifact_controlled(path, expected_length, maximum, None)
+}
+
+fn read_private_artifact_controlled(
+    path: &Path,
+    expected_length: u64,
+    maximum: usize,
+    control: Option<&EmbeddingActivationControl<'_>>,
+) -> Result<Vec<u8>, EmbeddingRuntimeError> {
+    provision_checkpoint(control)?;
     let mut file = backend_platform::durable::open_private_read(path)?;
     let metadata = file.metadata()?;
     if !metadata.is_file() || metadata.len() != expected_length || metadata.len() > maximum as u64 {
@@ -945,13 +1375,38 @@ fn read_private_artifact(
             usize::try_from(expected_length).map_err(|_| EmbeddingRuntimeError::Corrupt)?,
         )
         .map_err(|_| EmbeddingRuntimeError::Corrupt)?;
-    file.by_ref()
-        .take(expected_length.saturating_add(1))
-        .read_to_end(&mut bytes)?;
+    read_bounded_controlled(&mut file, &mut bytes, expected_length, control)?;
     if bytes.len() as u64 != expected_length {
         return Err(EmbeddingRuntimeError::Corrupt);
     }
+    provision_checkpoint(control)?;
     Ok(bytes)
+}
+
+fn read_bounded_controlled(
+    file: &mut impl Read,
+    bytes: &mut Vec<u8>,
+    length: u64,
+    control: Option<&EmbeddingActivationControl<'_>>,
+) -> Result<(), EmbeddingRuntimeError> {
+    let mut scratch = [0_u8; 64 * 1024];
+    let mut remaining = length;
+    while remaining > 0 {
+        provision_checkpoint(control)?;
+        let extent = usize::try_from(remaining.min(scratch.len() as u64))
+            .map_err(|_| EmbeddingRuntimeError::Corrupt)?;
+        let read = file.read(&mut scratch[..extent])?;
+        if read == 0 {
+            return Err(EmbeddingRuntimeError::Corrupt);
+        }
+        bytes.extend_from_slice(&scratch[..read]);
+        remaining -= read as u64;
+    }
+    provision_checkpoint(control)?;
+    if file.read(&mut scratch[..1])? != 0 {
+        return Err(EmbeddingRuntimeError::Corrupt);
+    }
+    provision_checkpoint(control)
 }
 
 fn write_private_artifact(
@@ -1199,7 +1654,7 @@ impl<'a> Reader<'a> {
 }
 
 #[cfg(all(test, unix))]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1221,7 +1676,14 @@ mod tests {
         path
     }
 
-    fn install_protocol_fixture(
+    pub(crate) fn remove_protocol_fixture_model(
+        path: &Path,
+        spec: EmbeddingRuntimeSpecV1,
+    ) -> std::io::Result<()> {
+        backend_platform::durable::remove_private(&artifact_path(path, spec.model(), "model"))
+    }
+
+    pub(crate) fn install_protocol_fixture(
         directory: &Path,
         requirement: EmbeddingRequirement,
     ) -> Result<(PathBuf, EmbeddingRuntimeSpecV1), EmbeddingRuntimeError> {
@@ -1298,6 +1760,436 @@ sys.stdout.buffer.write(response)
             },
         )?;
         Ok((config, spec))
+    }
+
+    #[test]
+    fn prepared_owner_config_identity_binds_launch_policy_without_activation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = private_dir("prepared-config-identity");
+        let (path, spec) = install_protocol_fixture(&directory, EmbeddingRequirement::Required)?;
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let control = EmbeddingActivationControl::new(
+            &cancelled,
+            std::time::Instant::now() + Duration::from_secs(5),
+        );
+        let baseline =
+            PreparedEmbeddingRuntime::capture_until(&path, &control)?.ok_or("missing capture")?;
+        assert_eq!(baseline.spec(), spec);
+        assert_eq!(baseline.requirement(), EmbeddingRequirement::Required);
+        assert_eq!(
+            baseline.identity().as_bytes(),
+            *blake3::hash(&fs::read(&path)?).as_bytes()
+        );
+        let mut config = read_private_config(&path)?.ok_or("missing config")?;
+        let baseline_environment = config.environment.clone();
+        let baseline_arguments = config.arguments.clone();
+        let baseline_limits = config.limits;
+        let mut observed = Vec::new();
+        for change in 0..4 {
+            config.environment = baseline_environment.clone();
+            config.arguments = baseline_arguments.clone();
+            config.limits = baseline_limits;
+            config.requirement = EmbeddingRequirement::Required;
+            match change {
+                0 => config.arguments.push("--explicit-mode=cpu".into()),
+                1 => config
+                    .environment
+                    .push(("WORKER_MODE".into(), "cpu".into())),
+                2 => config.limits.wall_time_ms += 1,
+                3 => config.requirement = EmbeddingRequirement::Optional,
+                _ => unreachable!(),
+            }
+            backend_platform::durable::write_private_atomic(&path, &encode_config(&config)?)?;
+            let next = PreparedEmbeddingRuntime::capture_until(&path, &control)?
+                .ok_or("missing next capture")?;
+            assert_eq!(
+                next.spec(),
+                baseline.spec(),
+                "portable recipe stays identical"
+            );
+            assert_ne!(
+                next.identity(),
+                baseline.identity(),
+                "full launch/config identity must change"
+            );
+            assert!(!observed.contains(&next.identity()));
+            observed.push(next.identity());
+        }
+        assert!(
+            !directory.join("embedding-runtime-work").exists(),
+            "preparation must not create runtime/artifact workspace"
+        );
+        fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[test]
+    fn owner_config_commit_revalidation_accepts_identical_content_and_refuses_drift()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = private_dir("refresh-config-commit");
+        let (config, _) = install_protocol_fixture(&directory, EmbeddingRequirement::Optional)?;
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        let control = EmbeddingActivationControl::new(
+            &flag,
+            std::time::Instant::now() + Duration::from_secs(5),
+        );
+        let prepared =
+            PreparedEmbeddingRuntime::capture_until(&config, &control)?.ok_or("prepared config")?;
+        let original = backend_platform::durable::open_private_read(&config)?;
+        let bytes = fs::read(&config)?;
+        backend_platform::durable::write_private_atomic(&config, &bytes)?;
+        prepared.verify_current_until(&control)?;
+        let mut changed = decode_config(&bytes)?;
+        changed.requirement = EmbeddingRequirement::Required;
+        backend_platform::durable::write_private_atomic(&config, &encode_config(&changed)?)?;
+        assert!(matches!(
+            prepared.verify_current_until(&control),
+            Err(EmbeddingRuntimeError::InvalidConfig)
+        ));
+        flag.store(true, std::sync::atomic::Ordering::Release);
+        assert!(matches!(
+            prepared.verify_current_until(&control),
+            Err(EmbeddingRuntimeError::Activation(
+                EmbeddingExecutableError::Process(backend_compile::ProcessError::Cancelled)
+            ))
+        ));
+        drop(original);
+        fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[test]
+    fn owner_config_capture_and_activation_keep_original_cancel_deadline_and_artifact_cause()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = private_dir("prepared-config-stop");
+        let (path, spec) = install_protocol_fixture(&directory, EmbeddingRequirement::Required)?;
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let control = EmbeddingActivationControl::new(&cancelled, deadline);
+        let prepared =
+            PreparedEmbeddingRuntime::capture_until(&path, &control)?.ok_or("missing capture")?;
+        cancelled.store(true, std::sync::atomic::Ordering::Release);
+        let failure = prepared
+            .activate_until(&control)
+            .err()
+            .ok_or("cancelled activation succeeded")?;
+        assert!(matches!(
+            failure.cause(),
+            EmbeddingRuntimeError::Activation(backend_compile::EmbeddingExecutableError::Process(
+                backend_compile::ProcessError::Cancelled
+            ))
+        ));
+        assert!(!directory.join("embedding-runtime-work").exists());
+        let expired = EmbeddingActivationControl::new(&cancelled, std::time::Instant::now());
+        assert!(matches!(
+            PreparedEmbeddingRuntime::capture_until(&path, &expired),
+            Err(EmbeddingRuntimeError::Activation(
+                backend_compile::EmbeddingExecutableError::Process(
+                    backend_compile::ProcessError::Cancelled
+                )
+            ))
+        ));
+        cancelled.store(false, std::sync::atomic::Ordering::Release);
+        assert!(matches!(
+            PreparedEmbeddingRuntime::capture_until(&path, &expired),
+            Err(EmbeddingRuntimeError::Activation(
+                backend_compile::EmbeddingExecutableError::Process(
+                    backend_compile::ProcessError::Deadline
+                )
+            ))
+        ));
+        let prepared = PreparedEmbeddingRuntime::capture_until(&path, &control)?
+            .ok_or("missing new capture")?;
+        fs::remove_file(artifact_path(&path, spec.model(), "model"))?;
+        let failure = prepared
+            .activate_until(&control)
+            .err()
+            .ok_or("missing artifact activated")?;
+        assert_eq!(
+            failure.reason(),
+            EmbeddingUnavailableReason::ModelArtifactUnavailable
+        );
+        assert!(
+            matches!(failure.cause(), EmbeddingRuntimeError::Io(error) if error.kind() == std::io::ErrorKind::NotFound)
+        );
+        let legacy = EmbeddingRuntimeProvision::open(&path)?;
+        assert_eq!(
+            legacy.status(),
+            EmbeddingRuntimeStatus::Unavailable(
+                EmbeddingUnavailableReason::ModelArtifactUnavailable
+            )
+        );
+        assert_eq!(legacy.requirement(), EmbeddingRequirement::Required);
+        assert!(!directory.join("embedding-runtime-work").exists());
+        fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_activation_rechecks_changed_config_after_actual_readiness_and_drops_runtime()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = private_dir("refresh-config-drift-after-readiness");
+        let (path, _) = install_protocol_fixture(&directory, EmbeddingRequirement::Required)?;
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        let control = EmbeddingActivationControl::new(
+            &flag,
+            std::time::Instant::now() + Duration::from_secs(5),
+        );
+        let prepared =
+            PreparedEmbeddingRuntime::capture_until(&path, &control)?.ok_or("prepared config")?;
+        let mut next = decode_config(&fs::read(&path)?)?;
+        next.requirement = EmbeddingRequirement::Optional;
+        let bytes = encode_config(&next)?;
+        let mut account = None;
+        let mut write_result = Ok(());
+        let result = prepared.activate_until_checked(&control, |runtime| {
+            account = Some(runtime.memory_budget().clone());
+            write_result = backend_platform::durable::write_private_atomic(&path, &bytes);
+        });
+        write_result?;
+        let failure = result
+            .err()
+            .ok_or("drift after readiness must not activate")?;
+        assert!(matches!(
+            failure.cause(),
+            EmbeddingRuntimeError::InvalidConfig
+        ));
+        let account = account.ok_or("real readiness was never reached")?;
+        assert_eq!(
+            account.used(),
+            0,
+            "refused real runtime drops all affine credits"
+        );
+        assert!(!directory.join("embedding-runtime-work").exists());
+        fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_owner_activation_retains_exact_config_and_one_runtime_account()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = private_dir("prepared-config-activation");
+        let (path, spec) = install_protocol_fixture(&directory, EmbeddingRequirement::Required)?;
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let control = EmbeddingActivationControl::new(
+            &cancelled,
+            std::time::Instant::now() + Duration::from_secs(5),
+        );
+        let prepared =
+            PreparedEmbeddingRuntime::capture_until(&path, &control)?.ok_or("missing capture")?;
+        let config_identity = prepared.identity();
+        let provision = prepared.activate_until(&control)?;
+        assert_eq!(provision.configuration_identity(), Some(config_identity));
+        assert_eq!(provision.requirement(), EmbeddingRequirement::Required);
+        assert_eq!(
+            provision.status(),
+            EmbeddingRuntimeStatus::Available {
+                recipe: spec.recipe_identity()
+            }
+        );
+        let runtime = provision.runtime().ok_or("no activated runtime")?;
+        let same_runtime = provision.runtime().ok_or("no second shared reference")?;
+        assert!(Arc::ptr_eq(&runtime, &same_runtime));
+        spec.validate_execution_identity(runtime.execution_identity())?;
+        let account = runtime.memory_budget().clone();
+        assert!(account.used() > 0);
+        drop(provision);
+        drop(same_runtime);
+        assert!(
+            account.used() > 0,
+            "runtime reference retains its affine resident credit"
+        );
+        drop(runtime);
+        assert_eq!(account.used(), 0);
+        fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[test]
+    fn actual_activation_artifact_read_preserves_cancellation_in_public_reason()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct CancelAfterRead<'a> {
+            file: fs::File,
+            flag: &'a std::sync::atomic::AtomicBool,
+            calls: usize,
+        }
+        impl Read for CancelAfterRead<'_> {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                self.calls += 1;
+                let count = self.file.read(bytes)?;
+                self.flag.store(true, std::sync::atomic::Ordering::Release);
+                Ok(count)
+            }
+        }
+        let directory = private_dir("actual-refresh-artifact-read-cancel");
+        let (path, spec) = install_protocol_fixture(&directory, EmbeddingRequirement::Required)?;
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        let control = EmbeddingActivationControl::new(
+            &flag,
+            std::time::Instant::now() + Duration::from_secs(5),
+        );
+        let prepared =
+            PreparedEmbeddingRuntime::capture_until(&path, &control)?.ok_or("prepared config")?;
+        let expected_path = artifact_path(&path, spec.model(), "model");
+        let mut artifact_calls = 0;
+        let mut payload_calls = 0;
+        let result = activate_config_with_artifact_reader(
+            &path,
+            &prepared.config,
+            Some(&control),
+            |selected, length, maximum| {
+                artifact_calls += 1;
+                assert_eq!(selected, expected_path.as_path());
+                assert!(length <= maximum);
+                let file = backend_platform::durable::open_private_read(selected)?;
+                assert_eq!(file.metadata()?.len(), length);
+                let mut reader = CancelAfterRead {
+                    file,
+                    flag: &flag,
+                    calls: 0,
+                };
+                let mut bytes = Vec::new();
+                bytes
+                    .try_reserve_exact(
+                        usize::try_from(length)
+                            .map_err(|_| EmbeddingRuntimeError::InvalidConfig)?,
+                    )
+                    .map_err(|_| EmbeddingRuntimeError::InvalidConfig)?;
+                let result =
+                    read_bounded_controlled(&mut reader, &mut bytes, length, Some(&control));
+                payload_calls = reader.calls;
+                result?;
+                Ok(bytes)
+            },
+        );
+        let failure = result.err().ok_or("cancelled artifact read activated")?;
+        assert_eq!(
+            artifact_calls, 1,
+            "tokenizer capture never starts after model cancellation"
+        );
+        assert_eq!(
+            payload_calls, 1,
+            "only the actual private model payload was read"
+        );
+        assert_eq!(
+            failure.reason(),
+            EmbeddingUnavailableReason::ActivationCancelled
+        );
+        assert!(matches!(
+            failure.cause(),
+            EmbeddingRuntimeError::Activation(EmbeddingExecutableError::Process(
+                backend_compile::ProcessError::Cancelled
+            ))
+        ));
+        assert!(!directory.join("embedding-runtime-work").exists());
+        fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    #[test]
+    fn owner_bounded_artifact_read_stops_inside_the_original_extent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        struct CancellingReader<'a> {
+            flag: &'a std::sync::atomic::AtomicBool,
+            calls: usize,
+            stop_after: usize,
+        }
+        impl Read for CancellingReader<'_> {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                self.calls += 1;
+                bytes.fill(0xA5);
+                if self.calls == self.stop_after {
+                    self.flag.store(true, std::sync::atomic::Ordering::Release);
+                }
+                Ok(bytes.len())
+            }
+        }
+        for stop_after in [1, 3] {
+            let cancelled = std::sync::atomic::AtomicBool::new(false);
+            let control = EmbeddingActivationControl::new(
+                &cancelled,
+                std::time::Instant::now() + Duration::from_secs(5),
+            );
+            let mut reader = CancellingReader {
+                flag: &cancelled,
+                calls: 0,
+                stop_after,
+            };
+            let mut bytes = Vec::with_capacity(3 * 64 * 1024);
+            let capacity = bytes.capacity();
+            let result = read_bounded_controlled(
+                &mut reader,
+                &mut bytes,
+                (3 * 64 * 1024) as u64,
+                Some(&control),
+            );
+            assert!(matches!(
+                &result,
+                Err(EmbeddingRuntimeError::Activation(
+                    backend_compile::EmbeddingExecutableError::Process(
+                        backend_compile::ProcessError::Cancelled
+                    )
+                ))
+            ));
+            let failure = activation_failure(
+                EmbeddingUnavailableReason::ArtifactIdentityMismatch,
+                result.err().ok_or("bounded artifact read did not stop")?,
+            );
+            assert_eq!(
+                failure.reason(),
+                EmbeddingUnavailableReason::ActivationCancelled
+            );
+            assert!(matches!(
+                failure.cause(),
+                EmbeddingRuntimeError::Activation(EmbeddingExecutableError::Process(
+                    backend_compile::ProcessError::Cancelled
+                ))
+            ));
+            assert_eq!(
+                reader.calls, stop_after,
+                "no post-cancellation payload or trailing-byte read"
+            );
+            assert_eq!(bytes.len(), stop_after * 64 * 1024);
+            assert_eq!(
+                bytes.capacity(),
+                capacity,
+                "bounded reads stay within pre-admitted allocation"
+            );
+        }
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let control = EmbeddingActivationControl::new(&cancelled, std::time::Instant::now());
+        let mut reader = CancellingReader {
+            flag: &cancelled,
+            calls: 0,
+            stop_after: usize::MAX,
+        };
+        let mut bytes = Vec::with_capacity(3 * 64 * 1024);
+        let error = read_bounded_controlled(
+            &mut reader,
+            &mut bytes,
+            (3 * 64 * 1024) as u64,
+            Some(&control),
+        )
+        .err()
+        .ok_or("expired artifact read did not refuse")?;
+        let failure =
+            activation_failure(EmbeddingUnavailableReason::ArtifactIdentityMismatch, error);
+        assert_eq!(
+            failure.reason(),
+            EmbeddingUnavailableReason::ActivationDeadline
+        );
+        assert!(matches!(
+            failure.cause(),
+            EmbeddingRuntimeError::Activation(EmbeddingExecutableError::Process(
+                backend_compile::ProcessError::Deadline
+            ))
+        ));
+        assert_eq!(
+            reader.calls, 0,
+            "expired deadline refuses before allocating payload contents"
+        );
+        assert!(bytes.is_empty());
+        Ok(())
     }
 
     #[test]

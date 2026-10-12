@@ -642,7 +642,8 @@ impl ProductState {
             | SurfaceCommand::IndexOperationStatus { .. }
             | SurfaceCommand::IndexAwait { .. }
             | SurfaceCommand::IndexProgress { .. }
-            | SurfaceCommand::IndexCancel { .. } => {
+            | SurfaceCommand::IndexCancel { .. }
+            | SurfaceCommand::EmbeddingRefresh { .. } => {
                 return Err("the command adapter owns this surface command".to_owned());
             }
         };

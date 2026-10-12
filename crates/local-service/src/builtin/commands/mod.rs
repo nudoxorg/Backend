@@ -3,6 +3,7 @@
 mod adapter;
 mod browse_lane;
 mod diff;
+mod embedding_refresh;
 mod graph;
 mod index;
 mod index_operation;

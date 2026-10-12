@@ -113,6 +113,35 @@ impl SearchLane {
                 .then(|| Arc::clone(cancelled))
             })
     }
+    /// Retire only the semantic work lifetime while retaining the same admitted
+    /// lexical projection. This is lawful only for the current successful selection,
+    /// never an active/unprepared/superseded view. No corpus preparation is repeated.
+    pub(super) fn renew_selected_lifetime(
+        &mut self,
+        projection: &SearchSnapshotOwner,
+        workspace: WorkspaceRoot,
+        view: &ViewRoot,
+    ) -> Result<(), super::super::query::QueryError> {
+        if self.closed
+            || self.active.is_some()
+            || projection.selected_for(workspace, view).is_none()
+        {
+            return Err(super::super::query::QueryError::InvalidView);
+        }
+        let Some((selected_workspace, selected_view, retired)) = self.selected.as_mut() else {
+            return Err(super::super::query::QueryError::InvalidView);
+        };
+        if *selected_workspace != workspace
+            || *selected_view != view.root()
+            || retired.load(Ordering::Acquire)
+        {
+            return Err(super::super::query::QueryError::InvalidView);
+        }
+        let prior = std::mem::replace(retired, Arc::new(AtomicBool::new(false)));
+        prior.store(true, Ordering::Release);
+        Ok(())
+    }
+
     /// A request observes this one worker; it never waits on its completion.
     pub(super) fn state_for(
         &mut self,
@@ -373,5 +402,136 @@ impl SearchLane {
 impl Drop for SearchLane {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+#[cfg(all(test, unix))]
+mod refresh_tests {
+    use super::*;
+    use crate::builtin::query::RemoteSemantic;
+    use std::time::{Duration, Instant};
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn selected_recipe_refresh_retires_actual_worker_without_revoking_lexical_selection()
+    -> TestResult {
+        let fixture =
+            crate::builtin::query::local_semantic::tests::fixture_with_mode(4096, "gate-second")?;
+        let (projection, library, view) =
+            crate::builtin::query::local_semantic::tests::selected_owner_many(300)?;
+        let workspace = crate::builtin::genesis()
+            .map_err(|error| error.to_string())?
+            .root();
+        let coordinator = projection
+            .selected_for(workspace, &view)
+            .ok_or("selected projection")?;
+        let old = Arc::new(AtomicBool::new(false));
+        // Represents the exact successful SearchLane completion; the projection itself
+        // is genuinely selected by the normal kernel, not a root-only fabricated owner.
+        let mut lane = SearchLane {
+            selected: Some((workspace, view.root(), Arc::clone(&old))),
+            ..SearchLane::default()
+        };
+        let mut provider = RemoteSemantic::select_owner(
+            &fixture.provision,
+            &fixture.descriptor,
+            RemoteSemantic::Unconfigured,
+        );
+        let runtime = fixture.provision.runtime().ok_or("fixture runtime")?;
+        let account = runtime.memory_budget().clone();
+        let baseline = account.used();
+        let request =
+            backend_engine::Query::new("fixture", view.root(), backend_engine::QueryLimit::new(3)?);
+        let expected = crate::builtin::query::search_page(
+            coordinator,
+            &library,
+            &mut RemoteSemantic::Unconfigured,
+            crate::builtin::admitted_coverage()?,
+            &request,
+        )
+        .map_err(|error| error.to_string())?
+        .0;
+        let first = crate::builtin::query::search_page_with_cancellation(
+            coordinator,
+            &library,
+            &mut provider,
+            crate::builtin::admitted_coverage()?,
+            &request,
+            Arc::clone(&old),
+        )
+        .map_err(|error| error.to_string())?;
+        assert_eq!(first.0, expected);
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while !fixture.entered.exists() {
+            if Instant::now() >= deadline {
+                return Err("actual semantic gate not entered".into());
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let builds = projection.projection_builds();
+        lane.renew_selected_lifetime(&projection, workspace, &view)?;
+        assert!(old.load(Ordering::Acquire));
+        let current = lane
+            .selected_cancellation(workspace, view.root())
+            .ok_or("renewed selected lifetime")?;
+        assert!(!Arc::ptr_eq(&old, &current));
+        let mut retired = provider.take_local_for_retirement().ok_or("local owner")?;
+        let worker = std::thread::spawn(move || {
+            retired.close_local();
+        });
+        let during = crate::builtin::query::search_page_with_cancellation(
+            coordinator,
+            &library,
+            &mut provider,
+            crate::builtin::admitted_coverage()?,
+            &request,
+            Arc::clone(&current),
+        )
+        .map_err(|error| error.to_string())?;
+        assert_eq!(during.0, expected);
+        assert_eq!(
+            during.1,
+            backend_library::SemanticSearchStatus::Unavailable {
+                reason: backend_library::SemanticSearchReason::NoActiveProjection
+            }
+        );
+        worker.join().map_err(|_| "retirement worker panic")?;
+        assert_eq!(
+            account.used(),
+            baseline,
+            "real query/cache/projection credits joined before model retirement"
+        );
+        assert!(
+            !fixture.release.exists(),
+            "actual child cancelled, gate not manually released"
+        );
+        assert!(!current.load(Ordering::Acquire));
+        assert_eq!(
+            projection.projection_builds(),
+            builds,
+            "no lexical reprojection"
+        );
+        let absent = SearchSnapshotOwner::default();
+        assert!(
+            lane.renew_selected_lifetime(&absent, workspace, &view)
+                .is_err()
+        );
+        assert!(Arc::ptr_eq(
+            &current,
+            &lane
+                .selected_cancellation(workspace, view.root())
+                .ok_or("still current")?
+        ));
+        let (_, _, replacement) =
+            crate::builtin::query::local_semantic::tests::selected_owner_many(301)?;
+        assert_ne!(replacement.root(), view.root());
+        lane.invalidate(workspace, replacement.root());
+        assert!(current.load(Ordering::Acquire));
+        assert!(
+            lane.renew_selected_lifetime(&projection, workspace, &view)
+                .is_err(),
+            "cannot renew a superseded selection"
+        );
+        Ok(())
     }
 }

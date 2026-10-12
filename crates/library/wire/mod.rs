@@ -69,6 +69,8 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version. Version 29 adds bounded semantic-history pages.
+/// Current transport DTO version. Version 29 adds bounded semantic-history pages
+/// and exact owner embedding-refresh actions and observations. Native checker
+/// startup refusals from version 28 remain.
 /// Persisted view rows and compact events are unchanged.
 pub const DTO_VERSION: u16 = 29;

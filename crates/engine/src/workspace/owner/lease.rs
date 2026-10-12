@@ -77,6 +77,11 @@ impl OwnerLease {
             fence: self.fence,
         }
     }
+    #[cfg(test)]
+    pub(crate) fn test_identity(&self) -> OwnerLeaseIdentity {
+        self.identity()
+    }
+
     /// Acquires the owner lock and durably advances the epoch.
     /// # Errors
     ///

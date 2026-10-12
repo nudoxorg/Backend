@@ -1293,6 +1293,19 @@ pub struct EmbeddingExecutable {
     active: bool,
 }
 
+impl Drop for EmbeddingExecutable {
+    fn drop(&mut self) {
+        // Keep resident/process credits and immutable artifacts alive until the persistent
+        // supervised child has actually completed its existing terminate/join path.
+        drop(
+            self.persistent_session
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take(),
+        );
+    }
+}
+
 const MAX_EMBEDDING_CACHE_ENTRIES: usize = 256;
 
 #[derive(Default)]
@@ -1351,6 +1364,39 @@ impl fmt::Debug for EmbeddingExecutable {
 }
 
 impl EmbeddingExecutable {
+    /// Validates launch paths/arguments without reading artifacts or starting a process.
+    ///
+    /// # Errors
+    /// Returns the existing closed launch-input refusal.
+    pub fn validate_launch_inputs(
+        program: &Path,
+        arguments: &[String],
+        workspace: &Path,
+    ) -> Result<(), ProcessError> {
+        SupervisedCommand::validate_launch_inputs(program, arguments, workspace)
+    }
+
+    /// Retires the actual persistent supervised child before owner residency is released.
+    /// Called only after the owner has joined inference workers; cleanup must finish even
+    /// if an observer's deadline/cancellation has already expired.
+    ///
+    /// # Errors
+    /// Returns the exact existing supervisor teardown refusal. No new model may be admitted
+    /// after this refusal merely because a later destructor releases numeric credits.
+    pub fn retire_persistent_session(&self) -> Result<(), EmbeddingExecutableError> {
+        let mut session = self
+            .persistent_session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(session) = session.as_mut() {
+            session
+                .retire()
+                .map_err(EmbeddingExecutableError::Process)?;
+        }
+        Ok(())
+    }
+
     /// Returns the exact activated model runtime identity, including launch arguments and
     /// output-affecting explicit environment values.
     #[must_use]
@@ -5114,6 +5160,71 @@ while True:
                 maximum: MAX_EMBEDDING_BATCH_COORDINATE_BYTES,
             })
         ));
+    }
+
+    #[test]
+    fn owner_cache_installation_requires_exact_execution_and_the_same_credit_account()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (root, _, runtime) = runtime()?;
+        let actual = runtime.execution_identity();
+        let mut foreign_execution = actual;
+        foreign_execution.recipe[31] ^= 1;
+        for (name, execution, account, expected) in [
+            ("valid", actual, runtime.memory_budget().clone(), None),
+            (
+                "foreign-execution",
+                foreign_execution,
+                runtime.memory_budget().clone(),
+                Some("cache execution identity"),
+            ),
+            (
+                "foreign-account",
+                actual,
+                EmbeddingMemoryBudget::new(runtime.memory_budget().capacity()),
+                Some("cache memory account"),
+            ),
+        ] {
+            let directory = root.join(name);
+            fs::create_dir(&directory)?;
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+            let observed_account = account.clone();
+            let before = observed_account.used();
+            let session = EmbeddingCacheSession::open(
+                backend_platform::DirectoryCapability::open(&directory)?,
+                execution,
+                account,
+            )
+            .ok_or("cache actor admission refused")?;
+            let result = session.validate_runtime_binding(&runtime);
+            match expected {
+                None => result?,
+                Some(expected) => assert!(matches!(result,
+                    Err(EmbeddingExecutableError::Spec(EmbeddingRuntimeSpecError::ObservedMismatch { field })) if field == expected)),
+            }
+            drop(session);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while observed_account.used() != before && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert_eq!(
+                observed_account.used(),
+                before,
+                "this actual cache actor releases metadata before its directory is removed"
+            );
+        }
+        let account = runtime.memory_budget().clone();
+        drop(runtime);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while account.used() != 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            account.used(),
+            0,
+            "all actual cache actor metadata has retired"
+        );
+        fs::remove_dir_all(root)?;
+        Ok(())
     }
 
     #[test]

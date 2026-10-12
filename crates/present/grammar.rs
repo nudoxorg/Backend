@@ -67,6 +67,8 @@ pub enum ArgumentKind {
     PackageSourceMembershipRequest,
     /// Exact source selection, full selected keys, and caller shape budgets.
     SemanticShapeRequest,
+    /// Exact typed start, observation or cancellation request for a local runtime handoff.
+    EmbeddingRefreshRequest,
     /// A non-negative progress event sequence.
     Sequence,
     /// A caller observation duration expressed in whole seconds.
@@ -96,6 +98,7 @@ impl ArgumentKind {
             Self::CargoPackageSourceRequest => "SOURCE_REQUEST_JSON",
             Self::PackageSourceMembershipRequest => "MEMBERSHIP_REQUEST_JSON",
             Self::SemanticShapeRequest => "SHAPE_REQUEST_JSON",
+            Self::EmbeddingRefreshRequest => "REFRESH_REQUEST_JSON",
             Self::Sequence => "SEQUENCE",
             Self::DurationSeconds => "SECONDS",
             Self::Generation => "GENERATION",
@@ -115,7 +118,9 @@ impl ArgumentKind {
             Self::IndexJobTicket
             | Self::CargoPackageReadmeOrigin
             | Self::CargoPackageSourceRequest => "object",
-            Self::PackageSourceMembershipRequest | Self::SemanticShapeRequest => "object",
+            Self::PackageSourceMembershipRequest
+            | Self::SemanticShapeRequest
+            | Self::EmbeddingRefreshRequest => "object",
             _ => "string",
         }
     }
@@ -403,7 +408,8 @@ impl CommandGrammar {
             | CommandId::IndexCancel
             | CommandId::IndexProgress
             | CommandId::PackageGraphPage
-            | CommandId::SemanticShapes => false,
+            | CommandId::SemanticShapes
+            | CommandId::EmbeddingRefresh => false,
         }
     }
 
@@ -544,7 +550,7 @@ const SEMANTIC_HISTORY_CURSOR: ArgumentSpec = ArgumentSpec::optional(
 );
 
 /// The calling convention of every registry row, in registry order.
-pub const GRAMMARS: [CommandGrammar; 53] = [
+pub const GRAMMARS: [CommandGrammar; 54] = [
     CommandGrammar {
         name: "advisory",
         tool: "backend.advisory",
@@ -1301,5 +1307,17 @@ pub const GRAMMARS: [CommandGrammar; 53] = [
             ),
         ],
         when: "Use for one immediate bounded observation of an exact ticket or durable operation key. Unknown and unresolved observations do not establish publication.",
+    },
+    CommandGrammar {
+        name: "embedding-refresh",
+        tool: "backend.embedding_refresh",
+        aliases: &[],
+        positional: &[ArgumentSpec::optional(
+            "request",
+            ArgumentKind::EmbeddingRefreshRequest,
+            "Exact start request or owner-issued observation/cancellation ticket JSON. The CLI captures its installed configuration when omitted.",
+        )],
+        options: &[],
+        when: "Use after embedding-setup to activate the installed local recipe on the current owner without killing it. Copy the accepted ticket to observe or cancel; activation does not claim complete semantic corpus coverage.",
     },
 ];

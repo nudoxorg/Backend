@@ -3069,6 +3069,280 @@ pub enum LocalCompilerRuntimeOpenError {
     WorkerPanic(backend_library::interface::CompilerRuntimePanic),
 }
 
+/// One owner-admitted change through the existing compiler generation barrier.
+pub enum LocalCompilerEmbeddingTransition {
+    /// Retires every old embedding consumer before replacement model admission.
+    Retire {
+        /// Exact complete configuration selected for this transition.
+        desired: crate::application::EmbeddingRuntimeConfigIdentity,
+    },
+    /// Explicitly retargets an already retired actor after a refused/cancelled replacement.
+    /// Retains the original account and requires exact previous identity and current new proof.
+    RetargetRetired {
+        /// Exact previously retired configuration this owner observed.
+        previous: crate::application::EmbeddingRuntimeConfigIdentity,
+        /// Captured corrected configuration; revalidated before retirement identity changes.
+        configuration: crate::application::EmbeddingRuntimeConfigWitness,
+    },
+    /// Installs the exact activated provision and its same-account optional durable cache.
+    Install {
+        /// Actual activated runtime; no inferred or equivalent activation is substituted.
+        provision: crate::application::EmbeddingRuntimeProvision,
+        /// Optional durable cache owned by this compiler actor.
+        cache: Option<EmbeddingCacheSession>,
+    },
+    /// Reopens compilation with an honest failed configured provision after retirement.
+    ResumeUnavailable {
+        /// Intrinsic original config proof, retained even when activation refused.
+        configuration: crate::application::EmbeddingRuntimeConfigWitness,
+        /// Captured Optional/Required policy.
+        requirement: EmbeddingRequirement,
+        /// Actual closed activation failure.
+        cause: EmbeddingProvisioningFailure,
+    },
+}
+
+/// Compiler-side acknowledgement, independent of whether the original caller remains attached.
+#[derive(Clone, Debug)]
+pub struct LocalCompilerEmbeddingReceipt {
+    /// Complete configuration this acknowledgement belongs to.
+    pub configuration: crate::application::EmbeddingRuntimeConfigIdentity,
+    /// Exact actor phase reached, distinct from semantic corpus coverage.
+    pub phase: LocalCompilerEmbeddingPhase,
+}
+
+/// Exact compiler generation phase. Numeric residency is observation, never a new lease.
+#[derive(Clone, Debug)]
+pub enum LocalCompilerEmbeddingPhase {
+    /// Old lanes/publisher joined and handles dropped; credits may still have actual owners.
+    Retired {
+        /// Original shared account, including detached cache work and retained coordinates.
+        account: Option<backend_compile::EmbeddingMemoryBudget>,
+    },
+    /// The replacement compiler generation opened with the exact activated execution identity.
+    Activated {
+        /// Actual runtime execution identity, including launch settings.
+        execution: backend_compile::EmbeddingExecutionIdentity,
+    },
+    /// New compiler generation opened with a genuine configured activation refusal.
+    Unavailable {
+        /// Closed cause retained by compiler staging.
+        cause: EmbeddingProvisioningFailure,
+    },
+}
+
+/// Refusal of a compiler generation transition. No generic cursor/owner text is substituted.
+#[derive(Debug, Error)]
+pub enum LocalCompilerEmbeddingTransitionError {
+    /// The original workspace owner identity was replaced or withdrawn.
+    #[error(transparent)]
+    WorkspaceOwner(#[from] crate::workspace::owner::WorkspaceError),
+    /// Actual active request/lane or another transition owns the compiler.
+    #[error("compiler generation has outstanding work")]
+    Busy,
+    /// Installation did not follow retirement of this exact configuration.
+    #[error("embedding installation does not match the retired configuration")]
+    ConfigurationMismatch,
+    /// Original credits remain held; admitting another model would overlap uncharged residency.
+    #[error("retired embedding allocations still hold {used} credits")]
+    RetainedMemory {
+        /// Actual outstanding reservations on the old account.
+        used: u64,
+    },
+    /// The actual compiler owner stopped or its bounded queue disconnected.
+    #[error("compiler owner stopped during embedding transition")]
+    OwnerStopped,
+    /// The bounded command queue could not accept this transition.
+    #[error("compiler command queue is full")]
+    QueueFull,
+    /// Original transition cancellation/deadline or cache-binding failure.
+    #[error(transparent)]
+    Activation(#[from] backend_compile::EmbeddingExecutableError),
+    /// The captured persisted configuration no longer admits replacement.
+    #[error(transparent)]
+    Configuration(#[from] crate::application::EmbeddingRuntimeError),
+    /// The replacement generation did not open successfully.
+    #[error(transparent)]
+    Generation(#[from] LocalCompilerRuntimeOpenError),
+    /// Durable publication shutdown did not prove old generation quiescence.
+    #[error(transparent)]
+    Shutdown(#[from] backend_store::journal::ShutdownError),
+}
+
+/// Accepted bounded compiler transition. Dropping the waiter never stops the owner actor.
+pub struct PendingLocalCompilerEmbeddingTransition {
+    returned:
+        Receiver<Result<LocalCompilerEmbeddingReceipt, LocalCompilerEmbeddingTransitionError>>,
+    cancelled: Arc<AtomicBool>,
+    deadline: Instant,
+    #[cfg(test)]
+    _fixture_admission: Option<LocalCompilerEmbeddingAdmission>,
+}
+
+impl PendingLocalCompilerEmbeddingTransition {
+    /// Observes the accepted actor's actual outcome from an owner lifecycle worker.
+    /// The actor retains original cancellation/deadline and performs its final commit check.
+    /// Unlike the transport wait, this observation cannot turn a committed generation into
+    /// a cancelled receipt. It must never run on the service command/control loop.
+    ///
+    /// # Errors
+    /// Returns the actor's original refusal or loss of that actor's outcome channel.
+    pub fn observe_owner_outcome(
+        self,
+    ) -> Result<LocalCompilerEmbeddingReceipt, LocalCompilerEmbeddingTransitionError> {
+        self.returned
+            .recv()
+            .map_err(|_| LocalCompilerEmbeddingTransitionError::OwnerStopped)?
+    }
+
+    /// Waits on a worker thread under the original owner transition lifetime.
+    ///
+    /// # Errors
+    /// Returns the actual generation refusal or original cancellation/deadline. An accepted
+    /// retirement remains owned by the actor if this waiter loses its observation budget.
+    pub fn wait(
+        self,
+    ) -> Result<LocalCompilerEmbeddingReceipt, LocalCompilerEmbeddingTransitionError> {
+        loop {
+            backend_compile::EmbeddingActivationControl::new(&self.cancelled, self.deadline)
+                .checkpoint()?;
+            match self.returned.recv_timeout(Duration::from_millis(5)) {
+                Ok(result) => return result,
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(LocalCompilerEmbeddingTransitionError::OwnerStopped);
+                }
+            }
+        }
+    }
+}
+
+// Every production transition carries the admitted original durable workspace identity.
+// Standalone actor fixtures exercise the same transition core without fabricating a workspace.
+#[derive(Clone)]
+enum EmbeddingTransitionAuthority {
+    #[cfg(test)]
+    CompilerActor,
+    Workspace(crate::workspace::owner::OwnerLeaseIdentity),
+}
+impl EmbeddingTransitionAuthority {
+    fn checkpoint(&self) -> Result<(), LocalCompilerEmbeddingTransitionError> {
+        match self {
+            #[cfg(test)]
+            Self::CompilerActor => Ok(()),
+            Self::Workspace(owner) => owner.assert_current().map_err(Into::into),
+        }
+    }
+}
+
+struct EmbeddingTransitionCommand {
+    authority: EmbeddingTransitionAuthority,
+    update: LocalCompilerEmbeddingTransition,
+    response:
+        SyncSender<Result<LocalCompilerEmbeddingReceipt, LocalCompilerEmbeddingTransitionError>>,
+    cancelled: Arc<AtomicBool>,
+    deadline: Instant,
+}
+
+impl EmbeddingTransitionCommand {
+    fn checkpoint(&self) -> Result<(), LocalCompilerEmbeddingTransitionError> {
+        backend_compile::EmbeddingActivationControl::new(&self.cancelled, self.deadline)
+            .checkpoint()?;
+        self.authority.checkpoint()?;
+        backend_compile::EmbeddingActivationControl::new(&self.cancelled, self.deadline)
+            .checkpoint()
+            .map_err(Into::into)
+    }
+}
+
+// Startup callers must observe successful owner creation. Accepted replacement observers may
+// disappear without stopping the actor or discarding the installed generation.
+enum RuntimeGenerationAcknowledgement {
+    Startup(SyncSender<Result<(), LocalCompilerRuntimeOpenError>>),
+    Embedding {
+        response: SyncSender<
+            Result<LocalCompilerEmbeddingReceipt, LocalCompilerEmbeddingTransitionError>,
+        >,
+        receipt: LocalCompilerEmbeddingReceipt,
+        authority: EmbeddingTransitionAuthority,
+        configuration: crate::application::EmbeddingRuntimeConfigWitness,
+        cancelled: Arc<AtomicBool>,
+        deadline: Instant,
+    },
+}
+
+impl RuntimeGenerationAcknowledgement {
+    fn send(self, result: Result<(), LocalCompilerRuntimeOpenError>) -> Result<(), ()> {
+        match self {
+            Self::Startup(response) => response.send(result).map_err(|_| ()),
+            Self::Embedding {
+                response, receipt, ..
+            } => {
+                let _ = response.send(
+                    result
+                        .map(|()| receipt)
+                        .map_err(LocalCompilerEmbeddingTransitionError::Generation),
+                );
+                Ok(())
+            }
+        }
+    }
+
+    // The checkpoint precedes the single Serving commit. After that commit, cancellation
+    // can stop the waiter but cannot rewrite an installed generation into a failed receipt.
+    fn commit(self, signal: &CapabilitySignal) -> Result<(), ()> {
+        match self {
+            Self::Startup(response) => {
+                *signal
+                    .lock
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    LocalCompilerGenerationState::Serving(None);
+                signal.changed.notify_all();
+                response.send(Ok(())).map_err(|_| ())
+            }
+            Self::Embedding {
+                response,
+                receipt,
+                authority,
+                configuration,
+                cancelled,
+                deadline,
+            } => {
+                let control =
+                    backend_compile::EmbeddingActivationControl::new(&cancelled, deadline);
+                if let Err(error) = control.checkpoint() {
+                    let _ = response.send(Err(error.into()));
+                    return Err(());
+                }
+                if let Err(error) = configuration.verify_current_until(&control) {
+                    let _ = response.send(Err(error.into()));
+                    return Err(());
+                }
+                if let Err(error) = authority.checkpoint() {
+                    let _ = response.send(Err(error));
+                    return Err(());
+                }
+                if let Err(error) =
+                    backend_compile::EmbeddingActivationControl::new(&cancelled, deadline)
+                        .checkpoint()
+                {
+                    let _ = response.send(Err(error.into()));
+                    return Err(());
+                }
+                *signal
+                    .lock
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    LocalCompilerGenerationState::Serving(Some(receipt.clone()));
+                signal.changed.notify_all();
+                let _ = response.send(Ok(receipt));
+                Ok(())
+            }
+        }
+    }
+}
+
 /// Cloneable bounded client for one local compiler execution kernel.
 pub struct LocalCompilerClient {
     shared: Arc<RuntimeShared>,
@@ -3087,6 +3361,89 @@ impl Clone for LocalCompilerClient {
 }
 
 impl LocalCompilerClient {
+    // Standalone actor laws retain a real affine reservation until their outcome is observed.
+    // This fixture route is absent from the public production API.
+    #[cfg(test)]
+    fn begin_embedding_transition(
+        &self,
+        update: LocalCompilerEmbeddingTransition,
+        cancelled: Arc<AtomicBool>,
+        deadline: Instant,
+    ) -> Result<PendingLocalCompilerEmbeddingTransition, LocalCompilerEmbeddingTransitionError>
+    {
+        let admission = self
+            .admit_embedding_refresh_with_authority(EmbeddingTransitionAuthority::CompilerActor)?;
+        let mut pending = admission.begin_transition(update, cancelled, deadline)?;
+        pending._fixture_admission = Some(admission);
+        Ok(pending)
+    }
+
+    /// Reserves this actor with the original durable workspace fence. The actor rechecks
+    /// the SAME identity immediately before its Serving commit; no current-owner rebinding.
+    /// # Errors
+    /// Returns the original fence, actor or busy admission refusal.
+    pub fn admit_embedding_refresh(
+        &self,
+        owner: crate::workspace::owner::OwnerLeaseIdentity,
+    ) -> Result<LocalCompilerEmbeddingAdmission, LocalCompilerEmbeddingTransitionError> {
+        self.admit_embedding_refresh_with_authority(EmbeddingTransitionAuthority::Workspace(owner))
+    }
+
+    fn admit_embedding_refresh_with_authority(
+        &self,
+        authority: EmbeddingTransitionAuthority,
+    ) -> Result<LocalCompilerEmbeddingAdmission, LocalCompilerEmbeddingTransitionError> {
+        authority.checkpoint()?;
+        if !self.shared.alive.load(Ordering::Acquire) {
+            return Err(LocalCompilerEmbeddingTransitionError::OwnerStopped);
+        }
+        let mut admission = self
+            .shared
+            .requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !matches!(&*admission, RequestAdmissions::Serving(requests) if requests.is_empty()) {
+            return Err(LocalCompilerEmbeddingTransitionError::Busy);
+        }
+        let sequence = self.shared.next_request.fetch_add(1, Ordering::Relaxed);
+        *admission = RequestAdmissions::Refreshing(sequence);
+        Ok(LocalCompilerEmbeddingAdmission {
+            shared: Arc::clone(&self.shared),
+            sequence,
+            authority,
+        })
+    }
+
+    /// Returns the exact retired generation reference after its old lanes and publisher joined.
+    #[must_use]
+    pub fn retired_embedding_configuration(
+        &self,
+    ) -> Option<crate::application::EmbeddingRuntimeConfigIdentity> {
+        match &*self
+            .shared
+            .capability_signal
+            .lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            LocalCompilerGenerationState::Serving(_) => None,
+            LocalCompilerGenerationState::Retired(configuration) => Some(*configuration),
+        }
+    }
+    /// Exact committed replacement remains observable after its original waiter disappears.
+    #[must_use]
+    pub fn embedding_generation_receipt(&self) -> Option<LocalCompilerEmbeddingReceipt> {
+        match &*self
+            .shared
+            .capability_signal
+            .lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            LocalCompilerGenerationState::Serving(receipt) => receipt.clone(),
+            LocalCompilerGenerationState::Retired(_) => None,
+        }
+    }
     /// Starts one compiler owner and waits until all borrowed configuration is valid.
     ///
     /// # Errors
@@ -3150,7 +3507,7 @@ impl LocalCompilerClient {
                         command: Some(command_tx),
                         worker: Some(worker),
                         cancelled,
-                        requests: Mutex::new(HashMap::new()),
+                        requests: Mutex::new(RequestAdmissions::Serving(HashMap::new())),
                         next_request: AtomicU64::new(1),
                         next_client: AtomicU64::new(2),
                         alive,
@@ -3354,6 +3711,17 @@ impl LocalCompilerClient {
         facts: RequestFacts,
         cancelled: &AtomicBool,
     ) -> Result<(), CompilerTerminal> {
+        if matches!(
+            *self
+                .shared
+                .capability_signal
+                .lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            LocalCompilerGenerationState::Retired(_)
+        ) {
+            return Err(facts.terminal(CompilerRuntimeCause::RequestInFlight));
+        }
         const PROBE_WAIT: Duration = Duration::from_secs(6);
         const SIGNAL_WAIT: Duration = Duration::from_millis(25);
         let native_python = (facts.language == Language::Python)
@@ -3429,7 +3797,6 @@ impl LocalCompilerClient {
                 .0;
         }
     }
-
     /// Retrieves one exact reopened semantic image from the single compiler owner.
     ///
     /// # Errors
@@ -3693,7 +4060,17 @@ pub enum PackageSemanticRuntimeError {
 
 impl CompilerCapability for LocalCompilerClient {
     fn readiness(&self) -> CompilerReadiness {
-        if self.shared.alive.load(Ordering::Acquire) {
+        if self.shared.alive.load(Ordering::Acquire)
+            && matches!(
+                *self
+                    .shared
+                    .capability_signal
+                    .lock
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                LocalCompilerGenerationState::Serving(_)
+            )
+        {
             CompilerReadiness::Ready
         } else {
             CompilerReadiness::Unavailable
@@ -3703,7 +4080,6 @@ impl CompilerCapability for LocalCompilerClient {
     fn cancel_active(&self) {
         Self::cancel_active(self);
     }
-
     fn semantic_image_snapshot(
         &mut self,
         requested: SemanticImageAuthority,
@@ -3735,11 +4111,91 @@ impl CompilerCapability for LocalCompilerClient {
     }
 }
 
+type AdmittedRequests = HashMap<(u64, u64), Arc<AtomicBool>>;
+
+// The same mutex admits requests and reserves an exclusive generation refresh.
+// Refreshing can be entered only from an empty Serving map; no request is hidden.
+enum RequestAdmissions {
+    Serving(AdmittedRequests),
+    Refreshing(u64),
+}
+impl RequestAdmissions {
+    fn requests(&self) -> Option<&AdmittedRequests> {
+        match self {
+            Self::Serving(requests) => Some(requests),
+            Self::Refreshing(_) => None,
+        }
+    }
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.requests().is_none_or(AdmittedRequests::is_empty)
+    }
+    fn iter(&self) -> impl Iterator<Item = (&(u64, u64), &Arc<AtomicBool>)> {
+        self.requests().into_iter().flat_map(AdmittedRequests::iter)
+    }
+    fn values(&self) -> impl Iterator<Item = &Arc<AtomicBool>> {
+        self.requests()
+            .into_iter()
+            .flat_map(AdmittedRequests::values)
+    }
+    fn remove(&mut self, key: &(u64, u64)) {
+        if let Self::Serving(requests) = self {
+            requests.remove(key);
+        }
+    }
+    #[cfg(test)]
+    fn contains_key(&self, key: &(u64, u64)) -> bool {
+        self.requests()
+            .is_some_and(|requests| requests.contains_key(key))
+    }
+}
+
+/// Affine admission of one exclusive refresh on this exact compiler actor.
+/// Its destructor reopens request admission only after its owner worker releases it.
+pub struct LocalCompilerEmbeddingAdmission {
+    shared: Arc<RuntimeShared>,
+    sequence: u64,
+    authority: EmbeddingTransitionAuthority,
+}
+impl LocalCompilerEmbeddingAdmission {
+    /// Dispatches under the held request reservation and original operation control.
+    /// # Errors
+    /// Returns the actual actor, reservation, control or queue refusal.
+    pub fn begin_transition(
+        &self,
+        update: LocalCompilerEmbeddingTransition,
+        cancelled: Arc<AtomicBool>,
+        deadline: Instant,
+    ) -> Result<PendingLocalCompilerEmbeddingTransition, LocalCompilerEmbeddingTransitionError>
+    {
+        self.shared.begin_embedding_transition(
+            update,
+            cancelled,
+            deadline,
+            self.sequence,
+            self.authority.clone(),
+        )
+    }
+}
+impl Drop for LocalCompilerEmbeddingAdmission {
+    fn drop(&mut self) {
+        let mut admission = self
+            .shared
+            .requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if matches!(*admission, RequestAdmissions::Refreshing(sequence) if sequence == self.sequence)
+        {
+            *admission = RequestAdmissions::Serving(HashMap::new());
+        }
+    }
+}
+
 struct RuntimeShared {
     command: Option<SyncSender<RuntimeCommand>>,
     worker: Option<JoinHandle<()>>,
     cancelled: Arc<AtomicBool>,
-    requests: Mutex<HashMap<(u64, u64), Arc<AtomicBool>>>,
+    requests: Mutex<RequestAdmissions>,
     next_request: AtomicU64,
     next_client: AtomicU64,
     alive: Arc<AtomicBool>,
@@ -3752,16 +4208,71 @@ struct RuntimeShared {
     native_python_observations: Sender<ToolchainProbeObservation>,
 }
 
+#[derive(Clone)]
+enum LocalCompilerGenerationState {
+    Serving(Option<LocalCompilerEmbeddingReceipt>),
+    Retired(crate::application::EmbeddingRuntimeConfigIdentity),
+}
+
 struct CapabilitySignal {
-    lock: Mutex<()>,
+    lock: Mutex<LocalCompilerGenerationState>,
     changed: Condvar,
 }
 
 impl CapabilitySignal {
     fn new() -> Self {
         Self {
-            lock: Mutex::new(()),
+            lock: Mutex::new(LocalCompilerGenerationState::Serving(None)),
             changed: Condvar::new(),
+        }
+    }
+}
+
+impl RuntimeShared {
+    fn begin_embedding_transition(
+        &self,
+        update: LocalCompilerEmbeddingTransition,
+        cancelled: Arc<AtomicBool>,
+        deadline: Instant,
+        sequence: u64,
+        authority: EmbeddingTransitionAuthority,
+    ) -> Result<PendingLocalCompilerEmbeddingTransition, LocalCompilerEmbeddingTransitionError>
+    {
+        backend_compile::EmbeddingActivationControl::new(&cancelled, deadline).checkpoint()?;
+        authority.checkpoint()?;
+        let admission = self
+            .requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let admitted =
+            matches!(&*admission, RequestAdmissions::Refreshing(held) if *held == sequence);
+        if !admitted {
+            return Err(LocalCompilerEmbeddingTransitionError::Busy);
+        }
+        let (response, returned) = sync_channel(1);
+        let sender = self
+            .command
+            .as_ref()
+            .ok_or(LocalCompilerEmbeddingTransitionError::OwnerStopped)?;
+        let command = RuntimeCommand::EmbeddingTransition(Box::new(EmbeddingTransitionCommand {
+            authority,
+            update,
+            response,
+            cancelled: Arc::clone(&cancelled),
+            deadline,
+        }));
+        match sender.try_send(command) {
+            Ok(()) => Ok(PendingLocalCompilerEmbeddingTransition {
+                returned,
+                cancelled,
+                deadline,
+                #[cfg(test)]
+                _fixture_admission: None,
+            }),
+            Err(TrySendError::Full(_)) => Err(LocalCompilerEmbeddingTransitionError::QueueFull),
+            Err(TrySendError::Disconnected(_)) => {
+                Err(LocalCompilerEmbeddingTransitionError::OwnerStopped)
+            }
         }
     }
 }
@@ -3816,6 +4327,9 @@ impl<'shared> RequestLease<'shared> {
             .requests
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let RequestAdmissions::Serving(requests) = &mut *requests else {
+            return Err(facts.terminal(CompilerRuntimeCause::RequestInFlight));
+        };
         if requests.len() >= MAX_ADMITTED_COMPILER_REQUESTS {
             return Err(facts.terminal(CompilerRuntimeCause::RequestAdmissionFull {
                 capacity: u16::try_from(MAX_ADMITTED_COMPILER_REQUESTS).unwrap_or(u16::MAX),
@@ -3846,6 +4360,9 @@ impl<'shared> RequestLease<'shared> {
             .requests
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let RequestAdmissions::Serving(requests) = &mut *requests else {
+            return Err(SemanticImageAccessError::RequestInFlight { requested });
+        };
         if requests.len() >= MAX_ADMITTED_COMPILER_REQUESTS {
             return Err(SemanticImageAccessError::RequestInFlight { requested });
         }
@@ -3954,6 +4471,7 @@ impl RequestFacts {
 }
 
 enum RuntimeCommand {
+    EmbeddingTransition(Box<EmbeddingTransitionCommand>),
     Compile {
         request: OwnedCompilerRequest,
         response: SyncSender<RuntimeEvent>,
@@ -4085,7 +4603,7 @@ fn run_worker(
     capabilities: &RwLock<LocalCompilerCapabilities>,
     capability_signal: &CapabilitySignal,
 ) {
-    let mut startup = Some(startup);
+    let mut startup = Some(RuntimeGenerationAcknowledgement::Startup(startup));
     loop {
         match run_worker_generation(
             &mut configuration,
@@ -4094,8 +4612,21 @@ fn run_worker(
             &mut startup,
             cancelled,
             alive,
+            capability_signal,
         ) {
             WorkerDisposition::Stop => break,
+            WorkerDisposition::EmbeddingTransition(command) => {
+                match retire_embedding_generation(
+                    &mut configuration,
+                    command,
+                    &commands,
+                    cancelled,
+                    capability_signal,
+                ) {
+                    Ok(next) => startup = next,
+                    Err(()) => break,
+                }
+            }
             WorkerDisposition::Reconfigure(observation) => {
                 let replacement = observation.result.unwrap_or_else(|failure| {
                     LocalRuntimeToolchain::probe_failed(observation.tool, failure)
@@ -4119,9 +4650,286 @@ fn run_worker(
     }
     alive.store(false, Ordering::Release);
 }
+fn retire_embedding_generation(
+    configuration: &mut LocalCompilerRuntimeConfiguration,
+    command: Box<EmbeddingTransitionCommand>,
+    commands: &Receiver<RuntimeCommand>,
+    owner_cancelled: &AtomicBool,
+    capability_signal: &CapabilitySignal,
+) -> Result<Option<RuntimeGenerationAcknowledgement>, ()> {
+    // Returning here follows scope exit, all native lane joins, and publisher shutdown.
+    let mut desired = match &command.update {
+        LocalCompilerEmbeddingTransition::Retire { desired } => *desired,
+        _ => {
+            let _ = command.response.send(Err(
+                LocalCompilerEmbeddingTransitionError::ConfigurationMismatch,
+            ));
+            return Ok(None);
+        }
+    };
+    if let Err(error) = command.checkpoint() {
+        let _ = command.response.send(Err(error));
+        return Ok(None);
+    }
+    if let Some(cache) = configuration.embedding_cache_session.as_ref() {
+        let validation = configuration
+            .embedding_runtime
+            .as_ref()
+            .ok_or(LocalCompilerEmbeddingTransitionError::ConfigurationMismatch)
+            .and_then(|runtime| cache.validate_runtime_binding(runtime).map_err(Into::into));
+        if let Err(error) = validation {
+            let _ = command.response.send(Err(error));
+            return Ok(None);
+        }
+    }
+    if let Some(runtime) = configuration.embedding_runtime.as_ref()
+        && let Err(error) = runtime.retire_persistent_session()
+    {
+        let _ = command.response.send(Err(error.into()));
+        return Err(());
+    }
+    let account = configuration
+        .embedding_runtime
+        .as_ref()
+        .map(|runtime| runtime.memory_budget().clone());
+    drop(configuration.embedding_cache_session.take());
+    drop(configuration.embedding_runtime.take());
+    *capability_signal
+        .lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        LocalCompilerGenerationState::Retired(desired);
+    capability_signal.changed.notify_all();
+    let mut retired = LocalCompilerEmbeddingReceipt {
+        configuration: desired,
+        phase: LocalCompilerEmbeddingPhase::Retired {
+            account: account.clone(),
+        },
+    };
+    let _ = command.response.send(Ok(retired.clone()));
+    // Accepted retirement remains owned here after observer loss. Neither an absent runtime
+    // nor a numeric credit count is advertised as a new usable compiler generation.
+    loop {
+        if owner_cancelled.load(Ordering::Acquire) {
+            return Err(());
+        }
+        match commands.recv_timeout(Duration::from_millis(5)) {
+            Ok(RuntimeCommand::EmbeddingTransition(command)) => {
+                if let Err(error) = command.checkpoint() {
+                    let _ = command.response.send(Err(error));
+                    continue;
+                }
+                if let LocalCompilerEmbeddingTransition::RetargetRetired {
+                    previous,
+                    configuration: next,
+                } = &command.update
+                {
+                    if *previous != desired {
+                        let _ = command.response.send(Err(
+                            LocalCompilerEmbeddingTransitionError::ConfigurationMismatch,
+                        ));
+                        continue;
+                    }
+                    let control = backend_compile::EmbeddingActivationControl::new(
+                        &command.cancelled,
+                        command.deadline,
+                    );
+                    if let Err(error) = next.verify_current_until(&control) {
+                        let _ = command.response.send(Err(error.into()));
+                        continue;
+                    }
+                    if let Err(error) = control.checkpoint() {
+                        let _ = command.response.send(Err(error.into()));
+                        continue;
+                    }
+                    desired = next.identity();
+                    retired.configuration = desired;
+                    *capability_signal
+                        .lock
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        LocalCompilerGenerationState::Retired(desired);
+                    capability_signal.changed.notify_all();
+                    let _ = command.response.send(Ok(retired.clone()));
+                    continue;
+                }
+                let requested = match &command.update {
+                    LocalCompilerEmbeddingTransition::Retire { desired } => Some(*desired),
+                    LocalCompilerEmbeddingTransition::RetargetRetired { configuration, .. } => {
+                        Some(configuration.identity())
+                    }
+                    LocalCompilerEmbeddingTransition::ResumeUnavailable {
+                        configuration, ..
+                    } => Some(configuration.identity()),
+                    LocalCompilerEmbeddingTransition::Install { provision, .. } => {
+                        provision.configuration_identity()
+                    }
+                };
+                if requested != Some(desired) {
+                    let _ = command.response.send(Err(
+                        LocalCompilerEmbeddingTransitionError::ConfigurationMismatch,
+                    ));
+                    continue;
+                }
+                if matches!(
+                    &command.update,
+                    LocalCompilerEmbeddingTransition::Retire { .. }
+                ) {
+                    let _ = command.response.send(Ok(retired.clone()));
+                    continue;
+                }
+                let used = account
+                    .as_ref()
+                    .map_or(0, backend_compile::EmbeddingMemoryBudget::used);
+                if used != 0 {
+                    let _ = command.response.send(Err(
+                        LocalCompilerEmbeddingTransitionError::RetainedMemory { used },
+                    ));
+                    continue;
+                }
+                let captured_configuration = match &command.update {
+                    LocalCompilerEmbeddingTransition::Install { provision, .. } => {
+                        provision.configuration_witness()
+                    }
+                    LocalCompilerEmbeddingTransition::ResumeUnavailable {
+                        configuration, ..
+                    } => Some(configuration.clone()),
+                    LocalCompilerEmbeddingTransition::Retire { .. }
+                    | LocalCompilerEmbeddingTransition::RetargetRetired { .. } => None,
+                };
+                let Some(captured_configuration) = captured_configuration else {
+                    let _ = command.response.send(Err(
+                        LocalCompilerEmbeddingTransitionError::ConfigurationMismatch,
+                    ));
+                    continue;
+                };
+                if let Err(error) = captured_configuration.verify_current_until(
+                    &backend_compile::EmbeddingActivationControl::new(
+                        &command.cancelled,
+                        command.deadline,
+                    ),
+                ) {
+                    let _ = command.response.send(Err(error.into()));
+                    continue;
+                }
+                let phase = match command.update {
+                    LocalCompilerEmbeddingTransition::Install { provision, cache } => {
+                        let requirement = provision.requirement();
+                        let Some(runtime) = provision.into_runtime() else {
+                            let _ = command.response.send(Err(
+                                LocalCompilerEmbeddingTransitionError::ConfigurationMismatch,
+                            ));
+                            continue;
+                        };
+                        if let Some(cache) = cache.as_ref()
+                            && let Err(error) = cache.validate_runtime_binding(&runtime)
+                        {
+                            let _ = command.response.send(Err(error.into()));
+                            continue;
+                        }
+                        let control = backend_compile::EmbeddingActivationControl::new(
+                            &command.cancelled,
+                            command.deadline,
+                        );
+                        if let Err(error) = control.checkpoint() {
+                            let _ = command.response.send(Err(error.into()));
+                            continue;
+                        }
+                        let execution = runtime.execution_identity();
+                        configuration.embedding_runtime = Some(runtime);
+                        configuration.embedding_cache_session = cache;
+                        configuration.embedding_requirement = requirement;
+                        configuration.embedding_provisioning_failure = None;
+                        LocalCompilerEmbeddingPhase::Activated { execution }
+                    }
+                    LocalCompilerEmbeddingTransition::ResumeUnavailable {
+                        requirement,
+                        cause,
+                        ..
+                    } => {
+                        configuration.embedding_requirement = requirement;
+                        configuration.embedding_provisioning_failure = Some(cause);
+                        LocalCompilerEmbeddingPhase::Unavailable { cause }
+                    }
+                    LocalCompilerEmbeddingTransition::Retire { .. }
+                    | LocalCompilerEmbeddingTransition::RetargetRetired { .. } => continue,
+                };
+                return Ok(Some(RuntimeGenerationAcknowledgement::Embedding {
+                    response: command.response,
+                    receipt: LocalCompilerEmbeddingReceipt {
+                        configuration: desired,
+                        phase,
+                    },
+                    configuration: captured_configuration,
+                    authority: command.authority,
+                    cancelled: command.cancelled,
+                    deadline: command.deadline,
+                }));
+            }
+            Ok(command) => refuse_retired_compiler_request(command),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return Err(()),
+        }
+    }
+}
 
+fn refuse_retired_compiler_request(command: RuntimeCommand) {
+    match command {
+        RuntimeCommand::EmbeddingTransition(command) => {
+            let _ = command
+                .response
+                .send(Err(LocalCompilerEmbeddingTransitionError::Busy));
+        }
+        RuntimeCommand::Compile {
+            request, response, ..
+        } => {
+            let _ = response.send(RuntimeEvent::Complete(Err(request
+                .facts()
+                .terminal(CompilerRuntimeCause::RequestInFlight))));
+        }
+        RuntimeCommand::SemanticImage {
+            requested,
+            response,
+            ..
+        } => {
+            let _ = response.send(Err(SemanticImageAccessError::RequestInFlight { requested }));
+        }
+        RuntimeCommand::CompilePackageSources {
+            request, response, ..
+        } => {
+            let _ = response.send(Err(PackageSemanticRuntimeError::Runtime(
+                request
+                    .facts()
+                    .terminal(CompilerRuntimeCause::RequestInFlight),
+            )));
+        }
+        RuntimeCommand::CompilePackageSourcesStaged {
+            request, response, ..
+        } => {
+            let _ = response.send(Err(PackageSemanticRuntimeError::Runtime(
+                request
+                    .facts()
+                    .terminal(CompilerRuntimeCause::RequestInFlight),
+            )));
+        }
+        RuntimeCommand::ActivateSemanticGeneration {
+            profile, response, ..
+        } => {
+            let facts = RequestFacts {
+                profile,
+                language: profile.language(),
+                stage: Stage::LowerIr,
+                target: None,
+            };
+            let _ = response.send(Err(PackageSemanticRuntimeError::Runtime(
+                facts.terminal(CompilerRuntimeCause::RequestInFlight),
+            )));
+        }
+    }
+}
 enum WorkerDisposition {
     Stop,
+    EmbeddingTransition(Box<EmbeddingTransitionCommand>),
     Reconfigure(ToolchainProbeObservation),
 }
 
@@ -4129,9 +4937,10 @@ fn run_worker_generation(
     configuration: &mut LocalCompilerRuntimeConfiguration,
     commands: &Receiver<RuntimeCommand>,
     probes: &Receiver<ToolchainProbeObservation>,
-    startup: &mut Option<SyncSender<Result<(), LocalCompilerRuntimeOpenError>>>,
+    startup: &mut Option<RuntimeGenerationAcknowledgement>,
     cancelled: &AtomicBool,
     alive: &AtomicBool,
+    capability_signal: &CapabilitySignal,
 ) -> WorkerDisposition {
     let mut toolchains = ArrayVec::<ToolchainSelection<'_>, MAX_LOCAL_TOOLCHAINS>::new();
     for (ordinal, owned) in configuration.toolchains.iter().enumerate() {
@@ -4344,18 +5153,24 @@ fn run_worker_generation(
         embedding_provisioning_failure,
         embedding_payload_max,
         embedding_scratch_max,
+        capability_signal,
     );
-    let _ = compiler.shutdown();
-    disposition
+    match (disposition, compiler.shutdown()) {
+        (WorkerDisposition::EmbeddingTransition(command), Err(error)) => {
+            let _ = command.response.send(Err(error.into()));
+            alive.store(false, Ordering::Release);
+            WorkerDisposition::Stop
+        }
+        (disposition, _) => disposition,
+    }
 }
-
 fn run_worker_lanes(
     native_work_root: PathBuf,
     image_cap: usize,
     compiler: &mut LocalCompiler<'_, '_, '_>,
     commands: &Receiver<RuntimeCommand>,
     probes: &Receiver<ToolchainProbeObservation>,
-    startup: &mut Option<SyncSender<Result<(), LocalCompilerRuntimeOpenError>>>,
+    startup: &mut Option<RuntimeGenerationAcknowledgement>,
     alive: &AtomicBool,
     capabilities: LocalCompilerCapabilities,
     lane_scratches: Vec<LocalCompilerScratch>,
@@ -4365,6 +5180,7 @@ fn run_worker_lanes(
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
     embedding_payload_max: usize,
     embedding_scratch_max: usize,
+    capability_signal: &CapabilitySignal,
 ) -> WorkerDisposition {
     let lane_count = compiler_lane_count();
     let reservation_capacity = staged_output_reservation(
@@ -4425,11 +5241,14 @@ fn run_worker_lanes(
             alive.store(false, Ordering::Release);
             return WorkerDisposition::Stop;
         };
-        if let Some(startup) = startup.take()
-            && startup.send(Ok(())).is_err()
-        {
-            alive.store(false, Ordering::Release);
-            return WorkerDisposition::Stop;
+        if let Some(startup) = startup.take() {
+            if startup.commit(capability_signal).is_err() {
+                alive.store(false, Ordering::Release);
+                return WorkerDisposition::Stop;
+            }
+        } else {
+            // A native toolchain rebuild retains the committed embedding receipt.
+            capability_signal.changed.notify_all();
         }
 
         let mut in_flight = 0_usize;
@@ -4480,6 +5299,24 @@ fn run_worker_lanes(
             }
 
             match commands.recv_timeout(Duration::from_millis(2)) {
+                Ok(RuntimeCommand::EmbeddingTransition(command)) => {
+                    let refusal = if in_flight != 0 {
+                        Err(LocalCompilerEmbeddingTransitionError::Busy)
+                    } else if !matches!(
+                        &command.update,
+                        LocalCompilerEmbeddingTransition::Retire { .. }
+                    ) {
+                        Err(LocalCompilerEmbeddingTransitionError::ConfigurationMismatch)
+                    } else {
+                        command.checkpoint()
+                    };
+                    if let Err(error) = refusal {
+                        let _ = command.response.send(Err(error));
+                        continue;
+                    }
+                    drop(lane_queue);
+                    return WorkerDisposition::EmbeddingTransition(command);
+                }
                 Ok(command) => dispatch_runtime_command(
                     command,
                     &mut lane_queue,
@@ -4500,7 +5337,6 @@ fn run_worker_lanes(
         }
     })
 }
-
 #[allow(clippy::too_many_arguments)]
 fn dispatch_runtime_command(
     command: RuntimeCommand,
@@ -4517,6 +5353,11 @@ fn dispatch_runtime_command(
     alive: &AtomicBool,
 ) {
     match command {
+        RuntimeCommand::EmbeddingTransition(command) => {
+            let _ = command
+                .response
+                .send(Err(LocalCompilerEmbeddingTransitionError::Busy));
+        }
         RuntimeCommand::Compile {
             request,
             response,
@@ -5994,7 +6835,7 @@ mod request_lease_tests {
             command: None,
             worker: None,
             cancelled: Arc::new(AtomicBool::new(false)),
-            requests: Mutex::new(HashMap::new()),
+            requests: Mutex::new(RequestAdmissions::Serving(HashMap::new())),
             next_request: AtomicU64::new(1),
             next_client: AtomicU64::new(1),
             alive: Arc::new(AtomicBool::new(true)),
@@ -6023,6 +6864,69 @@ mod request_lease_tests {
     fn lease<'a>(shared: &'a RuntimeShared, cancelled: Arc<AtomicBool>) -> RequestLease<'a> {
         RequestLease::acquire_with_cancelled(shared, 7, facts(), cancelled)
             .expect("register one request")
+    }
+
+    #[test]
+    fn refresh_reservation_excludes_concurrent_clones_and_reopens_only_after_owned_drop() {
+        let shared = Arc::new(shared());
+        let client = LocalCompilerClient {
+            shared: Arc::clone(&shared),
+            client_id: 7,
+            last_image: Mutex::new(None),
+        };
+        let token = Arc::new(AtomicBool::new(false));
+        let outstanding = lease(&shared, Arc::clone(&token));
+        assert!(matches!(
+            client.admit_embedding_refresh_with_authority(
+                EmbeddingTransitionAuthority::CompilerActor
+            ),
+            Err(LocalCompilerEmbeddingTransitionError::Busy)
+        ));
+        assert!(
+            !token.load(Ordering::Acquire),
+            "busy admission must not cancel outstanding work"
+        );
+        outstanding.complete(());
+        let admitted = client
+            .admit_embedding_refresh_with_authority(EmbeddingTransitionAuthority::CompilerActor)
+            .expect("exclusive reservation after actual request completion");
+        assert!(matches!(
+            client.clone().admit_embedding_refresh_with_authority(
+                EmbeddingTransitionAuthority::CompilerActor
+            ),
+            Err(LocalCompilerEmbeddingTransitionError::Busy)
+        ));
+        let concurrent = Arc::clone(&shared);
+        let refused =
+            std::thread::spawn(
+                move || match RequestLease::acquire(&concurrent, 9, facts()) {
+                    Err(CompilerTerminal::Runtime {
+                        cause: CompilerRuntimeCause::RequestInFlight,
+                        ..
+                    }) => true,
+                    Ok(lease) => {
+                        lease.complete(());
+                        false
+                    }
+                    Err(_) => false,
+                },
+            )
+            .join()
+            .expect("actual concurrent request thread");
+        assert!(
+            refused,
+            "a clone cannot enter after the same mutex granted refresh admission"
+        );
+        drop(admitted);
+        lease(&shared, token).complete(());
+        drop(client);
+        assert!(
+            shared
+                .requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -6609,7 +7513,7 @@ mod deferred_native_python_tests {
         }
     }
 
-    fn configuration(
+    pub(super) fn configuration(
         root: &Path,
         deferred: Arc<DeferredNativePython>,
     ) -> LocalCompilerRuntimeConfiguration {
@@ -6941,3 +7845,7 @@ mod deferred_native_python_tests {
         drop(client);
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "runtime_embedding_transition_tests.rs"]
+mod embedding_transition_tests;

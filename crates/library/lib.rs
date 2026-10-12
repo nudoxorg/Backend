@@ -256,6 +256,12 @@ pub use source_membership::{
     PackageSourceMembershipScopeV1, PackageSourceMembershipUnavailableV1,
 };
 pub use surface::{
+    EmbeddingRefreshAction, EmbeddingRefreshCompilerReceipt, EmbeddingRefreshExecution,
+    EmbeddingRefreshFailure, EmbeddingRefreshFailureKind, EmbeddingRefreshNormalization,
+    EmbeddingRefreshObservation, EmbeddingRefreshPhase, EmbeddingRefreshQueryStatus,
+    EmbeddingRefreshTicket,
+};
+pub use surface::{
     AuthorityClassFact, AuthorityPhaseFact, CompilerAuthorityDiagnosticFacts, CompilerLanguageFact,
     CompilerNativeToolFact, CompilerStageFact, DeclarationChange, DeclarationReadExtent,
     DeclarationRecord, DiffRecord,

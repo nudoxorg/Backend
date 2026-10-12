@@ -66,6 +66,10 @@ impl EmbeddingMemoryBudget {
         }))
     }
 
+    pub(crate) fn shares_account(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     /// Fixed capacity admitted by the owner.
     #[must_use]
     pub fn capacity(&self) -> u64 {

@@ -199,6 +199,7 @@ fn take_json(
                 | ArgumentKind::CargoPackageSourceRequest
                 | ArgumentKind::PackageSourceMembershipRequest
                 | ArgumentKind::SemanticShapeRequest
+                | ArgumentKind::EmbeddingRefreshRequest
         ) && scalar.is_object()
         {
             serde_json::to_string(&scalar).ok()
@@ -819,6 +820,18 @@ fn surface(
             ticket: index_job_ticket(invocation, 0)?,
             after_sequence: progress_sequence(invocation)?,
         },
+        CommandId::EmbeddingRefresh => {
+            let request = serde_json::from_str::<backend_library::EmbeddingRefreshAction>(
+                invocation.require(0)?,
+            )
+            .map_err(|error| {
+                Fault::usage(
+                    "request",
+                    format!("use the exact embedding refresh action: {error}"),
+                )
+            })?;
+            SurfaceCommand::EmbeddingRefresh { request }
+        }
         CommandId::IndexCancel => SurfaceCommand::IndexCancel {
             ticket: index_job_ticket(invocation, 0)?,
         },

@@ -27,6 +27,10 @@ const PAGE_ROWS: usize = 256;
 /// Why the local lane refused setup or one complete operation. No string classification.
 #[derive(Debug)]
 pub enum LocalSemanticError {
+    /// An accepted refresh ended with a retained typed owner refusal.
+    OwnerRefreshRefusal(backend_library::EmbeddingRefreshFailure),
+    /// Recipe installation was attempted outside the actual retired local owner state.
+    OwnerNotRetiring,
     /// No activated compiler runtime/artifact closure exists.
     RuntimeUnavailable(backend_engine::application::EmbeddingRuntimeStatus),
     /// A runtime exists but its explicitly declared query semantics were not installed.
@@ -97,11 +101,17 @@ impl LocalSemanticError {
     #[must_use]
     pub const fn setup_instruction(&self) -> &'static str {
         match self {
+            Self::OwnerRefreshRefusal(_) => {
+                "Observe the retained embedding-refresh ticket and its actual compiler receipt before deliberately retrying the installed configuration."
+            }
+            Self::OwnerNotRetiring => {
+                "Observe the admitted embedding refresh and current owner state before replacing its query recipe."
+            }
             Self::RuntimeUnavailable(_) => {
-                "Run nudox embedding-setup with a matched helper package, reopen the local owner, then run nudox add . to reindex under the installed recipe."
+                "Run nudox embedding-setup with matched artifacts, then nudox embedding-refresh on the same workspace. Observe the accepted ticket until compiler commit and query admission, then run nudox add . in the intended project; inference and publication are still required."
             }
             Self::RecipeNotConfigured | Self::Recipe(_) | Self::DescriptorIo(_) => {
-                "Run nudox embedding-setup to install matching runtime and query recipe artifacts, reopen the local owner, then run nudox add .; inspect the retained setup refusal if installation fails."
+                "Run nudox embedding-setup to install matching runtime and query recipe artifacts, then nudox embedding-refresh on the same workspace. Observe its exact ticket and actual refusal or compiler commit before nudox add .; installation alone is not activation."
             }
             Self::CorpusEnvelope => {
                 "Select a complete coherent view; a partial or sampled projection cannot answer exact search."
@@ -140,7 +150,9 @@ impl LocalSemanticError {
             Self::RecipeNotConfigured | Self::Recipe(_) | Self::DescriptorIo(_) => {
                 SemanticSearchReason::InvalidConfiguration
             }
-            Self::CorpusEnvelope
+            Self::OwnerRefreshRefusal(_)
+            | Self::OwnerNotRetiring
+            | Self::CorpusEnvelope
             | Self::Representation { .. }
             | Self::Corpus(_)
             | Self::Memory(_)
@@ -156,6 +168,8 @@ impl LocalSemanticError {
 impl fmt::Display for LocalSemanticError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::OwnerRefreshRefusal(cause) => f.write_str(cause.detail.as_str()),
+            Self::OwnerNotRetiring => f.write_str("local query recipe owner is not retiring"),
             Self::RuntimeUnavailable(status) => {
                 write!(f, "local semantic runtime unavailable: {status:?}")
             }
@@ -202,7 +216,9 @@ impl std::error::Error for LocalSemanticError {
             Self::Relation(error) => Some(error),
             Self::Lexical(error) => Some(error),
             Self::Worker(error) => Some(error),
-            Self::RuntimeUnavailable(_)
+            Self::OwnerRefreshRefusal(_)
+            | Self::OwnerNotRetiring
+            | Self::RuntimeUnavailable(_)
             | Self::RecipeNotConfigured
             | Self::CorpusEnvelope
             | Self::Representation { .. } => None,
@@ -261,17 +277,7 @@ impl LocalSemantic {
         let runtime = provision
             .runtime()
             .ok_or(LocalSemanticError::RuntimeUnavailable(provision.status()))?;
-        let addressed = super::local_recipe::recipe_descriptor_path(
-            path.parent()
-                .ok_or(LocalSemanticError::RecipeNotConfigured)?,
-            runtime.execution_identity().recipe(),
-        );
-        let selected = match std::fs::symlink_metadata(&addressed) {
-            Ok(_) => addressed.as_path(),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => path,
-            Err(error) => return Err(LocalSemanticError::DescriptorIo(error)),
-        };
-        let descriptor = read_descriptor(selected)?;
+        let descriptor = capture_descriptor(path, runtime.execution_identity().recipe(), None)?;
         let admitted = descriptor
             .admit(runtime)
             .map_err(LocalSemanticError::Recipe)?;
@@ -873,7 +879,33 @@ pub(super) fn checkpoint(
     Ok(())
 }
 
-fn read_descriptor(path: &Path) -> Result<LocalQueryRecipeDescriptor, LocalSemanticError> {
+pub(super) fn capture_descriptor(
+    path: &Path,
+    recipe: [u8; 32],
+    control: Option<&backend_compile::EmbeddingActivationControl<'_>>,
+) -> Result<LocalQueryRecipeDescriptor, LocalSemanticError> {
+    if let Some(control) = control {
+        control
+            .checkpoint()
+            .map_err(LocalSemanticError::Inference)?;
+    }
+    let addressed = super::local_recipe::recipe_descriptor_path(
+        path.parent()
+            .ok_or(LocalSemanticError::RecipeNotConfigured)?,
+        recipe,
+    );
+    let selected = match std::fs::symlink_metadata(&addressed) {
+        Ok(_) => addressed.as_path(),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => path,
+        Err(error) => return Err(LocalSemanticError::DescriptorIo(error)),
+    };
+    read_descriptor(selected, control)
+}
+
+fn read_descriptor(
+    path: &Path,
+    control: Option<&backend_compile::EmbeddingActivationControl<'_>>,
+) -> Result<LocalQueryRecipeDescriptor, LocalSemanticError> {
     let parent = path
         .parent()
         .ok_or(LocalSemanticError::RecipeNotConfigured)?;
@@ -905,7 +937,14 @@ fn read_descriptor(path: &Path) -> Result<LocalQueryRecipeDescriptor, LocalSeman
             LocalQueryRecipeError::DescriptorFormat,
         ));
     }
-    LocalQueryRecipeDescriptor::decode(&bytes).map_err(LocalSemanticError::Recipe)
+    let descriptor =
+        LocalQueryRecipeDescriptor::decode(&bytes).map_err(LocalSemanticError::Recipe)?;
+    if let Some(control) = control {
+        control
+            .checkpoint()
+            .map_err(LocalSemanticError::Inference)?;
+    }
+    Ok(descriptor)
 }
 
 #[cfg(test)]

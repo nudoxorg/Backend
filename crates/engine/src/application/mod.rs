@@ -65,6 +65,10 @@ pub use self::documentation::{
     DocumentationTextPart, DocumentationType, DocumentationTypeView,
 };
 pub use self::embedding_provision::{
+    EmbeddingRuntimeActivationFailure, EmbeddingRuntimeConfigIdentity,
+    EmbeddingRuntimeConfigWitness, PreparedEmbeddingRuntime,
+};
+pub use self::embedding_provision::{
     EmbeddingRuntimeError, EmbeddingRuntimeInstall, EmbeddingRuntimeIoPhase,
     EmbeddingRuntimeLimits, EmbeddingRuntimeProvision, EmbeddingRuntimeStatus,
     EmbeddingRuntimeSummary, EmbeddingUnavailableReason, embedding_runtime_resident_credit_bytes,
@@ -88,6 +92,11 @@ pub use self::package_authority::{
 };
 pub use self::package_source::MAX_LOCAL_PACKAGE_SOURCE_BYTES;
 pub(crate) use self::runtime::{AdmittedRustRequestAuthority, LocalCompilerPlaneExecutionSeed};
+pub use self::runtime::{
+    LocalCompilerEmbeddingAdmission, LocalCompilerEmbeddingPhase, LocalCompilerEmbeddingReceipt,
+    LocalCompilerEmbeddingTransition, LocalCompilerEmbeddingTransitionError,
+    PendingLocalCompilerEmbeddingTransition,
+};
 pub use self::runtime::{
     CompilerSessionLineage, ExactInputWitness, LocalCompilerCapabilities, LocalCompilerCapability,
     LocalCompilerCapabilityState, LocalCompilerClient, LocalCompilerExecutionIdentity,

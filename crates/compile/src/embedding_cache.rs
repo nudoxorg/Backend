@@ -192,6 +192,33 @@ impl EmbeddingCacheSession {
         })
     }
 
+    /// Validates both exact execution and shared allocation ownership before actor installation.
+    ///
+    /// # Errors
+    /// Refuses a foreign execution identity or independently charged cache account.
+    pub fn validate_runtime_binding(
+        &self,
+        runtime: &crate::EmbeddingExecutable,
+    ) -> Result<(), crate::EmbeddingExecutableError> {
+        for (field, matches) in [
+            (
+                "cache execution identity",
+                self.execution_identity == runtime.execution_identity(),
+            ),
+            (
+                "cache memory account",
+                self.memory.shares_account(runtime.memory_budget()),
+            ),
+        ] {
+            if !matches {
+                return Err(crate::EmbeddingExecutableError::Spec(
+                    crate::EmbeddingRuntimeSpecError::ObservedMismatch { field },
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn is_bound_to(&self, identity: EmbeddingExecutionIdentity) -> bool {
         self.execution_identity == identity
     }

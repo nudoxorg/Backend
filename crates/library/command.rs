@@ -205,6 +205,8 @@ pub enum CommandId {
     IndexProgress,
     /// Read one package graph page fenced to its selected root and facts witness.
     PackageGraphPage,
+    /// Refresh or observe an owner-admitted local embedding runtime handoff.
+    EmbeddingRefresh,
     /// Read engine health.
     Health,
     /// Read the constant-size current revision token.

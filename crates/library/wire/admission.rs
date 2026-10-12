@@ -868,6 +868,16 @@ pub fn admit_surface_reply(
             ));
         }
     }
+    if let crate::SurfaceCommand::EmbeddingRefresh { request } = command {
+        let crate::SurfaceReply::EmbeddingRefresh(observation) = reply else {
+            return Err(ReplyAdmissionError::Protocol(
+                "embedding refresh reply family does not match its action".to_owned(),
+            ));
+        };
+        observation
+            .admit_for_action(request)
+            .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
+    }
 
     if let (crate::SurfaceCommand::ProjectTree { root }, crate::SurfaceReply::ProjectTree(tree)) =
         (command, reply)

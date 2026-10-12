@@ -22,6 +22,8 @@ use super::index_operation::{
     Acceptance as IndexOperationAcceptance, IndexOperationJournal, JournalEntry,
     JournalError as IndexOperationJournalError, StoredOperation, StoredOperationState,
 };
+mod embedding_refresh_owner;
+
 use super::search_lane::SearchLane;
 use super::semantic_query::{
     execute_references, execute_semantic_graph, execute_structural_call_graph,
@@ -326,6 +328,7 @@ pub(in crate::builtin) struct CommandAdapter {
         backend_engine::CommandFailure,
     )>,
     remote_semantic: super::super::query::RemoteSemantic,
+    embedding_refresh: embedding_refresh_owner::Owner,
     pending_semantic_search: Option<backend_library::SemanticSearchStatus>,
     semantic_search_replies: std::collections::VecDeque<PendingSemanticSearchReply>,
     published: Option<super::super::view_publish::PublishedRoots>,
@@ -529,6 +532,7 @@ fn answers_while_indexing(command: &Command) -> bool {
                 | S::CargoPackageReadmeLink { .. }
                 | S::IndexAwait { .. }
                 | S::IndexProgress { .. }
+                | S::EmbeddingRefresh { .. }
                 | S::IndexCancel { .. }
         ),
         Command::Add { .. } | Command::Remove { .. } => false,
@@ -676,7 +680,7 @@ impl CommandAdapter {
     /// marker. Atomic keyed publication exclusion belongs to journal.prepare;
     /// workspace commits additionally retain the engine owner's fenced lease.
     fn mutation_admission(&self) -> MutationAdmission {
-        if self.indexing.is_some() {
+        if self.indexing.is_some() || self.embedding_refresh.active() {
             return MutationAdmission::Pending;
         }
         match self.index_operations.has_prepared() {
@@ -732,6 +736,7 @@ impl CommandAdapter {
             search_preparation_eager: false,
             search_preparation_failure: None,
             remote_semantic,
+            embedding_refresh: embedding_refresh_owner::Owner::default(),
             pending_semantic_search: None,
             semantic_search_replies: std::collections::VecDeque::new(),
             published,
@@ -1855,6 +1860,7 @@ impl CommandAdapter {
     }
 
     pub(in crate::builtin) fn close(&mut self) {
+        self.embedding_refresh.close();
         self.semantic_search_replies.clear();
         self.journal_readiness.close();
         self.search_lane.close();
@@ -2841,12 +2847,12 @@ impl CommandAdapter {
         &mut self,
         daemon: &mut ProductDaemon,
     ) -> Vec<(u64, Result<Vec<u8>, BuiltinModelError>)> {
+        let mut ready = self.poll_embedding_refresh(daemon);
         // Derived history is sidecar work: apply any completed status and
         // reschedule selected markers before advancing the active index job.
         // A history-store refusal must not stall product reads or an admitted
         // index publication; selected-marker reconciliation retries it later.
         let _ = self.semantic_authority.drain_native_history_completions();
-        let mut ready = Vec::new();
         self.journal_readiness.poll();
         // Background recovery hints are bound to this owner epoch and change
         // sequence. A stable Unresolved operation is examined once per cursor,
@@ -2855,7 +2861,8 @@ impl CommandAdapter {
         // recovery of the foreign marker holding that slot. The bounded
         // snapshot prioritizes Prepared over Accepted; never recover the
         // resident job itself as an orphan.
-        if (self.indexing.is_none()
+        if !self.embedding_refresh.active()
+            && (self.indexing.is_none()
             || self
                 .indexing
                 .as_ref()
@@ -3433,7 +3440,10 @@ impl CommandAdapter {
                 ready.extend(self.complete_index_job(daemon, indexing, outcome, legacy_reply));
             }
         }
-        while self.indexing.is_none() && !self.waiting.is_empty() {
+        while !self.embedding_refresh.active()
+            && self.indexing.is_none()
+            && !self.waiting.is_empty()
+        {
             let retry = self.journal_readiness.retry_token();
             if self.queued_writer_blocked.as_ref() == Some(&retry) {
                 break;
@@ -4821,7 +4831,10 @@ impl CommandAdapter {
     }
 
     fn maintain_query_preparation(&mut self, daemon: &ProductDaemon) {
-        if !self.search_preparation_eager || self.search_lane.active() {
+        if !self.search_preparation_eager
+            || self.search_lane.active()
+            || self.embedding_refresh.active()
+        {
             return;
         }
         let workspace = daemon.engine().daemon().owner().snapshot().root();
@@ -4873,6 +4886,14 @@ impl CommandAdapter {
             .is_some()
         {
             return Ok(None);
+        }
+        // Existing selected lexical reads remain usable. A missing corpus cannot borrow
+        // the retiring compiler generation; preparation resumes after the observed handoff.
+        if self.embedding_refresh.active() {
+            return Ok(Some(backend_engine::CommandFailure::QueryPreparation {
+                basis,
+                state: backend_library::QueryPreparationState::Retiring,
+            }));
         }
         let state = if self.search_lane.active() {
             self.search_lane.state_for(workspace, view.root())
@@ -5287,6 +5308,9 @@ impl CommandAdapter {
             }
             backend_engine::SurfaceCommand::Tree => {
                 self.owner_local_read(daemon, OwnerLocalRead::Tree)
+            }
+            backend_engine::SurfaceCommand::EmbeddingRefresh { request } => {
+                CommandReply::Surface(backend_library::SurfaceReply::EmbeddingRefresh(self.embedding_refresh(daemon, request)))
             }
             backend_engine::SurfaceCommand::Read { locators } => {
                 // Input has passed the same strict owner-aware command codec
@@ -6460,6 +6484,10 @@ mod tests {
     #[cfg(unix)]
     #[path = "local_semantic_transport.rs"]
     mod local_semantic_transport_tests;
+
+    #[cfg(unix)]
+    #[path = "embedding_refresh.rs"]
+    mod embedding_refresh_tests;
 
     #[cfg(unix)]
     #[path = "local_semantic_memory.rs"]

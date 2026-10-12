@@ -263,6 +263,7 @@ pub fn encode_answer(
                         index_search_page: product.index_search_page,
                         index_job: product.index_job,
                         index_operation: product.index_operation,
+                        embedding_refresh: product.embedding_refresh,
                         index_poll: product.index_poll,
                         selected_source_frontier: product.selected_source_frontier,
                         package_source_membership_page: product.package_source_membership_page,
@@ -696,6 +697,8 @@ struct SummaryProductDto {
     index_job: Option<crate::product::IndexJobProjection>,
     #[serde(skip_serializing_if = "Option::is_none")]
     index_operation: Option<backend_library::IndexOperationObservation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    embedding_refresh: Option<backend_library::EmbeddingRefreshObservation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     index_poll: Option<crate::dto::IndexPollDto>,
     #[serde(skip_serializing_if = "Option::is_none")]

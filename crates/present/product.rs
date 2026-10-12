@@ -397,6 +397,7 @@ pub struct ProductView {
     index_search_page: Option<IndexSearchPageInfo>,
     index_job: Option<IndexJobProjection>,
     index_operation: Option<backend_library::IndexOperationObservation>,
+    embedding_refresh: Option<backend_library::EmbeddingRefreshObservation>,
     index_progress_poll: Option<backend_client::IndexProgressReference>,
     selected_source_frontier: Option<SelectedProjectSourceFrontier>,
     package_source_membership_page: Option<backend_library::PackageSourceMembershipPageResultV1>,
@@ -669,6 +670,44 @@ impl ProductView {
         self
     }
 
+    /// Exact owner runtime handoff observation, including irreversible receipts on refusal.
+    #[must_use]
+    pub const fn embedding_refresh(&self) -> Option<&backend_library::EmbeddingRefreshObservation> {
+        self.embedding_refresh.as_ref()
+    }
+
+    /// Bind only the display continuation to the actual CLI attachment; ticket and result
+    /// remain unchanged. A missing UTF-8 connection context must not be fabricated.
+    pub fn bind_embedding_refresh_context(&mut self, context: &crate::OwnerContext) {
+        use backend_library::EmbeddingRefreshObservation as O;
+        let ticket = match self.embedding_refresh.as_ref() {
+            Some(
+                O::Pending { ticket, .. }
+                | O::Committed { ticket, .. }
+                | O::Failed { ticket, .. }
+                | O::Unknown { ticket },
+            ) => ticket,
+            _ => return,
+        };
+        let action = backend_library::EmbeddingRefreshAction::Observe {
+            ticket: ticket.clone(),
+        };
+        match serde_json::to_string(&action) {
+            Ok(request) => {
+                self.note = Some(format!(
+                    "Observe this exact operation: {}",
+                    context.passive_command_shell(
+                        backend_library::CommandId::EmbeddingRefresh,
+                        &[request]
+                    )
+                ))
+            }
+            Err(error) => {
+                self.note = Some(format!("Observation command could not be encoded: {error}"))
+            }
+        }
+    }
+
     /// Exact next observation of accepted work, without inferring active work
     /// from unknown, unresolved, expired, or terminal publication evidence.
     ///
@@ -925,6 +964,7 @@ impl ProductView {
             index_search_page: None,
             index_job: None,
             index_operation: None,
+            embedding_refresh: None,
             index_progress_poll: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
@@ -944,6 +984,7 @@ impl ProductView {
             index_search_page: None,
             index_job: None,
             index_operation: None,
+            embedding_refresh: None,
             index_progress_poll: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
@@ -961,6 +1002,7 @@ impl ProductView {
             index_search_page: None,
             index_job: None,
             index_operation: None,
+            embedding_refresh: None,
             index_progress_poll: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
@@ -978,6 +1020,7 @@ impl ProductView {
             index_search_page: None,
             index_job: None,
             index_operation: None,
+            embedding_refresh: None,
             index_progress_poll: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
@@ -995,6 +1038,7 @@ impl ProductView {
             index_search_page: None,
             index_job: None,
             index_operation: None,
+            embedding_refresh: None,
             index_progress_poll: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
@@ -1285,6 +1329,7 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
             };
             view.with_package_source_membership_page(page.clone())
         }
+        SurfaceReply::EmbeddingRefresh(observation) => embedding_refresh_view(observation),
         SurfaceReply::IndexStarted(result) => {
             index_start_view(result).with_index_job(IndexJobProjection::Started(result.clone()))
         }
@@ -1300,6 +1345,87 @@ fn registry_view(reply: &SurfaceReply) -> Option<ProductView> {
             .with_index_job(IndexJobProjection::Cancellation(receipt.clone())),
         _ => return None,
     })
+}
+
+fn embedding_refresh_view(
+    observation: &backend_library::EmbeddingRefreshObservation,
+) -> ProductView {
+    use backend_library::{EmbeddingRefreshObservation as O, EmbeddingRefreshQueryStatus as Q};
+    let (title, ticket, tags, refusal) = match observation {
+        O::Pending { ticket, phase } => (
+            "embedding refresh accepted; activation pending",
+            Some(ticket),
+            vec![format!("phase: {phase:?}"), "observer disconnect does not cancel this operation".to_owned()],
+            None,
+        ),
+        O::Committed { ticket, execution, query } => (
+            "embedding runtime committed",
+            Some(ticket),
+            vec![
+                format!("execution recipe {}", full_digest(&execution.recipe)),
+                "run nudox add . in the intended project to rebuild semantic source coverage under this recipe".to_owned(),
+                match query {
+                    Q::Admitted => "query recipe admitted; complete corpus projection remains lazy".to_owned(),
+                    Q::Unavailable { .. } => "query recipe unavailable; compiler commit is retained".to_owned(),
+                },
+            ],
+            match query {
+                Q::Admitted => None,
+                Q::Unavailable { cause } => Some(cause.detail.as_str()),
+            },
+        ),
+        O::Failed { ticket, cause, compiler } => (
+            "embedding refresh stopped",
+            Some(ticket),
+            vec![match compiler {
+                Some(backend_library::EmbeddingRefreshCompilerReceipt::Retired { .. }) => "compiler generation retired; no replacement committed".to_owned(),
+                Some(backend_library::EmbeddingRefreshCompilerReceipt::Activated { execution, .. }) => format!("compiler committed execution recipe {}", full_digest(&execution.recipe)),
+                None => "no compiler retirement or commit receipt was produced".to_owned(),
+            }],
+            Some(cause.detail.as_str()),
+        ),
+        O::Refused { cause } => ("embedding refresh not accepted", None, Vec::new(), Some(cause.detail.as_str())),
+        O::Unknown { ticket } => (
+            "embedding refresh ticket is unknown to this owner",
+            Some(ticket),
+            vec!["unknown does not establish activation or cancellation".to_owned()],
+            None,
+        ),
+    };
+    let operand = ticket.map(|ticket| full_digest(&ticket.configuration));
+    let mut view = ProductView::rows(
+        "embedding-refresh",
+        vec![ProductRecord::new(title, operand.clone(), tags)],
+    );
+    if let Some(detail) = refusal {
+        view.fault = Some(Fault::new(
+            crate::FaultSlug::Rejected,
+            operand.map_or_else(
+                || Operand::Argument("embedding-refresh".to_owned()),
+                Operand::Text,
+            ),
+            crate::Cause::new(crate::CauseSlug::Refused, detail),
+            crate::Affordance::None,
+        ));
+    }
+    if let Some(ticket) = ticket {
+        // This bounded typed action is directly consumable by the registered grammar.
+        let request = backend_library::EmbeddingRefreshAction::Observe {
+            ticket: ticket.clone(),
+        };
+        match serde_json::to_string(&request) {
+            Ok(request) => {
+                view.note = Some(format!(
+                    "Observe this exact operation with backend.embedding_refresh: {{\"request\":{request}}}"
+                ))
+            }
+            Err(error) => {
+                view.note = Some(format!("Observation command could not be encoded: {error}"))
+            }
+        }
+    }
+    view.embedding_refresh = Some(observation.clone());
+    view
 }
 
 fn index_operation_view(observation: &backend_library::IndexOperationObservation) -> ProductView {

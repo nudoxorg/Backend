@@ -25,6 +25,8 @@ use backend_present::{domain_name, grammar_for};
 #[cfg(unix)]
 #[path = "tests/index_overlap.rs"]
 mod index_overlap;
+#[path = "tests/embedding_refresh.rs"]
+mod embedding_refresh;
 #[path = "tests/surface_fidelity.rs"]
 mod surface_fidelity;
 #[path = "tests/token_outline.rs"]

@@ -168,6 +168,17 @@ impl LocalQueryRecipeDescriptor {
         Self::new(runtime, contract)
     }
 
+    /// Requires the entire portable runtime contract before retiring an old owner.
+    pub(super) fn validate_runtime_spec(
+        self,
+        runtime: EmbeddingRuntimeSpecV1,
+    ) -> Result<(), LocalQueryRecipeError> {
+        if self.runtime != runtime {
+            return Err(LocalQueryRecipeError::RuntimeContractMismatch);
+        }
+        Ok(())
+    }
+
     /// Admits this declaration against the already activated compiler runtime.
     /// The returned proof retains the same Arc; it performs no probes or activation.
     ///
@@ -256,6 +267,8 @@ impl AdmittedLocalQueryRecipe {
 pub enum LocalQueryRecipeError {
     /// Descriptor magic, tags or exact extent are not canonical.
     DescriptorFormat,
+    /// The full descriptor runtime differs from the captured replacement configuration.
+    RuntimeContractMismatch,
     /// Complete declared options do not match the installed runtime recipe.
     SemanticOptionsMismatch,
     /// Canonical local vector facts do not implement this coordinate encoding.
@@ -272,6 +285,9 @@ impl fmt::Display for LocalQueryRecipeError {
             Self::DescriptorFormat => {
                 formatter.write_str("local query recipe descriptor is invalid")
             }
+            Self::RuntimeContractMismatch => formatter.write_str(
+                "local query recipe differs from the complete selected runtime contract",
+            ),
             Self::SemanticOptionsMismatch => formatter.write_str(
                 "local query recipe options differ from the installed embedding runtime",
             ),

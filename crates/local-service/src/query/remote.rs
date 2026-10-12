@@ -144,6 +144,8 @@ pub enum RemoteSemantic {
     Unavailable(Box<RemoteConfigError>),
     /// Already admitted compiler runtime and matching explicit local query semantics.
     Local(Box<LocalSemanticOwner>),
+    /// Original local work is retiring off the owner control loop.
+    LocalRetiring,
     /// Closed local setup/activation cause; lexical search remains usable.
     LocalUnavailable(Box<LocalSemanticError>),
 }
@@ -185,7 +187,67 @@ impl RemoteSemantic {
     }
 
     pub(super) const fn is_local(&self) -> bool {
-        matches!(self, Self::Local(_) | Self::LocalUnavailable(_))
+        matches!(
+            self,
+            Self::Local(_) | Self::LocalRetiring | Self::LocalUnavailable(_)
+        )
+    }
+
+    /// An absent provider is also a lawful first activation; explicit remote choice never is.
+    pub(crate) const fn can_refresh_local(&self) -> bool {
+        matches!(
+            self,
+            Self::Unconfigured | Self::Local(_) | Self::LocalUnavailable(_)
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn local_refresh_runtime(&self) -> Option<&Arc<EmbeddingExecutable>> {
+        match self {
+            Self::Local(owner) => Some(owner.admitted_runtime()),
+            _ => None,
+        }
+    }
+
+    /// Constant-time ownership handoff. The returned original owner is joined only
+    /// by the refresh worker; explicit remote configuration is never recaptured.
+    pub(crate) fn take_local_for_retirement(&mut self) -> Option<Self> {
+        if !self.can_refresh_local() {
+            return None;
+        }
+        Some(std::mem::replace(self, Self::LocalRetiring))
+    }
+
+    /// Consumes and joins the moved original local owner on the refresh worker.
+    pub(crate) fn retire_local(self) -> Result<(), LocalSemanticError> {
+        match self {
+            Self::Local(owner) => (*owner).retire_for_refresh(),
+            Self::LocalUnavailable(_) | Self::Unconfigured => Ok(()),
+            _ => Err(LocalSemanticError::OwnerNotRetiring),
+        }
+    }
+
+    pub(crate) fn install_local_admitted(
+        &mut self,
+        admitted: Arc<super::AdmittedLocalQueryRecipe>,
+    ) -> Result<(), LocalSemanticError> {
+        if !matches!(self, Self::LocalRetiring) {
+            return Err(LocalSemanticError::OwnerNotRetiring);
+        }
+        let owner = LocalSemanticOwner::from_admitted(admitted)?;
+        *self = Self::Local(Box::new(owner));
+        Ok(())
+    }
+
+    pub(crate) fn finish_local_refusal(
+        &mut self,
+        cause: LocalSemanticError,
+    ) -> Result<(), LocalSemanticError> {
+        if !matches!(self, Self::LocalRetiring) {
+            return Err(LocalSemanticError::OwnerNotRetiring);
+        }
+        *self = Self::LocalUnavailable(Box::new(cause));
+        Ok(())
     }
 
     pub(crate) fn admits_local_reply(&self) -> bool {
@@ -225,6 +287,9 @@ impl RemoteSemantic {
                 None => SemanticAnswer::lexical(local, SemanticSearchReason::NoActiveProjection),
             },
             Self::LocalUnavailable(error) => SemanticAnswer::lexical(local, error.reason()),
+            Self::LocalRetiring => {
+                SemanticAnswer::lexical(local, SemanticSearchReason::NoActiveProjection)
+            }
             _ => SemanticAnswer::lexical(local, SemanticSearchReason::Unconfigured),
         }
     }
@@ -261,6 +326,7 @@ impl RemoteSemantic {
     pub fn local_preparation(&self) -> Option<backend_library::QueryPreparationState> {
         match self {
             Self::Local(owner) => owner.preparation(),
+            Self::LocalRetiring => Some(backend_library::QueryPreparationState::Retiring),
             _ => None,
         }
     }
@@ -300,6 +366,7 @@ impl RemoteSemantic {
             Self::Unconfigured
             | Self::Unavailable(_)
             | Self::Local(_)
+            | Self::LocalRetiring
             | Self::LocalUnavailable(_) => None,
         }
     }
@@ -346,6 +413,7 @@ impl RemoteSemantic {
             Self::Unconfigured
             | Self::Unavailable(_)
             | Self::Local(_)
+            | Self::LocalRetiring
             | Self::LocalUnavailable(_) => Ok(()),
         }
     }
@@ -366,6 +434,7 @@ impl RemoteSemantic {
             Self::Unconfigured
             | Self::Unavailable(_)
             | Self::Local(_)
+            | Self::LocalRetiring
             | Self::LocalUnavailable(_) => local.finish(),
         }
     }
@@ -388,7 +457,7 @@ impl RemoteSemantic {
                     reason: error.reason(),
                 },
             ),
-            Self::Local(_) => (
+            Self::Local(_) | Self::LocalRetiring => (
                 local.finish(),
                 SemanticSearchStatus::Unavailable {
                     reason: SemanticSearchReason::NoActiveProjection,
@@ -484,6 +553,24 @@ impl RemoteSemantic {
             return backend_engine::CapabilityInventory::try_new(rows)
                 .map_err(|_| RemoteConfigError::InvalidInventory);
         }
+        if matches!(self, Self::LocalRetiring) {
+            let mut rows = baseline
+                .as_slice()
+                .iter()
+                .copied()
+                .filter(|row| {
+                    !matches!(
+                        row.family(),
+                        backend_engine::CapabilityFamily::Embedding { .. }
+                    )
+                })
+                .collect::<Vec<_>>();
+            // A retiring owner has surrendered its embedding capability; the
+            // explicit preparation state carries retirement, not a made-up missing dependency.
+            rows.sort_unstable_by_key(backend_engine::CapabilityStatus::id);
+            return backend_engine::CapabilityInventory::try_new(rows)
+                .map_err(|_| RemoteConfigError::InvalidInventory);
+        }
         let mut rows = baseline
             .as_slice()
             .iter()
@@ -496,7 +583,7 @@ impl RemoteSemantic {
             })
             .collect::<Vec<_>>();
         match self {
-            Self::Local(_) | Self::LocalUnavailable(_) => {}
+            Self::Local(_) | Self::LocalRetiring | Self::LocalUnavailable(_) => {}
             Self::Configured(configured) => {
                 let capability_recipe = embedding_capability_recipe(configured.recipe);
                 let recipe = capability_recipe.identity();
@@ -574,6 +661,7 @@ impl fmt::Debug for RemoteSemantic {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Local(_) => formatter.write_str("RemoteSemantic::Local"),
+            Self::LocalRetiring => formatter.write_str("RemoteSemantic::LocalRetiring"),
             Self::LocalUnavailable(error) => formatter
                 .debug_tuple("RemoteSemantic::LocalUnavailable")
                 .field(error)

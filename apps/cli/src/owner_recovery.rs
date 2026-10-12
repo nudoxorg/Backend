@@ -201,10 +201,7 @@ impl OwnerRecovery {
         let status_read = matches!(command, SurfaceCommand::IndexOperationStatus { .. });
         if self.used || !is_peer_loss(&error) || !(durable_start || status_read) {
             return Err(
-                if !durable_start
-                    && backend_library::command_spec(command.id()).mutation
-                        == backend_library::CommandMutation::Write
-                {
+                if !durable_start && command.mutation() == backend_library::CommandMutation::Write {
                     match error {
                         ClientError::Disconnected(kind) => {
                             ClientError::MutationOutcomeUnknown(kind)

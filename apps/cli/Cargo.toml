@@ -15,6 +15,7 @@ path = "src/lib.rs"
 
 [dependencies]
 backend-client = { path = "../../crates/client" }
+backend-compile = { path = "../../crates/compile" }
 backend-engine = { path = "../../crates/engine" }
 backend-local-service = { path = "../../crates/local-service" }
 backend-library = { path = "../../crates/library" }

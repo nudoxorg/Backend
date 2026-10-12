@@ -5,6 +5,179 @@
 //! complete answer from a lane that refused, a fault that names its operand.
 
 use super::*;
+
+#[test]
+fn refresh_cli_mcp_actions_and_all_projections_keep_exact_outcome_without_corpus_success() {
+    use backend_library::{
+        EmbeddingRefreshAction as A, EmbeddingRefreshCompilerReceipt as C,
+        EmbeddingRefreshFailure as F, EmbeddingRefreshFailureKind as K,
+        EmbeddingRefreshObservation as O, EmbeddingRefreshPhase as P, EmbeddingRefreshTicket as T,
+    };
+    let ticket = T {
+        sequence: std::num::NonZeroU64::new(7).expect("sequence"),
+        owner_epoch: 17,
+        owner_fence: [0x91; 32],
+        configuration: [0x27; 32],
+    };
+    let grammar = grammar_for("embedding-refresh").expect("registered refresh grammar");
+    assert_eq!(grammar.tool(), "backend.embedding_refresh");
+    for action in [
+        A::Start {
+            configuration: ticket.configuration,
+            timeout_seconds: 30,
+        },
+        A::Observe {
+            ticket: ticket.clone(),
+        },
+        A::Cancel {
+            ticket: ticket.clone(),
+        },
+    ] {
+        let mut cli = Invocation::new(grammar);
+        cli.push(serde_json::to_string(&action).expect("action JSON"));
+        let arguments = serde_json::json!({ "request": action });
+        let mcp = Invocation::from_json(grammar, arguments.as_object().expect("arguments"))
+            .expect("object request");
+        for invocation in [cli, mcp] {
+            let Request::Surface(command) =
+                lower(&invocation, "/original/project").expect("same shared lowering")
+            else {
+                panic!("surface action");
+            };
+            assert_eq!(
+                *command,
+                backend_library::SurfaceCommand::EmbeddingRefresh {
+                    request: action.clone()
+                }
+            );
+        }
+    }
+    let diagnostic = "actual declared helper identity changed; compiler generation remains retired";
+    let spec = backend_compile::EmbeddingRuntimeSpecV1::new(
+        [1; 32],
+        [2; 32],
+        [3; 32],
+        [4; 32],
+        std::num::NonZeroU16::new(3).expect("dimension"),
+        backend_compile::EmbeddingNormalization::L2,
+        std::num::NonZeroU32::new(4096).expect("text"),
+        [5; 32],
+    );
+    let execution = backend_library::EmbeddingRefreshExecution {
+        model: spec.model(),
+        model_version: spec.model_version(),
+        tokenizer: spec.tokenizer(),
+        executable: spec.executable(),
+        recipe: spec.recipe_identity(),
+        launch_configuration: [6; 32],
+        options_digest: spec.options_digest(),
+        dimension: 3,
+        normalization: backend_library::EmbeddingRefreshNormalization::L2,
+        maximum_text_bytes: 4096,
+    };
+    for observation in [
+        O::Pending {
+            ticket: ticket.clone(),
+            phase: P::Activating,
+        },
+        O::Failed {
+            ticket: ticket.clone(),
+            cause: F {
+                kind: K::Activation,
+                detail: backend_library::ProductText::from_static(diagnostic),
+            },
+            compiler: Some(C::Retired {
+                configuration: ticket.configuration,
+            }),
+        },
+        O::Unknown {
+            ticket: ticket.clone(),
+        },
+        O::Committed {
+            ticket: ticket.clone(),
+            execution: execution.clone(),
+            query: backend_library::EmbeddingRefreshQueryStatus::Admitted,
+        },
+        O::Committed {
+            ticket: ticket.clone(),
+            execution,
+            query: backend_library::EmbeddingRefreshQueryStatus::Unavailable {
+                cause: F {
+                    kind: K::Deadline,
+                    detail: backend_library::ProductText::from_static(diagnostic),
+                },
+            },
+        },
+    ] {
+        let reply = backend_library::SurfaceReply::EmbeddingRefresh(observation.clone());
+        reply
+            .admit(backend_library::CommandId::EmbeddingRefresh)
+            .expect("bounded actual status");
+        let view = product_view(&reply);
+        let human = text::product(&view, Theme::plain());
+        let md = markdown::product(&view);
+        for output in [&human, &md] {
+            assert!(!output.contains("semantic search available"));
+            assert!(!output.contains("complete semantic coverage"));
+            assert!(output.contains("backend.embedding_refresh"));
+            if matches!(observation, O::Failed { .. }) {
+                assert!(output.contains(diagnostic));
+            }
+        }
+        assert_eq!(
+            view.fault().is_some(),
+            matches!(
+                observation,
+                O::Failed { .. }
+                    | O::Committed {
+                        query: backend_library::EmbeddingRefreshQueryStatus::Unavailable { .. },
+                        ..
+                    }
+            )
+        );
+        let mut cli_view = view.clone();
+        cli_view.bind_embedding_refresh_context(&OwnerContext::new(
+            "/caller/project with 'quote".to_owned(),
+            "/caller/workspace; literal".to_owned(),
+            "/caller/socket $literal".to_owned(),
+        ));
+        let cli_text = text::product(&cli_view, Theme::plain());
+        assert!(cli_text.contains("--passive embedding-refresh"));
+        assert!(cli_text.contains("/caller/workspace; literal"));
+        assert!(cli_text.contains("/caller/socket $literal"));
+        assert_eq!(cli_view.embedding_refresh(), view.embedding_refresh());
+        let answer = Answer::Product(Box::new(view));
+        for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+            let encoded = encode_answer(&answer, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES)
+                .expect("exact owner status within existing budget");
+            assert_eq!(encoded.budget.bytes, encoded.bytes.len());
+            let value: serde_json::Value =
+                serde_json::from_slice(&encoded.bytes).expect("serialized product DTO");
+            assert_eq!(
+                value["embedding_refresh"],
+                serde_json::to_value(&observation).expect("expected status")
+            );
+            assert_eq!(
+                value["embedding_refresh"]["ticket"]["owner_fence"],
+                serde_json::json!(ticket.owner_fence)
+            );
+            assert_eq!(
+                value["embedding_refresh"]["ticket"]["configuration"],
+                serde_json::json!(ticket.configuration)
+            );
+            if matches!(
+                observation,
+                O::Failed { .. }
+                    | O::Committed {
+                        query: backend_library::EmbeddingRefreshQueryStatus::Unavailable { .. },
+                        ..
+                    }
+            ) {
+                assert_eq!(value["fault"]["detail"], diagnostic);
+            }
+        }
+    }
+}
 mod external_identity_tests;
 use backend_library::{
     Coverage, DeclarationKind, Document, Fragment, GraphRelation, Lane, OutlineExtent, OutlineNode,

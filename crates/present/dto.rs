@@ -941,6 +941,9 @@ pub struct ProductDto {
     /// typed failure/unresolved reason.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index_operation: Option<backend_library::IndexOperationObservation>,
+    /// Exact runtime handoff status; activation is distinct from semantic coverage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_refresh: Option<backend_library::EmbeddingRefreshObservation>,
     /// Exact executable observation of accepted indexing work, when present.
     /// This is guidance derived from the retained typed result, not authority
     /// to start a mutation or a claim that publication has completed.
@@ -1153,6 +1156,7 @@ impl ProductDto {
                 }),
             index_job: view.index_job().cloned(),
             index_operation: view.index_operation().cloned(),
+            embedding_refresh: view.embedding_refresh().cloned(),
             index_poll: match detail {
                 Some(detail) => IndexPollDto::for_detail(view, detail),
                 None => IndexPollDto::new(view),

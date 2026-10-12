@@ -27,7 +27,7 @@ pub(super) const fn help_text() -> &'static str {
        nudox [--project PATH] [--workspace PATH] embedding-setup download --program /absolute/backend-embedding-candle --helper-identity HEX --limits /absolute/limits.json [--dependency /absolute/file] [--required]\n\n\
      Use the helper identity from a reviewed build/package receipt; inspect only observes bytes and does not attest their semantics. The source-pinned model is sentence-transformers/all-MiniLM-L6-v2 revision1110a243fdf4706b3f48f1d95db1a4f5529b4d41. Ordinary setup and advanced download perform network acquisition, with exact artifact byte lengths/BLAKE3 verification and private staging. No executable probes are performed. The mandatory OS memory ceiling is currently supported on Linux only; other platforms refuse before acquisition.\n\n\
      limits.json must supply every field: stdout_bytes, stderr_bytes, output_bytes, input_bytes, wall_time_ms, workspace_bytes, process_count, memory_bytes, cpu_time_ms, resident_credit_bytes. memory_bytes must be a nonzero explicit child ceiling; cpu_time_ms may be null. Limits and shared credits are admitted by the existing runtime policy. There is no implicit resource increase.\n\n\
-     For a fresh workspace, run setup before the first nudox add . or search: those commands start the local owner automatically. Installation saves the recipe for the next owner startup; an already-running owner keeps its admitted recipe. This command does not reactivate it, and there is currently no CLI reload command. Poll the Add receipt before trusting indexing, then search; semantic availability requires actual complete inference under the installed recipe. Existing required policy cannot be downgraded. Explicit remote configuration remains authoritative.\n"
+     For a fresh workspace, run setup before the first nudox add . or search: those commands start the local owner automatically. Installation saves the recipe; it is not activation or semantic availability. For an already-running owner, run the exact scoped embedding-refresh command printed after setup and copy its observation command until the actual compiler commit and query admission are reported, then run the scoped Add command. A busy owner refuses without replacing its recipe. Refresh admission or activation does not prove complete semantic corpus coverage; actual inference and publication are still required. Existing required policy cannot be downgraded. Explicit remote configuration remains authoritative.\n"
 }
 
 struct Arguments {
@@ -217,7 +217,8 @@ impl SetupState {
             }
             Self::InstalledNotActivated(context) => {
                 let command = context.reindex_shell().ok_or_else(|| Fault::usage("add", "the Add command is not registered"))?;
-                Ok(format!("Saved for the next local owner startup. If no owner is running, `{command}` starts it with these artifacts; poll the Add receipt, then search. An already-running owner keeps its admitted recipe: this command does not reactivate it and there is currently no CLI reload command. Semantic availability requires completed inference under the installed recipe. Explicit remote configuration remains authoritative."))
+                let refresh = context.embedding_refresh_shell().ok_or_else(|| Fault::usage("embedding-refresh", "the refresh command is not registered"))?;
+                Ok(format!("Saved for the next local owner startup. If no owner is running, `{command}` starts it with these artifacts; poll the Add receipt, then search. An already-running owner keeps its admitted recipe; saving does not reactivate it. Run `{refresh}` and copy its observation command until it reports the actual compiler commit and query admission. If it is busy or refuses, retain its actual cause and retry deliberately after the outstanding work completes. Then run the scoped Add command above and observe actual publication. Semantic availability requires completed inference under the installed recipe. Explicit remote configuration remains authoritative."))
             }
         }
     }
@@ -570,6 +571,44 @@ mod tests {
         assert!(
             matches!(request, backend_present::Request::Index(path) if Path::new(&path) == workspace.project())
         );
+        let refresh = action
+            .split('`')
+            .nth(3)
+            .expect("exact scoped refresh command");
+        let parsed = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("set -- {refresh}; printf '%s\\000' \"$@\""))
+            .output()
+            .expect("argv only; no nudox or helper execution");
+        assert!(parsed.status.success());
+        assert!(parsed.stderr.is_empty());
+        let words = parsed
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|word| !word.is_empty())
+            .map(|word| String::from_utf8(word.to_vec()).expect("UTF-8 argv"))
+            .collect::<Vec<_>>();
+        assert_eq!(words[0], "nudox");
+        let (options, words) = crate::options::split(&words[1..]).expect("actual global grammar");
+        assert_eq!(
+            options.project().map(PathBuf::as_path),
+            Some(workspace.project())
+        );
+        assert_eq!(
+            options.workspace().map(PathBuf::as_path),
+            Some(workspace.data())
+        );
+        assert_eq!(
+            options.endpoint().map(PathBuf::as_path),
+            Some(workspace.endpoint())
+        );
+        assert_eq!(words, ["embedding-refresh"]);
+        let invocation = crate::invoke::parse(&words, None).expect("registered refresh grammar");
+        assert_eq!(invocation.grammar().name(), "embedding-refresh");
+        assert!(
+            invocation.at(0).is_none(),
+            "real CLI capture must supply the config proof; guidance cannot fabricate it"
+        );
         for format in [Format::Human, Format::Markdown, Format::Json] {
             let output = render(
                 &Options::plain(format),
@@ -591,6 +630,9 @@ mod tests {
         assert!(action.contains("already-running owner keeps its admitted recipe"));
         assert!(action.contains("does not reactivate it"));
         assert!(!action.contains("Reopen"));
+        assert!(!action.contains("no CLI reload command"));
+        assert!(action.contains("actual compiler commit and query admission"));
+        assert!(action.contains("observe actual publication"));
         let help = crate::invoke::help();
         assert!(
             help.find("nudox embedding-setup").expect("setup")

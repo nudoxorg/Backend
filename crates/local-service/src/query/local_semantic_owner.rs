@@ -209,6 +209,16 @@ impl LocalSemanticOwner {
         path: &Path,
     ) -> Result<Self, LocalSemanticError> {
         let core = LocalSemantic::open(provision, path)?;
+        Self::from_core(core)
+    }
+
+    pub(super) fn from_admitted(
+        admitted: Arc<AdmittedLocalQueryRecipe>,
+    ) -> Result<Self, LocalSemanticError> {
+        Self::from_core(LocalSemantic::from_admitted(admitted))
+    }
+
+    fn from_core(core: LocalSemantic) -> Result<Self, LocalSemanticError> {
         let cache = Arc::new(CompletionCache::default());
         let reclaimer: Arc<dyn backend_compile::EmbeddingMemoryReclaimer> = cache.clone();
         core.admitted()
@@ -723,6 +733,23 @@ impl LocalSemanticOwner {
     #[cfg(test)]
     pub(super) fn admitted_runtime(&self) -> &Arc<backend_compile::EmbeddingExecutable> {
         self.admitted.runtime()
+    }
+
+    /// Refresh must observe join failure before admitting a new model account.
+    pub(super) fn retire_for_refresh(mut self) -> Result<(), LocalSemanticError> {
+        let joined = match std::mem::replace(&mut self.execution, Execution::Closed) {
+            Execution::Working(worker) => {
+                worker.selection.cancelled.store(true, Ordering::Release);
+                drop(worker.completed);
+                worker
+                    .worker
+                    .join()
+                    .map_err(|_| LocalSemanticError::Worker(LocalSemanticWorkerError::Panicked))
+            }
+            Execution::Ready { .. } | Execution::Closed => Ok(()),
+        };
+        self.cache.clear();
+        joined
     }
 
     pub(super) fn close(&mut self) {

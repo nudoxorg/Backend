@@ -64,6 +64,7 @@ impl CommandSpec {
                 | CommandId::IndexStart
                 | CommandId::IndexAwait
                 | CommandId::IndexCancel
+                | CommandId::EmbeddingRefresh
                 | CommandId::IndexProgress
                 | CommandId::AdvisoryRefresh
                 | CommandId::PackageGraphPage
@@ -97,7 +98,7 @@ pub enum CommandDomain {
 }
 
 /// The closed registry in stable display order.
-pub const COMMANDS: [CommandSpec; 53] = [
+pub const COMMANDS: [CommandSpec; 54] = [
     CommandSpec {
         id: CommandId::Advisory,
         name: "advisory",
@@ -522,6 +523,14 @@ pub const COMMANDS: [CommandSpec; 53] = [
         mutation: CommandMutation::Read,
         domain: CommandDomain::Library,
     },
+    CommandSpec {
+        id: CommandId::EmbeddingRefresh,
+        name: "embedding-refresh",
+        title: "Embedding Refresh",
+        description: "Activate the exact installed local embedding configuration through a fenced, observable owner handoff.",
+        mutation: CommandMutation::Write,
+        domain: CommandDomain::System,
+    },
 ];
 
 /// Finds one shared command row or internal owner-command description.
@@ -590,6 +599,7 @@ pub fn command_spec(id: CommandId) -> CommandSpec {
         CommandId::CargoPackageReadme => 49,
         CommandId::CargoPackageReadmeLink => 50,
         CommandId::PackageSourceMembership => 51,
+        CommandId::EmbeddingRefresh => 53,
     };
     COMMANDS[index]
 }

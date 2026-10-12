@@ -404,9 +404,48 @@ fn plan(words: &[String], options: &Options, project: &str) -> Result<Plan, Faul
             wait: None,
         });
     }
-    let invocation = invoke::parse(words, options.limit())?;
+    let mut invocation = invoke::parse(words, options.limit())?;
+    if invocation.grammar().name() == "embedding-refresh" && invocation.at(0).is_none() {
+        let paths = workspace(options)?;
+        let path = paths.data().join("compiler").join("embedding.config");
+        invocation.push(installed_embedding_refresh_request(&path)?);
+    }
     let wait = crate::index_wait::IndexWaitPolicy::from_invocation(&invocation)?;
     lower(&invocation, project).map(|request| Plan { request, wait })
+}
+
+fn installed_embedding_refresh_request(path: &std::path::Path) -> Result<String, Fault> {
+    // This bounded CLI capture proves only persisted bytes. The owner performs its own
+    // original-deadline capture, quiescence, activation and commit; no owner is started here.
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let deadline = std::time::Instant::now()
+        .checked_add(backend_runtime::COMMAND_STARTUP_TIMEOUT)
+        .ok_or_else(|| {
+            Fault::usage(
+                "embedding-refresh",
+                "configuration capture deadline cannot be represented",
+            )
+        })?;
+    let control = backend_compile::EmbeddingActivationControl::new(&cancelled, deadline);
+    let prepared = backend_engine::application::PreparedEmbeddingRuntime::capture_until(path, &control)
+        .map_err(|error| Fault::new(FaultSlug::Rejected, Operand::Argument("embedding-refresh".to_owned()), Cause::new(CauseSlug::Refused, error.to_string()), Affordance::None))?
+        .ok_or_else(|| Fault::usage("embedding-refresh", "No installed local embedding configuration exists; run nudox embedding-setup --help and install the matched artifacts first."))?;
+    serde_json::to_string(&backend_library::EmbeddingRefreshAction::Start {
+        configuration: prepared.identity().as_bytes(),
+        timeout_seconds: u16::try_from(backend_runtime::COMMAND_STARTUP_TIMEOUT.as_secs())
+            .map_err(|_| {
+                Fault::usage(
+                    "embedding-refresh",
+                    "default operation budget cannot be represented",
+                )
+            })?,
+    })
+    .map_err(|error| {
+        Fault::usage(
+            "embedding-refresh",
+            format!("configuration request encoding failed: {error}"),
+        )
+    })
 }
 
 fn workspace(options: &Options) -> Result<backend_runtime::WorkspacePaths, Fault> {
@@ -545,6 +584,159 @@ mod help_tests {
             assert!(help.contains("nudox --passive status"));
             assert!(help.contains("unsent startup observation"));
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod embedding_refresh_tests {
+    use super::*;
+    use backend_engine::application::{
+        EmbeddingRequirement, EmbeddingRuntimeInstall, EmbeddingRuntimeLimits,
+        install_embedding_runtime,
+    };
+    use std::{
+        num::{NonZeroU16, NonZeroU32},
+        os::unix::fs::PermissionsExt,
+    };
+
+    #[test]
+    fn cli_refresh_captures_installed_bytes_without_activation_and_uses_shared_grammar()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let root =
+            std::path::PathBuf::from("/tmp").join(format!("ncr-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&root)?;
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
+        struct Owned(std::path::PathBuf);
+        impl Drop for Owned {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _owned = Owned(root.clone());
+        let root = root.canonicalize()?;
+        let helper = root.join("capture-fixture.sh");
+        let marker = root.join("activation-marker");
+        std::fs::write(
+            &helper,
+            b"#!/bin/sh\nprintf unexpected > \"$FIXTURE_ACTIVATION_MARKER\"\nexit 77\n",
+        )?;
+        std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o700))?;
+        let compiler = root.join("compiler");
+        backend_platform::durable::ensure_private_directory(&compiler)?;
+        let path = compiler.join("embedding.config");
+        install_embedding_runtime(
+            &path,
+            EmbeddingRuntimeInstall {
+                requirement: EmbeddingRequirement::Optional,
+                program: helper,
+                arguments: Vec::new(),
+                dependencies: Vec::new(),
+                environment: vec![(
+                    "FIXTURE_ACTIVATION_MARKER".to_owned(),
+                    marker.to_str().ok_or("fixture UTF-8 path")?.to_owned(),
+                )],
+                limits: EmbeddingRuntimeLimits {
+                    stdout_bytes: 128 * 1024,
+                    stderr_bytes: 1024,
+                    output_bytes: 129 * 1024,
+                    input_bytes: 1024 * 1024,
+                    wall_time_ms: 5000,
+                    workspace_bytes: 1024 * 1024,
+                    process_count: 8,
+                    memory_bytes: None,
+                    cpu_time_ms: None,
+                    resident_credit_bytes: 128 * 1024 * 1024,
+                },
+                model_bytes: b"capture-only fixture, not a genuine model".to_vec(),
+                tokenizer_bytes: b"capture-only fixture tokenizer".to_vec(),
+                dimension: NonZeroU16::new(2).ok_or("dimension")?,
+                normalization: backend_compile::EmbeddingNormalization::L2,
+                maximum_text_bytes: NonZeroU32::new(4096).ok_or("text")?,
+                options_digest: [9; 32],
+            },
+        )?;
+        let text = installed_embedding_refresh_request(&path)
+            .map_err(|fault| format!("capture: {fault:?}"))?;
+        assert!(
+            !marker.exists(),
+            "CLI capture must never invoke the helper or claim activation"
+        );
+        let request: backend_library::EmbeddingRefreshAction = serde_json::from_str(&text)?;
+        let backend_library::EmbeddingRefreshAction::Start {
+            configuration,
+            timeout_seconds,
+        } = request
+        else {
+            return Err("CLI capture did not produce a start observation".into());
+        };
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        let control = backend_compile::EmbeddingActivationControl::new(
+            &flag,
+            std::time::Instant::now() + Duration::from_secs(1),
+        );
+        assert_eq!(
+            configuration,
+            backend_engine::application::PreparedEmbeddingRuntime::capture_until(&path, &control)?
+                .ok_or("installed config")?
+                .identity()
+                .as_bytes()
+        );
+        assert_eq!(
+            u64::from(timeout_seconds),
+            backend_runtime::COMMAND_STARTUP_TIMEOUT.as_secs()
+        );
+        let invocation = invoke::parse(&["embedding-refresh".to_owned(), text.clone()], None)
+            .map_err(|fault| format!("parse: {fault:?}"))?;
+        let Request::Surface(command) = lower(&invocation, "/unchanged/caller/project")
+            .map_err(|fault| format!("lower: {fault:?}"))?
+        else {
+            return Err("shared lowering lost refresh action".into());
+        };
+        assert_eq!(
+            *command,
+            backend_library::SurfaceCommand::EmbeddingRefresh {
+                request: serde_json::from_str(&text)?
+            }
+        );
+        let arguments = vec![
+            "--project".to_owned(),
+            root.to_str().ok_or("project UTF-8")?.to_owned(),
+            "--workspace".to_owned(),
+            root.to_str().ok_or("workspace UTF-8")?.to_owned(),
+            "--endpoint".to_owned(),
+            root.join("owner.sock")
+                .to_str()
+                .ok_or("endpoint UTF-8")?
+                .to_owned(),
+            "embedding-refresh".to_owned(),
+        ];
+        let (options, words) =
+            options::split(&arguments).map_err(|fault| format!("options: {fault:?}"))?;
+        let planned = plan(&words, &options, root.to_str().ok_or("project UTF-8")?)
+            .map_err(|fault| format!("plan: {fault:?}"))?;
+        assert!(
+            planned.wait.is_none(),
+            "refresh never starts an index wait policy"
+        );
+        let Request::Surface(planned) = planned.request else {
+            return Err("normal CLI plan lost refresh".into());
+        };
+        assert_eq!(
+            *planned, *command,
+            "omitted action captures the exact current config through the registered command"
+        );
+        assert!(
+            !marker.exists(),
+            "normal planning performs no activation or owner startup"
+        );
+        let missing = installed_embedding_refresh_request(&root.join("missing.config"))
+            .expect_err("missing config is not acceptance");
+        assert!(format!("{missing:?}").contains("embedding-setup --help"));
+        assert!(!marker.exists());
+        Ok(())
     }
 }
 

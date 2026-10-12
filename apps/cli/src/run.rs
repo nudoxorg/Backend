@@ -167,14 +167,15 @@ pub fn execute_in_workspace(
     request: &Request,
     paths: &backend_runtime::WorkspacePaths,
 ) -> Result<Answer, Fault> {
-    backend_present::answer(
+    let answer = backend_present::answer(
         &mut SessionEngine {
             session,
             paths: Some(paths),
             recovery: None,
         },
         request,
-    )
+    )?;
+    Ok(bind_answer_to_workspace(answer, paths))
 }
 
 pub(crate) fn execute_with_recovery(
@@ -183,14 +184,32 @@ pub(crate) fn execute_with_recovery(
     paths: &backend_runtime::WorkspacePaths,
     recovery: &mut crate::owner_recovery::OwnerRecovery,
 ) -> Result<Answer, Fault> {
-    backend_present::answer(
+    let answer = backend_present::answer(
         &mut SessionEngine {
             session,
             paths: Some(paths),
             recovery: Some(recovery),
         },
         request,
-    )
+    )?;
+    Ok(bind_answer_to_workspace(answer, paths))
+}
+
+fn bind_answer_to_workspace(mut answer: Answer, paths: &backend_runtime::WorkspacePaths) -> Answer {
+    if let Answer::Product(view) = &mut answer
+        && let (Some(project), Some(workspace), Some(endpoint)) = (
+            paths.project().to_str(),
+            paths.data().to_str(),
+            paths.endpoint().to_str(),
+        )
+    {
+        view.bind_embedding_refresh_context(&backend_present::OwnerContext::new(
+            project.to_owned(),
+            workspace.to_owned(),
+            endpoint.to_owned(),
+        ));
+    }
+    answer
 }
 
 fn nonrepeatable(error: ClientError) -> ClientError {

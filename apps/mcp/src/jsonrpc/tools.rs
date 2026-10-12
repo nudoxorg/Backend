@@ -233,7 +233,7 @@ pub(super) fn validate_registry_arguments(
         .positional()
         .iter()
         .chain(grammar.options())
-        .filter(|spec| spec.is_required())
+        .filter(|spec| registry_argument_required(grammar, **spec))
     {
         if !arguments.contains_key(spec.json_name()) {
             return Err(Fault::usage(
@@ -607,6 +607,14 @@ pub(crate) fn token_budget_tools() -> Value {
     tools_value()
 }
 
+// CLI-only discovery defaults never become ambient MCP request authority.
+// Both advertised required fields and call admission use this closed predicate.
+fn registry_argument_required(grammar: CommandGrammar, spec: ArgumentSpec) -> bool {
+    spec.is_required()
+        || (grammar.tool() == "backend.index" && spec.name() == "path")
+        || spec.kind() == ArgumentKind::EmbeddingRefreshRequest
+}
+
 /// Projects one registry row into one MCP tool definition.
 fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
     let mut properties = Map::new();
@@ -620,7 +628,7 @@ fn registry_tool(grammar: CommandGrammar, domain: CommandDomain) -> Value {
             );
         }
         properties.insert(spec.json_name().to_owned(), argument);
-        if spec.is_required() || (grammar.tool() == "backend.index" && spec.name() == "path") {
+        if registry_argument_required(grammar, *spec) {
             required.push(Value::String(spec.json_name().to_owned()));
         }
     }

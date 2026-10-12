@@ -32,6 +32,15 @@ pub use package_compiler_failure::{
     PackageTypeCellFact, PackageTypeScriptProjectionFaultFacts, PackageTypeTagFact,
 };
 
+#[path = "surface/embedding_refresh.rs"]
+mod embedding_refresh;
+pub use embedding_refresh::{
+    EmbeddingRefreshAction, EmbeddingRefreshCompilerReceipt, EmbeddingRefreshExecution,
+    EmbeddingRefreshFailure, EmbeddingRefreshFailureKind, EmbeddingRefreshNormalization,
+    EmbeddingRefreshObservation, EmbeddingRefreshPhase, EmbeddingRefreshQueryStatus,
+    EmbeddingRefreshTicket,
+};
+
 /// Largest user-authored operand retained by the product service.
 pub const MAX_PRODUCT_TEXT_BYTES: usize = 4096;
 /// Largest row collection in one product request or reply.
@@ -3424,11 +3433,28 @@ pub enum SurfaceCommand {
         /// Owner-issued job and package identity.
         ticket: IndexJobTicket,
     },
+    /// Observe or deliberately refresh this owner's installed local embedding recipe.
+    EmbeddingRefresh {
+        /// Exact start, observation or explicit cancellation action.
+        request: EmbeddingRefreshAction,
+    },
     /// Refresh every configured advisory source.
     AdvisoryRefresh,
 }
 
 impl SurfaceCommand {
+    /// Classifies the actual action; observing an issued refresh ticket cannot mutate its owner.
+    /// Registry policy remains authoritative for every other existing command.
+    #[must_use]
+    pub fn mutation(&self) -> crate::CommandMutation {
+        match self {
+            Self::EmbeddingRefresh {
+                request: EmbeddingRefreshAction::Observe { .. },
+            } => crate::CommandMutation::Read,
+            _ => crate::command_spec(self.id()).mutation,
+        }
+    }
+
     /// Returns this command's exact registry identity.
     #[must_use]
     pub const fn id(&self) -> CommandId {
@@ -3478,6 +3504,7 @@ impl SurfaceCommand {
             Self::IndexAwait { .. } => CommandId::IndexAwait,
             Self::IndexProgress { .. } => CommandId::IndexProgress,
             Self::IndexCancel { .. } => CommandId::IndexCancel,
+            Self::EmbeddingRefresh { .. } => CommandId::EmbeddingRefresh,
             Self::AdvisoryRefresh => CommandId::AdvisoryRefresh,
         }
     }
@@ -3489,6 +3516,7 @@ impl SurfaceCommand {
     /// fixed product row bound.
     pub fn admit(&self) -> Result<(), ProductAdmissionError> {
         match self {
+            Self::EmbeddingRefresh { request } => request.admit(),
             Self::Read { locators } if locators.len() > MAX_PRODUCT_ROWS => {
                 Err(ProductAdmissionError::RowBound)
             }
@@ -4998,6 +5026,8 @@ pub enum SurfaceReply {
     IndexProgress(IndexJobObservation),
     /// Immediate result of an owner-issued cancellation request.
     IndexCancellation(IndexCancelReceipt),
+    /// Exact state of an accepted runtime handoff; never semantic corpus availability.
+    EmbeddingRefresh(EmbeddingRefreshObservation),
     /// Exact compiler generation selected by the durable owner.
     SemanticVersionSelected(SemanticVersionRecord),
     /// Latest package and history count.
@@ -5087,6 +5117,7 @@ impl SurfaceReply {
             Self::IndexOperationStatus(_) => CommandId::IndexProgress,
             Self::IndexTerminal(_) => CommandId::IndexAwait,
             Self::IndexProgress(_) => CommandId::IndexProgress,
+            Self::EmbeddingRefresh(_) => CommandId::EmbeddingRefresh,
             Self::IndexCancellation(_) => CommandId::IndexCancel,
             Self::SemanticVersionSelected(_) => CommandId::SelectSemanticVersion,
             Self::PackageProfile { .. } => CommandId::PackageProfile,
@@ -5234,6 +5265,10 @@ impl SurfaceReply {
                 1
             }
             Self::IndexOperationStarted(observation) | Self::IndexOperationStatus(observation) => {
+                observation.admit()?;
+                1
+            }
+            Self::EmbeddingRefresh(observation) => {
                 observation.admit()?;
                 1
             }
@@ -5510,6 +5545,8 @@ impl SurfaceReply {
                 .saturating_add(serde_json::to_vec(terminal).map_or(0, |bytes| bytes.len())),
             Self::IndexProgress(page) => fixed_record_bound()
                 .saturating_add(serde_json::to_vec(page).map_or(0, |bytes| bytes.len())),
+            Self::EmbeddingRefresh(observation) => fixed_record_bound()
+                .saturating_add(serde_json::to_vec(observation).map_or(0, |bytes| bytes.len())),
             Self::IndexCancellation(receipt) => fixed_record_bound()
                 .saturating_add(serde_json::to_vec(receipt).map_or(0, |bytes| bytes.len())),
             Self::Dependents(RegistryMetadata::NotRecorded(reason))
@@ -5758,6 +5795,8 @@ fn tree_subject_bound(subject: &TreeSubject) -> usize {
 /// Semantic refusal while admitting a parsed product value.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProductAdmissionError {
+    /// Runtime handoff contains an invalid budget or inconsistent actual receipt.
+    EmbeddingRefreshShape,
     /// Required text was blank.
     EmptyText,
     /// Text exceeded its byte bound or contained NUL.
@@ -5867,6 +5906,9 @@ impl core::fmt::Display for ProductAdmissionError {
                 "index cancellation terminal receipt has a different ticket"
             }
             Self::IndexOperationKey => "index operation key is malformed or reserved",
+            Self::EmbeddingRefreshShape => {
+                "embedding refresh has inconsistent owner receipt or operation budget"
+            }
             Self::IndexOperationShape => "index operation status has inconsistent evidence",
             Self::PackageCompilerFailureShape => {
                 "package compiler failure summary is malformed or inconsistent"
@@ -7337,7 +7379,7 @@ mod tests {
         );
         assert_eq!(
             crate::DTO_VERSION,
-            28,
+            29,
             "partial publication remains in the current closed live DTO cohort"
         );
         let command = crate::CommandDto::new(
@@ -7357,7 +7399,7 @@ mod tests {
         assert_eq!(decoded_reply, reply);
         let mut old_peer: serde_json::Value =
             serde_json::from_slice(&encoded_reply).expect("encoded reply fields");
-        for old_version in [22, 23, 24, 25, 26, 27] {
+        for old_version in [22, 23, 24, 25, 26, 27, 28] {
             old_peer["version"] = serde_json::json!(old_version);
             let old_bytes = serde_json::to_vec(&old_peer).expect("old peer version header");
             let error = crate::decode_reply_body(&old_bytes).expect_err("old partial peer refused");

@@ -2755,7 +2755,7 @@ fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants() {
     use crate::interface::TypeScriptAuthorityFailureKind as F;
     assert_eq!(
         DTO_VERSION, 29,
-        "bounded semantic history pages ship with DTO29"
+        "history and refresh cohort preserves the native worker refusal introduced by DTO28"
     );
     let kind = F::NativeCheckerWorkerPoolUnavailable;
     let encoded_kind = serde_json::to_vec(&kind).unwrap();
@@ -2769,9 +2769,10 @@ fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants() {
         "reply": {"typescript_failure": kind, "unknown_future_shape": true}
     }))
     .unwrap();
-    let old_peer = super::codec::check_version_header_against(&current, "reply", 27)
-        .expect_err("DTO27 peer must refuse DTO28 before decoding its new failure variant");
-    assert!(old_peer.contains("reply DTO version 28"));
+    let old_peer = super::codec::check_version_header_against(&current, "reply", 27).expect_err(
+        "DTO27 peer must refuse the current envelope before decoding its new failure variant",
+    );
+    assert!(old_peer.contains(&format!("reply DTO version {DTO_VERSION}")));
     assert!(old_peer.contains("this build supports 27"));
     assert!(!old_peer.contains("unknown variant"));
     let mut previous: serde_json::Value = serde_json::from_slice(&current).unwrap();
