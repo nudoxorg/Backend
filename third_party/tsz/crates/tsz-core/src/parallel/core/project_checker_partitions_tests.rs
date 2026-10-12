@@ -827,8 +827,17 @@ fn two_worker_cold_consumer_finishes_before_interface_owner_starts() {
         ),
     ] {
         let semantic = ProjectSemanticOptions::declaration_scoped();
+        // An explicit outcome mode must come from this retained type-only
+        // request's syntax. Plain .ts has no package-format evidence here;
+        // an implicit NodeNext edge must not infer the supplied Require mode.
+        let attributes = match (module, resolution_mode) {
+            (ModuleKind::NodeNext, Some(ResolutionModeOverride::Require)) => {
+                " with { 'resolution-mode': 'require' }"
+            }
+            _ => "",
+        };
         let binds = parse_and_bind_parallel_with_libs(vec![
-        ("src/consumer.ts".to_owned(), format!("import type {{ Derived }} from './owner'; export function inherited(value: Derived<number>): {return_type} {{ return value.base; }}")),
+        ("src/consumer.ts".to_owned(), format!("import type {{ Derived }} from './owner'{attributes}; export function inherited(value: Derived<number>): {return_type} {{ return value.base; }}")),
         ("src/owner.ts".to_owned(), "export interface Base<T> { base: T } export interface Derived<T> extends Base<T> { own: T }".to_owned()),
     ], &[]);
         let refs = binds.iter().collect::<Vec<_>>();
@@ -1764,6 +1773,279 @@ fn named_and_wildcard_edges_keep_disjoint_same_specifier_modes() {
                 assert_cold_request_semantics(files, &resolutions, &codes, Some(TypeId::NUMBER));
             }
         }
+    }
+}
+
+#[test]
+fn selected_namespace_keeps_its_surface_after_value_capture() {
+    use crate::checker::context::ResolutionModeOverride;
+    for external in [false, true] {
+        for receiver in ["dependency", "captured"] {
+            for indexed in [false, true] {
+                for (return_type, expected) in [("string", vec![]), ("number", vec![2322])] {
+                    let expression = if indexed {
+                        format!(r#"{receiver}["value"]"#)
+                    } else {
+                        format!("{receiver}.value")
+                    };
+                    let files = vec![
+                    (
+                        "src/main.ts".to_owned(),
+                        format!(
+                            "import * as dependency from 'dep'; const captured = dependency; export function read(): {return_type} {{ return {expression}; }}"
+                        ),
+                    ),
+                    (
+                        "src/wrong.ts".to_owned(),
+                        "export const value: number = 42; export const foreignOnly: number = 1;"
+                            .to_owned(),
+                    ),
+                    (
+                        "src/owner.ts".to_owned(),
+                        "export const value: string = 'selected';".to_owned(),
+                    ),
+                    (
+                        "ambient.d.ts".to_owned(),
+                        "declare module 'dep' { export const value: string; }".to_owned(),
+                    ),
+                ];
+                    let resolutions = [
+                        ProjectModuleResolution {
+                            importer_path: "src/main.ts".to_owned(),
+                            specifier: "dep".to_owned(),
+                            request_kind: ProjectModuleRequestKind::EsmImport,
+                            resolution_mode: None,
+                            target: if external {
+                                ProjectModuleResolutionTarget::External {
+                                    identity: "admitted-ambient:dep".to_owned(),
+                                }
+                            } else {
+                                ProjectModuleResolutionTarget::File {
+                                    path: "src/owner.ts".to_owned(),
+                                }
+                            },
+                        },
+                        ProjectModuleResolution {
+                            importer_path: "src/main.ts".to_owned(),
+                            specifier: "dep".to_owned(),
+                            request_kind: ProjectModuleRequestKind::EsmReExport,
+                            resolution_mode: None,
+                            target: ProjectModuleResolutionTarget::File {
+                                path: "src/wrong.ts".to_owned(),
+                            },
+                        },
+                        ProjectModuleResolution {
+                            importer_path: "src/main.ts".to_owned(),
+                            specifier: "dep".to_owned(),
+                            request_kind: ProjectModuleRequestKind::EsmImport,
+                            resolution_mode: Some(ResolutionModeOverride::Require),
+                            target: ProjectModuleResolutionTarget::File {
+                                path: "src/wrong.ts".to_owned(),
+                            },
+                        },
+                    ];
+                    let program = compile_files_with_libs(files, &[]);
+                    let options = CheckerOptions {
+                        module: tsz_common::common::ModuleKind::ESNext,
+                        ..CheckerOptions::default()
+                    };
+                    let plan = ParallelCheckPlan::build(
+                        &program,
+                        &options,
+                        &[],
+                        ProjectSemanticOptions::declaration_scoped(),
+                        Some(Arc::new(
+                            build_project_module_resolution_outcomes(&program, &resolutions)
+                                .unwrap(),
+                        )),
+                        None,
+                    )
+                    .unwrap();
+                    let result = plan.check_file_partition(0, &program.files[..1]).unwrap();
+                    assert_eq!(
+                        result[0]
+                            .diagnostics
+                            .iter()
+                            .map(|diagnostic| diagnostic.code)
+                            .collect::<Vec<_>>(),
+                        expected,
+                        "external={external}, receiver={receiver}, indexed={indexed}, result={return_type}: {:?}",
+                        result[0].diagnostics,
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn selected_namespace_runtime_surface_excludes_named_and_wildcard_type_only_edges() {
+    for wildcard in [false, true] {
+        let clause = if wildcard {
+            "export type *"
+        } else {
+            "export type { value }"
+        };
+        let files = vec![
+            ("src/main.ts".to_owned(), "import * as observed from 'pkg'; export function read(): number { return observed.value; }".to_owned()),
+            ("ambient.d.ts".to_owned(), format!("declare module 'pkg' {{ {clause} from './owner'; }}")),
+            ("src/owner.ts".to_owned(), "export const value: number = 42;".to_owned()),
+        ];
+        let resolutions = [
+            ProjectModuleResolution {
+                importer_path: "src/main.ts".to_owned(),
+                specifier: "pkg".to_owned(),
+                request_kind: ProjectModuleRequestKind::EsmImport,
+                resolution_mode: None,
+                target: ProjectModuleResolutionTarget::External {
+                    identity: "admitted-ambient:pkg".to_owned(),
+                },
+            },
+            ProjectModuleResolution {
+                importer_path: "ambient.d.ts".to_owned(),
+                specifier: "./owner".to_owned(),
+                request_kind: ProjectModuleRequestKind::EsmReExport,
+                resolution_mode: None,
+                target: ProjectModuleResolutionTarget::File {
+                    path: "src/owner.ts".to_owned(),
+                },
+            },
+        ];
+        assert_cold_request_semantics(files, &resolutions, &[2339], None);
+    }
+}
+
+#[test]
+fn selected_external_namespace_keeps_only_its_own_augmentation_members() {
+    for (property, result_type, codes) in [
+        ("value", "string", vec![]),
+        ("added", "number", vec![]),
+        ("foreignOnly", "number", vec![2339]),
+    ] {
+        let files = vec![
+            ("src/main.ts".to_owned(), format!("import * as observed from 'pkg'; export function read(): {result_type} {{ return observed.{property}; }}")),
+            ("ambient.d.ts".to_owned(), "declare module 'pkg' { export const value: string; } declare module 'foreign' {}".to_owned()),
+            ("augment.ts".to_owned(), "export {}; declare module 'pkg' { export const added: number; } declare module 'foreign' { export const foreignOnly: number; }".to_owned()),
+            ("src/wrong.ts".to_owned(), "export const value: number = 42; export const foreignOnly: number = 1;".to_owned()),
+        ];
+        let resolutions = [
+            ProjectModuleResolution {
+                importer_path: "src/main.ts".to_owned(),
+                specifier: "pkg".to_owned(),
+                request_kind: ProjectModuleRequestKind::EsmImport,
+                resolution_mode: None,
+                target: ProjectModuleResolutionTarget::External {
+                    identity: "admitted-ambient:pkg".to_owned(),
+                },
+            },
+            ProjectModuleResolution {
+                importer_path: "src/main.ts".to_owned(),
+                specifier: "pkg".to_owned(),
+                request_kind: ProjectModuleRequestKind::EsmReExport,
+                resolution_mode: None,
+                target: ProjectModuleResolutionTarget::File {
+                    path: "src/wrong.ts".to_owned(),
+                },
+            },
+        ];
+        // The established augmentation contract admits the exact added member;
+        // it does not turn another module's declarations into namespace values.
+        let program = compile_files_with_libs(files, &[]);
+        let options = CheckerOptions {
+            module: tsz_common::common::ModuleKind::ESNext,
+            ..CheckerOptions::default()
+        };
+        let plan = ParallelCheckPlan::build(
+            &program,
+            &options,
+            &[],
+            ProjectSemanticOptions::declaration_scoped(),
+            Some(Arc::new(
+                build_project_module_resolution_outcomes(&program, &resolutions).unwrap(),
+            )),
+            None,
+        )
+        .unwrap();
+        let result = plan.check_file_partition(0, &program.files[..1]).unwrap();
+        assert_eq!(
+            result[0]
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.code)
+                .collect::<Vec<_>>(),
+            codes,
+            "property={property}: {:?}",
+            result[0].diagnostics,
+        );
+    }
+}
+
+#[test]
+fn selected_file_namespace_default_keeps_node_cjs_interop_against_competing_kind() {
+    use crate::checker::context::ResolutionModeOverride;
+    for (result_type, codes) in [("number", vec![]), ("string", vec![2322])] {
+        let mut program = compile_files_with_libs(vec![
+            ("src/main.mts".to_owned(), format!("import * as observed from './cjs'; export function read(): {result_type} {{ return observed.default.value; }}")),
+            ("src/cjs.cts".to_owned(), "declare class api { static value: number; static default: string; } export = api;".to_owned()),
+            ("src/wrong.mts".to_owned(), "export default 'wrong';".to_owned()),
+        ], &[]);
+        // Explicit extensions supply these producer format facts; there is no
+        // package-format inference for a plain .ts file in this control.
+        program.file_is_esm_map = Arc::new(
+            [
+                ("src/main.mts".to_owned(), true),
+                ("src/cjs.cts".to_owned(), false),
+                ("src/wrong.mts".to_owned(), true),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let resolutions = [
+            ProjectModuleResolution {
+                importer_path: "src/main.mts".to_owned(),
+                specifier: "./cjs".to_owned(),
+                request_kind: ProjectModuleRequestKind::EsmImport,
+                resolution_mode: Some(ResolutionModeOverride::Import),
+                target: ProjectModuleResolutionTarget::File {
+                    path: "src/cjs.cts".to_owned(),
+                },
+            },
+            ProjectModuleResolution {
+                importer_path: "src/main.mts".to_owned(),
+                specifier: "./cjs".to_owned(),
+                request_kind: ProjectModuleRequestKind::EsmReExport,
+                resolution_mode: Some(ResolutionModeOverride::Import),
+                target: ProjectModuleResolutionTarget::File {
+                    path: "src/wrong.mts".to_owned(),
+                },
+            },
+        ];
+        let options = CheckerOptions {
+            module: tsz_common::common::ModuleKind::NodeNext,
+            ..CheckerOptions::default()
+        };
+        let plan = ParallelCheckPlan::build(
+            &program,
+            &options,
+            &[],
+            ProjectSemanticOptions::declaration_scoped(),
+            Some(Arc::new(
+                build_project_module_resolution_outcomes(&program, &resolutions).unwrap(),
+            )),
+            None,
+        )
+        .unwrap();
+        let result = plan.check_file_partition(0, &program.files[..1]).unwrap();
+        assert_eq!(
+            result[0]
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.code)
+                .collect::<Vec<_>>(),
+            codes,
+            "result={result_type}: {:?}",
+            result[0].diagnostics,
+        );
     }
 }
 

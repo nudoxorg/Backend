@@ -34,6 +34,10 @@ impl<'a> CheckerState<'a> {
         else {
             return false;
         };
+        self.source_file_is_esm(target_idx)
+    }
+
+    pub(crate) fn source_file_is_esm(&self, target_idx: usize) -> bool {
         let arena = self.ctx.get_arena_for_file(target_idx as u32);
         let Some(source_file) = arena.source_files.first() else {
             return false;

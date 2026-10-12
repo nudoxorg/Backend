@@ -1694,6 +1694,58 @@ impl<'a> CheckerState<'a> {
         sym_id: SymbolId,
         property_name: &str,
     ) -> Option<TypeId> {
+        if self.ctx.project_module_resolution_outcomes.is_some()
+            && self
+                .get_cross_file_symbol(sym_id)
+                .or_else(|| self.ctx.binder.get_symbol(sym_id))
+                .is_some_and(|symbol| {
+                    symbol.has_any_flags(symbol_flags::ALIAS)
+                        && symbol.import_module().is_some()
+                        && symbol.import_name().is_none_or(|name| name == "*")
+                })
+        {
+            // The value-property shortcut must use the same selected namespace
+            // as the alias's type builder. Its escaped name/specifier alone is
+            // not authority to borrow another request's exports or file.
+            let request = self.ctx.bound_module_request_for_alias(sym_id)?;
+            let selected = self.ctx.select_module_request(request)?;
+            let exports = self.resolve_exports_for_selected_request(selected)?;
+            let target = selected.file_target();
+            let module_specifier = request.specifier.to_owned();
+            // Preserve Node ESM->CJS namespace-default interop, using the
+            // selected file's source format rather than a specifier-only lookup.
+            if property_name == "default"
+                && self.ctx.compiler_options.module.is_node_module()
+                && self.ctx.file_is_esm == Some(true)
+                && let Some(target) = target
+                && !self.source_file_is_esm(target)
+            {
+                let arena = self.ctx.get_arena_for_file(target as u32);
+                let file_name = &arena.source_files.first()?.file_name;
+                let synthetic = exports.has("export=")
+                    || file_name.ends_with(".cjs")
+                    || file_name.ends_with(".cts")
+                    || self.lookup_file_is_esm(file_name) == Some(false)
+                    || self.resolve_js_export_surface(target).has_commonjs_exports;
+                if synthetic {
+                    let namespace_type = self.get_type_of_symbol(sym_id);
+                    if namespace_type != TypeId::ERROR && namespace_type != TypeId::UNKNOWN {
+                        return Some(namespace_type);
+                    }
+                }
+            }
+            if let Some(member) = exports.get(property_name) {
+                let member_type = self.get_validated_member_type(member, property_name)?;
+                return Some(self.apply_module_augmentations(
+                    &module_specifier,
+                    property_name,
+                    member_type,
+                ));
+            }
+            return self
+                .module_augmentation_introduces_member(&module_specifier, property_name)
+                .then_some(TypeId::ANY);
+        }
         let (
             sym_flags,
             sym_name,
