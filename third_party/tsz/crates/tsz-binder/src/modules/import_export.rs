@@ -153,7 +153,12 @@ impl BinderState {
                         None
                     };
 
-                    if let Some(sym) = self.symbols.get_mut(sym_id) {
+                    if let Some(sym) = self.symbols.get_mut(sym_id)
+                        && sym.import_module().is_none()
+                    {
+                        // Duplicate local imports still retain every declaration
+                        // for TS2300, but cannot rewrite the first binding's
+                        // source/name or erase its explicit import-type marker.
                         sym.is_type_only = spec_type_only;
                         // Track module and original name for cross-file resolution
                         if let Some(ref specifier) = module_specifier {
