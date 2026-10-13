@@ -26,7 +26,7 @@ use tantivy::query::{
     BooleanQuery, ConstScoreQuery, EmptyQuery, EnableScoring, FuzzyTermQuery, Occur, PhraseQuery,
     Query, RangeQuery, RegexQuery, TermQuery, Weight,
 };
-use tantivy::schema::{FAST, Field, IndexRecordOption, STRING, Schema, TEXT};
+use tantivy::schema::{FAST, Field, IndexRecordOption, STRING, Schema, SchemaBuilder, TEXT};
 use tantivy::{Index, IndexReader, IndexWriter, Order, TantivyDocument, Term};
 
 #[path = "discovery_search/release_projection.rs"]
@@ -52,7 +52,7 @@ const MAX_LINEAGE_FACET_VALUES: usize = 16_384;
 const SEARCH_PROJECTION_DIRECTORY: &str = "v1";
 const SEARCH_PROJECTION_MANIFEST: &str = "selected-root-v1";
 const SEARCH_PROJECTION_ROOT_LEASE: &str = ".backend-root-reader.lock";
-const SEARCH_PROJECTION_SCHEMA: &[u8] = b"backend-discovery-tantivy-v3\0";
+const SEARCH_PROJECTION_SCHEMA: &[u8] = b"backend-discovery-tantivy-v4\0";
 const MAX_RETAINED_SEARCH_PROJECTIONS: usize = 4;
 const MAX_SEARCH_PROJECTION_FILES: usize = 196_608;
 const MAX_SEARCH_PROJECTION_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
@@ -3210,10 +3210,8 @@ pub(super) struct TextSearchIndex<K> {
     searchable_keyword: Field,
     searchable_description: Field,
     searchable_advisory: Field,
-    local_source_path: Field,
-    substring_unigram: Field,
-    substring_bigram: Field,
-    substring_trigram: Field,
+    substring: SubstringFields,
+    local_source_path: SubstringFields,
     document_identity: Field,
     lineage_group: Field,
     sort_key: Field,
@@ -3224,6 +3222,38 @@ pub(super) struct TextSearchIndex<K> {
     substring_values: BTreeMap<String, Vec<String>>,
     local_source_paths: BTreeMap<String, String>,
     dirty: bool,
+}
+
+/// Positional Unicode grams shared by prose and separately admitted source paths.
+/// Queries use postings rather than scanning the path term dictionary.
+struct SubstringFields {
+    unigram: Field,
+    bigram: Field,
+    trigram: Field,
+}
+
+impl SubstringFields {
+    fn new(schema: &mut SchemaBuilder, prefix: &str) -> Self {
+        Self {
+            unigram: schema.add_text_field(&format!("{prefix}_unigram"), TEXT),
+            bigram: schema.add_text_field(&format!("{prefix}_bigram"), TEXT),
+            trigram: schema.add_text_field(&format!("{prefix}_trigram"), TEXT),
+        }
+    }
+
+    fn add<'a>(
+        &self,
+        document: &mut TantivyDocument,
+        values: impl Iterator<Item = &'a str> + Clone,
+    ) {
+        document.add_text(self.unigram, combined_gram_stream::<1>(values.clone()));
+        document.add_text(self.bigram, combined_gram_stream::<2>(values.clone()));
+        document.add_text(self.trigram, combined_gram_stream::<3>(values));
+    }
+
+    fn query(&self, needle: &str) -> Box<dyn Query> {
+        substring_query(self.unigram, self.bigram, self.trigram, needle)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -4849,13 +4879,11 @@ impl<K: Clone> TextSearchIndex<K> {
         let searchable_description = schema.add_text_field("searchable_description", TEXT);
         let searchable_advisory = schema.add_text_field("searchable_advisory", TEXT);
         let lineage_group = schema.add_text_field("lineage_group", STRING);
-        let substring_unigram = schema.add_text_field("substring_unigram", TEXT);
-        let substring_bigram = schema.add_text_field("substring_bigram", TEXT);
-        let substring_trigram = schema.add_text_field("substring_trigram", TEXT);
+        let substring = SubstringFields::new(&mut schema, "substring");
         let document_identity = schema.add_text_field("document_identity", STRING);
         let sort_key = schema.add_text_field(SORT_KEY_FIELD, FAST);
         let pagination_key = schema.add_text_field("pagination_key", STRING);
-        let local_source_path = schema.add_text_field("local_source_path", STRING);
+        let local_source_path = SubstringFields::new(&mut schema, "local_source_path");
         let schema = schema.build();
         let index = match mode {
             SearchIndexMode::Memory => Index::create_in_ram(schema.clone()),
@@ -4896,9 +4924,7 @@ impl<K: Clone> TextSearchIndex<K> {
             searchable_advisory,
             local_source_path,
             lineage_group,
-            substring_unigram,
-            substring_bigram,
-            substring_trigram,
+            substring,
             document_identity,
             sort_key,
             pagination_key,
@@ -5083,7 +5109,8 @@ impl<K: Clone> TextSearchIndex<K> {
         let mut document = TantivyDocument::default();
         if let Some(path) = search_text.local_source_path {
             let path = normalize(path);
-            document.add_text(self.local_source_path, path.as_str());
+            self.local_source_path
+                .add(&mut document, std::iter::once(path.as_str()));
             self.local_source_paths.insert(sort_key.clone(), path);
         }
         document.add_text(self.exact_coordinate, coordinate.as_str());
@@ -5122,18 +5149,8 @@ impl<K: Clone> TextSearchIndex<K> {
         document.add_text(self.document_identity, identity.as_str());
         document.add_text(self.sort_key, sort_key.as_str());
         document.add_text(self.pagination_key, sort_key.as_str());
-        document.add_text(
-            self.substring_unigram,
-            combined_gram_stream::<1>(substring_values.iter().map(String::as_str)).as_str(),
-        );
-        document.add_text(
-            self.substring_bigram,
-            combined_gram_stream::<2>(substring_values.iter().map(String::as_str)).as_str(),
-        );
-        document.add_text(
-            self.substring_trigram,
-            combined_gram_stream::<3>(substring_values.iter().map(String::as_str)).as_str(),
-        );
+        self.substring
+            .add(&mut document, substring_values.iter().map(String::as_str));
         substring_values.retain(|field| !field.is_empty());
         self.dirty = true;
         if let Some(writer) = self.writer.as_mut() {
@@ -5464,21 +5481,11 @@ impl<K: Clone> TextSearchIndex<K> {
             SearchTier::PrefixName => prefix_query(self.exact_name, needle),
             SearchTier::PrefixAlias => prefix_query(self.exact_alias, needle),
             SearchTier::Substring => {
-                let text = substring_query(
-                    self.substring_unigram,
-                    self.substring_bigram,
-                    self.substring_trigram,
-                    needle,
-                );
+                let text = self.substring.query(needle);
                 if !local_source_path_intent(needle) {
                     return text;
                 }
-                let pattern = format!(".*{}", regex_prefix_pattern(needle));
-                let path: Box<dyn Query> =
-                    RegexQuery::from_pattern(&pattern, self.local_source_path).map_or_else(
-                        |_| Box::new(EmptyQuery) as Box<dyn Query>,
-                        |query| Box::new(query),
-                    );
+                let path = self.local_source_path.query(needle);
                 Box::new(BooleanQuery::new(vec![
                     (Occur::Should, text),
                     (Occur::Should, path),
@@ -9535,6 +9542,7 @@ mod tests {
             "src/資料/δ.py",
             "src/path\twith-tab.py",
             "src/path\nwith-newline.py",
+            "src/earlier.py\nlater/data.go",
         ];
         let mut changes = Vec::new();
         let mut expected = Vec::new();
@@ -9560,12 +9568,29 @@ mod tests {
         let (view, _) = base.commit(prepared).expect("commit legal path fixtures");
         let mut local = LocalDeclarationSearchIndex::default();
         local.sync(&view).expect("typed local path projection");
-        for (path, id) in paths.iter().zip(expected) {
+        for (path, id) in paths.iter().zip(expected.iter().copied()) {
             let page = local
                 .page_after(path, 1, None)
                 .expect("complete explicit file query");
             assert_eq!(hit_keys(page.hits), [id], "{path:?}");
             assert!(page.next_cursor.is_none(), "{path:?}");
+        }
+        for (query, at) in [
+            ("file.py", 0),
+            ("space/module.ts", 1),
+            ("δ.py", 2),
+            ("with-tab.py", 3),
+            ("with-newline.py", 4),
+            ("path\nwith-newline.py", 4),
+            ("earlier.py", 5),
+            ("data.go", 5),
+            ("earlier.py\nlater", 5),
+        ] {
+            let page = local
+                .page_after(query, 1, None)
+                .expect("source path substring across control characters");
+            assert_eq!(hit_keys(page.hits), [expected[at]], "{query:?}");
+            assert!(page.next_cursor.is_none(), "{query:?}");
         }
         assert!(
             local
