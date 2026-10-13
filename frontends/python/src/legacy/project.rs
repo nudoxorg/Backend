@@ -229,7 +229,7 @@ fn native_producer_identity(digest: blake3::Hash, size: u64) -> NativePythonProd
         ))
         .as_bytes(),
     );
-    identity.update(b"root-isolated;named-single-package-import-root.v1;declared-captured-python-source-roots.v1;captured-diagnostic-baseline.v1;root-pinned-config-inputs.v1;fresh-state;per-file-raw-intake.v1;native-syntax-diagnostics;unavailable-exact-rdeps;classdef-declaration+constructor-callee;captured-candidates;depth64;work262144\0");
+    identity.update(b"root-isolated;named-single-package-import-root.v1;declared-captured-python-source-roots.v1;captured-diagnostic-baseline.v1;root-pinned-config-inputs.v1;fresh-state;per-file-raw-intake.v1;native-syntax-diagnostics;unavailable-exact-rdeps;classdef-declaration+constructor-callee;captured-candidates;opaque-link-frontier.v1;depth64;work262144\0");
     identity.update(digest.as_bytes());
     identity.update(&size.to_be_bytes());
     NativePythonProducerIdentity(*identity.finalize().as_bytes())
@@ -841,12 +841,22 @@ pub fn is_ignored_python_source_path(
 /// Exact original directory membership for the configured finite module roots.
 /// Non-source files are not read; namespace directories and Python candidates
 /// are included so both omissions and later newly-present modules are detected.
+/// Non-source aliases are opaque membership: their exact targets are witnessed,
+/// but neither traversed nor copied to the solver. An actual import candidate
+/// still refuses an alias before the native resolver can read through it.
+#[derive(Debug, PartialEq, Eq)]
+enum SourceDirectoryChild {
+    Directory,
+    PythonSource,
+    OpaqueSymlink(PathBuf),
+}
+
 #[derive(Debug)]
 pub(super) struct SourceDirectoryWitness {
     path: PathBuf,
     source_root: PathBuf,
     context: std::sync::Arc<backend_discovery::PythonSourceContext>,
-    children: Option<Vec<(std::ffi::OsString, bool)>>,
+    children: Option<Vec<(std::ffi::OsString, SourceDirectoryChild)>>,
 }
 
 impl SourceDirectoryWitness {
@@ -898,19 +908,37 @@ impl SourceDirectoryWitness {
                 .extension()
                 .is_some_and(|ext| ext == "py" || ext == "pyi");
             if kind.is_symlink() {
-                if python || std::fs::metadata(entry.path()).is_ok_and(|target| target.is_dir()) {
+                if python {
                     return Err(CheckerError::UncapturedDependency { path: entry.path() });
                 }
+                // Do not stat the target to decide whether this link is an
+                // asset or a namespace. Either classification would consult
+                // uncaptured state, and an unrelated directory alias must not
+                // abort the entire source transaction. CandidateWitness is
+                // the refusal boundary if an import actually names the alias.
+                children.push((
+                    name,
+                    SourceDirectoryChild::OpaqueSymlink(
+                        std::fs::read_link(entry.path()).map_err(workspace_error)?,
+                    ),
+                ));
                 continue;
             }
             if python && !kind.is_file() {
                 return Err(CheckerError::UncapturedDependency { path: entry.path() });
             }
             if kind.is_dir() || python {
-                children.push((name, kind.is_dir()));
+                children.push((
+                    name,
+                    if kind.is_dir() {
+                        SourceDirectoryChild::Directory
+                    } else {
+                        SourceDirectoryChild::PythonSource
+                    },
+                ));
             }
         }
-        children.sort();
+        children.sort_by(|(left, _), (right, _)| left.cmp(right));
         Ok(Self {
             path,
             source_root: source_root.to_owned(),
@@ -955,12 +983,14 @@ impl SourceDirectoryWitness {
                     .strip_prefix(original)
                     .map_err(|_| CheckerError::UncapturedDependency { path: path.clone() })?;
                 std::fs::create_dir_all(mirror.join(relative)).map_err(workspace_error)?;
-                for (name, directory) in children {
+                for (name, kind) in children {
                     checkpoint(control)?;
                     let child = path.join(name);
-                    if *directory {
+                    if matches!(kind, SourceDirectoryChild::Directory) {
                         pending.push(child);
-                    } else if !mirror.join(relative).join(name).is_file() {
+                    } else if matches!(kind, SourceDirectoryChild::PythonSource)
+                        && !mirror.join(relative).join(name).is_file()
+                    {
                         return Err(CheckerError::IncompleteSourceFrontier {
                             source_path: source_path.into(),
                             module: child
@@ -1009,9 +1039,20 @@ impl SourceDirectoryWitness {
             Some(children) => {
                 identity.update(&[1]);
                 identity.update(&(children.len() as u64).to_be_bytes());
-                for (name, directory) in children {
+                for (name, kind) in children {
                     hash_field(identity, name.as_encoded_bytes());
-                    identity.update(&[u8::from(*directory)]);
+                    match kind {
+                        SourceDirectoryChild::PythonSource => {
+                            identity.update(&[0]);
+                        }
+                        SourceDirectoryChild::Directory => {
+                            identity.update(&[1]);
+                        }
+                        SourceDirectoryChild::OpaqueSymlink(target) => {
+                            identity.update(&[2]);
+                            hash_field(identity, target.as_os_str().as_encoded_bytes());
+                        }
+                    }
                 }
             }
         }
