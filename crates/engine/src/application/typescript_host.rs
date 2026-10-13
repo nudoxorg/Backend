@@ -29,8 +29,10 @@ const MAX_ANGULAR_WORKSPACE_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_RESOLVED_SOURCE_FILES: usize = 4096;
 const MAX_RESOLVED_SOURCE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_SOURCE_FILE_BYTES: u64 = 16 * 1024 * 1024;
-const MAX_TYPESCRIPT_PACKAGE_FILES: usize = 256;
-const MAX_TYPESCRIPT_PACKAGE_BYTES: u64 = 96 * 1024 * 1024;
+const MAX_TYPESCRIPT_PACKAGE_FILES: usize = super::toolchain_probe::MAX_TYPESCRIPT_MODULE_FILES;
+const MAX_TYPESCRIPT_PACKAGE_ENTRIES: usize = super::toolchain_probe::MAX_TYPESCRIPT_MODULE_ENTRIES;
+const MAX_TYPESCRIPT_PACKAGE_DEPTH: usize = super::toolchain_probe::MAX_TYPESCRIPT_MODULE_DEPTH;
+const MAX_TYPESCRIPT_PACKAGE_BYTES: u64 = super::toolchain_probe::MAX_TYPESCRIPT_MODULE_BYTES;
 const MAX_NODE_EXECUTABLE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_COMPILER_SHIM_BYTES: usize = 16 * 1024;
 const MAX_SHEBANG_BYTES: usize = 256;
@@ -2486,9 +2488,43 @@ fn module_files_digest(
     })
 }
 
+fn require_compiler_api_entry(
+    package_root: &Path,
+    package_version: &str,
+) -> Result<(), TypeScriptProjectHostError> {
+    let entrypoint = package_root.join("lib/typescript.js");
+    let metadata = match fs::symlink_metadata(&entrypoint) {
+        Ok(metadata) => metadata,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {
+            return Err(TypeScriptProjectHostError::CompilerApiEntryMissing {
+                package_root: package_root.to_path_buf().into_boxed_path(),
+                package_version: package_version.to_owned().into_boxed_str(),
+                entrypoint: entrypoint.into_boxed_path(),
+            });
+        }
+        Err(source) => {
+            return Err(TypeScriptProjectHostError::PackagePath {
+                path: entrypoint.into_boxed_path(),
+                source,
+            });
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        return Err(TypeScriptProjectHostError::ModuleEntrySymlink {
+            path: entrypoint.into_boxed_path(),
+        });
+    }
+    if !metadata.is_file() {
+        return Err(TypeScriptProjectHostError::RegularFileRequired {
+            path: entrypoint.into_boxed_path(),
+        });
+    }
+    Ok(())
+}
+
 fn witness_fingerprint(files: &[FileSnapshot]) -> [u8; 32] {
     let mut digest = Hasher::new();
-    digest.update(b"compiler.typescript.immutable-files.v1\0");
+    digest.update(b"compiler.typescript.immutable-files.v2\0");
     for file in files {
         let path = file.path.as_os_str().as_encoded_bytes();
         digest.update(&(path.len() as u64).to_be_bytes());
@@ -2692,10 +2728,18 @@ fn collect_module_inputs(
         }
     })?;
     let mut paths = Vec::new();
-    collect_regular_module_paths(&package_root, &mut paths)?;
+    let mut observed_entries = 0_usize;
+    collect_regular_module_paths(
+        &package_root,
+        &package_root,
+        0,
+        &mut observed_entries,
+        &mut paths,
+    )?;
     paths.sort_unstable();
     if paths.len() > MAX_TYPESCRIPT_PACKAGE_FILES {
         return Err(TypeScriptProjectHostError::ModuleFileLimit {
+            package_root: package_root.clone().into_boxed_path(),
             observed: paths.len(),
             maximum: MAX_TYPESCRIPT_PACKAGE_FILES,
         });
@@ -3469,9 +3513,19 @@ fn resolve_package_config(
 }
 
 fn collect_regular_module_paths(
+    package_root: &Path,
     directory: &Path,
+    depth: usize,
+    observed_entries: &mut usize,
     output: &mut Vec<PathBuf>,
 ) -> Result<(), TypeScriptProjectHostError> {
+    if depth > MAX_TYPESCRIPT_PACKAGE_DEPTH {
+        return Err(TypeScriptProjectHostError::ModuleDirectoryDepth {
+            package_root: package_root.to_path_buf().into_boxed_path(),
+            observed: depth,
+            maximum: MAX_TYPESCRIPT_PACKAGE_DEPTH,
+        });
+    }
     let metadata = fs::symlink_metadata(directory).map_err(|source| {
         TypeScriptProjectHostError::PackagePath {
             path: directory.to_path_buf().into_boxed_path(),
@@ -3489,6 +3543,20 @@ fn collect_regular_module_paths(
             source,
         })?
     {
+        *observed_entries = observed_entries.checked_add(1).ok_or_else(|| {
+            TypeScriptProjectHostError::ModuleEntryLimit {
+                package_root: package_root.to_path_buf().into_boxed_path(),
+                observed: usize::MAX,
+                maximum: MAX_TYPESCRIPT_PACKAGE_ENTRIES,
+            }
+        })?;
+        if *observed_entries > MAX_TYPESCRIPT_PACKAGE_ENTRIES {
+            return Err(TypeScriptProjectHostError::ModuleEntryLimit {
+                package_root: package_root.to_path_buf().into_boxed_path(),
+                observed: *observed_entries,
+                maximum: MAX_TYPESCRIPT_PACKAGE_ENTRIES,
+            });
+        }
         let entry = entry.map_err(|source| TypeScriptProjectHostError::PackagePath {
             path: directory.to_path_buf().into_boxed_path(),
             source,
@@ -3506,9 +3574,16 @@ fn collect_regular_module_paths(
             });
         }
         if metadata.is_dir() {
-            collect_regular_module_paths(&path, output)?;
+            collect_regular_module_paths(package_root, &path, depth + 1, observed_entries, output)?;
         } else if metadata.is_file() {
-            output.push(path);
+            let relative = path.strip_prefix(package_root).map_err(|_| {
+                TypeScriptProjectHostError::WitnessChanged {
+                    path: path.clone().into_boxed_path(),
+                }
+            })?;
+            if super::toolchain_probe::typescript_module_file_is_runtime_input(relative) {
+                output.push(path);
+            }
         } else {
             return Err(TypeScriptProjectHostError::RegularFileRequired {
                 path: path.into_boxed_path(),
@@ -3516,6 +3591,7 @@ fn collect_regular_module_paths(
         }
         if output.len() > MAX_TYPESCRIPT_PACKAGE_FILES {
             return Err(TypeScriptProjectHostError::ModuleFileLimit {
+                package_root: package_root.to_path_buf().into_boxed_path(),
                 observed: output.len(),
                 maximum: MAX_TYPESCRIPT_PACKAGE_FILES,
             });
@@ -3853,6 +3929,7 @@ impl TypeScriptProjectHost {
                 }
             })?;
         }
+        require_compiler_api_entry(&package_root, &expected_version)?;
         let node_identity = self.admit_node_runtime(&node)?;
         if let Some(expected) = resource_proof
             .as_ref()
@@ -4740,6 +4817,23 @@ pub enum TypeScriptProjectHostError {
     },
     #[error("the admitted TypeScript compiler API rejected its program input: {message}")]
     CompilerApiBridge { message: Box<str> },
+    #[error(
+        "selected TypeScript package {package_root:?} declares version {package_version} but has no Compiler API entrypoint at {entrypoint:?}"
+    )]
+    CompilerApiEntryMissing {
+        package_root: Box<Path>,
+        package_version: Box<str>,
+        entrypoint: Box<Path>,
+    },
+    #[error(
+        "selected TypeScript package {package_root:?} version {package_version} does not provide required Compiler API export {export:?} from {entrypoint:?}"
+    )]
+    CompilerApiExportMissing {
+        package_root: Box<Path>,
+        package_version: Box<str>,
+        entrypoint: Box<Path>,
+        export: Box<str>,
+    },
     #[error("TypeScript compiler I/O closure exceeded its {phase} budget: {detail}")]
     CompilerIoClosureLimit { phase: Box<str>, detail: Box<str> },
     #[error("TypeScript compiler I/O closure did not match admitted directory state: {detail}")]
@@ -4771,8 +4865,30 @@ pub enum TypeScriptProjectHostError {
     RegularDirectoryRequired { path: Box<Path> },
     #[error("TypeScript module contains a symlink at {path:?}")]
     ModuleEntrySymlink { path: Box<Path> },
-    #[error("TypeScript package contains {observed} regular files, maximum is {maximum}")]
-    ModuleFileLimit { observed: usize, maximum: usize },
+    #[error(
+        "TypeScript package {package_root:?} contains {observed} admitted compiler files, maximum is {maximum}"
+    )]
+    ModuleFileLimit {
+        package_root: Box<Path>,
+        observed: usize,
+        maximum: usize,
+    },
+    #[error(
+        "TypeScript package {package_root:?} contains {observed} filesystem entries, maximum is {maximum}"
+    )]
+    ModuleEntryLimit {
+        package_root: Box<Path>,
+        observed: usize,
+        maximum: usize,
+    },
+    #[error(
+        "TypeScript package {package_root:?} reached directory depth {observed}, maximum is {maximum}"
+    )]
+    ModuleDirectoryDepth {
+        package_root: Box<Path>,
+        observed: usize,
+        maximum: usize,
+    },
     #[error("TypeScript project witness changed at {path:?} after admission")]
     WitnessChanged { path: Box<Path> },
     #[error(
@@ -4879,12 +4995,15 @@ mod tests {
             let modules = self.0.join("node_modules");
             let package = modules.join("typescript");
             fs::create_dir_all(package.join("bin")).expect("create package");
+            fs::create_dir_all(package.join("lib")).expect("create compiler API package");
             fs::write(
                 package.join("package.json"),
                 format!("{{\"name\":\"typescript\",\"version\":\"{version}\"}}"),
             )
             .expect("write package manifest");
             fs::write(package.join("bin/tsc"), "#!/usr/bin/env node\n").expect("write compiler");
+            fs::write(package.join("lib/typescript.js"), "module.exports = {};\n")
+                .expect("write Compiler API fixture entry");
             fs::create_dir_all(modules.join(".bin")).expect("create bin links");
             symlink(package.join("bin/tsc"), modules.join(".bin/tsc")).expect("link compiler");
             modules
@@ -4919,6 +5038,152 @@ mod tests {
         );
         assert_eq!(project.version, "5.9.3");
         assert!(project.compiler.ends_with("typescript/bin/tsc"));
+    }
+
+    #[test]
+    fn compiler_package_capture_excludes_root_docs_but_keeps_the_full_lib_tree() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let package = modules.join("typescript");
+        fs::write(package.join("README.md"), "documentation").unwrap();
+        fs::write(package.join("LICENSE.txt"), "license").unwrap();
+        fs::write(package.join("lib/runtime-data.dat"), "compiler data").unwrap();
+        for index in 0..300 {
+            fs::write(
+                package.join(format!("README-{index:03}.md")),
+                "documentation",
+            )
+            .unwrap();
+        }
+
+        let inputs = collect_module_inputs(&package).expect("capture bounded runtime inputs");
+        let paths = inputs
+            .iter()
+            .map(|input| input.path.strip_prefix(&package).unwrap().to_path_buf())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            vec![
+                PathBuf::from("bin/tsc"),
+                PathBuf::from("lib/runtime-data.dat"),
+                PathBuf::from("lib/typescript.js"),
+                PathBuf::from("package.json"),
+            ]
+        );
+    }
+
+    #[test]
+    fn compiler_package_file_limit_reports_selected_root_and_exact_input_count() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let package = modules.join("typescript");
+        for index in 0..MAX_TYPESCRIPT_PACKAGE_FILES {
+            fs::write(
+                package.join(format!("lib/extra-{index:03}.js")),
+                "module.exports = {};\n",
+            )
+            .unwrap();
+        }
+
+        let error = collect_module_inputs(&package).expect_err("runtime files exceed bound");
+        assert!(matches!(
+            error,
+            TypeScriptProjectHostError::ModuleFileLimit {
+                package_root,
+                observed,
+                maximum,
+            } if package_root.as_ref() == package.as_path()
+                && observed == MAX_TYPESCRIPT_PACKAGE_FILES + 1
+                && maximum == MAX_TYPESCRIPT_PACKAGE_FILES
+        ));
+    }
+
+    #[test]
+    fn compiler_package_entry_limit_reports_selected_root_and_exact_entry_count() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let package = modules.join("typescript");
+        for index in 0..MAX_TYPESCRIPT_PACKAGE_ENTRIES {
+            fs::write(
+                package.join(format!("README-{index:03}.md")),
+                "documentation",
+            )
+            .unwrap();
+        }
+
+        let error = collect_module_inputs(&package).expect_err("package traversal exceeds bound");
+        assert!(matches!(
+            error,
+            TypeScriptProjectHostError::ModuleEntryLimit {
+                package_root,
+                observed,
+                maximum,
+            } if package_root.as_ref() == package.as_path()
+                && observed == MAX_TYPESCRIPT_PACKAGE_ENTRIES + 1
+                && maximum == MAX_TYPESCRIPT_PACKAGE_ENTRIES
+        ));
+    }
+
+    #[test]
+    fn compiler_package_depth_refusal_retains_selected_root_and_exact_depth() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let package = modules.join("typescript");
+        let mut nested = package.join("lib");
+        for _ in 0..MAX_TYPESCRIPT_PACKAGE_DEPTH + 2 {
+            nested.push("nested");
+        }
+        fs::create_dir_all(&nested).unwrap();
+
+        let error = collect_module_inputs(&package).expect_err("package nesting exceeds bound");
+        assert!(matches!(
+            error,
+            TypeScriptProjectHostError::ModuleDirectoryDepth {
+                package_root,
+                observed,
+                maximum,
+            } if package_root.as_ref() == package.as_path()
+                && observed == MAX_TYPESCRIPT_PACKAGE_DEPTH + 1
+                && maximum == MAX_TYPESCRIPT_PACKAGE_DEPTH
+        ));
+    }
+
+    #[test]
+    fn typescript_seven_without_api_refuses_before_host_or_bundled_fallback() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = Fixture::new();
+        let project_modules = fixture.install("7.0.2");
+        let project_package = project_modules.join("typescript");
+        let project_api = project_package.join("lib/typescript.js");
+        fs::remove_file(&project_api).expect("remove absent TypeScript 7 API fixture");
+
+        let host_root = fixture.0.join("host");
+        let host_modules = host_root.join("node_modules");
+        install_at(&host_modules, "5.9.3");
+        let node = fixture.0.join("node");
+        fs::write(&node, "not executed by this capability refusal\n").unwrap();
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let error = TypeScriptProjectHost::new(None, Some(node), None, None, Fixture::limits())
+            .with_installed_default(
+                Some(host_modules.join("typescript/bin/tsc")),
+                Some(host_modules),
+            )
+            .with_bundled_application(Some(fixture.0.join("unused.app")))
+            .admit(&fixture.0)
+            .expect_err("a present incompatible package is not replaced by the host package");
+
+        assert!(matches!(
+            error,
+            TypeScriptProjectHostError::CompilerApiEntryMissing {
+                package_root,
+                package_version,
+                entrypoint,
+            } if package_root.as_ref() == project_package.as_path()
+                && package_version.as_ref() == "7.0.2"
+                && entrypoint.as_ref() == project_api.as_path()
+        ));
     }
 
     #[test]
@@ -7428,12 +7693,15 @@ if [ "$1" = "--version" ]; then printf 'v24.21.0\n'; elif [ "$2" = "--version" ]
     fn install_at(modules: &Path, version: &str) {
         let package = modules.join("typescript");
         fs::create_dir_all(package.join("bin")).expect("create package");
+        fs::create_dir_all(package.join("lib")).expect("create Compiler API package");
         fs::write(
             package.join("package.json"),
             format!("{{\"name\":\"typescript\",\"version\":\"{version}\"}}"),
         )
         .expect("write package manifest");
         fs::write(package.join("bin/tsc"), "#!/usr/bin/env node\n").expect("write compiler");
+        fs::write(package.join("lib/typescript.js"), "module.exports = {};\n")
+            .expect("write Compiler API fixture entry");
         fs::create_dir_all(modules.join(".bin")).expect("create package manager bin");
         symlink(package.join("bin/tsc"), modules.join(".bin/tsc")).expect("link package compiler");
     }

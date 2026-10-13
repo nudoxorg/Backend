@@ -70,6 +70,8 @@ fn host_failure(error: &TypeScriptProjectHostError) -> F {
         TypeScriptProjectHostError::ConfigMissing { .. } => F::HostConfigMissing,
         TypeScriptProjectHostError::CompilerProgramSourceMissing { .. } => F::HostCompilerApiBridge,
         TypeScriptProjectHostError::CompilerApiBridge { .. } => F::HostCompilerApiBridge,
+        TypeScriptProjectHostError::CompilerApiEntryMissing { .. }
+        | TypeScriptProjectHostError::CompilerApiExportMissing { .. } => F::HostCompilerApiBridge,
         TypeScriptProjectHostError::CompilerProgramCancelled => F::HostProgramCancelled,
         TypeScriptProjectHostError::CompilerProgramDeadline => F::HostProgramDeadline,
         TypeScriptProjectHostError::CompilerProgramProbe { source } => {
@@ -90,7 +92,9 @@ fn host_failure(error: &TypeScriptProjectHostError) -> F {
             F::HostRegularDirectoryRequired
         }
         TypeScriptProjectHostError::ModuleEntrySymlink { .. } => F::HostModuleEntrySymlink,
-        TypeScriptProjectHostError::ModuleFileLimit { .. } => F::HostModuleFileLimit,
+        TypeScriptProjectHostError::ModuleFileLimit { .. }
+        | TypeScriptProjectHostError::ModuleEntryLimit { .. }
+        | TypeScriptProjectHostError::ModuleDirectoryDepth { .. } => F::HostModuleFileLimit,
         TypeScriptProjectHostError::WitnessChanged { .. } => F::HostWitnessChanged,
         TypeScriptProjectHostError::SourceOutsideCapability { .. } => {
             F::HostSourceOutsideCapability

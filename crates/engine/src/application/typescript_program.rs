@@ -147,6 +147,8 @@ struct ProgramReport {
     error: Option<String>,
     #[serde(default)]
     failure_kind: Option<String>,
+    #[serde(default)]
+    missing_compiler_api_export: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -527,11 +529,16 @@ const add = value => { const k = JSON.stringify(value); observations.set(k, valu
 const result = value => { process.stdout.write(JSON.stringify(value)); };
 try {
   const ts = require(compilerApiPath);
-  if (typeof ts.getModeForUsageLocation !== 'function') throw new Error('selected TypeScript runtime does not expose its exact getModeForUsageLocation implementation');
+  const compilerApiCapabilityFault = name => {
+    const error = closureFault('capability', 'selected TypeScript runtime does not expose required Compiler API export ' + name);
+    error.missingCompilerApiExport = name;
+    return error;
+  };
+  if (typeof ts.getModeForUsageLocation !== 'function') throw compilerApiCapabilityFault('getModeForUsageLocation');
   for (const name of ['getEmitScriptTarget', 'getEmitModuleKind', 'getEmitModuleResolutionKind', 'getEmitModuleDetectionKind', 'getESModuleInterop', 'getAllowSyntheticDefaultImports']) {
-    if (typeof ts[name] !== 'function') throw new Error('selected TypeScript runtime does not expose its exact ' + name + ' implementation');
+    if (typeof ts[name] !== 'function') throw compilerApiCapabilityFault(name);
   }
-  if (typeof ts.matchFiles !== 'function') throw closureFault('mismatch', 'selected TypeScript runtime does not expose its exact matchFiles implementation');
+  if (typeof ts.matchFiles !== 'function') throw compilerApiCapabilityFault('matchFiles');
   const finishDirectoryQuery = (context, queryPath, value, kind, args, environment) => {
     for (const view of context.views.values()) {
       const files = Array.from(view.files).sort();
@@ -883,7 +890,8 @@ try {
       matcher_result_entries:matcherResultEntries,
       matcher_pattern_items:matcherPatternItems, matcher_pattern_bytes:matcherPatternBytes,
       directory_query_cache_bytes:directoryQueryCacheBytes,
-      unsupported_options:Array.from(new Set(unsupported)).sort(), error:null, failure_kind:null});
+      unsupported_options:Array.from(new Set(unsupported)).sort(), error:null, failure_kind:null,
+      missing_compiler_api_export:null});
   }
 } catch (error) {
   result({schema:1, version:'', config_path:configPath ? path.resolve(configPath) : "", compiler_options:{compilerOptions:{}},
@@ -893,7 +901,8 @@ try {
     matcher_result_entries:matcherResultEntries,
     matcher_pattern_items:matcherPatternItems, matcher_pattern_bytes:matcherPatternBytes,
     directory_query_cache_bytes:directoryQueryCacheBytes,
-    unsupported_options:[], error:String(error && error.message || error), failure_kind:error && error.closureFailureKind || null});
+    unsupported_options:[], error:String(error && error.message || error), failure_kind:error && error.closureFailureKind || null,
+    missing_compiler_api_export:error && error.missingCompilerApiExport || null});
 }
 "#;
 
@@ -1228,12 +1237,22 @@ fn build_native_inputs_for_config(
     let compiler_api_path = inputs
         .typescript_module_root
         .join("typescript/lib/typescript.js");
+    let expected_version = std::str::from_utf8(inputs.compiler_version)
+        .ok()
+        .map(str::trim)
+        .and_then(|version| version.strip_prefix("Version ").or(Some(version)))
+        .ok_or_else(|| bridge_error("the admitted TypeScript package version is not valid text"))?;
     let compiler_api = inputs
         .typescript_files
         .iter()
         .find(|file| normalize_path(&file.path) == normalize_path(&compiler_api_path))
-        .ok_or_else(|| {
-            bridge_error("the admitted TypeScript package has no witnessed Compiler API module")
+        .ok_or_else(|| TypeScriptProjectHostError::CompilerApiEntryMissing {
+            package_root: inputs
+                .typescript_module_root
+                .join("typescript")
+                .into_boxed_path(),
+            package_version: expected_version.to_owned().into_boxed_str(),
+            entrypoint: compiler_api_path.clone().into_boxed_path(),
         })?;
     let report = run_program_bridge_with_forest_limits(
         inputs,
@@ -1251,6 +1270,22 @@ fn build_native_inputs_for_config(
         return Err(bridge_error("unsupported compiler API report schema"));
     }
     if let Some(message) = report.error.as_deref() {
+        if report.failure_kind.as_deref() == Some("capability") {
+            if let Some(export) = report.missing_compiler_api_export.as_deref() {
+                return Err(TypeScriptProjectHostError::CompilerApiExportMissing {
+                    package_root: inputs
+                        .typescript_module_root
+                        .join("typescript")
+                        .into_boxed_path(),
+                    package_version: expected_version.to_owned().into_boxed_str(),
+                    entrypoint: compiler_api_path.clone().into_boxed_path(),
+                    export: export.to_owned().into_boxed_str(),
+                });
+            }
+            return Err(bridge_error(
+                "the compiler API capability report omitted its missing export name",
+            ));
+        }
         return Err(match report.failure_kind.as_deref() {
             Some("limit") => TypeScriptProjectHostError::CompilerIoClosureLimit {
                 phase: "TypeScript compiler bridge".into(),
@@ -1262,11 +1297,7 @@ fn build_native_inputs_for_config(
             _ => bridge_error(message),
         });
     }
-    let expected_version = std::str::from_utf8(inputs.compiler_version)
-        .ok()
-        .map(str::trim)
-        .and_then(|version| version.strip_prefix("Version ").or(Some(version)));
-    if expected_version != Some(report.version.as_str()) {
+    if expected_version != report.version.as_str() {
         return Err(bridge_error(
             "the compiler API version differs from the admitted TypeScript identity",
         ));
