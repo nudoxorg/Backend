@@ -370,8 +370,13 @@ mod tests {
             "discovered host fallback cannot override project-local SDK precedence"
         );
         assert_eq!(
-            desktop.path(LocalHostVariable::NudoxTypeScriptModuleRoot),
+            desktop.path(LocalHostVariable::NudoxTypeScriptDefaultModuleRoot),
             Some(module_root.as_path())
+        );
+        assert_eq!(
+            desktop.path(LocalHostVariable::NudoxTypeScriptModuleRoot),
+            None,
+            "a discovered global module root cannot become an explicit project SDK override"
         );
         assert_eq!(
             desktop.path(LocalHostVariable::NudoxTypeScriptDefaultNode),
