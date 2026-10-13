@@ -7904,6 +7904,7 @@ mod tests {
         }
         let mut index =
             build_discovery_search_projection_with_facet_limit(&entries, TEST_FACET_VALUE_LIMIT);
+        assert_eq!(index.lineages.oversized_lineages.len(), 3);
         let request = DiscoverySearchRequest {
             text: "9999.9.",
             ecosystem: Some(RegistryEcosystem::Cargo),
@@ -7915,6 +7916,11 @@ mod tests {
         assert_eq!(first.groups.len(), 1);
         assert_eq!(first.groups[0].lineage, "ample");
         assert_eq!(first.groups[0].evidence, SearchMatchEvidence::Substring);
+        assert_eq!(first.groups[0].matched_releases.len(), 1);
+        assert_eq!(
+            first.groups[0].matched_releases[0].coordinate.as_str(),
+            "pkg:cargo/ample@9999.9.9"
+        );
         let first_cursor = first.next_cursor.expect("lookahead for remaining lineages");
         let second = index
             .search_groups_after(request, 1, Some(&first_cursor))
@@ -7922,18 +7928,33 @@ mod tests {
         assert_eq!(second.groups.len(), 1);
         assert_eq!(second.groups[0].lineage, "widget");
         assert_eq!(second.groups[0].evidence, SearchMatchEvidence::Substring);
+        assert_eq!(second.groups[0].matched_releases.len(), 1);
+        assert_eq!(
+            second.groups[0].matched_releases[0].coordinate.as_str(),
+            "pkg:cargo/widget@9999.9.9"
+        );
         let second_cursor = second.next_cursor.expect("lookahead for final lineage");
         let third = index
             .search_groups_after(request, 1, Some(&second_cursor))
             .expect("third tail substring page");
         assert_eq!(third.groups.len(), 1);
         assert_eq!(third.groups[0].lineage, "widget-a");
+        assert_eq!(third.groups[0].matched_releases.len(), 1);
+        assert_eq!(
+            third.groups[0].matched_releases[0].coordinate.as_str(),
+            "pkg:cargo/widget-a@9999.9.9"
+        );
         let third_cursor = third.next_cursor.expect("lookahead for final lineage");
         let fourth = index
             .search_groups_after(request, 1, Some(&third_cursor))
             .expect("final tail substring page");
         assert_eq!(fourth.groups.len(), 1);
         assert_eq!(fourth.groups[0].lineage, "widget-b");
+        assert_eq!(fourth.groups[0].matched_releases.len(), 1);
+        assert_eq!(
+            fourth.groups[0].matched_releases[0].coordinate.as_str(),
+            "pkg:cargo/widget-b@9999.9.9"
+        );
         assert!(fourth.next_cursor.is_none());
 
         let removed_key = key(cargo, "pkg:cargo/widget-b@9999.9.9");
