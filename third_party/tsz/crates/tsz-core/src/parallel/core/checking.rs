@@ -791,7 +791,9 @@ impl std::fmt::Display for ProjectProgramCheckError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ModuleResolution(error) => write!(formatter, "{error}"),
-            Self::ExecutionStopped(reason) => write!(formatter, "project check stopped: {reason:?}"),
+            Self::ExecutionStopped(reason) => {
+                write!(formatter, "project check stopped: {reason:?}")
+            }
         }
     }
 }
@@ -1338,8 +1340,31 @@ impl<'a> ParallelCheckPlan<'a> {
         checker
     }
 
+    /// The AST declaration bit belongs to the admitted parsed source. The
+    /// policy belongs to resolved compiler options, never a directory/name filter.
+    fn checks_file_semantics(&self, file: &BoundFile) -> bool {
+        self.checker_options.declaration_diagnostics
+            != tsz_common::options::checker::DeclarationDiagnosticPolicy::SkipSemantic
+            || !file
+                .arena
+                .get_source_file_at(file.source_file)
+                .is_some_and(|source| source.is_declaration_file)
+    }
+
+    fn checks_library_semantics(&self, lib: &LibFile) -> bool {
+        self.checker_options.declaration_diagnostics
+            != tsz_common::options::checker::DeclarationDiagnosticPolicy::SkipSemantic
+            || !lib
+                .arena
+                .get_source_file_at(lib.root_index)
+                .is_some_and(|source| source.is_declaration_file)
+    }
+
     /// Check a single user file, returning its sorted, deduplicated diagnostics.
     fn check_one_file(&self, file_idx: usize, file: &BoundFile) -> FileCheckResult {
+        if !self.checks_file_semantics(file) {
+            return Self::user_file_result(file_idx, file, Vec::new());
+        }
         let diagnostics = self.with_bound_file_checker_and_types(
             file_idx,
             file,
@@ -1375,6 +1400,9 @@ impl<'a> ParallelCheckPlan<'a> {
 
     /// Check a single lib file against the merged program's affected interfaces.
     fn check_one_lib(&self, lib_idx: usize, lib_file: &Arc<LibFile>) -> FileCheckResult {
+        if !self.checks_library_semantics(lib_file) {
+            return self.lib_file_result(lib_idx, lib_file, Vec::new());
+        }
         if !lib_file_contains_affected_interface(lib_file.as_ref(), &self.affected_lib_interfaces) {
             return self.lib_file_result(lib_idx, lib_file, Vec::new());
         }
@@ -1483,6 +1511,10 @@ impl<'a> ParallelCheckPlan<'a> {
     /// is filtered against, so only diagnostics introduced by user augmentations
     /// survive.
     fn check_one_lib_baseline(&self, lib_idx: usize, lib_file: &Arc<LibFile>) -> FileCheckResult {
+        if !self.checks_library_semantics(lib_file) {
+            return self.lib_file_result(lib_idx, lib_file, Vec::new());
+        }
+
         if !lib_file_contains_affected_interface(lib_file.as_ref(), &self.affected_lib_interfaces) {
             return self.lib_file_result(lib_idx, lib_file, Vec::new());
         }
@@ -1625,9 +1657,22 @@ impl<'a> ParallelCheckPlan<'a> {
         );
 
         poll(0)?;
+        // Cross-file augmentation passes can append declaration diagnostics.
+        // Keep their application effects, but enforce the same source policy on
+        // final declaration rows without removing any member or parse result.
         let mut diagnostic_count = 0;
-        for result in &file_results {
+        for result in &mut file_results {
             poll(1)?;
+            let check = if result.file_idx < self.program.files.len() {
+                self.checks_file_semantics(&self.program.files[result.file_idx])
+            } else {
+                self.checker_lib_files
+                    .get(result.file_idx - self.program.files.len())
+                    .is_none_or(|lib| self.checks_library_semantics(lib))
+            };
+            if !check {
+                result.diagnostics.clear();
+            }
             diagnostic_count += result.diagnostics.len();
         }
         poll(0)?;
@@ -1643,11 +1688,11 @@ impl<'a> ParallelCheckPlan<'a> {
 #[cfg(test)]
 mod project_module_resolution_tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use crate::checker::context::{
         ResolutionModeOverride, ResolutionRequestKind, ResolvedModuleRequestOutcome,
         ResolvedModuleRequestOutcomeMap,
     };
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     struct ArmedExecutionStop {
         armed: AtomicBool,

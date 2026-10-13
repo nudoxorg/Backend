@@ -371,7 +371,9 @@ impl ParallelCheckPlan<'_> {
                 ProjectExecutionPhase::FileCheck,
                 observed_file,
             );
-            checker.check_source_file(file.source_file);
+            if self.checks_file_semantics(file) {
+                checker.check_source_file(file.source_file);
+            }
             span.returned();
             poll()?;
             let post_span = ProjectExecutionSpan::new(

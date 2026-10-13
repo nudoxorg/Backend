@@ -41,9 +41,9 @@ pub use tsz::tsz_solver::construction::TypeDatabase as TszTypeDatabase;
 pub use tsz::tsz_solver::type_handles as tsz_type_handles;
 pub use tsz_authority::{
     TszAuthorityError, TszBinderState, TszCheckerOptions, TszCheckerState, TszCompilerOptionsError,
-    TszDiagnostic, TszEnvironmentFingerprint, TszFileInput, TszLibraryInput,
-    TszModuleDetectionKind, TszModuleKind, TszNodeIndex, TszParseDiagnostic, TszProject,
-    TszProjectAuthority, TszProjectCheckerExecution, TszProjectFileFormat,
+    TszDeclarationDiagnosticPolicy, TszDiagnostic, TszEnvironmentFingerprint, TszFileInput,
+    TszLibraryInput, TszModuleDetectionKind, TszModuleKind, TszNodeIndex, TszParseDiagnostic,
+    TszProject, TszProjectAuthority, TszProjectCheckerExecution, TszProjectFileFormat,
     TszProjectFileFormatInput, TszProjectModuleRequestKind, TszProjectModuleResolution,
     TszProjectModuleResolutionError, TszProjectModuleResolutionTarget, TszProjectOptions,
     TszProjectSemanticOptions, TszScriptTarget, TszSourceError, TszSymbolId, TszTypeId,
