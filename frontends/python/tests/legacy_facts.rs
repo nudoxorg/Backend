@@ -283,10 +283,11 @@ fn dotted_direct_import_keeps_head_binding_and_complete_module_evidence() -> Res
 #[test]
 fn function_local_dotted_import_shadows_head_without_inventing_tail_local() -> Result<(), TestError>
 {
-    let source = b"def resolve(httpie):\n    import httpie.cli.argparser\n    return httpie.cli.argparser.HTTPieArgumentParser()\n\nasync def aliased():\n    import os.path as local_path\n    from httpie.cli import argparser\n    return local_path, argparser\n";
+    let source = b"def resolve(httpie):\n    import httpie.cli.argparser\n    return httpie.cli.argparser.HTTPieArgumentParser()\n\ndef introduced():\n    import httpie.cli.argparser\n    return httpie.cli.argparser.HTTPieArgumentParser()\n\nasync def aliased():\n    import os.path as local_path\n    from httpie.cli import argparser\n    return local_path, argparser\n";
     let facts = extract(source)?;
     for (function_name, expected) in [
         ("resolve", vec!["httpie"]),
+        ("introduced", vec!["httpie"]),
         ("aliased", vec!["argparser", "local_path"]),
     ] {
         let function = facts
