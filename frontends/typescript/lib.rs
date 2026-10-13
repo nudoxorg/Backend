@@ -56,7 +56,10 @@ pub use tsz_common::interner::Atom as TszAtom;
 pub use tsz_common::{
     ExecutionCheckpoint as TszExecutionCheckpoint,
     ProjectExecutionBudget as TszProjectExecutionBudget,
+    ProjectExecutionEvent as TszProjectExecutionEvent,
+    ProjectExecutionPhase as TszProjectExecutionPhase,
     ProjectExecutionStop as TszProjectExecutionStop,
+    ProjectExecutionTransition as TszProjectExecutionTransition,
 };
 
 use backend_compile::{

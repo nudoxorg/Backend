@@ -35,7 +35,7 @@ use backend_frontend_rust::legacy::{
 use backend_frontend_typescript::legacy::TypeScriptInvocationModeV1;
 use backend_frontend_typescript::{
     TszCheckerOptions, TszEnvironmentFingerprint, TszFileInput, TszProject, TszProjectAuthority,
-    TszProjectCheckerExecution, TszProjectExecutionBudget, TszProjectOptions, TszSourceError,
+    TszProjectCheckerExecution, TszProjectOptions, TszSourceError,
 };
 // Each admitted compiler lane owns its private checker pool. Two compiler
 // lanes currently admit at most four file-check workers per owner; parse,
@@ -2286,8 +2286,16 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 }
             })?;
             typescript_closure_witness = Some(native.closure_witness);
-            let budget =
-                TszProjectExecutionBudget::new(control.deadline, cancelled, native.work_units);
+            let budget = super::compiler_typescript_observation::ObservedTypeScriptBudget::new(
+                control.deadline,
+                cancelled,
+                native.work_units,
+            );
+            tracing::info!(target: "compiler.typescript_project",
+                phase = "admitted_program", sources = native.sources.len(),
+                libraries = native.libraries.len(), module_requests = native.options.module_resolutions.len(),
+                work_allowance = native.work_units,
+                "native TypeScript project inputs admitted");
             let mut authority = TszProjectAuthority::new();
             authority
                 .update_with_checker_execution(

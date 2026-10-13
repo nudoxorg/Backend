@@ -5,6 +5,9 @@ use std::sync::Arc;
 
 /// Cooperative cancellation/work checkpoint supplied by a query database.
 pub trait TypeExecutionCheckpoint {
+    /// Forward an existing checker boundary without an added type query or poll.
+    fn observe_execution(&self, _event: tsz_common::ProjectExecutionEvent<'_>) {}
+
     /// Charge work and return the shared terminal reason, if execution stopped.
     fn execution_checkpoint(
         &self,
