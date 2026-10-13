@@ -91,12 +91,12 @@ fn queued_foreground_work_after_owned_context_unwind_cannot_retain_the_app_or_wo
         let root = mounted.graph.root.downgrade();
         let window = mounted._window;
         let lifetime = WorkerLifetime::new(&queued);
-        cx.spawn(async move |app| {
+        cx.spawn(async move |mut app| {
             let _lifetime = lifetime;
             // The queued continuation can outlive the scope through weak
             // handles, never a static mutable visual-context reference.
-            assert!(root.update(app, |_, _| ()).is_err());
-            assert!(window.update(app, |_, _, _| ()).is_err());
+            assert!(root.update(&mut app, |_, _| ()).is_err());
+            assert!(window.update(&mut app, |_, _, _| ()).is_err());
         })
         .detach();
         panic!("deliberate mounted test unwind");
