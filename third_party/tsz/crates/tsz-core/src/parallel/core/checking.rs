@@ -906,6 +906,39 @@ fn project_plan_checkpoint(
     checkpoint.map_or(Ok(()), |checkpoint| checkpoint.checkpoint(work_units))
 }
 
+/// Plan-local index authority. The borrow prevents changing the program's
+/// ordered views/options/graph while workers can read their sealed projection.
+/// It cannot escape into another program or survive a mutable merge/update.
+struct SealedProjectCheckerIndexes<'program> {
+    program: &'program MergedProgram,
+    tables: crate::checker::context::SealedProgramGlobalIndexes,
+}
+
+impl<'program> SealedProjectCheckerIndexes<'program> {
+    fn build(
+        program: &'program MergedProgram,
+        binders: Arc<Vec<Arc<BinderState>>>,
+        arenas: Arc<Vec<Arc<NodeArena>>>,
+        declared_modules: Option<Arc<crate::checker::context::GlobalDeclaredModules>>,
+    ) -> Self {
+        Self {
+            program,
+            tables: crate::checker::context::SealedProgramGlobalIndexes::build(
+                binders,
+                arenas,
+                declared_modules,
+            ),
+        }
+    }
+
+    fn install_into(&self, ctx: &mut crate::checker::context::CheckerContext<'_>) {
+        // The sealed table owns its exact views; no caller-provided filename,
+        // mutable program map, query result, or alternate owner can rebind them.
+        debug_assert_eq!(self.program.files.len(), self.program.file_locals.len());
+        self.tables.install_into(ctx);
+    }
+}
+
 struct ParallelCheckPlan<'a> {
     program: &'a MergedProgram,
     checker_options: &'a CheckerOptions,
@@ -913,6 +946,7 @@ struct ParallelCheckPlan<'a> {
     project_module_resolution_outcomes:
         Option<Arc<crate::checker::context::ResolvedModuleRequestOutcomeMap>>,
     execution_scope: Option<tsz_common::LatchedExecutionCheckpoint<'a>>,
+    checker_indexes: SealedProjectCheckerIndexes<'a>,
     resolved_module_paths: Arc<FxHashMap<(usize, String), usize>>,
     resolved_modules: Arc<FxHashSet<String>>,
     checker_lib_files: Vec<Arc<LibFile>>,
@@ -1066,6 +1100,19 @@ impl<'a> ParallelCheckPlan<'a> {
 
         project_plan_checkpoint(execution_checkpoint, 0)?;
         owner_span.returned();
+        let indexes_span = tsz_common::ProjectExecutionSpan::new(
+            execution_checkpoint,
+            tsz_common::ProjectExecutionPhase::SharedCheckerIndexes,
+            None,
+        );
+        let checker_indexes = SealedProjectCheckerIndexes::build(
+            program,
+            Arc::clone(&all_binders),
+            Arc::clone(&all_arenas),
+            shared_declared_modules.clone(),
+        );
+        project_plan_checkpoint(execution_checkpoint, 0)?;
+        indexes_span.returned();
         // Initialize per-file delegation locks for parallel correctness.
         program
             .definition_store
@@ -1109,6 +1156,7 @@ impl<'a> ParallelCheckPlan<'a> {
             project_semantic_options,
             project_module_resolution_outcomes,
             execution_scope,
+            checker_indexes,
             resolved_module_paths,
             resolved_modules,
             checker_lib_files,
@@ -1243,7 +1291,7 @@ impl<'a> ParallelCheckPlan<'a> {
             self.checker_options,
             std::sync::Arc::clone(&self.program.definition_store),
         );
-        checker.ctx.set_all_arenas(Arc::clone(&self.all_arenas));
+        self.checker_indexes.install_into(&mut checker.ctx);
 
         // Use pre-computed skeleton-derived declared modules (shared via Arc::clone).
         if let Some(ref modules) = self.shared_declared_modules {
@@ -1252,7 +1300,7 @@ impl<'a> ParallelCheckPlan<'a> {
                 .set_declared_modules_from_skeleton(Arc::clone(modules));
         }
 
-        checker.ctx.set_all_binders(Arc::clone(&self.all_binders));
+        // Exact ordered binder views were installed with the sealed indexes.
         checker.ctx.set_current_file_idx(file_idx);
         checker
             .ctx
@@ -1364,13 +1412,13 @@ impl<'a> ParallelCheckPlan<'a> {
             lib_bound_file.file_name.clone(),
             self.checker_options,
         );
-        checker.ctx.set_all_arenas(Arc::clone(&self.all_arenas));
+        self.checker_indexes.install_into(&mut checker.ctx);
         if let Some(ref modules) = self.shared_declared_modules {
             checker
                 .ctx
                 .set_declared_modules_from_skeleton(Arc::clone(modules));
         }
-        checker.ctx.set_all_binders(Arc::clone(&self.all_binders));
+        // Exact ordered binder views were installed with the sealed indexes.
         checker
             .ctx
             .set_resolved_module_paths(Arc::clone(&self.resolved_module_paths));

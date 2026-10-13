@@ -3764,3 +3764,161 @@ fn observed_partitions_preserve_diagnostics_and_exact_file_boundaries() {
             .any(|(_, transition, _)| *transition == T::Unwound)
     );
 }
+
+#[test]
+fn sealed_program_indexes_match_legacy_rows_and_share_across_workers_and_resets() {
+    fn fixture(extra: &str) -> MergedProgram {
+        let binds = parse_and_bind_parallel_with_libs(vec![
+            ("src/owner.ts".to_owned(), "export interface Shape { left: number }".to_owned()),
+            ("src/augment.ts".to_owned(), "import './owner'; declare module './owner' { interface Shape { right: string } }".to_owned()),
+            ("src/ambient.d.ts".to_owned(), format!("declare module 'owned' {{ export interface Direct {{ value: string }} {extra} }}")),
+        ], &[]);
+        let refs = binds.iter().collect::<Vec<_>>();
+        merge_bind_results_ref_with_project_semantic_options(
+            &refs,
+            ProjectSemanticOptions::declaration_scoped(),
+        )
+    }
+    let program = fixture("");
+    let options = CheckerOptions::default();
+    let plan = ParallelCheckPlan::build(
+        &program,
+        &options,
+        &[],
+        ProjectSemanticOptions::declaration_scoped(),
+        None,
+        None,
+    )
+    .unwrap();
+    let cache = plan.make_query_cache();
+    let mut actual = plan.configured_file_checker(0, &program.files[0], &cache);
+    let mut legacy = CheckerState::with_options_and_shared_def_store(
+        &program.files[0].arena,
+        plan.all_binders[0].as_ref(),
+        &cache,
+        program.files[0].file_name.clone(),
+        &options,
+        Arc::clone(&program.definition_store),
+    );
+    legacy.ctx.set_all_arenas(Arc::clone(&plan.all_arenas));
+    if let Some(modules) = plan.shared_declared_modules.as_ref() {
+        legacy
+            .ctx
+            .set_declared_modules_from_skeleton(Arc::clone(modules));
+    }
+    legacy.ctx.set_all_binders(Arc::clone(&plan.all_binders));
+    assert_eq!(
+        actual.ctx.global_file_locals_index,
+        legacy.ctx.global_file_locals_index
+    );
+    assert_eq!(
+        actual.ctx.global_module_exports_index,
+        legacy.ctx.global_module_exports_index
+    );
+    assert_eq!(
+        actual.ctx.global_augmentation_targets_index,
+        legacy.ctx.global_augmentation_targets_index
+    );
+    assert_eq!(
+        actual.ctx.global_module_binder_index,
+        legacy.ctx.global_module_binder_index
+    );
+    assert_eq!(actual.ctx.global_arena_index, legacy.ctx.global_arena_index);
+    assert_eq!(
+        actual.ctx.global_expando_index,
+        legacy.ctx.global_expando_index
+    );
+    assert_eq!(actual.ctx.module_specifiers, legacy.ctx.module_specifiers);
+    assert_eq!(
+        actual.ctx.module_path_specifiers,
+        legacy.ctx.module_path_specifiers
+    );
+    let augmentation_rows = |ctx: &crate::checker::context::CheckerContext<'_>| {
+        let mut rows = ctx
+            .global_module_augmentations_index
+            .as_ref()
+            .unwrap()
+            .iter()
+            .flat_map(|(specifier, rows)| {
+                rows.iter().map(move |(file, aug)| {
+                    (
+                        specifier.clone(),
+                        *file,
+                        aug.name.clone(),
+                        aug.node,
+                        aug.arena.as_ref().map(|arena| Arc::as_ptr(arena) as usize),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by_key(|row| (row.0.clone(), row.1, row.2.clone(), row.3.0));
+        rows
+    };
+    assert!(
+        !augmentation_rows(&actual.ctx).is_empty(),
+        "fixture must exercise actual augmentation owner rows"
+    );
+    assert_eq!(
+        augmentation_rows(&actual.ctx),
+        augmentation_rows(&legacy.ctx)
+    );
+    let other_cache = plan.make_query_cache();
+    let other = plan.configured_file_checker(1, &program.files[1], &other_cache);
+    assert!(Arc::ptr_eq(
+        actual.ctx.global_module_exports_index.as_ref().unwrap(),
+        other.ctx.global_module_exports_index.as_ref().unwrap()
+    ));
+    assert!(Arc::ptr_eq(
+        actual.ctx.global_file_locals_index.as_ref().unwrap(),
+        other.ctx.global_file_locals_index.as_ref().unwrap()
+    ));
+    actual.ctx.switch_to_file(
+        &program.files[1].arena,
+        plan.all_binders[1].as_ref(),
+        program.files[1].file_name.clone(),
+        1,
+    );
+    assert!(Arc::ptr_eq(
+        actual.ctx.global_module_exports_index.as_ref().unwrap(),
+        other.ctx.global_module_exports_index.as_ref().unwrap()
+    ));
+    let changed = fixture("export const Later: number;");
+    let changed_plan = ParallelCheckPlan::build(
+        &changed,
+        &options,
+        &[],
+        ProjectSemanticOptions::declaration_scoped(),
+        None,
+        None,
+    )
+    .unwrap();
+    let changed_cache = changed_plan.make_query_cache();
+    let changed_checker =
+        changed_plan.configured_file_checker(0, &changed.files[0], &changed_cache);
+    assert!(!Arc::ptr_eq(
+        actual.ctx.global_module_exports_index.as_ref().unwrap(),
+        changed_checker
+            .ctx
+            .global_module_exports_index
+            .as_ref()
+            .unwrap()
+    ));
+    assert!(
+        changed_checker
+            .ctx
+            .global_module_exports_index
+            .as_ref()
+            .unwrap()
+            .values()
+            .any(|exports| exports.contains_key("Later"))
+    );
+    assert!(
+        !actual
+            .ctx
+            .global_module_exports_index
+            .as_ref()
+            .unwrap()
+            .values()
+            .any(|exports| exports.contains_key("Later"))
+    );
+}
