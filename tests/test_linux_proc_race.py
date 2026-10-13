@@ -164,7 +164,7 @@ class LinuxProcRaceTests(unittest.TestCase):
             "ns": [8, 90], "root": [8, 91],
         })
         self.assertEqual(rows[0].events, [
-            "pidfd-open", "open-pid-directory", "stat", "pidfd-poll", "stat",
+            "pidfd-open", "open-pid-directory", "stat", "stat", "pidfd-poll",
             "read:status", "stat:ns/mnt", "stat:root", "stat", "pidfd-poll",
             "close-pid-directory-and-pidfd",
         ])
@@ -248,12 +248,72 @@ class LinuxProcRaceTests(unittest.TestCase):
 
     def test_already_ready_pidfd_is_not_bound_to_a_later_first_proc_row(self) -> None:
         factory, _rows = self.factory(
-            starts=[("Z", 101)],
+            starts=[("R", 101), ("R", 101)],
             ready=[True],
         )
 
         with self.assertRaisesRegex(census._LinuxProcRace, "pidfd-ready-before-first-identity"):
             census._capture_gui_supervisor_process(41, proc_factory=factory)
+
+    def test_stable_terminal_proc_row_is_distinct_from_pidfd_exit_proof(self) -> None:
+        for state in ("Z", "X", "x"):
+            with self.subTest(state=state):
+                factory, rows = self.factory(
+                    starts=[(state, 101), (state, 101)],
+                    ready=[True],
+                )
+
+                row, proof = census._capture_gui_supervisor_process(41, proc_factory=factory)
+
+                self.assertIsNone(proof)
+                self.assertEqual(row, {
+                    "pid": 41,
+                    "state": state,
+                    "ppid": 11,
+                    "pgid": 12,
+                    "sid": 13,
+                    "start": 101,
+                    "terminal_proc_observation": True,
+                })
+                self.assertEqual(rows[0].events, [
+                    "pidfd-open", "open-pid-directory", "stat", "stat",
+                    "close-pid-directory-and-pidfd",
+                ])
+
+    def test_terminal_cargo_row_does_not_become_unknown_active_occupancy(self) -> None:
+        factory, _rows = self.factory(
+            starts=[("Z", 101), ("Z", 101)],
+            ready=[True],
+        )
+
+        records, issues, races = census._linux_processes(
+            1000,
+            [self.cargo_row()],
+            census._ArgvBudget(),
+            proc_root=self.proc_root,
+            proc_factory=factory,
+        )
+
+        self.assertEqual(records, {})
+        self.assertEqual(issues, {})
+        self.assertEqual(races, {})
+
+    def test_terminal_to_active_identity_is_refused_independent_of_pidfd_readiness(self) -> None:
+        for ready in (False, True):
+            with self.subTest(pidfd_ready=ready):
+                factory, rows = self.factory(
+                    starts=[("Z", 101), ("R", 101)],
+                    ready=[ready],
+                )
+
+                with self.assertRaisesRegex(census._LinuxProcRace, "terminal-state-changed-while-pinning"):
+                    census._capture_gui_supervisor_process(41, proc_factory=factory)
+                # The contradictory proc observation is sufficient to refuse;
+                # polling cannot turn a terminal task into a live identity.
+                self.assertEqual(rows[0].events, [
+                    "pidfd-open", "open-pid-directory", "stat", "stat",
+                    "close-pid-directory-and-pidfd",
+                ])
 
     def test_pid_reuse_after_payload_fails_closed(self) -> None:
         factory, _rows = self.factory(starts=[("R", 101), ("R", 101), ("R", 102)])
