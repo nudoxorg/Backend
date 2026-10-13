@@ -17,6 +17,7 @@ struct OwnerState {
     active: Option<IndexOperationStatus>,
     terminal: Option<IndexOperationStatus>,
     commands: Vec<SurfaceCommand>,
+    cancelled: Vec<IndexJobTicket>,
 }
 
 struct Owner(Arc<Mutex<OwnerState>>);
@@ -74,6 +75,28 @@ impl CommandTransport for Owner {
                     stage: *stage,
                 })
             }
+            SurfaceCommand::IndexCancel { ticket } => {
+                let matches = state.active.as_ref().is_some_and(|active| {
+                    matches!(&active.state, IndexOperationState::Active { ticket: actual, .. } if actual == &ticket)
+                });
+                let status = if matches {
+                    let mut terminal = state.active.take().expect("exact resident job");
+                    terminal.state = IndexOperationState::Failed {
+                        reason: backend_library::IndexOperationFailureReason::Cancelled,
+                        detail: ProductText::from_static("original accepted job cancelled"),
+                        compiler_failure: None,
+                    };
+                    state.terminal = Some(terminal);
+                    state.cancelled.push(ticket.clone());
+                    backend_library::IndexCancelStatus::Requested
+                } else {
+                    backend_library::IndexCancelStatus::Unknown
+                };
+                SurfaceReply::IndexCancellation(backend_library::IndexCancelReceipt {
+                    ticket,
+                    status,
+                })
+            }
             SurfaceCommand::IndexOperationStatus { operation_key } => {
                 let status = state
                     .active
@@ -112,6 +135,15 @@ fn call_line(writer: &mut impl std::io::Write, id: u64, params: Value) {
 
 #[test]
 fn stdio_index_then_index_start_keeps_exact_ticket_poll_and_durable_retry_identity() {
+    assert_stdio_shared_default_index(false);
+}
+
+#[test]
+fn stdio_default_index_start_then_cli_add_joins_same_saved_key_before_work() {
+    assert_stdio_shared_default_index(true);
+}
+
+fn assert_stdio_shared_default_index(start_first: bool) {
     let fixture = LazyAuthorityFixture::new();
     fixture
         .paths
@@ -151,12 +183,20 @@ fn stdio_index_then_index_start_keeps_exact_ticket_poll_and_durable_retry_identi
     call_line(
         &mut input,
         2,
-        json!({"name":"backend.index", "arguments":{"path":package.as_str(),"detail":"full"}}),
+        if start_first {
+            json!({"name":INDEX_START_TOOL,"arguments":{"package":package.as_str(),"detail":"full"}})
+        } else {
+            json!({"name":"backend.index", "arguments":{"path":package.as_str(),"detail":"full"}})
+        },
     );
     call_line(
         &mut input,
         3,
-        json!({"name":INDEX_START_TOOL, "arguments":{"package":package.as_str(),"detail":"full"}}),
+        if start_first {
+            json!({"name":"backend.index","arguments":{"path":package.as_str(),"detail":"full"}})
+        } else {
+            json!({"name":INDEX_START_TOOL, "arguments":{"package":package.as_str(),"detail":"full"}})
+        },
     );
     let initialized = receive(&mut output, 1);
     assert!(initialized["serverInfo"].is_object());
@@ -174,22 +214,41 @@ fn stdio_index_then_index_start_keeps_exact_ticket_poll_and_durable_retry_identi
         panic!("live job");
     };
     assert_eq!(
-        poll["arguments"],
-        json!({"operation_key":initial.operation_key})
+        poll["arguments"]["operation_key"],
+        serde_json::to_value(initial.operation_key).expect("key")
     );
     let joined = receive(&mut output, 3);
     assert_eq!(joined["isError"], false);
+    let started = if start_first { &first } else { &joined };
     assert_eq!(
-        joined["structuredContent"]["surface"]["data"]["data"]["ticket"],
-        serde_json::to_value(ticket).expect("exact ticket")
+        started["structuredContent"]["surface"]["data"],
+        serde_json::to_value(IndexOperationObservation::Known(initial.clone()))
+            .expect("same complete active receipt")
     );
+    assert_eq!(
+        started["structuredContent"]["index_poll"]["call"]["arguments"]["operation_key"],
+        serde_json::to_value(initial.operation_key).expect("key")
+    );
+    let mut cli = Session::from_transport(fixture.paths.endpoint(), Owner(Arc::clone(&state)));
+    let cli_reply = backend_client::index_with_journal(
+        &fixture.paths,
+        package.clone(),
+        initial.execution_intent,
+        |command| cli.surface(command),
+    )
+    .expect("ordinary CLI/shared journal join");
+    assert_eq!(
+        cli_reply,
+        SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(initial.clone()))
+    );
+    assert_eq!(ticket.package(), &package);
     {
         let mut owner = state.lock().expect("state");
         assert_eq!(owner.starts, [initial.operation_key]);
         assert_eq!(
             owner.commands.len(),
-            2,
-            "no extra index, status, revision or probe"
+            3,
+            "one initial start then MCP and CLI same-key receipt reads, no extra mutation/revision/probe"
         );
         owner.active = None;
         owner.terminal = Some(IndexOperationStatus::new(
@@ -263,11 +322,136 @@ fn stdio_index_then_index_start_keeps_exact_ticket_poll_and_durable_retry_identi
     assert_eq!(fresh.package, initial.package);
     assert_eq!(
         retry["structuredContent"]["index_poll"]["call"]["arguments"],
-        json!({"operation_key":fresh.operation_key})
+        json!({
+            "operation_key":fresh.operation_key,
+            "after_observation":backend_client::IndexObservationFingerprint::active(fresh)
+                .expect("full durable receipt fingerprint").expect("active receipt"),
+            "wait_millis":backend_client::MAX_INDEX_PROGRESS_WAIT_MILLIS,
+            "detail":"full",
+        })
     );
     drop(owner);
     serving
         .join()
         .expect("stdio actor joined")
         .expect("finite stdio drain");
+}
+
+#[test]
+fn default_mcp_start_cli_join_and_exact_ticket_cancel_retain_original_receipt_key() {
+    let fixture = LazyAuthorityFixture::new();
+    fixture
+        .paths
+        .initialize()
+        .expect("real private caller attachment");
+    let package =
+        PackageReference::parse(fixture.project.to_str().expect("path")).expect("package");
+    let state = Arc::new(Mutex::new(OwnerState::default()));
+    let session = Session::from_transport(fixture.paths.endpoint(), Owner(Arc::clone(&state)));
+    let mut server = Server::with_authority(
+        SessionProduct::new(session, fixture.paths.clone()),
+        fixture.project.to_str().expect("path").to_owned(),
+        [7; 32],
+    );
+    server.handle(br#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"default-join-cancel","version":"1"}}}"#).expect("initialize");
+    server.handle(br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
+    fn session_tool(server: &mut Server<SessionProduct>, name: &str, arguments: &Value) -> Value {
+        let request = serde_json::to_vec(&json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":name,"arguments":arguments}})).expect("request bytes");
+        let response = server.handle(&request).expect("correlated tool response");
+        assert!(response.get("error").is_none(), "{response}");
+        response["result"].clone()
+    }
+    let started = session_tool(
+        &mut server,
+        INDEX_START_TOOL,
+        &json!({"package":package.as_str(),"detail":"full"}),
+    );
+    assert_eq!(started["isError"], false);
+    let initial = state
+        .lock()
+        .expect("state")
+        .active
+        .clone()
+        .expect("actual routed active key");
+    let IndexOperationState::Active { ticket, .. } = &initial.state else {
+        panic!("active owner ticket");
+    };
+    let mut cli = Session::from_transport(fixture.paths.endpoint(), Owner(Arc::clone(&state)));
+    let joined = backend_client::index_with_journal(
+        &fixture.paths,
+        package,
+        initial.execution_intent,
+        |command| cli.surface(command),
+    )
+    .expect("ordinary CLI saved-request join");
+    assert_eq!(
+        joined,
+        SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(initial.clone()))
+    );
+    let foreign = IndexJobTicket::new(
+        std::num::NonZeroU64::new(ticket.id() + 1).expect("different id"),
+        ticket.owner_epoch(),
+        ticket.package().clone(),
+    );
+    let refused = session_tool(
+        &mut server,
+        INDEX_CANCEL_TOOL,
+        &json!({"ticket":foreign,"detail":"full"}),
+    );
+    let expected_foreign = SurfaceReply::IndexCancellation(backend_library::IndexCancelReceipt {
+        ticket: foreign,
+        status: backend_library::IndexCancelStatus::Unknown,
+    });
+    assert_eq!(
+        refused["structuredContent"]["surface"]["data"],
+        serde_json::to_value(expected_foreign).expect("wire")["data"]
+    );
+    assert!(
+        state.lock().expect("state").cancelled.is_empty(),
+        "foreign ticket never cancels current job"
+    );
+    let cancelled = session_tool(
+        &mut server,
+        INDEX_CANCEL_TOOL,
+        &json!({"ticket":ticket,"detail":"full"}),
+    );
+    assert_eq!(cancelled["isError"], false);
+    let progress = session_tool(
+        &mut server,
+        INDEX_PROGRESS_TOOL,
+        &json!({"operation_key":initial.operation_key,"detail":"full"}),
+    );
+    assert_eq!(
+        progress["isError"], true,
+        "actual cancellation remains a typed terminal refusal"
+    );
+    let terminal = state
+        .lock()
+        .expect("state")
+        .terminal
+        .clone()
+        .expect("same original cancelled operation");
+    assert_eq!(terminal.operation_key, initial.operation_key);
+    assert_eq!(terminal.request_digest, initial.request_digest);
+    assert_eq!(terminal.package, initial.package);
+    assert_eq!(terminal.execution_intent, initial.execution_intent);
+    assert!(matches!(
+        terminal.state,
+        IndexOperationState::Failed {
+            reason: backend_library::IndexOperationFailureReason::Cancelled,
+            ..
+        }
+    ));
+    assert_eq!(
+        progress["structuredContent"]["surface"]["data"],
+        serde_json::to_value(IndexOperationObservation::Known(terminal))
+            .expect("exact full receipt")
+    );
+    let owner = state.lock().expect("state");
+    assert_eq!(
+        owner.starts,
+        [initial.operation_key],
+        "no duplicate capture/start"
+    );
+    assert_eq!(owner.cancelled, [ticket.clone()]);
 }

@@ -113,6 +113,54 @@ impl OwnerLocalRead {
     }
 }
 
+/// Product-state commands that neither select a compiler head nor consume a
+/// registry catalog, dependency graph, or source manifest.
+pub(super) enum OwnerSubscriptionCommand {
+    Subscribe {
+        package: PackageReference,
+        project: Option<ProjectSelector>,
+    },
+    Unsubscribe {
+        package: PackageReference,
+    },
+    List,
+}
+
+impl OwnerSubscriptionCommand {
+    fn command(&self) -> SurfaceCommand {
+        match self {
+            Self::Subscribe { package, project } => SurfaceCommand::Subscribe {
+                package: package.clone(),
+                project: project.clone(),
+            },
+            Self::Unsubscribe { package } => SurfaceCommand::Unsubscribe {
+                package: package.clone(),
+            },
+            Self::List => SurfaceCommand::Subscriptions,
+        }
+    }
+}
+
+/// Reads the exact advisory row selected by the caller's admitted catalog.
+/// No source refresh, manifest walk, dependency projection, or mutation runs here.
+pub(super) fn read_advisory(
+    package: &PackageReference,
+    override_evidence: Option<backend_library::OverrideEvidence>,
+    catalog: &[RegistryPackageRecord],
+    catalog_index: &CatalogLookupIndex,
+) -> Result<SurfaceReply, String> {
+    let advisory = catalog_index
+        .first_coordinate(catalog, package)?
+        .map(|record| record.advisory.clone())
+        .unwrap_or_else(backend_engine::AdvisoryPackageDto::unknown);
+    let advisory = override_evidence.map_or(advisory.clone(), |evidence| {
+        advisory.with_override(evidence, unix_seconds())
+    });
+    let reply = SurfaceReply::Advisory(advisory);
+    reply.admit(reply.id()).map_err(|error| error.to_string())?;
+    Ok(reply)
+}
+
 pub(super) struct ProductState {
     path: PathBuf,
     state: StoredState,
@@ -121,6 +169,58 @@ pub(super) struct ProductState {
 }
 
 impl ProductState {
+    /// Runs one independent product-state transaction on the control owner.
+    /// The reply is admitted before persistence and the in-memory state is
+    /// replaced only after the atomic write succeeds, exactly as on the general path.
+    pub(super) fn execute_subscription(
+        &mut self,
+        command: OwnerSubscriptionCommand,
+    ) -> Result<SurfaceReply, String> {
+        let request = command.command();
+        request.admit().map_err(|error| error.to_string())?;
+        if matches!(command, OwnerSubscriptionCommand::List) {
+            let (reply, _) = self.apply_subscription(command)?;
+            reply.admit(request.id()).map_err(|error| error.to_string())?;
+            return Ok(reply);
+        }
+        let mut pending = self.pending_mutation();
+        let (reply, changed) = pending.apply_subscription(command)?;
+        reply.admit(request.id()).map_err(|error| error.to_string())?;
+        if changed {
+            pending.commit()?;
+            self.state = pending.state;
+        }
+        Ok(reply)
+    }
+
+    fn pending_mutation(&self) -> Self {
+        Self {
+            path: self.path.clone(),
+            state: self.state.clone(),
+            discovery_search: None,
+            local_declaration_search: LocalDeclarationSearchIndex::default(),
+        }
+    }
+
+    fn apply_subscription(
+        &mut self,
+        command: OwnerSubscriptionCommand,
+    ) -> Result<(SurfaceReply, bool), String> {
+        Ok(match command {
+            OwnerSubscriptionCommand::Subscribe { package, project } => (
+                SurfaceReply::Subscribed(self.subscribe(package, project.as_ref())?),
+                true,
+            ),
+            OwnerSubscriptionCommand::Unsubscribe { package } => {
+                (SurfaceReply::Unsubscribed(self.unsubscribe(&package)), true)
+            }
+            OwnerSubscriptionCommand::List => (
+                SurfaceReply::Subscriptions(self.state.subscriptions.clone().into_boxed_slice()),
+                false,
+            ),
+        })
+    }
+
     /// Projects exactly the dependencies of the closed local read, with the
     /// same command/reply admission used by the general product-state path.
     pub(super) fn read_owner_local(
@@ -304,12 +404,7 @@ impl ProductState {
                 Ok(reply)
             }
             CommandMutation::Write => {
-                let mut pending = Self {
-                    path: self.path.clone(),
-                    state: self.state.clone(),
-                    discovery_search: None,
-                    local_declaration_search: LocalDeclarationSearchIndex::default(),
-                };
+                let mut pending = self.pending_mutation();
                 let (reply, changed) = pending.execute_admitted(
                     command,
                     view,
@@ -349,16 +444,10 @@ impl ProductState {
             SurfaceCommand::Advisory {
                 package,
                 override_evidence,
-            } => {
-                let advisory = catalog_index
-                    .first_coordinate(catalog, &package)?
-                    .map(|record| record.advisory.clone())
-                    .unwrap_or_else(backend_engine::AdvisoryPackageDto::unknown);
-                let advisory = override_evidence.map_or(advisory.clone(), |evidence| {
-                    advisory.with_override(evidence, unix_seconds())
-                });
-                (SurfaceReply::Advisory(advisory), false)
-            }
+            } => (
+                read_advisory(&package, override_evidence, catalog, catalog_index)?,
+                false,
+            ),
             SurfaceCommand::Read { locators } => {
                 (read_from_selected_view(view, &locators)?, false)
             }
@@ -550,17 +639,14 @@ impl ProductState {
                     false,
                 )
             }
-            SurfaceCommand::Subscribe { package, project } => (
-                SurfaceReply::Subscribed(self.subscribe(package, project.as_ref())?),
-                true,
-            ),
+            SurfaceCommand::Subscribe { package, project } => self
+                .apply_subscription(OwnerSubscriptionCommand::Subscribe { package, project })?,
             SurfaceCommand::Unsubscribe { package } => {
-                (SurfaceReply::Unsubscribed(self.unsubscribe(&package)), true)
+                self.apply_subscription(OwnerSubscriptionCommand::Unsubscribe { package })?
             }
-            SurfaceCommand::Subscriptions => (
-                SurfaceReply::Subscriptions(self.state.subscriptions.clone().into_boxed_slice()),
-                false,
-            ),
+            SurfaceCommand::Subscriptions => {
+                self.apply_subscription(OwnerSubscriptionCommand::List)?
+            }
             SurfaceCommand::Releases { mark_seen } => (
                 SurfaceReply::Releases(self.releases(
                     view,
@@ -7220,5 +7306,6 @@ edition = \"2021\"
         let _ = fs::remove_dir_all(workspace);
     }
     include!("product_state/project_lockfile_tests.rs");
+    include!("product_state/owner_short_controls_tests.rs");
 
 }

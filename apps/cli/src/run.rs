@@ -95,6 +95,9 @@ impl Engine for SessionEngine<'_> {
             },
             Probe::Search { text, limit } => self.session.search_page(text, limit, continuation),
             Probe::Names { text, limit } => self.session.names_page(text, limit, continuation),
+            Probe::OutlinePage { path, limit } => {
+                self.session.outline_page(path, limit, continuation)
+            }
             _ if continuation.is_none() => self.probe(probe),
             _ => Err(ClientError::Protocol(
                 "this CLI command does not support continuation pages".to_owned(),

@@ -4,8 +4,9 @@
 use super::*;
 use backend_client::CommandTransport;
 use backend_library::{
-    Command, CommandDto, CommandReply, CompileExecutionIntent, IndexOperationObservation,
-    IndexOperationState, IndexOperationStatus, PackageReference, ReplyDto,
+    Command, CommandDto, CommandFailure, CommandReply, CompileExecutionIntent,
+    IndexOperationObservation, IndexOperationState, IndexOperationStatus, PackageReference,
+    ReplyDto,
 };
 use std::sync::{
     Arc, Mutex,
@@ -93,41 +94,26 @@ impl Drop for Fixture {
 
 #[test]
 fn owner_replacement_authenticates_private_endpoint_before_repeating_health() {
-    use backend_replication::{LocalControlLimits, read_frame, write_frame};
+    use backend_local_service::{EmbeddedLocalService, ProcessConfig};
     use std::os::unix::fs::PermissionsExt as _;
     let fixture = Fixture::new();
-    let listener = std::os::unix::net::UnixListener::bind(fixture.paths.endpoint())
-        .expect("private owner endpoint");
+    let config = ProcessConfig::parse([
+        "--workspace".to_owned(),
+        fixture.paths.data().to_string_lossy().into_owned(),
+        "--endpoint".to_owned(),
+        fixture.paths.endpoint().to_string_lossy().into_owned(),
+        "--profile".to_owned(),
+        "builtin-echo".to_owned(),
+        "--idle-timeout-ms".to_owned(),
+        "0".to_owned(),
+    ])
+    .expect("parse real builtin echo owner config");
+    let owner = EmbeddedLocalService::start(config).expect("start admitted local owner");
     std::fs::set_permissions(
         fixture.paths.endpoint(),
         std::fs::Permissions::from_mode(0o600),
     )
     .expect("admitted endpoint mode");
-    let server = std::thread::spawn(move || {
-        // Passive readiness is a separate probe and carries no command.
-        let (probe, _) = listener.accept().expect("passive readiness probe");
-        drop(probe);
-        let (mut stream, _) = listener
-            .accept()
-            .expect("replacement authenticated connection");
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
-            .expect("bounded owner");
-        let body = read_frame(&mut stream, LocalControlLimits::default())
-            .expect("correlated health frame");
-        let library = backend_library::Library::new();
-        let request = CommandDto::decode_for_owner(&body, library.cursor())
-            .expect("actual owner request admission");
-        assert_eq!(request.command, Command::Health);
-        let reply = library.execute_dto(request.clone());
-        write_frame(
-            &mut stream,
-            &serde_json::to_vec(&reply).expect("reply"),
-            LocalControlLimits::default(),
-        )
-        .expect("reply frame");
-        request.request_id
-    });
     let initial = Arc::new(AtomicUsize::new(0));
     let seen = initial.clone();
     let mut original = session(fixture.paths.endpoint(), move |request| {
@@ -141,11 +127,7 @@ fn owner_replacement_authenticates_private_endpoint_before_repeating_health() {
         .expect("authenticated health recovery");
     assert_eq!(initial.load(Ordering::Relaxed), 1);
     assert_eq!(report.row_count(), 0);
-    assert_eq!(
-        server.join().expect("owner drained"),
-        1,
-        "fresh Session has its own correlated request sequence"
-    );
+    assert_eq!(owner.close().expect("stop admitted owner").frames, 1);
     assert!(recovery.used);
 }
 
@@ -456,7 +438,95 @@ fn journal_start_capability_refuses_foreign_connection_attachment_before_send() 
 }
 
 #[test]
-fn replacement_failure_keeps_saved_claim_and_reuses_wait_deadline_only_once() {
+fn journal_start_retains_admitted_command_refusal_without_delivery_uncertainty() {
+    let fixture = Fixture::new();
+    let sends = Arc::new(AtomicUsize::new(0));
+    let sent = sends.clone();
+    let mut original = session(fixture.paths.endpoint(), move |request| {
+        assert!(matches!(
+            request.command,
+            Command::Surface(SurfaceCommand::IndexOperationStart { .. })
+        ));
+        sent.fetch_add(1, Ordering::Relaxed);
+        Ok(ReplyDto::new(
+            request.request_id,
+            CommandReply::Failed(CommandFailure::MutationRequiresOwner),
+        ))
+    });
+    let mut recovery =
+        OwnerRecovery::from_connector(fixture.paths.clone(), RequestContext::new(), |_| {
+            panic!("refusal cannot reconnect")
+        });
+    let error = backend_client::index_with_journal_recovery(
+        &fixture.paths,
+        fixture.package.clone(),
+        CompileExecutionIntent::Interactive,
+        |dispatch| recovery.journal(&mut original, dispatch, None),
+    )
+    .expect_err("actual command rejection is retained");
+    assert_eq!(
+        error,
+        ClientError::CommandFailed(CommandFailure::MutationRequiresOwner),
+        "the typed admitted command cause must remain exact",
+    );
+    assert_eq!(sends.load(Ordering::Relaxed), 1);
+    assert!(!recovery.used);
+    assert_eq!(
+        fixture.claims().len(),
+        1,
+        "no durable terminal receipt was invented"
+    );
+}
+
+#[test]
+fn journal_start_legacy_error_keeps_delivery_uncertainty_and_original_claim() {
+    let fixture = Fixture::new();
+    let sends = Arc::new(AtomicUsize::new(0));
+    let sent = sends.clone();
+    let mut original = session(fixture.paths.endpoint(), move |request| {
+        assert!(matches!(
+            request.command,
+            Command::Surface(SurfaceCommand::IndexOperationStart { .. })
+        ));
+        sent.fetch_add(1, Ordering::Relaxed);
+        Ok(ReplyDto::error(request.request_id, "legacy failure"))
+    });
+    let mut recovery =
+        OwnerRecovery::from_connector(fixture.paths.clone(), RequestContext::new(), |_| {
+            panic!("a legacy protocol failure cannot authenticate a replacement")
+        });
+    let error = backend_client::index_with_journal_recovery(
+        &fixture.paths,
+        fixture.package.clone(),
+        CompileExecutionIntent::Interactive,
+        |dispatch| recovery.journal(&mut original, dispatch, None),
+    )
+    .expect_err("an untyped legacy error cannot attest a refused mutation");
+    let claims = fixture.claims();
+    assert_eq!(
+        claims.len(),
+        1,
+        "the original nonterminal claim is retained"
+    );
+    let ClientError::IndexOperationDeliveryUnknown {
+        operation_key,
+        cause,
+    } = error
+    else {
+        panic!("an untyped failure cannot become an admitted command refusal");
+    };
+    assert_eq!(
+        serde_json::to_value(operation_key).expect("operation key"),
+        claims[0]["operation_key"],
+        "uncertainty retains the exact saved request identity",
+    );
+    assert_eq!(*cause, ClientError::Protocol("legacy failure".to_owned()));
+    assert_eq!(sends.load(Ordering::Relaxed), 1);
+    assert!(!recovery.used);
+}
+
+#[test]
+fn replacement_failure_keeps_saved_claim_and_read_recovery_keeps_original_deadline() {
     let fixture = Fixture::new();
     let commands = Arc::new(AtomicUsize::new(0));
     let submitted = commands.clone();
@@ -542,21 +612,27 @@ fn replacement_failure_keeps_saved_claim_and_reuses_wait_deadline_only_once() {
     let command = SurfaceCommand::IndexOperationStatus { operation_key: key };
     assert_eq!(
         recovery.surface(&mut original, command.clone(), Some(&wait)),
-        Err(reset())
+        Err(ClientError::RemoteDeadlineExceeded)
+    );
+    let attempts = connects.load(Ordering::Relaxed);
+    assert!(
+        attempts > 2,
+        "saved-key reads tolerate repeated peer retirement"
     );
     assert_eq!(
         recovery.surface(&mut original, command, Some(&wait)),
-        Err(reset())
+        Err(ClientError::RemoteDeadlineExceeded)
     );
     assert_eq!(
         connects.load(Ordering::Relaxed),
-        1,
-        "repeated peer loss never creates a reconnect loop"
+        attempts,
+        "expired scope cannot reconnect"
     );
+    assert!(std::time::Instant::now() >= deadline);
     assert_eq!(
-        wait.read_deadline(std::time::Duration::from_secs(900))
-            .expect("still original"),
-        deadline
+        wait.read_deadline(std::time::Duration::from_secs(900)),
+        Err(ClientError::RemoteDeadlineExceeded),
+        "reconnection never renews the expired original deadline"
     );
     wait.finish();
 
@@ -619,5 +695,237 @@ fn replacement_failure_keeps_saved_claim_and_reuses_wait_deadline_only_once() {
     assert_eq!(
         fixture.claims()[0]["operation_key"],
         serde_json::to_value(operation_key).expect("original saved key")
+    );
+}
+
+/// Scripted Session connectors exercise cancellation of the original request.
+/// The same saved key and deadline survive retries; no mutation is dispatched.
+#[test]
+fn repeated_saved_key_reobservation_stops_on_original_cancellation_without_start() {
+    let fixture = Fixture::new();
+    let key = backend_library::IndexOperationKey::from_bytes([59; 32]).expect("key");
+    let command = SurfaceCommand::IndexOperationStatus { operation_key: key };
+    let reads = Arc::new(AtomicUsize::new(0));
+    let seen = reads.clone();
+    let expected = command.clone();
+    let mut original = session(fixture.paths.endpoint(), move |request| {
+        assert_eq!(request.command, Command::Surface(expected.clone()));
+        seen.fetch_add(1, Ordering::Relaxed);
+        Err(reset())
+    });
+    let wait = RequestContext::new();
+    let deadline = wait.read_deadline(std::time::Duration::from_secs(10)).expect("original deadline");
+    let captured = wait.clone();
+    let connects = Arc::new(AtomicUsize::new(0));
+    let connected = connects.clone();
+    let mut recovery = OwnerRecovery::from_connector(
+        fixture.paths.clone(), RequestContext::new(), move |scope| {
+            assert!(scope.same_request(&captured));
+            assert_eq!(scope.read_deadline(std::time::Duration::from_secs(900)).expect("same deadline"), deadline);
+            if connected.fetch_add(1, Ordering::Relaxed) == 2 {
+                scope.cancel(backend_client::RequestCancellationReason::Explicit);
+                return Err(ClientError::RequestCancelled(backend_client::RequestCancellationReason::Explicit));
+            }
+            let reads = reads.clone();
+            let expected = SurfaceCommand::IndexOperationStatus { operation_key: key };
+            Ok(session(std::path::Path::new("/replacement"), move |request| {
+                assert_eq!(request.command, Command::Surface(expected.clone()));
+                reads.fetch_add(1, Ordering::Relaxed);
+                Err(reset())
+            }))
+        },
+    );
+    assert_eq!(recovery.surface(&mut original, command.clone(), Some(&wait)),
+        Err(ClientError::RequestCancelled(backend_client::RequestCancellationReason::Explicit)));
+    assert_eq!(connects.load(Ordering::Relaxed), 3);
+    assert_eq!(recovery.surface(&mut original, command, Some(&wait)),
+        Err(ClientError::RequestCancelled(backend_client::RequestCancellationReason::Explicit)));
+    assert_eq!(connects.load(Ordering::Relaxed), 3, "cancel cannot authenticate again");
+}
+
+/// Real private Unix transport and the production 256-frame server boundary.
+/// Scripted Accepted receipts prove recovery/identity, not compiler publication.
+#[test]
+fn saved_key_read_survives_three_real_frame_budget_retirements_without_new_start() {
+    use backend_local_service::protocol::{
+        EngineRequest, EngineStatus, FrameLimits, ProtocolError,
+    };
+    use backend_local_service::service::{LocaldService, OwnerService};
+    use std::os::unix::fs::PermissionsExt as _;
+    struct ReceiptOwner {
+        library: backend_library::Library,
+        package: PackageReference,
+        key: Option<backend_library::IndexOperationKey>,
+        starts: usize,
+        reads: usize,
+    }
+    impl OwnerService for ReceiptOwner {
+        fn command(&mut self, body: &[u8]) -> Result<Vec<u8>, ProtocolError> {
+            let request = CommandDto::decode_for_owner(body, self.library.cursor())
+                .expect("actual request admission");
+            let (key, started) = match request.command {
+                Command::Surface(SurfaceCommand::IndexOperationStart {
+                    operation_key,
+                    package,
+                    execution_intent,
+                }) => {
+                    assert_eq!(package, self.package);
+                    assert_eq!(execution_intent, CompileExecutionIntent::Interactive);
+                    assert!(
+                        self.key.replace(operation_key).is_none(),
+                        "no duplicate mutation"
+                    );
+                    self.starts += 1;
+                    (operation_key, true)
+                }
+                Command::Surface(SurfaceCommand::IndexOperationStatus { operation_key }) => {
+                    assert_eq!(
+                        Some(operation_key),
+                        self.key,
+                        "every read retains original saved key"
+                    );
+                    self.reads += 1;
+                    (operation_key, false)
+                }
+                command => panic!("unexpected command during saved-key read: {command:?}"),
+            };
+            let observation = IndexOperationObservation::Known(IndexOperationStatus::new(
+                key,
+                self.package.clone(),
+                CompileExecutionIntent::Interactive,
+                IndexOperationState::Accepted,
+            ));
+            let reply = if started {
+                SurfaceReply::IndexOperationStarted(observation)
+            } else {
+                SurfaceReply::IndexOperationStatus(observation)
+            };
+            Ok(serde_json::to_vec(&ReplyDto::new(
+                request.request_id,
+                CommandReply::Surface(reply),
+            ))
+            .expect("typed receipt encoding"))
+        }
+        fn engine(&mut self, _: u64, _: EngineRequest) -> Result<EngineStatus, ProtocolError> {
+            panic!("receipt observation cannot issue engine mutations")
+        }
+        fn serve_one(&mut self) -> bool {
+            false
+        }
+        fn close(&mut self) {}
+    }
+    let fixture = Fixture::new();
+    let listener =
+        std::os::unix::net::UnixListener::bind(fixture.paths.endpoint()).expect("private endpoint");
+    std::fs::set_permissions(
+        fixture.paths.endpoint(),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .expect("private socket");
+    let frames = FrameLimits::default().max_frames_per_connection;
+    assert_eq!(
+        frames, 256,
+        "exercise actual default retirement, not a reduced test cap"
+    );
+    listener
+        .set_nonblocking(true)
+        .expect("bounded accept observation");
+    let package = fixture.package.clone();
+    let server = std::thread::spawn(move || {
+        let accept_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut service = LocaldService::new(
+            ReceiptOwner {
+                library: backend_library::Library::new(),
+                package,
+                key: None,
+                starts: 0,
+                reads: 0,
+            },
+            FrameLimits::default(),
+        )
+        .expect("real frame service");
+        for _ in 0..4 {
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(connection) => break connection,
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < accept_deadline,
+                            "expected connection absent"
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("private accept failed: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .expect("bounded fixture read");
+            assert_eq!(
+                service
+                    .serve_stream(&mut stream)
+                    .expect("production frame retirement"),
+                frames
+            );
+        }
+        (
+            service.owner().key,
+            service.owner().starts,
+            service.owner().reads,
+        )
+    });
+    let mut original =
+        Session::connect(fixture.paths.endpoint()).expect("real initial authentication");
+    let mut recovery = OwnerRecovery::new(&fixture.paths, false, RequestContext::new());
+    let started = backend_client::index_with_journal_recovery(
+        &fixture.paths,
+        fixture.package.clone(),
+        CompileExecutionIntent::Interactive,
+        |dispatch| recovery.journal(&mut original, dispatch, None),
+    )
+    .expect("one journaled mutation");
+    let SurfaceReply::IndexOperationStarted(IndexOperationObservation::Known(initial)) = started
+    else {
+        panic!("original accepted operation");
+    };
+    let key = initial.operation_key;
+    let wait = RequestContext::new();
+    let deadline = wait
+        .read_deadline(std::time::Duration::from_secs(30))
+        .expect("original read deadline");
+    for _ in 1..(frames * 4) {
+        let actual = recovery
+            .surface(
+                &mut original,
+                SurfaceCommand::IndexOperationStatus { operation_key: key },
+                Some(&wait),
+            )
+            .expect("same-key read across healthy connection retirement");
+        assert_eq!(
+            actual,
+            SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(initial.clone()))
+        );
+        assert_eq!(
+            wait.read_deadline(std::time::Duration::from_secs(900))
+                .expect("unrenewed scope"),
+            deadline
+        );
+    }
+    recovery
+        .detach(&mut original)
+        .expect("retire exact scope binding");
+    wait.finish();
+    assert_eq!(
+        fixture.claims().len(),
+        1,
+        "nonterminal original claim stays resumable"
+    );
+    assert_eq!(
+        fixture.claims()[0]["operation_key"],
+        serde_json::to_value(key).expect("saved key")
+    );
+    assert_eq!(
+        server.join().expect("bounded owner thread"),
+        (Some(key), 1, frames * 4 - 1)
     );
 }

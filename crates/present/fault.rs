@@ -553,6 +553,8 @@ pub struct Fault {
     partial_publication: Option<backend_library::IndexJobPartialPublication>,
     query_preparation: Option<(ViewRevision, backend_library::QueryPreparationState)>,
     startup_recovery: Option<backend_client::StartupRecovery>,
+    /// A saved mutation was attempted but its admitted receipt is not known.
+    unconfirmed_index_delivery: Option<backend_library::IndexOperationKey>,
 }
 
 impl Fault {
@@ -573,6 +575,7 @@ impl Fault {
             partial_publication: None,
             query_preparation: None,
             startup_recovery: None,
+            unconfirmed_index_delivery: None,
         }
     }
 
@@ -605,6 +608,12 @@ impl Fault {
     #[must_use]
     pub const fn startup_recovery(&self) -> Option<backend_client::StartupRecovery> {
         self.startup_recovery
+    }
+
+    /// Returns the saved key whose delivery remains unconfirmed, not a terminal failure.
+    #[must_use]
+    pub const fn unconfirmed_index_delivery(&self) -> Option<backend_library::IndexOperationKey> {
+        self.unconfirmed_index_delivery
     }
 
     /// Returns the exact bounded compiler refusal, when the producer supplied one.
@@ -973,11 +982,12 @@ impl Fault {
         let (slug, cause, sentence, affordance) = match error {
             ClientError::IndexOperationDeliveryUnknown { operation_key, cause } => {
                 let mut fault = Self::from_client_error(cause, Operand::Text(operation_key.to_string()));
-                fault.cause.sentence = format!("the saved index operation {operation_key} has no admitted outcome; delivery/replacement observation: {}", fault.cause.sentence);
+                fault.cause.sentence = format!("delivery of saved index operation {operation_key} is unconfirmed; it may already be queued or accepted; no receipt has been observed; transport/recovery observation: {}", fault.cause.sentence);
                 fault.affordance = Affordance::PollIndexOperation { operation_key: *operation_key };
                 // Replacement readiness cannot authorize replay of the
                 // original already-sent mutation's command line.
                 fault.startup_recovery = None;
+                fault.unconfirmed_index_delivery = Some(*operation_key);
                 return fault;
             }
             ClientError::CommandFailed(failure) => {

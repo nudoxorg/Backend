@@ -1,0 +1,9 @@
+# Owner controls during indexing
+
+Report 21 observed advisory and follow changes waiting behind a long TypeScript compile. The source repair admits advisory reads and independent subscriptions on the serial owner without waiting for the compiler or refreshing unrelated local manifests and package graphs. Project-bound subscriptions and earlier queued product writes retain their ordering. Deferred queue heads retain their origin through dispatch.
+
+Advisory reads retain the existing checked immutable catalog selection. External source validation and cold materialization can still perform work; this is not a cache-only route or a proven latency guarantee. A configured but reserved or lost registry authority returns a refusal with retry guidance rather than fabricated unknown coverage. Subscription changes validate the reply before atomic persistence and install the in-memory state only after persistence succeeds.
+
+Root reviewed the complete source and consumer paths, and Luna independently reviewed the repair and its ordering corrections. Root source commit `7bb995127687d435a393c1dc38b54581fe6d20a0`, tree `4d2501c75ad6c1a691f048a113e0c6c60cdd30f5`, exactly matches author `68a94972ec803a8354f5fbafa4cec17f4e52d84e`. All four postimages match, Rust syntax parsing and diff checks pass. Six new and four retained native controls are prepared. Cargo/type checks, these controls, and live CLI/MCP requests overlapping a current compiler job remain **unrun**.
+
+The local machine restarted at approximately 04:51 UTC, clearing temporary worktrees and packets. Committed sources were recovered into persistent storage. The regenerated source receipt is `/Users/mileswirht/.cache/nudox/evidence/report21-20261013/w3-source-verification.json`, SHA-256 `f0722ef504b4dd6ee94d51b338d3d5868c96b113e505bf479611a9bbab745ba3`. This receipt is source evidence, not product acceptance.

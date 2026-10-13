@@ -540,8 +540,28 @@ pub fn index_with_journal(
     execution_intent: CompileExecutionIntent,
     mut transport: impl FnMut(SurfaceCommand) -> Result<SurfaceReply, ClientError>,
 ) -> Result<SurfaceReply, ClientError> {
-    index_with_journal_recovery(paths, package, execution_intent, |dispatch| {
-        transport(dispatch.command())
+    index_with_journal_recovery(paths, package, execution_intent, |dispatch| match dispatch {
+        IndexJournalDispatch::Observe(operation_key) => transport(
+            SurfaceCommand::IndexOperationStatus { operation_key },
+        ),
+        IndexJournalDispatch::Start(start) => {
+            // This adapter is the actual transport boundary. The recovery API's
+            // callback can still refuse its attachment before sending anything.
+            let command = start.command();
+            let SurfaceCommand::IndexOperationStart { operation_key, .. } = &command else {
+                unreachable!("the held start has one exact command shape");
+            };
+            let operation_key = *operation_key;
+            exchange(&mut transport, command).map_err(|cause| match cause {
+                ClientError::IndexOperationDeliveryUnknown { operation_key: observed, .. }
+                    if observed == operation_key => cause,
+                ClientError::RequestCancelled(_) | ClientError::CommandFailed(_) => cause,
+                cause => ClientError::IndexOperationDeliveryUnknown {
+                    operation_key,
+                    cause: Box::new(cause),
+                },
+            })
+        }
     })
 }
 
@@ -879,7 +899,7 @@ mod tests {
                 },
             )
             .expect_err("same key cannot authenticate a different request");
-            assert!(matches!(error, ClientError::Protocol(_)));
+            assert!(matches!(&error, ClientError::Protocol(_)));
             assert_eq!(calls, if late { 2 } else { 1 });
             assert_eq!(fixture.claims(), [observed_claim.expect("original claim")]);
         }
@@ -931,7 +951,7 @@ mod tests {
                 },
             )
             .expect_err("changed attachment/claim cannot authorize replay");
-            assert!(matches!(error, ClientError::Io(_)));
+            assert!(matches!(&error, ClientError::Io(_)));
             assert_eq!(calls, 1);
             let mut expected = observed_claim.expect("original claim");
             if change_claim {
@@ -975,7 +995,7 @@ mod tests {
                         .join()
                         .expect("contender drained")
                         .expect_err("held real lock excludes second caller");
-                    assert!(matches!(error, ClientError::Io(_)));
+                    assert!(matches!(&error, ClientError::Io(_)), "request-lock refusal happens before any dispatch: {error}");
                     assert!(
                         error
                             .to_string()
@@ -1133,6 +1153,32 @@ mod tests {
             .expect("exact retry reads the retained owner receipt");
         assert!(matches!(reply, SurfaceReply::IndexOperationStatus(_)));
         assert_eq!(fixture.claims(), [original]);
+    }
+
+    #[test]
+    fn queued_dispatch_without_reply_retains_claim_and_observes_original_key() {
+        let fixture = Fixture::new();
+        let mut delivered = Vec::new();
+        let error = fixture.index(|command| {
+            delivered.push(command);
+            Err(ClientError::Disconnected(io::ErrorKind::WouldBlock))
+        }).expect_err("queued delivery has no admitted reply");
+        let claim = fixture.claims().pop().expect("saved before attempted delivery");
+        assert_eq!(error, ClientError::IndexOperationDeliveryUnknown {
+            operation_key: claim.operation_key,
+            cause: Box::new(ClientError::Disconnected(io::ErrorKind::WouldBlock)),
+        });
+        let original_claim = claim.clone();
+        let reply = fixture.index(|command| {
+            assert_eq!(command, SurfaceCommand::IndexOperationStatus { operation_key: claim.operation_key });
+            delivered.push(command);
+            Ok(SurfaceReply::IndexOperationStatus(known(&claim, IndexOperationState::Accepted)))
+        }).expect("observe the exact queued/accepted operation without another start");
+        assert_eq!(reply, SurfaceReply::IndexOperationStatus(known(&claim, IndexOperationState::Accepted)));
+        assert_eq!(fixture.claims(), [original_claim]);
+        assert_eq!(delivered.len(), 2);
+        assert!(matches!(delivered[0], SurfaceCommand::IndexOperationStart { operation_key, .. } if operation_key == claim.operation_key));
+        assert!(matches!(delivered[1], SurfaceCommand::IndexOperationStatus { operation_key } if operation_key == claim.operation_key));
     }
 
     #[test]
