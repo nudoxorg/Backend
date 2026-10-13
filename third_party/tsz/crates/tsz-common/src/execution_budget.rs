@@ -13,6 +13,136 @@ use std::time::Instant;
 pub trait ExecutionCheckpoint: Send + Sync {
     /// Charge work and report the program's latched terminal reason, if any.
     fn checkpoint(&self, work_units: u64) -> Result<(), ProjectExecutionStop>;
+
+    /// Observe an already-entered computation boundary without charging work,
+    /// polling cancellation, resolving types, or changing semantic state.
+    /// Implementations must not re-enter the compiler from this callback.
+    fn observe(&self, _event: ProjectExecutionEvent<'_>) {}
+}
+
+/// Computation boundaries of one admitted native program. These observations
+/// locate work; none of them proves complete semantic output.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectExecutionPhase {
+    SourceFrontier,
+    ParseBind,
+    Merge,
+    FileFormats,
+    ModuleOutcomes,
+    CheckerPlan,
+    LibraryViews,
+    BinderViews,
+    OwnershipIndex,
+    AffectedLibraries,
+    AugmentationPrime,
+    FileReset,
+    FileCheck,
+    FilePostprocess,
+    SourcePreparation,
+    SourceStatements,
+    SourcePostchecks,
+    LibraryBaseline,
+    LibraryCheck,
+    Aggregate,
+}
+
+/// A returned boundary can still have a latched stop. Unwound means only that
+/// its lexical scope ended before `returned` was called, including `?`/panic.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectExecutionTransition {
+    Entered,
+    Returned,
+    Unwound,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProjectExecutionFile<'file> {
+    pub index: usize,
+    /// Exact file name in the admitted program, never a guessed hot file.
+    pub path: &'file str,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProjectExecutionEvent<'file> {
+    pub phase: ProjectExecutionPhase,
+    pub transition: ProjectExecutionTransition,
+    pub file: Option<ProjectExecutionFile<'file>>,
+}
+
+/// Borrowed, allocation-free boundary observation. It does not add any work
+/// checkpoint or otherwise change the existing admission/stop policy.
+pub struct ProjectExecutionSpan<'checkpoint, 'file> {
+    checkpoint: Option<&'checkpoint dyn ExecutionCheckpoint>,
+    phase: ProjectExecutionPhase,
+    file: Option<ProjectExecutionFile<'file>>,
+    observer: Option<&'checkpoint dyn for<'event> Fn(ProjectExecutionEvent<'event>)>,
+    returned: bool,
+}
+
+impl<'checkpoint, 'file> ProjectExecutionSpan<'checkpoint, 'file> {
+    pub fn new(
+        checkpoint: Option<&'checkpoint dyn ExecutionCheckpoint>,
+        phase: ProjectExecutionPhase,
+        file: Option<ProjectExecutionFile<'file>>,
+    ) -> Self {
+        let span = Self {
+            checkpoint,
+            phase,
+            file,
+            observer: None,
+            returned: false,
+        };
+        span.emit(ProjectExecutionTransition::Entered);
+        span
+    }
+
+    /// The query database may be thread-local. Borrow only its observation
+    /// callback; it remains on that thread and never acquires semantic authority.
+    pub fn with_observer(
+        observer: &'checkpoint dyn for<'event> Fn(ProjectExecutionEvent<'event>),
+        phase: ProjectExecutionPhase,
+        file: Option<ProjectExecutionFile<'file>>,
+    ) -> Self {
+        let span = Self {
+            checkpoint: None,
+            phase,
+            file,
+            observer: Some(observer),
+            returned: false,
+        };
+        span.emit(ProjectExecutionTransition::Entered);
+        span
+    }
+
+    pub fn returned(mut self) {
+        self.returned = true;
+        self.emit(ProjectExecutionTransition::Returned);
+    }
+
+    fn emit(&self, transition: ProjectExecutionTransition) {
+        if let Some(observer) = self.observer {
+            observer(ProjectExecutionEvent {
+                phase: self.phase,
+                transition,
+                file: self.file,
+            });
+        }
+        if let Some(checkpoint) = self.checkpoint {
+            checkpoint.observe(ProjectExecutionEvent {
+                phase: self.phase,
+                transition,
+                file: self.file,
+            });
+        }
+    }
+}
+
+impl Drop for ProjectExecutionSpan<'_, '_> {
+    fn drop(&mut self) {
+        if !self.returned {
+            self.emit(ProjectExecutionTransition::Unwound);
+        }
+    }
 }
 
 /// Scope an arbitrary checkpoint so its first stop remains visible to every
@@ -61,6 +191,10 @@ impl<'checkpoint> LatchedExecutionCheckpoint<'checkpoint> {
 }
 
 impl ExecutionCheckpoint for LatchedExecutionCheckpoint<'_> {
+    fn observe(&self, event: ProjectExecutionEvent<'_>) {
+        self.source.observe(event);
+    }
+
     fn checkpoint(&self, work_units: u64) -> Result<(), ProjectExecutionStop> {
         if let Some(stop) = self.stopped_reason() {
             return Err(stop);
@@ -244,6 +378,66 @@ mod tests {
     };
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn boundary_observation_is_read_only_and_forwards_through_latched_scopes() {
+        use super::{
+            ProjectExecutionEvent, ProjectExecutionFile, ProjectExecutionPhase as P,
+            ProjectExecutionSpan, ProjectExecutionTransition as T,
+        };
+        use std::sync::Mutex;
+        use std::sync::atomic::AtomicU64;
+        struct Observer {
+            polls: AtomicU64,
+            events: Mutex<Vec<(P, T, Option<(usize, String)>)>>,
+        }
+        impl ExecutionCheckpoint for Observer {
+            fn checkpoint(&self, _: u64) -> Result<(), ProjectExecutionStop> {
+                self.polls.fetch_add(1, Ordering::Relaxed);
+                Err(ProjectExecutionStop::Cancelled)
+            }
+            fn observe(&self, event: ProjectExecutionEvent<'_>) {
+                self.events.lock().unwrap().push((
+                    event.phase,
+                    event.transition,
+                    event.file.map(|file| (file.index, file.path.to_owned())),
+                ));
+            }
+        }
+        let observer = Observer {
+            polls: AtomicU64::new(0),
+            events: Mutex::new(Vec::new()),
+        };
+        let inner = LatchedExecutionCheckpoint::new(&observer);
+        let outer = LatchedExecutionCheckpoint::new(&inner);
+        let file = Some(ProjectExecutionFile {
+            index: 3,
+            path: "src/exact.ts",
+        });
+        ProjectExecutionSpan::new(Some(&outer), P::FileCheck, file).returned();
+        {
+            let _unfinished = ProjectExecutionSpan::new(Some(&outer), P::SourcePreparation, file);
+        }
+        assert_eq!(observer.polls.load(Ordering::Relaxed), 0);
+        assert_eq!(inner.stopped_reason(), None);
+        assert_eq!(outer.stopped_reason(), None);
+        let events = observer.events.lock().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .map(|(_, transition, _)| *transition)
+                .collect::<Vec<_>>(),
+            [T::Entered, T::Returned, T::Entered, T::Unwound]
+        );
+        assert!(
+            events
+                .iter()
+                .all(|(_, _, path)| path.as_ref() == Some(&(3, "src/exact.ts".to_owned())))
+        );
+        drop(events);
+        assert_eq!(outer.checkpoint(0), Err(ProjectExecutionStop::Cancelled));
+        assert_eq!(observer.polls.load(Ordering::Relaxed), 1);
+    }
 
     struct OneShotStop(AtomicBool);
 

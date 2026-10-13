@@ -446,6 +446,11 @@ impl TszProjectAuthority {
                 .checkpoint(0)
                 .map_err(TszAuthorityError::ExecutionStopped)?;
         }
+        let frontier = tsz_common::ProjectExecutionSpan::new(
+            checkpoint,
+            tsz_common::ProjectExecutionPhase::SourceFrontier,
+            None,
+        );
         if sources.is_empty() {
             return Err(TszSourceError::EmptyProject.into());
         }
@@ -550,12 +555,19 @@ impl TszProjectAuthority {
                     .checkpoint(0)
                     .map_err(TszAuthorityError::ExecutionStopped)?;
             }
+            frontier.returned();
             report.reused_project_result = true;
             return Ok(report);
         }
 
+        frontier.returned();
         report.parsed_and_bound = files_to_parse.len();
         if !files_to_parse.is_empty() {
+            let parse = tsz_common::ProjectExecutionSpan::new(
+                checkpoint,
+                tsz_common::ProjectExecutionPhase::ParseBind,
+                None,
+            );
             let parsed = match checkpoint {
                 Some(checkpoint) => {
                     tsz::parallel::parse_and_bind_parallel_with_libs_and_options_and_execution_checkpoint(
@@ -574,6 +586,7 @@ impl TszProjectAuthority {
                     options.checker.module_detection,
                 ),
             };
+            parse.returned();
             for result in parsed {
                 let path = result.file_name.clone();
                 let source = result
@@ -598,6 +611,11 @@ impl TszProjectAuthority {
             .map(|(path, cached)| (path.clone(), Arc::clone(&cached.result)))
             .collect();
         let bind_refs: Vec<_> = bound_sources.values().map(Arc::as_ref).collect();
+        let merge = tsz_common::ProjectExecutionSpan::new(
+            checkpoint,
+            tsz_common::ProjectExecutionPhase::Merge,
+            None,
+        );
         let mut program = match checkpoint {
             Some(checkpoint) => {
                 tsz::parallel::merge_bind_results_ref_with_project_semantic_options_and_execution_checkpoint(
@@ -617,8 +635,15 @@ impl TszProjectAuthority {
                 .checkpoint(0)
                 .map_err(TszAuthorityError::ExecutionStopped)?;
         }
+        merge.returned();
+        let formats = tsz_common::ProjectExecutionSpan::new(
+            checkpoint,
+            tsz_common::ProjectExecutionPhase::FileFormats,
+            None,
+        );
         program.set_project_file_formats(&options.file_formats)?;
         program.set_project_module_resolutions(&options.module_resolutions)?;
+        formats.returned();
         let check = match execution {
             TszUpdateExecution::Partitions(execution) => {
                 let checkpoint = checkpoint.expect("partition execution always owns a checkpoint");

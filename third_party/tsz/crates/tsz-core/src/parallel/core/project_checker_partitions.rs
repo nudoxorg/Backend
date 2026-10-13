@@ -1,3 +1,5 @@
+use tsz_common::{ProjectExecutionFile, ProjectExecutionPhase, ProjectExecutionSpan};
+
 /// Failure to start or complete a bounded project checker run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProjectPartitionCheckError {
@@ -107,6 +109,11 @@ fn check_project_partitions_observing_file_boundaries(
             .map_err(|reason| Program(ProjectProgramCheckError::ExecutionStopped(reason)))
     };
     poll()?;
+    let resolution_span = ProjectExecutionSpan::new(
+        Some(execution_checkpoint),
+        ProjectExecutionPhase::ModuleOutcomes,
+        None,
+    );
     let outcomes = build_project_module_resolution_outcomes_with_poll(
         program,
         resolutions,
@@ -119,8 +126,14 @@ fn check_project_partitions_observing_file_boundaries(
     )
     .map_err(Program)?;
     poll()?;
+    resolution_span.returned();
     let worker_count = workers.get().min(program.files.len().max(1));
     let run = || -> Result<CheckResult, ProjectPartitionCheckError> {
+        let plan_span = ProjectExecutionSpan::new(
+            Some(execution_checkpoint),
+            ProjectExecutionPhase::CheckerPlan,
+            None,
+        );
         let plan = ParallelCheckPlan::build(
             program,
             checker_options,
@@ -131,8 +144,15 @@ fn check_project_partitions_observing_file_boundaries(
         )
         .map_err(|reason| Program(ProjectProgramCheckError::ExecutionStopped(reason)))?;
         poll()?;
+        plan_span.returned();
+        let prime_span = ProjectExecutionSpan::new(
+            Some(execution_checkpoint),
+            ProjectExecutionPhase::AugmentationPrime,
+            None,
+        );
         plan.prime_module_augmentation_bodies();
         poll()?;
+        prime_span.returned();
         let partition_size = program.files.len().div_ceil(worker_count).max(1);
         let check_partition = |partition_idx: usize, files: &[BoundFile]| {
             plan.check_file_partition_observing_completion(
@@ -171,10 +191,16 @@ fn check_project_partitions_observing_file_boundaries(
         plan.run_lib_checks_with_execution_checkpoint(&mut file_results)
             .map_err(|reason| Program(ProjectProgramCheckError::ExecutionStopped(reason)))?;
         poll()?;
+        let aggregate_span = ProjectExecutionSpan::new(
+            Some(execution_checkpoint),
+            ProjectExecutionPhase::Aggregate,
+            None,
+        );
         let result = plan
             .aggregate_with_poll(file_results, |work| execution_checkpoint.checkpoint(work))
             .map_err(|reason| Program(ProjectProgramCheckError::ExecutionStopped(reason)))?;
         poll()?;
+        aggregate_span.returned();
         Ok(result)
     };
     #[cfg(not(target_arch = "wasm32"))]
@@ -227,7 +253,16 @@ impl ParallelCheckPlan<'_> {
             let mut baseline_diagnostics = FxHashSet::default();
             for (index, lib) in self.checker_lib_files.iter().enumerate() {
                 poll(1)?;
+                let span = ProjectExecutionSpan::new(
+                    self.execution_control(),
+                    ProjectExecutionPhase::LibraryBaseline,
+                    Some(ProjectExecutionFile {
+                        index: self.program.files.len() + index,
+                        path: &lib.file_name,
+                    }),
+                );
                 let result = self.check_one_lib_baseline(index, lib);
+                span.returned();
                 poll(0)?;
                 completed(LibraryCheckCompletion::Baseline(index));
                 poll(0)?;
@@ -239,7 +274,16 @@ impl ParallelCheckPlan<'_> {
             }
             for (index, lib) in self.checker_lib_files.iter().enumerate() {
                 poll(1)?;
+                let span = ProjectExecutionSpan::new(
+                    self.execution_control(),
+                    ProjectExecutionPhase::LibraryCheck,
+                    Some(ProjectExecutionFile {
+                        index: self.program.files.len() + index,
+                        path: &lib.file_name,
+                    }),
+                );
                 let mut result = self.check_one_lib(index, lib);
+                span.returned();
                 poll(0)?;
                 let mut kept = Vec::with_capacity(result.diagnostics.len());
                 for diagnostic in result.diagnostics {
@@ -299,6 +343,15 @@ impl ParallelCheckPlan<'_> {
             // Once another worker latches a stop, no later file is started.
             poll()?;
             let file_idx = first_file_idx + offset;
+            let observed_file = Some(ProjectExecutionFile {
+                index: file_idx,
+                path: &file.file_name,
+            });
+            let reset_span = ProjectExecutionSpan::new(
+                self.execution_control(),
+                ProjectExecutionPhase::FileReset,
+                observed_file,
+            );
             if offset != 0 {
                 query_cache.reset_for_next_file();
                 checker.ctx.switch_to_file(
@@ -308,14 +361,27 @@ impl ParallelCheckPlan<'_> {
                     file_idx,
                 );
             }
+            reset_span.returned();
             starting(file_idx);
             // Reset/switch may clear large local maps. Poll again so a stop
             // observed during that boundary cannot start the next file.
             poll()?;
+            let span = ProjectExecutionSpan::new(
+                self.execution_control(),
+                ProjectExecutionPhase::FileCheck,
+                observed_file,
+            );
             checker.check_source_file(file.source_file);
+            span.returned();
             poll()?;
+            let post_span = ProjectExecutionSpan::new(
+                self.execution_control(),
+                ProjectExecutionPhase::FilePostprocess,
+                observed_file,
+            );
             let diagnostics = std::mem::take(&mut checker.ctx.diagnostics);
             results.push(Self::user_file_result(file_idx, file, diagnostics));
+            post_span.returned();
             completed(file_idx);
         }
         Ok(results)

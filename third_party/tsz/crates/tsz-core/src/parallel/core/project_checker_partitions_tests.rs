@@ -1,9 +1,9 @@
 use super::*;
-use tsz_parser::parser::node::NodeAccess;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tsz_common::{ProjectExecutionBudget, ProjectExecutionStop};
+use tsz_parser::parser::node::NodeAccess;
 
 fn execution_budget(cancelled: &AtomicBool) -> ProjectExecutionBudget<'_> {
     ProjectExecutionBudget::new(
@@ -3676,5 +3676,91 @@ fn assert_cold_selected_diagnostics_with_options(
         codes,
         "{:?}",
         checked[0].diagnostics
+    );
+}
+
+#[test]
+fn observed_partitions_preserve_diagnostics_and_exact_file_boundaries() {
+    use std::sync::Mutex;
+    use tsz_common::{
+        ExecutionCheckpoint, ProjectExecutionEvent, ProjectExecutionPhase as P,
+        ProjectExecutionTransition as T,
+    };
+    struct Observed<'a> {
+        budget: ProjectExecutionBudget<'a>,
+        rows: Mutex<Vec<(P, T, Option<(usize, String)>)>>,
+    }
+    impl ExecutionCheckpoint for Observed<'_> {
+        fn checkpoint(&self, work: u64) -> Result<(), ProjectExecutionStop> {
+            self.budget.checkpoint(work)
+        }
+        fn observe(&self, event: ProjectExecutionEvent<'_>) {
+            self.rows.lock().unwrap().push((
+                event.phase,
+                event.transition,
+                event.file.map(|file| (file.index, file.path.to_owned())),
+            ));
+        }
+    }
+    let cancelled = AtomicBool::new(false);
+    let (baseline, libs, options, resolutions, semantic) = pristine_parity_fixture();
+    let expected = check_files_with_project_inputs_and_checker_partitions(
+        &baseline,
+        &options,
+        &libs,
+        semantic,
+        &resolutions,
+        ProjectCheckerExecution {
+            checkpoint: &execution_budget(&cancelled),
+            workers: NonZeroUsize::new(2).unwrap(),
+        },
+    )
+    .unwrap();
+    let (program, libs, options, resolutions, semantic) = pristine_parity_fixture();
+    let observer = Observed {
+        budget: execution_budget(&cancelled),
+        rows: Mutex::new(Vec::new()),
+    };
+    let actual = check_files_with_project_inputs_and_checker_partitions(
+        &program,
+        &options,
+        &libs,
+        semantic,
+        &resolutions,
+        ProjectCheckerExecution {
+            checkpoint: &observer,
+            workers: NonZeroUsize::new(2).unwrap(),
+        },
+    )
+    .unwrap();
+    assert_same_results(&actual, &expected);
+    let rows = observer.rows.lock().unwrap();
+    for (index, file) in program.files.iter().enumerate() {
+        for phase in [
+            P::FileReset,
+            P::FileCheck,
+            P::FilePostprocess,
+            P::SourcePreparation,
+            P::SourceStatements,
+            P::SourcePostchecks,
+        ] {
+            for transition in [T::Entered, T::Returned] {
+                assert_eq!(
+                    rows.iter()
+                        .filter(|(p, t, path)| *p == phase
+                            && *t == transition
+                            && path.as_ref() == Some(&(index, file.file_name.clone())))
+                        .count(),
+                    1,
+                    "exact admitted file must expose each boundary once: {phase:?} {transition:?} {}",
+                    file.file_name
+                );
+            }
+        }
+    }
+    assert!(
+        !rows
+            .iter()
+            .any(|(_, transition, _)| *transition == T::Unwound)
     );
 }

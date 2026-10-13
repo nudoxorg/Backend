@@ -966,6 +966,11 @@ impl<'a> ParallelCheckPlan<'a> {
         let resolved_module_paths = Arc::new(resolved_module_paths);
         let resolved_modules = Arc::new(resolved_modules);
 
+        let library_span = tsz_common::ProjectExecutionSpan::new(
+            execution_checkpoint,
+            tsz_common::ProjectExecutionPhase::LibraryViews,
+            None,
+        );
         let should_clone_libs_in_parallel = program.files.len() > 1;
         let checker_lib_files =
             clone_lib_files_for_checker(lib_files, should_clone_libs_in_parallel);
@@ -993,6 +998,12 @@ impl<'a> ParallelCheckPlan<'a> {
                 project_plan_checkpoint(execution_checkpoint, work)
             })?;
 
+        library_span.returned();
+        let binder_span = tsz_common::ProjectExecutionSpan::new(
+            execution_checkpoint,
+            tsz_common::ProjectExecutionPhase::BinderViews,
+            None,
+        );
         // The binder constructor reads the program's existing shared maps.
         // The legacy with_shared wrapper no longer consumes SharedBinderData,
         // so do not allocate a redundant merged augmentation copy here.
@@ -1005,6 +1016,12 @@ impl<'a> ParallelCheckPlan<'a> {
             )));
         }
         let all_binders = Arc::new(all_binders_vec);
+        binder_span.returned();
+        let owner_span = tsz_common::ProjectExecutionSpan::new(
+            execution_checkpoint,
+            tsz_common::ProjectExecutionPhase::OwnershipIndex,
+            None,
+        );
         let mut all_arenas_vec = Vec::with_capacity(program.files.len());
         for file in &program.files {
             project_plan_checkpoint(execution_checkpoint, 1)?;
@@ -1048,6 +1065,7 @@ impl<'a> ParallelCheckPlan<'a> {
             });
 
         project_plan_checkpoint(execution_checkpoint, 0)?;
+        owner_span.returned();
         // Initialize per-file delegation locks for parallel correctness.
         program
             .definition_store
@@ -1066,6 +1084,11 @@ impl<'a> ParallelCheckPlan<'a> {
         };
 
         project_plan_checkpoint(execution_checkpoint, 0)?;
+        let affected_span = tsz_common::ProjectExecutionSpan::new(
+            execution_checkpoint,
+            tsz_common::ProjectExecutionPhase::AffectedLibraries,
+            None,
+        );
         let affected_lib_interfaces = affected_lib_interface_names(program, &checker_lib_files);
         project_plan_checkpoint(execution_checkpoint, 0)?;
         let affected_lib_extension_interfaces = if affected_lib_interfaces.is_empty() {
@@ -1079,6 +1102,7 @@ impl<'a> ParallelCheckPlan<'a> {
         };
 
         project_plan_checkpoint(execution_checkpoint, 0)?;
+        affected_span.returned();
         Ok(Self {
             program,
             checker_options,
