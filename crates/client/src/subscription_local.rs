@@ -89,6 +89,25 @@ enum BootstrapRelease {
     RetiredAfterAcknowledgement,
 }
 
+/// Healthy completion spends its original hydration allowance. Abandoned
+/// admission spends only terminal cleanup on the last correlated socket.
+#[cfg(any(unix, windows))]
+#[derive(Clone, Copy, Debug)]
+enum BootstrapReleasePhase {
+    Hydrated { deadline: Instant },
+    Abandoned,
+}
+
+#[cfg(any(unix, windows))]
+impl BootstrapReleasePhase {
+    fn now(self, hydration_clock: &dyn crate::monotonic::MonotonicClock) -> Instant {
+        match self {
+            Self::Hydrated { .. } => hydration_clock.now(),
+            Self::Abandoned => Instant::now(),
+        }
+    }
+}
+
 /// Failure starting or completing one resumable local-control request.
 #[cfg(any(unix, windows))]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -431,14 +450,22 @@ impl LocalSubscriptionTransport {
         let lease = response.lease();
         let mut cleanup_on = self.connection();
         let root = self.bootstrap_pages(response, lease, &mut hydration, &mut cleanup_on);
-        let cleanup =
-            self.release_bootstrap_lease_current(lease, cleanup_on, Duration::from_millis(50));
         match root {
             Err(error) => {
-                let _ = cleanup;
+                let _ = self.release_bootstrap_lease_current(
+                    lease,
+                    cleanup_on,
+                    BootstrapReleasePhase::Abandoned,
+                );
                 Err(LocalSubscriptionExchangeError::Invalid(error))
             }
-            Ok(root) => match cleanup? {
+            Ok(root) => match self.release_bootstrap_lease_current(
+                lease,
+                cleanup_on,
+                BootstrapReleasePhase::Hydrated {
+                    deadline: hydration.budget().deadline(),
+                },
+            )? {
                 BootstrapRelease::Reusable | BootstrapRelease::RetiredAfterAcknowledgement => {
                     Ok(root)
                 }
@@ -537,7 +564,7 @@ impl LocalSubscriptionTransport {
         &mut self,
         lease: LocalSubscriptionId,
         cleanup_on: ConnectionId,
-        timeout: Duration,
+        phase: BootstrapReleasePhase,
     ) -> Result<BootstrapRelease, LocalSubscriptionExchangeError> {
         if self.connection != cleanup_on {
             return Err(LocalSubscriptionExchangeError::Invalid(
@@ -550,6 +577,41 @@ impl LocalSubscriptionTransport {
             return Err(LocalSubscriptionExchangeError::Setup(ClientError::Io(
                 "transport already released by a terminal lease cancellation".to_owned(),
             )));
+        }
+        let deadline = match phase {
+            BootstrapReleasePhase::Hydrated { deadline } => {
+                if self.terminal_cleanup.is_some() {
+                    self.retire_connection();
+                    return Err(LocalSubscriptionExchangeError::Invalid(
+                        ClientError::Protocol(
+                            "hydrated bootstrap cannot consume abandoned exchange cleanup"
+                                .to_owned(),
+                        ),
+                    ));
+                }
+                deadline
+            }
+            BootstrapReleasePhase::Abandoned => match self.terminal_cleanup.take() {
+                Some(cleanup) if cleanup.lease == lease && cleanup.connection == cleanup_on => {
+                    cleanup.deadline
+                }
+                Some(_) => {
+                    self.retire_connection();
+                    return Err(LocalSubscriptionExchangeError::Invalid(
+                        ClientError::Protocol(
+                            "bootstrap cleanup belongs to another lease/socket".to_owned(),
+                        ),
+                    ));
+                }
+                None => Instant::now() + TERMINAL_CLEANUP_ALLOWANCE,
+            },
+        };
+        let clock = Arc::clone(&self.clock);
+        if phase.now(clock.as_ref()) >= deadline {
+            self.retire_connection();
+            return Err(LocalSubscriptionExchangeError::Invalid(
+                crate::reset_budget::ResetFault::TimeBudget.into(),
+            ));
         }
         let request_id = self.next_request_id;
         let Some(next_request_id) = request_id.checked_add(1) else {
@@ -566,23 +628,55 @@ impl LocalSubscriptionTransport {
             request_id,
             operation: LocalSubscriptionOperation::Cancel { lease },
         });
-        let configured = self
-            .client
-            .stream()
-            .set_read_timeout(Some(timeout))
-            .and_then(|()| self.client.stream().set_write_timeout(Some(timeout)));
+        // Unix uses the existing deadline parser without blocking native I/O.
+        // Darwin can reject timeout setters after peer FIN while a complete
+        // correlated acknowledgement is still buffered on this socket.
+        #[cfg(unix)]
+        let configured = self.client.stream().set_nonblocking(true);
+        #[cfg(windows)]
+        let configured = {
+            let remaining = deadline.saturating_duration_since(phase.now(clock.as_ref()));
+            if remaining.is_zero() {
+                self.retire_connection();
+                return Err(LocalSubscriptionExchangeError::Invalid(
+                    crate::reset_budget::ResetFault::TimeBudget.into(),
+                ));
+            }
+            self.client
+                .stream()
+                .set_read_timeout(Some(remaining))
+                .and_then(|()| self.client.stream().set_write_timeout(Some(remaining)))
+        };
         if let Err(error) = configured {
             self.retire_connection();
             return Err(LocalSubscriptionExchangeError::Setup(ClientError::Io(
                 error.to_string(),
             )));
         }
-        let result = match self
-            .client
-            .begin_exchange(&request, Instant::now() + timeout)
-        {
+        let result = match self.client.begin_exchange(&request, deadline) {
             Ok(mut exchange) => exchange
-                .wait_with(|_| LocalControlExchangeDecision::Continue)
+                .wait_exact_with_io_deadline(
+                    |_| {
+                        if phase.now(clock.as_ref()) >= deadline {
+                            LocalControlExchangeDecision::Cancel
+                        } else {
+                            LocalControlExchangeDecision::Continue
+                        }
+                    },
+                    |stream, remaining| {
+                        #[cfg(unix)]
+                        {
+                            let _ = (stream, remaining);
+                            Ok(())
+                        }
+                        #[cfg(windows)]
+                        {
+                            stream
+                                .set_read_timeout(Some(remaining))
+                                .and_then(|()| stream.set_write_timeout(Some(remaining)))
+                        }
+                    },
+                )
                 .map_err(LocalSubscriptionExchangeError::Exchange),
             Err(error) => Err(LocalSubscriptionExchangeError::Setup(map_control_error(
                 error,
@@ -604,12 +698,24 @@ impl LocalSubscriptionTransport {
                 )),
             });
         }
+        // Decoding and scheduling cannot extend the original admission term.
+        if phase.now(clock.as_ref()) >= deadline {
+            self.retire_connection();
+            return Err(LocalSubscriptionExchangeError::Invalid(
+                crate::reset_budget::ResetFault::TimeBudget.into(),
+            ));
+        }
         self.frames_on_connection = self.frames_on_connection.saturating_add(1);
         Ok(self.restore_after_bootstrap_ack())
     }
 
     // Called only after the exact request and lease release acknowledgement.
     fn restore_after_bootstrap_ack(&mut self) -> BootstrapRelease {
+        #[cfg(unix)]
+        if self.client.stream().set_nonblocking(false).is_err() {
+            self.retire_connection();
+            return BootstrapRelease::RetiredAfterAcknowledgement;
+        }
         if self
             .client
             .stream()
@@ -1254,7 +1360,13 @@ mod bootstrap_exhaustion_tests {
             .expect("send complete correlated response");
         });
         assert!(matches!(
-            transport.release_bootstrap_lease_current(lease, connection, Duration::from_millis(50)),
+            transport.release_bootstrap_lease_current(
+                lease,
+                connection,
+                BootstrapReleasePhase::Hydrated {
+                    deadline: Instant::now() + Duration::from_secs(1),
+                }
+            ),
             Err(LocalSubscriptionExchangeError::Invalid(
                 ClientError::Protocol(_)
             ))
@@ -1502,6 +1614,224 @@ mod exchange_tests {
     };
     use std::io::{Read as _, Write as _};
     use std::os::unix::net::UnixStream;
+
+    #[test]
+    fn healthy_release_rejects_an_ack_for_another_request_without_queueing_it() {
+        let (stream, mut owner) = UnixStream::pair().expect("Unix pair");
+        owner
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("bounded owner");
+        let lease = LocalSubscriptionId::from_bytes([35; 16]);
+        let server = std::thread::spawn(move || {
+            let body = read_frame(&mut owner, control_limits()).expect("release request");
+            let LocalControlRequest::Subscription(cancel) =
+                decode_request(&body, control_limits()).expect("release frame")
+            else {
+                panic!("subscription cancel");
+            };
+            write_frame(
+                &mut owner,
+                &encode_response(
+                    &LocalControlResponse::Subscription(LocalSubscriptionResponse::Cancelled {
+                        request_id: cancel.request_id + 1,
+                        lease,
+                    }),
+                    control_limits(),
+                )
+                .expect("wrong request ACK"),
+                control_limits(),
+            )
+            .expect("send wrong request ACK");
+        });
+        let mut transport = LocalSubscriptionTransport::from_stream(stream);
+        let connection = transport.connection();
+        assert!(matches!(
+            transport.release_bootstrap_lease_current(
+                lease, connection, BootstrapReleasePhase::Hydrated {
+                    deadline: Instant::now() + Duration::from_secs(1)
+                }
+            ),
+            Err(LocalSubscriptionExchangeError::Exchange(exchange))
+                if matches!(exchange.failure, LocalControlExchangeFailure::Protocol(_))
+        ));
+        assert!(
+            transport.interrupt_handle().is_none(),
+            "wrong request ACK left socket reusable"
+        );
+        server.join().expect("wrong request owner");
+    }
+
+    #[test]
+    fn healthy_release_rejects_an_expired_original_deadline_without_sending_or_rebudgeting() {
+        let (stream, mut owner) = UnixStream::pair().expect("real Unix pair");
+        owner
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("bounded owner");
+        let mut transport = LocalSubscriptionTransport::from_stream(stream);
+        let connection = transport.connection();
+        let next_request = transport.next_request_id;
+        assert!(matches!(transport.release_bootstrap_lease_current(
+            LocalSubscriptionId::from_bytes([36; 16]), connection,
+            BootstrapReleasePhase::Hydrated { deadline: Instant::now() },
+        ), Err(LocalSubscriptionExchangeError::Invalid(ClientError::Protocol(message))) if message.contains("time budget")));
+        assert_eq!(
+            transport.next_request_id, next_request,
+            "expired release allocated another request"
+        );
+        let mut byte = [0; 1];
+        assert_eq!(
+            owner.read(&mut byte).expect("exact stream retired"),
+            0,
+            "expired release sent bytes"
+        );
+        assert!(transport.interrupt_handle().is_none());
+    }
+
+    #[test]
+    fn an_interrupted_bootstrap_socket_never_releases_its_lease_on_a_replacement() {
+        let (stream, mut old_owner) = UnixStream::pair().expect("old Unix pair");
+        let mut transport = LocalSubscriptionTransport::from_stream(stream);
+        let held_on = transport.connection();
+        transport
+            .interrupt_handle()
+            .expect("old interrupt")
+            .interrupt();
+        assert!(
+            transport
+                .release_bootstrap_lease_current(
+                    LocalSubscriptionId::from_bytes([37; 16]),
+                    held_on.clone(),
+                    BootstrapReleasePhase::Hydrated {
+                        deadline: Instant::now() + Duration::from_secs(1)
+                    },
+                )
+                .is_err()
+        );
+        let mut byte = [0; 1];
+        assert_eq!(old_owner.read(&mut byte).expect("old retired socket"), 0);
+
+        let (replacement, mut new_owner) = UnixStream::pair().expect("new Unix pair");
+        new_owner
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .expect("bounded new owner");
+        transport.client = LocalControlClient::new(replacement, control_limits());
+        transport.connection = ConnectionId::next();
+        transport.frames_on_connection = 0;
+        let next_request = transport.next_request_id;
+        assert!(matches!(transport.release_bootstrap_lease_current(
+            LocalSubscriptionId::from_bytes([37; 16]), held_on,
+            BootstrapReleasePhase::Hydrated { deadline: Instant::now() + Duration::from_secs(1) },
+        ), Err(LocalSubscriptionExchangeError::Invalid(ClientError::Protocol(message))) if message.contains("no longer current")));
+        assert_eq!(transport.next_request_id, next_request);
+        assert!(
+            matches!(new_owner.read(&mut byte), Err(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)),
+            "old lease reached the replacement owner"
+        );
+    }
+
+    #[test]
+    fn failed_bootstrap_keeps_original_admission_error_and_short_cleanup() {
+        let lease = LocalSubscriptionId::from_bytes([38; 16]);
+        let (stream, mut owner) = UnixStream::pair().expect("Unix pair");
+        owner
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("bounded owner");
+        let (release, held) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let body = read_frame(&mut owner, control_limits()).expect("bootstrap open");
+            let LocalControlRequest::Subscription(open) =
+                decode_request(&body, control_limits()).expect("open request")
+            else {
+                panic!("subscription open");
+            };
+            write_frame(
+                &mut owner,
+                &encode_response(
+                    &LocalControlResponse::Subscription(LocalSubscriptionResponse::SnapshotPage {
+                        request_id: open.request_id,
+                        lease,
+                        page: Box::new([]),
+                        next: None,
+                        credit: PUBLICATION_CREDIT,
+                        payload: Box::from(b"no peer proof".as_slice()),
+                    }),
+                    control_limits(),
+                )
+                .expect("page response"),
+                control_limits(),
+            )
+            .expect("send page");
+            let body = read_frame(&mut owner, control_limits()).expect("cleanup cancel");
+            let LocalControlRequest::Subscription(cancel) =
+                decode_request(&body, control_limits()).expect("cancel request")
+            else {
+                panic!("subscription cancel");
+            };
+            assert!(
+                matches!(cancel.operation, LocalSubscriptionOperation::Cancel { lease: observed } if observed == lease)
+            );
+            let mut byte = [0; 1];
+            assert_eq!(
+                owner.read(&mut byte).expect("short cleanup retired socket"),
+                0
+            );
+            held.recv_timeout(Duration::from_secs(2))
+                .expect("original error returned before held ACK");
+        });
+        let mut transport = LocalSubscriptionTransport::from_stream(stream);
+        let started = Instant::now();
+        let error = transport
+            .bootstrap_root_with_exchange_error()
+            .expect_err("unauthenticated page cannot admit");
+        assert!(
+            matches!(error, LocalSubscriptionExchangeError::Invalid(ClientError::Protocol(message)) if message.contains("authenticated")),
+            "cleanup replaced original hydration error"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "terminal cleanup spent healthy hydration allowance"
+        );
+        assert!(transport.interrupt_handle().is_none());
+        release.send(()).expect("release held owner");
+        server.join().expect("failed bootstrap owner");
+    }
+
+    #[test]
+    fn abandoned_bootstrap_reuses_only_remaining_correlated_cleanup_allowance() {
+        let (stream, mut owner) = UnixStream::pair().expect("Unix pair");
+        owner
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("bounded owner");
+        let mut transport = LocalSubscriptionTransport::from_stream(stream);
+        let connection = transport.connection();
+        let lease = LocalSubscriptionId::from_bytes([39; 16]);
+        transport.terminal_cleanup = Some(TerminalCleanup {
+            lease,
+            connection: connection.clone(),
+            deadline: Instant::now(),
+        });
+        let next_request = transport.next_request_id;
+        assert!(
+            transport
+                .release_bootstrap_lease_current(
+                    lease,
+                    connection,
+                    BootstrapReleasePhase::Abandoned
+                )
+                .is_err()
+        );
+        assert_eq!(
+            transport.next_request_id, next_request,
+            "abandoned cleanup obtained a fresh allowance"
+        );
+        let mut byte = [0; 1];
+        assert_eq!(
+            owner
+                .read(&mut byte)
+                .expect("expired cleanup closed exact socket"),
+            0
+        );
+    }
 
     #[test]
     fn bootstrap_releases_a_known_lease_on_the_same_socket_and_restores_transport_timeouts() {
