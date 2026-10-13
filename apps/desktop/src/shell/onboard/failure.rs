@@ -75,13 +75,20 @@ fn card(
     let measure = ctx.measure;
     let palette = ctx.palette;
     let lifecycle = project.lifecycle();
-    let owner_words = project.partial_refusal_words().or_else(|| project
-        .error
-        .as_deref()
-        .filter(|words| !words.is_empty())
-        .map(str::to_owned));
+    let compiler_words = project.compiler_refusal_words();
+    let owner_words = project.partial_refusal_words().or_else(|| {
+        project
+            .error
+            .as_deref()
+            .filter(|words| !words.is_empty())
+            .filter(|_| compiler_words.is_none())
+            .map(str::to_owned)
+    });
     let headline = format!("{}: {}.", project.label, lifecycle.label());
     let mut lines = vec![lifecycle.detail().to_owned()];
+    if let Some(words) = compiler_words {
+        lines.push(words);
+    }
     if lifecycle == ProjectLifecycle::Missing {
         lines.push(format!("Nudox looked for it at {}.", project.path));
     }

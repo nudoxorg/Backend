@@ -1871,7 +1871,7 @@ fn usability_batch_read_wire_extent_is_versioned_and_older_records_stay_honest()
         assert!(error.contains(&format!("this build supports {DTO_VERSION}")));
     }
     let grammar = crate::JournalViewGrammarV3::from_checked_container(3).expect("checked grammar");
-    for historical in 21..=27 {
+    for historical in 21..=28 {
         grammar
             .check_envelope_version(historical)
             .expect("maintained journal law");
@@ -2754,8 +2754,8 @@ mod index_ticket_reply;
 fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants() {
     use crate::interface::TypeScriptAuthorityFailureKind as F;
     assert_eq!(
-        DTO_VERSION, 28,
-        "native worker refusal first ships with DTO28"
+        DTO_VERSION, 29,
+        "combined source and admission detail cutover uses DTO29; worker refusal first shipped with DTO28"
     );
     let kind = F::NativeCheckerWorkerPoolUnavailable;
     let encoded_kind = serde_json::to_vec(&kind).unwrap();
@@ -2769,8 +2769,8 @@ fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants() {
     }))
     .unwrap();
     let old_peer = super::codec::check_version_header_against(&current, "reply", 27)
-        .expect_err("DTO27 peer must refuse DTO28 before decoding its new failure variant");
-    assert!(old_peer.contains("reply DTO version 28"));
+        .expect_err("DTO27 peer must refuse the current DTO before decoding its failure variant");
+    assert!(old_peer.contains("reply DTO version 29"));
     assert!(old_peer.contains("this build supports 27"));
     assert!(!old_peer.contains("unknown variant"));
     let mut previous: serde_json::Value = serde_json::from_slice(&current).unwrap();
@@ -2782,3 +2782,6 @@ fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants() {
     assert!(error.contains("reply DTO version 27"));
     assert!(!error.contains("unknown variant"));
 }
+
+#[path = "typescript_admission_cutover_tests.rs"]
+mod typescript_admission_cutover;

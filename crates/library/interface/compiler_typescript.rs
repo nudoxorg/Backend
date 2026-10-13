@@ -83,7 +83,7 @@ pub enum TypeScriptAuthorityFailureKind {
     HostConfigInvalid,
     /// TypeScript selected configuration file was absent.
     HostConfigMissing,
-    /// TypeScript admitted compiler API rejected its program input.
+    /// TypeScript selected compiler API could not complete semantic analysis.
     HostCompilerApiBridge,
     /// TypeScript compiler program admission observed cooperative cancellation.
     HostProgramCancelled,
@@ -111,7 +111,7 @@ pub enum TypeScriptAuthorityFailureKind {
     HostRegularDirectoryRequired,
     /// TypeScript module capture encountered a disallowed symlink.
     HostModuleEntrySymlink,
-    /// TypeScript compiler package exceeded its file count bound.
+    /// TypeScript compiler package exceeded its runtime-file or traversal bound.
     HostModuleFileLimit,
     /// TypeScript project witness changed after admission.
     HostWitnessChanged,
@@ -463,7 +463,7 @@ impl TypeScriptAuthorityFailureKind {
             Self::HostConfigInvalid => "TypeScript project configuration could not be decoded",
             Self::HostConfigMissing => "TypeScript selected configuration file was absent",
             Self::HostCompilerApiBridge => {
-                "TypeScript admitted compiler API rejected its program input"
+                "TypeScript semantic analysis could not be completed with the selected Compiler API"
             }
             Self::HostProgramCancelled => "TypeScript compiler program admission was cancelled",
             Self::HostProgramDeadline => {
@@ -493,7 +493,7 @@ impl TypeScriptAuthorityFailureKind {
                 "TypeScript module capture encountered a disallowed symlink"
             }
             Self::HostModuleFileLimit => {
-                "TypeScript compiler package exceeded its file count bound"
+                "TypeScript compiler package exceeded an admitted runtime-file or traversal bound"
             }
             Self::HostWitnessChanged => "TypeScript project witness changed after admission",
             Self::HostSourceOutsideCapability => {

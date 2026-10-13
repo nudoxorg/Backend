@@ -4639,6 +4639,7 @@ fn package_authority_terminal(
                     );
             let (phase, class) = package_authority_projection(&cause);
             let typescript_failure = super::compiler_typescript_failure::failure_kind(&cause);
+            let typescript_admission = super::compiler_typescript_failure::admission_detail(&cause);
             let go_failure = match &cause {
                 PackageAuthorityError::GoOracle(
                     backend_frontend_go::legacy::OracleError::DependencyClosureUnavailable {
@@ -4687,7 +4688,13 @@ fn package_authority_terminal(
                     }
                 }
                 None => match typescript_failure {
-                    Some(failure) => diagnostic.with_typescript_failure(failure),
+                    Some(failure) => {
+                        let diagnostic = diagnostic.with_typescript_failure(failure);
+                        match typescript_admission {
+                            Some(detail) => diagnostic.with_typescript_admission(detail),
+                            None => diagnostic,
+                        }
+                    }
                     None => match go_failure {
                         Some(failure) => diagnostic.with_go_failure(failure),
                         None => diagnostic,
@@ -5101,6 +5108,10 @@ fn package_authority_projection(
         | PackageAuthorityError::RequiredTool { .. } => (Phase::Open, Class::Authority),
     }
 }
+
+#[cfg(test)]
+#[path = "compiler/typescript_installed_detail_tests.rs"]
+mod typescript_installed_detail_tests;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SourceError {

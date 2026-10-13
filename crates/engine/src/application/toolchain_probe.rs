@@ -64,10 +64,46 @@ impl NativeCompilerEnvironment {
 const READ_CHUNK_BYTES: usize = 4096;
 const PROBE_POLL_INTERVAL: Duration = Duration::from_millis(2);
 pub(crate) const MAX_INVOCATION_EXECUTABLE_BYTES: u64 = 512 * 1024 * 1024;
-const MAX_TYPESCRIPT_MODULE_FILES: usize = 256;
-const MAX_TYPESCRIPT_MODULE_ENTRIES: usize = 512;
-const MAX_TYPESCRIPT_MODULE_BYTES: u64 = 96 * 1024 * 1024;
-const MAX_TYPESCRIPT_MODULE_DEPTH: usize = 32;
+pub(crate) const MAX_TYPESCRIPT_MODULE_FILES: usize = 256;
+pub(crate) const MAX_TYPESCRIPT_MODULE_ENTRIES: usize = 512;
+pub(crate) const MAX_TYPESCRIPT_MODULE_BYTES: u64 = 96 * 1024 * 1024;
+pub(crate) const MAX_TYPESCRIPT_MODULE_DEPTH: usize = 32;
+
+/// Whether a TypeScript package file participates in the admitted Compiler API inputs.
+///
+/// The selected package's manifest controls its entry points. Capture the complete `bin` and
+/// `lib` trees, plus Node-loadable files elsewhere in the package; this retains runtime data and
+/// extensionless entrypoints in the compiler trees while omitting root documentation and license
+/// assets. The shared predicate keeps the invocation lease and compiler host on the same closure.
+pub(crate) fn typescript_module_file_is_runtime_input(relative: &Path) -> bool {
+    if relative == Path::new("package.json") {
+        return true;
+    }
+    if matches!(
+        relative.components().next(),
+        Some(std::path::Component::Normal(directory))
+            if directory == std::ffi::OsStr::new("bin")
+                || directory == std::ffi::OsStr::new("lib")
+    ) {
+        return true;
+    }
+    let Some(name) = relative.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if name == "package.json"
+        || name.ends_with(".d.ts")
+        || name.ends_with(".d.mts")
+        || name.ends_with(".d.cts")
+    {
+        return true;
+    }
+    matches!(
+        relative
+            .extension()
+            .and_then(|extension| extension.to_str()),
+        Some("js" | "cjs" | "mjs" | "json" | "node" | "wasm")
+    )
+}
 
 /// Hashes one already-selected executable without allocating its full image.
 ///
@@ -146,10 +182,13 @@ pub(crate) fn executable_content_digest(path: &Path) -> io::Result<[u8; 32]> {
     Ok(*hasher.finalize().as_bytes())
 }
 
-/// Digests the complete selected `typescript` package under a canonical `node_modules` root.
+/// Digests the selected TypeScript runtime inputs under a canonical `node_modules` root.
 ///
-/// The inventory is bounded by file count, total bytes, and directory depth. Symlinks and special
-/// files are refused, so the package tree cannot redirect module loads outside this selected root.
+/// The host and invocation lease share the same selection: all regular files under `bin` and
+/// `lib`, the package manifest, and Node-loadable files or declarations elsewhere. Entries are
+/// walked under a separate bound, while selected files count against runtime-file and byte limits.
+/// Symlinks and special files are refused so the package tree cannot redirect module loads outside
+/// this selected root.
 pub(crate) fn typescript_module_closure_digest(module_root: &Path) -> io::Result<[u8; 32]> {
     if !module_root.is_absolute() || std::fs::canonicalize(module_root)? != module_root {
         return Err(io::Error::new(
@@ -167,12 +206,14 @@ pub(crate) fn typescript_module_closure_digest(module_root: &Path) -> io::Result
     }
     let mut entries = Vec::new();
     let mut file_count = 0_usize;
+    let mut entry_count = 0_usize;
     let mut total_bytes = 0_u64;
     collect_typescript_module_entries(
         &package_root,
         &package_root,
         0,
         &mut entries,
+        &mut entry_count,
         &mut file_count,
         &mut total_bytes,
     )?;
@@ -219,7 +260,7 @@ pub(crate) fn typescript_module_files_digest<'path>(
     }
     let mut total_bytes = 0_u64;
     let mut digest = blake3::Hasher::new();
-    digest.update(b"backend.typescript.module-closure.v1\0");
+    digest.update(b"backend.typescript.module-closure.v2\0");
     digest.update(&(files.len() as u64).to_be_bytes());
     for (relative, length, content_digest) in files {
         total_bytes = total_bytes.checked_add(length).ok_or_else(|| {
@@ -252,6 +293,7 @@ fn collect_typescript_module_entries(
     directory: &Path,
     depth: usize,
     entries: &mut Vec<TypeScriptModuleEntry>,
+    entry_count: &mut usize,
     file_count: &mut usize,
     total_bytes: &mut u64,
 ) -> io::Result<()> {
@@ -269,9 +311,26 @@ fn collect_typescript_module_entries(
         ));
     }
     let before_identity = invocation_file_identity(&before, directory, None)?;
-    let mut children = std::fs::read_dir(directory)?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<io::Result<Vec<_>>>()?;
+    let mut children = Vec::new();
+    for child in std::fs::read_dir(directory)? {
+        let child = child?;
+        *entry_count = entry_count.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "module entry count overflow")
+        })?;
+        if *entry_count > MAX_TYPESCRIPT_MODULE_ENTRIES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "selected TypeScript package exceeds the admitted directory-entry count",
+            ));
+        }
+        children.try_reserve(1).map_err(|source| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("cannot reserve bounded TypeScript package entry: {source}"),
+            )
+        })?;
+        children.push(child.path());
+    }
     children.sort_unstable();
     for path in children {
         let metadata = std::fs::symlink_metadata(&path)?;
@@ -302,10 +361,18 @@ fn collect_typescript_module_entries(
                 &path,
                 depth + 1,
                 entries,
+                entry_count,
                 file_count,
                 total_bytes,
             )?;
         } else if metadata.is_file() {
+            let relative_path = path
+                .strip_prefix(package_root)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "module path escape"))?
+                .to_path_buf();
+            if !typescript_module_file_is_runtime_input(&relative_path) {
+                continue;
+            }
             *file_count = file_count.checked_add(1).ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidData, "module file count overflow")
             })?;
@@ -326,10 +393,7 @@ fn collect_typescript_module_entries(
             }
             let file_digest = executable_content_digest(&path)?;
             entries.push(TypeScriptModuleEntry {
-                relative_path: path
-                    .strip_prefix(package_root)
-                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "module path escape"))?
-                    .to_path_buf(),
+                relative_path,
                 kind: b'f',
                 length: metadata.len(),
                 digest: Some(file_digest),
@@ -1290,8 +1354,75 @@ mod tests {
 
     use super::{
         NATIVE_COMPILER_ENVIRONMENT_POLICY_ID, NativeCompilerEnvironment, ToolchainProbeError,
-        ToolchainProbeLimits, probe_command,
+        ToolchainProbeLimits, probe_command, typescript_module_closure_digest,
     };
+
+    static NEXT_TYPESCRIPT_PACKAGE: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+
+    #[test]
+    fn invocation_digest_ignores_root_docs_and_tracks_the_full_compiler_lib_tree() {
+        use std::fs;
+
+        let root = std::env::temp_dir().join(format!(
+            "typescript-runtime-closure-{}-{}",
+            std::process::id(),
+            NEXT_TYPESCRIPT_PACKAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        let modules = root.join("node_modules");
+        let package = modules.join("typescript");
+        fs::create_dir_all(package.join("bin")).unwrap();
+        fs::create_dir_all(package.join("lib")).unwrap();
+        fs::write(
+            package.join("package.json"),
+            r#"{"name":"typescript","version":"5.9.3"}"#,
+        )
+        .unwrap();
+        fs::write(package.join("bin/tsc"), "require('../lib/tsc.js');\n").unwrap();
+        fs::write(package.join("lib/typescript.js"), "module.exports = {};\n").unwrap();
+        fs::write(package.join("lib/runtime-data.dat"), "runtime data\n").unwrap();
+        fs::write(package.join("README.md"), "documentation\n").unwrap();
+        for index in 0..300 {
+            fs::write(
+                package.join(format!("README-{index:03}.md")),
+                "documentation\n",
+            )
+            .unwrap();
+        }
+        let module_root = fs::canonicalize(&modules).unwrap();
+        let before = typescript_module_closure_digest(&module_root).unwrap();
+
+        fs::write(package.join("README.md"), "changed documentation\n").unwrap();
+        fs::write(package.join("CONTRIBUTING.md"), "new documentation\n").unwrap();
+        assert_eq!(
+            typescript_module_closure_digest(&module_root).unwrap(),
+            before,
+            "root documentation is outside the admitted compiler input closure"
+        );
+
+        fs::write(
+            package.join("lib/runtime-data.dat"),
+            "changed runtime data\n",
+        )
+        .unwrap();
+        assert_ne!(
+            typescript_module_closure_digest(&module_root).unwrap(),
+            before,
+            "arbitrary runtime data inside the compiler lib tree stays witnessed"
+        );
+
+        for index in 0..220 {
+            fs::write(
+                package.join(format!("GUIDE-{index:03}.md")),
+                "documentation\n",
+            )
+            .unwrap();
+        }
+        let error = typescript_module_closure_digest(&module_root)
+            .expect_err("entry traversal is bounded even for irrelevant files");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        let _ = fs::remove_dir_all(root);
+    }
 
     #[test]
     fn compiler_environment_contract_is_versioned_and_removes_ambient_settings() {

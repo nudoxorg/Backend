@@ -404,7 +404,7 @@ pub enum AuthorityClassFact {
 }
 
 /// Safe authority-diagnostic extent; native bytes are deliberately omitted.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompilerAuthorityDiagnosticFacts {
     pub retained_bytes: u32,
@@ -420,6 +420,9 @@ pub struct CompilerAuthorityDiagnosticFacts {
     /// Exact closed TypeScript cause; transcript, paths and solver text remain local.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub typescript_failure: Option<crate::interface::TypeScriptAuthorityFailureKind>,
+    /// Typed compiler version, bounded counts and exact missing API capability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typescript_admission: Option<crate::interface::TypeScriptCompilerAdmissionDetail>,
     /// Exact Go dependency-admission cause; native diagnostic text stays local.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub go_failure: Option<crate::interface::GoAuthorityFailureKind>,
@@ -1804,6 +1807,7 @@ pub(crate) fn package_failure_from_terminal(
                         python_failure: diagnostic.python_failure,
                         python_configuration: diagnostic.python_configuration,
                         typescript_failure: diagnostic.typescript_failure,
+                        typescript_admission: diagnostic.typescript_admission.clone(),
                         go_failure: diagnostic.go_failure,
                     }
                 }),
@@ -1847,6 +1851,7 @@ pub(crate) fn package_failure_from_terminal(
                         python_failure: diagnostic.python_failure,
                         python_configuration: diagnostic.python_configuration,
                         typescript_failure: diagnostic.typescript_failure,
+                        typescript_admission: diagnostic.typescript_admission.clone(),
                         go_failure: diagnostic.go_failure,
                     }
                 }),

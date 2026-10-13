@@ -960,7 +960,15 @@ impl Fault {
             failure.detail().to_owned()
         };
         let scope = if failure.is_typescript_program_execution_failure() {
-            format!("TypeScript project (requested from {})", failure.relative_path())
+            format!(
+                "TypeScript project (requested from {})",
+                failure.relative_path()
+            )
+        } else if failure.typescript_compiler_admission().is_some() {
+            format!(
+                "TypeScript compiler package (requested from {})",
+                failure.relative_path()
+            )
         } else {
             failure.relative_path().to_owned()
         };
