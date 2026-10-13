@@ -25,6 +25,14 @@ use backend_present::{domain_name, grammar_for};
 #[cfg(unix)]
 #[path = "tests/index_overlap.rs"]
 mod index_overlap;
+#[path = "tests/named_call.rs"]
+mod named_call;
+#[path = "tests/package_graph_budget.rs"]
+mod package_graph_budget;
+#[path = "tests/record_budget_pages.rs"]
+mod record_budget_pages;
+#[path = "tests/semantic_source_pages.rs"]
+mod semantic_source_pages;
 #[path = "tests/surface_fidelity.rs"]
 mod surface_fidelity;
 #[path = "tests/token_outline.rs"]
@@ -570,6 +578,9 @@ struct Fake {
     document_override: Option<Document>,
     /// Optional graph rows used to exercise the complete-page admission cap.
     graph_rows: Option<Box<[GraphQueryRow]>>,
+    /// Synthetic typed query membership under real transport admission.
+    graph_paged_rows: Option<Box<[GraphQueryRow]>>,
+    graph_query_source_changes: bool,
     /// Identity-free typed failed reply from the direct graph-page route.
     graph_failure: Option<backend_library::CommandFailure>,
     /// Typed failure from the generic graph query route.
@@ -584,6 +595,15 @@ struct Fake {
     continuation_error: Option<ClientError>,
     /// Optional product reply used by the high-fanout surface budget case.
     surface_reply: Option<SurfaceReply>,
+    /// Exact captured bytes; responds to the actual selected native range.
+    semantic_source_document: Option<std::sync::Arc<backend_library::SemanticSourceDocument>>,
+    /// Synthetic immutable membership; portable source bytes remain real42.
+    semantic_versions_total: Option<u64>,
+    native_graph_rows: Option<Vec<backend_library::PackageDependencyRecord>>,
+    /// Stops the exact admitted scope after a native graph reply is prepared.
+    graph_cancel_after_native_reply: Option<RequestCancellationReason>,
+    /// Only explicit local-serving metadata authorizes a shell alternative.
+    cli_context: Option<backend_present::StartupRecoveryContext>,
     /// Exact sequential observations for bounded-wait controls.
     surface_replies: std::collections::VecDeque<SurfaceReply>,
     /// Signals a real actor progress read before external cancellation.
@@ -608,6 +628,10 @@ struct Fake {
     surface_commands: Vec<SurfaceCommand>,
     /// Number of graph requests that reached the product boundary.
     graph_query_calls: usize,
+    /// Exact typed input and page bound admitted from a query call.
+    graph_query_inputs: Vec<(AdmittedGraphQueryInput, u16)>,
+    /// Exact caller lifetimes seen at request admission.
+    request_contexts: Vec<RequestContext>,
     /// Exact index operands that reached the owner admission boundary.
     index_paths: Vec<String>,
     /// Number of command probes that reached the product boundary.
@@ -920,6 +944,25 @@ impl Engine for Fake {
 
     fn surface(&mut self, command: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
         self.surface_commands.push(command.clone());
+        if let (SurfaceCommand::SemanticVersions { limit, cursor, .. }, Some(total)) =
+            (&command, self.semantic_versions_total)
+        {
+            let offset = cursor
+                .as_ref()
+                .map(|cursor| cursor.claims().expect("synthetic owner cursor").offset)
+                .unwrap_or(0);
+            return Ok(SurfaceReply::SemanticVersionsPage(
+                semantic_source_pages::page(*limit, offset, total, 8),
+            ));
+        }
+        if let (SurfaceCommand::SemanticSource { request }, Some(document)) =
+            (&command, &self.semantic_source_document)
+        {
+            let chunk = document
+                .chunk(&request.range)
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+            return Ok(SurfaceReply::SemanticSource(chunk));
+        }
         if let Some(admitted) = self.surface_admitted.take() {
             admitted.send(()).expect("actual progress read admitted");
         }
@@ -930,6 +973,19 @@ impl Engine for Fake {
             return Ok(reply);
         }
         if let Some(reply) = self.surface_reply.take() {
+            return Ok(reply);
+        }
+        if let (SurfaceCommand::PackageGraphPage { request }, Some(rows)) =
+            (&command, &self.native_graph_rows)
+        {
+            let reply =
+                SurfaceReply::PackageGraphPage(package_graph_budget::page_for(request, rows));
+            if let Some(reason) = self.graph_cancel_after_native_reply.take() {
+                self.request_contexts
+                    .last()
+                    .expect("original admitted graph lifetime")
+                    .cancel(reason);
+            }
             return Ok(reply);
         }
         match command {
@@ -1022,6 +1078,17 @@ impl Engine for Fake {
 }
 
 impl Product for Fake {
+    fn set_request_context(&mut self, context: Option<RequestContext>) -> Result<(), ClientError> {
+        if let Some(context) = context {
+            context.check()?;
+            self.request_contexts.push(context);
+        }
+        Ok(())
+    }
+    fn cli_context(&self) -> Option<backend_present::StartupRecoveryContext> {
+        self.cli_context.clone()
+    }
+
     fn encode_continuation(
         &mut self,
         continuation: backend_library::PageContinuation,
@@ -1118,15 +1185,40 @@ impl Product for Fake {
 
     fn graph_query(
         &mut self,
-        _: AdmittedGraphQueryInput,
-        _: u16,
+        input: AdmittedGraphQueryInput,
+        limit: u16,
         continuation: Option<backend_library::PageContinuation>,
     ) -> Result<GraphQueryPage, ClientError> {
+        self.graph_query_inputs.push((input, limit));
         if let Some(error) = &self.graph_query_error {
             return Err(error.clone());
         }
 
         self.graph_query_calls += 1;
+        if let Some(rows) = &self.graph_paged_rows {
+            let offset = continuation.map_or(0, |cursor| cursor.cursor().sequence() as usize);
+            let end = rows.len().min(offset + usize::from(limit));
+            let terminal = if end < rows.len() {
+                let next = PageContinuation::from_cursor(backend_library::Cursor::at(
+                    view_state_root(&[]),
+                    end as u64,
+                ));
+                self.next_continuation = Some(next);
+                PageTerminal::More(next)
+            } else {
+                PageTerminal::Complete
+            };
+            return Ok(GraphQueryPage {
+                revision: if self.graph_query_source_changes && self.graph_query_calls > 1 {
+                    view_state_root(&[("changed".to_owned(), "native source".to_owned())]).into()
+                } else {
+                    view_state_root(&[]).into()
+                },
+                source: basis().object,
+                rows: rows[offset..end].to_vec().into_boxed_slice(),
+                terminal,
+            });
+        }
         if let Some(rows) = &self.graph_rows {
             return Ok(GraphQueryPage {
                 revision: view_state_root(&[]).into(),
@@ -1203,6 +1295,34 @@ fn call(server: &mut Server<Fake>, tool: &str, arguments: &Value) -> Value {
         .clone()
 }
 
+fn native_transport_source_page(
+    source: &backend_library::SemanticVersionRecord,
+) -> backend_library::SemanticVersionsPage {
+    let source_root = source
+        .selected_source_frontier
+        .as_ref()
+        .map_or([8; 32], |frontier| frontier.source_relation_root);
+    backend_library::SemanticVersionsPage {
+        package: source.package.clone(),
+        source_relation_root: source_root,
+        semantic_relation_root: [34; 32],
+        total: 1,
+        offset: 0,
+        entries: Box::new([backend_library::SemanticVersionDescriptor::Available {
+            reference: backend_library::SemanticSourceReference::capture(
+                source,
+                source_root,
+                [34; 32],
+                &[7; 32],
+            )
+            .expect("transport selector"),
+        }]),
+        next_cursor: None,
+        more: false,
+        complete: true,
+    }
+}
+
 #[test]
 fn semantic_shapes_actual_jsonrpc_preserves_full_view_in_summary_and_full() {
     let operands: Value = serde_json::from_str(include_str!(
@@ -1212,10 +1332,13 @@ fn semantic_shapes_actual_jsonrpc_preserves_full_view_in_summary_and_full() {
     for detail in ["summary", "full"] {
         let selected: backend_library::SemanticShapeReadRequest =
             serde_json::from_value(operands.clone()).expect("request");
+        let backend_library::SemanticShapeSource::Inline(source) = selected.source() else {
+            panic!("inline fixture")
+        };
         let mut server = ready(Fake {
-            surface_reply: Some(SurfaceReply::SemanticVersions(Box::new([selected
-                .source()
-                .clone()]))),
+            surface_reply: Some(SurfaceReply::SemanticVersionsPage(
+                native_transport_source_page(source),
+            )),
             ..Fake::default()
         });
         let resolved = call(
@@ -1232,10 +1355,20 @@ fn semantic_shapes_actual_jsonrpc_preserves_full_view_in_summary_and_full() {
             "backend.semantic_versions",
             &json!({"package":"/abs/shape-fixture","detail":detail}),
         );
-        let source = versions["structuredContent"]["semantic_data"]["value"][0].clone();
-        assert_eq!(source, operands["source"]);
+        let reference =
+            &versions["structuredContent"]["semantic_data"]["value"]["entries"][0]["reference"];
+        assert_eq!(
+            reference["metadata"]["generation"],
+            operands["source"]["generation"]
+        );
+        assert_eq!(
+            reference["metadata"]["coordinate"],
+            operands["source"]["coordinate"]
+        );
+        // The inline/current-shape epoch path remains separately supported.
+        // Full reference retrieval and exact shape source selection are covered
+        // by source range/cold-owner controls rather than fabricated here.
         let mut shape_operands = operands.clone();
-        shape_operands["source"] = source;
         shape_operands["symbols"] = json!([selector["value"]]);
         let mut export_view: Value = serde_json::from_str(include_str!(
             "../../../../crates/library/fixtures/semantic-shape-egress-view.json"
@@ -1278,7 +1411,7 @@ fn semantic_shapes_actual_jsonrpc_preserves_full_view_in_summary_and_full() {
 }
 
 #[test]
-fn semantic_versions_jsonrpc_preserves_captured_semver_and_matches_the_cli_projection() {
+fn archived_semantic_versions_captured_semver_projection_keeps_dense_transport_refusal() {
     let packet: Value = serde_json::from_str(include_str!(
         "../../../../crates/present/fixtures/semantic-versions-semver-public.json"
     ))
@@ -1286,22 +1419,58 @@ fn semantic_versions_jsonrpc_preserves_captured_semver_and_matches_the_cli_proje
     let reply: SurfaceReply = serde_json::from_value(packet["surface"].clone())
         .expect("complete source DTO; no wire certificate is fabricated");
     let answer = Answer::Product(Box::new(backend_present::product_view(&reply)));
+    let SurfaceReply::SemanticVersions(records) = &reply else {
+        panic!("captured versions source");
+    };
     let package = packet["surface"]["data"][0]["package"]["value"]
         .as_str()
         .expect("exact captured local package");
-    for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
-        let mut server = ready(Fake {
-            surface_reply: Some(reply.clone()),
-            ..Fake::default()
-        });
-        let response = request(
-            &mut server,
-            "tools/call",
-            &json!({"name":"backend.semantic_versions","arguments":{"package":package,"detail":detail.name()}}),
+    assert_eq!(
+        packet["surface"]["data"][0]["history_status"]["proof"]["images"]
+            .as_array()
+            .expect("all actual captured image proofs")
+            .len(),
+        42
+    );
+    // Preserve the complete persisted/archived DTO and CLI parity. Live
+    // discovery now returns a native descriptor page; archived source blobs
+    // remain an honest whole-envelope refusal control.
+    for requested_detail in [
+        None,
+        Some(Detail::Summary),
+        Some(Detail::Standard),
+        Some(Detail::Full),
+    ] {
+        let detail = requested_detail.unwrap_or(Detail::Summary);
+        let mut server = ready(Fake::default());
+        let mut arguments = json!({"package":package});
+        if requested_detail.is_some() {
+            arguments["detail"] = json!(detail.name());
+        }
+        let context = continuation_context(
+            PROJECT,
+            "backend.semantic_versions",
+            arguments.as_object().expect("arguments"),
+            detail,
         );
-        assert_context_bounded(&response);
-        let result = &response["result"];
-        assert_eq!(result["isError"], false, "{response}");
+        let candidate = codec::success(
+            json!(9),
+            server
+                .rendered(
+                    Answer::Product(Box::new(backend_present::product_view(&reply))),
+                    detail,
+                    &context,
+                    CursorTarget::CliOption,
+                    McpInvocation::new(
+                        McpExposure::Direct,
+                        "backend.semantic_versions",
+                        arguments.as_object().expect("arguments"),
+                    ),
+                )
+                .expect("archived typed DTO display before whole-envelope admission"),
+        );
+        let result = &candidate["result"];
+        assert_eq!(result["isError"], false, "{candidate}");
         assert_eq!(
             result["structuredContent"]["semantic_data"]["value"],
             packet["surface"]["data"]
@@ -1310,6 +1479,30 @@ fn semantic_versions_jsonrpc_preserves_captured_semver_and_matches_the_cli_proje
             result["structuredContent"]["records"][0]["history_status"]["proof"]
                 .get("images")
                 .is_none()
+        );
+        assert_eq!(
+            result["structuredContent"]["records"]
+                .as_array()
+                .expect("whole version set")
+                .len(),
+            1
+        );
+        assert_eq!(
+            result["structuredContent"]["records"][0]["title"],
+            packet["surface"]["data"][0]["coordinate"]
+        );
+        assert_eq!(
+            result["structuredContent"]["records"][0]["operand"],
+            backend_library::encode_id(&records[0].generation.to_bytes())
+        );
+        let dto: backend_present::ProductDto =
+            serde_json::from_value(result["structuredContent"].clone())
+                .expect("exact captured public version DTO before transport admission");
+        assert_eq!(
+            dto.semantic_data,
+            Some(backend_present::ProductSemanticData::Versions(
+                records.clone()
+            ))
         );
         // The CLI adapter regression compares its actual JSON bytes to this
         // same production encoder and its Markdown to this shared renderer.
@@ -1327,8 +1520,232 @@ fn semantic_versions_jsonrpc_preserves_captured_semver_and_matches_the_cli_proje
             text_of(result),
             backend_present::bounded_text(&backend_present::markdown::answer(&answer))
         );
+        assert_context_bounded(&candidate);
+        let mut without_preview = candidate.clone();
+        without_preview["result"]["content"] = json!([]);
         assert!(
-            matches!(&server.product.surface_commands[0], SurfaceCommand::SemanticVersions { package: observed } if observed.as_str() == package)
+            wire_tokens(&without_preview).expect("byte-admissible dense operand tokens")
+                > MCP_CL100K_TOKEN_LIMIT,
+            "shrinking preview cannot make the exact source operand fit"
+        );
+        let response = encoded_stdio_reply(candidate);
+        assert_context_bounded(&response);
+        assert!(response.get("result").is_none(), "{response}");
+        assert_eq!(response["error"]["code"], -32000);
+        let refusal = &response["error"]["data"]["structuredContent"];
+        assert_eq!(refusal["slug"], "transport");
+        assert_eq!(refusal["cause"], "oversized");
+        assert!(refusal.get("semantic_data").is_none());
+        assert!(
+            refusal.get("nextCursor").is_none(),
+            "no fabricated semantic-source continuation"
+        );
+        assert!(wire_tokens(&response).expect("actual bounded refusal") <= MCP_CL100K_TOKEN_LIMIT);
+        assert!(
+            server.product.surface_commands.is_empty(),
+            "archived display is not a current owner call"
+        );
+    }
+}
+
+#[test]
+fn semantic_versions_default_discovers_real_42_image_capture_without_embedding_source_blob() {
+    let packet: Value = serde_json::from_str(include_str!(
+        "../../../../crates/present/fixtures/semantic-versions-semver-public.json"
+    ))
+    .expect("unchanged native 42-image capture");
+    let source: backend_library::SemanticVersionRecord =
+        serde_json::from_value(packet["surface"]["data"][0].clone())
+            .expect("exact captured record");
+    let source_root = source
+        .selected_source_frontier
+        .as_ref()
+        .expect("real captured frontier")
+        .source_relation_root;
+    // Fixture seal is a transport selector only. Native owner/cold authority is
+    // exercised by the real local-service journey, never inferred from Fake.
+    let reference =
+        backend_library::SemanticSourceReference::capture(&source, source_root, [34; 32], &[7; 32])
+            .expect("frozen compact source selector");
+    let page = backend_library::SemanticVersionsPage {
+        package: source.package.clone(),
+        source_relation_root: source_root,
+        semantic_relation_root: [34; 32],
+        total: 1,
+        offset: 0,
+        entries: Box::new([backend_library::SemanticVersionDescriptor::Available {
+            reference: reference.clone(),
+        }]),
+        next_cursor: None,
+        more: false,
+        complete: true,
+    };
+    let reply = SurfaceReply::SemanticVersionsPage(page.clone());
+    let answer = Answer::Product(Box::new(backend_present::product_view(&reply)));
+    for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+        let mut server = ready(Fake {
+            surface_reply: Some(reply.clone()),
+            ..Fake::default()
+        });
+        let response = request(
+            &mut server,
+            "tools/call",
+            &json!({"name":"backend.semantic_versions","arguments":{"package":source.package.as_str(),"detail":detail.name()}}),
+        );
+        assert_context_bounded(&response);
+        assert!(
+            wire_tokens(&response).expect("actual whole envelope tokens") <= MCP_CL100K_TOKEN_LIMIT
+        );
+        let result = &response["result"];
+        assert_eq!(result["isError"], false, "{response}");
+        let dto: backend_present::ProductDto =
+            serde_json::from_value(result["structuredContent"].clone())
+                .expect("real typed public decode");
+        assert_eq!(
+            dto.semantic_data,
+            Some(backend_present::ProductSemanticData::VersionsPage(
+                page.clone()
+            ))
+        );
+        assert!(text_of(result).contains(source.coordinate.version()));
+        assert!(text_of(result).contains("42 image(s)"));
+        let exposed =
+            &result["structuredContent"]["semantic_data"]["value"]["entries"][0]["reference"];
+        assert_eq!(exposed["metadata"]["generation"], json!(source.generation));
+        assert_eq!(exposed["metadata"]["coordinate"], json!(source.coordinate));
+        assert_eq!(exposed["source"], json!(reference.source));
+        assert!(exposed["history"]["proof"].get("images").is_none());
+        assert_eq!(exposed["history"]["proof"]["image_count"], 42);
+        let cli =
+            backend_present::encode_answer(&answer, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES)
+                .expect("same shared CLI projection");
+        assert_eq!(
+            result["structuredContent"],
+            serde_json::from_slice::<Value>(&cli.bytes).expect("CLI typed JSON")
+        );
+        assert!(matches!(
+            &server.product.surface_commands[..],
+            [SurfaceCommand::SemanticVersions {
+                limit: 1,
+                cursor: None,
+                ..
+            }]
+        ));
+    }
+    let document =
+        backend_library::SemanticSourceDocument::new(&source).expect("complete real source");
+    let mut union = backend_library::SemanticSourceAssembly::new(reference.source.clone())
+        .expect("exact captured union");
+    loop {
+        let range = backend_library::SemanticSourceRange {
+            offset: union.offset().expect("ordered offset"),
+            ..Default::default()
+        };
+        let chunk = document.chunk(&range).expect("native compact byte page");
+        let mut server = ready(Fake {
+            surface_reply: Some(SurfaceReply::SemanticSource(chunk.clone())),
+            ..Fake::default()
+        });
+        let response = request(
+            &mut server,
+            "tools/call",
+            &json!({"name":"backend.semantic_source","arguments":{"request":{"reference":reference,"range":range}}}),
+        );
+        assert_context_bounded(&response);
+        assert!(
+            wire_tokens(&response).expect("actual source whole envelope tokens")
+                <= MCP_CL100K_TOKEN_LIMIT
+        );
+        assert_eq!(response["result"]["isError"], false, "{response}");
+        let restored: backend_library::SemanticSourceChunk = serde_json::from_value(
+            response["result"]["structuredContent"]["semantic_data"]["value"].clone(),
+        )
+        .expect("typed native range");
+        assert_eq!(restored, chunk);
+        union.append(&restored).expect("whole byte identity/order");
+        if restored.complete {
+            break;
+        }
+    }
+    assert_eq!(
+        union.finish().expect("complete digest/canonical admission"),
+        source
+    );
+}
+
+#[test]
+fn archived_semantic_versions_token_admissible_source_retains_cli_projection() {
+    // A separate complete typed source fixture; no entries are removed from
+    // the actual 42-image capture exercised above to make this success fit.
+    let operands: Value = serde_json::from_str(include_str!(
+        "../../../../crates/library/fixtures/semantic-shape-read.json"
+    ))
+    .expect("complete selected source operand");
+    let source: backend_library::SemanticVersionRecord =
+        serde_json::from_value(operands["source"].clone()).expect("exact typed source");
+    let reply = SurfaceReply::SemanticVersions(Box::new([source.clone()]));
+    let answer = Answer::Product(Box::new(backend_present::product_view(&reply)));
+    for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+        let mut server = ready(Fake::default());
+        let arguments = json!({"package":source.package.as_str(),"detail":detail.name()});
+        let context = continuation_context(
+            PROJECT,
+            "backend.semantic_versions",
+            arguments.as_object().expect("arguments"),
+            detail,
+        );
+        let response = encoded_stdio_reply(codec::success(
+            json!(9),
+            server
+                .rendered(
+                    Answer::Product(Box::new(backend_present::product_view(&reply))),
+                    detail,
+                    &context,
+                    CursorTarget::CliOption,
+                    McpInvocation::new(
+                        McpExposure::Direct,
+                        "backend.semantic_versions",
+                        arguments.as_object().expect("arguments"),
+                    ),
+                )
+                .expect("archived typed display"),
+        ));
+        assert_context_bounded(&response);
+        assert!(
+            wire_tokens(&response).expect("actual whole-envelope tokens") <= MCP_CL100K_TOKEN_LIMIT
+        );
+        let result = &response["result"];
+        assert_eq!(result["isError"], false, "{response}");
+        assert_eq!(
+            result["structuredContent"]["semantic_data"]["value"],
+            json!([source])
+        );
+        let dto: backend_present::ProductDto =
+            serde_json::from_value(result["structuredContent"].clone())
+                .expect("actual public typed version decode");
+        assert_eq!(
+            dto.semantic_data,
+            Some(backend_present::ProductSemanticData::Versions(Box::new([
+                source.clone()
+            ])))
+        );
+        let mut selected = operands.clone();
+        selected["source"] = result["structuredContent"]["semantic_data"]["value"][0].clone();
+        let selected: backend_library::SemanticShapeReadRequest =
+            serde_json::from_value(selected).expect("exact source remains a usable shape operand");
+        assert_eq!(
+            selected.source(),
+            &backend_library::SemanticShapeSource::Inline(source.clone())
+        );
+        let cli =
+            backend_present::encode_answer(&answer, detail, None, DEFAULT_RESPONSE_BUDGET_BYTES)
+                .expect("shared CLI encoder");
+        let cli: Value = serde_json::from_slice(&cli.bytes).expect("CLI JSON");
+        assert_eq!(result["structuredContent"], cli);
+        assert_eq!(text_of(result), bounded_text(&markdown::answer(&answer)));
+        assert!(
+            server.product.surface_commands.is_empty(),
+            "archived display creates no native owner call"
         );
     }
 }
@@ -1347,17 +1764,34 @@ fn semantic_versions_jsonrpc_keeps_true_oversize_refusals_atomic() {
     // Repeating an actual display operand exercises only egress budgeting. It
     // does not assert that a compiler owner published duplicate generations.
     for detail in ["summary", "standard", "full"] {
-        let mut server = ready(Fake {
-            surface_reply: Some(SurfaceReply::SemanticVersions(
-                vec![records[0].clone(), records[0].clone()].into_boxed_slice(),
-            )),
-            ..Fake::default()
-        });
-        let response = request(
-            &mut server,
-            "tools/call",
-            &json!({"name":"backend.semantic_versions","arguments":{"package":records[0].package.as_str(),"detail":detail}}),
+        let mut server = ready(Fake::default());
+        let display = SurfaceReply::SemanticVersions(
+            vec![records[0].clone(), records[0].clone()].into_boxed_slice(),
         );
+        let arguments = json!({"package":records[0].package.as_str(),"detail":detail});
+        let detail = Detail::parse(detail).expect("detail");
+        let context = continuation_context(
+            PROJECT,
+            "backend.semantic_versions",
+            arguments.as_object().expect("arguments"),
+            detail,
+        );
+        let response = encoded_stdio_reply(codec::success(
+            json!(9),
+            server
+                .rendered(
+                    Answer::Product(Box::new(backend_present::product_view(&display))),
+                    detail,
+                    &context,
+                    CursorTarget::CliOption,
+                    McpInvocation::new(
+                        McpExposure::Direct,
+                        "backend.semantic_versions",
+                        arguments.as_object().expect("arguments"),
+                    ),
+                )
+                .expect("atomic archived egress refusal"),
+        ));
         assert_context_bounded(&response);
         assert_eq!(response["result"]["isError"], true);
         assert_eq!(
@@ -2367,7 +2801,7 @@ fn owner_index_job_tools_advertise_exact_tickets_and_immediate_progress() {
     ] {
         assert_eq!(
             tool["outputSchema"]["properties"]["index_poll"]["required"],
-            json!(["shell", "call"])
+            json!(["call"])
         );
         assert_eq!(
             tool["outputSchema"]["properties"]["index_poll"]["properties"]["call"]["properties"]["name"]
@@ -2455,9 +2889,11 @@ fn keyed_index_progress_preserves_durable_owner_evidence_and_rejects_mixed_ident
         next,
         json!({"name":"backend.index_progress", "arguments":{"operation_key":"51".repeat(32),"detail":"summary"}})
     );
-    assert_eq!(
-        result["structuredContent"]["index_poll"]["shell"],
-        format!("nudox index_progress --operation-key {}", "51".repeat(32))
+    assert!(
+        result["structuredContent"]["index_poll"]
+            .get("shell")
+            .is_none(),
+        "no observed installed CLI in this product fixture"
     );
     assert!(text_of(&result).contains(&next.to_string()));
     server.product.surface_reply = Some(SurfaceReply::IndexOperationStatus(observation.clone()));
@@ -2618,21 +3054,48 @@ fn default_index_start_preserves_active_ticket_and_uses_durable_purl_index_api()
     let ticket = index_job_ticket();
     let operation_key = backend_library::IndexOperationKey::from_bytes([0x72; 32]).expect("key");
     let status = backend_library::IndexOperationStatus::new(
-        operation_key, ticket.package().clone(), CompileExecutionIntent::Background,
-        backend_library::IndexOperationState::Active { ticket: ticket.clone(), stage: IndexJobStage::Acquiring },
+        operation_key,
+        ticket.package().clone(),
+        CompileExecutionIntent::Background,
+        backend_library::IndexOperationState::Active {
+            ticket: ticket.clone(),
+            stage: IndexJobStage::Acquiring,
+        },
     );
-    let reply = SurfaceReply::IndexOperationStarted(backend_library::IndexOperationObservation::Known(status.clone()));
-    let fake = Fake { surface_reply: Some(reply.clone()), durable_index_key: Some(operation_key), ..Fake::default() };
+    let reply = SurfaceReply::IndexOperationStarted(
+        backend_library::IndexOperationObservation::Known(status.clone()),
+    );
+    let fake = Fake {
+        surface_reply: Some(reply.clone()),
+        durable_index_key: Some(operation_key),
+        ..Fake::default()
+    };
     let mut server = ready(fake);
-    let result = call(&mut server, INDEX_START_TOOL, &json!({"package":"pkg:cargo/serde@1.0.228", "execution_intent":"background"}));
+    let result = call(
+        &mut server,
+        INDEX_START_TOOL,
+        &json!({"package":"pkg:cargo/serde@1.0.228", "execution_intent":"background"}),
+    );
     assert_eq!(result["isError"], false);
     let wire = serde_json::to_value(&reply).expect("typed reply");
-    assert_eq!(result["structuredContent"]["surface"]["result"], wire["result"]);
+    assert_eq!(
+        result["structuredContent"]["surface"]["result"],
+        wire["result"]
+    );
     assert_eq!(result["structuredContent"]["surface"]["data"], wire["data"]);
     let poll = &result["structuredContent"]["index_poll"]["call"];
     assert_eq!(poll["name"], INDEX_PROGRESS_TOOL);
-    assert_eq!(poll["arguments"]["operation_key"], serde_json::to_value(operation_key).expect("key"));
-    assert_eq!(status.state, backend_library::IndexOperationState::Active { ticket, stage: IndexJobStage::Acquiring });
+    assert_eq!(
+        poll["arguments"]["operation_key"],
+        serde_json::to_value(operation_key).expect("key")
+    );
+    assert_eq!(
+        status.state,
+        backend_library::IndexOperationState::Active {
+            ticket,
+            stage: IndexJobStage::Acquiring
+        }
+    );
     assert_context_bounded(&result);
     assert!(matches!(server.product.surface_commands.as_slice(),
         [SurfaceCommand::IndexOperationStart { operation_key: key, package: PackageReference::Purl(package), execution_intent: CompileExecutionIntent::Background }]
@@ -3789,11 +4252,11 @@ fn page_projection_mcp_combined_summary_retains_real_faults_and_section_notes() 
     let mut server = ready(Fake::default());
     let result = server
         .rendered(
-            &answer,
+            answer.clone(),
             Detail::Summary,
             b"page-projection-context",
             CursorTarget::CliOption,
-            "backend.document",
+            McpInvocation::new(McpExposure::Direct, "backend.document", &Map::new()),
         )
         .expect("actual combined result projection");
     assert_eq!(result["isError"], false);
@@ -3854,10 +4317,7 @@ fn a_standard_search_call_leads_with_honest_coverage_and_complete_selectable_row
         Some("~lanes exact· names· graph· semantic✗ unconfigured"),
         "{text}"
     );
-    assert_eq!(
-        lines.get(1).copied(),
-        Some("• `ferris` · function · rust")
-    );
+    assert_eq!(lines.get(1).copied(), Some("• `ferris` · function · rust"));
     assert!(
         lines
             .get(2)
@@ -4280,7 +4740,10 @@ fn an_unsent_startup_retry_preserves_exact_mutation_arguments_as_advice() {
         "detail": "full"
     });
     let result = RpcError::from_fault(&fault)
-        .into_tool_result_for_call("backend.index_start", Some(&arguments))
+        .into_tool_result_for_call(
+            "backend.index_start",
+            arguments.as_object().expect("arguments"),
+        )
         .expect("typed startup refusal");
     assert_eq!(result["isError"], true);
     assert_eq!(
@@ -4296,7 +4759,10 @@ fn an_unsent_startup_retry_preserves_exact_mutation_arguments_as_advice() {
     let error = ClientError::Io("local-startup-pending; command_submitted:false".into());
     let fault = Fault::from_client_error(&error, backend_present::Operand::Argument("path".into()));
     let result = RpcError::from_fault(&fault)
-        .into_tool_result_for_call("backend.index_start", Some(&arguments))
+        .into_tool_result_for_call(
+            "backend.index_start",
+            arguments.as_object().expect("arguments"),
+        )
         .expect("ordinary transport refusal");
     assert!(result["structuredContent"].get("call").is_none());
 }
@@ -4649,7 +5115,7 @@ fn tool_catalog_names_callable_routes_without_advertising_unready_surfaces() {
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect();
-    assert_eq!(advertised.len(), 17);
+    assert_eq!(advertised.len(), 18);
     assert!(
         advertised
             .iter()
@@ -4698,6 +5164,57 @@ fn tool_catalog_names_callable_routes_without_advertising_unready_surfaces() {
         "string"
     );
     assert_eq!(package_versions_schema["required"], json!(["package"]));
+    let package_graph_schema = text
+        .split("`backend.package_graph` —")
+        .nth(1)
+        .and_then(|entry| entry.split_once("```json\n"))
+        .and_then(|(_, schema)| schema.split_once("\n```").map(|(schema, _)| schema))
+        .and_then(|schema| serde_json::from_str::<Value>(schema).ok())
+        .expect("catalog provides the package graph input schema");
+    assert_eq!(package_graph_schema["properties"]["limit"]["minimum"], 1);
+    assert_eq!(
+        package_graph_schema["properties"]["limit"]["maximum"],
+        backend_library::MAX_PACKAGE_GRAPH_PAGE_ROWS
+    );
+    assert_eq!(package_graph_schema["properties"]["limit"]["default"], 64);
+
+    let mut boundary = ready(Fake::default());
+    let _ = call(
+        &mut boundary,
+        "backend.package_graph",
+        &json!({
+            "package": "pkg:cargo/serde@1.0.228", "direction": "dependencies", "limit": 128
+        }),
+    );
+    assert!(matches!(
+        boundary.product.surface_commands.as_slice(),
+        [SurfaceCommand::PackageGraphPage { request }]
+        if request.limit == 128 && request.admit().is_ok()
+    ));
+    boundary.product.surface_commands.clear();
+    let refused = call(
+        &mut boundary,
+        "backend.package_graph",
+        &json!({
+            "package": "pkg:cargo/serde@1.0.228", "direction": "dependencies", "limit": 129
+        }),
+    );
+    assert_eq!(refused["isError"], true);
+    assert_eq!(refused["structuredContent"]["cause"], "malformed");
+    assert!(
+        boundary.product.surface_commands.is_empty(),
+        "invalid bound reaches no owner command"
+    );
+    let wrong_type = call(
+        &mut boundary,
+        "backend.package_graph",
+        &json!({
+            "package": "pkg:cargo/serde@1.0.228", "direction": "dependencies", "limit": "128"
+        }),
+    );
+    assert_eq!(wrong_type["isError"], true);
+    assert!(text_of(&wrong_type).contains("an integer from 1 through 128"));
+    assert!(boundary.product.surface_commands.is_empty());
     for name in [QUERY_TOOL, SURFACE_TOOL] {
         assert!(text.contains(&format!("`{name}`")), "catalog omits {name}");
         assert!(!advertised.contains(&name));
@@ -4741,6 +5258,55 @@ fn the_query_card_carries_worked_queries_over_the_declared_schema() {
         );
     }
     assert!(text.contains("`coordinate` is the exact string"), "{text}");
+    let parameters = text
+        .split_once("```json\n")
+        .and_then(|(_, block)| block.split_once("\n```"))
+        .map(|(body, _)| serde_json::from_str::<Value>(body).expect("literal query call JSON"))
+        .expect("query card includes one copyable tool call");
+    let reply = request(&mut server, "tools/call", &parameters);
+    assert_eq!(reply["result"]["isError"], false);
+    let (input, limit) = server
+        .product
+        .graph_query_inputs
+        .last()
+        .expect("typed query input");
+    assert_eq!(
+        input.query(),
+        parameters["arguments"]["query"]
+            .as_str()
+            .expect("query text")
+    );
+    assert!(input.variables().is_empty());
+    assert_eq!(*limit, 25);
+    assert_eq!(reply["result"]["structuredContent"]["detail"], "summary");
+    assert_context_bounded(&reply);
+
+    let mut variables = parameters.clone();
+    variables["arguments"]["variables"] = json!({
+        "name": "ferris", "flags": [null, true, -1, 2.5, ["nested"]]
+    });
+    let reply = request(&mut server, "tools/call", &variables);
+    assert_eq!(reply["result"]["isError"], false);
+    let (input, _) = server
+        .product
+        .graph_query_inputs
+        .last()
+        .expect("typed variables");
+    assert_eq!(input.variables().len(), 2);
+    assert!(matches!(&input.variables()[0], (name, GraphValue::List(_)) if name == "flags"));
+    assert!(
+        matches!(&input.variables()[1], (name, GraphValue::String(value)) if name == "name" && value == "ferris")
+    );
+    let admitted = server.product.graph_query_inputs.len();
+    for invalid in [
+        json!({"name": {"nested": "object"}}),
+        json!({"name": [{"nested": "object"}]}),
+    ] {
+        variables["arguments"]["variables"] = invalid;
+        let refused = request(&mut server, "tools/call", &variables);
+        assert_eq!(refused["result"]["isError"], true);
+        assert_eq!(server.product.graph_query_inputs.len(), admitted);
+    }
 }
 
 #[test]
@@ -5017,9 +5583,16 @@ fn the_handshake_reports_the_stable_protocol_and_its_instructions() {
     assert_stdio_line_accounting(std::str::from_utf8(&line).expect("UTF-8"));
     assert!(instructions.contains("absolute path"), "{instructions}");
     assert!(instructions.contains("backend.document"), "{instructions}");
-    assert!(instructions.contains("nudox add ."), "{instructions}");
     assert!(
-        instructions.contains("nudox search \"error handling\""),
+        instructions.contains("backend.index with the absolute project path"),
+        "{instructions}"
+    );
+    assert!(
+        !instructions.contains("nudox add ."),
+        "the MCP host must not assume a CLI is installed"
+    );
+    assert!(
+        instructions.contains("before backend.search"),
         "{instructions}"
     );
     assert!(
@@ -7122,7 +7695,10 @@ fn stdio_reader_cancels_an_active_call_then_allows_completed_id_reuse() {
     let budget = &fresh["result"]["_meta"]["backend/wireBudget"];
     assert_eq!(budget["bytes"], line.len(), "complete correlated ping line");
     assert_eq!(budget["tokenPolicy"], "cl100k_base/ordinary-v1");
-    assert_eq!(budget["tokenScope"], "complete_jsonrpc_json_excluding_transport_framing");
+    assert_eq!(
+        budget["tokenScope"],
+        "complete_jsonrpc_json_excluding_transport_framing"
+    );
     assert_eq!(budget["limitTokens"], MCP_CL100K_TOKEN_LIMIT);
     assert!(wire_tokens(&fresh).expect("whole-envelope tokens") <= MCP_CL100K_TOKEN_LIMIT);
     assert_eq!(fresh["id"], 7);
@@ -7898,4 +8474,146 @@ fn dense_record_budget_witnesses_remain_named_token_refusals() {
                 .contains(CL100K_POLICY)
         );
     }
+}
+
+#[test]
+fn index_poll_cli_advice_is_optional_and_preserves_installed_attachment_key_and_detail() {
+    let key = backend_library::IndexOperationKey::from_bytes([0x71; 32]).expect("key");
+    let observation = backend_library::IndexOperationObservation::Known(
+        backend_library::IndexOperationStatus::new(
+            key,
+            PackageReference::parse(PROJECT).expect("package"),
+            CompileExecutionIntent::Interactive,
+            backend_library::IndexOperationState::Accepted,
+        ),
+    );
+    let context = backend_present::StartupRecoveryContext::new(
+        PROJECT.to_owned(),
+        "/private/owner.sock".to_owned(),
+        "/observed/bundle/backend-cli".to_owned(),
+        backend_present::StartupRecoveryCommand::Status,
+        backend_present::StartupRecoveryMode::Active,
+        backend_present::StartupRecoveryWorkspace::Explicit("/private/workspace".to_owned()),
+    );
+    for detail in ["summary", "standard", "full"] {
+        for installed in [false, true] {
+            let mut server = ready(Fake {
+                surface_reply: Some(SurfaceReply::IndexOperationStatus(observation.clone())),
+                cli_context: installed.then(|| context.clone()),
+                ..Fake::default()
+            });
+            let response = request(
+                &mut server,
+                "tools/call",
+                &json!({"name":INDEX_PROGRESS_TOOL,"arguments":{"operation_key":key,"detail":detail}}),
+            );
+            assert_context_bounded(&response);
+            let json = serde_json::to_string(&response).expect("actual admitted JSON envelope");
+            assert!(
+                cl100k_tokens(&json).expect("named wire token policy") <= MCP_CL100K_TOKEN_LIMIT
+            );
+            assert_eq!(
+                response["result"]["_meta"]["backend/wireBudget"]["bytes"],
+                json.len() + 1
+            );
+            let result = &response["result"];
+            assert_eq!(result["isError"], false, "{result}");
+            let poll = &result["structuredContent"]["index_poll"];
+            assert_eq!(
+                poll["call"],
+                json!({"name":"backend.index_progress","arguments":{"operation_key":key,"detail":detail}})
+            );
+            assert_eq!(poll.get("shell").is_some(), installed);
+            if installed {
+                let expected =
+                    backend_present::Affordance::PollIndexOperation { operation_key: key }
+                        .poll_shell_in_context(&context, backend_present::Detail::parse(detail));
+                assert_eq!(poll["shell"], expected.expect("same admitted CLI context"));
+                assert!(
+                    !poll["shell"]
+                        .as_str()
+                        .expect("shell")
+                        .contains("authority.secret")
+                );
+                assert!(!poll["shell"].as_str().expect("shell").contains("nudox"));
+            }
+            assert_eq!(
+                server.product.surface_commands,
+                [SurfaceCommand::IndexOperationStatus { operation_key: key }]
+            );
+            let catalog = tools::list_tools(&json!({})).expect("actual listed tool catalog");
+            let grammar = tool_named(&catalog["tools"], INDEX_PROGRESS_TOOL);
+            assert_eq!(
+                grammar["outputSchema"]["properties"]["index_poll"]["required"],
+                json!(["call"])
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn cli_attachment_metadata_does_not_connect_an_owner_or_display_custom_authority() {
+    const PROBE: &str = "jsonrpc::tests::cli_attachment_metadata_probe";
+    let executable = std::env::current_exe().expect("test binary");
+    for custom in [false, true] {
+        let mut child = std::process::Command::new(&executable);
+        child
+            .args(["--exact", PROBE, "--nocapture"])
+            .env("NUDOX_TEST_CLI_CONTEXT", "1");
+        if custom {
+            child.env(
+                backend_runtime::AUTHORITY_SECRET_ENV,
+                "/not-displayed/custom-authority",
+            );
+        } else {
+            child.env_remove(backend_runtime::AUTHORITY_SECRET_ENV);
+        }
+        let output = child.output().expect("read-only metadata subprocess");
+        assert!(output.status.success(), "{output:?}");
+        let stdout = std::str::from_utf8(&output.stdout).expect("UTF-8");
+        let data = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("CLI_CONTEXT="))
+            .expect("context observation");
+        let value: Value = serde_json::from_str(data).expect("typed observation");
+        assert_eq!(value["has_context"], !custom);
+        assert_eq!(value["data_exists"], false);
+        assert_eq!(value["endpoint_exists"], false);
+        assert!(!data.contains("custom-authority"));
+    }
+}
+
+#[test]
+fn cli_attachment_metadata_probe() {
+    if std::env::var("NUDOX_TEST_CLI_CONTEXT").is_err() {
+        return;
+    }
+    let base = std::env::temp_dir().join(format!("cli-context-probe-{}", std::process::id()));
+    let paths = backend_runtime::WorkspacePaths::discover(
+        Some(base.join("project")),
+        Some(base.join("state")),
+        Some(base.join("owner.sock")),
+    )
+    .expect("uncreated attachment");
+    #[cfg(unix)]
+    let context = {
+        use std::os::unix::fs::PermissionsExt as _;
+        let bundle = base.with_extension("observed-bundle");
+        std::fs::create_dir(&bundle).expect("owned installed CLI fixture");
+        let cli = bundle.join("backend-cli");
+        std::fs::write(&cli, b"#!/bin/sh\nexit 0\n").expect("actual executable fixture");
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700))
+            .expect("CLI execute mode");
+        assert!(cli_context_for_executable(&paths, &bundle.join("missing-cli")).is_none());
+        let context = cli_context_for_executable(&paths, &cli);
+        std::fs::remove_dir_all(bundle).expect("remove owned metadata fixture");
+        context
+    };
+    #[cfg(not(unix))]
+    let context: Option<backend_present::StartupRecoveryContext> = None;
+    println!(
+        "\nCLI_CONTEXT={}",
+        json!({"has_context":context.is_some(),"data_exists":paths.data().exists(),"endpoint_exists":paths.endpoint().exists(),"shell":context.map(|context|context.shell())})
+    );
 }

@@ -254,6 +254,7 @@ pub fn record_list(query: &str, snapshot: &ViewSnapshot) -> RecordList {
         snapshot.next.is_some(),
     )
     .with_continuation(snapshot.next.map(PageContinuation::from_cursor))
+    .with_page_basis(snapshot.root.basis(), snapshot.root.frontier().sequence)
 }
 
 /// Builds one result page from rows a surface already holds.

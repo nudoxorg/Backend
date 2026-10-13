@@ -67,9 +67,11 @@ mod glyph;
 mod grammar;
 mod identity;
 mod language;
+mod mcp_invocation;
 mod outline;
 #[cfg(test)]
 mod owner_recovery_tests;
+mod package_graph;
 mod page;
 mod product;
 mod projection;
@@ -83,11 +85,13 @@ mod sections;
 mod shelf;
 mod shell;
 mod signature;
-mod status;
 mod startup_recovery;
+mod status;
 mod token_count;
 
-pub use startup_recovery::{StartupRecoveryContext, StartupRecoveryWorkspace};
+pub use startup_recovery::{
+    StartupRecoveryCommand, StartupRecoveryContext, StartupRecoveryMode, StartupRecoveryWorkspace,
+};
 
 pub use assemble::{
     outline_tree, page_from_document, page_from_document_with_graph_relations, project_of,
@@ -98,9 +102,10 @@ pub use browse::{
     display_version, read_tree, role_label, why_line,
 };
 pub use budget::{
-    BudgetExceeded, DEFAULT_RESPONSE_BUDGET_BYTES, Detail, ESTIMATED_BYTES_PER_TOKEN,
-    EncodedPayload, MAX_PREVIEW_TEXT_BYTES, MAX_RESPONSE_BUDGET_BYTES, PayloadBudget, bounded_text,
-    encode_answer, encode_serializable, encode_value, estimate_tokens, oversized_fault,
+    BudgetExceeded, DEFAULT_RESPONSE_BUDGET_BYTES, DEFAULT_RESPONSE_TOKEN_BUDGET, Detail,
+    ESTIMATED_BYTES_PER_TOKEN, EncodedPayload, MAX_PREVIEW_TEXT_BYTES, MAX_RESPONSE_BUDGET_BYTES,
+    PayloadBudget, bounded_text, encode_answer, encode_answer_with_call, encode_package_graph_json,
+    encode_serializable, encode_value, estimate_tokens, oversized_fault,
 };
 pub use call::{
     DEFAULT_LIMIT, Invocation, Request, SURFACE_VERB, decode_index_job_ticket, lower,
@@ -122,15 +127,17 @@ pub use dto::{
 pub use fault::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand, OwnerContext};
 pub use glyph::{KindGlyph, LanguageGlyph, RelationDirection, RelationLabel, relation_label};
 pub use grammar::{
-    ArgumentKind, ArgumentSpec, CommandGrammar, GRAMMARS, domain_name, domains, grammar_for,
-    grammar_for_tool, grammars_in, registry_size,
+    ArgumentKind, ArgumentSpec, CommandGrammar, ContinuationDomain, GRAMMARS, PageLimitDomain,
+    domain_name, domains, grammar_for, grammar_for_tool, grammars_in, registry_size,
 };
 pub use identity::{
     Coordinate, Identity, IdentityKey, IdentityShape, KeyTag, LineNumber, PackagePath, ProjectRef,
     SymbolSegment, SymbolTrail,
 };
 pub use language::Language;
+pub use mcp_invocation::{MCP_REGISTERED_CALL_TOOL, McpExecutableCall, McpExposure, McpInvocation};
 pub use outline::{OutlineEntry, OutlineTree, row_resolver};
+pub use package_graph::{PackageGraphPageSelection, package_graph_json_alternative};
 pub use page::{
     Member, MemberGroup, Page, Prose, Relation, RelationGroup, Source, SourceLine, SourceSite,
     Truncation,
@@ -138,7 +145,8 @@ pub use page::{
 pub use product::{
     CursorProjection, CursorTarget, IndexJobProjection, IndexSearchPageInfo, ProductRecord,
     ProductSemanticData, ProductSemanticHistoryProofSummary, ProductSemanticHistoryStatus,
-    ProductView, product_view, product_view_for_command,
+    ProductView, package_graph_markdown, product_view, product_view_for_command,
+    product_view_for_owned_command,
 };
 pub use projection::{PageProjection, PageSection};
 pub use record::{Record, RecordList, RecordState, Score};

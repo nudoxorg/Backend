@@ -13,7 +13,7 @@
 //! the card cannot promise a query the engine will not run.
 
 use super::codec::{empty_cursor, object, percent_decode, string};
-use super::tools::catalog_markdown;
+use super::tools::{CATALOG_RESOURCE_URI, catalog_markdown};
 use super::{RpcError, answer_for};
 use backend_present::{
     DEFAULT_RESPONSE_BUDGET_BYTES, Detail, Engine, Request, encode_serializable, markdown,
@@ -24,7 +24,7 @@ use serde_json::{Value, json};
 
 const WORKSPACE_URI: &str = "backend://workspace/current";
 const SCHEMA_URI: &str = "backend://schema/query";
-const TOOLS_URI: &str = "backend://tools/catalog";
+const TOOLS_URI: &str = CATALOG_RESOURCE_URI;
 const MARKDOWN: &str = "text/markdown";
 
 /// The card an agent reads before writing its first Trustfall query.
@@ -34,6 +34,40 @@ One typed query language over the current immutable revision. Use it when the
 question is a join rather than a lookup: every declaration a module contains,
 every neighbour of a name, every project on the shelf with its declarations.
 For a single declaration, `backend.document` is cheaper and more complete.
+
+## tool arguments
+
+Send this literal object as the parameters of an MCP `tools/call` request:
+On a host exposing only default tools, pass the same object as the arguments
+to `backend.call`.
+
+```json
+{
+  "name": "backend.query",
+  "arguments": {
+    "query": "{ Declaration { coordinate @output(name: \"at\") name @output(name: \"name\") } }",
+    "variables": {},
+    "limit": 25,
+    "detail": "summary"
+  }
+}
+```
+
+`arguments.query` is a required non-empty GraphQL string. The only optional
+arguments are `variables`, `limit`, `cursor`, and `detail`; unknown fields are
+refused. `variables` is a JSON object whose keys omit the `$` used in the query.
+For the worked `$name` filter below, supply `{"name": "a name copied from a result"}`.
+Values may be null, booleans, strings, finite numbers, or bounded nested arrays
+of those values. A variable value cannot be a JSON object. Omitting `variables`
+or passing null supplies no variables.
+
+`detail` is `summary`, `standard`, or `full` and defaults to `summary`. `limit`
+is an integer from 1 to 200 and defaults to 25. An initial page may select a
+smaller limit to fit the complete response. Copy `structuredContent.continuation_call`
+to continue with the exact query, variables, effective limit, detail and owner
+cursor. Long portable proofs appear once in that executable call; small pages
+also expose `nextCursor` for compatibility. A cursor from another query or
+selected revision is refused.
 
 Rows come back under `structuredContent.rows`, and `terminal` says whether the
 page is `complete`, hit its `limit_reached` bound, or was `cancelled`.
@@ -142,8 +176,8 @@ Each declaration and its neighbours in the graph:
 ## bounds
 
 `limit` is 1 to 200 and defaults to 25. A query that reaches its bound says
-`limit_reached` and returns an opaque `nextCursor`; pass that cursor to resume
-the same immutable query rather than restarting at page one.
+`limit_reached` and returns an executable `continuation_call`; copy it to resume
+the same immutable query. A resumed page retains its issued limit.
 "#;
 
 /// Lifts every fenced `graphql` block out of the schema card.
@@ -185,7 +219,7 @@ pub(super) fn list_resources(params: &Value) -> Result<Value, RpcError> {
             "uri": TOOLS_URI,
             "name": "mcp-tool-catalog",
             "title": "MCP tool catalog",
-            "description": "Advertised tools plus capability-dependent routes that remain callable by exact name.",
+            "description": "Registered capability-dependent route schemas and compact named-tool call guidance.",
             "mimeType": MARKDOWN
         }),
     ];
@@ -211,6 +245,13 @@ pub(super) fn list_resource_templates(params: &Value) -> Result<Value, RpcError>
             "title": "Project outline",
             "description": "An outline selected by project path when declarations are published; otherwise resources/read returns resource-not-found.",
             "mimeType": MARKDOWN
+        }
+        ,{
+            "uriTemplate":"backend://semantic-source/{version}{?request}",
+            "name":"captured-semantic-source", "title":"Captured semantic source bytes",
+            "description":"Read exact native source bytes through resources/read. URI request is canonical unpadded base64url of {reference,range:{offset,max_bytes}}; the digest path alone grants no authority. Copy result._meta[backend/nextUri] to resume. The measured response may select a smaller range, reported in result._meta[backend/semanticSourceRange]. Every page retains the same reference; admit the complete byte union and canonical digest.",
+            "mimeType":"application/json",
+            "_meta":{"backend/requestSchema":backend_library::SemanticSourceRequest::json_schema()}
         }
     ] }),
     )
@@ -263,7 +304,10 @@ struct ResourceContent<'a> {
 /// Applies the same bounded typed envelope as tool projections to MCP
 /// resources. Resource text is context, so an oversized resource is refused
 /// with a typed transport fault instead of being silently truncated.
-fn encode_result<T: Serialize>(answer: &'static str, body: T) -> Result<Value, RpcError> {
+pub(super) fn encode_result<T: Serialize>(
+    answer: &'static str,
+    body: T,
+) -> Result<Value, RpcError> {
     let payload = encode_serializable(
         answer,
         Detail::Summary,

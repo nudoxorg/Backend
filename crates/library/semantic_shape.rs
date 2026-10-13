@@ -138,87 +138,182 @@ impl SemanticShapeBudget {
     }
 }
 
-/// Public read operands; they are selectors, not admitted compiler facts.
-/// Full selected SymbolKey bytes are required, never a display abbreviation.
+/// Exact source/compiler relation pair at captured current-shape selection.
+/// Historical source retrieval remains valid, but cannot mint a fresh shape
+/// proof under a newer pair by preserving only compiler generation labels.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticSourceEpoch {
+    /// Exact captured source relation root.
+    pub source_relation_root: [u8; 32],
+    /// Exact captured semantic relation root.
+    pub semantic_relation_root: [u8; 32],
+}
+impl SemanticSourceEpoch {
+    /// Checks nonempty exact root operands; native owner supplies authority.
+    pub fn admit(self) -> Result<Self, SemanticShapeError> {
+        if self.source_relation_root == [0; 32] || self.semantic_relation_root == [0; 32] {
+            return Err(SemanticShapeError::InvalidSource);
+        }
+        Ok(self)
+    }
+    fn admit_source(self, source: &SemanticVersionRecord) -> Result<(), SemanticShapeError> {
+        self.admit()?;
+        if source
+            .selected_source_frontier
+            .as_ref()
+            .is_some_and(|frontier| frontier.source_relation_root != self.source_relation_root)
+        {
+            return Err(SemanticShapeError::InvalidSource);
+        }
+        Ok(())
+    }
+}
+
+/// Public selected source operands. Neither parsed alternative grants authority.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SemanticShapeSource {
+    /// An exact complete inline record, accompanied by a mandatory source epoch.
+    Inline(SemanticVersionRecord),
+    /// A portable owner guard resolved through the existing native source read.
+    Reference(crate::SemanticSourceReference),
+}
+
+/// Public read operands with full selected keys and mandatory captured epoch.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
     try_from = "SemanticShapeReadRequestWire",
     into = "SemanticShapeReadRequestWire"
 )]
 pub struct SemanticShapeReadRequest {
-    source: SemanticVersionRecord,
+    source: SemanticShapeSource,
+    source_epoch: SemanticSourceEpoch,
     symbols: Box<[[u8; 32]]>,
     max_nodes: u16,
     max_bytes: u32,
 }
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SemanticShapeReadRequestWire {
-    source: SemanticVersionRecord,
+    source: SemanticShapeSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_epoch: Option<SemanticSourceEpoch>,
     symbols: Box<[[u8; 32]]>,
     max_nodes: u16,
     max_bytes: u32,
 }
-
 impl SemanticShapeReadRequest {
-    /// Checks selection, distinct full keys, and fixed caller budget bounds.
+    /// Checks an inline source and mandatory captured source/compiler roots.
     pub fn new(
         source: SemanticVersionRecord,
+        source_epoch: SemanticSourceEpoch,
         symbols: Box<[[u8; 32]]>,
         max_nodes: u16,
         max_bytes: u32,
     ) -> Result<Self, SemanticShapeError> {
-        SemanticShapeSelection::from_selected(&source)?;
-        SemanticShapeBudget::new(max_nodes, max_bytes)?;
-        if symbols.is_empty() || symbols.len() > MAX_SEMANTIC_SHAPE_BATCH {
-            return Err(SemanticShapeError::BatchBound);
-        }
-        let mut seen = std::collections::BTreeSet::new();
-        for key in &symbols {
-            if *key == [0; 32] || !seen.insert(*key) {
-                return Err(SemanticShapeError::DuplicateSymbol);
-            }
-        }
-        Ok(Self {
-            source,
+        Self::try_from(SemanticShapeReadRequestWire {
+            source: SemanticShapeSource::Inline(source),
+            source_epoch: Some(source_epoch),
             symbols,
             max_nodes,
             max_bytes,
         })
     }
-
-    /// Exact selected generation supplied by the caller.
-    #[must_use]
-    pub const fn source(&self) -> &SemanticVersionRecord {
+    /// Checks a portable selector whose sealed header contains the exact epoch.
+    pub fn from_reference(
+        reference: crate::SemanticSourceReference,
+        symbols: Box<[[u8; 32]]>,
+        max_nodes: u16,
+        max_bytes: u32,
+    ) -> Result<Self, SemanticShapeError> {
+        Self::try_from(SemanticShapeReadRequestWire {
+            source: SemanticShapeSource::Reference(reference),
+            source_epoch: None,
+            symbols,
+            max_nodes,
+            max_bytes,
+        })
+    }
+    /// Borrows the source selector before native owner admission.
+    pub const fn source(&self) -> &SemanticShapeSource {
         &self.source
     }
+    /// Returns the exact captured source/compiler root pair.
+    pub const fn source_epoch(&self) -> SemanticSourceEpoch {
+        self.source_epoch
+    }
     /// Full selected symbol key bytes in requested order.
-    #[must_use]
     pub fn symbols(&self) -> &[[u8; 32]] {
         &self.symbols
     }
-    /// Checked caller limits; deserialization applies the same admission.
+    /// Checked caller output limits.
     pub fn budget(&self) -> Result<SemanticShapeBudget, SemanticShapeError> {
         SemanticShapeBudget::new(self.max_nodes, self.max_bytes)
     }
 }
-
 impl TryFrom<SemanticShapeReadRequestWire> for SemanticShapeReadRequest {
     type Error = SemanticShapeError;
     fn try_from(value: SemanticShapeReadRequestWire) -> Result<Self, Self::Error> {
-        Self::new(
-            value.source,
-            value.symbols,
-            value.max_nodes,
-            value.max_bytes,
-        )
+        let source_epoch = match &value.source {
+            SemanticShapeSource::Inline(source) => {
+                SemanticShapeSelection::from_selected(source)?;
+                let epoch = value
+                    .source_epoch
+                    .ok_or(SemanticShapeError::InvalidSource)?;
+                epoch.admit_source(source)?;
+                epoch
+            }
+            SemanticShapeSource::Reference(reference) => {
+                if !reference.metadata.selected || !reference.metadata.complete {
+                    return Err(SemanticShapeError::InvalidSource);
+                }
+                let epoch = SemanticSourceEpoch {
+                    source_relation_root: reference.source_relation_root,
+                    semantic_relation_root: reference.semantic_relation_root,
+                };
+                if reference
+                    .metadata
+                    .selected_source_frontier
+                    .as_ref()
+                    .is_some_and(|frontier| {
+                        frontier.package != reference.metadata.package
+                            || frontier.source_relation_root != epoch.source_relation_root
+                    })
+                    || value.source_epoch.is_some_and(|supplied| supplied != epoch)
+                {
+                    return Err(SemanticShapeError::InvalidSource);
+                }
+                epoch
+            }
+        }
+        .admit()?;
+        SemanticShapeBudget::new(value.max_nodes, value.max_bytes)?;
+        if value.symbols.is_empty() || value.symbols.len() > MAX_SEMANTIC_SHAPE_BATCH {
+            return Err(SemanticShapeError::BatchBound);
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        if value
+            .symbols
+            .iter()
+            .any(|key| *key == [0; 32] || !seen.insert(*key))
+        {
+            return Err(SemanticShapeError::DuplicateSymbol);
+        }
+        Ok(Self {
+            source: value.source,
+            source_epoch,
+            symbols: value.symbols,
+            max_nodes: value.max_nodes,
+            max_bytes: value.max_bytes,
+        })
     }
 }
 impl From<SemanticShapeReadRequest> for SemanticShapeReadRequestWire {
     fn from(value: SemanticShapeReadRequest) -> Self {
         Self {
             source: value.source,
+            source_epoch: Some(value.source_epoch),
             symbols: value.symbols,
             max_nodes: value.max_nodes,
             max_bytes: value.max_bytes,
@@ -231,6 +326,7 @@ impl From<SemanticShapeReadRequest> for SemanticShapeReadRequestWire {
 pub struct SemanticShapeRequest {
     basis: ViewRevision,
     source: SemanticVersionRecord,
+    source_epoch: SemanticSourceEpoch,
     symbols: Box<[SymbolAddress]>,
     budget: SemanticShapeBudget,
 }
@@ -240,9 +336,11 @@ impl SemanticShapeRequest {
     pub fn new(
         basis: ViewStateRoot,
         source: SemanticVersionRecord,
+        source_epoch: SemanticSourceEpoch,
         symbols: impl Into<Box<[SymbolAddress]>>,
         budget: SemanticShapeBudget,
     ) -> Result<Self, SemanticShapeError> {
+        source_epoch.admit_source(&source)?;
         let symbols = symbols.into();
         if symbols.is_empty() || symbols.len() > MAX_SEMANTIC_SHAPE_BATCH {
             return Err(SemanticShapeError::BatchBound);
@@ -267,6 +365,7 @@ impl SemanticShapeRequest {
         Ok(Self {
             basis: basis.into(),
             source,
+            source_epoch,
             symbols,
             budget,
         })
@@ -276,9 +375,11 @@ impl SemanticShapeRequest {
     pub(crate) fn from_admitted_parts(
         basis: ViewRevision,
         source: SemanticVersionRecord,
+        source_epoch: SemanticSourceEpoch,
         symbols: Box<[SymbolAddress]>,
         budget: SemanticShapeBudget,
     ) -> Result<Self, SemanticShapeError> {
+        source_epoch.admit_source(&source)?;
         let mut seen = std::collections::BTreeSet::new();
         if symbols.is_empty() || symbols.len() > MAX_SEMANTIC_SHAPE_BATCH {
             return Err(SemanticShapeError::BatchBound);
@@ -302,6 +403,7 @@ impl SemanticShapeRequest {
         Ok(Self {
             basis,
             source,
+            source_epoch,
             symbols,
             budget,
         })
@@ -317,6 +419,11 @@ impl SemanticShapeRequest {
     #[must_use]
     pub const fn source(&self) -> &SemanticVersionRecord {
         &self.source
+    }
+
+    /// Exact captured source/compiler roots, admitted by the native owner.
+    pub const fn source_epoch(&self) -> SemanticSourceEpoch {
+        self.source_epoch
     }
 
     /// Ordered declaration selectors.
@@ -1577,7 +1684,7 @@ fn admit_minimum_budget(
     symbols: usize,
     budget: SemanticShapeBudget,
 ) -> Result<(), SemanticShapeError> {
-    let source_bytes = serde_json::to_vec(source)
+    let source_bytes = serde_json::to_vec(&SemanticShapeSelection::from_selected(source)?)
         .map_err(|_| SemanticShapeError::InvalidOrigin)?
         .len();
     let min_nodes = symbols.saturating_mul(2);
@@ -1709,6 +1816,49 @@ mod tests {
     }
 
     #[test]
+    fn public_shape_selectors_require_exact_captured_epoch_and_do_not_rebind_reference_roots() {
+        let value: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/semantic-shape-read.json"))
+                .expect("inline operands");
+        let mut missing = value.clone();
+        missing
+            .as_object_mut()
+            .expect("object")
+            .remove("source_epoch");
+        assert!(serde_json::from_value::<SemanticShapeReadRequest>(missing).is_err());
+        let mut wrong = value.clone();
+        wrong["source_epoch"]["source_relation_root"] = serde_json::json!([7u8; 32]);
+        assert!(serde_json::from_value::<SemanticShapeReadRequest>(wrong).is_err());
+        let source: SemanticVersionRecord =
+            serde_json::from_value(value["source"].clone()).expect("complete inline source");
+        let reference =
+            crate::SemanticSourceReference::capture(&source, [8; 32], [34; 32], &[7; 32])
+                .expect("frozen selector; no native authority claim");
+        let read = SemanticShapeReadRequest::from_reference(
+            reference.clone(),
+            Box::new([[6; 32]]),
+            4096,
+            49152,
+        )
+        .expect("portable selector");
+        assert_eq!(
+            read.source_epoch(),
+            SemanticSourceEpoch {
+                source_relation_root: [8; 32],
+                semantic_relation_root: [34; 32]
+            }
+        );
+        let mut rebind = serde_json::to_value(read).expect("wire selector");
+        rebind["source_epoch"]["semantic_relation_root"] = serde_json::json!([35u8; 32]);
+        assert!(serde_json::from_value::<SemanticShapeReadRequest>(rebind).is_err());
+        // A caller may parse mutated raw guards, but cannot obtain the owner
+        // capability required by native history lookup and reconstruction.
+        let mut forged = reference;
+        forged.semantic_relation_root = [35; 32];
+        assert!(forged.verify_owner(&[7; 32]).is_err());
+    }
+
+    #[test]
     fn public_shape_operands_reject_abbreviations_wrong_family_and_unselected_source() {
         let value: serde_json::Value =
             serde_json::from_str(include_str!("fixtures/semantic-shape-read.json"))
@@ -1717,12 +1867,12 @@ mod tests {
             serde_json::from_value(value.clone()).expect("closed operands");
         assert_eq!(admitted.symbols(), &[[6; 32]]);
         for changed in [
-            serde_json::json!({"source": value["source"], "symbols": ["06060606"], "max_nodes": 4096, "max_bytes": 49152}),
-            serde_json::json!({"source": value["source"], "symbols": [{"kind":"canonical","id":"06".repeat(32)}], "max_nodes": 4096, "max_bytes": 49152}),
-            serde_json::json!({"source": value["source"], "symbols": [], "max_nodes": 4096, "max_bytes": 49152}),
-            serde_json::json!({"source": value["source"], "symbols": vec![[6u8;32];33], "max_nodes": 4096, "max_bytes": 49152}),
-            serde_json::json!({"source": value["source"], "symbols": vec![[6u8;32];2], "max_nodes": 4096, "max_bytes": 49152}),
-            serde_json::json!({"source": value["source"], "symbols": vec![[6u8;32]], "max_nodes": 4097, "max_bytes": 49152}),
+            serde_json::json!({"source": value["source"], "source_epoch":value["source_epoch"], "symbols": ["06060606"], "max_nodes": 4096, "max_bytes": 49152}),
+            serde_json::json!({"source": value["source"], "source_epoch":value["source_epoch"], "symbols": [{"kind":"canonical","id":"06".repeat(32)}], "max_nodes": 4096, "max_bytes": 49152}),
+            serde_json::json!({"source": value["source"], "source_epoch":value["source_epoch"], "symbols": [], "max_nodes": 4096, "max_bytes": 49152}),
+            serde_json::json!({"source": value["source"], "source_epoch":value["source_epoch"], "symbols": vec![[6u8;32];33], "max_nodes": 4096, "max_bytes": 49152}),
+            serde_json::json!({"source": value["source"], "source_epoch":value["source_epoch"], "symbols": vec![[6u8;32];2], "max_nodes": 4096, "max_bytes": 49152}),
+            serde_json::json!({"source": value["source"], "source_epoch":value["source_epoch"], "symbols": vec![[6u8;32]], "max_nodes": 4097, "max_bytes": 49152}),
         ] {
             assert!(serde_json::from_value::<SemanticShapeReadRequest>(changed).is_err());
         }
@@ -1766,6 +1916,10 @@ mod tests {
         SemanticShapeRequest::new(
             crate::view_state_root(&[]),
             selected,
+            SemanticSourceEpoch {
+                source_relation_root: [0x21; 32],
+                semantic_relation_root: [0x22; 32],
+            },
             names
                 .iter()
                 .map(|name| SymbolAddress::selected(crate::symbol_key(name)))
@@ -1832,6 +1986,7 @@ mod tests {
         let small_manifest_request = SemanticShapeRequest::new(
             crate::view_state_root(&[]),
             small_manifest_source,
+            request.source_epoch(),
             request.symbols().to_vec().into_boxed_slice(),
             request.budget(),
         )
@@ -2082,6 +2237,7 @@ mod tests {
         let changed_history_request = SemanticShapeRequest::new(
             crate::view_state_root(&[]),
             changed_history,
+            original_request.source_epoch(),
             original_request.symbols.clone(),
             original_request.budget,
         )

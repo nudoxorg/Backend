@@ -37,7 +37,8 @@ pub use codec::{
     encode_command_body,
 };
 pub use command::{
-    CommandDto, ReplyDto, ViewDto, encode_binary_certificate_command, expand_binary_certificate_command,
+    CommandDto, ReplyDto, ViewDto, encode_binary_certificate_command,
+    expand_binary_certificate_command,
 };
 pub use event_dto::EventDto;
 pub use journal_grammar::JournalViewGrammarV3;
@@ -69,6 +70,7 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version. Version 28 distinguishes native checker
-/// worker-pool startup refusal. Persisted view rows and compact events are unchanged.
-pub const DTO_VERSION: u16 = 28;
+/// Current transport DTO version. Version 29 adds native semantic source
+/// ranges/version pages and mandatory captured source epochs for shape reads.
+/// Persisted view rows, certificates and compact events are unchanged.
+pub const DTO_VERSION: u16 = 29;

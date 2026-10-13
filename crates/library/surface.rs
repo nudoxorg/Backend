@@ -3148,6 +3148,8 @@ impl IndexJobObservation {
     }
 }
 
+fn default_semantic_versions_limit() -> u16 { 1 }
+
 /// Exact request for one daemon-owned product operation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "operation", rename_all = "kebab-case", deny_unknown_fields)]
@@ -3236,6 +3238,17 @@ pub enum SurfaceCommand {
     SemanticVersions {
         /// Exact product package reference.
         package: PackageReference,
+        /// Requested native descriptor bound, within the shared query limit.
+        #[serde(default = "default_semantic_versions_limit")]
+        limit: u16,
+        /// Owner-bound continuation for the same exact source/compiler roots.
+        #[serde(default)]
+        cursor: Option<crate::SemanticVersionsCursor>,
+    },
+    /// Read a byte range of one complete captured semantic-source operand.
+    SemanticSource {
+        /// Exact owner reference and native byte range.
+        request: crate::SemanticSourceRequest,
     },
     /// Read compiler-owned member/type shapes for exact selected keys.
     SemanticShapes {
@@ -3429,6 +3442,7 @@ impl SurfaceCommand {
             Self::IndexSearch { .. } => CommandId::IndexSearch,
             Self::PackageVersions { .. } => CommandId::PackageVersions,
             Self::SemanticVersions { .. } => CommandId::SemanticVersions,
+            Self::SemanticSource { .. } => CommandId::SemanticSource,
             Self::SemanticShapes { .. } => CommandId::SemanticShapes,
             Self::PackageSourceMembership { .. } => CommandId::PackageSourceMembership,
             Self::SelectSemanticVersion { .. } => CommandId::SelectSemanticVersion,
@@ -3471,10 +3485,15 @@ impl SurfaceCommand {
             Self::Read { locators } if locators.len() > MAX_PRODUCT_ROWS => {
                 Err(ProductAdmissionError::RowBound)
             }
-            Self::Explore { limit, .. } | Self::IndexSearch { limit, .. }
+            Self::Explore { limit, .. } | Self::IndexSearch { limit, .. } | Self::SemanticVersions { limit, .. }
                 if *limit == 0 || usize::from(*limit) > MAX_PRODUCT_ROWS =>
             {
                 Err(ProductAdmissionError::RowBound)
+            }
+            Self::SemanticSource { request } if request.range.max_bytes == 0
+                || usize::from(request.range.max_bytes) > MAX_PRODUCT_TEXT_BYTES
+                || request.range.offset >= request.reference.source.total_bytes => {
+                Err(ProductAdmissionError::SemanticVersionShape)
             }
             Self::SelectSemanticVersion {
                 coordinate,
@@ -4954,6 +4973,10 @@ pub enum SurfaceReply {
     PackageVersions(Box<[RegistryPackageRecord]>),
     /// Immutable compiler generations for one exact package.
     SemanticVersions(Box<[SemanticVersionRecord]>),
+    /// Bounded immutable compiler identities with native source references.
+    SemanticVersionsPage(crate::SemanticVersionsPage),
+    /// Exact range of a captured complete semantic-source object.
+    SemanticSource(crate::SemanticSourceChunk),
     /// Egress view exported after direct shape certificate admission.
     SemanticShapes(crate::SemanticShapeExport),
     /// One bounded page of exact selected Project source membership.
@@ -5049,7 +5072,8 @@ impl SurfaceReply {
             Self::IndexSearchWithDiscovery(_) => CommandId::IndexSearch,
             Self::IndexSearchPage(_) => CommandId::IndexSearch,
             Self::PackageVersions(_) => CommandId::PackageVersions,
-            Self::SemanticVersions(_) => CommandId::SemanticVersions,
+            Self::SemanticVersions(_) | Self::SemanticVersionsPage(_) => CommandId::SemanticVersions,
+            Self::SemanticSource(_) => CommandId::SemanticSource,
             Self::SemanticShapes(_) => CommandId::SemanticShapes,
             Self::PackageSourceMembershipPage(_) => CommandId::PackageSourceMembership,
             Self::IndexStarted(_) => CommandId::IndexStart,
@@ -5141,6 +5165,14 @@ impl SurfaceReply {
                 page.admit()
                     .map_err(|_| ProductAdmissionError::PackageGraphPage)?;
                 page.rows.len()
+            }
+            Self::SemanticSource(chunk) => {
+                chunk.admit().map_err(|_| ProductAdmissionError::SemanticVersionShape)?;
+                1
+            }
+            Self::SemanticVersionsPage(page) => {
+                page.admit()?;
+                page.entries.len()
             }
             Self::SemanticVersions(records) => {
                 let mut selected_targets = BTreeSet::new();
@@ -5443,6 +5475,8 @@ impl SurfaceReply {
                         ),
                     )
                 })),
+            Self::SemanticSource(chunk) => chunk.base64url.len().saturating_add(512),
+            Self::SemanticVersionsPage(page) => serialized_json_size(page),
             Self::SemanticVersions(records) => records.iter().fold(0_usize, |bound, record| {
                 bound
                     .saturating_add(fixed_record_bound())

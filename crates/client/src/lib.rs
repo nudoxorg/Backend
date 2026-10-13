@@ -890,6 +890,13 @@ impl Session {
         }
     }
 
+    /// Borrows the existing caller scope so bounded read retries preserve its
+    /// absolute deadline and cancellation rather than renewing a request.
+    #[must_use]
+    pub fn request_context(&self) -> Option<&RequestContext> {
+        self.request_context.as_ref()
+    }
+
     /// Installs or retires the context for one caller-owned request.
     /// # Errors
     /// Returns cancellation if this request stopped before transport admission.
@@ -1607,8 +1614,15 @@ impl Session {
             let budget = request
                 .budget()
                 .map_err(|error| ClientError::Protocol(error.to_string()))?;
+            let source = match request.source() {
+                backend_library::SemanticShapeSource::Inline(source) => source.clone(),
+                backend_library::SemanticShapeSource::Reference(reference) => {
+                    self.semantic_source(reference.clone())?
+                }
+            };
             let (_, admitted_request, reply) = self.read_semantic_shapes(
-                request.source().clone(),
+                source,
+                request.source_epoch(),
                 keys.into_boxed_slice(),
                 budget,
             )?;
@@ -1619,6 +1633,20 @@ impl Session {
             .map_err(ClientError::Protocol)?;
             return Ok(SurfaceReply::SemanticShapes(export));
         }
+        let source_read = match &command {
+            SurfaceCommand::SemanticSource { request } => {
+                Some((request.reference.source.clone(), request.range.clone()))
+            }
+            _ => None,
+        };
+        let version_read = match &command {
+            SurfaceCommand::SemanticVersions {
+                package,
+                limit,
+                cursor,
+            } => Some((package.clone(), *limit, cursor.clone())),
+            _ => None,
+        };
         let expected = command.id();
         let reply = self.send_success(Command::Surface(command), None)?;
         let CommandReply::Surface(reply) = reply.reply else {
@@ -1626,9 +1654,29 @@ impl Session {
                 "surface reply changed shape".to_owned(),
             ));
         };
-        reply
-            .admit(expected)
-            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        if let Some((source, range)) = source_read {
+            let SurfaceReply::SemanticSource(chunk) = &reply else {
+                return Err(ClientError::Protocol(
+                    "semantic source reply changed shape".to_owned(),
+                ));
+            };
+            chunk
+                .admit_range(&source, &range)
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        } else {
+            reply
+                .admit(expected)
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        }
+        if let Some((package, limit, cursor)) = version_read {
+            let SurfaceReply::SemanticVersionsPage(page) = &reply else {
+                return Err(ClientError::Protocol(
+                    "paged semantic-versions command requires a native descriptor page".to_owned(),
+                ));
+            };
+            page.admit_request(&package, limit, cursor.as_ref())
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        }
         Ok(reply)
     }
 
@@ -1792,12 +1840,117 @@ impl Session {
         &mut self,
         package: PackageReference,
     ) -> Result<Box<[SemanticVersionRecord]>, ClientError> {
-        match self.surface(SurfaceCommand::SemanticVersions { package })? {
-            SurfaceReply::SemanticVersions(records) => Ok(records),
+        let mut cursor = None;
+        let mut records = Vec::new();
+        loop {
+            let reply = self.surface(SurfaceCommand::SemanticVersions {
+                package: package.clone(),
+                limit: 1,
+                cursor,
+            })?;
+            let SurfaceReply::SemanticVersionsPage(page) = reply else {
+                return Err(ClientError::Protocol(
+                    "semantic versions reply changed shape".to_owned(),
+                ));
+            };
+            for entry in &page.entries {
+                let backend_library::SemanticVersionDescriptor::Available { reference } = entry
+                else {
+                    return Err(ClientError::Protocol(
+                        "exact semantic source retention is unavailable".to_owned(),
+                    ));
+                };
+                records.push(self.semantic_source(reference.clone())?);
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(records.into_boxed_slice())
+    }
+
+    /// Reads a bounded native version descriptor page with exact root bindings.
+    ///
+    /// # Errors
+    /// Refuses stale/foreign continuations and malformed native page replies.
+    pub fn semantic_versions_page(
+        &mut self,
+        package: PackageReference,
+        limit: u16,
+        cursor: Option<backend_library::SemanticVersionsCursor>,
+    ) -> Result<backend_library::SemanticVersionsPage, ClientError> {
+        match self.surface(SurfaceCommand::SemanticVersions {
+            package,
+            limit,
+            cursor,
+        })? {
+            SurfaceReply::SemanticVersionsPage(page) => Ok(page),
             _ => Err(ClientError::Protocol(
-                "semantic versions reply changed shape".to_owned(),
+                "semantic versions page changed shape".to_owned(),
             )),
         }
+    }
+
+    /// Reconstructs one complete captured record through exact native ranges.
+    ///
+    /// # Errors
+    /// Refuses gaps, reordered or foreign chunks, changed extents and digest
+    /// mismatch; each source read retains the same portable owner reference.
+    pub fn semantic_source(
+        &mut self,
+        reference: backend_library::SemanticSourceReference,
+    ) -> Result<SemanticVersionRecord, ClientError> {
+        let mut assembly = backend_library::SemanticSourceAssembly::new(reference.source.clone())
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        loop {
+            let range = backend_library::SemanticSourceRange {
+                offset: assembly
+                    .offset()
+                    .map_err(|error| ClientError::Protocol(error.to_string()))?,
+                ..Default::default()
+            };
+            let admitted = self.semantic_source_range(&reference, range)?;
+            let complete = admitted.complete();
+            assembly
+                .append_admitted(admitted)
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
+            if complete {
+                break;
+            }
+        }
+        assembly
+            .finish()
+            .map_err(|error| ClientError::Protocol(error.to_string()))
+    }
+
+    fn semantic_source_range(
+        &mut self,
+        reference: &backend_library::SemanticSourceReference,
+        range: backend_library::SemanticSourceRange,
+    ) -> Result<backend_library::AdmittedSemanticSourceChunk, ClientError> {
+        let command = SurfaceCommand::SemanticSource {
+            request: backend_library::SemanticSourceRequest {
+                reference: reference.clone(),
+                range: range.clone(),
+            },
+        };
+        command
+            .admit()
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        let reply = self.send_success(Command::Surface(command), None)?;
+        let CommandReply::Surface(SurfaceReply::SemanticSource(chunk)) = reply.reply else {
+            return Err(ClientError::Protocol(
+                "semantic source range reply changed shape".to_owned(),
+            ));
+        };
+        let admitted = chunk
+            .admit_decoded()
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        admitted
+            .correlate(&reference.source, &range)
+            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        Ok(admitted)
     }
 
     /// Reads one bounded page of exact source File rows selected by a local Project.
@@ -1857,11 +2010,13 @@ impl Session {
     pub fn semantic_shapes(
         &mut self,
         source: SemanticVersionRecord,
+        source_epoch: backend_library::SemanticSourceEpoch,
         symbols: &[SymbolKey],
         budget: SemanticShapeBudget,
     ) -> Result<SemanticShapeBatch, ClientError> {
         self.read_semantic_shapes(
             source,
+            source_epoch,
             symbols
                 .iter()
                 .copied()
@@ -1876,6 +2031,7 @@ impl Session {
     fn read_semantic_shapes(
         &mut self,
         source: SemanticVersionRecord,
+        source_epoch: backend_library::SemanticSourceEpoch,
         symbols: Box<[SymbolAddress]>,
         budget: SemanticShapeBudget,
     ) -> Result<(SemanticShapeBatch, SemanticShapeRequest, ReplyDto), ClientError> {
@@ -1893,8 +2049,9 @@ impl Session {
                     id: encode_id(&symbol.claimed_bytes()),
                 })
             });
-        let request = SemanticShapeRequest::new(revision.root, source, symbols, budget)
-            .map_err(|error| ClientError::Protocol(error.to_string()))?;
+        let request =
+            SemanticShapeRequest::new(revision.root, source, source_epoch, symbols, budget)
+                .map_err(|error| ClientError::Protocol(error.to_string()))?;
         let reply =
             self.send_success(Command::SemanticShapes(request.clone()), Some(certificate))?;
         let CommandReply::SemanticShapes(batch) = &reply.reply else {

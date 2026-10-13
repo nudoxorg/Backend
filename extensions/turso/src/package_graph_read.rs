@@ -9,6 +9,7 @@ use backend_library::{
     PackageDependencyRecord, PackageGraphControl, PackageGraphCursor, PackageGraphDirection,
     PackageGraphKnowledge, PackageGraphPage, PackageGraphPageError, PackageGraphPageRequest,
     PackageGraphPageTerminal, PackageGraphSourceKey, PackageReference, ProductText,
+    VerifiedPackageGraphPageRequest,
 };
 
 /// Failure while reading one bounded package graph page.
@@ -69,14 +70,46 @@ impl TursoProjection {
     /// clients.
     pub async fn read_package_graph_page(
         &self,
+        request: &VerifiedPackageGraphPageRequest<'_>,
+    ) -> Result<PackageGraphPage, PackageGraphReadError> {
+        let _operation_guard = self.operation_guard()?;
+        let tx = self.connection.unchecked_transaction().await?;
+        let result = read_page_snapshot(&tx, GraphReadAdmission::Owner(request)).await;
+        tx.rollback().await?;
+        result
+    }
+    /// Projection-only corruption controls deliberately do not test owner
+    /// authentication. This raw decoder path is absent from production builds.
+    #[cfg(test)]
+    pub(crate) async fn read_unsealed_package_graph_page_for_test(
+        &self,
         request: &PackageGraphPageRequest,
     ) -> Result<PackageGraphPage, PackageGraphReadError> {
         request.admit()?;
         let _operation_guard = self.operation_guard()?;
         let tx = self.connection.unchecked_transaction().await?;
-        let result = read_page_snapshot(&tx, request).await;
+        let result = read_page_snapshot(&tx, GraphReadAdmission::UnsealedFixture(request)).await;
         tx.rollback().await?;
         result
+    }
+}
+
+/// Production admits only an owner-verified immutable request. The separate
+/// test variant retains existing SQL corruption controls without giving any
+/// production caller a way to forge a verified frontier.
+pub(crate) enum GraphReadAdmission<'a> {
+    Owner(&'a VerifiedPackageGraphPageRequest<'a>),
+    #[cfg(test)]
+    UnsealedFixture(&'a PackageGraphPageRequest),
+}
+
+impl GraphReadAdmission<'_> {
+    fn request(&self) -> &PackageGraphPageRequest {
+        match self {
+            Self::Owner(verified) => verified.request(),
+            #[cfg(test)]
+            Self::UnsealedFixture(request) => request,
+        }
     }
 }
 
@@ -84,8 +117,9 @@ impl TursoProjection {
 /// already fixed the SQLite snapshot; this helper never starts or ends it.
 pub(crate) async fn read_page_snapshot(
     tx: &turso::Connection,
-    request: &PackageGraphPageRequest,
+    admission: GraphReadAdmission<'_>,
 ) -> Result<PackageGraphPage, PackageGraphReadError> {
+    let request = admission.request();
     request.admit()?;
     let Some(metadata) = crate::graph::package_graph_metadata_from(tx).await? else {
         return if request.cursor.is_some() {
@@ -251,6 +285,8 @@ pub(crate) async fn read_page_snapshot(
         };
         PackageGraphPageTerminal::More(PackageGraphCursor {
             schema: backend_library::PACKAGE_GRAPH_PAGE_SCHEMA,
+            limit: request.limit,
+            seal: [0; 32],
             view_root,
             facts_witness: metadata.facts_witness,
             catalog_snapshot: request.catalog_snapshot,
@@ -263,6 +299,7 @@ pub(crate) async fn read_page_snapshot(
     };
     let page = PackageGraphPage {
         schema: backend_library::PACKAGE_GRAPH_PAGE_SCHEMA,
+        limit: request.limit,
         view_root,
         facts_witness: metadata.facts_witness,
         catalog_snapshot: request.catalog_snapshot,
@@ -528,6 +565,7 @@ fn empty_page(
 ) -> PackageGraphPage {
     PackageGraphPage {
         schema: backend_library::PACKAGE_GRAPH_PAGE_SCHEMA,
+        limit: request.limit,
         view_root,
         facts_witness,
         catalog_snapshot,
@@ -799,7 +837,7 @@ mod tests {
             )
             .expect("bounded request");
             let first = projection
-                .read_package_graph_page(&request)
+                .read_unsealed_package_graph_page_for_test(&request)
                 .await
                 .expect("first page");
             assert_eq!(first.rows.len(), 1);
@@ -808,7 +846,9 @@ mod tests {
                 panic!("first page should continue")
             };
             let second = projection
-                .read_package_graph_page(&request.clone().with_cursor(cursor.clone()))
+                .read_unsealed_package_graph_page_for_test(
+                    &request.clone().with_cursor(cursor.clone()),
+                )
                 .await
                 .expect("second page");
             assert_eq!(second.rows.len(), 1);
@@ -816,7 +856,7 @@ mod tests {
                 panic!("second page should continue")
             };
             let third = projection
-                .read_package_graph_page(&request.with_cursor(cursor.clone()))
+                .read_unsealed_package_graph_page_for_test(&request.with_cursor(cursor.clone()))
                 .await
                 .expect("third page");
             assert_eq!(third.rows.len(), 1);
@@ -833,7 +873,7 @@ mod tests {
                 .await
                 .expect("reopen durable projection");
             let reopened = projection
-                .read_package_graph_page(
+                .read_unsealed_package_graph_page_for_test(
                     &PackageGraphPageRequest::new(
                         source,
                         PackageGraphDirection::Dependencies,
@@ -925,7 +965,7 @@ mod tests {
             )
             .expect("PURL request");
             let purl_first = projection
-                .read_package_graph_page(&purl_request)
+                .read_unsealed_package_graph_page_for_test(&purl_request)
                 .await
                 .expect("PURL first page");
             assert_eq!(purl_first.source, Some(purl_key.clone()));
@@ -936,7 +976,7 @@ mod tests {
                 purl_cursor.schema,
                 backend_library::PACKAGE_GRAPH_PAGE_SCHEMA
             );
-            assert_eq!(purl_cursor.schema, 2, "typed cursor recipe uses schema v2");
+            assert_eq!(purl_cursor.schema, 3, "owner-sealed cursor uses schema v3");
 
             let local_request = PackageGraphPageRequest::new(
                 local.clone(),
@@ -947,7 +987,7 @@ mod tests {
             .expect("Local request");
             assert!(
                 projection
-                    .read_package_graph_page(
+                    .read_unsealed_package_graph_page_for_test(
                         &local_request.clone().with_cursor(purl_cursor.clone())
                     )
                     .await
@@ -955,7 +995,7 @@ mod tests {
                 "a PURL cursor cannot continue a same-text Local query"
             );
             let local_first = projection
-                .read_package_graph_page(&local_request)
+                .read_unsealed_package_graph_page_for_test(&local_request)
                 .await
                 .expect("Local first page");
             assert_eq!(local_first.source, Some(local_key.clone()));
@@ -964,7 +1004,9 @@ mod tests {
             };
             assert_eq!(local_cursor.source.as_ref(), Some(&local_key));
             let local_second = projection
-                .read_package_graph_page(&local_request.clone().with_cursor(local_cursor.clone()))
+                .read_unsealed_package_graph_page_for_test(
+                    &local_request.clone().with_cursor(local_cursor.clone()),
+                )
                 .await
                 .expect("Local continuation");
             assert_eq!(local_second.source, Some(local_key));
@@ -977,7 +1019,7 @@ mod tests {
             local_names.sort_unstable();
             assert_eq!(local_names, ["local-a", "local-b"]);
             let reverse = projection
-                .read_package_graph_page(
+                .read_unsealed_package_graph_page_for_test(
                     &PackageGraphPageRequest::new(
                         package("pkg:cargo/local-a@1.0.0"),
                         PackageGraphDirection::Dependents,
@@ -1026,7 +1068,7 @@ mod tests {
             .expect("request");
             assert_eq!(
                 projection
-                    .read_package_graph_page(&request)
+                    .read_unsealed_package_graph_page_for_test(&request)
                     .await
                     .expect("original page")
                     .rows
@@ -1041,7 +1083,12 @@ mod tests {
                 )
                 .await
                 .expect("alter one durable payload without its identity");
-            assert!(projection.read_package_graph_page(&request).await.is_err());
+            assert!(
+                projection
+                    .read_unsealed_package_graph_page_for_test(&request)
+                    .await
+                    .is_err()
+            );
             drop(projection);
             remove_database(&path);
         });
@@ -1091,7 +1138,10 @@ mod tests {
             )
             .expect("request");
             assert!(
-                projection.read_package_graph_page(&request).await.is_err(),
+                projection
+                    .read_unsealed_package_graph_page_for_test(&request)
+                    .await
+                    .is_err(),
                 "paged reads must refuse trim-normalized state text"
             );
             drop(projection);
@@ -1190,7 +1240,10 @@ mod tests {
             )
             .expect("request");
             assert!(
-                projection.read_package_graph_page(&request).await.is_err(),
+                projection
+                    .read_unsealed_package_graph_page_for_test(&request)
+                    .await
+                    .is_err(),
                 "paged reads must reject a valid gap witness with an indexed edge"
             );
             drop(projection);
@@ -1240,7 +1293,12 @@ mod tests {
                 8,
             )
             .expect("request");
-            assert!(projection.read_package_graph_page(&request).await.is_err());
+            assert!(
+                projection
+                    .read_unsealed_package_graph_page_for_test(&request)
+                    .await
+                    .is_err()
+            );
             drop(projection);
             remove_database(&path);
         });
@@ -1291,7 +1349,7 @@ mod tests {
             .expect("dependency request");
             assert!(
                 projection
-                    .read_package_graph_page(&dependencies)
+                    .read_unsealed_package_graph_page_for_test(&dependencies)
                     .await
                     .is_err(),
                 "paged lookup must detect a state row under another identity"
@@ -1305,7 +1363,7 @@ mod tests {
             .expect("reverse request");
             assert!(
                 projection
-                    .read_package_graph_page(&dependents)
+                    .read_unsealed_package_graph_page_for_test(&dependents)
                     .await
                     .is_err(),
                 "reverse probe must reject a state key without its witness"
@@ -1353,7 +1411,10 @@ mod tests {
             )
             .expect("reverse request");
             assert!(
-                projection.read_package_graph_page(&reverse).await.is_err(),
+                projection
+                    .read_unsealed_package_graph_page_for_test(&reverse)
+                    .await
+                    .is_err(),
                 "state=3 must not be skipped into a Known reverse answer"
             );
             drop(projection);
@@ -1389,7 +1450,12 @@ mod tests {
             let request =
                 PackageGraphPageRequest::new(source, PackageGraphDirection::Dependencies, None, 8)
                     .expect("request");
-            assert!(projection.read_package_graph_page(&request).await.is_err());
+            assert!(
+                projection
+                    .read_unsealed_package_graph_page_for_test(&request)
+                    .await
+                    .is_err()
+            );
             drop(projection);
             remove_database(&path);
         });
@@ -1420,7 +1486,7 @@ mod tests {
             )
             .expect("request");
             let ambiguous = projection
-                .read_package_graph_page(&request)
+                .read_unsealed_package_graph_page_for_test(&request)
                 .await
                 .expect("ambiguity response");
             assert!(ambiguous.rows.is_empty());
@@ -1439,7 +1505,7 @@ mod tests {
             )
             .expect("exact authority request");
             let selected = projection
-                .read_package_graph_page(&exact)
+                .read_unsealed_package_graph_page_for_test(&exact)
                 .await
                 .expect("exact authority response");
             assert_eq!(
@@ -1522,7 +1588,7 @@ mod tests {
             ];
             let (path, projection) = projection_with_facts(&facts, 3).await;
             let page = projection
-                .read_package_graph_page(
+                .read_unsealed_package_graph_page_for_test(
                     &PackageGraphPageRequest::new(
                         package("pkg:cargo/demo@1.0.0"),
                         PackageGraphDirection::Dependents,
@@ -1588,14 +1654,14 @@ mod tests {
             )
             .expect("request");
             let first = projection
-                .read_package_graph_page(&request)
+                .read_unsealed_package_graph_page_for_test(&request)
                 .await
                 .expect("first page");
             let PackageGraphPageTerminal::More(cursor) = first.terminal else {
                 panic!("first page should continue")
             };
             let empty = projection
-                .read_package_graph_page(
+                .read_unsealed_package_graph_page_for_test(
                     &PackageGraphPageRequest::new(
                         source.clone(),
                         PackageGraphDirection::Dependencies,
@@ -1609,7 +1675,7 @@ mod tests {
             assert_eq!(empty.knowledge, PackageGraphKnowledge::Known);
             assert_eq!(
                 projection
-                    .read_package_graph_page(&request.clone().cancelled())
+                    .read_unsealed_package_graph_page_for_test(&request.clone().cancelled())
                     .await
                     .expect("cancel response")
                     .terminal,
@@ -1647,7 +1713,7 @@ mod tests {
                 .await
                 .expect("advance graph snapshot");
             let stale = projection
-                .read_package_graph_page(&request.with_cursor(cursor))
+                .read_unsealed_package_graph_page_for_test(&request.with_cursor(cursor))
                 .await;
             assert!(matches!(stale, Err(PackageGraphReadError::StaleCursor)));
 
@@ -1655,7 +1721,7 @@ mod tests {
                 [(unknown_key, "unknown"), (unavailable_key, "unavailable")]
             {
                 let page = projection
-                    .read_package_graph_page(
+                    .read_unsealed_package_graph_page_for_test(
                         &PackageGraphPageRequest::new(
                             coordinate.coordinate,
                             PackageGraphDirection::Dependencies,

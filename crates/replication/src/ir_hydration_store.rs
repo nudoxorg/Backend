@@ -931,6 +931,20 @@ impl FileSemanticRangeStore {
         name: &crate::HistoryRefName,
         ancestor: crate::HistoryCommitId,
     ) -> Result<crate::HistoryRefAncestryProof, String> {
+        self.history_ref_ancestry_if_retained(target, kind, name, ancestor)?
+            .ok_or_else(|| "requested history commit is not retained by the named ref".to_owned())
+    }
+
+    /// Returns no proof when the publication ref is absent or its first-parent
+    /// chain no longer retains the captured commit. Corrupt metadata, unsupported
+    /// merges, and concurrent ref movement remain errors rather than Gone.
+    pub fn history_ref_ancestry_if_retained(
+        &self,
+        target: &crate::SemanticTargetKey,
+        kind: crate::HistoryRefKind,
+        name: &crate::HistoryRefName,
+        ancestor: crate::HistoryCommitId,
+    ) -> Result<Option<crate::HistoryRefAncestryProof>, String> {
         self.history_ref_ancestry_proof_inner(target, kind, name, ancestor, || Ok(()))
     }
 
@@ -948,17 +962,61 @@ impl FileSemanticRangeStore {
         commit_ids: &[crate::HistoryCommitId],
         expected_first_parent: Option<crate::HistoryCommitId>,
     ) -> Result<Box<[crate::HistoryRefAncestryProof]>, String> {
+        self.history_ref_ancestry_proofs_for_chain_inner(
+            target,
+            kind,
+            name,
+            commit_ids,
+            expected_first_parent,
+            true,
+        )
+    }
+
+    /// Admits one complete captured package chain whose final commit remains
+    /// reachable from a publication-owned named ref. The immutable captured
+    /// tip need not remain the current mutable ref tip. No navigation ref or
+    /// durable lifetime root is created by this read; release fails closed.
+    pub fn history_ref_ancestry_proofs_for_captured_chain(
+        &self,
+        target: &crate::SemanticTargetKey,
+        kind: crate::HistoryRefKind,
+        name: &crate::HistoryRefName,
+        commit_ids: &[crate::HistoryCommitId],
+        expected_first_parent: Option<crate::HistoryCommitId>,
+    ) -> Result<Box<[crate::HistoryRefAncestryProof]>, String> {
+        self.history_ref_ancestry_proofs_for_chain_inner(
+            target,
+            kind,
+            name,
+            commit_ids,
+            expected_first_parent,
+            false,
+        )
+    }
+
+    fn history_ref_ancestry_proofs_for_chain_inner(
+        &self,
+        target: &crate::SemanticTargetKey,
+        kind: crate::HistoryRefKind,
+        name: &crate::HistoryRefName,
+        commit_ids: &[crate::HistoryCommitId],
+        expected_first_parent: Option<crate::HistoryCommitId>,
+        require_exact_tip: bool,
+    ) -> Result<Box<[crate::HistoryRefAncestryProof]>, String> {
         if commit_ids.is_empty() || commit_ids.len() > MAX_SELECTED_NATIVE_HISTORY_PACKAGE_IMAGES {
             return Err(
                 "history ancestry chain is empty or exceeds its bounded image count".to_owned(),
             );
         }
-        let tip = *commit_ids
+        let captured_tip = *commit_ids
             .last()
             .ok_or_else(|| "history ancestry chain is empty".to_owned())?;
-        {
-            let _state_lock = self.acquire_state_lock()?;
-            self.require_ancestry_ref_tip(target, kind, name, tip)?;
+        let anchor = self.history_ref_ancestry_proof(target, kind, name, captured_tip)?;
+        let tip = anchor.ref_tip();
+        if require_exact_tip && tip != captured_tip {
+            return Err(
+                "history reference does not name the exact requested package tip".to_owned(),
+            );
         }
 
         let mut proofs = Vec::new();
@@ -1008,7 +1066,8 @@ impl FileSemanticRangeStore {
         ancestor: crate::HistoryCommitId,
         after_batch: impl FnMut() -> Result<(), String>,
     ) -> Result<crate::HistoryRefAncestryProof, String> {
-        self.history_ref_ancestry_proof_inner(target, kind, name, ancestor, after_batch)
+        self.history_ref_ancestry_proof_inner(target, kind, name, ancestor, after_batch)?
+            .ok_or_else(|| "requested history commit is not retained by the named ref".to_owned())
     }
 
     fn history_ref_ancestry_proof_inner(
@@ -1018,13 +1077,12 @@ impl FileSemanticRangeStore {
         name: &crate::HistoryRefName,
         ancestor: crate::HistoryCommitId,
         mut after_batch: impl FnMut() -> Result<(), String>,
-    ) -> Result<crate::HistoryRefAncestryProof, String> {
+    ) -> Result<Option<crate::HistoryRefAncestryProof>, String> {
         let (tip, tip_depth, ancestor_depth) = {
             let _state_lock = self.acquire_state_lock()?;
-            let reference = self
-                .generations
-                .history_ref(target, kind, name)?
-                .ok_or_else(|| "historical semantic reference is missing".to_owned())?;
+            let Some(reference) = self.generations.history_ref(target, kind, name)? else {
+                return Ok(None);
+            };
             let tip = reference.commit();
             let tip_record = self.generations.history_commit(target, tip)?;
             let ancestor_record = self.generations.history_commit(target, ancestor)?;
@@ -1037,10 +1095,7 @@ impl FileSemanticRangeStore {
             let tip_depth = tip_record.first_parent_depth();
             let ancestor_depth = ancestor_record.first_parent_depth();
             if ancestor_depth > tip_depth {
-                return Err(
-                    "requested history commit is not reachable from the named ref's first-parent chain"
-                        .to_owned(),
-                );
+                return Ok(None);
             }
             (tip, tip_depth, ancestor_depth)
         };
@@ -1070,10 +1125,7 @@ impl FileSemanticRangeStore {
                         );
                     }
                     let Some(parent) = current.parents().first().copied() else {
-                        return Err(
-                            "requested history commit is not reachable from the named ref's first-parent chain"
-                                .to_owned(),
-                        );
+                        return Err("semantic history ancestry depth has no parent".to_owned());
                     };
                     cursor = parent;
                     remaining -= 1;
@@ -1087,14 +1139,11 @@ impl FileSemanticRangeStore {
             self.require_ancestry_ref_tip(target, kind, name, tip)?;
             let requested = self.generations.history_commit(target, ancestor)?;
             if cursor != ancestor || requested.first_parent_depth() != ancestor_depth {
-                return Err(
-                    "requested history commit is not reachable from the named ref's first-parent chain"
-                        .to_owned(),
-                );
+                return Ok(None);
             }
         }
 
-        Ok(
+        Ok(Some(
             crate::HistoryRefAncestryProof::from_validated_first_parent_chain(
                 target.clone(),
                 kind,
@@ -1102,7 +1151,7 @@ impl FileSemanticRangeStore {
                 tip,
                 ancestor,
             ),
-        )
+        ))
     }
 
     fn require_ancestry_ref_tip(
@@ -1569,26 +1618,38 @@ impl FileSemanticRangeStore {
     ) -> Result<GcReport, String> {
         self.store
             .collect_garbage_resolving_roots(
-                |resolver: &mut GcRootResolver<'_>| {
-                    let _state_lock = self
-                        .acquire_state_lock()
-                        .map_err(backend_store::StoreError::Io)?;
-                    let roots = self
-                        .generations
-                        .history_payload_roots(target)
-                        .map_err(backend_store::StoreError::Io)?;
-                    let admitted_roots = roots
-                        .into_iter()
-                        .map(|claim| self.store.admit_closure_claim(claim))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    for closure in admitted_roots {
-                        resolver.add(GcRoot::Closure(closure));
-                    }
-                    Ok(())
-                },
+                |resolver: &mut GcRootResolver<'_>| self.add_history_gc_roots(target, resolver),
                 limits,
             )
             .map_err(|error| format!("collect semantic FileStore garbage: {error:?}"))
+    }
+
+    /// Adds one native target's exact retained VCS payload closures to an
+    /// existing collection scope. A `GcRootResolver` is constructible only
+    /// inside FileStore's exclusive collection callback; native ref writers
+    /// retain the matching shared lease before taking the history state lock.
+    /// This lets compiler authority and V3 history share one complete GC root
+    /// snapshot instead of either collector omitting the other's live roots.
+    pub fn add_history_gc_roots(
+        &self,
+        target: &crate::SemanticTargetKey,
+        resolver: &mut GcRootResolver<'_>,
+    ) -> Result<(), backend_store::StoreError> {
+        if resolver.store_root() != self.store.root() {
+            return Err(backend_store::StoreError::Corrupt);
+        }
+        let _state_lock = self
+            .acquire_state_lock()
+            .map_err(backend_store::StoreError::Io)?;
+        let roots = self
+            .generations
+            .history_payload_roots(target)
+            .map_err(backend_store::StoreError::Io)?;
+        for claim in roots {
+            let closure = self.store.admit_closure_claim(claim)?;
+            resolver.add(GcRoot::Closure(closure));
+        }
+        Ok(())
     }
 
     /// Streams a selected segment already present in immutable local CAS and

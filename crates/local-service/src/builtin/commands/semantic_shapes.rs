@@ -213,6 +213,17 @@ pub(super) fn execute_semantic_shapes(
             "semantic shape view is detached from the current workspace snapshot".to_owned(),
         )));
     }
+    let captured = request.source_epoch();
+    let frontier =
+        super::index::selected_project_source_frontier(&snapshot, &request.source().package)?;
+    if captured.source_relation_root != snapshot_source_root
+        || captured.semantic_relation_root != snapshot_semantic_root
+        || request.source().selected_source_frontier != frontier
+    {
+        return Ok(CommandReply::Failed(CommandFailure::InvalidQuery(
+            "semantic shape source belongs to another captured source/compiler epoch".to_owned(),
+        )));
+    }
     let sources = read_package_sources(&snapshot, package)?;
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
@@ -269,7 +280,8 @@ pub(super) fn execute_semantic_shapes(
     // observation. History status is
     // intentionally outside this shape authority: it is an asynchronous,
     // derived sidecar and is neither echoed nor triggered by a shape read.
-    if semantic_authority.freshness(&snapshot, freshness_key, claim)? != request.source().freshness {
+    if semantic_authority.freshness(&snapshot, freshness_key, claim)? != request.source().freshness
+    {
         return Ok(CommandReply::Failed(CommandFailure::InvalidQuery(
             "semantic shape source freshness changed after selection".to_owned(),
         )));
