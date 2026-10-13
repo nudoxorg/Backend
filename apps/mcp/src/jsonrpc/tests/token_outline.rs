@@ -4,7 +4,10 @@ use super::*;
 use std::collections::BTreeSet;
 
 fn dense_catalog(count: usize, version: u8) -> backend_library::Library {
-    let source = Basis::new(view_state_root(&[version]), object_version(&[version]));
+    let source = Basis::new(
+        view_state_root(&[("dense-outline".to_owned(), version.to_string())]),
+        object_version(&[version]),
+    );
     let rows = (0..count)
         .map(|i| {
             let coordinate = format!(
