@@ -2,6 +2,12 @@
 
 This checkpoint follows the [previous readiness report](runtime-readiness-20261011-evening.md). It separates actual native execution from source-reviewed changes. Public installers still select historical binaries; no new production-readiness or public-release claim is made.
 
+## October 13: complete live census after two isolated corrections
+
+The successor excludes only the exact successful `Popen` enumeration child after `wait()` returns zero and duplicate-PID checks pass. Other processes named `ps`, missing foreign PIDs and every failed enumeration remain subject to the original checks. Root and independent Luna read the full correction. Root's **entire twenty-five-test build-census suite, twenty proc-race controls and sixteen fleet admission controls passed** under realized CPython. The author reported a Darwin `ctypes.cast` fixture error under its separate interpreter; Root's full CPython run did not reproduce it. The four host-row controls also passed independently; they are included in the twenty-five-test total.
+
+Read-only ILO diagnostic 05 at **00:59:40 GMT** returned `complete=true`, 449 visible rows, 271 identity-proven kernel tasks and **zero issues, races or errors**, using exact helper SHA-256 `67efe2b4575b3e390b425d4efd4d4a43ad0b932a32bb1488b91227d14a60cb7c`. Root rehashed its retained stdout (`7d9bcf2803ebe5186813d357dcc474935c8baa51aecc27d7002de08b759281bb`). This closes that one read-only host snapshot. It does not reserve a slot, validate every fleet host, update a live monitor or admit a workload. Current source handoff still requires the separately pinned corrected guard and managed permit. The failures immediately below remain historical evidence.
+
 ## October 13: live census regression and narrow kernel-task correction
 
 The first real ILO source-transition guard after PR #186 refused admission before starting its child. The new proc identity checks treated stable kernel tasks' absent executable links as incomplete userspace observations: 273 rows blocked the whole census. The refusal and unchanged historical source were retained; no workload was admitted on the failed guard.

@@ -225,6 +225,50 @@ class CargoCensusTests(unittest.TestCase):
         sentinel = census._parse_ps_rows("43 1 43 -2 Fri Oct 2 03:04:26 2026 cargo\n")
         self.assertIsNone(sentinel[0].effective_uid)
 
+    @staticmethod
+    def host_rows_with_mocked_ps(
+        output: bytes, *, child_pid: int = 300, return_code: int = 0
+    ) -> list[census._PsRow]:
+        child = mock.Mock()
+        child.pid = child_pid
+        child.stdout.fileno.return_value = 31
+        child.poll.return_value = return_code
+        child.wait.return_value = return_code
+        selector = mock.Mock()
+        selector.select.side_effect = [[object()], [object()]]
+        with (
+            mock.patch.object(census.sys, "platform", "linux"),
+            mock.patch.object(census.shutil, "which", return_value="/usr/bin/ps"),
+            mock.patch.object(census.subprocess, "Popen", return_value=child),
+            mock.patch.object(census.selectors, "DefaultSelector", return_value=selector),
+            mock.patch.object(census.os, "read", side_effect=[output, b""]),
+        ):
+            return census._host_process_rows()
+
+    def test_host_process_rows_excludes_exact_reaped_ps_child(self) -> None:
+        rows = self.host_rows_with_mocked_ps(
+            b"300 1 300 0 Mon Oct 12 20:55:39 2026 ps\n"
+            b"301 1 301 0 Mon Oct 12 20:55:39 2026 cargo\n"
+        )
+
+        self.assertEqual([row.pid for row in rows], [301])
+
+    def test_host_process_rows_keeps_other_ps_named_processes(self) -> None:
+        rows = self.host_rows_with_mocked_ps(
+            b"301 1 301 0 Mon Oct 12 20:55:39 2026 ps\n"
+            b"302 1 302 0 Mon Oct 12 20:55:39 2026 cargo\n"
+        )
+
+        self.assertEqual([row.pid for row in rows], [301, 302])
+
+    def test_host_process_rows_does_not_publish_table_from_failed_child(self) -> None:
+        with self.assertRaisesRegex(census.CensusError, "host-process-list-failed"):
+            self.host_rows_with_mocked_ps(
+                b"300 1 300 0 Mon Oct 12 20:55:39 2026 ps\n"
+                b"301 1 301 0 Mon Oct 12 20:55:39 2026 cargo\n",
+                return_code=1,
+            )
+
     def test_process_table_parser_rejects_malformed_and_duplicate_pid_rows(self) -> None:
         with self.assertRaises(census.CensusError):
             census._parse_ps_rows("not a process row\n")
