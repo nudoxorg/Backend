@@ -136,6 +136,17 @@ fn run_deferred_rust_public_indexing(fixture: &FailureFixture) -> Result<(), Box
     // Health advertises the canonical product profile; the package keeps its
     // independently parsed Rust 2021 edition throughout actual indexing.
     let rust_health_profile = LanguageProfile::Rust(RustEdition::Rust2024);
+    // Native Python also defers image admission until its first request. Its
+    // independence from Rust startup is proved by a real public publication,
+    // rather than claiming a Ready manifest before the producer is admitted.
+    let python_root = fixture.path().join("independent-native-python");
+    fs::create_dir_all(&python_root)?;
+    fs::write(
+        python_root.join("pyproject.toml"),
+        "[project]\nname=\"independent_native_python\"\nversion=\"0.1.0\"\n",
+    )?;
+    let python_package = PackageReference::parse(python_root.to_string_lossy().into_owned())
+        .map_err(|error| io::Error::other(error.to_string()))?;
     let mut selected_generation = None;
     for cold in [false, true] {
         let selection =
@@ -179,17 +190,113 @@ fn run_deferred_rust_public_indexing(fixture: &FailureFixture) -> Result<(), Box
                 == CapabilityLifecycle::Unavailable(CapabilityUnavailable::NoManifest)
                 && row.manifest().is_none()
                 && row.authority().is_none()));
-            assert!(health.capabilities().as_slice().iter().any(|row| matches!(
-                row.family(), CapabilityFamily::LanguageOracle { profile, .. }
-                    if profile == LanguageProfile::Python(PythonVersion::Python314)
-            ) && row.lifecycle()
-                == CapabilityLifecycle::Ready));
+            let python = health
+                .capabilities()
+                .as_slice()
+                .iter()
+                .filter(|row| {
+                    matches!(
+                        row.family(), CapabilityFamily::LanguageOracle { profile, .. }
+                            if profile == LanguageProfile::Python(PythonVersion::Python314)
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert!(
+                !python.is_empty(),
+                "native Python remains publicly discoverable before first use"
+            );
+            assert!(
+                python.iter().all(|row| row.lifecycle()
+                    == CapabilityLifecycle::Unavailable(CapabilityUnavailable::NoManifest)
+                    && row.manifest().is_none()
+                    && row.authority().is_none()),
+                "startup cannot invent an admitted native Python producer manifest"
+            );
             break;
         }
         assert_eq!(
             default_cache.exists(),
             cold,
             "health must not realize Cargo home"
+        );
+        fs::write(
+            python_root.join("source.py"),
+            format!(
+                "def independent_ready_marker() -> int:\n    return {}\n",
+                if cold { 43 } else { 42 }
+            ),
+        )?;
+        let python_key = IndexOperationKey::from_bytes([if cold { 0x7b } else { 0x7a }; 32])
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        let mut python_observation = session.start_index_operation(
+            python_key,
+            python_package.clone(),
+            CompileExecutionIntent::Interactive,
+        )?;
+        let python_deadline = Instant::now() + Duration::from_secs(180);
+        loop {
+            let status = known_status_for_key(python_observation, python_key)?;
+            match status.state {
+                IndexOperationState::Published(_) => {
+                    let capture = status.source_capture.as_ref().ok_or_else(|| {
+                        io::Error::other(
+                            "real native Python publication omitted its captured source identity",
+                        )
+                    })?;
+                    assert!(
+                        capture.profiles().iter().all(|profile| matches!(
+                            profile.state,
+                            backend_library::IndexOperationSemanticProfileState::Published { .. }
+                        )),
+                        "every captured Python profile must have actual published authority"
+                    );
+                    break;
+                }
+                IndexOperationState::Accepted | IndexOperationState::Active { .. } => {
+                    assert!(
+                        Instant::now() < python_deadline,
+                        "real native Python first use exceeded its original deadline"
+                    );
+                    thread::sleep(Duration::from_millis(25));
+                    python_observation = read_status_with_keyed_reconnect(
+                        &mut session,
+                        python_key,
+                        python_deadline,
+                    )?;
+                }
+                state => {
+                    return Err(io::Error::other(format!(
+                        "native Python first-use publication refused: {state:?}"
+                    ))
+                    .into());
+                }
+            }
+        }
+        let health = session.health()?;
+        let python = health
+            .capabilities()
+            .as_slice()
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row.family(), CapabilityFamily::LanguageOracle { profile, .. }
+                        if profile == LanguageProfile::Python(PythonVersion::Python314)
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(!python.is_empty());
+        assert!(
+            python
+                .iter()
+                .all(|row| row.lifecycle() == CapabilityLifecycle::Ready
+                    && row.manifest().is_some()
+                    && row.authority().is_some()),
+            "a real Python request must admit its exact public producer authority"
+        );
+        assert_eq!(
+            default_cache.exists(),
+            cold,
+            "native Python cannot realize deferred Rust Cargo home"
         );
         if !cold {
             let key = IndexOperationKey::from_bytes([0x79; 32])
