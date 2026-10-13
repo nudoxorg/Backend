@@ -794,7 +794,28 @@ impl<'a> CheckerState<'a> {
                     continue;
                 }
 
+                // A namespace value surface filters type-only/refused chains.
+                // Named imports still see a name explicitly published by the
+                // exact source owner, even when its type cannot be resolved.
+                // Keep that alias; its type walk cannot borrow another edge.
+                let selected_named_member = self
+                    .ctx
+                    .project_module_resolution_outcomes
+                    .as_ref()
+                    .and_then(|_| {
+                        self.ctx.select_module_request(crate::context::BoundModuleRequest {
+                            importer: self.ctx.current_file_idx,
+                            specifier: module_name,
+                            mode: resolution_mode,
+                            kind: request_kind,
+                        })
+                    })
+                    .and_then(|selected| {
+                        self.resolve_member_for_selected_request(selected, import_name)
+                    })
+                    .is_some();
                 if !exports_table.has(import_name)
+                    && !selected_named_member
                     && !self.has_named_export_via_export_equals(&exports_table, import_name)
                 {
                     if has_json_default_export && !json_default_only {
