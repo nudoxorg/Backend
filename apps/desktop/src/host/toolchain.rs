@@ -727,7 +727,7 @@ mod tests {
         );
         assert_eq!(
             found.words(),
-            "No Rust toolchain was found. Install one with rustup (rustup.rs) or Homebrew (brew install rust), then quit and reopen Nudox."
+            "No Rust toolchain was found. For Rust projects, install Rust with rustup (rustup.rs), then quit and reopen Nudox."
         );
         assert!(supplied_among(&finder, &system).is_empty());
         let _ = std::fs::remove_dir_all(&root);
