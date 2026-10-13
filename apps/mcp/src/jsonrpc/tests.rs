@@ -3830,7 +3830,7 @@ fn page_projection_mcp_combined_summary_retains_real_faults_and_section_notes() 
 }
 
 #[test]
-fn a_standard_search_call_leads_with_honest_coverage_then_two_lines_per_record() {
+fn a_standard_search_call_leads_with_honest_coverage_and_complete_selectable_rows() {
     let mut server = ready(Fake::default());
     let result = call(
         &mut server,
@@ -3846,12 +3846,12 @@ fn a_standard_search_call_leads_with_honest_coverage_then_two_lines_per_record()
     );
     assert_eq!(
         lines.get(1).copied(),
-        Some("polyglot › src/lib.rs:2 › ferris  ·  function · rust")
+        Some("• `ferris` · function · rust")
     );
     assert!(
         lines
             .get(2)
-            .is_some_and(|line| line.starts_with("`/abs/polyglot::src/lib.rs:2::ferris`")),
+            .is_some_and(|line| *line == "  `/abs/polyglot::src/lib.rs:2::ferris`"),
         "{text}"
     );
     assert_eq!(result["structuredContent"]["answer"], "records");
@@ -3862,7 +3862,7 @@ fn a_standard_search_call_leads_with_honest_coverage_then_two_lines_per_record()
 }
 
 #[test]
-fn standard_mcp_text_is_the_same_shared_markdown_the_cli_renders() {
+fn standard_mcp_preview_retains_every_structured_coordinate_and_the_cli_projection() {
     let mut direct = Fake::default();
     let answer = backend_present::answer(
         &mut direct,
@@ -3872,7 +3872,14 @@ fn standard_mcp_text_is_the_same_shared_markdown_the_cli_renders() {
         },
     )
     .expect("fixture search answer");
-    let expected = bounded_text(&backend_present::markdown::answer(&answer));
+    let projected = backend_present::encode_answer(
+        &answer,
+        Detail::Standard,
+        None,
+        DEFAULT_RESPONSE_BUDGET_BYTES,
+    )
+    .expect("complete shared CLI projection");
+    let projected: Value = serde_json::from_slice(&projected.bytes).expect("CLI JSON");
 
     let mut server = ready(Fake::default());
     let result = call(
@@ -3880,7 +3887,28 @@ fn standard_mcp_text_is_the_same_shared_markdown_the_cli_renders() {
         "backend.search",
         &json!({ "query": "ferris", "detail": "standard" }),
     );
-    assert_eq!(text_of(&result), expected);
+    assert_eq!(result["structuredContent"], projected);
+    let text = text_of(&result);
+    let rows = result["structuredContent"]["records"]
+        .as_array()
+        .expect("whole page");
+    assert_eq!(rows.len(), 1);
+    for row in rows {
+        let coordinate = row["identity"]["coordinate"]
+            .as_str()
+            .expect("exact coordinate");
+        assert!(
+            text.lines().any(|line| line == format!("  `{coordinate}`")),
+            "{text}"
+        );
+        assert_eq!(
+            row["identity"]["semantic_data"]["value"],
+            json!(symbol_key(coordinate).as_bytes())
+        );
+    }
+    assert!(text.contains("showing 1 exact coordinate(s); 0 omitted from text preview"));
+    assert!(text.contains("Full page: `structuredContent.records`"));
+    assert_eq!(result["structuredContent"]["more"], false);
 }
 
 #[test]
@@ -7081,11 +7109,12 @@ fn stdio_reader_cancels_an_active_call_then_allows_completed_id_reuse() {
     line.clear();
     output.read_line(&mut line).expect("fresh reply");
     let fresh = assert_stdio_line_accounting(&line);
-    assert_eq!(
-        line.len(),
-        171,
-        "complete correlated ping line, including newline and metadata"
-    );
+    let budget = &fresh["result"]["_meta"]["backend/wireBudget"];
+    assert_eq!(budget["bytes"], line.len(), "complete correlated ping line");
+    assert_eq!(budget["tokenPolicy"], "cl100k_base/ordinary-v1");
+    assert_eq!(budget["tokenScope"], "complete_jsonrpc_json_excluding_transport_framing");
+    assert_eq!(budget["limitTokens"], MCP_CL100K_TOKEN_LIMIT);
+    assert!(wire_tokens(&fresh).expect("whole-envelope tokens") <= MCP_CL100K_TOKEN_LIMIT);
     assert_eq!(fresh["id"], 7);
     assert!(fresh.get("error").is_none());
     let result = fresh["result"].as_object().expect("fresh ping result");
@@ -7633,7 +7662,7 @@ mod conditional_progress_tests {
                 .remove("wait_millis");
             let wire = server.handle_value(
                 json!({"jsonrpc":"2.0", "id":41, "method":"tools/call", "params":{"name":INDEX_PROGRESS_TOOL,"arguments":arguments}}),
-                Some(context),
+                Some(context.clone()),
             ).expect("typed request refusal");
             assert_eq!(wire["id"], 41);
             if cancelled {
@@ -7643,6 +7672,12 @@ mod conditional_progress_tests {
                 assert_eq!(wire["result"]["isError"], true);
                 assert_eq!(wire["result"]["structuredContent"]["slug"], "endpoint");
                 assert_ne!(wire["result"]["structuredContent"]["answer"], "surface");
+                assert_eq!(context.check(), Err(ClientError::RemoteDeadlineExceeded));
+                assert_eq!(
+                    context.read_deadline(std::time::Duration::from_secs(30)),
+                    Err(ClientError::RemoteDeadlineExceeded),
+                    "re-admission must not install a fresh read budget"
+                );
             }
             assert!(
                 server.product.surface_commands.is_empty(),

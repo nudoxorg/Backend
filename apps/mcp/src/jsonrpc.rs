@@ -534,12 +534,21 @@ impl<P: Product> Server<P> {
             {
                 return Some(reply);
             }
-            return Some(error_reply(
-                id,
-                -32000,
-                "Request unavailable",
-                Some(json!({"detail": error.to_string()})),
+            // Admission and the routed read share the same typed failure
+            // contract. In particular an exhausted original deadline must not
+            // become an unclassified transport error before tools/call runs.
+            let error = RpcError::from_fault(&Fault::from_client_error(
+                &error,
+                backend_present::Operand::Whole,
             ));
+            return Some(if value.get("method").and_then(Value::as_str) == Some("tools/call") {
+                match error.into_tool_result() {
+                    Ok(result) => success(id, result),
+                    Err(error) => error.into_reply(id),
+                }
+            } else {
+                error.into_reply(id)
+            });
         }
         self.request_context = context.clone();
         let reply = self.handle_inner(value);
