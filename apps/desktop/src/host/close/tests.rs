@@ -19,7 +19,7 @@ fn closing(rig: &mut Rig) -> Entity<GracefulClose> {
         window.set_a11y_forced(true);
     });
     rig._window
-        .root(&rig.cx)
+        .root(&mut rig.cx)
         .expect("component root")
         .read_with(&rig.cx, |root, cx| {
             root.view()

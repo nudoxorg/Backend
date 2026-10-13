@@ -291,7 +291,7 @@ fn the_librarys_project_tile_does_not_keep_its_own_target_list_alive(cx: &mut Te
     let probe = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx).list_probe());
     assert!(probe.upgrade().is_some(), "the probe sees the live list");
     // Close the window and let go of every strong handle the rig keeps.
-    let Rig { shell, graph, cx, .. } = rig;
+    let Rig { shell, graph, mut cx, .. } = rig;
     cx.update(|window, _| window.remove_window());
     drop(shell);
     drop(graph);
