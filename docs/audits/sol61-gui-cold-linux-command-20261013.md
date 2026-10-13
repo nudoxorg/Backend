@@ -24,7 +24,7 @@ display. It may reuse a matching product binary. If a build is needed, the
 minimal normal-GUI target is:
 
 ```text
-cargo build --locked -p backend-desktop --bin backend-desktop -j 4
+cargo build --locked -p backend-desktop --bin backend-desktop -j 2
 ```
 
 GPUI mounted/event controls are a separate test-support target. Desktop
@@ -32,7 +32,7 @@ dev-dependencies already enable `gpui/test-support`,
 `gpui_platform/test-support`, and component headless text hooks:
 
 ```text
-cargo test --locked -p backend-desktop --lib --no-run -j 4
+cargo test --locked -p backend-desktop --lib --no-run -j 2
 ```
 
 Current `vendor/gpui_ce_platform/src/gpui_platform.rs` explicitly returns
@@ -87,6 +87,12 @@ activity, binds the visible X11 window by `_NET_WM_PID`, captures that window,
 and closes only its own window/process group. It preserves bootstrap event
 order, ReadingHeader faults, fault-to-observer latency, frame-lifecycle records,
 stderr/stdout, executable/tool identities, XWD and PNG bytes, and per-run JSON.
+On a private Xvfb display with no window manager, it performs actual native
+`windowraise` and `windowfocus` operations after proving `_NET_WM_PID`, then
+checks `getwindowfocus -f` against that same window. The exact commands,
+results and monotonic intervals are retained as `native_focus`; this is the
+native focus needed to display the mapped product. It supplies no fixture,
+semantic route, application redraw call, or root admission.
 `summary.json` returns success only when all requested runs certify and have a
 nonblank native capture. A failed case remains a failed case; the collector
 continues to collect the remaining cold starts.
@@ -104,7 +110,30 @@ For offline analysis of collected traces, without any native process:
 python3 tools/gui-harness/cold_linux_product.py --analyze-only /absolute/path/to/cold-01/trace.jsonl
 ```
 
-Local verification of this source handoff: CPython source parse/help, pure
+At the original source handoff, verification covered CPython source parse/help, pure
 classification controls using explicitly synthetic trace records, and
 `git diff --check`. These controls verify the collector only. Product builds,
-ten cold starts, native event/capture proof, and G1 acceptance are **UNRUN**.
+ten cold starts, native event/capture proof, and G1 acceptance were **UNRUN**.
+
+## Subsequent actual evidence and focus prerequisite
+
+The original no-input collector was run on exact candidate
+`710e39d8a7221961e6fc9326fe6b99f8863ea91b`, normal executable SHA-256
+`f5e581ffb42c76ad1d3537954bfe97dfd096a19f2d02b06ee92e61f5853cc00e`.
+All ten launches proved their running executable and X11 window PID. Three
+certified their initial root; seven failed in request 2 ReadingHeader. Each
+failure reached the definitive observer failure within 0.07–0.63 ms. All ten
+native PNGs were one color, so the preserved cohort passed 0/10 cases.
+
+A separate actual native diagnostic retained that black baseline, then proved
+ordinary window raise/focus changed the same product window into a nonblank
+Library failure view with real accessibility nodes. Native resize remained
+nonblank, and keyboard actions opened Settings, toggled the shelf, and opened
+and closed Ask. Initial-root admission still failed. Those diagnostics are
+separate from the failed ten-start cohort and do not certify a semantic project
+journey, an exact presented-frame bracket, or a macOS bundle.
+
+The focus operations above implement this measured private-Xvfb prerequisite.
+The amended ten-start collector has not yet been run. Its next run must use the
+reviewed bootstrap-release repair and an exact source-matched build receipt;
+the original failed cohort remains unchanged.

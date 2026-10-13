@@ -173,6 +173,29 @@ def one_launch(index, args, tools, env, identity):
             while proc.poll() is None and time.monotonic() - started < args.deadline:
                 if not window:
                     window, props = find_window(proc.pid, tools, child_env)
+                    if window:
+                        # A private Xvfb server has no window manager to give
+                        # the newly mapped product ordinary native focus.
+                        # Preserve these actual input events separately from
+                        # cold owner certification and semantic acceptance.
+                        result["native_focus"] = []
+                        for operation in ("windowraise", "windowfocus"):
+                            began = time.monotonic_ns()
+                            argv = [tools["xdotool"], operation, window]
+                            native = command(argv, child_env)
+                            result["native_focus"].append({
+                                "argv": argv, "exit": native.returncode,
+                                "stdout": native.stdout, "stderr": native.stderr,
+                                "begin_monotonic_ns": began,
+                                "end_monotonic_ns": time.monotonic_ns(),
+                            })
+                            if native.returncode:
+                                raise RuntimeError("native product window focus failed")
+                        focus = command([tools["xdotool"], "getwindowfocus", "-f"], child_env)
+                        result["native_focus_window"] = focus.stdout.strip()
+                        if focus.returncode or result["native_focus_window"] != window:
+                            raise RuntimeError("native focus does not identify this product window")
+                        result["native_input"] = "actual X11 raise/focus; semantic controls remain UNRUN"
                 state = classify(read_trace(case / "trace.jsonl"))
                 if state["status"] != "pending":
                     terminal_seen = terminal_seen or time.monotonic()
