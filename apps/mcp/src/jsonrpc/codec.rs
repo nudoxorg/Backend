@@ -366,7 +366,7 @@ impl Write for BoundedBuffer {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{MCP_RESULT_BUDGET_BYTES, attach_wire_budget};
+    use super::super::{MCP_CL100K_TOKEN_LIMIT, MCP_RESULT_BUDGET_BYTES, attach_wire_budget};
     use super::*;
     use backend_present::{ESTIMATED_BYTES_PER_TOKEN, estimate_tokens};
 
@@ -391,6 +391,16 @@ mod tests {
         assert_eq!(budget["bytesPerToken"], ESTIMATED_BYTES_PER_TOKEN);
         assert_eq!(budget["limitBytes"], MCP_RESULT_BUDGET_BYTES);
         assert_eq!(budget["scope"], transport.scope());
+        assert!(
+            backend_present::cl100k_tokens(
+                std::str::from_utf8(bytes)
+                    .expect("UTF-8 JSON")
+                    .trim_end_matches('\n'),
+            )
+            .expect("named wire tokenizer")
+                <= MCP_CL100K_TOKEN_LIMIT,
+            "the complete JSON envelope also passes token admission"
+        );
         reply
     }
 
@@ -402,7 +412,9 @@ mod tests {
         );
         let mut padding = target.saturating_sub(base);
         for _ in 0..8 {
-            reply["result"]["payload"] = json!("p".repeat(padding));
+            // Keep token admission below its independent ceiling so these
+            // fixtures isolate byte accounting and its decimal fixed point.
+            reply["result"]["payload"] = json!(" ".repeat(padding));
             let bytes = super::super::transport_serialized_bytes(
                 &attach_wire_budget(reply.clone(), transport),
                 transport,
@@ -484,8 +496,9 @@ mod tests {
 
     #[test]
     fn transport_preview_fitting_preserves_full_structured_page_and_owner_cursor() {
+        // The full 31 KiB page must fit both budgets before reclaiming text.
         let structured = json!({
-            "rows":"r".repeat(31_000), "terminal":"limit_reached",
+            "rows":"a".repeat(31_000), "terminal":"limit_reached",
             "nextCursor":"exact-owner-cursor", "more":true
         });
         let text = "λ אב🙂\n\\\"".repeat(10_000);
@@ -545,7 +558,7 @@ mod tests {
                     .as_str()
                     .expect("ASCII padding")
                     .to_owned();
-                reply["result"]["payload"] = json!(payload + "p");
+                reply["result"]["payload"] = json!(payload + " ");
                 let bytes = encode_response(reply, transport).expect("decimal-width transition");
                 decoded(&bytes, transport);
                 assert_eq!(bytes.len(), lower + 2);
@@ -571,6 +584,36 @@ mod tests {
             } else {
                 assert_eq!(stdio["error"]["code"], -32000);
             }
+        }
+    }
+
+    #[test]
+    fn token_dense_payload_is_refused_even_when_its_complete_frame_fits() {
+        let reply = success(json!("request-42"), json!({"payload":"p".repeat(30_000)}));
+        for transport in [ResponseTransport::HttpBody, ResponseTransport::StdioLine] {
+            let candidate = attach_wire_budget(reply.clone(), transport);
+            let json = serde_json::to_string(&candidate).expect("whole dense candidate");
+            assert!(
+                transport.encoded_len(json.len()).expect("bounded length")
+                    < MCP_RESULT_BUDGET_BYTES
+            );
+            assert!(
+                backend_present::cl100k_tokens(&json).expect("dense token witness")
+                    > MCP_CL100K_TOKEN_LIMIT
+            );
+            let emitted = decoded(
+                &encode_response(reply.clone(), transport).expect("bounded token refusal"),
+                transport,
+            );
+            assert_eq!(emitted["id"], reply["id"]);
+            assert_eq!(emitted["error"]["code"], -32000);
+            assert!(emitted.get("result").is_none());
+            assert!(
+                emitted["error"]["data"]["detail"]
+                    .as_str()
+                    .expect("token refusal detail")
+                    .contains(backend_present::CL100K_POLICY)
+            );
         }
     }
 
