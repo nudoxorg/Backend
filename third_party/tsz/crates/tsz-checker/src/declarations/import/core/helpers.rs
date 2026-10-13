@@ -347,19 +347,23 @@ impl<'a> CheckerState<'a> {
             return false;
         };
 
-        let lib_binders: Vec<_> = self
+        // Configured requests already retain exact source/library identities;
+        // only the legacy fallback needs a materialized library-binder list.
+        let lib_binders = self
             .ctx
-            .lib_contexts
-            .iter()
-            .map(|lc| std::sync::Arc::clone(&lc.binder))
-            .collect();
+            .project_module_resolution_outcomes
+            .is_none()
+            .then(|| {
+                self.ctx
+                    .lib_contexts
+                    .iter()
+                    .map(|lc| std::sync::Arc::clone(&lc.binder))
+                    .collect::<Vec<_>>()
+            });
 
-        let symbol_for_export = |symbol| {
-            if self.ctx.project_module_resolution_outcomes.is_some() {
-                self.ctx.project_source_symbol(symbol)
-            } else {
-                self.ctx.binder.get_symbol_with_libs(symbol, &lib_binders)
-            }
+        let symbol_for_export = |symbol| match lib_binders.as_deref() {
+            Some(lib_binders) => self.ctx.binder.get_symbol_with_libs(symbol, lib_binders),
+            None => self.ctx.project_source_symbol(symbol),
         };
 
         // If the export= target is a type-only import (e.g., `import type * as X`),
