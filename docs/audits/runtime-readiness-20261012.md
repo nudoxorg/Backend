@@ -2,6 +2,10 @@
 
 This checkpoint follows the [previous readiness report](runtime-readiness-20261011-evening.md). It separates actual native execution from source-reviewed changes. Public installers still select historical binaries; no new production-readiness or public-release claim is made.
 
+## October 13: Python and Go imported-reference repairs
+
+The [import authority checkpoint](python-go-import-authority-20261013.md) records two concrete source defects: Python's dotted direct import bound the tail rather than the head, and Go discarded imported types/constants/variables by comparing their parent with the caller's scope. Both repairs preserve their compiler authorities and exact source spans. Root and independent Luna reviews cleared the source; all nine postimages matched the frozen author packets, three Rust files passed syntax parsing, and the aggregate diff passed whitespace checks. **Native compilation, regression tests and fresh CLI/MCP ingestion for these repairs remain UNRUN.** The new controls and actual pinned application examples are described separately from runtime evidence.
+
 ## October 13: source handoff completed; native execution interrupted by its monitor
 
 The actual ILO source transition completed at **01:03 GMT**, exit 0 in **3.367 seconds**, under a fresh v6 guard and acquired managed permit. Its retained witness verifies clean `cc79e1a2ad4239afdd44fcbdd2dd4021d19b10c0`, tree `06ded63795485cb61f83290a9ba5cb1cdc2d0cf4`, all 18,229 tracked postimages and modes, the Turso gitlink and both lockfiles. Root read the complete transition receipt and rehashed the witness (`0f249c88c42a2efc5f325413059c25cc5aa128d0957d1fa230c27179b282db31`); the outer receipt is `33d45088c2ee53e4b72dc6f43bbd15b643dd19e0c9cb53adc0b3ab84fde6a76c`. Original executable images remain retained. This supersedes the earlier source-handoff UNRUN labels, but proves no product build or indexing outcome.
