@@ -97,7 +97,8 @@ def run_one(bin_dir: Path, name: str) -> float:
             require("without starting it" in body.get("detail", ""), "passive refusal lost no-start explanation")
             require("call" not in body, "CLI refusal exposed MCP-only recovery arguments")
             recovery = body.get("shell", "")
-            expected = ["nudox", *scope, command]
+            # Both passive aliases recover by starting the selected owner via health.
+            expected = ["nudox", *scope, "health"]
             require(shlex.split(recovery) == expected, f"recovery lost literal selected paths: {recovery!r}")
             # Execute only a shell function that prints argv, never the recovery itself.
             parsed = subprocess.run(["/bin/sh", "-c", 'nudox() { printf "%s\\000" "$@"; }; ' + recovery],
