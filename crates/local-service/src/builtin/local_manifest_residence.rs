@@ -38,7 +38,7 @@ impl LocalManifestResidence {
 
     /// How many roots have been parsed since this residence was created.
     #[must_use]
-    pub(super) const fn parses(&self) -> u64 {
+    pub(in crate::builtin) const fn parses(&self) -> u64 {
         self.parses
     }
 
@@ -47,7 +47,7 @@ impl LocalManifestResidence {
     /// A later refresh reads again, so a byte change is visible. Within one
     /// refresh a path is read once.
     #[must_use]
-    pub(super) const fn disk_reads(&self) -> u64 {
+    pub(in crate::builtin) const fn disk_reads(&self) -> u64 {
         self.disk_reads
     }
 

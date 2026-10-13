@@ -865,11 +865,15 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 1731,
+                "bytes": 1942,
                 "bytesPerToken": 4,
-                "estimatedTokens": 433,
+                "estimatedTokens": 486,
                 "limitBytes": 49152,
-                "scope": "complete_jsonrpc_line"
+                "limitTokens": 12000,
+                "scope": "complete_jsonrpc_line",
+                "tokenPolicy": "cl100k_base/ordinary-v1",
+                "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
+                "vocabularySha256": "69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992"
               }
             },
             "content": [
@@ -983,11 +987,15 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 1732,
+                "bytes": 1943,
                 "bytesPerToken": 4,
-                "estimatedTokens": 433,
+                "estimatedTokens": 486,
                 "limitBytes": 49152,
-                "scope": "complete_jsonrpc_line"
+                "limitTokens": 12000,
+                "scope": "complete_jsonrpc_line",
+                "tokenPolicy": "cl100k_base/ordinary-v1",
+                "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
+                "vocabularySha256": "69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992"
               }
             },
             "content": [
@@ -1099,16 +1107,20 @@
           "reply": {
             "_meta": {
               "backend/wireBudget": {
-                "bytes": 5063,
+                "bytes": 5832,
                 "bytesPerToken": 4,
-                "estimatedTokens": 1266,
+                "estimatedTokens": 1458,
                 "limitBytes": 49152,
-                "scope": "complete_jsonrpc_line"
+                "limitTokens": 12000,
+                "scope": "complete_jsonrpc_line",
+                "tokenPolicy": "cl100k_base/ordinary-v1",
+                "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
+                "vocabularySha256": "69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992"
               }
             },
             "content": [
               {
-                "text": "# project\n`/tmp/nudox-surface/polyglot/project`\n\n▣ Duke  `src/Duke.java:1 › Duke`\n  ƒ language  `src/Duke.java:2 › language`\n    ▫ java.lang.String  `java.lang.String`\n  ƒ <init>  `<init>`\n▣ Anders  `src/Main.cs:1 › Anders`\n  ƒ Language  `src/Main.cs:2 › Language`\n    ▫ string  `string`\n▣ Bjarne  `src/main.cpp:3 › Bjarne`\n  ƒ language  `src/main.cpp:4 › language`\n    ▫ language  `language`\nƒ Gopher  `go/main.go:4 › Gopher`\n  ▫ _  `_`\nƒ ferris  `src/lib.rs:2 › ferris`\n  ▫ ferris  `ferris`\nƒ monty  `src/main.py:1 › monty`\n  ▫ monty  `monty`\nƒ turing  `src/main.ts:2 › turing`\n  ▫ turing  `turing`\n▦ string_view  `string_view`\n19 declaration(s) · complete\n",
+                "text": "# project\n`/tmp/nudox-surface/polyglot/project`\n\nƒ Gopher  `go/main.go:4 › Gopher`\n  ▫ _  `_`\nƒ monty  `src/main.py:1 › monty`\n  ▫ monty  `monty`\nƒ turing  `src/main.ts:2 › turing`\n  ▫ turing  `turing`\nƒ ferris  `src/lib.rs:2 › ferris`\n  ▫ ferris  `ferris`\n▣ Bjarne  `src/main.cpp:3 › Bjarne`\n  ƒ language  `src/main.cpp:4 › language`\n    ▫ language  `language`\n▣ Duke  `src/Duke.java:1 › Duke`\n  ƒ <init>  `<init>`\n  ƒ language  `src/Duke.java:2 › language`\n    ▫ java.lang.String  `java.lang.String`\n▦ string_view  `string_view`\n▣ Anders  `src/Main.cs:1 › Anders`\n  ƒ Language  `src/Main.cs:2 › Language`\n    ▫ string  `string`\n19 declaration(s) · complete\n",
                 "type": "text"
               }
             ],
@@ -1116,9 +1128,9 @@
             "structuredContent": {
               "answer": "outline",
               "budget": {
-                "bytes": 4081,
+                "bytes": 4639,
                 "bytesPerToken": 4,
-                "estimatedTokens": 1021
+                "estimatedTokens": 1160
               },
               "declarations": 19,
               "detail": "summary",
@@ -1132,79 +1144,36 @@
                 "shape": "package",
                 "trail": "project"
               },
+              "page": {
+                "branch": "4650a5d2d38c507c621bb7adec963afac7bd740bbc85007b1cd609a67fb2482f",
+                "coverage": [
+                  {
+                    "lane": "exact",
+                    "state": "complete"
+                  },
+                  {
+                    "lane": "names",
+                    "state": "complete"
+                  },
+                  {
+                    "lane": "graph",
+                    "state": "complete"
+                  },
+                  {
+                    "lane": "semantic",
+                    "reason": "unconfigured",
+                    "state": "unavailable"
+                  }
+                ],
+                "limit": 200,
+                "log": "12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760",
+                "more": false,
+                "schema": 3,
+                "sequence": 2,
+                "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
+                "source_root": "dd43357f79b1ef5ea7df1e4fd34fabec036119528f6ebe433440487c2e42fd59"
+              },
               "roots": [
-                {
-                  "children": [
-                    {
-                      "children": [
-                        {
-                          "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::f218d50b09b36a0348632bc1e4fe6e3ec60fec02d07fab42f32e18d466daeafc::java.lang.String",
-                          "key": "86b3a1cd",
-                          "kind": "variable",
-                          "name": "java.lang.String"
-                        }
-                      ],
-                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::6e8790ddc2dd39caf6365bc29f0ad1f1d01d6469f926d32592768321a7b34980::language",
-                      "key": "f71a2950",
-                      "kind": "function",
-                      "name": "language"
-                    },
-                    {
-                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::7c477c80b27a745b2b757f73d6002f045337f69e8da027b97d0663a19de55565::<init>",
-                      "key": "36995985",
-                      "kind": "function",
-                      "name": "<init>"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::14df8e6d1fd4b1c5d6d2eb7562af648797e58489b4264de96595fcdf97ef2ab7::Duke",
-                  "key": "c0c37545",
-                  "kind": "struct",
-                  "name": "Duke"
-                },
-                {
-                  "children": [
-                    {
-                      "children": [
-                        {
-                          "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::78eb7eb2e97460b2df61a482670fec9c9650e8ddbc168f82fb8a742146f95646::string",
-                          "key": "39d7fc56",
-                          "kind": "variable",
-                          "name": "string"
-                        }
-                      ],
-                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::537c4870565c4938eaa2c7d92fd0f14328f2f9b213259d4064e735270864b274::Language",
-                      "key": "ce3210be",
-                      "kind": "function",
-                      "name": "Language"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::9353b5e09e4c927e31ad6d6f0210e16c5dc0055e332bcddbd7c1f84974197d02::Anders",
-                  "key": "d5d356dd",
-                  "kind": "struct",
-                  "name": "Anders"
-                },
-                {
-                  "children": [
-                    {
-                      "children": [
-                        {
-                          "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::648281f6edf9643f51aee2934716454117c85fde0b657fcb74283e59bdf4934b::language",
-                          "key": "bc8e5613",
-                          "kind": "variable",
-                          "name": "language"
-                        }
-                      ],
-                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::39ee5dde14bfc4ee7d64692b95c404eef0e21e7a6fa75125d3223dd74e29e75e::language",
-                      "key": "6832c672",
-                      "kind": "function",
-                      "name": "language"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::6810d146dca47541fd405bff629354dd67646b8cce1912abaef0052dbf6433f5::Bjarne",
-                  "key": "6b232e6a",
-                  "kind": "struct",
-                  "name": "Bjarne"
-                },
                 {
                   "children": [
                     {
@@ -1218,20 +1187,6 @@
                   "key": "2b29681e",
                   "kind": "function",
                   "name": "Gopher"
-                },
-                {
-                  "children": [
-                    {
-                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::4c6611a46a2a8e7fee449668c24f600efa89ab1d4d68c85cae005527c783bb4c::ferris",
-                      "key": "bf0b54f4",
-                      "kind": "variable",
-                      "name": "ferris"
-                    }
-                  ],
-                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::ef50602bb73121801eebfb4a0bdf09fb05c9af6f8f13ef9eb04d0be5012fcabf::ferris",
-                  "key": "6aa95e91",
-                  "kind": "function",
-                  "name": "ferris"
                 },
                 {
                   "children": [
@@ -1262,10 +1217,96 @@
                   "name": "turing"
                 },
                 {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::4c6611a46a2a8e7fee449668c24f600efa89ab1d4d68c85cae005527c783bb4c::ferris",
+                      "key": "bf0b54f4",
+                      "kind": "variable",
+                      "name": "ferris"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::ef50602bb73121801eebfb4a0bdf09fb05c9af6f8f13ef9eb04d0be5012fcabf::ferris",
+                  "key": "6aa95e91",
+                  "kind": "function",
+                  "name": "ferris"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::648281f6edf9643f51aee2934716454117c85fde0b657fcb74283e59bdf4934b::language",
+                          "key": "bc8e5613",
+                          "kind": "variable",
+                          "name": "language"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::39ee5dde14bfc4ee7d64692b95c404eef0e21e7a6fa75125d3223dd74e29e75e::language",
+                      "key": "6832c672",
+                      "kind": "function",
+                      "name": "language"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::6810d146dca47541fd405bff629354dd67646b8cce1912abaef0052dbf6433f5::Bjarne",
+                  "key": "6b232e6a",
+                  "kind": "struct",
+                  "name": "Bjarne"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::7c477c80b27a745b2b757f73d6002f045337f69e8da027b97d0663a19de55565::<init>",
+                      "key": "36995985",
+                      "kind": "function",
+                      "name": "<init>"
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::f218d50b09b36a0348632bc1e4fe6e3ec60fec02d07fab42f32e18d466daeafc::java.lang.String",
+                          "key": "86b3a1cd",
+                          "kind": "variable",
+                          "name": "java.lang.String"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::6e8790ddc2dd39caf6365bc29f0ad1f1d01d6469f926d32592768321a7b34980::language",
+                      "key": "f71a2950",
+                      "kind": "function",
+                      "name": "language"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::14df8e6d1fd4b1c5d6d2eb7562af648797e58489b4264de96595fcdf97ef2ab7::Duke",
+                  "key": "c0c37545",
+                  "kind": "struct",
+                  "name": "Duke"
+                },
+                {
                   "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::983eeae49997d5dec76877a35a6153223e3355dca14774d437584687bceff42b::string_view",
                   "key": "d112b5a2",
                   "kind": "module",
                   "name": "string_view"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::78eb7eb2e97460b2df61a482670fec9c9650e8ddbc168f82fb8a742146f95646::string",
+                          "key": "39d7fc56",
+                          "kind": "variable",
+                          "name": "string"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::537c4870565c4938eaa2c7d92fd0f14328f2f9b213259d4064e735270864b274::Language",
+                      "key": "ce3210be",
+                      "kind": "function",
+                      "name": "Language"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/polyglot/project::semantic::9353b5e09e4c927e31ad6d6f0210e16c5dc0055e332bcddbd7c1f84974197d02::Anders",
+                  "key": "d5d356dd",
+                  "kind": "struct",
+                  "name": "Anders"
                 }
               ],
               "unnamed": 0
