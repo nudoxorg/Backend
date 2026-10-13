@@ -481,7 +481,7 @@ impl InstalledRustToolchain {
                 "Rust is absent from the closed compiler environment.".to_owned()
             }
             Self::Missing { .. } => {
-                "No Rust toolchain was found. Install one with rustup (rustup.rs) or Homebrew (brew install rust), then quit and reopen Nudox.".to_owned()
+                "No Rust toolchain was found. For Rust projects, install Rust with rustup (rustup.rs), then quit and reopen Nudox.".to_owned()
             }
         }
     }

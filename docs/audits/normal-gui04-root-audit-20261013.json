@@ -1,0 +1,387 @@
+{
+  "schema": "nudox.root-normal-gui04-audit.v1",
+  "source": "6a7a96b20896cdfb392b3f6cb5e94e99aff0bf77",
+  "tree": "8e3ed7ae8ecfcba6b2eb8b64e48cad21b0892067",
+  "locks": {
+    "commit": "6a7a96b20896cdfb392b3f6cb5e94e99aff0bf77",
+    "tree": "8e3ed7ae8ecfcba6b2eb8b64e48cad21b0892067",
+    "status": "",
+    "lock_sha256": "1681d11b2be9b746ce4596fe43d545010f43861cf6f498a9bff342c0555a18cd",
+    "nested_lock_sha256": "d01855ac7c9794a3a8db43e483ee1fc884ff6ef209ad5828da88e944a3b8a350"
+  },
+  "normal_image_sha256": "96b06be3d224e660577a7a2a751f75481a330ff8e9bfe6012ff1abae37eb1904",
+  "local_custody_sha256": "eec059ba5fe537dac79281a68ce17d37237a92df9efc04968c6fdb331b2d7689",
+  "original_custody_sha256": "d71680cab22dc833f89b1d1a8b3207d25ce17645087def579b3e065528580db3",
+  "files": 41,
+  "bytes": 401624,
+  "rows": [
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/outer/receipt.json",
+      "bytes": 27296,
+      "sha256": "c39e96d47fb21438f258fd7d03271b174a8abfe36e6d1d95da3be54606c20620"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/outer/stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/outer/stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/accessibility-bus.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/accessibility-bus.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/accessibility-registry.stderr",
+      "bytes": 63,
+      "sha256": "ef5037846adf78b931d57517d8d48c02a0d14781c007bf2c88eb53c66797305f"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/accessibility-registry.stdout",
+      "bytes": 77,
+      "sha256": "9d307ed556499f37fcb1517732638144b4ee8125619c1a443295c570b34c6bae"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/actual-normal-capture-request.json",
+      "bytes": 2511,
+      "sha256": "1ebd30eb0c5e8118725b10087aba3fc9499f2723b35fabe410232d855ce4d55c"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/before-native-focus/after.json",
+      "bytes": 1645,
+      "sha256": "da88d10cf8749895e4462b5c28d560e2ea7f14acbb7ee22a790af0be1fc0e958"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/before-native-focus/after.request.json",
+      "bytes": 568,
+      "sha256": "0696b522d75532485c0530626a9b49f21a593626ef3f3e5b8629b048e06e9077"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/before-native-focus/before.json",
+      "bytes": 1645,
+      "sha256": "da88d10cf8749895e4462b5c28d560e2ea7f14acbb7ee22a790af0be1fc0e958"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/before-native-focus/before.request.json",
+      "bytes": 568,
+      "sha256": "0696b522d75532485c0530626a9b49f21a593626ef3f3e5b8629b048e06e9077"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/before-native-focus/native.png",
+      "bytes": 286,
+      "sha256": "8a67fffea7d3f3bd724483f9298f1ec4437875c08c833a40ebf7fbf973cb5007"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/before-native-focus/trace.jsonl",
+      "bytes": 6055,
+      "sha256": "eb85dc87052443bfbcb2766ea22ad64cfc3e0f145c21a799337c5a2e5ac7ebbd"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/before-native-focus/witness.json",
+      "bytes": 5622,
+      "sha256": "99abea103c5bbd19d5ab7512e6a34ced736448bdfcc6daeca70a0e3b391a31e9"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/initial-normal/normal_after_native_focus-attempt-01/after.json",
+      "bytes": 9098,
+      "sha256": "ac8030f128d0816f996114edf53d004dba4b4f649ae36379a23ba416cf1a96c5"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/initial-normal/normal_after_native_focus-attempt-01/after.request.json",
+      "bytes": 568,
+      "sha256": "0696b522d75532485c0530626a9b49f21a593626ef3f3e5b8629b048e06e9077"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/initial-normal/normal_after_native_focus-attempt-01/before.json",
+      "bytes": 9098,
+      "sha256": "ac8030f128d0816f996114edf53d004dba4b4f649ae36379a23ba416cf1a96c5"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/initial-normal/normal_after_native_focus-attempt-01/before.request.json",
+      "bytes": 568,
+      "sha256": "0696b522d75532485c0530626a9b49f21a593626ef3f3e5b8629b048e06e9077"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-diagnostic/initial-normal/normal_after_native_focus-attempt-01/native.png",
+      "bytes": 94756,
+      "sha256": "c1325df792d8a82e3bb5bfff7cc562564dfea8bbca373fd48586ad8a71c0bbd9"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/initial-normal/normal_after_native_focus-attempt-01/trace-rejected.jsonl",
+      "bytes": 11199,
+      "sha256": "f92db776d0cfd57d4b96c040713c85888f1a9952ee9ec94089cbece12a0f42c5"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/initial-normal/normal_after_native_focus-attempt-01/witness.json",
+      "bytes": 28639,
+      "sha256": "539dc18b8c4cf928c6eec74ce2f2a3172d2b5968130de3959462e6a46d507833"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/initial-normal/normal_after_native_focus-attempt-02/after.json",
+      "bytes": 9098,
+      "sha256": "ac8030f128d0816f996114edf53d004dba4b4f649ae36379a23ba416cf1a96c5"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/initial-normal/normal_after_native_focus-attempt-02/after.request.json",
+      "bytes": 568,
+      "sha256": "0696b522d75532485c0530626a9b49f21a593626ef3f3e5b8629b048e06e9077"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/initial-normal/normal_after_native_focus-attempt-02/before.json",
+      "bytes": 9098,
+      "sha256": "ac8030f128d0816f996114edf53d004dba4b4f649ae36379a23ba416cf1a96c5"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/initial-normal/normal_after_native_focus-attempt-02/before.request.json",
+      "bytes": 568,
+      "sha256": "0696b522d75532485c0530626a9b49f21a593626ef3f3e5b8629b048e06e9077"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-diagnostic/initial-normal/normal_after_native_focus-attempt-02/native.png",
+      "bytes": 94756,
+      "sha256": "c1325df792d8a82e3bb5bfff7cc562564dfea8bbca373fd48586ad8a71c0bbd9"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/initial-normal/normal_after_native_focus-attempt-02/trace-complete.jsonl",
+      "bytes": 13614,
+      "sha256": "ba5cb94d9b89e9c77b4b615a1ccb7ad10fb0b40dbd8722e01dcdf16c0d062cc6"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/initial-normal/normal_after_native_focus-attempt-02/witness.json",
+      "bytes": 29538,
+      "sha256": "dc5d32fdd5876e6c8a59e1bab74de806a190d3518313b0bcf5d397a7f323399a"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/normal-desktop.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/normal-desktop.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/normal-ui-trace.jsonl",
+      "bytes": 14419,
+      "sha256": "88a34a1cb0a2b6094cd185e6365ab1960b2684f659fabf499bb609b45959745a"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/session-bus.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/session-bus.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/startup-receipt.json",
+      "bytes": 8738,
+      "sha256": "85e7cc7bf3e0de5e4b951187c612bda7db9e90afec9d3cd416dd5e5cbbed1f0e"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/xvfb.stderr",
+      "bytes": 936,
+      "sha256": "160d027868303b38699d229564aad727d812d5d7ee81fe5ce2b4221a76bb928e"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/output04/xvfb.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/monitor-output04/driver.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/monitor-output04/driver.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/monitor-output04/receipt.json",
+      "bytes": 6951,
+      "sha256": "82b1627bf4582fc5322e9d72bda5c7af2bf0e605c6b187cb30b5e9bfe5a971cc"
+    },
+    {
+      "path": "/private/tmp/nudox-normal6a04-closed/rootfs-bootstrap04.json",
+      "bytes": 13078,
+      "sha256": "cf5d026644492dd5c2cde0c569f6d4c6dff3c18d6d2ae27b759790ab375a76e0"
+    }
+  ],
+  "capture": {
+    "image_sha256": "c1325df792d8a82e3bb5bfff7cc562564dfea8bbca373fd48586ad8a71c0bbd9",
+    "dimensions": [
+      1380,
+      880
+    ],
+    "rgb_extrema": [
+      [
+        2,
+        245
+      ],
+      [
+        5,
+        247
+      ],
+      [
+        11,
+        251
+      ]
+    ],
+    "native_window": 4194305,
+    "native_process": {
+      "pid": 2916767,
+      "start_ticks": "119403160",
+      "pgid": 2916683,
+      "session": 2916683,
+      "uid": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "exe": "/root/.cache/nudox/gui-native81-31230-20261012/target/debug/backend-desktop"
+    },
+    "accessibility_nodes": 19,
+    "frame": {
+      "logical_window": 4294967297,
+      "frame_id": 3,
+      "accessible_frame": 2,
+      "drawn": {
+        "t_ms": 4414.307,
+        "name": "frame_lifecycle",
+        "pid": 2916767,
+        "window_id": 4294967297,
+        "native_window": null,
+        "frame_id": 3,
+        "kind": "drawn",
+        "a11y_frame": 2
+      },
+      "submission": {
+        "t_ms": 4438.753,
+        "name": "frame_lifecycle",
+        "pid": 2916767,
+        "window_id": 4294967297,
+        "native_window": null,
+        "frame_id": 3,
+        "kind": "submission",
+        "result": "Presented"
+      },
+      "collection": {
+        "t_ms": 6593.363,
+        "name": "frame_collection",
+        "pid": 2916767,
+        "scope": "app-ui",
+        "collection": 58,
+        "collected_through_ms": 6593.336,
+        "timings": 0,
+        "lifecycle": 0,
+        "dropped": 0
+      },
+      "bracket_ms": [
+        5560.652473,
+        6501.75039
+      ]
+    }
+  },
+  "actual_focus": {
+    "before_focus": {
+      "argv": [
+        "/nix/store/qvckv6m6ycsa8f26w0f20mzk5w4v9ciq-xdotool-4.20260303.1/bin/xdotool",
+        "getwindowfocus"
+      ],
+      "returncode": 1,
+      "stdout": "",
+      "stderr": "XGetInputFocus returned the focused window of 1. This is likely a bug in the X server.\nX Error of failed request:  BadWindow (invalid Window parameter)\n  Major opcode of failed request:  20 (X_GetProperty)\n  Resource id in failed request:  0x1\n  Serial number of failed request:  36\n  Current serial number in output stream:  36\n",
+      "begin_monotonic_ns": 1194034373554123,
+      "end_monotonic_ns": 1194034385661644
+    },
+    "window": 4194305,
+    "process": {
+      "pid": 2916767,
+      "start_ticks": "119403160",
+      "pgid": 2916683,
+      "session": 2916683,
+      "uid": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "exe": "/root/.cache/nudox/gui-native81-31230-20261012/target/debug/backend-desktop"
+    },
+    "events": [
+      {
+        "argv": [
+          "/nix/store/qvckv6m6ycsa8f26w0f20mzk5w4v9ciq-xdotool-4.20260303.1/bin/xdotool",
+          "windowraise",
+          "4194305"
+        ],
+        "stdout": "",
+        "begin_monotonic_ns": 1194034820487613,
+        "end_monotonic_ns": 1194034824325487
+      },
+      {
+        "argv": [
+          "/nix/store/qvckv6m6ycsa8f26w0f20mzk5w4v9ciq-xdotool-4.20260303.1/bin/xdotool",
+          "windowfocus",
+          "4194305"
+        ],
+        "stdout": "",
+        "begin_monotonic_ns": 1194035228845259,
+        "end_monotonic_ns": 1194035230836580
+      }
+    ],
+    "baseline": "/root/sol61-gui-production-6a7a96-20261012/output04/before-native-focus",
+    "after_focus": "4194305"
+  },
+  "root_bootstrap_failures": [
+    {
+      "t_ms": 803.295,
+      "name": "root.bootstrap-failed",
+      "detail": "cancelled"
+    },
+    {
+      "t_ms": 859.689,
+      "name": "root.bootstrap-failed",
+      "detail": "fault:Protocol:protocol: local control request 2 stalled in ReadingHeader"
+    }
+  ],
+  "lifecycle": {
+    "outer_exit": 0,
+    "outer_seconds": 10.853920510038733,
+    "permit_released": true,
+    "two_complete_empty_scans": [
+      {
+        "started": "2026-10-13T00:05:15.226861+00:00",
+        "finished": "2026-10-13T00:05:15.246642+00:00",
+        "complete": true,
+        "members": [],
+        "adopted_children_kernel_result": "ECHILD"
+      },
+      {
+        "started": "2026-10-13T00:05:15.446731+00:00",
+        "finished": "2026-10-13T00:05:15.484611+00:00",
+        "complete": true,
+        "members": [],
+        "adopted_children_kernel_result": "ECHILD"
+      }
+    ],
+    "identity_change_signal_refusal": "RuntimeError('pre-pidfd signal identity changed')"
+  },
+  "root_personally_viewed_png": true,
+  "scope": "Historical normal Linux empty-library startup after real window raise/focus; no project Add, publication, query, resize, animation, current-source or Mac acceptance."
+}

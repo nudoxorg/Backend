@@ -1877,55 +1877,64 @@ mod tests {
         std::fs::remove_file(path).expect("remove test socket");
     }
 
+    fn serve_bootstrap_pages(
+        stream: &mut UnixStream,
+        lease: LocalSubscriptionId,
+        pages: Vec<EncodedSnapshotPage>,
+    ) -> u64 {
+        let (open_id, operation) = request(stream);
+        assert!(matches!(
+            operation,
+            LocalSubscriptionOperation::Open { cursor, credit: PUBLICATION_CREDIT, lease_ms }
+                if cursor.is_empty() && lease_ms == BOOTSTRAP_LEASE.get()
+        ));
+
+        let mut expected_page = Box::<[u8]>::default();
+        for (index, (page, payload, next)) in pages.into_iter().enumerate() {
+            let request_id = if index == 0 {
+                assert!(page.is_empty(), "bootstrap starts at the first page");
+                open_id
+            } else {
+                let (request_id, operation) = request(stream);
+                assert!(matches!(
+                    operation,
+                    LocalSubscriptionOperation::Page {
+                        lease: requested_lease,
+                        page: requested_page,
+                        credit: PUBLICATION_CREDIT,
+                    } if requested_lease == lease && requested_page == expected_page
+                ));
+                request_id
+            };
+            expected_page = next.clone().unwrap_or_default();
+            reply(
+                stream,
+                LocalControlResponse::Subscription(LocalSubscriptionResponse::SnapshotPage {
+                    request_id,
+                    lease,
+                    page,
+                    next,
+                    credit: PUBLICATION_CREDIT,
+                    payload,
+                }),
+            );
+        }
+
+        let (cancel_id, operation) = request(stream);
+        assert!(matches!(
+            operation,
+            LocalSubscriptionOperation::Cancel { lease: requested_lease }
+                if requested_lease == lease
+        ));
+        cancel_id
+    }
+
     #[test]
     fn bootstrap_hydrates_a_valid_multi_page_root_and_cancels_on_its_correlated_socket() {
         let (_initial, target, _previous, target_cursor, pages) = multi_page_bootstrap_fixture();
         let lease = LocalSubscriptionId::from_bytes([31; 16]);
         let (mut transport, path, owner) = authenticated_pair(move |stream| {
-            let (open_id, operation) = request(stream);
-            assert!(matches!(
-                operation,
-                LocalSubscriptionOperation::Open { cursor, credit: PUBLICATION_CREDIT, lease_ms }
-                    if cursor.is_empty() && lease_ms == BOOTSTRAP_LEASE.get()
-            ));
-
-            let mut expected_page = Box::<[u8]>::default();
-            for (index, (page, payload, next)) in pages.into_iter().enumerate() {
-                let request_id = if index == 0 {
-                    assert!(page.is_empty(), "bootstrap starts at the first page");
-                    open_id
-                } else {
-                    let (request_id, operation) = request(stream);
-                    assert!(matches!(
-                        operation,
-                        LocalSubscriptionOperation::Page {
-                            lease: requested_lease,
-                            page: requested_page,
-                            credit: PUBLICATION_CREDIT,
-                        } if requested_lease == lease && requested_page == expected_page
-                    ));
-                    request_id
-                };
-                expected_page = next.clone().unwrap_or_default();
-                reply(
-                    stream,
-                    LocalControlResponse::Subscription(LocalSubscriptionResponse::SnapshotPage {
-                        request_id,
-                        lease,
-                        page,
-                        next,
-                        credit: PUBLICATION_CREDIT,
-                        payload,
-                    }),
-                );
-            }
-
-            let (cancel_id, operation) = request(stream);
-            assert!(matches!(
-                operation,
-                LocalSubscriptionOperation::Cancel { lease: requested_lease }
-                    if requested_lease == lease
-            ));
+            let cancel_id = serve_bootstrap_pages(stream, lease, pages);
             reply(
                 stream,
                 LocalControlResponse::Subscription(LocalSubscriptionResponse::Cancelled {
@@ -1940,6 +1949,62 @@ mod tests {
         assert_eq!(cursor, target_cursor);
         owner.join().expect("one authenticated owner connection");
         std::fs::remove_file(path).expect("remove authenticated test socket");
+    }
+
+    #[test]
+    fn certified_bootstrap_release_stall_keeps_typed_cause_and_requires_fresh_admission() {
+        use backend_replication::{LocalControlExchangeFailure, LocalControlExchangePhase};
+        let (_, target, _, target_cursor, pages) = multi_page_bootstrap_fixture();
+        let lease = LocalSubscriptionId::from_bytes([32; 16]);
+        let (release, held) = std::sync::mpsc::channel();
+        let (mut transport, path, owner) = authenticated_pair(move |stream| {
+            let cancel_id = serve_bootstrap_pages(stream, lease, pages);
+            assert_eq!(cancel_id, 4, "three certified pages precede exact release");
+            // Hold the actual ACK until the client observes its bounded stall;
+            // no sleep or scheduler assumption controls the failure.
+            held.recv_timeout(Duration::from_secs(3))
+                .expect("release held peer");
+        });
+        let error = transport
+            .bootstrap_root_with_exchange_error()
+            .expect_err("certified root cannot escape before its release acknowledgement");
+        let crate::LocalSubscriptionExchangeError::Exchange(exchange) = error else {
+            panic!("exact release must preserve its typed exchange cause");
+        };
+        assert_eq!(exchange.failure, LocalControlExchangeFailure::Stalled);
+        assert_eq!(exchange.progress.request_id, 4);
+        assert_eq!(
+            exchange.progress.phase,
+            LocalControlExchangePhase::ReadingHeader
+        );
+        assert!(exchange.progress.write_offset > 0);
+        assert_eq!(exchange.progress.header_offset, 0);
+        assert!(transport.interrupt_handle().is_none());
+        assert!(transport.authenticated_peer().is_none());
+        release.send(()).expect("close held peer after refusal");
+        owner.join().expect("bounded held owner");
+        std::fs::remove_file(path).expect("remove failed socket");
+
+        let (_, retry_target, _, retry_cursor, pages) = multi_page_bootstrap_fixture();
+        assert_eq!(target.root(), retry_target.root());
+        assert_eq!(target_cursor, retry_cursor);
+        let (mut fresh, path, owner) = authenticated_pair(move |stream| {
+            let request_id = serve_bootstrap_pages(stream, lease, pages);
+            reply(
+                stream,
+                LocalControlResponse::Subscription(LocalSubscriptionResponse::Cancelled {
+                    request_id,
+                    lease,
+                }),
+            );
+        });
+        let (root, cursor) = fresh
+            .bootstrap_root_with_exchange_error()
+            .expect("fresh authenticated stream must re-admit all pages and exact ACK");
+        assert_eq!(root.root(), target.root());
+        assert_eq!(cursor, target_cursor);
+        owner.join().expect("fresh acknowledged owner");
+        std::fs::remove_file(path).expect("remove fresh socket");
     }
 
     #[test]
