@@ -142,8 +142,15 @@ fn collect_transaction<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
     scratch: CompileScratch<'diagnostic, 'work>,
 ) -> Result<CollectedFacts<'source, 'cancel>, CompileFailure<'diagnostic>> {
     let prepared = prepare(request)?;
+    let plan = match &prepared.authority {
+        EnteredAuthority::Go { image } => {
+            lower::go::resource_plan(prepared.lease.bytes(), image)
+                .map_err(|cause| go_terminal(prepared.source, prepared.recipe, cause))?
+        }
+        _ => lower::ResourcePlan::for_source(request.profile, request.source.len()),
+    };
     let mut facts = lower::FactSet::with_primary_source(
-        lower::ResourcePlan::for_source(request.profile, request.source.len()),
+        plan,
         u32::try_from(request.source.len()).unwrap_or(u32::MAX),
     );
     emit_facts(&prepared, Some(scratch.diagnostic_output), &mut facts)?;

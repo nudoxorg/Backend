@@ -212,9 +212,10 @@ impl ResourcePlan {
         }
     }
 
-    /// Conservative measured demand derived from entered bytes and the one
-    /// selected language. Excess authority output is an exact capacity fault,
-    /// never an eager max-of-seven-languages allocation.
+    /// Initial storage estimate derived from entered bytes and the selected
+    /// language. Authorities whose projection extends beyond those bytes
+    /// must provide their checked demand separately; this estimate is not
+    /// a protocol limit.
     pub(crate) fn for_source(
         profile: backend_semantic::vocabulary::LanguageProfile,
         source_bytes: usize,
