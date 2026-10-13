@@ -5336,9 +5336,9 @@ impl CommandAdapter {
                 package,
                 override_evidence,
             } => {
-                // The source-checked Arc is immutable for this read. Compiler
-                // publication cannot replace it, and no package graph writer
-                // or source-manifest refresh is required to answer advisory.
+                // Catalog validation may refresh external sources or rebuild
+                // cold state. Its checked Arc is immutable for this read; no
+                // local manifest walk or package graph writer is required.
                 let selected = match self.registry.as_mut() {
                     Some(registry) => registry.catalog_projection().map(Some),
                     None if self.registry_configured => Err(
