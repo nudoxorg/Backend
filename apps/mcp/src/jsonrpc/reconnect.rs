@@ -283,6 +283,9 @@ const fn surface_is_repeatable(command: &SurfaceCommand) -> Repeatable {
         | SurfaceCommand::PackageVersions { .. }
         | SurfaceCommand::SemanticVersions { .. }
         | SurfaceCommand::SemanticVersionsPage { .. }
+        | SurfaceCommand::EmbeddingRefresh {
+            request: backend_library::EmbeddingRefreshAction::Observe { .. },
+        }
         | SurfaceCommand::PackageProfile { .. }
         | SurfaceCommand::ForgeReference { .. }
         | SurfaceCommand::Subscriptions
@@ -539,6 +542,19 @@ mod tests {
                     Ok(SurfaceReply::IndexOperationStatus(
                         IndexOperationObservation::Unknown { operation_key },
                     ))
+                }
+                SurfaceCommand::EmbeddingRefresh { request } => {
+                    self.record(&format!("refresh:{request:?}"))?;
+                    match request {
+                        backend_library::EmbeddingRefreshAction::Observe { ticket } => {
+                            Ok(SurfaceReply::EmbeddingRefresh(
+                                backend_library::EmbeddingRefreshObservation::Unknown { ticket },
+                            ))
+                        }
+                        _ => Err(ClientError::Protocol(
+                            "fixture does not execute refresh mutations".to_owned(),
+                        )),
+                    }
                 }
                 SurfaceCommand::Subscribe { .. } => {
                     self.record("subscribe")?;
@@ -901,6 +917,67 @@ mod tests {
             handle.endpoint.connects, 1,
             "exactly one reconnect, never a loop"
         );
+    }
+
+    fn refresh_ticket() -> backend_library::EmbeddingRefreshTicket {
+        backend_library::EmbeddingRefreshTicket {
+            sequence: std::num::NonZeroU64::new(17).expect("operation sequence"),
+            owner_epoch: 23,
+            owner_fence: [0x51; 32],
+            configuration: [0x72; 32],
+        }
+    }
+
+    #[test]
+    fn refresh_observation_reconnects_once_with_the_exact_ticket() {
+        let (mut handle, log) = idle_out();
+        let ticket = refresh_ticket();
+        let request = backend_library::EmbeddingRefreshAction::Observe {
+            ticket: ticket.clone(),
+        };
+        let label = format!("refresh:{request:?}");
+        let reply = handle
+            .surface(SurfaceCommand::EmbeddingRefresh { request })
+            .expect("read-only observation survives the retired connection");
+        assert_eq!(
+            reply,
+            SurfaceReply::EmbeddingRefresh(
+                backend_library::EmbeddingRefreshObservation::Unknown { ticket },
+            )
+        );
+        assert_eq!(
+            calls(&log),
+            [format!("dead:{label}"), format!("live:{label}")]
+        );
+        assert_eq!(handle.endpoint.connects, 1);
+    }
+
+    #[test]
+    fn refresh_start_and_cancel_never_replay_an_ambiguous_send() {
+        for request in [
+            backend_library::EmbeddingRefreshAction::Start {
+                configuration: [0x72; 32],
+                timeout_seconds: 60,
+            },
+            backend_library::EmbeddingRefreshAction::Cancel {
+                ticket: refresh_ticket(),
+            },
+        ] {
+            let (mut handle, log) = idle_out();
+            let label = format!("refresh:{request:?}");
+            let error = handle
+                .surface(SurfaceCommand::EmbeddingRefresh { request })
+                .expect_err("refresh mutation outcome is ambiguous");
+            assert!(matches!(error, ClientError::MutationOutcomeUnknown(_)));
+            assert_eq!(calls(&log), [format!("dead:{label}")]);
+            assert_eq!(handle.endpoint.connects, 1);
+            handle.health().expect("replacement remains usable");
+            assert_eq!(
+                calls(&log),
+                [format!("dead:{label}"), "live:health".to_owned()]
+            );
+            assert_eq!(handle.endpoint.connects, 1);
+        }
     }
 
     #[test]

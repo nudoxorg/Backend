@@ -2219,6 +2219,10 @@ fn configure_request_with_timeouts(
             | SurfaceCommand::IndexOperationStart { .. }
             | SurfaceCommand::IndexCancel { .. },
         ) => read_timeout,
+        Command::Surface(command) => match command.mutation() {
+            CommandMutation::Write => mutation_timeout,
+            CommandMutation::Read => read_timeout,
+        },
         _ => match backend_library::command_spec(request.command.id()).mutation {
             CommandMutation::Write => mutation_timeout,
             CommandMutation::Read => read_timeout,
@@ -2640,6 +2644,45 @@ mod tests {
                 .expect("acceptance write bound"),
             Some(CLIENT_REQUEST_TIMEOUT)
         );
+        let ticket = backend_library::EmbeddingRefreshTicket {
+            sequence: std::num::NonZeroU64::new(17).expect("operation sequence"),
+            owner_epoch: 23,
+            owner_fence: [0x51; 32],
+            configuration: [0x72; 32],
+        };
+        for (action, expected) in [
+            (
+                backend_library::EmbeddingRefreshAction::Start {
+                    configuration: ticket.configuration,
+                    timeout_seconds: 60,
+                },
+                CLIENT_MUTATION_TIMEOUT,
+            ),
+            (
+                backend_library::EmbeddingRefreshAction::Observe {
+                    ticket: ticket.clone(),
+                },
+                CLIENT_REQUEST_TIMEOUT,
+            ),
+            (
+                backend_library::EmbeddingRefreshAction::Cancel { ticket },
+                CLIENT_MUTATION_TIMEOUT,
+            ),
+        ] {
+            let request = CommandDto::new(
+                4,
+                Command::Surface(SurfaceCommand::EmbeddingRefresh { request: action }),
+            );
+            configure_request(&transport.stream, &request).expect("refresh timeout rearm");
+            assert_eq!(
+                transport.stream.read_timeout().expect("refresh read bound"),
+                Some(expected)
+            );
+            assert_eq!(
+                transport.stream.write_timeout().expect("refresh write bound"),
+                Some(expected)
+            );
+        }
         let _ = std::fs::remove_file(path);
     }
 
