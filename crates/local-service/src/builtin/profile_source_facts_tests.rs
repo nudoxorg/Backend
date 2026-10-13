@@ -1462,6 +1462,28 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
         &[(file.clone(), Some(facts))],
     );
     let capture = SemanticSourceCapture::new(None, [1; 32], [0x72; 32], 1, 1).unwrap();
+    let source_only_intent =
+        |package: PackageKey, label: &str, source_version, file: ProductSourceRecord| {
+            let fields = file.file_fields().unwrap();
+            let key = backend_engine::product_source_file_key(package.to_bytes(), fields.path);
+            let project = ProductSourceRecord::project(label, source_version, vec![key]).unwrap();
+            BuiltinIntent::index_with_semantics(
+                package,
+                label,
+                vec![
+                    BuiltinSourceChange {
+                        key: package.to_bytes(),
+                        after: Some(project),
+                    },
+                    BuiltinSourceChange {
+                        key,
+                        after: Some(file),
+                    },
+                ],
+                Vec::new(),
+            )
+            .unwrap()
+        };
     let commit_capture =
         |daemon: &mut super::super::ProductDaemon, request, capture, outcome, semantic_changes| {
             let base = daemon.engine().daemon().owner().snapshot();
@@ -1556,13 +1578,7 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
     let capture_root = view_publish::capture_root(&published).unwrap();
     let semantic_root = view_publish::semantic_root(&published).unwrap();
     let (sibling_file, _) = parsed_file(sibling, "sibling.ts", 1);
-    let (sibling_source_only, _) = prepare_files_at_source_version(
-        &daemon,
-        sibling,
-        sibling_label,
-        [0x45; 32],
-        &[(sibling_file, None)],
-    );
+    let sibling_source_only = source_only_intent(sibling, sibling_label, [0x45; 32], sibling_file);
     super::super::commands::commit_builtin_intent(&mut daemon, 45, &sibling_source_only).unwrap();
     let sibling_after_published = daemon.engine().daemon().owner().snapshot();
     assert_ne!(sibling_after_published.root(), published.root());
@@ -1575,32 +1591,9 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
         RowState::Ready,
         vec![ViewCoverage::Complete],
     );
-    let file_key = backend_engine::product_source_file_key(package.to_bytes(), "retained.ts");
-    let remove_published =
-        BuiltinIntent::remove_project_with_semantics(package, label, &[file_key], &[], Vec::new())
-            .unwrap();
-    super::super::commands::commit_builtin_intent(&mut daemon, 46, &remove_published).unwrap();
-    let missing_published = daemon.engine().daemon().owner().snapshot();
-    assert_eq!(
-        view_publish::capture_root(&missing_published).unwrap(),
-        capture_root
-    );
-    assert_eq!(
-        view_publish::semantic_root(&missing_published).unwrap(),
-        semantic_root
-    );
-    assert_scope(&missing_published, RowState::Failed, stale.clone());
-    assert!(
-        read_package_sources(&missing_published, package)
-            .unwrap()
-            .projects
-            .is_empty()
-    );
-
     // The production dirty-empty path can commit a new authenticated project
     // frontier without changing either capture or semantic publication root.
-    let (source_only, _) =
-        prepare_files_at_source_version(&daemon, package, label, [5; 32], &[(file.clone(), None)]);
+    let source_only = source_only_intent(package, label, [5; 32], file.clone());
     super::super::commands::commit_builtin_intent(&mut daemon, 5, &source_only).unwrap();
     let changed = daemon.engine().daemon().owner().snapshot();
     assert_ne!(
@@ -1638,6 +1631,32 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
         "unrelated package acquired foreign failure scope"
     );
 
+    let file_key = backend_engine::product_source_file_key(package.to_bytes(), "retained.ts");
+    let remove_published =
+        BuiltinIntent::remove_project_with_semantics(package, label, &[file_key], &[], Vec::new())
+            .unwrap();
+    super::super::commands::commit_builtin_intent(&mut daemon, 46, &remove_published).unwrap();
+    let missing_published = daemon.engine().daemon().owner().snapshot();
+    assert_eq!(
+        view_publish::capture_root(&missing_published).unwrap(),
+        capture_root
+    );
+    assert_eq!(
+        view_publish::semantic_root(&missing_published).unwrap(),
+        semantic_root
+    );
+    assert_scope(&missing_published, RowState::Failed, stale.clone());
+    assert!(
+        read_package_sources(&missing_published, package)
+            .unwrap()
+            .projects
+            .is_empty()
+    );
+
+    // Restore the exact newer source frontier while keeping the old selected
+    // generation and capture; the next capture refresh starts from this scope.
+    super::super::commands::commit_builtin_intent(&mut daemon, 47, &source_only).unwrap();
+
     let refresh_capture = SemanticSourceCapture::new(None, [5; 32], [0x73; 32], 2, 1).unwrap();
     commit_capture(
         &mut daemon,
@@ -1650,8 +1669,7 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
     );
     let current_pending = daemon.engine().daemon().owner().snapshot();
     assert_scope(&current_pending, RowState::Loading, partial);
-    let (source_only, _) =
-        prepare_files_at_source_version(&daemon, package, label, [7; 32], &[(file, None)]);
+    let source_only = source_only_intent(package, label, [7; 32], file);
     super::super::commands::commit_builtin_intent(&mut daemon, 7, &source_only).unwrap();
     let old_pending = daemon.engine().daemon().owner().snapshot();
     assert_scope(&old_pending, RowState::Failed, stale.clone());
