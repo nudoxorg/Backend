@@ -144,8 +144,15 @@ fn collect_transaction<'source, 'toolchain, 'cancel, 'diagnostic, 'work>(
     let prepared = prepare(request)?;
     let plan = match &prepared.authority {
         EnteredAuthority::Go { image } => {
-            lower::go::resource_plan(prepared.lease.bytes(), image)
-                .map_err(|cause| go_terminal(prepared.source, prepared.recipe, cause))?
+            lower::go::controlled_resource_plan(prepared.lease.bytes(), image, prepared.permit)
+                .map_err(|cause| match cause {
+                    lower::go::DemandError::Projection(cause) => {
+                        go_terminal(prepared.source, prepared.recipe, cause)
+                    }
+                    lower::go::DemandError::Stopped(stopped) => {
+                        stopped_failure(prepared.permit, prepared.recipe, stopped)
+                    }
+                })?
         }
         _ => lower::ResourcePlan::for_source(request.profile, request.source.len()),
     };
@@ -656,7 +663,17 @@ fn checkpoint<'diagnostic>(
 ) -> Result<(), CompileFailure<'diagnostic>> {
     match permit.checkpoint() {
         Ok(()) => Ok(()),
-        Err(WorkStopped::Cancelled) => Err(CompileFailure::Cancelled {
+        Err(stopped) => Err(stopped_failure(permit, recipe, stopped)),
+    }
+}
+
+fn stopped_failure<'diagnostic>(
+    permit: WorkPermit<'_>,
+    recipe: CompileRecipeFact,
+    stopped: WorkStopped,
+) -> CompileFailure<'diagnostic> {
+    match stopped {
+        WorkStopped::Cancelled => CompileFailure::Cancelled {
             source_identity: permit.source(),
             recipe,
             diagnostic: NativeDiagnostic {
@@ -664,8 +681,8 @@ fn checkpoint<'diagnostic>(
                 observed: 0,
                 truncated: false,
             },
-        }),
-        Err(WorkStopped::Deadline) => Err(CompileFailure::DeadlineExceeded {
+        },
+        WorkStopped::Deadline => CompileFailure::DeadlineExceeded {
             source_identity: permit.source(),
             recipe,
             diagnostic: NativeDiagnostic {
@@ -673,7 +690,7 @@ fn checkpoint<'diagnostic>(
                 observed: 0,
                 truncated: false,
             },
-        }),
+        },
     }
 }
 

@@ -90,13 +90,65 @@ use crate::driver::types::{FactFault, FactRejection};
 
 mod demand;
 
+/// A typed stop remains distinct from a projection rejection during demand.
+#[derive(Debug)]
+pub(crate) enum DemandError {
+    Projection(GoCollectError),
+    Stopped(crate::driver::types::WorkStopped),
+}
+
+impl From<GoCollectError> for DemandError {
+    fn from(cause: GoCollectError) -> Self {
+        Self::Projection(cause)
+    }
+}
+
+pub(crate) fn controlled_resource_plan(
+    source: &[u8],
+    image: &[u8],
+    permit: crate::driver::types::WorkPermit<'_>,
+) -> Result<super::ResourcePlan, DemandError> {
+    permit.checkpoint().map_err(DemandError::Stopped)?;
+    demand::ImageDemand::measure(validated_image(source, image)?, Some(permit))?.resource_plan()
+}
+
 /// Reserves the complete package authority rather than guessing its demand
 /// from the one primary source whose bytes bind the image.
+#[cfg(test)]
 pub(crate) fn resource_plan(
     source: &[u8],
     image: &[u8],
 ) -> Result<super::ResourcePlan, GoCollectError> {
-    demand::ImageDemand::measure(validated_image(source, image)?)?.resource_plan()
+    demand::ImageDemand::measure(validated_image(source, image)?, None)
+        .and_then(demand::ImageDemand::resource_plan)
+        .map_err(|error| match error {
+            DemandError::Projection(cause) => cause,
+            DemandError::Stopped(_) => unreachable!("uncontrolled direct demand test"),
+        })
+}
+
+/// Borrows a contiguous owner run already proved sorted by GoImage. Both
+/// reservation and projection use this allocation-free lookup.
+fn owner_run(
+    count: usize,
+    owner: u32,
+    mut at: impl FnMut(usize) -> Result<u32, ImageError>,
+) -> Result<std::ops::Range<usize>, GoCollectError> {
+    let mut boundary = |strict: bool| -> Result<usize, GoCollectError> {
+        let (mut low, mut high) = (0, count);
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let found = at(middle).map_err(GoCollectError::Image)?;
+            if found < owner || (strict && found == owner) {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        Ok(low)
+    };
+    let start = boundary(false)?;
+    Ok(start..boundary(true)?)
 }
 
 fn validated_image<'image>(
@@ -1956,7 +2008,9 @@ impl<'x, 'source> Projector<'x, 'source> {
         let mut declared_members = fields.clone();
         declared_members.extend(interface_methods.iter().map(|(ordinal, _)| *ordinal));
         let image_version = self.image.version();
-        for method_index in 0..self.image.method_count() {
+        for method_index in owner_run(self.image.method_count(), index as u32, |position| {
+            self.image.method(position).map(|row| row.owner)
+        })? {
             let method = self
                 .image
                 .method(method_index)
@@ -2012,7 +2066,13 @@ impl<'x, 'source> Projector<'x, 'source> {
                     lane_terminal_ordinal(type_ordinal, declaration.name.len(), fault)
                 })?;
         }
-        for method_set_index in 0..self.image.method_set_count() {
+        let method_set_run = match declaration.type_root {
+            Some(owner) => owner_run(self.image.method_set_count(), owner, |position| {
+                self.image.method_set(position).map(|row| row.owner)
+            })?,
+            None => 0..0,
+        };
+        for method_set_index in method_set_run {
             let method_set = self
                 .image
                 .method_set(method_set_index)
@@ -2085,7 +2145,11 @@ impl<'x, 'source> Projector<'x, 'source> {
             .declaration(index)
             .map_err(GoCollectError::Image)?
             .package;
-        for parameter_index in 0..self.image.type_parameter_count() {
+        for parameter_index in owner_run(
+            self.image.type_parameter_count(),
+            index as u32,
+            |position| self.image.type_parameter(position).map(|row| row.owner),
+        )? {
             let row = self
                 .image
                 .type_parameter(parameter_index)
@@ -2871,19 +2935,22 @@ impl<'x, 'source> Projector<'x, 'source> {
         owner: u32,
         ordinal: usize,
     ) -> Result<Option<&'source [u8]>, GoCollectError> {
-        let parameter = self
-            .image
-            .signature_parameters()
-            .enumerate()
-            .find_map(|(_, row)| match row {
-                Ok(row) if row.owner == owner && row.ordinal == ordinal as u32 => {
-                    Some(Ok(row.name))
-                }
-                Ok(_) => None,
-                Err(error) => Some(Err(GoCollectError::Image(error))),
-            })
-            .transpose()?
-            .unwrap_or(&[]);
+        let run = owner_run(self.image.signature_parameter_count(), owner, |index| {
+            self.image.signature_parameter(index).map(|row| row.owner)
+        })?;
+        let parameter = match run
+            .start
+            .checked_add(ordinal)
+            .filter(|index| *index < run.end)
+        {
+            Some(index) => {
+                self.image
+                    .signature_parameter(index)
+                    .map_err(GoCollectError::Image)?
+                    .name
+            }
+            None => &[],
+        };
         Ok((!parameter.is_empty() && parameter != b"_").then_some(parameter))
     }
 
@@ -3663,10 +3730,10 @@ impl WithShape for SemanticTypeRecord<'_> {
 }
 
 /// The member-run row indices of one struct or interface row.
-fn member_run(row: &backend_frontend_go::legacy::TypeRow<'_>) -> Vec<usize> {
+fn member_run(row: &backend_frontend_go::legacy::TypeRow<'_>) -> std::ops::Range<usize> {
     let start = index_of(row.members.0);
     let count = row.members.1 as usize;
-    (start..start + count).collect()
+    start..start + count
 }
 
 /// The embedded-run row indices of one interface row.
@@ -3693,10 +3760,9 @@ fn embedded_name<'image>(row: &backend_frontend_go::legacy::TypeRow<'image>) -> 
 }
 
 /// Splits one validated NUL-separated name blob into its non-empty parts.
-fn blank_separated(blob: &[u8]) -> Vec<&[u8]> {
+fn blank_separated(blob: &[u8]) -> impl Iterator<Item = &[u8]> {
     blob.split(|byte| *byte == 0)
         .filter(|part| !part.is_empty())
-        .collect()
 }
 
 /// Converts one validated u32 coordinate to its row index.
@@ -3803,6 +3869,31 @@ mod tests {
         assert_eq!(
             facts.type_list_len, 9,
             "empty list plus two distinct lists per callable"
+        );
+        demand::assert_control_boundaries(&image);
+    }
+
+    #[test]
+    fn borrowed_owner_runs_find_absent_and_repeated_owners_without_full_scan() {
+        let owners = [0u32, 1, 1, 1, 3, 3, 7];
+        for (owner, expected) in [(0, 0..1), (1, 1..4), (2, 4..4), (3, 4..6), (8, 7..7)] {
+            assert_eq!(
+                owner_run(owners.len(), owner, |index| Ok(owners[index])).expect("sorted run"),
+                expected
+            );
+        }
+        let mut reads = 0;
+        assert_eq!(
+            owner_run(4096, 2047, |index| {
+                reads += 1;
+                Ok(index as u32)
+            })
+            .expect("large sorted run"),
+            2047..2048
+        );
+        assert!(
+            reads <= 26,
+            "owner lookup must be logarithmic, observed {reads}"
         );
     }
 
