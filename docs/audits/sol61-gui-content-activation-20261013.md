@@ -52,6 +52,8 @@ chosen node and camera and republishes it under fresh ownership. Fresh
 navigation to the same graph route consumes its route entry again: World
 clears the old selected node, and a declaration graph resolves its entry
 declaration instead of briefly presenting the departed selection.
+When Reader keeps an inert departing graph visible while a destination loads,
+that paint does not acquire the destination's reading identity or activation.
 
 A separate lifecycle gap lost the footer's owner recovery guidance during
 local navigation after failure. The store now derives a new scoped Retry

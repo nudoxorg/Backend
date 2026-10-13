@@ -695,6 +695,13 @@ impl Map {
     ) {
         let changed_route = self.route.as_ref() != Some(route);
         let snapshot = self.links.snapshot(cx);
+        if snapshot.route() != route {
+            // Reader can retain the departing graph as inert paint while a
+            // new page loads. Its ghost must not overwrite the graph's saved
+            // reading identity with the destination's activation.
+            self.suspend(window, cx);
+            return;
+        }
         let changed_reading = self.presented_visit.as_ref().is_some_and(|visit|
             visit.reading != snapshot.session().reading.current.id);
         // Back restores the original reading identity and intentionally keeps
