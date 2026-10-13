@@ -1200,6 +1200,8 @@ pub(crate) struct LineageSearchIndex {
     coordinate_lineages: BTreeMap<String, BTreeMap<String, (LineageKey, usize)>>,
     oversized_lineages: BTreeSet<String>,
     facet_postings: BTreeMap<LineageFacetField, BTreeMap<String, BTreeSet<String>>>,
+    #[cfg(test)]
+    facet_value_limit: usize,
     fingerprint_xor: [u8; 32],
     document_count: usize,
 }
@@ -1235,6 +1237,8 @@ impl LineageSearchIndex {
             coordinate_lineages: BTreeMap::new(),
             oversized_lineages: BTreeSet::new(),
             facet_postings: BTreeMap::new(),
+            #[cfg(test)]
+            facet_value_limit: MAX_LINEAGE_FACET_VALUES,
             fingerprint_xor: [0; 32],
             document_count: 0,
         })
@@ -1475,6 +1479,17 @@ impl LineageSearchIndex {
         Ok(visited)
     }
 
+    fn facet_value_limit(&self) -> usize {
+        #[cfg(test)]
+        {
+            self.facet_value_limit
+        }
+        #[cfg(not(test))]
+        {
+            MAX_LINEAGE_FACET_VALUES
+        }
+    }
+
     fn exact_facet_lineages(
         &self,
         field: LineageFacetField,
@@ -1655,6 +1670,7 @@ impl LineageSearchIndex {
         }
         let aggregate = self.aggregates.get(key)?;
         let name = normalize(lineage_search_name(key.ecosystem, &key.lineage));
+        let facet_value_limit = self.facet_value_limit();
 
         if aggregate.coordinates.contains_key(&query) {
             return Some(SearchMatchEvidence::ExactCoordinate);
@@ -1688,7 +1704,7 @@ impl LineageSearchIndex {
             || aggregate
                 .coordinates
                 .keys()
-                .take(MAX_LINEAGE_FACET_VALUES)
+                .take(facet_value_limit)
                 .any(|coordinate| coordinate.contains(&query))
         {
             return Some(SearchMatchEvidence::Substring);
@@ -1737,6 +1753,7 @@ impl LineageSearchIndex {
 
     fn refresh_lineage(&mut self, key: &LineageKey) -> Result<(), String> {
         let group_sort_key = lineage_sort_key(key);
+        let facet_value_limit = self.facet_value_limit();
         if !self.releases.contains_key(key) {
             self.oversized_lineages.remove(&group_sort_key);
             self.inner.remove_document(&group_sort_key);
@@ -1745,7 +1762,7 @@ impl LineageSearchIndex {
         if self
             .aggregates
             .get(key)
-            .is_some_and(|aggregate| aggregate.coordinates.len() > MAX_LINEAGE_FACET_VALUES)
+            .is_some_and(|aggregate| aggregate.coordinates.len() > facet_value_limit)
         {
             self.oversized_lineages.insert(group_sort_key.clone());
         } else {
@@ -1758,17 +1775,17 @@ impl LineageSearchIndex {
         let coordinate_refs = aggregate
             .coordinates
             .keys()
-            .take(MAX_LINEAGE_FACET_VALUES)
+            .take(facet_value_limit)
             .map(String::as_str)
             .collect();
-        let aliases = facet_from_counts(&aggregate.aliases);
-        let keywords = facet_from_counts(&aggregate.keywords);
-        let descriptions = facet_from_counts(&aggregate.descriptions);
-        let advisories = facet_from_counts(&aggregate.advisories);
+        let aliases = facet_from_counts(&aggregate.aliases, facet_value_limit);
+        let keywords = facet_from_counts(&aggregate.keywords, facet_value_limit);
+        let descriptions = facet_from_counts(&aggregate.descriptions, facet_value_limit);
+        let advisories = facet_from_counts(&aggregate.advisories, facet_value_limit);
         let generic = aggregate
             .generic
             .keys()
-            .take(MAX_LINEAGE_FACET_VALUES)
+            .take(facet_value_limit)
             .map(String::as_str)
             .collect();
         let search_text = SearchDocumentText {
@@ -1908,11 +1925,14 @@ fn versioned_release_facet(
     )))
 }
 
-fn facet_from_counts<'a>(counts: &'a BTreeMap<String, usize>) -> SearchTextFacet<'a> {
+fn facet_from_counts<'a>(
+    counts: &'a BTreeMap<String, usize>,
+    facet_value_limit: usize,
+) -> SearchTextFacet<'a> {
     SearchTextFacet::Known(
         counts
             .keys()
-            .take(MAX_LINEAGE_FACET_VALUES)
+            .take(facet_value_limit)
             .map(String::as_str)
             .collect(),
     )
@@ -6443,19 +6463,34 @@ mod tests {
     }
 
     fn build_discovery_search_projection(entries: &[DiscoverySearchKey]) -> DiscoverySearchIndex {
+        build_discovery_search_projection_with_facet_limit(entries, MAX_LINEAGE_FACET_VALUES)
+    }
+
+    fn build_discovery_search_projection_with_facet_limit(
+        entries: &[DiscoverySearchKey],
+        facet_value_limit: usize,
+    ) -> DiscoverySearchIndex {
         let metadata = entries
             .iter()
             .cloned()
             .map(|key| (key, DiscoveryMetadata::default()))
             .collect::<Vec<_>>();
-        build_discovery_projection_with_metadata(&metadata)
+        build_discovery_projection_with_metadata_and_facet_limit(&metadata, facet_value_limit)
     }
 
     fn build_discovery_projection_with_metadata(
         entries: &[(DiscoverySearchKey, DiscoveryMetadata)],
     ) -> DiscoverySearchIndex {
+        build_discovery_projection_with_metadata_and_facet_limit(entries, MAX_LINEAGE_FACET_VALUES)
+    }
+
+    fn build_discovery_projection_with_metadata_and_facet_limit(
+        entries: &[(DiscoverySearchKey, DiscoveryMetadata)],
+        facet_value_limit: usize,
+    ) -> DiscoverySearchIndex {
         let mut inner = TextSearchIndex::new().expect("release index");
         let mut lineages = LineageSearchIndex::new().expect("lineage index");
+        lineages.facet_value_limit = facet_value_limit;
         let mut changes = Vec::new();
         for (key, metadata) in entries {
             let coordinate = key.coordinate.as_str();
@@ -7858,32 +7893,82 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "manual 16k-release substring coverage diagnostic"]
-    fn grouped_search_finds_coordinate_substring_beyond_lineage_field_bound() {
+    fn grouped_search_finds_tail_substrings_and_clears_overflow_after_delete() {
         let cargo = source(RegistryEcosystem::Cargo, "https://index.crates.io");
-        let mut entries = (0..MAX_LINEAGE_FACET_VALUES)
-            .map(|patch| key(cargo, &format!("pkg:cargo/widget@1.0.{patch}")))
-            .collect::<Vec<_>>();
-        let tail_coordinate = "pkg:cargo/widget@9999.9.9";
-        entries.push(key(cargo, tail_coordinate));
-        let index = build_discovery_search_projection(&entries);
-        let page = index
-            .search_groups(
-                DiscoverySearchRequest {
-                    text: "9999.9.",
-                    ecosystem: Some(RegistryEcosystem::Cargo),
-                },
-                8,
-            )
-            .expect("coordinate substring beyond bounded lineage terms");
+        const TEST_FACET_VALUE_LIMIT: usize = 2;
+        let mut entries = vec![key(cargo, "pkg:cargo/ample@9999.9.9")];
+        for lineage in ["widget", "widget-a", "widget-b"] {
+            for version in ["1.0.0", "1.0.1", "9999.9.9"] {
+                entries.push(key(cargo, &format!("pkg:cargo/{lineage}@{version}")));
+            }
+        }
+        let mut index =
+            build_discovery_search_projection_with_facet_limit(&entries, TEST_FACET_VALUE_LIMIT);
+        let request = DiscoverySearchRequest {
+            text: "9999.9.",
+            ecosystem: Some(RegistryEcosystem::Cargo),
+        };
 
-        assert_eq!(page.groups.len(), 1);
-        assert_eq!(page.groups[0].lineage, "widget");
-        assert_eq!(page.groups[0].evidence, SearchMatchEvidence::Substring);
-        assert_eq!(page.groups[0].matched_releases.len(), 1);
+        let first = index
+            .search_groups_after(request, 1, None)
+            .expect("first tail substring page");
+        assert_eq!(first.groups.len(), 1);
+        assert_eq!(first.groups[0].lineage, "ample");
+        assert_eq!(first.groups[0].evidence, SearchMatchEvidence::Substring);
+        let first_cursor = first.next_cursor.expect("lookahead for remaining lineages");
+        let second = index
+            .search_groups_after(request, 1, Some(&first_cursor))
+            .expect("second tail substring page");
+        assert_eq!(second.groups.len(), 1);
+        assert_eq!(second.groups[0].lineage, "widget");
+        assert_eq!(second.groups[0].evidence, SearchMatchEvidence::Substring);
+        let second_cursor = second.next_cursor.expect("lookahead for final lineage");
+        let third = index
+            .search_groups_after(request, 1, Some(&second_cursor))
+            .expect("third tail substring page");
+        assert_eq!(third.groups.len(), 1);
+        assert_eq!(third.groups[0].lineage, "widget-a");
+        let third_cursor = third.next_cursor.expect("lookahead for final lineage");
+        let fourth = index
+            .search_groups_after(request, 1, Some(&third_cursor))
+            .expect("final tail substring page");
+        assert_eq!(fourth.groups.len(), 1);
+        assert_eq!(fourth.groups[0].lineage, "widget-b");
+        assert!(fourth.next_cursor.is_none());
+
+        let removed_key = key(cargo, "pkg:cargo/widget-b@9999.9.9");
+        let removed_identity =
+            discovery_sort_key(&removed_key.source, removed_key.coordinate.as_str());
+        index.inner.remove_document(&removed_identity);
+        index.inner.commit().expect("commit release delete");
+        index
+            .lineages
+            .remove_batch([removed_identity])
+            .expect("remove lineage release");
+        index.lineages.commit().expect("commit lineage delete");
+        let removed_lineage = discovery_lineage_key(
+            &removed_key.source,
+            RegistryEcosystem::Cargo,
+            &removed_key.lineage,
+        );
+        assert!(
+            !index
+                .lineages
+                .oversized_lineages
+                .contains(&lineage_sort_key(&removed_lineage)),
+            "a lineage at the bound should leave the overflow set"
+        );
+
+        let remaining = index
+            .search_groups(request, 8)
+            .expect("tail substring results after delete");
         assert_eq!(
-            page.groups[0].matched_releases[0].coordinate.as_str(),
-            tail_coordinate
+            remaining
+                .groups
+                .iter()
+                .map(|group| group.lineage.as_str())
+                .collect::<Vec<_>>(),
+            ["ample", "widget", "widget-a"]
         );
     }
 
