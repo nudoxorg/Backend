@@ -733,7 +733,7 @@ impl SyntaxFrontend {
             return Err(SyntaxError::MalformedSource(self.language));
         }
         let mut cursor = QueryCursor::new();
-        let captured = captured_definitions(variant, &tree, &mut cursor, source, text);
+        let captured = captured_definitions(self.language, variant, &tree, &mut cursor, source, text);
         Ok(SourceAnalysis {
             language: self.language,
             content: typed_of::<InputContentSchema>(source),
@@ -831,7 +831,12 @@ impl SyntaxFrontend {
 
 /// One definition selected by a tags query, before it becomes a declaration.
 struct CapturedDefinition<'a> {
+    /// Original grammar capture used for the declaration's written source.
     node: Node<'a>,
+    /// Exact declaration that owns nested definitions. A multi-binding
+    /// statement shares its written range, but each initializer belongs to
+    /// its own declarator rather than the first name captured for the statement.
+    owner_node: Node<'a>,
     name: String,
     tag: &'a str,
     line: NonZeroU32,
@@ -843,6 +848,7 @@ struct CapturedDefinition<'a> {
 /// select the same definition - a supplementary pattern refining a stock one -
 /// and one declaration must not be published twice.
 fn captured_definitions<'a>(
+    language: SourceLanguage,
     variant: &'a GrammarVariant,
     tree: &'a tree_sitter::Tree,
     cursor: &mut QueryCursor,
@@ -867,6 +873,7 @@ fn captured_definitions<'a>(
         let (Some((tag, node)), Some(name)) = (definition, name) else {
             continue;
         };
+        let owner_node = captured_owner_node(language, node, name);
         let name = node_text(name, text).trim();
         let line = NonZeroU32::new(
             u32::try_from(node.start_position().row.saturating_add(1)).unwrap_or(u32::MAX),
@@ -877,12 +884,36 @@ fn captured_definitions<'a>(
         }
         captured.push(CapturedDefinition {
             node,
+            owner_node,
             name: bounded(name),
             tag,
             line,
         });
     }
     captured
+}
+
+/// Keeps ownership tied to the grammar's exact binding node while preserving
+/// the statement capture for source excerpts, signatures and documentation.
+/// TypeScript's supplemental lexical pattern captures the same statement for
+/// every identifier binding; that statement cannot identify which initializer
+/// owns a nested declaration. Only the directly captured name field proves the
+/// corresponding declarator. Other grammar captures retain their original node.
+fn captured_owner_node<'a>(
+    language: SourceLanguage,
+    definition: Node<'a>,
+    name: Node<'a>,
+) -> Node<'a> {
+    if language == SourceLanguage::TypeScript && definition.kind() == "lexical_declaration" {
+        if let Some(declarator) = name.parent()
+            && declarator.kind() == "variable_declarator"
+            && declarator.child_by_field_name("name") == Some(name)
+            && declarator.parent() == Some(definition)
+        {
+            return declarator;
+        }
+    }
+    definition
 }
 
 /// One definition node's byte span and name, as captures are grouped by.
@@ -912,16 +943,16 @@ fn resolved_definitions<'a>(
 ) -> Vec<ResolvedDefinition<'a>> {
     let mut definitions = DefinitionIndex::new();
     for capture in captured {
-        definitions.insert(capture.node, &capture.name, capture.line, capture.tag);
+        definitions.insert(capture.owner_node, &capture.name, capture.line, capture.tag);
     }
     let mut selected: BTreeMap<DefinitionSelector, usize> = BTreeMap::new();
     let mut resolved: Vec<ResolvedDefinition<'a>> = Vec::new();
     for capture in captured {
-        let container = container_of(capture.node, &definitions, text);
+        let container = container_of(capture.owner_node, &definitions, text);
         let tag = settled_role(capture.tag, &container, &definitions);
         let kind = declaration_kind(language, tag, capture.node.kind());
         let selector: DefinitionSelector = (
-            (capture.node.start_byte(), capture.node.end_byte()),
+            (capture.owner_node.start_byte(), capture.owner_node.end_byte()),
             capture.name.clone(),
         );
         if let Some(held) = selected.get(&selector).and_then(|at| resolved.get_mut(*at)) {

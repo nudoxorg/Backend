@@ -912,6 +912,48 @@ pub fn execute() {}
     }
 
     #[test]
+    fn typescript_binding_parentage_survives_the_canonical_structural_row_projection()
+    -> Result<(), String> {
+        let path = "scheduler.ts";
+        let source = concat!(
+            "export const unrelated = 0, generateSchedule = () => {\n",
+            "  const allSections = [1];\n",
+            "  const missingSections = [2];\n",
+            "  return { allSections, missingSections };\n",
+            "};\n",
+        );
+        let analysis = backend_frontend_typescript::syntax_frontend()
+            .map_err(|error| error.to_string())?
+            .analyze(std::path::Path::new(path), source.as_bytes())
+            .map_err(|error| error.to_string())?;
+        let sources = structural_sources(
+            [0x31; 32], path, backend_engine::SourceLanguage::TypeScript,
+            analysis.declarations().clone(),
+        )?;
+        let plan = StructuralProjectionPlan::of(&sources, &BTreeSet::new())
+            .map_err(|error| error.to_string())?;
+        let (initial, _) = initial_view().map_err(|error| error.to_string())?;
+        let targets = super::SemanticTargets::default();
+        let scratch = std::env::temp_dir();
+        let mut projection = SourceRowProjection::new(&initial, &sources, 64, &targets, &plan, &scratch)
+            .map_err(|error| error.to_string())?;
+        for (key, file) in &sources.files {
+            projection.append_file(*key, file, &BTreeSet::new(), &ProfileStalePaths::new())
+                .map_err(|error| error.to_string())?;
+        }
+        let rows = projection.finish(Vec::new()).map_err(|error| error.to_string())?;
+        let schedule = "fixture::scheduler.ts:1::generateSchedule";
+        assert_eq!(parent_of(&rows, "fixture::scheduler.ts:2::allSections")?, schedule);
+        assert_eq!(parent_of(&rows, "fixture::scheduler.ts:3::missingSections")?, schedule);
+        assert_eq!(parent_of(&rows, schedule)?, "fixture::scheduler.ts");
+        assert_eq!(parent_of(&rows, "fixture::scheduler.ts:1::unrelated")?, "fixture::scheduler.ts");
+        let parent = rows.iter().find(|row| row.label == schedule).ok_or("schedule row")?.id;
+        assert_eq!(rows.iter().filter(|row| row.parent.map(RowId::Symbol) == Some(parent)).count(), 2,
+            "document/outline consumers receive exactly the actual local members");
+        Ok(())
+    }
+
+    #[test]
     fn frontend_duplicate_coordinates_are_retained_without_a_dangling_target() -> Result<(), String>
     {
         let frontend = backend_frontend_csharp::syntax_frontend().map_err(|e| e.to_string())?;

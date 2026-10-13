@@ -201,7 +201,7 @@ pub fn syntax_frontend() -> Result<backend_compile::SyntaxFrontend, backend_comp
     );
     backend_compile::SyntaxFrontend::new(
         backend_compile::SourceLanguage::TypeScript,
-        b"tree-sitter-typescript-0.23.2/tags-v4",
+        b"tree-sitter-typescript-0.23.2/tags-v5/binding-owner-v1",
         vec![
             backend_compile::GrammarVariant::new(
                 &["ts", "mts", "cts", "js", "mjs", "cjs"],
@@ -557,6 +557,9 @@ mod tests {
             assert_eq!(find("generateSchedule").container(), &Container::Module);
             assert_eq!(find("unrelated").container(), &Container::Module);
             assert_eq!(find("generateSchedule").kind(), DeclarationKind::Constant);
+            assert_eq!(analysis.declarations().len(), 8, "no captured declaration is discarded");
+            assert!(find("generateSchedule").signature().contains("export const unrelated"),
+                "ownership refinement preserves the original written statement");
         }
         Ok(())
     }
