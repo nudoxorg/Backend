@@ -9348,9 +9348,9 @@ mod tests {
             "project path cannot expand posting work"
         );
         let second = local
-            .page_after("httpie", 1, first.continuation.as_ref())
+            .page_after("httpie", 1, first.next_cursor.as_ref())
             .expect("second name page");
-        assert!(second.continuation.is_none());
+        assert!(second.next_cursor.is_none());
         let selected = first
             .hits
             .into_iter()
