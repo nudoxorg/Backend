@@ -372,6 +372,7 @@ fn test_tier_2_type_checker_accuracy_fixes() {
             allow_unused_labels: None,
             sound_mode: false,
             sound_check_declarations: false,
+            declaration_diagnostics: tsz_common::options::checker::DeclarationDiagnosticPolicy::Check,
             sound_report_only: false,
             sound_pedantic: false,
             sound_declaration_projection: false,
