@@ -5676,10 +5676,9 @@ fn searchable_content_query(field: Field, value: &str) -> Box<dyn Query> {
 }
 
 fn local_source_path_intent(needle: &str) -> bool {
-    !needle.chars().any(char::is_whitespace)
-        && needle
-            .chars()
-            .any(|character| matches!(character, '/' | '\\' | '.'))
+    needle
+        .chars()
+        .any(|character| matches!(character, '/' | '\\' | '.'))
 }
 
 fn regex_prefix_pattern(value: &str) -> String {
@@ -9523,6 +9522,64 @@ mod tests {
                     .hits
             ),
             [file_id]
+        );
+    }
+
+    #[test]
+    fn typed_local_source_paths_keep_spaces_unicode_and_control_characters() {
+        let (base, _) = super::super::initial_view().expect("initial view");
+        let project = "/tmp/work::checkout/repo";
+        let paths = [
+            "my file.py",
+            "src/path with space/module.ts",
+            "src/資料/δ.py",
+            "src/path\twith-tab.py",
+            "src/path\nwith-newline.py",
+        ];
+        let mut changes = Vec::new();
+        let mut expected = Vec::new();
+        for (at, path) in paths.iter().enumerate() {
+            let coordinate = format!("{project}::{path}:1::fixture_{at}");
+            let id = RowId::Symbol(backend_engine::symbol_key(&coordinate));
+            let location =
+                backend_library::SourceLocation::new(*path, 1).expect("legal captured source path");
+            changes.push(RowChange::Upsert(Box::new(
+                Row::new(id, base.basis(), coordinate).with_source(location),
+            )));
+            expected.push(id);
+        }
+        changes.sort_by_key(RowChange::id);
+        let prepared = base
+            .prepare(
+                ViewDelta::Patch {
+                    changes: changes.into(),
+                },
+                super::super::test_builtin_view_capability().expect("view capability"),
+            )
+            .expect("prepare legal path fixtures");
+        let (view, _) = base.commit(prepared).expect("commit legal path fixtures");
+        let mut local = LocalDeclarationSearchIndex::default();
+        local.sync(&view).expect("typed local path projection");
+        for (path, id) in paths.iter().zip(expected) {
+            let page = local
+                .page_after(path, 1, None)
+                .expect("complete explicit file query");
+            assert_eq!(hit_keys(page.hits), [id], "{path:?}");
+            assert!(page.next_cursor.is_none(), "{path:?}");
+        }
+        assert!(
+            local
+                .page("checkout", 8)
+                .expect("inherited label query")
+                .hits
+                .is_empty()
+        );
+        assert!(
+            local
+                .page("path with space", 8)
+                .expect("plain prose query")
+                .hits
+                .is_empty()
         );
     }
 
