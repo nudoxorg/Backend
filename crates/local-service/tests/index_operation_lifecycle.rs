@@ -243,6 +243,27 @@ fn run_deferred_rust_public_indexing(fixture: &FailureFixture) -> Result<(), Box
                             "real native Python publication omitted its captured source identity",
                         )
                     })?;
+                    assert_eq!(
+                        status.package, python_package,
+                        "exact public Python package identity"
+                    );
+                    assert_eq!(
+                        capture.operation_key(),
+                        python_key,
+                        "exact Python source receipt ownership"
+                    );
+                    assert!(
+                        !capture.profiles().is_empty(),
+                        "a published Python capture cannot omit its profile"
+                    );
+                    assert!(
+                        capture
+                            .profiles()
+                            .iter()
+                            .all(|profile| profile.profile.profile().ok()
+                                == Some(LanguageProfile::Python(PythonVersion::Python314))),
+                        "every returned profile belongs to the actual requested native Python source"
+                    );
                     assert!(
                         capture.profiles().iter().all(|profile| matches!(
                             profile.state,
