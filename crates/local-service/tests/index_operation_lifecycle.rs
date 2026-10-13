@@ -147,6 +147,7 @@ fn run_deferred_rust_public_indexing(fixture: &FailureFixture) -> Result<(), Box
     )?;
     let python_package = PackageReference::parse(python_root.to_string_lossy().into_owned())
         .map_err(|error| io::Error::other(error.to_string()))?;
+    let mut first_python_source_version = None;
     let mut selected_generation = None;
     for cold in [false, true] {
         let selection =
@@ -271,6 +272,24 @@ fn run_deferred_rust_public_indexing(fixture: &FailureFixture) -> Result<(), Box
                         )),
                         "every captured Python profile must have actual published authority"
                     );
+                    let python_profile = capture
+                        .profiles()
+                        .iter()
+                        .find(|profile| {
+                            profile.profile.profile().ok()
+                                == Some(LanguageProfile::Python(PythonVersion::Python314))
+                        })
+                        .expect("exact native Python capture profile");
+                    if cold {
+                        assert_ne!(
+                            python_profile.source_version,
+                            first_python_source_version
+                                .expect("warm Python source version retained"),
+                            "the changed cold Python source must produce a new captured source version"
+                        );
+                    } else {
+                        first_python_source_version = Some(python_profile.source_version);
+                    }
                     break;
                 }
                 IndexOperationState::Accepted | IndexOperationState::Active { .. } => {
