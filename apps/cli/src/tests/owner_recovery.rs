@@ -104,9 +104,7 @@ fn owner_replacement_authenticates_private_endpoint_before_repeating_health() {
     )
     .expect("admitted endpoint mode");
     let server = std::thread::spawn(move || {
-        // Passive readiness is a separate probe and carries no command.
-        let (probe, _) = listener.accept().expect("passive readiness probe");
-        drop(probe);
+        // Recovery authenticates the existing owner directly, without a bootstrap probe.
         let (mut stream, _) = listener
             .accept()
             .expect("replacement authenticated connection");
@@ -456,7 +454,7 @@ fn journal_start_capability_refuses_foreign_connection_attachment_before_send() 
 }
 
 #[test]
-fn replacement_failure_keeps_saved_claim_and_reuses_wait_deadline_only_once() {
+fn replacement_failure_keeps_saved_claim_and_read_recovery_keeps_original_deadline() {
     let fixture = Fixture::new();
     let commands = Arc::new(AtomicUsize::new(0));
     let submitted = commands.clone();
@@ -542,21 +540,27 @@ fn replacement_failure_keeps_saved_claim_and_reuses_wait_deadline_only_once() {
     let command = SurfaceCommand::IndexOperationStatus { operation_key: key };
     assert_eq!(
         recovery.surface(&mut original, command.clone(), Some(&wait)),
-        Err(reset())
+        Err(ClientError::RemoteDeadlineExceeded)
+    );
+    let attempts = connects.load(Ordering::Relaxed);
+    assert!(
+        attempts > 2,
+        "saved-key reads tolerate repeated peer retirement"
     );
     assert_eq!(
         recovery.surface(&mut original, command, Some(&wait)),
-        Err(reset())
+        Err(ClientError::RemoteDeadlineExceeded)
     );
     assert_eq!(
         connects.load(Ordering::Relaxed),
-        1,
-        "repeated peer loss never creates a reconnect loop"
+        attempts,
+        "expired scope cannot reconnect"
     );
+    assert!(std::time::Instant::now() >= deadline);
     assert_eq!(
-        wait.read_deadline(std::time::Duration::from_secs(900))
-            .expect("still original"),
-        deadline
+        wait.read_deadline(std::time::Duration::from_secs(900)),
+        Err(ClientError::RemoteDeadlineExceeded),
+        "reconnection never renews the expired original deadline"
     );
     wait.finish();
 
@@ -619,5 +623,192 @@ fn replacement_failure_keeps_saved_claim_and_reuses_wait_deadline_only_once() {
     assert_eq!(
         fixture.claims()[0]["operation_key"],
         serde_json::to_value(operation_key).expect("original saved key")
+    );
+}
+
+/// Real private Unix transport and the production 256-frame server boundary.
+/// Scripted Accepted receipts prove recovery/identity, not compiler publication.
+#[test]
+fn saved_key_read_survives_three_real_frame_budget_retirements_without_new_start() {
+    use backend_local_service::protocol::{
+        EngineRequest, EngineStatus, FrameLimits, ProtocolError,
+    };
+    use backend_local_service::service::{LocaldService, OwnerService};
+    use std::os::unix::fs::PermissionsExt as _;
+    struct ReceiptOwner {
+        library: backend_library::Library,
+        package: PackageReference,
+        key: Option<backend_library::IndexOperationKey>,
+        starts: usize,
+        reads: usize,
+    }
+    impl OwnerService for ReceiptOwner {
+        fn command(&mut self, body: &[u8]) -> Result<Vec<u8>, ProtocolError> {
+            let request = CommandDto::decode_for_owner(body, self.library.cursor())
+                .expect("actual request admission");
+            let (key, started) = match request.command {
+                Command::Surface(SurfaceCommand::IndexOperationStart {
+                    operation_key,
+                    package,
+                    execution_intent,
+                }) => {
+                    assert_eq!(package, self.package);
+                    assert_eq!(execution_intent, CompileExecutionIntent::Interactive);
+                    assert!(
+                        self.key.replace(operation_key).is_none(),
+                        "no duplicate mutation"
+                    );
+                    self.starts += 1;
+                    (operation_key, true)
+                }
+                Command::Surface(SurfaceCommand::IndexOperationStatus { operation_key }) => {
+                    assert_eq!(
+                        Some(operation_key),
+                        self.key,
+                        "every read retains original saved key"
+                    );
+                    self.reads += 1;
+                    (operation_key, false)
+                }
+                command => panic!("unexpected command during saved-key read: {command:?}"),
+            };
+            let observation = IndexOperationObservation::Known(IndexOperationStatus::new(
+                key,
+                self.package.clone(),
+                CompileExecutionIntent::Interactive,
+                IndexOperationState::Accepted,
+            ));
+            let reply = if started {
+                SurfaceReply::IndexOperationStarted(observation)
+            } else {
+                SurfaceReply::IndexOperationStatus(observation)
+            };
+            Ok(serde_json::to_vec(&ReplyDto::new(
+                request.request_id,
+                CommandReply::Surface(reply),
+            ))
+            .expect("typed receipt encoding"))
+        }
+        fn engine(&mut self, _: u64, _: EngineRequest) -> Result<EngineStatus, ProtocolError> {
+            panic!("receipt observation cannot issue engine mutations")
+        }
+        fn serve_one(&mut self) -> bool {
+            false
+        }
+        fn close(&mut self) {}
+    }
+    let fixture = Fixture::new();
+    let listener =
+        std::os::unix::net::UnixListener::bind(fixture.paths.endpoint()).expect("private endpoint");
+    std::fs::set_permissions(
+        fixture.paths.endpoint(),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .expect("private socket");
+    let frames = FrameLimits::default().max_frames_per_connection;
+    assert_eq!(
+        frames, 256,
+        "exercise actual default retirement, not a reduced test cap"
+    );
+    listener
+        .set_nonblocking(true)
+        .expect("bounded accept observation");
+    let package = fixture.package.clone();
+    let server = std::thread::spawn(move || {
+        let accept_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut service = LocaldService::new(
+            ReceiptOwner {
+                library: backend_library::Library::new(),
+                package,
+                key: None,
+                starts: 0,
+                reads: 0,
+            },
+            FrameLimits::default(),
+        )
+        .expect("real frame service");
+        for _ in 0..4 {
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(connection) => break connection,
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < accept_deadline,
+                            "expected connection absent"
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("private accept failed: {error}"),
+                }
+            };
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .expect("bounded fixture read");
+            assert_eq!(
+                service
+                    .serve_stream(&mut stream)
+                    .expect("production frame retirement"),
+                frames
+            );
+        }
+        (
+            service.owner().key,
+            service.owner().starts,
+            service.owner().reads,
+        )
+    });
+    let mut original =
+        Session::connect(fixture.paths.endpoint()).expect("real initial authentication");
+    let mut recovery = OwnerRecovery::new(&fixture.paths, false, RequestContext::new());
+    let started = backend_client::index_with_journal_recovery(
+        &fixture.paths,
+        fixture.package.clone(),
+        CompileExecutionIntent::Interactive,
+        |dispatch| recovery.journal(&mut original, dispatch, None),
+    )
+    .expect("one journaled mutation");
+    let SurfaceReply::IndexOperationStarted(IndexOperationObservation::Known(initial)) = started
+    else {
+        panic!("original accepted operation");
+    };
+    let key = initial.operation_key;
+    let wait = RequestContext::new();
+    let deadline = wait
+        .read_deadline(std::time::Duration::from_secs(30))
+        .expect("original read deadline");
+    for _ in 1..(frames * 4) {
+        let actual = recovery
+            .surface(
+                &mut original,
+                SurfaceCommand::IndexOperationStatus { operation_key: key },
+                Some(&wait),
+            )
+            .expect("same-key read across healthy connection retirement");
+        assert_eq!(
+            actual,
+            SurfaceReply::IndexOperationStatus(IndexOperationObservation::Known(initial.clone()))
+        );
+        assert_eq!(
+            wait.read_deadline(std::time::Duration::from_secs(900))
+                .expect("unrenewed scope"),
+            deadline
+        );
+    }
+    recovery
+        .detach(&mut original)
+        .expect("retire exact scope binding");
+    wait.finish();
+    assert_eq!(
+        fixture.claims().len(),
+        1,
+        "nonterminal original claim stays resumable"
+    );
+    assert_eq!(
+        fixture.claims()[0]["operation_key"],
+        serde_json::to_value(key).expect("saved key")
+    );
+    assert_eq!(
+        server.join().expect("bounded owner thread"),
+        (Some(key), 1, frames * 4 - 1)
     );
 }
