@@ -697,32 +697,9 @@ impl<P: Product> Server<P> {
             .get("uri")
             .and_then(Value::as_str)
             .is_some_and(|uri| uri == "backend://workspace/current");
-        let mut value = resources::read_resource(&mut self.product, params)?;
-        // The legacy constructor intentionally keeps the resource byte-for-
-        // byte identical to `backend.status`; only process sessions that
-        // supplied launch context need the extra diagnostic block.
-        if !is_workspace || self.working_directory.is_none() {
-            return Ok(value);
-        }
-        let Some(text) = value
-            .get("contents")
-            .and_then(Value::as_array)
-            .and_then(|contents| contents.first())
-            .and_then(|content| content.get("text"))
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-        else {
-            return Ok(value);
-        };
-        if let Some(content) = value
-            .get_mut("contents")
-            .and_then(Value::as_array_mut)
-            .and_then(|contents| contents.first_mut())
-            .and_then(|content| content.get_mut("text"))
-        {
-            *content = Value::String(format!("{text}\n\n{}", self.instructions_context()));
-        }
-        Ok(value)
+        let context =
+            (is_workspace && self.working_directory.is_some()).then(|| self.instructions_context());
+        resources::read_resource(&mut self.product, params, context.as_deref())
     }
 
     fn instructions_context(&self) -> String {
