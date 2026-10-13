@@ -322,7 +322,13 @@ fn assert_stdio_shared_default_index(start_first: bool) {
     assert_eq!(fresh.package, initial.package);
     assert_eq!(
         retry["structuredContent"]["index_poll"]["call"]["arguments"],
-        json!({"operation_key":fresh.operation_key})
+        json!({
+            "operation_key":fresh.operation_key,
+            "after_observation":backend_client::IndexObservationFingerprint::active(fresh)
+                .expect("full durable receipt fingerprint").expect("active receipt"),
+            "wait_millis":backend_client::MAX_INDEX_PROGRESS_WAIT_MILLIS,
+            "detail":"full",
+        })
     );
     drop(owner);
     serving
