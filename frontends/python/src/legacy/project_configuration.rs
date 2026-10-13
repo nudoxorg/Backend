@@ -543,26 +543,8 @@ mod tests {
 
     #[test]
     fn actual_native_invalid_path_causes_keep_field_and_config_source_context() {
-        let root = std::env::temp_dir().join(format!("c{:x}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        // The native API accepts a supplied TOML path. Keep this actual
-        // fixture short so each complete cause chain fits the fixed allowance.
-        let path = root.join("p");
-        let source = "search-path = ['s']\nsite-package-path = ['t']\n";
-        std::fs::write(&path, source).unwrap();
-        let (mut config, errors) = ConfigFile::from_file(&path);
-        assert!(errors.is_empty());
-        config.interpreters.skip_interpreter_query = true;
-        let errors = config.configure();
-        assert_eq!(
-            errors.len(),
-            2,
-            "actual native search/site-package validation"
-        );
-        let cancelled = AtomicBool::new(false);
-        let mut complete_messages = Vec::new();
-        for (error, field) in errors.iter().zip(["site-package-path", "search-path"]) {
-            let complete = format!(
+        fn complete(error: &ConfigError) -> String {
+            format!(
                 "{}: {}",
                 error.severity().label().trim(),
                 error
@@ -570,32 +552,71 @@ mod tests {
                     .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join(": ")
-            );
-            assert!(
-                complete.len() <= MAX_NATIVE_DIAGNOSTIC_BYTES,
-                "complete genuine fixture chain must fit the fixed allowance"
-            );
+            )
+        }
+        fn prefix(text: &str) -> &str {
+            let end = text
+                .char_indices()
+                .map(|(start, character)| start + character.len_utf8())
+                .take_while(|end| *end <= MAX_NATIVE_DIAGNOSTIC_BYTES)
+                .last()
+                .unwrap_or(0);
+            &text[..end]
+        }
+        let root = std::env::temp_dir().join(format!("c{:x}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        // The native API accepts a supplied TOML path. A short private test
+        // TMPDIR exercises complete context; long platform paths must clip exactly.
+        let path = root.join("p");
+        let source = "search-path = ['s']\nsite-package-path = ['t']\n";
+        std::fs::write(&path, source).unwrap();
+        let (mut config, errors) = ConfigFile::from_file(&path);
+        assert!(errors.is_empty());
+        config.interpreters.skip_interpreter_query = true;
+        let mut errors = config.configure();
+        assert_eq!(
+            errors.len(),
+            2,
+            "actual native search/site-package validation"
+        );
+        let cancelled = AtomicBool::new(false);
+        for (error, field) in errors.iter().zip(["site-package-path", "search-path"]) {
+            let complete = complete(error);
             let message =
                 native_loader_causes(std::slice::from_ref(error), control(&cancelled)).unwrap();
-            assert_eq!(message.as_ref(), complete);
-            complete_messages.push(complete);
+            assert_eq!(message.as_ref(), prefix(&complete));
             let cause = error.cause().to_string();
             let context = format!("Invalid {field}");
             let file = error.get_message();
             assert_eq!(file, path.to_string_lossy());
-            let cause_position = message.find(&cause).unwrap();
-            let field_position = message[cause_position..].find(&context).unwrap() + cause_position;
-            let file_position = message[field_position..].find(&file).unwrap() + field_position;
+            let cause_position = complete.find(&cause).unwrap();
+            let field_position =
+                complete[cause_position..].find(&context).unwrap() + cause_position;
+            let file_position = complete[field_position..].find(&file).unwrap() + field_position;
             assert!(
                 cause_position < field_position && field_position < file_position,
                 "native cause, field and file context remain ordered"
             );
         }
-        let complete = complete_messages.join("; ");
-        assert!(complete.len() > MAX_NATIVE_DIAGNOSTIC_BYTES);
+        // Generate fresh genuine configure errors until even a short TMPDIR
+        // exceeds the unchanged allowance. No assumed platform path length.
+        let mut full = errors.iter().map(complete).collect::<Vec<_>>().join("; ");
+        for _ in 0..MAX_NATIVE_DIAGNOSTIC_BYTES {
+            if full.len() > MAX_NATIVE_DIAGNOSTIC_BYTES {
+                break;
+            }
+            let additional = config.configure();
+            assert_eq!(additional.len(), 2, "fresh native path validation errors");
+            errors.extend(additional);
+            full = errors.iter().map(complete).collect::<Vec<_>>().join("; ");
+        }
+        assert!(
+            full.len() > MAX_NATIVE_DIAGNOSTIC_BYTES,
+            "deterministic native overflow"
+        );
         let aggregate = native_loader_causes(&errors, control(&cancelled)).unwrap();
-        assert_eq!(aggregate.len(), MAX_NATIVE_DIAGNOSTIC_BYTES);
-        assert!(complete.starts_with(aggregate.as_ref()));
+        assert_eq!(aggregate.as_ref(), prefix(&full));
+        assert!(aggregate.len() <= MAX_NATIVE_DIAGNOSTIC_BYTES);
         assert_eq!(std::fs::read(&path).unwrap(), source.as_bytes());
         std::fs::remove_dir_all(root).unwrap();
     }
