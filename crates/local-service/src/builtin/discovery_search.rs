@@ -1536,27 +1536,27 @@ impl LineageSearchIndex {
         &self,
         field: LineageFacetField,
         tokens: &[String],
-        query: &str,
         expected: SearchMatchEvidence,
         ecosystem: Option<RegistryEcosystem>,
         after_sort_key: Option<&str>,
         limit: usize,
-    ) -> (usize, Vec<(String, LineageKey)>) {
+        mut evidence_for: impl FnMut(&str, &LineageKey) -> Result<Option<SearchMatchEvidence>, String>,
+    ) -> Result<(usize, Vec<(String, LineageKey)>), String> {
         if tokens.is_empty() || limit == 0 {
-            return (0, Vec::new());
+            return Ok((0, Vec::new()));
         }
         let Some(values) = self.facet_postings.get(&field) else {
-            return (0, Vec::new());
+            return Ok((0, Vec::new()));
         };
         let Some(rarest) = tokens
             .iter()
             .filter_map(|token| values.get(token))
             .min_by_key(|postings| postings.len())
         else {
-            return (0, Vec::new());
+            return Ok((0, Vec::new()));
         };
         if tokens.iter().any(|token| !values.contains_key(token)) {
-            return (0, Vec::new());
+            return Ok((0, Vec::new()));
         }
         let lower = after_sort_key.map_or_else(
             || Bound::Included(String::new()),
@@ -1584,7 +1584,7 @@ impl LineageSearchIndex {
                 LineageFacetField::Coordinate | LineageFacetField::AliasValue => continue,
             };
             if tokens.iter().all(|token| counts.contains_key(token))
-                && self.best_evidence_for_lineage(key, query) == Some(expected)
+                && evidence_for(sort_key, key)? == Some(expected)
             {
                 hits.push((sort_key.clone(), key.clone()));
                 if hits.len() == limit {
@@ -1592,7 +1592,7 @@ impl LineageSearchIndex {
                 }
             }
         }
-        (visited, hits)
+        Ok((visited, hits))
     }
 
     fn prefix_facet_lineages(
@@ -2771,10 +2771,21 @@ impl DiscoverySearchIndex {
             .prepare_search_query(normalized_query.clone());
         let prepared_release_query = self.inner.prepare_search_query(normalized_query.clone());
         let empty_release_query = self.inner.prepare_search_query(String::new());
-        let page = prepared_lineage_query.page_filtered(
+        let mut evidence_resolver = LineageEvidenceResolver {
+            lineages: &self.lineages,
+            release_query: &prepared_release_query,
+            query: &normalized_query,
+            ecosystem: request.ecosystem,
+            cache: BTreeMap::new(),
+            cache_limit: limit.saturating_add(1).saturating_mul(SEARCH_TIERS.len()),
+            posting_candidates: 0,
+            documents_visited: 0,
+        };
+        let page = prepared_lineage_query.page_filtered_with_resolver(
             limit.saturating_add(1),
             request.ecosystem.map(RegistryEcosystem::as_str),
             continuation.as_ref(),
+            |sort_key, key, tier| evidence_resolver.accepts_indexed_tier(sort_key, key, tier),
         )?;
         let mut posting_candidates = page.posting_candidates;
         let mut index_documents_visited = page.posting_candidates;
@@ -2913,12 +2924,12 @@ impl DiscoverySearchIndex {
                 let candidates = self.lineages.token_facet_lineages(
                     field,
                     &query_tokens,
-                    &normalized_query,
                     evidence,
                     request.ecosystem,
                     after.as_deref(),
                     limit.saturating_add(1),
-                );
+                    |sort_key, key| evidence_resolver.best_evidence(sort_key, key),
+                )?;
                 merge_lineage_candidates(
                     &mut ranked_hits,
                     candidates,
@@ -2945,7 +2956,6 @@ impl DiscoverySearchIndex {
                 .filter(|(_, hit)| hit.evidence.rank() == substring_tier)
                 .map(|(sort_key, _)| sort_key.clone())
                 .collect::<BTreeSet<_>>();
-            let mut newly_visited = 0_usize;
             let visited = self.lineages.visit_oversized_lineages(
                 request.ecosystem,
                 after.as_deref(),
@@ -2966,41 +2976,29 @@ impl DiscoverySearchIndex {
                     {
                         return Ok(false);
                     }
-                    let release_page = prepared_release_query.page_in_group(
-                        1,
-                        request.ecosystem.map(RegistryEcosystem::as_str),
-                        sort_key,
-                        None,
-                    )?;
-                    if !release_page
-                        .hits
-                        .iter()
-                        .any(|hit| hit.evidence == SearchMatchEvidence::Substring)
+                    if evidence_resolver.best_evidence(sort_key, key)?
+                        != Some(SearchMatchEvidence::Substring)
                     {
                         return Ok(false);
                     }
-                    if self
-                        .lineages
-                        .best_evidence_for_lineage(key, &normalized_query)
-                        .is_some_and(|evidence| evidence.rank() < substring_tier)
-                    {
-                        return Ok(false);
-                    }
-                    if merge_lineage_candidate(
+                    merge_lineage_candidate(
                         &mut ranked_hits,
                         sort_key.to_owned(),
                         key.clone(),
                         SearchMatchEvidence::Substring,
-                    ) {
-                        newly_visited = newly_visited.saturating_add(1);
-                    }
+                    );
                     substring_keys.insert(sort_key.to_owned());
                     Ok(false)
                 },
             )?;
             posting_candidates = posting_candidates.saturating_add(visited);
-            index_documents_visited = index_documents_visited.saturating_add(newly_visited);
+            index_documents_visited = index_documents_visited.saturating_add(visited);
         }
+
+        posting_candidates =
+            posting_candidates.saturating_add(evidence_resolver.posting_candidates);
+        index_documents_visited =
+            index_documents_visited.saturating_add(evidence_resolver.documents_visited);
 
         let mut ranked_hits = ranked_hits.into_iter().collect::<Vec<_>>();
         ranked_hits.sort_by(|(left_key, left), (right_key, right)| {
@@ -3016,7 +3014,7 @@ impl DiscoverySearchIndex {
             .map(|(sort_key, hit)| (hit, sort_key))
             .collect::<Vec<_>>();
         let mut groups = Vec::with_capacity(selected.len());
-        let mut facet_releases_examined = 0_usize;
+        let mut facet_releases_examined = evidence_resolver.documents_visited;
         let mut facet_term_keys_scanned = 0_usize;
 
         for (hit, _) in selected {
@@ -3366,6 +3364,80 @@ struct PreparedSearchQuery<'index, K> {
     ranked_tiers: [OnceCell<Arc<dyn Query>>; SEARCH_TIERS.len()],
 }
 
+/// Resolves a candidate lineage's best query tier once per grouped-search
+/// request. Oversized lineages use the release projection when the bounded
+/// lineage facets cannot prove whether a substring match is earlier.
+struct LineageEvidenceResolver<'lineages, 'query, 'index> {
+    lineages: &'lineages LineageSearchIndex,
+    release_query: &'query PreparedSearchQuery<'index, DiscoverySearchKey>,
+    query: &'query str,
+    ecosystem: Option<RegistryEcosystem>,
+    cache: BTreeMap<String, Option<SearchMatchEvidence>>,
+    cache_limit: usize,
+    posting_candidates: usize,
+    documents_visited: usize,
+}
+
+impl LineageEvidenceResolver<'_, '_, '_> {
+    fn best_evidence(
+        &mut self,
+        sort_key: &str,
+        key: &LineageKey,
+    ) -> Result<Option<SearchMatchEvidence>, String> {
+        if !self.lineages.oversized_lineages.contains(sort_key) {
+            return Ok(self.lineages.best_evidence_for_lineage(key, self.query));
+        }
+        if let Some(cached) = self.cache.get(sort_key) {
+            return Ok(*cached);
+        }
+        let bounded = self.lineages.best_evidence_for_lineage(key, self.query);
+        let resolved = if self.query.is_empty()
+            || bounded.is_some_and(|evidence| evidence.rank() <= SearchTier::Substring as u8)
+        {
+            bounded
+        } else {
+            let release_page = self.release_query.page_in_group(
+                1,
+                self.ecosystem.map(RegistryEcosystem::as_str),
+                sort_key,
+                None,
+            )?;
+            self.posting_candidates = self
+                .posting_candidates
+                .saturating_add(release_page.posting_candidates);
+            self.documents_visited = self
+                .documents_visited
+                .saturating_add(release_page.posting_candidates);
+            let release_evidence = release_page.hits.first().map(|hit| hit.evidence);
+            match (bounded, release_evidence) {
+                (Some(bounded), Some(release)) if release.rank() < bounded.rank() => Some(release),
+                (Some(bounded), _) => Some(bounded),
+                (None, release) => release,
+            }
+        };
+        if self.cache.len() < self.cache_limit {
+            self.cache.insert(sort_key.to_owned(), resolved);
+        }
+        Ok(resolved)
+    }
+
+    fn accepts_indexed_tier(
+        &mut self,
+        sort_key: &str,
+        key: &LineageKey,
+        tier: u8,
+    ) -> Result<bool, String> {
+        if tier < SearchTier::Substring as u8
+            || !self.lineages.oversized_lineages.contains(sort_key)
+        {
+            return Ok(true);
+        }
+        Ok(self
+            .best_evidence(sort_key, key)?
+            .is_some_and(|evidence| evidence.rank() == tier))
+    }
+}
+
 /// Cheaply clones a prepared Tantivy query node into request-specific trees.
 #[derive(Clone, Debug)]
 struct SharedQuery(Arc<dyn Query>);
@@ -3428,6 +3500,23 @@ impl<'index, K: Clone> PreparedSearchQuery<'index, K> {
         continuation: Option<&SearchContinuation>,
     ) -> Result<IndexedSearchPage<K>, String> {
         self.page_filtered_in_group(limit, ecosystem, None, continuation)
+    }
+
+    fn page_filtered_with_resolver(
+        &self,
+        limit: usize,
+        ecosystem: Option<&str>,
+        continuation: Option<&SearchContinuation>,
+        include_candidate: impl FnMut(&str, &K, u8) -> Result<bool, String>,
+    ) -> Result<IndexedSearchPage<K>, String> {
+        TextSearchIndex::<K>::page_filtered_in_group_prepared_with_resolver(
+            self,
+            limit,
+            ecosystem,
+            None,
+            continuation,
+            include_candidate,
+        )
     }
 
     fn page_in_group(
@@ -5349,6 +5438,24 @@ impl<K: Clone> TextSearchIndex<K> {
         lineage_group: Option<&str>,
         continuation: Option<&SearchContinuation>,
     ) -> Result<IndexedSearchPage<K>, String> {
+        Self::page_filtered_in_group_prepared_with_resolver(
+            prepared,
+            limit,
+            ecosystem,
+            lineage_group,
+            continuation,
+            |_, _, _| Ok(true),
+        )
+    }
+
+    fn page_filtered_in_group_prepared_with_resolver(
+        prepared: &PreparedSearchQuery<'_, K>,
+        limit: usize,
+        ecosystem: Option<&str>,
+        lineage_group: Option<&str>,
+        continuation: Option<&SearchContinuation>,
+        mut include_candidate: impl FnMut(&str, &K, u8) -> Result<bool, String>,
+    ) -> Result<IndexedSearchPage<K>, String> {
         let index = prepared.index;
         let limit = limit.min(MAX_INTERNAL_SEARCH_PAGE_SIZE);
         if limit == 0 {
@@ -5511,23 +5618,23 @@ impl<K: Clone> TextSearchIndex<K> {
                 posting_candidates = posting_candidates.saturating_add(candidates);
                 let fetched_count = fetched.len();
                 let last_fetched = fetched.last().map(|(_, sort_key, _, _)| sort_key.clone());
-                if tier_index > SearchTier::Substring as usize {
-                    selected.extend(
-                        fetched.into_iter().filter(|(_, sort_key, _, _)| {
-                            !index.contains_substring(sort_key, needle)
-                        }),
-                    );
-                    if selected.len() >= limit.saturating_add(1) || fetched_count < remaining {
-                        break;
+                for (candidate_tier, sort_key, key, standing) in fetched {
+                    if tier_index > SearchTier::Substring as usize
+                        && index.contains_substring(&sort_key, needle)
+                    {
+                        continue;
                     }
-                    let Some(last_fetched) = last_fetched else {
-                        break;
-                    };
-                    after_sort_key = Some(last_fetched);
-                    continue;
+                    if include_candidate(&sort_key, &key, candidate_tier)? {
+                        selected.push((candidate_tier, sort_key, key, standing));
+                    }
                 }
-                selected.extend(fetched);
-                break;
+                if selected.len() >= limit.saturating_add(1) || fetched_count < remaining {
+                    break;
+                }
+                let Some(last_fetched) = last_fetched else {
+                    break;
+                };
+                after_sort_key = Some(last_fetched);
             }
             if selected.len() >= limit.saturating_add(1) {
                 break;
@@ -7990,6 +8097,67 @@ mod tests {
                 .map(|group| group.lineage.as_str())
                 .collect::<Vec<_>>(),
             ["ample", "widget", "widget-a"]
+        );
+    }
+
+    #[test]
+    fn grouped_search_keeps_tail_substring_rank_across_keyword_cursors() {
+        let cargo = source(RegistryEcosystem::Cargo, "https://index.crates.io");
+        const TEST_FACET_VALUE_LIMIT: usize = 2;
+        let mut entries = Vec::new();
+        for lineage in ["widget", "widget-a", "widget-b"] {
+            for version in ["1.0.0", "1.0.1", "9999.9.9"] {
+                let metadata = if version == "9999.9.9" {
+                    DiscoveryMetadata {
+                        keywords: DiscoveryFacet::Known(vec!["9999 9".to_owned()]),
+                        ..DiscoveryMetadata::default()
+                    }
+                } else {
+                    DiscoveryMetadata::default()
+                };
+                entries.push((
+                    key(cargo, &format!("pkg:cargo/{lineage}@{version}")),
+                    metadata,
+                ));
+            }
+        }
+        for lineage in ["alpha", "beta"] {
+            entries.push((
+                key(cargo, &format!("pkg:cargo/{lineage}@1.0.0")),
+                DiscoveryMetadata {
+                    keywords: DiscoveryFacet::Known(vec!["9999 9".to_owned()]),
+                    ..DiscoveryMetadata::default()
+                },
+            ));
+        }
+        let index = build_discovery_projection_with_metadata_and_facet_limit(
+            &entries,
+            TEST_FACET_VALUE_LIMIT,
+        );
+        let request = DiscoverySearchRequest {
+            text: "9999.9.",
+            ecosystem: Some(RegistryEcosystem::Cargo),
+        };
+        let expected = [
+            ("widget", SearchMatchEvidence::Substring),
+            ("widget-a", SearchMatchEvidence::Substring),
+            ("widget-b", SearchMatchEvidence::Substring),
+            ("alpha", SearchMatchEvidence::KeywordTerms),
+            ("beta", SearchMatchEvidence::KeywordTerms),
+        ];
+        let mut cursor = None;
+        for (expected_lineage, expected_evidence) in expected {
+            let page = index
+                .search_groups_after(request, 1, cursor.as_ref())
+                .expect("continued grouped search with weaker keyword matches");
+            assert_eq!(page.groups.len(), 1);
+            assert_eq!(page.groups[0].lineage, expected_lineage);
+            assert_eq!(page.groups[0].evidence, expected_evidence);
+            cursor = page.next_cursor;
+        }
+        assert!(
+            cursor.is_none(),
+            "all unique ranked groups should be consumed"
         );
     }
 
