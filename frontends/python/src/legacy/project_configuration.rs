@@ -706,13 +706,19 @@ mod tests {
             1,
             "actual native loader rejected original bytes"
         );
-        let native_message = errors[0].get_message();
+        let native_message = errors[0].cause().to_string();
+        assert_ne!(
+            native_message,
+            errors[0].get_message(),
+            "loader path context is not its native cause"
+        );
         let refusal =
             configuration_error(&path, &path, &errors, control(&AtomicBool::new(false))).unwrap();
         let CheckerError::ProjectConfiguration {
             source_identity,
             source_byte_len,
             omitted_faults,
+            evidence_truncated,
             faults,
             ..
         } = refusal
@@ -728,13 +734,14 @@ mod tests {
         );
         assert_eq!(source_byte_len as usize, bytes.len());
         assert_eq!(omitted_faults, 0);
+        assert!(!evidence_truncated);
         assert_eq!(faults.len(), 2);
         assert!(
             matches!(&faults[0], PythonProjectConfigurationFault::InvalidConfigurationEncoding { span } if span.start == rejected && span.end == rejected + 1)
         );
         assert!(
             matches!(&faults[1], PythonProjectConfigurationFault::NativeLoaderRefusal { severity, message }
-            if severity.as_ref() == "Error" && !message.is_empty() && native_message.starts_with(message.as_ref()))
+            if severity.as_ref() == "Error" && !message.is_empty() && message.as_ref() == native_message)
         );
         assert!(!faults.iter().any(|fault| matches!(
             fault,
