@@ -381,6 +381,70 @@ fn end_to_end_fixture_preserves_package_and_tagged_declarations()
     Ok(())
 }
 
+/// Explicit generic and parenthesized function calls retain Call rows in the
+/// authority image; instantiated function values and indexed containers keep
+/// Read rows. Requires an explicitly admitted Go toolchain.
+#[test]
+fn generic_call_authority_image_distinguishes_calls_from_values(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use backend_frontend_go::legacy::{ReferenceTargetClass as Class, ReferenceUseKind as Kind};
+    let _guard = ENVIRONMENT
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()?;
+    let _compiler = explicit_go_toolchain()?;
+    let fixture =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/generic-calls");
+    let source = fixture.join("renamed.go");
+    let bytes = adapter().authority_image_for_package(&source, &fixture)?;
+    let image = GoImage::open(&bytes).map_err(image_fault)?;
+    let expected_digest: [u8; 32] = Sha256::digest(fs::read(&source)?).into();
+    assert_eq!(image.source_digest(), expected_digest);
+    let rows = image
+        .references()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(image_fault)?;
+    for (owner, target, class, kind, package, count) in [
+        ("ExplicitSingle", "One", Class::Func, Kind::Call, "example.com/genericcalls/exports", 1),
+        ("ExplicitMultiple", "Two", Class::Func, Kind::Call, "example.com/genericcalls/exports", 1),
+        ("Inferred", "One", Class::Func, Kind::Call, "example.com/genericcalls/exports", 1),
+        ("Parenthesized", "One", Class::Func, Kind::Call, "example.com/genericcalls/exports", 1),
+        ("MultipleParentheses", "Two", Class::Func, Kind::Call, "example.com/genericcalls/exports", 1),
+        ("PlainParentheses", "One", Class::Func, Kind::Call, "example.com/genericcalls/exports", 1),
+        ("LocalExplicit", "LocalOne", Class::Func, Kind::Call, "", 1),
+        ("DotSingle", "One", Class::Func, Kind::Call, "example.com/genericcalls/exports", 1),
+        ("DotMultiple", "Two", Class::Func, Kind::Call, "example.com/genericcalls/exports", 1),
+        ("InstantiatedValue", "One", Class::Func, Kind::Read, "example.com/genericcalls/exports", 1),
+        ("LocalValue", "LocalOne", Class::Func, Kind::Read, "", 1),
+        ("Indexed", "Callbacks", Class::Var, Kind::Read, "", 2),
+        ("FieldIndexed", "Callbacks", Class::Field, Kind::Read, "", 1),
+        ("FieldIndexed", "GlobalRegistry", Class::Var, Kind::Read, "", 1),
+        ("TypeConversion", "LocalNamed", Class::Type, Kind::TypeRef, "", 1),
+    ] {
+        let mut found = 0;
+        for row in &rows {
+            assert!(row.owner_is_declaration);
+            let declaration = image
+                .declaration(usize::try_from(row.owner_row)?)
+                .map_err(image_fault)?;
+            if declaration.name != owner.as_bytes() || row.target != target.as_bytes() {
+                continue;
+            }
+            found += 1;
+            assert_eq!((row.target_class, row.use_kind), (class, kind));
+            assert_eq!(row.target_package, package.as_bytes());
+            let file = fs::read(std::path::Path::new(std::str::from_utf8(row.file)?))?;
+            let span = usize::try_from(row.span.0)?..usize::try_from(row.span.1)?;
+            assert_eq!(
+                file.get(span),
+                Some(target.as_bytes()),
+                "{owner} -> {target} name token"
+            );
+        }
+        assert_eq!(found, count, "{owner} -> {target} must retain all occurrences");
+    }
+    Ok(())
+}
+
 /// The v4 widened Uses walk, over a fixture exercising every class: one
 /// type use, one method call, one method value, one field read, one field
 /// write, one import use, one foreign call, and one satisfaction edge —

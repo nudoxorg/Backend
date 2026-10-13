@@ -687,6 +687,41 @@ func declarationSpan(docs *docCatalog, decl *ast.FuncDecl) (posRange, bool) {
 	return span, ok
 }
 
+// callOperandIdentifier resolves the named call operand, including explicit
+// generic instantiation and parentheses. An indexed collection of functions
+// is a read of that collection, not a call to its declaration.
+func callOperandIdentifier(pkg *packages.Package, expression ast.Expr) *ast.Ident {
+	switch expression := expression.(type) {
+	case *ast.Ident:
+		return expression
+	case *ast.SelectorExpr:
+		return expression.Sel
+	case *ast.ParenExpr:
+		return callOperandIdentifier(pkg, expression.X)
+	case *ast.IndexExpr:
+		return instantiatedFunctionIdentifier(pkg, expression.X)
+	case *ast.IndexListExpr:
+		return instantiatedFunctionIdentifier(pkg, expression.X)
+	default:
+		return nil
+	}
+}
+
+func instantiatedFunctionIdentifier(pkg *packages.Package, expression ast.Expr) *ast.Ident {
+	ident := callOperandIdentifier(pkg, expression)
+	if ident == nil {
+		return nil
+	}
+	instance, ok := pkg.TypesInfo.Instances[ident]
+	if !ok {
+		return nil
+	}
+	if _, function := instance.Type.(*types.Signature); !function {
+		return nil
+	}
+	return ident
+}
+
 // usesIn records one reference row per identifier under node that the type
 // checker resolved to a keyable object. owner is the declaring object the
 // rows are attributed to; ownerRecv is its bare receiver type name for
@@ -701,11 +736,8 @@ func usesIn(pkg *packages.Package, owner types.Object, ownerRecv string, ownerSp
 	ast.Inspect(node, func(n ast.Node) bool {
 		switch n := n.(type) {
 		case *ast.CallExpr:
-			switch fun := n.Fun.(type) {
-			case *ast.Ident:
-				callFuns[fun] = true
-			case *ast.SelectorExpr:
-				callFuns[fun.Sel] = true
+			if ident := callOperandIdentifier(pkg, n.Fun); ident != nil {
+				callFuns[ident] = true
 			}
 		case *ast.SelectorExpr:
 			selectors[n.Sel] = n
