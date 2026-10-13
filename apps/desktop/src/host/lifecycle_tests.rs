@@ -539,8 +539,7 @@ fn the_foot_offers_try_again_beside_a_notice_that_the_index_could_not_start(cx: 
         let snapshot = store.snapshot();
         store.set_notice(
             Some(crate::runtime::graph_focus::Notice {
-                visit: snapshot.route().clone(),
-                root: snapshot.key(),
+                visit: crate::runtime::content_visit::ContentVisit::capture(&snapshot),
                 message: Arc::from("The index could not start, so this is the page as you left it. the lock is held"),
                 retry: Some(PageKey::Orbit),
             }),

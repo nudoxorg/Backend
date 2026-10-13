@@ -1,7 +1,7 @@
 //! Ephemeral graph selection. This is a measured selection in the current
 //! indexed world, never a replacement navigation address or persisted history entry.
 
-use crate::core::VersionedRoot;
+use super::content_visit::ContentVisit;
 use crate::model::AppSnapshot;
 use crate::model::pages::{PackageRef, PageKey, SymbolRef};
 use crate::navigation::{Route, View};
@@ -10,11 +10,10 @@ use backend_library::DeclarationKind;
 use std::sync::Arc;
 
 /// The current graph selection, scoped to the exact mounted visit and producer
-/// authority. `root` retains the observation metadata from publication.
+/// authority. Its content visit retains observation metadata from publication.
 #[derive(Clone, Debug)]
 pub(crate) struct GraphFocus {
-    pub visit: Route,
-    pub root: VersionedRoot,
+    pub visit: ContentVisit,
     pub node: u32,
     pub name: Arc<str>,
     pub package: Arc<str>,
@@ -31,7 +30,6 @@ pub(crate) struct GraphFocus {
 impl PartialEq for GraphFocus {
     fn eq(&self, other: &Self) -> bool {
         self.visit == other.visit
-            && self.root.same_authority(other.root)
             && self.node == other.node
             && self.name == other.name
             && self.package == other.package
@@ -109,8 +107,7 @@ impl GraphViewEligibility {
 impl GraphFocus {
     pub(crate) fn active(&self, snapshot: &AppSnapshot) -> bool {
         snapshot.overlay().is_none()
-            && snapshot.key().same_authority(self.root)
-            && snapshot.route() == &self.visit
+            && self.visit.current(snapshot)
             && matches!(
                 snapshot.route(),
                 Route::World
@@ -144,8 +141,7 @@ impl GraphFocus {
 /// marks (`shell::status`).
 #[derive(Clone, Debug)]
 pub(crate) struct Notice {
-    pub visit: Route,
-    pub root: VersionedRoot,
+    pub visit: ContentVisit,
     pub message: Arc<str>,
     /// The page whose "Try again" the foot offers beside the message: for a
     /// notice that says the index could not start, asking for this page again
@@ -156,7 +152,6 @@ pub(crate) struct Notice {
 impl PartialEq for Notice {
     fn eq(&self, other: &Self) -> bool {
         self.visit == other.visit
-            && self.root.same_authority(other.root)
             && self.message == other.message
             && self.retry == other.retry
     }
@@ -167,8 +162,7 @@ impl Eq for Notice {}
 impl Notice {
     pub(crate) fn active(&self, snapshot: &AppSnapshot) -> bool {
         snapshot.overlay().is_none()
-            && snapshot.route() == &self.visit
-            && snapshot.key().same_authority(self.root)
+            && self.visit.current(snapshot)
     }
 }
 
@@ -176,6 +170,7 @@ impl Notice {
 mod tests {
     use super::*;
     use crate::model::SessionState;
+    use crate::core::VersionedRoot;
 
     fn root(tag: &str, epoch: u64, generation: u64, observation: u64) -> VersionedRoot {
         let digest = backend_library::view_state_root(&[("focus".to_owned(), tag.to_owned())]);
@@ -189,10 +184,14 @@ mod tests {
     #[test]
     fn focus_survives_observation_only_changes_but_not_authority_changes() {
         let captured = root("same", 3, 9, 1);
+        let base = AppSnapshot::empty(captured).with_session(SessionState {
+            route: Route::World,
+            ..SessionState::default()
+        });
+        let snapshot = |key| base.with_key(key, None);
         let observed = root("same", 3, 9, 2);
         let focus = GraphFocus {
-            visit: Route::World,
-            root: captured,
+            visit: ContentVisit::capture(&base),
             node: 1,
             name: Arc::from("Value"),
             package: Arc::from("fixture"),
@@ -201,28 +200,20 @@ mod tests {
             origin: Origin::IndexedOwner,
             indexed: None,
         };
-        let snapshot = |key| {
-            AppSnapshot::empty(key).with_session(SessionState {
-                route: Route::World,
-                ..SessionState::default()
-            })
-        };
-
         assert!(focus.active(&snapshot(observed)));
         assert_eq!(GraphViewEligibility::from_current(&snapshot(observed), None), GraphViewEligibility::ChooseSymbol);
         assert_eq!(GraphViewEligibility::from_current(&snapshot(observed), Some(&focus)),
             GraphViewEligibility::Selected { node: 1, indexed: None });
-        assert_eq!(focus, GraphFocus { root: observed, ..focus.clone() });
+        assert_eq!(focus, GraphFocus { visit: ContentVisit::capture(&snapshot(observed)), ..focus.clone() });
         let changed = root("changed", 3, 9, 2);
-        assert_ne!(focus, GraphFocus { root: changed, ..focus.clone() });
+        assert_ne!(focus, GraphFocus { visit: ContentVisit::capture(&snapshot(changed)), ..focus.clone() });
         let notice = Notice {
-            visit: Route::World,
-            root: captured,
+            visit: ContentVisit::capture(&base),
             message: Arc::from("index unavailable"),
             retry: None,
         };
-        assert_eq!(notice, Notice { root: observed, ..notice.clone() });
-        assert_ne!(notice, Notice { root: changed, ..notice.clone() });
+        assert_eq!(notice, Notice { visit: ContentVisit::capture(&snapshot(observed)), ..notice.clone() });
+        assert_ne!(notice, Notice { visit: ContentVisit::capture(&snapshot(changed)), ..notice.clone() });
         assert!(!focus.active(&snapshot(changed)));
         assert_eq!(GraphViewEligibility::from_current(&snapshot(changed), Some(&focus)), GraphViewEligibility::ChooseSymbol,
             "an old-root selection cannot enable Page or Code");
@@ -246,8 +237,7 @@ mod tests {
         assert!(declaration.allows(View::Page));
         assert!(declaration.allows(View::Code));
         let selected = GraphFocus {
-            visit: route,
-            root: snapshot.key(),
+            visit: ContentVisit::capture(&snapshot),
             node: 4,
             name: Arc::from("another declaration"),
             package: Arc::from("fixture"),

@@ -449,6 +449,14 @@ impl AppSnapshot {
     /// the typed navigation reducer.
     #[must_use]
     pub fn with_session(&self, mut session: SessionState) -> Self {
+        // Same-place replacements (Page/Code, source line, Find refinement)
+        // retain reading choices but retire callbacks from the prior route.
+        // Fresh/history visits have already renewed their activation.
+        if self.route() != &session.route
+            && self.session().reading.activation() == session.reading.activation()
+        {
+            session.reading.renew_activation();
+        }
         session.reading.normalize(&session.route);
         let mut next = self.clone();
         next.data = Arc::new(SnapshotData {

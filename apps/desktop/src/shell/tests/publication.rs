@@ -390,7 +390,7 @@ fn coalesced_find_and_status_failures_cannot_inherit_held_retry_keys(cx: &mut Te
                 rig.graph.store.update(rig.cx, |store, cx| {
                     let snapshot = store.snapshot();
                     store.set_notice(Some(crate::runtime::graph_focus::Notice {
-                        visit: snapshot.route().clone(), root: snapshot.key(),
+                        visit: crate::runtime::content_visit::ContentVisit::capture(&snapshot),
                         message: "The represented symbol read failed.".into(), retry: Some(key.clone()),
                     }), cx);
                 });
@@ -1027,7 +1027,7 @@ fn graph_context_event_cannot_consume_a_queued_mounted_page_landing(cx: &mut Tes
             // lands. Reader's keys are unchanged, and Reader does not watch
             // GraphFocus; it needs the later Resource event to renew its body.
             store.set_notice(Some(crate::runtime::graph_focus::Notice {
-                visit: route.clone(), root: before.key(), message: Arc::from("Local graph observation changed"), retry: None,
+                visit: crate::runtime::content_visit::ContentVisit::capture(&before), message: Arc::from("Local graph observation changed"), retry: None,
             }), cx);
             store.retry(key.clone(), cx);
         });

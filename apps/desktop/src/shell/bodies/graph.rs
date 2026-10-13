@@ -94,6 +94,10 @@ pub(crate) struct Map {
     presentation_visit: VisitIdentity,
     retained_presentation: Option<RetainedPresentation>,
     presented_visit: Option<PresentationVisit>,
+    /// The activation under which this retained scene was presented. A scene
+    /// may restore passive context; only an explicit show can publish it for
+    /// the new content visit.
+    presented_content: Option<crate::runtime::content_visit::ContentVisit>,
     semantic_focus: Option<NodeId>,
     revealed_focus: Option<NodeId>,
     resolved: BTreeMap<NodeId, ResolvedSymbol>,
@@ -269,6 +273,9 @@ impl Map {
                 if event.is_branch(Branch::Route)
                     || event.is_branch(Branch::Root)
                     || event.is_branch(Branch::Overlay)
+                    || (event.is_branch(Branch::Reading)
+                        && map.presented_content.as_ref().is_some_and(|visit|
+                            !visit.current(&map.links.snapshot(cx))))
                 {
                     map.invalidate_open();
                     map.error = None;
@@ -320,9 +327,7 @@ impl Map {
                 |map, owner, request: &GraphViewRequest, window, cx| {
                     let snapshot = map.links.snapshot(cx);
                     if owner.read(cx).graph_view_generation() == request.sequence
-                        && snapshot.route() == &request.route
-                        && request.root.authority() == request.authority
-                        && snapshot.key().authority() == request.authority
+                        && request.visit.current(&snapshot)
                         && snapshot.overlay().is_none()
                         && request.attachment.as_ref().is_some_and(|attachment| {
                             map.links.store.read(cx).admits_owner_attachment(attachment)
@@ -373,6 +378,7 @@ impl Map {
             presentation_visit: VisitIdentity::default(),
             retained_presentation: None,
             presented_visit: None,
+            presented_content: None,
             semantic_focus: None,
             revealed_focus: None,
             resolved: BTreeMap::new(),
@@ -404,6 +410,7 @@ impl Map {
         self.retain_presentation(cx);
         self.graph = None;
         self.presented_visit = None;
+        self.presented_content = None;
         self.ready_scene = None;
         self.world_key = None;
         self.painted_scene = None;
@@ -687,7 +694,15 @@ impl Map {
         cx: &mut Context<Self>,
     ) {
         let changed_route = self.route.as_ref() != Some(route);
-        let arriving = !self.visible || changed_route;
+        let snapshot = self.links.snapshot(cx);
+        let changed_reading = self.presented_visit.as_ref().is_some_and(|visit|
+            visit.reading != snapshot.session().reading.current.id);
+        // Back restores the original reading identity and intentionally keeps
+        // its graph selection/camera. A fresh navigation to the same route has
+        // a different reading identity and must consume that route anew.
+        let changed_entry = changed_route || changed_reading;
+        let changed_activation = self.presented_content.as_ref().is_some_and(|visit| !visit.current(&snapshot));
+        let arriving = !self.visible || changed_route || changed_activation;
         if arriving {
             // First paint consumes the store transition's permission. A
             // newer blur/focus/input before this render cannot grant a lease.
@@ -706,7 +721,7 @@ impl Map {
                 }
             });
             self.route = Some(route.clone());
-            if changed_route {
+            if changed_entry {
                 self.cancel_presentation();
                 self.route_consumed = false;
             }
@@ -714,22 +729,27 @@ impl Map {
             self.error = None;
         }
         self.visible = true;
-        if arriving {
-            self.publish_focus(cx);
-        }
         let Some(graph) = self.graph.clone() else {
+            self.publish_focus(cx);
             return;
         };
+        if changed_entry && matches!(route, Route::Symbol(_)) {
+            // A different declaration must not briefly publish the preceding
+            // declaration's selection while its exact entry read is pending.
+            graph.update(cx, |graph, cx| graph.set_focus(None, false, cx));
+        }
+        self.presented_content = Some(crate::runtime::content_visit::ContentVisit::capture(&snapshot));
         self.presented_visit = Some(PresentationVisit {
             identity: self.presentation_visit.clone(),
             reading: self.links.snapshot(cx).session().reading.current.id,
             route: route.clone(),
             preferred: self.world_key.as_ref().and_then(|key| key.preferred().cloned()),
         });
-        if changed_route && matches!(route, Route::World) && self.revealed_focus.is_none() {
+        if changed_entry && matches!(route, Route::World) && self.revealed_focus.is_none() {
             graph.update(cx, |graph, cx| graph.show_world(cx));
             self.painted_focus = None;
         }
+        if arriving { self.publish_focus(cx); }
         // T explicitly asked for the package tour: fly it once,
         // from the first stop, when the world shows.
         if matches!(route, Route::World)
@@ -994,10 +1014,13 @@ impl Map {
     fn publish_focus(&self, cx: &mut Context<Self>) {
         use backend_library::DeclarationKind as D;
         let snapshot = self.links.snapshot(cx);
+        let publication = self.presented_content.clone()
+            .unwrap_or_else(|| crate::runtime::content_visit::ContentVisit::capture(&snapshot));
         let focus = self.graph.as_ref().and_then(|graph| {
             if !self.visible || !is_graph(snapshot.route()) {
                 return None;
             }
+            let visit = self.presented_content.as_ref().filter(|visit| visit.current(&snapshot))?;
             let graph = graph.read(cx);
             let id = graph.focused()?;
             let world = graph.world();
@@ -1030,8 +1053,7 @@ impl Map {
                     Some((package, symbol))
                 });
             Some(crate::runtime::graph_focus::GraphFocus {
-                visit: snapshot.route().clone(),
-                root: snapshot.key(),
+                visit: visit.clone(),
                 node: id,
                 name: Arc::from(world.name_of(id).as_ref()),
                 package: Arc::from(world.packages[node.pkg as usize].name.as_ref()),
@@ -1052,23 +1074,20 @@ impl Map {
             .then(|| self.error.as_ref())
             .flatten()
             .map(|error| crate::runtime::graph_focus::Notice {
-                visit: snapshot.route().clone(),
-                root: snapshot.key(),
+                visit: publication.clone(),
                 message: Arc::from(error.as_str()),
                 retry: None,
             });
         self.links
             .store
-            .update(cx, |store, cx| store.admit_graph_focus(focus, notice, cx));
+            .update(cx, |store, cx| store.admit_graph_focus(&publication, focus, notice, cx));
     }
 
     fn callback_basis(&self, cx: &App) -> CallbackBasis {
         let snapshot = self.links.snapshot(cx);
         CallbackBasis {
-            route: snapshot.route().clone(),
-            authority: snapshot.key().authority(),
+            visit: crate::runtime::content_visit::ContentVisit::capture(&snapshot),
             generation: self.open_generation,
-            visit: snapshot.session().reading.current.id,
         }
     }
 
@@ -1076,9 +1095,7 @@ impl Map {
         let snapshot = self.links.snapshot(cx);
         basis.matches(
             self.open_generation,
-            snapshot.route(),
-            snapshot.key().authority(),
-            snapshot.session().reading.current.id,
+            &snapshot,
             snapshot.overlay().is_some() || snapshot.page_overlay().is_some(),
         )
     }
@@ -1221,9 +1238,7 @@ impl Map {
             .and_then(|graph| graph.read(cx).focused());
         if !request.accepts(
             self.open_generation,
-            snapshot.route(),
-            snapshot.key(),
-            snapshot.session().reading.current.id,
+            &snapshot,
             focus,
             (self.visible || request.origin == OpenOrigin::Peek) && snapshot.overlay().is_none(),
         ) {
@@ -1410,25 +1425,19 @@ enum OpenOrigin {
 /// A deferred native callback cannot survive a different content visit.
 #[derive(Clone, Debug)]
 struct CallbackBasis {
-    route: Route,
-    authority: ProducerAuthority,
+    visit: crate::runtime::content_visit::ContentVisit,
     generation: u64,
-    visit: crate::navigation::presentation::VisitId,
 }
 
 impl CallbackBasis {
     fn matches(
         &self,
         generation: u64,
-        route: &Route,
-        authority: ProducerAuthority,
-        visit: crate::navigation::presentation::VisitId,
+        snapshot: &crate::model::AppSnapshot,
         has_overlay: bool,
     ) -> bool {
         self.generation == generation
-            && self.route == *route
-            && self.authority == authority
-            && self.visit == visit
+            && self.visit.current(snapshot)
             && !has_overlay
     }
 }
@@ -1453,16 +1462,14 @@ impl OpenRequest {
     fn accepts(
         &self,
         generation: u64,
-        route: &Route,
-        root: VersionedRoot,
-        visit: crate::navigation::presentation::VisitId,
+        snapshot: &crate::model::AppSnapshot,
         focus: Option<NodeId>,
         visible: bool,
     ) -> bool {
-        self.basis.matches(generation, route, root.authority(), visit, false)
+        self.basis.matches(generation, snapshot, false)
             && focus == self.focus_at_open
             && visible
-            && (self.origin == OpenOrigin::Peek || is_graph(route))
+            && (self.origin == OpenOrigin::Peek || is_graph(snapshot.route()))
     }
 }
 
@@ -1698,6 +1705,7 @@ impl Render for Map {
             };
             let restored = self.retained_presentation.take().and_then(|packet| packet.restore(&visit, &scene, &identities));
             self.presented_visit = Some(visit);
+            self.presented_content = Some(crate::runtime::content_visit::ContentVisit::capture(&snapshot));
             let start = restored.as_ref().map_or(Start::World, |restored| restored.start);
             let editing = restored.and_then(|restored| {
                 self.error = restored.status.map(str::to_owned);
@@ -2047,133 +2055,86 @@ mod tests {
         );
     }
 
-    #[test]
-    fn deferred_graph_callback_uses_exact_authority_and_ignores_observation() {
-        let root = VersionedRoot::synthetic(
-            backend_library::view_state_root(&[("graph".to_owned(), "callback".to_owned())]),
-            2,
-        );
-        let observed_root = VersionedRoot::from_revision(
-            root.producer_epoch(),
-            root.revision(),
-            root.observation().saturating_add(8),
-        );
-        let basis = CallbackBasis {
+    fn callback_snapshot(root: VersionedRoot) -> crate::model::AppSnapshot {
+        crate::model::AppSnapshot::empty(root).with_session(crate::model::SessionState {
             route: Route::World,
-            authority: root.authority(),
-            generation: 4,
-            visit: crate::navigation::presentation::VisitId::initial(),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn deferred_graph_callback_uses_exact_activation_and_ignores_observation() {
+        let root = VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("graph".to_owned(), "callback".to_owned())]), 2,
+        );
+        let snapshot = callback_snapshot(root);
+        let observed = snapshot.with_key(VersionedRoot::from_revision(
+            root.producer_epoch(), root.revision(), root.observation().saturating_add(8)), None);
+        let basis = CallbackBasis {
+            visit: crate::runtime::content_visit::ContentVisit::capture(&snapshot), generation: 4,
         };
-        assert!(basis.matches(4, &Route::World, observed_root.authority(), basis.visit, false));
-        assert!(!basis.matches(5, &Route::World, root.authority(), basis.visit, false));
-        assert!(!basis.matches(4, &Route::World, root.with_generation(3).authority(), basis.visit, false));
-        assert!(!basis.matches(4, &Route::World, root.authority(), basis.visit, true));
-        assert!(!basis.matches(4, &Route::World, root.authority(), basis.visit.next().expect("later reading"), false),
-            "same route and owner cannot revive a callback from a previous reading visit");
+        assert!(basis.matches(4, &observed, false));
+        assert!(!basis.matches(5, &snapshot, false));
+        assert!(!basis.matches(4, &snapshot.with_key(root.with_generation(3), None), false));
+        assert!(!basis.matches(4, &snapshot, true));
+        let departed = crate::navigation::reduce(&snapshot, Intent::Navigate(
+            Route::Orbit(crate::navigation::OrbitRoute::Home))).snapshot;
+        let returned = crate::navigation::reduce(&departed, Intent::Back).snapshot;
+        assert_eq!(returned.route(), snapshot.route());
+        assert_eq!(returned.session().reading.current, snapshot.session().reading.current);
+        assert!(!basis.matches(4, &returned, false),
+            "Back restores reading context while refusing a delayed callback from its earlier activation");
     }
 
     #[test]
     fn an_open_rejects_changed_focus_route_root_visibility_or_generation() {
         let root = VersionedRoot::synthetic(
-            backend_library::view_state_root(&[("graph".to_owned(), "requests".to_owned())]),
-            1,
+            backend_library::view_state_root(&[("graph".to_owned(), "requests".to_owned())]), 1,
         );
+        let snapshot = callback_snapshot(root);
         let request = OpenRequest {
-            basis: CallbackBasis { generation: 5, route: Route::World, authority: root.authority(),
-                visit: crate::navigation::presentation::VisitId::initial() },
-            node: 7,
-            target: OpenView::Page,
-            origin: OpenOrigin::Graph,
-            continuations: Vec::new(),
-            focus_at_open: Some(7),
-            source_at_open: None,
-            query: SearchQuery::new("Value", 200).expect("query"),
-            root,
+            basis: CallbackBasis {
+                generation: 5, visit: crate::runtime::content_visit::ContentVisit::capture(&snapshot),
+            },
+            node: 7, target: OpenView::Page, origin: OpenOrigin::Graph,
+            continuations: Vec::new(), focus_at_open: Some(7), source_at_open: None,
+            query: SearchQuery::new("Value", 200).expect("query"), root,
         };
-        assert!(request.accepts(5, &Route::World, root, request.basis.visit, Some(7), true));
-        assert!(!request.accepts(5, &Route::World, root, request.basis.visit.next().expect("later reading"), Some(7), true),
-            "a late lookup from the previous reading cannot navigate the same route reopened later");
-        let observed_root = VersionedRoot::from_revision(
-            root.producer_epoch(),
-            root.revision(),
-            root.observation().saturating_add(1),
-        );
-        assert!(
-            request.accepts(5, &Route::World, observed_root, request.basis.visit, Some(7), true),
-            "diagnostic observation changes do not stale a callback for the same authority"
-        );
-        assert!(
-            !request.accepts(6, &Route::World, root, request.basis.visit, Some(7), true),
-            "a newer request supersedes the previous one"
-        );
-        assert!(
-            !request.accepts(5, &Route::World, root, request.basis.visit, Some(8), true),
-            "the camera's selected symbol changed"
-        );
-        assert!(
-            !request.accepts(5, &Route::World, root, request.basis.visit, None, true),
-            "the source disappeared"
-        );
-        assert!(
-            !request.accepts(5, &Route::World, root.with_generation(2), request.basis.visit, Some(7), true),
-            "a retained last-good read is stale"
-        );
-        let changed_epoch = VersionedRoot::from_revision(
-            root.producer_epoch().saturating_add(1),
-            root.revision(),
-            root.observation(),
-        );
-        let changed_cursor = VersionedRoot::from_revision(
-            root.producer_epoch(),
-            backend_library::Cursor::at(root.root(), root.generation().saturating_add(1)),
-            root.observation(),
-        );
-        let changed_root = VersionedRoot::from_revision(
-            root.producer_epoch(),
-            backend_library::Cursor::at(
+        assert!(request.accepts(5, &snapshot, Some(7), true));
+        let departed = crate::navigation::reduce(&snapshot, Intent::Navigate(
+            Route::Orbit(crate::navigation::OrbitRoute::Home))).snapshot;
+        let returned = crate::navigation::reduce(&departed, Intent::Back).snapshot;
+        assert!(!request.accepts(5, &returned, Some(7), true));
+        let observed = snapshot.with_key(VersionedRoot::from_revision(
+            root.producer_epoch(), root.revision(), root.observation().saturating_add(1)), None);
+        assert!(request.accepts(5, &observed, Some(7), true),
+            "diagnostic observation changes preserve producer authority");
+        assert!(!request.accepts(6, &snapshot, Some(7), true));
+        assert!(!request.accepts(5, &snapshot, Some(8), true));
+        assert!(!request.accepts(5, &snapshot, None, true));
+        assert!(!request.accepts(5, &snapshot, Some(7), false));
+        for changed in [
+            root.with_generation(2),
+            VersionedRoot::from_revision(root.producer_epoch().saturating_add(1), root.revision(), root.observation()),
+            VersionedRoot::from_revision(root.producer_epoch(), backend_library::Cursor::at(
                 backend_library::view_state_root(&[("graph".to_owned(), "other-root".to_owned())]),
-                root.generation(),
-            ),
-            root.observation(),
-        );
-        for changed in [changed_epoch, changed_cursor, changed_root] {
-            assert!(
-                !request.accepts(5, &Route::World, changed, request.basis.visit, Some(7), true),
-                "changed producer authority cannot complete an old callback"
-            );
+                root.generation()), root.observation()),
+        ] {
+            assert!(!request.accepts(5, &snapshot.with_key(changed, None), Some(7), true));
         }
-        assert!(!request.accepts(
-            5,
-            &Route::Orbit(crate::navigation::OrbitRoute::Home),
-            root,
-            request.basis.visit,
-            Some(7),
-            true
-        ));
-        assert!(
-            !request.accepts(5, &Route::World, root, request.basis.visit, Some(7), false),
-            "overlays or hidden graphs cannot complete an open"
-        );
-        let doubleclicked = OpenRequest {
-            focus_at_open: Some(8),
-            ..request.clone()
-        };
-        assert!(
-            doubleclicked.accepts(5, &Route::World, root, request.basis.visit, Some(8), true),
-            "doubleclick B may open B while A remains focused"
-        );
-        assert!(
-            !doubleclicked.accepts(5, &Route::World, root, request.basis.visit, Some(9), true),
-            "a later focus supersedes doubleclicked B"
-        );
+        assert!(!request.accepts(5, &departed, Some(7), true));
+        let doubleclicked = OpenRequest { focus_at_open: Some(8), ..request.clone() };
+        assert!(doubleclicked.accepts(5, &snapshot, Some(8), true));
+        assert!(!doubleclicked.accepts(5, &snapshot, Some(9), true));
         let graph_route = crate::shell::tests::view_route("RelationLabel", View::Graph);
-        let scoped = OpenRequest {
-            basis: CallbackBasis { route: graph_route.clone(), ..request.basis.clone() },
-            ..request
-        };
-        let other_release = graph_route.with_release(Some(
-            crate::navigation::ReleaseId::new("0.3.0").expect("release"),
-        ));
-        assert!(!scoped.accepts(5, &other_release, root, scoped.basis.visit, Some(7), true));
+        let mut session = snapshot.session().clone();
+        session.route = graph_route.clone();
+        let declaration = snapshot.with_session(session);
+        let scoped = OpenRequest { basis: CallbackBasis {
+            visit: crate::runtime::content_visit::ContentVisit::capture(&declaration), ..request.basis.clone()
+        }, ..request };
+        let mut session = declaration.session().clone();
+        session.route = graph_route.with_release(Some(crate::navigation::ReleaseId::new("0.3.0").expect("release")));
+        assert!(!scoped.accepts(5, &declaration.with_session(session), Some(7), true));
     }
 }

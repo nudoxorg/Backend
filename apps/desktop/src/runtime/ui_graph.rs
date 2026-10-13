@@ -11,7 +11,7 @@
 use super::coordinator::{DesktopRuntime, RequestOutcome, RuntimeEvent};
 use super::reads::ReadPool;
 use super::store::{DataStore, OwnerAttachment, RouteDependencies, RouteReadLease};
-use crate::core::{FaultCode, IntentDispatcher, ProducerAuthority, SnapshotReadModel};
+use crate::core::{FaultCode, IntentDispatcher, SnapshotReadModel};
 use crate::model::{AppSnapshot, ConnectionStatus, PersistentState};
 use crate::navigation::{FolderPickerOutcome, Intent, Route, View};
 use gpui::{App, AppContext as _, Context, Entity, EventEmitter, PathPromptOptions, Task};
@@ -104,12 +104,9 @@ impl ConnectionProbeLatch {
 #[derive(Clone, Debug)]
 pub(crate) struct GraphViewRequest {
     pub target: GraphDestination,
-    pub route: Route,
+    pub visit: super::content_visit::ContentVisit,
     /// The selected node, including its typed indexed address when known.
     pub selection: super::graph_focus::GraphViewEligibility,
-    /// Full observation metadata retained for diagnostics.
-    pub root: crate::core::VersionedRoot,
-    pub authority: ProducerAuthority,
     /// The serving owner captured with this graph visit. A later same-root
     /// attachment cannot turn an old native view callback into a new action.
     pub attachment: Option<OwnerAttachment>,
@@ -123,6 +120,9 @@ pub(crate) struct AddProjectVisit { owner: gpui::EntityId, sequence: u64 }
 
 enum QueuedIntent {
     Plain(Intent),
+    /// Local scalar intent belongs to the activation that captured it. A
+    /// historical reading ID alone cannot admit an edit after leave/Back.
+    Reading { intent: Intent, visit: super::content_visit::ContentVisit },
     AddProject { intent: Intent, visit: AddProjectVisit },
     Retry { intent: Intent, expected: crate::model::WorkspaceProject },
     Acquire { intent: Intent, composition: crate::host::registry::Composition, attachment: OwnerAttachment, owner: super::acquire::OwnerRequest },
@@ -132,7 +132,7 @@ enum QueuedIntent {
 }
 
 impl QueuedIntent {
-    fn intent(&self) -> &Intent { match self { Self::Plain(intent) | Self::AddProject { intent, .. } | Self::Retry { intent, .. } | Self::Acquire { intent, .. } | Self::Index { intent, .. } | Self::IndexStatus { intent, .. } | Self::Read { intent, .. } => intent } }
+    fn intent(&self) -> &Intent { match self { Self::Plain(intent) | Self::Reading { intent, .. } | Self::AddProject { intent, .. } | Self::Retry { intent, .. } | Self::Acquire { intent, .. } | Self::Index { intent, .. } | Self::IndexStatus { intent, .. } | Self::Read { intent, .. } => intent } }
 }
 
 enum IndexPreflightSave { Writing, Saved }
@@ -371,6 +371,8 @@ impl UiRootEntity {
         for queued in pending {
             match queued {
                 QueuedIntent::Plain(intent) => self.dispatch(intent, cx),
+                QueuedIntent::Reading { intent, visit } if visit.matches_destination(&self.snapshot()) => self.dispatch(intent, cx),
+                QueuedIntent::Reading { .. } => {},
                 QueuedIntent::AddProject { intent, visit } if self.admits_add_project_visit(visit, cx.entity_id(), cx) => self.dispatch(intent, cx),
                 QueuedIntent::AddProject { .. } => {},
                 QueuedIntent::Retry { intent, expected }
@@ -733,6 +735,7 @@ impl UiRootEntity {
             return;
         }
         if self.published.as_ref().is_some_and(|previous| previous.route() != snapshot.route()
+            || previous.session().reading.activation() != snapshot.session().reading.activation()
             || !previous.key().same_authority(snapshot.key()) || previous.overlay() != snapshot.overlay()) {
             self.graph_view_generation = self.graph_view_generation.wrapping_add(1);
         }
@@ -757,7 +760,12 @@ impl UiRootEntity {
             self.queue_read(intent, dependency, cx);
             return;
         }
-        if let Intent::RetryIndex(project) = &intent {
+        if let Intent::SetReading { visit, .. } = &intent {
+            let snapshot = self.snapshot();
+            if *visit != snapshot.session().reading.current.id { return; }
+            let visit = super::content_visit::ContentVisit::capture(&snapshot);
+            self.pending.push(QueuedIntent::Reading { intent, visit });
+        } else if let Intent::RetryIndex(project) = &intent {
             let Some(expected) = self.snapshot().workspace().projects.iter()
                 .find(|row| row.id == *project).cloned() else { return; };
             self.pending.push(QueuedIntent::Retry { intent, expected });
@@ -869,17 +877,14 @@ impl UiRootEntity {
                     if selection.can_open() {
                         cx.emit(GraphViewRequest {
                             target: if view == View::Page { GraphDestination::Page } else { GraphDestination::Code },
-                            route: snapshot.route().clone(),
+                            visit: super::content_visit::ContentVisit::capture(&snapshot),
                             selection,
-                            root: snapshot.key(),
-                            authority: snapshot.key().authority(),
                             attachment,
                             sequence: self.graph_view_generation,
                         });
                     } else if let Some(message) = selection.guidance() {
                         let notice = super::graph_focus::Notice {
-                            visit: snapshot.route().clone(),
-                            root: snapshot.key(),
+                            visit: crate::runtime::content_visit::ContentVisit::capture(&snapshot),
                             message: message.into(),
                             retry: None,
                         };
@@ -900,13 +905,12 @@ impl UiRootEntity {
             Intent::RevealProject(project) => cx.reveal_path(&project.path()),
             Intent::OpenSource { path, line } => {
                 let launch = crate::host::editor::launcher(cx);
-                let visit = self.snapshot().route().clone();
-                let root = self.snapshot().key();
+                let visit = super::content_visit::ContentVisit::capture(&self.snapshot());
                 let outcome = crate::host::editor::open(launch.as_ref(), None, &path, line);
                 if let Some(store) = &self.store {
                     let message = outcome.message(&path, line);
                     store.update(cx, |store, cx| store.set_notice(Some(super::graph_focus::Notice {
-                        visit, root, message: message.into(), retry: None,
+                        visit, message: message.into(), retry: None,
                     }), cx));
                 }
             }
@@ -1570,6 +1574,37 @@ mod queued_acquisition_tests {
     fn composition() -> Composition {
         Composition { endpoint: PathBuf::from("/fixture/queued-owner"), source: Arc::new(RefusingSource),
             authority: "queued-authority".into(), generation: CompositionGeneration::default(), refusals: None }
+    }
+
+    #[gpui::test]
+    fn queued_local_reading_edits_cannot_land_after_a_same_route_history_return(cx: &mut gpui::TestAppContext) {
+        use crate::navigation::presentation::{ReadingChange, ReadingOffset};
+        let basis = crate::core::VersionedRoot::synthetic(backend_library::view_state_root(&[
+            ("queued".into(), "reading".into())]), 1);
+        let snapshot = crate::navigation::reduce(&AppSnapshot::empty(basis), Intent::Navigate(
+            crate::shell::tests::view_route("RelationLabel", View::Code))).snapshot;
+        let actor = EngineActor::start(RefusingEngine, 2).expect("actor");
+        let root = cx.update(|cx| cx.new(|_| {
+            let mut root = UiRootEntity::new(DesktopRuntime::new(snapshot, actor), None);
+            root.pending.clear();
+            root
+        }));
+        root.update(cx, |root, cx| {
+            let before = root.snapshot();
+            let visit = before.session().reading.current.id;
+            let late = ReadingOffset::new(0.0, -240.0).expect("late scroll");
+            root.queue(Intent::SetReading { visit, change: ReadingChange::ReaderOffset(late) }, cx);
+            root.dispatch(Intent::Navigate(Route::World), cx);
+            root.dispatch(Intent::Back, cx);
+            assert_eq!(root.snapshot().session().reading.current, before.session().reading.current);
+            root.flush_pending(cx);
+            assert_eq!(root.snapshot().session().reading.current, before.session().reading.current,
+                "an old queued native edit cannot overwrite the restored reading choices");
+            root.queue(Intent::SetReading { visit, change: ReadingChange::ReaderOffset(late) }, cx);
+            root.flush_pending(cx);
+            assert_eq!(root.snapshot().session().reading.current.presentation.controls().offset, late,
+                "the current activation can still edit its restored reading context");
+        });
     }
 
     #[gpui::test]

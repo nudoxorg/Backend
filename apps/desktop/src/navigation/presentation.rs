@@ -236,6 +236,20 @@ pub struct ReadingVisit {
     pub id: VisitId,
     pub presentation: ReadingPresentation,
 }
+
+/// One foreground activation of a reading visit. History retains reading
+/// choices, never this identity: returning with Back renews delayed input and
+/// publication claims while restoring the same scroll, lens and focus.
+/// Retained clones prevent allocator address reuse from reviving old claims.
+#[derive(Clone, Debug)]
+pub(crate) struct ReadingActivation(Arc<()>);
+impl Default for ReadingActivation {
+    fn default() -> Self { Self(Arc::new(())) }
+}
+impl PartialEq for ReadingActivation {
+    fn eq(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) }
+}
+impl Eq for ReadingActivation {}
 impl ReadingVisit {
     pub fn cold(route: &Route) -> Self {
         Self {
@@ -250,6 +264,7 @@ impl ReadingVisit {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReadingSession {
     pub current: ReadingVisit,
+    activation: ReadingActivation,
     last: VisitId,
     preview_origin: Option<ReadingVisit>,
 }
@@ -260,6 +275,7 @@ impl ReadingSession {
                 id: VisitId::initial(),
                 presentation: ReadingPresentation::for_route(route),
             },
+            activation: ReadingActivation::default(),
             last: VisitId::initial(),
             preview_origin: None,
         }
@@ -273,6 +289,7 @@ impl ReadingSession {
             id,
             presentation: ReadingPresentation::for_route(route),
         };
+        self.renew_activation();
         true
     }
     pub fn restore(&mut self, visit: ReadingVisit, route: &Route) -> bool {
@@ -285,6 +302,7 @@ impl ReadingSession {
             self.fresh(route)
         } else {
             self.current = visit;
+            self.renew_activation();
             true
         }
     }
@@ -305,8 +323,11 @@ impl ReadingSession {
     pub fn cancel_preview(&mut self) {
         if let Some(origin) = self.preview_origin.take() {
             self.current = origin;
+            self.renew_activation();
         }
     }
+    pub(crate) fn activation(&self) -> &ReadingActivation { &self.activation }
+    pub(crate) fn renew_activation(&mut self) { self.activation = ReadingActivation::default(); }
     pub fn normalize(&mut self, route: &Route) {
         if !self.current.presentation.compatible(route) {
             self.current.presentation = ReadingPresentation::for_route(route);

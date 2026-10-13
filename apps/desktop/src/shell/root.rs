@@ -129,9 +129,8 @@ pub(crate) struct TransientFocusReturn {
 
 #[derive(Clone)]
 struct HintScope {
-    route: Route,
+    reading: super::keyboard::LocalReadingScope,
     overlay: Option<Overlay>,
-    visit: crate::navigation::presentation::VisitId,
     local_input: gpui::NativeActivationScope,
 }
 
@@ -882,7 +881,7 @@ impl Shell {
         let snapshot = self.links.snapshot(cx);
         let Some(mut claim) = KeyboardClaim::new(
             overlay,
-            snapshot.session().reading.current.id,
+            super::keyboard::LocalReadingScope::capture(&snapshot),
             window.window_handle().window_id(),
             self.transient_generation,
             window.focus_epoch(),
@@ -908,8 +907,7 @@ impl Shell {
         let Some(claim) = self.keyboard_claim.take() else { return; };
         let snapshot = self.links.snapshot(cx);
         if !claim.current(
-            snapshot.overlay(),
-            snapshot.session().reading.current.id,
+            &snapshot,
             window.window_handle().window_id(),
             self.transient_generation,
         ) { return; }
@@ -1190,8 +1188,7 @@ impl Shell {
     fn symbol_link_unresolved(&mut self, query: crate::model::pages::SearchQuery, cx: &mut Context<Self>) {
         let snapshot = self.links.snapshot(cx);
         let notice = crate::runtime::graph_focus::Notice {
-            visit: snapshot.route().clone(),
-            root: snapshot.key(),
+            visit: crate::runtime::content_visit::ContentVisit::capture(&snapshot),
             message: format!("{} isn't in the index", query.text).into(),
             retry: None,
         };
@@ -1216,8 +1213,7 @@ impl Shell {
         if snapshot.route().at().is_some() {
             self.links.store.update(cx, |store, cx| {
                 store.set_notice(Some(crate::runtime::graph_focus::Notice {
-                    visit: snapshot.route().clone(),
-                    root: snapshot.key(),
+                    visit: crate::runtime::content_visit::ContentVisit::capture(&snapshot),
                     message: "Historical graph identities are not available for this release.".into(),
                     retry: None,
                 }), cx);
@@ -1230,8 +1226,7 @@ impl Shell {
             cx,
         ) else {
             self.links.store.update(cx, |store, cx| store.set_notice(Some(crate::runtime::graph_focus::Notice {
-                visit: snapshot.route().clone(),
-                root: snapshot.key(),
+                visit: crate::runtime::content_visit::ContentVisit::capture(&snapshot),
                 message: "The local graph reader is not ready.".into(),
                 retry: None,
             }), cx));
@@ -1241,8 +1236,7 @@ impl Shell {
             crate::runtime::indexed_world::State::Ready(projection) => projection,
             crate::runtime::indexed_world::State::Reading => {
                 self.links.store.update(cx, |store, cx| store.set_notice(Some(crate::runtime::graph_focus::Notice {
-                    visit: snapshot.route().clone(),
-                    root: snapshot.key(),
+                    visit: crate::runtime::content_visit::ContentVisit::capture(&snapshot),
                     message: "The current indexed graph is still being read.".into(),
                     retry: None,
                 }), cx));
@@ -1250,8 +1244,7 @@ impl Shell {
             }
             crate::runtime::indexed_world::State::Waiting => {
                 self.links.store.update(cx, |store, cx| store.set_notice(Some(crate::runtime::graph_focus::Notice {
-                    visit: snapshot.route().clone(),
-                    root: snapshot.key(),
+                    visit: crate::runtime::content_visit::ContentVisit::capture(&snapshot),
                     message: "Waiting for an available graph-read slot; this view will retry when one opens.".into(),
                     retry: None,
                 }), cx));
@@ -1259,8 +1252,7 @@ impl Shell {
             }
             crate::runtime::indexed_world::State::Unavailable(reason) => {
                 self.links.store.update(cx, |store, cx| store.set_notice(Some(crate::runtime::graph_focus::Notice {
-                    visit: snapshot.route().clone(),
-                    root: snapshot.key(),
+                    visit: crate::runtime::content_visit::ContentVisit::capture(&snapshot),
                     message: format!("The current indexed graph is unavailable: {reason}").into(),
                     retry: None,
                 }), cx));
@@ -1717,7 +1709,7 @@ impl Shell {
     fn graph_view_notice(&mut self, message: &str, cx: &mut Context<Self>) {
         let snapshot = self.links.snapshot(cx);
         let notice = crate::runtime::graph_focus::Notice {
-            visit: snapshot.route().clone(), root: snapshot.key(), message: message.into(), retry: None,
+            visit: crate::runtime::content_visit::ContentVisit::capture(&snapshot), message: message.into(), retry: None,
         };
         self.links.store.update(cx, |store, cx| store.set_notice(Some(notice), cx));
     }
@@ -1816,9 +1808,8 @@ impl Shell {
     fn target_scope(&self, cx: &App) -> HintScope {
         let snapshot = self.links.snapshot(cx);
         HintScope {
-            route: snapshot.route().clone(),
+            reading: super::keyboard::LocalReadingScope::capture(&snapshot),
             overlay: snapshot.overlay(),
-            visit: snapshot.session().reading.current.id,
             local_input: self.local_activation_scope(),
         }
     }
@@ -1840,9 +1831,8 @@ impl Shell {
     fn target_structure_current(&self, scope: &HintScope, cx: &App) -> bool {
         let snapshot = self.links.snapshot(cx);
         self.local_activation_scope() == scope.local_input
-            && snapshot.route() == &scope.route
+            && scope.reading.matches_destination(&snapshot)
             && snapshot.overlay() == scope.overlay
-            && snapshot.session().reading.current.id == scope.visit
     }
 
     fn hinted_targets(&self, zone: Zone, cx: &App) -> super::focus::Targets {
@@ -2214,8 +2204,7 @@ impl Shell {
             let Some(Route::Symbol(route)) = focus.indexed.as_ref().and_then(|(package, symbol)| kit::symbol_route(package.as_str(), symbol)) else {
                 // Not in the index: nothing to hold, and the Notice says so.
                 let notice = crate::runtime::graph_focus::Notice {
-                    visit: snapshot.route().clone(),
-                    root: snapshot.key(),
+                    visit: crate::runtime::content_visit::ContentVisit::capture(&snapshot),
                     message: format!("{}::{}::{} isn't in the index", focus.package, focus.module, focus.name).into(),
                     retry: None,
                 };
@@ -4335,7 +4324,7 @@ mod native_hint_receipt_tests {
         let route = rig.route();
         rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
         rig.go(Intent::Navigate(route.clone()));
-        assert_ne!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id), scope.visit);
+        assert_ne!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id), scope.reading.visit);
         let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
         assert!(targets.mount_claim("source-copy-excerpt").is_some());
         assert!(!rig.cx.update(|window, _| targets.admits_mount(&choice.mount, window)));

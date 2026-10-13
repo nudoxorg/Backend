@@ -131,7 +131,7 @@ impl StoreEvent {
 pub struct Watch {
     /// Optional action-bound reading identity; ordinary Reading watches still
     /// observe the full presentation branch.
-    visit: Option<crate::navigation::presentation::VisitId>,
+    visit: Option<crate::navigation::presentation::ReadingActivation>,
     keys: BTreeMap<PageKey, Stamp>,
     branches: BTreeSet<Branch>,
 }
@@ -160,7 +160,7 @@ impl Watch {
     /// Watch only reading ownership, without subscribing cached action
     /// handlers to every saved offset, focus, or lens edit in that visit.
     pub(crate) fn watch_reading_visit(&mut self, store: &DataStore) {
-        self.visit = Some(store.snapshot.session().reading.current.id);
+        self.visit = Some(store.snapshot.session().reading.activation().clone());
     }
 
     /// Replaces the watched keys (after the view navigates).
@@ -195,9 +195,9 @@ impl Watch {
         match event {
             StoreEvent::Snapshot(Branch::Reading) => {
                 let moved = self.visit.as_mut().is_some_and(|seen| {
-                    let current = store.snapshot.session().reading.current.id;
-                    let moved = *seen != current;
-                    *seen = current;
+                    let current = store.snapshot.session().reading.activation();
+                    let moved = *seen != *current;
+                    *seen = current.clone();
                     moved
                 });
                 moved || self.branches.contains(&Branch::Reading)
@@ -500,6 +500,11 @@ impl DataStore {
         notice: Option<super::graph_focus::Notice>,
         cx: &mut Context<Self>,
     ) {
+        // A delayed publication cannot replace newer words, including after
+        // Back restores the same route and historical reading choices.
+        if notice.as_ref().is_some_and(|notice| !notice.visit.current(&self.snapshot)) {
+            return;
+        }
         if self.notice != notice {
             self.notice = notice;
             self.emit(StoreEvent::Snapshot(Branch::GraphFocus), cx);
@@ -524,10 +529,17 @@ impl DataStore {
 
     pub(crate) fn admit_graph_focus(
         &mut self,
+        visit: &super::content_visit::ContentVisit,
         focus: Option<super::graph_focus::GraphFocus>,
         notice: Option<super::graph_focus::Notice>,
         cx: &mut Context<Self>,
     ) {
+        if !visit.current(&self.snapshot)
+            || focus.as_ref().is_some_and(|focus| &focus.visit != visit)
+            || notice.as_ref().is_some_and(|notice| &notice.visit != visit)
+        {
+            return;
+        }
         // The map publishes an empty focus when an overlay covers it. That
         // publication must not erase the owner's current recovery notice
         // while it fails or starts again. Retry remains visibly disabled until
@@ -535,8 +547,7 @@ impl DataStore {
         // exact route and authority, even while covered.
         let owner_notice = self.notice.as_ref().filter(|current| {
             current.retry.is_some()
-                && current.visit == *self.snapshot.route()
-                && current.root.same_authority(self.snapshot.key())
+                && current.visit.current(&self.snapshot)
                 && matches!(self.owner.phase(), OwnerPhase::Failed(_) | OwnerPhase::Starting)
         }).cloned();
         let notice = owner_notice.or(notice);
@@ -721,6 +732,17 @@ impl DataStore {
         let old = std::mem::replace(&mut self.snapshot, snapshot);
         let snapshot = Arc::clone(&self.snapshot);
         let mut changed = Vec::new();
+        // History can return to the same route/root/reading choices, but its
+        // foreground activation is fresh. Retire transient publications now,
+        // before subscribers can inspect the new snapshot or publish a scene.
+        if self.graph_focus.as_ref().is_some_and(|focus| !focus.visit.current(&snapshot)) {
+            self.graph_focus = None;
+            changed.push(Branch::GraphFocus);
+        }
+        if self.notice.as_ref().is_some_and(|notice| !notice.visit.current(&snapshot)) {
+            self.notice = None;
+            if !changed.contains(&Branch::GraphFocus) { changed.push(Branch::GraphFocus); }
+        }
         if !old.key().same_authority(snapshot.key()) {
             changed.push(Branch::Root);
         }
@@ -787,6 +809,16 @@ impl DataStore {
             for key in focused {
                 self.ensure(key, cx);
             }
+        }
+        if (changed.contains(&Branch::Route) || changed.contains(&Branch::Root)
+            || old.session().reading.activation() != snapshot.session().reading.activation())
+            && let OwnerPhase::Failed(fault) = self.owner.phase()
+        {
+            // Failure belongs to the current owner's lifecycle, so local
+            // navigation still exposes a newly scoped Retry notice. No old
+            // route publication is revived and no replacement read is started.
+            let fault = fault.clone();
+            self.publish_owner_failure_notice(&fault, cx);
         }
     }
 
@@ -1226,6 +1258,15 @@ impl DataStore {
         for key in keys {
             self.fail(&key, fault, cx);
         }
+        self.publish_owner_failure_notice(fault, cx);
+        // Exact Retry capability movement belongs to Owner. GraphFocus only
+        // announces changed selection or notice content through set_notice.
+        if !repeated || retry_changed {
+            self.emit(StoreEvent::Snapshot(Branch::Owner), cx);
+        }
+    }
+
+    fn publish_owner_failure_notice(&mut self, fault: &OwnerFault, cx: &mut Context<Self>) {
         // The foot says it wherever the person is, with "Try again" beside
         // it (R7). A page painted from the launch snapshot stays (it is the
         // page as it was left), and says it could not be brought up to date.
@@ -1236,8 +1277,7 @@ impl DataStore {
             format!("The index could not start. {fault}")
         };
         let notice = super::graph_focus::Notice {
-            visit: self.snapshot.route().clone(),
-            root: self.snapshot.key(),
+            visit: super::content_visit::ContentVisit::capture(&self.snapshot),
             message: Arc::from(message),
             // "Try again" asks the page for itself again, which starts the
             // owner; with no page on the route, the Library's.
@@ -1250,11 +1290,6 @@ impl DataStore {
             ),
         };
         self.set_notice(Some(notice), cx);
-        // Exact Retry capability movement belongs to Owner. GraphFocus only
-        // announces changed selection or notice content through set_notice.
-        if !repeated || retry_changed {
-            self.emit(StoreEvent::Snapshot(Branch::Owner), cx);
-        }
     }
 
     fn revoke_inflight(&mut self, cx: &mut Context<Self>) {
@@ -1689,6 +1724,64 @@ mod tests {
     }
 
     #[gpui::test]
+    fn abandoned_graph_publications_cannot_replace_a_returned_visits_current_notice(cx: &mut TestAppContext) {
+        use crate::runtime::{content_visit::ContentVisit, graph_focus::{GraphFocus, Notice}, indexed_world::Origin};
+        let mut session = snapshot().session().clone();
+        session.route = Route::World;
+        let base = snapshot().with_session(session);
+        let former = ContentVisit::capture(&base);
+        let selected = GraphFocus {
+            visit: former.clone(), node: 7, name: "Chosen".into(), package: "fixture".into(),
+            module: "module".into(), kind: backend_library::DeclarationKind::Function,
+            origin: Origin::IndexedOwner, indexed: None,
+        };
+        let store = cx.update(|cx| cx.new(|_| DataStore::new(Arc::new(base.clone()), None)));
+        store.update(cx, |store, cx| store.admit_graph_focus(&former, Some(selected.clone()), None, cx));
+        let away = crate::navigation::reduce(&base, crate::navigation::Intent::Navigate(
+            Route::Orbit(crate::navigation::OrbitRoute::Home))).snapshot;
+        let returned = crate::navigation::reduce(&away, crate::navigation::Intent::Back).snapshot;
+        assert_eq!(returned.session().reading.current, base.session().reading.current);
+        store.update(cx, |store, cx| {
+            store.admit_snapshot(Arc::new(away), cx);
+            store.admit_snapshot(Arc::new(returned.clone()), cx);
+            assert!(store.graph_focus().is_none(), "history did not revive an old transient selection");
+            let current = ContentVisit::capture(&returned);
+            let current_notice = Notice { visit: current.clone(), message: "Current answer".into(), retry: None };
+            store.set_notice(Some(current_notice.clone()), cx);
+            let events = store.stats.events;
+            store.set_notice(Some(Notice { visit: former.clone(), message: "Late old answer".into(), retry: None }), cx);
+            store.admit_graph_focus(&former, Some(selected.clone()), None, cx);
+            store.admit_graph_focus(&former, None, None, cx);
+            assert_eq!(store.stats.events, events, "stale positive and empty publications are silent");
+            assert_eq!(store.notice(), Some(&current_notice));
+            store.admit_graph_focus(&current, Some(GraphFocus { visit: current.clone(), ..selected }), None, cx);
+            assert_eq!(store.graph_focus().map(|focus| focus.node), Some(7),
+                "an explicitly restored scene may publish the chosen symbol under fresh ownership");
+        });
+    }
+
+    #[gpui::test]
+    fn current_owner_failure_republishes_retry_for_local_navigation_without_reviving_old_words(cx: &mut TestAppContext) {
+        let base = snapshot();
+        let store = cx.update(|cx| cx.new(|_| DataStore::new(base.clone(), None)));
+        let fault = OwnerFault::Lost("owner stopped".into());
+        store.update(cx, |store, cx| store.owner_failed(&fault, cx));
+        let former = store.read_with(cx, |store, _| store.notice().cloned().expect("owner notice"));
+        let world = crate::navigation::reduce(&base, crate::navigation::Intent::Navigate(Route::World)).snapshot;
+        store.update(cx, |store, cx| {
+            store.admit_snapshot(Arc::new(world), cx);
+            let current = store.notice().cloned().expect("current route has recovery guidance");
+            assert_ne!(current.visit, former.visit);
+            assert_eq!(current.message, former.message);
+            assert!(current.retry.is_some());
+            assert!(!former.visit.current(&store.snapshot));
+            store.set_notice(Some(former), cx);
+            assert_eq!(store.notice(), Some(&current));
+            assert_eq!(store.stats.submitted, 0, "navigation cannot restart a failed owner by itself");
+        });
+    }
+
+    #[gpui::test]
     fn owner_eligibility_wakes_cached_consumers_without_resource_or_root_movement(cx: &mut TestAppContext) {
         use crate::model::ServiceMode;
         use crate::runtime::owner::{OwnerGate, OwnerState};
@@ -1783,14 +1876,14 @@ mod tests {
         store.update(cx, |store, cx| {
             assert!(store.retry_owner_at(&retry, PageKey::Orbit, cx));
             store.owner_starting(cx);
-            store.admit_graph_focus(None, None, cx);
+            store.admit_graph_focus(&super::super::content_visit::ContentVisit::capture(&store.snapshot), None, None, cx);
             assert_eq!(store.notice().cloned(), notice, "Starting retains the exact recovery notice");
             assert!(store.current_owner_retry().is_none(), "the consumed Retry is disabled");
         });
         gate.publish(OwnerState::Ready { key: root, mode: ServiceMode::Attached });
         store.update(cx, |store, cx| {
             store.owner_ready(cx);
-            store.admit_graph_focus(None, None, cx);
+            store.admit_graph_focus(&super::super::content_visit::ContentVisit::capture(&store.snapshot), None, None, cx);
             assert!(store.notice().is_none(), "an admitted answer releases recovery notice ownership");
         });
     }

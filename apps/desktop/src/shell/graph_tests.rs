@@ -634,6 +634,10 @@ fn graph_header_requests_the_exact_selection_at_native_activation_time(cx: &mut 
         rig.settle();
         let action = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_action(id, cx))
             .expect("painted selected graph control");
+        let (activation, reading) = rig.graph.store.read_with(rig.cx, |store, _| {
+            (crate::runtime::content_visit::ContentVisit::capture(&store.snapshot()),
+                store.snapshot().session().reading.current.id)
+        });
         let before = rig.graph.root.read_with(rig.cx, |root, _| root.graph_view_generation());
         let root = rig.graph.root.clone();
         rig.cx.update(|window, cx| {
@@ -653,6 +657,33 @@ fn graph_header_requests_the_exact_selection_at_native_activation_time(cx: &mut 
         assert_eq!(rig.route(), view_route("RelationLabel", View::Graph));
         assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)).contains("focus Some(3)"),
             "Back restores the chosen graph node and its retained scene");
+        rig.graph.store.read_with(rig.cx, |store, _| {
+            assert_eq!(store.snapshot().session().reading.current.id, reading);
+            assert!(!activation.current(&store.snapshot()), "Back renews action ownership");
+            let focus = store.graph_focus().expect("the returned map explicitly republished selection");
+            assert_eq!(focus.node, RELATION_LABEL_FN);
+            assert_ne!(focus.visit, activation);
+        });
+    }
+}
+
+#[gpui::test]
+fn fresh_same_route_graph_reentry_consumes_entry_instead_of_reviving_departed_selection(cx: &mut TestAppContext) {
+    for route in [Route::World, view_route("RelationLabel", View::Graph)] {
+        let mut rig = world_rig(cx, route.clone());
+        rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL_FN, cx));
+        rig.settle();
+        let former = rig.graph.store.read_with(rig.cx, |store, _|
+            crate::runtime::content_visit::ContentVisit::capture(&store.snapshot()));
+        rig.go(Intent::Navigate(Route::Orbit(crate::navigation::OrbitRoute::Home)));
+        rig.go(Intent::Navigate(route.clone()));
+        rig.settle();
+        let expected = if route == Route::World { None } else { Some(RELATION_LABEL) };
+        rig.graph.store.read_with(rig.cx, |store, _| {
+            assert!(!former.current(&store.snapshot()));
+            assert_eq!(store.graph_focus().map(|focus| focus.node), expected,
+                "a fresh graph arrival consumes its entry; deliberate Back is covered separately");
+        });
     }
 }
 

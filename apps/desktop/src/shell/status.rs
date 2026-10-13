@@ -111,15 +111,12 @@ fn feedback_message(snapshot: &AppSnapshot, focus: Option<&crate::runtime::graph
 /// it does not need a serving index owner or start another page read.
 fn message_admission(links: &Links, snapshot: &AppSnapshot, message: String, cx: &App) -> facet::controls::button::ActivationAdmission {
     let links = links.clone();
-    let route = snapshot.route().clone();
-    let authority = snapshot.key().authority();
-    let visit = snapshot.session().reading.current.id;
+    let visit = crate::runtime::content_visit::ContentVisit::capture(snapshot);
     let scope = links.shell.upgrade().map(|shell| shell.read(cx).local_activation_scope());
     std::rc::Rc::new(move |cx| {
         let store = links.store.read(cx);
         let current = store.snapshot();
-        current.route() == &route && current.key().authority() == authority
-            && current.session().reading.current.id == visit && current.overlay().is_none()
+        visit.current(&current) && current.overlay().is_none()
             && feedback_message(&current, store.graph_focus(), store.notice()) == message
             && links.shell.upgrade().is_some_and(|shell| {
                 let shell = shell.read(cx);
@@ -549,7 +546,7 @@ mod tests {
         rig.graph.store.update(rig.cx, |store, cx| {
             let snapshot = store.snapshot();
             store.set_notice(Some(crate::runtime::graph_focus::Notice {
-                visit: snapshot.route().clone(), root: snapshot.key(), message: message.clone().into(), retry: Some(crate::model::pages::PageKey::Orbit),
+                visit: crate::runtime::content_visit::ContentVisit::capture(&snapshot), message: message.clone().into(), retry: Some(crate::model::pages::PageKey::Orbit),
             }), cx);
         });
         rig.settle();

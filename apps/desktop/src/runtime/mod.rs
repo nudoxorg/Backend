@@ -9,6 +9,7 @@ pub(crate) mod cargo_readme_reads;
 pub(crate) mod browse_views;
 pub mod client;
 pub mod coordinator;
+pub(crate) mod content_visit;
 pub mod debug_page;
 #[cfg(test)]
 pub(crate) mod fixture_releases;

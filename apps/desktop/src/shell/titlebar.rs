@@ -21,7 +21,6 @@ use super::focus::{Target, TargetAction, Targets};
 use super::jump::{self, Here, Mark, Segment};
 use super::kit::{keycap, text};
 use super::region::{Links, Region, RegionCore};
-use crate::core::VersionedRoot;
 use crate::model::AppSnapshot;
 use crate::model::pages::PageKey;
 use crate::navigation::{BrowseRoute, Intent, OrbitRoute, Overlay, Route, View};
@@ -50,43 +49,37 @@ const LONG_PRESS: Duration = Duration::from_millis(400);
 /// the producer authority and the route/overlay are the action boundary.
 #[derive(Clone)]
 struct JumpVisit {
-    route: Route,
-    reading: crate::navigation::presentation::VisitId,
+    content: crate::runtime::content_visit::ContentVisit,
     subject: jump::JumpSubject,
     graph_selection: crate::runtime::graph_focus::GraphViewEligibility,
     attachment: Option<crate::runtime::store::OwnerAttachment>,
     overlay: Option<Overlay>,
-    root: VersionedRoot,
 }
 
 impl PartialEq for JumpVisit {
     fn eq(&self, other: &Self) -> bool {
-        self.route == other.route && self.reading == other.reading && self.subject == other.subject
+        self.content == other.content && self.subject == other.subject
             && self.graph_selection == other.graph_selection && self.attachment == other.attachment
-            && self.overlay == other.overlay && self.root.same_authority(other.root)
+            && self.overlay == other.overlay
     }
 }
 
 impl JumpVisit {
     fn at(snapshot: &AppSnapshot, store: &DataStore) -> Self {
         Self {
-            route: snapshot.route().clone(),
-            reading: snapshot.session().reading.current.id,
+            content: crate::runtime::content_visit::ContentVisit::capture(snapshot),
             subject: jump::bar_subject(snapshot, store),
             graph_selection: store.graph_view_eligibility(),
             attachment: store.current_owner_attachment(),
             overlay: snapshot.overlay(),
-            root: snapshot.key(),
         }
     }
 
     fn current(&self, links: &Links, cx: &App) -> bool {
         let store = links.store.read(cx);
         let snapshot = store.snapshot();
-        snapshot.route() == &self.route
-            && snapshot.session().reading.current.id == self.reading
+        self.content.current(&snapshot)
             && snapshot.overlay() == self.overlay
-            && snapshot.key().same_authority(self.root)
             && jump::bar_subject(&snapshot, store) == self.subject
             && store.graph_view_eligibility() == self.graph_selection
             && store.current_owner_attachment() == self.attachment
