@@ -1073,12 +1073,16 @@ impl PythonProjectWitness {
     pub fn validate_current(&self, control: PythonProjectControl<'_>) -> Result<(), CheckerError> {
         checkpoint(control)?;
         self.baselines.validate_current(control)?;
-        for directory in &self.frontier {
-            directory.validate_current(control)?;
-        }
         for candidate in &self.candidates {
             checkpoint(control)?;
             candidate.validate_current()?;
+        }
+        // An observed import candidate owns the exact refusal for its path.
+        // Validate it before the broader namespace witness can report the same
+        // transition as a directory-membership change. Both boundaries still
+        // have to remain current before any report is admitted.
+        for directory in &self.frontier {
+            directory.validate_current(control)?;
         }
         for file in &self.files {
             checkpoint(control)?;
