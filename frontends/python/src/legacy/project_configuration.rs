@@ -168,7 +168,9 @@ impl Evidence {
             }
         }
         let mut sink = Bounded {
-            text: String::new(),
+            // The writer never appends past this admitted allowance, so its
+            // buffer cannot grow geometrically beyond the diagnostic budget.
+            text: String::with_capacity(maximum),
             maximum,
             truncated: false,
             control,
