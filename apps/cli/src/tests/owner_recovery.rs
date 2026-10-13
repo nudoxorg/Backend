@@ -454,6 +454,29 @@ fn journal_start_capability_refuses_foreign_connection_attachment_before_send() 
 }
 
 #[test]
+fn journal_start_retains_admitted_command_refusal_without_delivery_uncertainty() {
+    let fixture = Fixture::new();
+    let sends = Arc::new(AtomicUsize::new(0));
+    let sent = sends.clone();
+    let mut original = session(fixture.paths.endpoint(), move |request| {
+        assert!(matches!(request.command, Command::Surface(SurfaceCommand::IndexOperationStart { .. })));
+        sent.fetch_add(1, Ordering::Relaxed);
+        Ok(ReplyDto::error(request.request_id, "the admitted start was refused"))
+    });
+    let mut recovery = OwnerRecovery::from_connector(
+        fixture.paths.clone(), RequestContext::new(), |_| panic!("refusal cannot reconnect"),
+    );
+    let error = backend_client::index_with_journal_recovery(
+        &fixture.paths, fixture.package.clone(), CompileExecutionIntent::Interactive,
+        |dispatch| recovery.journal(&mut original, dispatch, None),
+    ).expect_err("actual command rejection is retained");
+    assert!(matches!(&error, ClientError::CommandFailed(_)), "{error}");
+    assert_eq!(sends.load(Ordering::Relaxed), 1);
+    assert!(!recovery.used);
+    assert_eq!(fixture.claims().len(), 1, "no durable terminal receipt was invented");
+}
+
+#[test]
 fn replacement_failure_keeps_saved_claim_and_read_recovery_keeps_original_deadline() {
     let fixture = Fixture::new();
     let commands = Arc::new(AtomicUsize::new(0));

@@ -296,23 +296,10 @@ fn start_claim(
     };
     start.verify()?;
     let command = start.command();
-    // Verification above is still an unsent refusal. After dispatch is attempted,
-    // lack of an admitted reply never proves that owner work was rejected.
-    let attempted = (|| {
-        let reply = transport(IndexJournalDispatch::Start(start))?;
-        backend_library::admit_surface_reply(&command, &reply)
-            .map_err(|error| ClientError::Protocol(error.to_string()))?;
-        Ok(reply)
-    })();
-    attempted.map_err(|cause| match cause {
-        ClientError::IndexOperationDeliveryUnknown { operation_key, .. }
-            if operation_key == claim.operation_key => cause,
-        ClientError::RequestCancelled(_) | ClientError::CommandFailed(_) => cause,
-        cause => ClientError::IndexOperationDeliveryUnknown {
-            operation_key: claim.operation_key,
-            cause: Box::new(cause),
-        },
-    })
+    let reply = transport(IndexJournalDispatch::Start(start))?;
+    backend_library::admit_surface_reply(&command, &reply)
+        .map_err(|error| ClientError::Protocol(error.to_string()))?;
+    Ok(reply)
 }
 
 fn reply_observation(reply: &SurfaceReply) -> Result<&IndexOperationObservation, ClientError> {
@@ -553,8 +540,28 @@ pub fn index_with_journal(
     execution_intent: CompileExecutionIntent,
     mut transport: impl FnMut(SurfaceCommand) -> Result<SurfaceReply, ClientError>,
 ) -> Result<SurfaceReply, ClientError> {
-    index_with_journal_recovery(paths, package, execution_intent, |dispatch| {
-        transport(dispatch.command())
+    index_with_journal_recovery(paths, package, execution_intent, |dispatch| match dispatch {
+        IndexJournalDispatch::Observe(operation_key) => transport(
+            SurfaceCommand::IndexOperationStatus { operation_key },
+        ),
+        IndexJournalDispatch::Start(start) => {
+            // This adapter is the actual transport boundary. The recovery API's
+            // callback can still refuse its attachment before sending anything.
+            let command = start.command();
+            let SurfaceCommand::IndexOperationStart { operation_key, .. } = &command else {
+                unreachable!("the held start has one exact command shape");
+            };
+            let operation_key = *operation_key;
+            exchange(&mut transport, command).map_err(|cause| match cause {
+                ClientError::IndexOperationDeliveryUnknown { operation_key: observed, .. }
+                    if observed == operation_key => cause,
+                ClientError::RequestCancelled(_) | ClientError::CommandFailed(_) => cause,
+                cause => ClientError::IndexOperationDeliveryUnknown {
+                    operation_key,
+                    cause: Box::new(cause),
+                },
+            })
+        }
     })
 }
 
@@ -892,7 +899,7 @@ mod tests {
                 },
             )
             .expect_err("same key cannot authenticate a different request");
-            assert!(matches!(&error, ClientError::IndexOperationDeliveryUnknown { cause, .. } if matches!(cause.as_ref(), ClientError::Protocol(_))));
+            assert!(matches!(&error, ClientError::Protocol(_)));
             assert_eq!(calls, if late { 2 } else { 1 });
             assert_eq!(fixture.claims(), [observed_claim.expect("original claim")]);
         }
@@ -944,7 +951,7 @@ mod tests {
                 },
             )
             .expect_err("changed attachment/claim cannot authorize replay");
-            assert!(matches!(&error, ClientError::IndexOperationDeliveryUnknown { cause, .. } if matches!(cause.as_ref(), ClientError::Io(_))));
+            assert!(matches!(&error, ClientError::Io(_)));
             assert_eq!(calls, 1);
             let mut expected = observed_claim.expect("original claim");
             if change_claim {
