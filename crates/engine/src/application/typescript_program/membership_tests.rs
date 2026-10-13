@@ -1304,7 +1304,7 @@ fn configured_skip_lib_check_matches_sdk_diagnostics_without_losing_declaration_
     let mut previous = None;
     for wrong_application in [false, true] {
         let app = format!(
-            "import {{ value }} from '../types/diagnostic'; export const actual: {} = value.value;\n",
+            "import {{ value, Broken }} from '../types/diagnostic'; export type UsedBroken = Broken; export const actual: {} = value.value;\n",
             if wrong_application {
                 "string"
             } else {

@@ -3931,7 +3931,7 @@ fn configured_declaration_diagnostics_preserve_members_types_and_application_err
         let files = vec![
             (
                 "src/main.ts".to_owned(),
-                "import { value } from '../types/dep'; export const wrong: string = value.value;"
+                "import { value, Broken } from '../types/dep'; export type UsedBroken = Broken; export const wrong: string = value.value;"
                     .to_owned(),
             ),
             ("types/dep.d.ts".to_owned(), declaration.to_owned()),
