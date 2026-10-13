@@ -26,6 +26,64 @@ fn assert_same_results(actual: &CheckResult, expected: &CheckResult) {
     }
 }
 
+#[test]
+fn checker_partition_preserves_distinct_missing_global_diagnostics() {
+    let program = compile_files_with_libs(
+        vec![(
+            "src/main.ts".to_owned(),
+            "export const value = 1;".to_owned(),
+        )],
+        &[],
+    );
+    let options = CheckerOptions {
+        no_lib: true,
+        module: tsz_common::common::ModuleKind::ESNext,
+        ..CheckerOptions::default()
+    };
+    let plan = ParallelCheckPlan::build(
+        &program,
+        &options,
+        &[],
+        ProjectSemanticOptions::declaration_scoped(),
+        None,
+        None,
+    )
+    .unwrap();
+    let result = plan.check_file_partition(0, &program.files).unwrap();
+    let globals = result[0]
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == 2318)
+        .collect::<Vec<_>>();
+    assert_eq!(globals.len(), 10, "{:?}", result[0].diagnostics);
+    for name in [
+        "Array",
+        "Boolean",
+        "CallableFunction",
+        "Function",
+        "IArguments",
+        "NewableFunction",
+        "Number",
+        "Object",
+        "RegExp",
+        "String",
+    ] {
+        assert_eq!(
+            globals
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic.message_text == format!("Cannot find global type '{name}'.")
+                })
+                .count(),
+            1,
+            "each missing global keeps its distinct native message"
+        );
+    }
+    assert!(globals.iter().all(|diagnostic| {
+        diagnostic.file.is_empty() && diagnostic.start == 0 && diagnostic.length == 0
+    }));
+}
+
 fn in_memory_lib() -> Arc<LibFile> {
     in_memory_lib_named("lib/custom.d.ts")
 }
@@ -1314,6 +1372,127 @@ fn ordinary_import_none_mode_keeps_its_exact_file_and_members() {
             );
         }
     }
+}
+
+#[test]
+fn refused_import_recovery_keeps_explicit_unknown_semantics() {
+    let program = compile_files_with_libs(
+        vec![(
+            "src/main.ts".to_owned(),
+            "import type { Shape } from 'absent'; declare const unresolved: Shape; \
+             declare const explicit: unknown; export function missing(): number { return unresolved.value; } \
+             export function known(): number { return explicit.value; }".to_owned(),
+        )],
+        &[],
+    );
+    let resolutions = [ProjectModuleResolution {
+        importer_path: "src/main.ts".to_owned(),
+        specifier: "absent".to_owned(),
+        request_kind: ProjectModuleRequestKind::EsmImport,
+        resolution_mode: None,
+        target: ProjectModuleResolutionTarget::Unresolved,
+    }];
+    let options = CheckerOptions {
+        module: tsz_common::common::ModuleKind::ESNext,
+        ..CheckerOptions::default()
+    };
+    let plan = ParallelCheckPlan::build(
+        &program,
+        &options,
+        &[],
+        ProjectSemanticOptions::declaration_scoped(),
+        Some(Arc::new(
+            build_project_module_resolution_outcomes(&program, &resolutions).unwrap(),
+        )),
+        None,
+    )
+    .unwrap();
+    let checked = plan.check_file_partition(0, &program.files).unwrap();
+    assert_eq!(
+        checked[0]
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>(),
+        [2307, 18046],
+        "{:?}",
+        checked[0].diagnostics
+    );
+    assert!(checked[0].diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == 18046 && diagnostic.message_text == "'explicit' is of type 'unknown'."
+    }));
+    let file = &program.files[0];
+    let usage = file
+        .arena
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(raw, node)| {
+            file.arena
+                .get_identifier(node)
+                .filter(|identifier| identifier.escaped_text == "explicit")
+                .map(|_| NodeIndex(raw as u32))
+        })
+        .max_by_key(|&index| file.arena.get(index).unwrap().pos)
+        .unwrap();
+    assert_eq!(
+        plan.with_bound_file_checker_and_types(0, file, |checker, _, _, _| {
+            checker.get_type_of_node(usage)
+        }),
+        TypeId::UNKNOWN,
+        "explicit source unknown is never recovery-any or ERROR"
+    );
+}
+
+#[test]
+fn admitted_import_of_explicit_unknown_keeps_unknown_semantics() {
+    let program = compile_files_with_libs(
+        vec![
+            ("src/main.ts".to_owned(),
+                "import type { Shape } from './dep'; declare const explicit: Shape; export function read(): number { return explicit.value; }".to_owned()),
+            ("src/dep.ts".to_owned(), "export type Shape = unknown;".to_owned()),
+        ],
+        &[],
+    );
+    let resolutions = [ProjectModuleResolution {
+        importer_path: "src/main.ts".to_owned(),
+        specifier: "./dep".to_owned(),
+        request_kind: ProjectModuleRequestKind::EsmImport,
+        resolution_mode: None,
+        target: ProjectModuleResolutionTarget::File {
+            path: "src/dep.ts".to_owned(),
+        },
+    }];
+    let options = CheckerOptions {
+        module: tsz_common::common::ModuleKind::ESNext,
+        ..CheckerOptions::default()
+    };
+    let plan = ParallelCheckPlan::build(
+        &program,
+        &options,
+        &[],
+        ProjectSemanticOptions::declaration_scoped(),
+        Some(Arc::new(
+            build_project_module_resolution_outcomes(&program, &resolutions).unwrap(),
+        )),
+        None,
+    )
+    .unwrap();
+    let checked = plan.check_file_partition(0, &program.files[..1]).unwrap();
+    assert_eq!(
+        checked[0]
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>(),
+        [18046],
+        "{:?}",
+        checked[0].diagnostics
+    );
+    assert_eq!(
+        checked[0].diagnostics[0].message_text,
+        "'explicit' is of type 'unknown'."
+    );
 }
 
 #[test]

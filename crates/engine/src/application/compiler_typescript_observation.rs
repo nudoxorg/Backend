@@ -45,9 +45,16 @@ impl TszExecutionCheckpoint for ObservedTypeScriptBudget<'_> {
         let result = self.budget.checkpoint(work_units);
         if let Err(stop) = result {
             if !self.stop_observed.swap(true, Ordering::AcqRel) {
+                // A rejected charge does not subtract from the remaining
+                // allowance. Keep its requested size and one counter snapshot
+                // so exhaustion cannot be mistaken for spending the full cap.
+                let remaining = self.budget.remaining_work_units();
                 tracing::info!(target: "compiler.typescript_project", transition = "stopped",
                     reason = ?stop, project_elapsed_millis = self.started.elapsed().as_millis() as u64,
-                    project_remaining_work_units = self.budget.remaining_work_units(),
+                    project_initial_work_units = self.initial_work,
+                    project_attempted_work_units = work_units,
+                    project_charged_work_units = self.initial_work.saturating_sub(remaining),
+                    project_remaining_work_units = remaining,
                     "native TypeScript project execution stopped");
             }
         }
@@ -74,6 +81,7 @@ impl TszExecutionCheckpoint for ObservedTypeScriptBudget<'_> {
             file_index = event.file.map(|file| file.index),
             file = event.file.map(|file| file.path), worker = thread.name(),
             project_elapsed_millis = self.started.elapsed().as_millis() as u64,
+            project_initial_work_units = self.initial_work,
             project_charged_work_units = self.initial_work.saturating_sub(remaining),
             project_remaining_work_units = remaining, latched_stop = ?self.budget.stop_reason(),
             "native TypeScript project boundary");

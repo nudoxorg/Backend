@@ -115,6 +115,15 @@ impl<'a> CheckerState<'a> {
             ) {
                 Some(crate::context::ResolvedModuleRequestOutcome::File(_)) => {
                     configured_file_alias = true;
+                    if request.kind == crate::context::ResolutionRequestKind::CjsRequire
+                        && symbol.import_name().is_none()
+                        && let Some(target) = self.resolve_member_for_selected_request(
+                            self.ctx.select_module_request(request)?,
+                            "export=",
+                        )
+                    {
+                        return self.resolve_alias_symbol(target, visited_aliases);
+                    }
                     if let Some(export_name) = symbol.import_name().filter(|name| *name != "*") {
                         let request = self.ctx.select_module_request(request)?;
                         let selected =
@@ -124,6 +133,13 @@ impl<'a> CheckerState<'a> {
                 }
                 Some(crate::context::ResolvedModuleRequestOutcome::External { .. }) => {
                     let selected = self.ctx.select_module_request(request)?;
+                    if request.kind == crate::context::ResolutionRequestKind::CjsRequire
+                        && symbol.import_name().is_none()
+                        && let Some(target) =
+                            self.resolve_member_for_selected_request(selected, "export=")
+                    {
+                        return self.resolve_alias_symbol(target, visited_aliases);
+                    }
                     if let Some(export_name) = symbol.import_name().filter(|name| *name != "*") {
                         let target =
                             self.resolve_member_for_selected_request(selected, export_name)?;

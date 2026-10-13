@@ -45,6 +45,76 @@ pub fn compile_files_with_libs(
 // Parallel Type Checking
 // =============================================================================
 
+/// Complete native-record ordering for exact deduplication. The shared TSC
+/// comparator intentionally omits presentation fields; its equal rows still
+/// need stable category/related-presentation ties before equal records group.
+fn compare_native_diagnostic_records(
+    left: &Diagnostic,
+    right: &Diagnostic,
+) -> std::cmp::Ordering {
+    left.compare(right)
+        .then_with(|| (left.category as u8).cmp(&(right.category as u8)))
+        .then_with(|| {
+            left.related_information
+                .iter()
+                .zip(&right.related_information)
+                .map(|(left, right)| {
+                    (left.category as u8)
+                        .cmp(&(right.category as u8))
+                        .then_with(|| left.depth.cmp(&right.depth))
+                        .then_with(|| (left.kind as u8).cmp(&(right.kind as u8)))
+                })
+                .find(|ordering| ordering.is_ne())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+}
+
+#[cfg(test)]
+#[test]
+fn parallel_native_diagnostic_records_preserve_comparator_ties() {
+    use tsz_common::diagnostics::{DiagnosticCategory, RelatedInformationKind};
+    let mut base = Diagnostic::error("src/main.ts", 4, 1, "same", 2304);
+    base.related_information.push(Diagnostic::related_message(
+        2304,
+        "src/main.ts",
+        5,
+        1,
+        "related",
+    ));
+    let mut category = base.clone();
+    category.category = DiagnosticCategory::Warning;
+    let mut related_category = base.clone();
+    related_category.related_information[0].category = DiagnosticCategory::Error;
+    let mut depth = base.clone();
+    depth.related_information[0].depth = 1;
+    let mut kind = base.clone();
+    kind.related_information[0].kind = RelatedInformationKind::LocationPointer;
+    let unique = [base.clone(), category, related_category, depth, kind];
+    assert!(unique.iter().all(|record| record.compare(&base).is_eq()));
+    let mut rows = vec![
+        unique[0].clone(),
+        unique[1].clone(),
+        unique[0].clone(),
+        unique[2].clone(),
+        unique[3].clone(),
+        unique[1].clone(),
+        unique[4].clone(),
+        unique[0].clone(),
+        unique[2].clone(),
+    ];
+    let mut reversed = rows.iter().rev().cloned().collect::<Vec<_>>();
+    ParallelCheckPlan::sort_and_dedup(&mut rows);
+    ParallelCheckPlan::sort_and_dedup(&mut reversed);
+    assert_eq!(
+        rows, reversed,
+        "full record order is independent of arrival order"
+    );
+    assert_eq!(rows.len(), unique.len());
+    for expected in unique {
+        assert_eq!(rows.iter().filter(|actual| **actual == expected).count(), 1);
+    }
+}
+
 use crate::checker::context::{CheckerOptions, LibContext};
 use crate::checker::diagnostics::Diagnostic;
 use crate::checker::state::CheckerState;
@@ -1246,11 +1316,12 @@ impl<'a> ParallelCheckPlan<'a> {
         }
     }
 
-    /// Sort by position then deduplicate by `(start, code)` for deterministic
-    /// output regardless of thread scheduling.
+    /// Sort by the diagnostic comparator and remove only identical records.
+    /// Distinct missing globals can share position zero and TS2318, while
+    /// different member faults can share an anchor and diagnostic code.
     fn sort_and_dedup(diagnostics: &mut Vec<Diagnostic>) {
-        diagnostics.sort_by(|a, b| a.compare(b));
-        diagnostics.dedup_by(|a, b| a.start == b.start && a.code == b.code);
+        diagnostics.sort_by(compare_native_diagnostic_records);
+        diagnostics.dedup();
     }
 
     /// Lend a project-configured checker with all shared program context.
@@ -1383,12 +1454,13 @@ impl<'a> ParallelCheckPlan<'a> {
         mut diagnostics: Vec<Diagnostic>,
     ) -> FileCheckResult {
         // Sort diagnostics by position for deterministic output within each file.
-        diagnostics.sort_by(|a, b| a.compare(b));
+        diagnostics.sort_by(compare_native_diagnostic_records);
 
         suppress_parallel_ts2339_cascade_diagnostics(file.arena.as_ref(), &mut diagnostics);
 
-        // Deduplicate within each file: same (start, code) = same diagnostic.
-        diagnostics.dedup_by(|a, b| a.start == b.start && a.code == b.code);
+        // Preserve distinct messages, locations, lengths and related evidence
+        // even when two diagnostics have the same anchor and code.
+        diagnostics.dedup();
 
         FileCheckResult {
             file_idx,

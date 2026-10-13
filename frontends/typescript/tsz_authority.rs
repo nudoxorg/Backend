@@ -2919,10 +2919,23 @@ mod declaration_policy_tests {
     #[test]
     fn resolved_declaration_policy_rechecks_diagnostics_without_removing_sources_or_syntax() {
         let declaration = "export interface Broken { missing: DoesNotExist; }";
-        let sources = vec![TszFileInput {
-            path: "types/dep.d.ts".into(),
-            source: declaration.into(),
-        }];
+        // noLib makes required globals a program obligation independent of
+        // the declaration member under test. Supply this unit program's own
+        // globals explicitly; these are source inputs, not a substitute SDK.
+        let globals = "interface Object {} interface Function {} interface CallableFunction {} \
+            interface NewableFunction {} interface String {} interface Number {} \
+            interface Boolean {} interface RegExp {} interface IArguments {} \
+            interface Array<T> { length: number; [n: number]: T; }";
+        let sources = vec![
+            TszFileInput {
+                path: "types/dep.d.ts".into(),
+                source: declaration.into(),
+            },
+            TszFileInput {
+                path: "types/globals.d.ts".into(),
+                source: globals.into(),
+            },
+        ];
         let mut options = TszProjectOptions {
             checker: checker_options_from_compiler_api_json(
                 r#"{"compilerOptions":{"skipLibCheck":true,"noLib":true}}"#,
@@ -2946,6 +2959,11 @@ mod declaration_policy_tests {
             authority.project().unwrap().source_text("types/dep.d.ts"),
             Some(declaration)
         );
+        assert_eq!(
+            authority.project().unwrap().source_text("types/globals.d.ts"),
+            Some(globals)
+        );
+        assert_eq!(authority.project().unwrap().program.files.len(), 2);
         options.checker = checker_options_from_compiler_api_json(
             r#"{"compilerOptions":{"skipLibCheck":false,"noLib":true}}"#,
         )
@@ -2967,10 +2985,16 @@ mod declaration_policy_tests {
             r#"{"compilerOptions":{"skipLibCheck":true,"noLib":true}}"#,
         )
         .unwrap();
-        let invalid = vec![TszFileInput {
-            path: "types/dep.d.ts".into(),
-            source: "export interface Broken { value: ; }".into(),
-        }];
+        let invalid = vec![
+            TszFileInput {
+                path: "types/dep.d.ts".into(),
+                source: "export interface Broken { value: ; }".into(),
+            },
+            TszFileInput {
+                path: "types/globals.d.ts".into(),
+                source: globals.into(),
+            },
+        ];
         authority.update(invalid, options, &[]).unwrap();
         assert!(
             !authority
