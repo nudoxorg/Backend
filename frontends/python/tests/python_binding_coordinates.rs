@@ -133,3 +133,72 @@ fn native_rebound_constants_encode_the_exact_current_binding_source_site() {
     }
     std::fs::remove_dir_all(root).expect("fixture cleanup");
 }
+
+#[test]
+fn native_class_valued_binding_reads_do_not_invent_external_constructor_targets() {
+    let root = std::env::temp_dir().join(format!(
+        "nudox-python-class-valued-binding-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let checker = NativePythonProjectAuthority::admit().unwrap();
+    let compat = "text_type = bytes\ntext_type = str\n";
+    let caller =
+        "from . import compat\nselected = compat.text_type\nconstructed = compat.text_type()\n";
+    let sources = [
+        PythonProjectSource {
+            relative_path: "pkg/__init__.py",
+            source: "",
+        },
+        PythonProjectSource {
+            relative_path: "pkg/compat.py",
+            source: compat,
+        },
+        PythonProjectSource {
+            relative_path: "pkg/client.py",
+            source: caller,
+        },
+    ];
+    let cancelled = AtomicBool::new(false);
+    for version in [PythonVersion::Python313, PythonVersion::Python314] {
+        let control = || PythonProjectControl {
+            cancelled: &cancelled,
+            deadline: Instant::now() + Duration::from_secs(30),
+        };
+        let report = checker
+            .analyze_project(&root, "pkg", &sources, version, control())
+            .unwrap();
+        let symbols = &report.module("pkg/client.py").unwrap().symbols;
+        let read_position = caller.find("compat.text_type").unwrap() + "compat.".len();
+        let call_position = caller.rfind("compat.text_type").unwrap() + "compat.".len();
+        let read = symbols
+            .iter()
+            .find(|symbol| symbol.span.start as usize == read_position)
+            .unwrap();
+        let SymbolOutcome::Definition {
+            target,
+            callee: None,
+        } = &read.outcome
+        else {
+            panic!("genuine native module-variable read is retained");
+        };
+        assert_eq!(target.relative_path.as_ref(), "pkg/compat.py");
+        let coordinate = PythonSourceCoordinate::decode(&target.source_coordinate)
+            .unwrap()
+            .0;
+        assert_eq!(
+            coordinate.declaration_start as usize,
+            compat.rfind("text_type = str").unwrap()
+        );
+        let call = symbols
+            .iter()
+            .find(|symbol| symbol.span.start as usize == call_position)
+            .unwrap();
+        assert!(
+            matches!(call.outcome, SymbolOutcome::Unresolved),
+            "a variable site cannot supply external constructor authority"
+        );
+        report.witness().validate_current(control()).unwrap();
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}

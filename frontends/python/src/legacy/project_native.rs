@@ -786,7 +786,17 @@ pub(super) fn analyze(
                     targets.push(target);
                 }
             }
-            let primary = if is_class {
+            // A non-call read can have a native module-variable definition even
+            // when its value is an external ClassDef. A call still requires the
+            // captured class declaration; its variable cannot stand in for an
+            // uncaptured constructor or callable.
+            let primary = if is_class
+                && (!bindings.is_empty()
+                    || matches!(
+                        occurrence.kind,
+                        OccurrenceKind::FunctionCall | OccurrenceKind::MethodCall
+                    ))
+            {
                 bindings.as_slice()
             } else {
                 callees.as_slice()
@@ -1306,7 +1316,7 @@ fn captured_finder(
     let mut effective = BTreeMap::new();
     let mut scope_identity = blake3::Hasher::new();
     scope_identity.update(b"compiler.python.effective-config-scope.v1\0");
-    scope_identity.update(b"root-isolated;named-package-import-root.v1;captured-diagnostic-baseline.v1;native-priority;candidate-kind+presence+absence;namespace-membership-only+compiled-shadow-unavailable-rdeps+binding-site-compiled-cause+parse-only-tainted-diagnostics+regular-file-finder+opaque-link-frontier+native-current-module-binding+borrowed-native-config-cause.v8;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
+    scope_identity.update(b"root-isolated;named-package-import-root.v1;captured-diagnostic-baseline.v1;native-priority;candidate-kind+presence+absence;namespace-membership-only+compiled-shadow-unavailable-rdeps+binding-site-compiled-cause+parse-only-tainted-diagnostics+regular-file-finder+opaque-link-frontier+native-current-module-binding+borrowed-native-config-cause+class-valued-module-read.v9;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
     for directory in directories {
         let mut candidates = Vec::new();
         for (depth, ancestor) in directory
