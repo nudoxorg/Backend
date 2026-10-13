@@ -68,7 +68,7 @@ mod lib_queries;
 mod module_entity;
 mod package_resolution;
 mod program_context;
-pub use program_context::ProgramContext;
+pub use program_context::{ProgramContext, SealedProgramGlobalIndexes};
 mod request_cache;
 mod resolver;
 pub(crate) use resolver::{BoundModuleRequest, SelectedModuleRequest, SourceModuleAliasKind};

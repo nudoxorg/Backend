@@ -1858,7 +1858,7 @@ fn every_interior_byte_of_a_rendered_backtick_unicode_row_backs_up_to_its_start(
 fn result_budget_shortening_preserves_complete_summary_coordinate_rows() {
     let (text, coordinates) = summary_rows_fixture(100);
     let structured = json!({
-        "records": "s".repeat(41_000),
+        "records": " ".repeat(41_000),
         "nextCursor": "owner-cursor-remains-structured"
     });
     let result = tool_result(&text, structured.clone(), false);
@@ -1870,6 +1870,11 @@ fn result_budget_shortening_preserves_complete_summary_coordinate_rows() {
     assert!(!shown.is_empty());
     assert!(shown.len() < coordinates.len());
     assert_eq!(shown, coordinates[..shown.len()]);
+    assert!(preview.contains(&format!(
+        "100 row(s) on this page; showing {} exact coordinate(s); {} omitted",
+        shown.len(),
+        100 - shown.len()
+    )));
     assert!(preview.contains("\n\n… readable preview shortened"));
     assert!(!preview.contains("owner-cursor-remains-structured"));
 }
@@ -1878,7 +1883,7 @@ fn result_budget_shortening_preserves_complete_summary_coordinate_rows() {
 fn final_rpc_budget_shortening_preserves_complete_summary_coordinate_rows() {
     let (text, coordinates) = summary_rows_fixture(100);
     let structured = json!({
-        "records": "s".repeat(34_000),
+        "records": " ".repeat(34_000),
         "nextCursor": "owner-cursor-remains-structured"
     });
     let result = tool_result(&text, structured.clone(), false);
@@ -1900,6 +1905,11 @@ fn final_rpc_budget_shortening_preserves_complete_summary_coordinate_rows() {
     assert!(!shown.is_empty());
     assert!(shown.len() < coordinates.len());
     assert_eq!(shown, coordinates[..shown.len()]);
+    assert!(preview.contains(&format!(
+        "100 row(s) on this page; showing {} exact coordinate(s); {} omitted",
+        shown.len(),
+        100 - shown.len()
+    )));
     assert!(!preview.contains("owner-cursor-remains-structured"));
 }
 
@@ -7780,5 +7790,112 @@ mod conditional_progress_tests {
             assert_eq!(result["isError"], true);
             assert!(server.product.surface_commands.is_empty());
         }
+    }
+}
+
+#[test]
+fn all_mcp_record_details_preserve_useful_text_and_complete_structured_identity() {
+    for tool in [
+        "backend.search",
+        "backend.resolve",
+        "backend.graph",
+        "backend.related",
+    ] {
+        for detail in ["summary", "standard", "full"] {
+            let mut server = ready(Fake::default());
+            let arguments = if matches!(tool, "backend.search" | "backend.resolve") {
+                json!({"query":"ferris", "limit":1, "detail":detail})
+            } else {
+                json!({"coordinate":DECLARATION, "detail":detail})
+            };
+            let response = request(
+                &mut server,
+                "tools/call",
+                &json!({"name":tool,"arguments":arguments}),
+            );
+            assert_context_bounded(&response);
+            let result = &response["result"];
+            assert_eq!(result["isError"], false, "{tool}: {response}");
+            let typed = &result["structuredContent"];
+            assert_eq!(typed["detail"], detail);
+            let records = typed["records"].as_array().expect("complete rows");
+            let preview = text_of(result);
+            let coordinates = summary_coordinates(&preview);
+            assert!(!coordinates.is_empty(), "{tool}/{detail}: {preview}");
+            assert_eq!(
+                coordinates,
+                records
+                    .iter()
+                    .map(|row| row["identity"]["coordinate"]
+                        .as_str()
+                        .expect("exact operand")
+                        .to_owned())
+                    .collect::<Vec<_>>()
+            );
+            let decoded: backend_present::RecordListDto =
+                serde_json::from_value(typed.clone()).expect("stable typed row projection");
+            assert_eq!(decoded.records.len(), records.len());
+            assert!(preview.contains(&format!(
+                "showing {} exact coordinate(s); 0 omitted",
+                coordinates.len()
+            )));
+        }
+    }
+}
+
+#[test]
+fn final_record_preview_shrink_preserves_page_footer_across_ids_and_transports() {
+    let (mut text, coordinates) = summary_rows_fixture(100);
+    text.push_str("Continue `backend.graph` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n");
+    let structured = json!({"records": " ".repeat(32_000), "nextCursor": "exact-owner-token"});
+    for transport in [ResponseTransport::StdioLine, ResponseTransport::HttpBody] {
+        for id in [
+            json!("אב\"\\🙂".repeat(1000)),
+            json!("request-".to_owned() + &"r".repeat(8_000)),
+        ] {
+            let response = bound_rpc_reply(
+                success(id.clone(), tool_result(&text, structured.clone(), false)),
+                transport,
+            );
+            assert!(wire_fits(&response, transport), "{response}");
+            assert_eq!(response["id"], id);
+            assert_eq!(response["result"]["structuredContent"], structured);
+            let preview = text_of(&response["result"]);
+            let shown = summary_coordinates(&preview);
+            assert_eq!(shown, coordinates[..shown.len()]);
+            assert!(preview.contains(&format!(
+                "showing {} exact coordinate(s); {} omitted",
+                shown.len(),
+                100 - shown.len()
+            )));
+            assert!(preview.contains("Continue `backend.graph` with the same arguments"));
+            assert!(!preview.contains("exact-owner-token"));
+            assert!(wire_tokens(&response).expect("named tokenizer") <= MCP_CL100K_TOKEN_LIMIT);
+        }
+    }
+}
+
+#[test]
+fn dense_record_budget_witnesses_remain_named_token_refusals() {
+    let (text, _) = summary_rows_fixture(100);
+    for bytes in [34_000, 41_000] {
+        let structured =
+            json!({"records":"s".repeat(bytes),"nextCursor":"owner-cursor-remains-structured"});
+        let candidate = success(json!(71), tool_result(&text, structured, false));
+        assert!(wire_tokens(&candidate).expect("reference dense witness") > MCP_CL100K_TOKEN_LIMIT);
+        let response = bound_rpc_reply(candidate, ResponseTransport::StdioLine);
+        assert_eq!(response["id"], 71);
+        assert!(wire_fits(&response, ResponseTransport::StdioLine));
+        assert!(response["error"].is_object());
+        assert_eq!(
+            response["error"]["data"]["structuredContent"]["cause"],
+            "oversized"
+        );
+        assert!(
+            response["error"]["data"]["detail"]
+                .as_str()
+                .expect("typed refusal")
+                .contains(CL100K_POLICY)
+        );
     }
 }

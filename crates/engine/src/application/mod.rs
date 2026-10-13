@@ -6,6 +6,7 @@
 mod cluster_coordinator;
 mod compiler;
 mod compiler_typescript_failure;
+mod compiler_typescript_observation;
 mod config;
 mod documentation;
 mod embedding_provision;

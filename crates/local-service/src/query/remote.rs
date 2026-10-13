@@ -2433,16 +2433,14 @@ printf '{{"abi":1,"dimensions":2,"values":[1.0,0.0]}}'
         let model = directory.join("model.bin");
         let tokenizer = directory.join("tokenizer.bin");
         let calls = directory.join("calls.txt");
-        let interpreter = Command::new("python3")
-            .arg("-c")
-            .arg("import sys; print(sys.executable)")
-            .output()
-            .expect("python interpreter");
-        assert!(interpreter.status.success());
-        let interpreter = String::from_utf8(interpreter.stdout)
-            .expect("interpreter path")
-            .trim()
-            .to_owned();
+        // Use the same explicit, canonical interpreter custody as the local
+        // BEM2 controls. A managed test environment can provide a real Python
+        // executable without exporting a python3 alias on its restricted PATH.
+        // Invalid explicit selections still fail closed; the supervised batch
+        // activation and all one-producer/cache assertions remain unchanged.
+        let interpreter = crate::builtin::query::local_semantic::tests::protocol_fixture_python()
+            .expect("configured real BEM2 protocol interpreter");
+        let interpreter = interpreter.to_str().expect("UTF-8 fixture interpreter path");
         let script = format!(
             r#"#!{}
 import struct, sys

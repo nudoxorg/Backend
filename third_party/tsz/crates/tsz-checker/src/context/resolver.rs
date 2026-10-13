@@ -1170,29 +1170,10 @@ impl<'a> CheckerContext<'a> {
         source_file_idx: usize,
         specifier: &str,
     ) -> bool {
-        let Some(outcomes) = self.project_module_resolution_outcomes.as_ref() else {
-            return false;
-        };
-        let mut identity: Option<&str> = None;
-        let mut saw_request = false;
-        for candidate in module_specifier_candidates(specifier) {
-            for ((file_idx, request_specifier, _, _), outcome) in outcomes.iter() {
-                if *file_idx != source_file_idx || request_specifier != &candidate {
-                    continue;
-                }
-                saw_request = true;
-                let crate::context::ResolvedModuleRequestOutcome::External { identity: current } =
-                    outcome
-                else {
-                    return false;
-                };
-                if identity.is_some_and(|known| known != current) {
-                    return false;
-                }
-                identity = Some(current);
-            }
-        }
-        saw_request && identity.is_some()
+        matches!(
+            self.project_module_consensus_for_specifier(source_file_idx, specifier),
+            Some(crate::context::ResolvedModuleRequestOutcome::External { .. })
+        )
     }
 
     /// Return a file target only when every explicit request for this
@@ -1202,25 +1183,61 @@ impl<'a> CheckerContext<'a> {
         source_file_idx: usize,
         specifier: &str,
     ) -> Option<usize> {
+        match self.project_module_consensus_for_specifier(source_file_idx, specifier) {
+            Some(crate::context::ResolvedModuleRequestOutcome::File(target)) => Some(*target),
+            _ => None,
+        }
+    }
+
+    /// A generic lookup cannot recover lost syntax, but it can verify that
+    /// every admitted kind/mode agrees. Probe the complete finite key domain
+    /// instead of scanning unrelated requests across the whole program.
+    fn project_module_consensus_for_specifier(
+        &self,
+        source_file_idx: usize,
+        specifier: &str,
+    ) -> Option<&crate::context::ResolvedModuleRequestOutcome> {
         let outcomes = self.project_module_resolution_outcomes.as_ref()?;
-        let mut target: Option<usize> = None;
-        let mut saw_request = false;
+        self.types
+            .execution_checkpoint(1 + specifier.len() as u64)
+            .ok()?;
+        let mut agreed: Option<&crate::context::ResolvedModuleRequestOutcome> = None;
         for candidate in module_specifier_candidates(specifier) {
-            for ((file_idx, request_specifier, _, _), outcome) in outcomes.iter() {
-                if *file_idx != source_file_idx || request_specifier != &candidate {
-                    continue;
+            let mut key = (
+                source_file_idx,
+                candidate,
+                None,
+                ResolutionRequestKind::EsmImport,
+            );
+            // Keep every variant of ResolutionRequestKind in this domain,
+            // including dynamic imports and the mode-inapplicable None key.
+            for kind in [
+                ResolutionRequestKind::EsmImport,
+                ResolutionRequestKind::DynamicImport,
+                ResolutionRequestKind::CjsRequire,
+                ResolutionRequestKind::EsmReExport,
+            ] {
+                key.3 = kind;
+                for mode in [
+                    None,
+                    Some(ResolutionModeOverride::Import),
+                    Some(ResolutionModeOverride::Require),
+                ] {
+                    self.types
+                        .execution_checkpoint(1 + key.1.len() as u64)
+                        .ok()?;
+                    key.2 = mode;
+                    if let Some(outcome) = outcomes.get(&key) {
+                        if agreed.is_some_and(|known| known != outcome) {
+                            return None;
+                        }
+                        agreed = Some(outcome);
+                    }
                 }
-                let crate::context::ResolvedModuleRequestOutcome::File(current) = outcome else {
-                    return None;
-                };
-                if target.is_some_and(|known| known != *current) {
-                    return None;
-                }
-                target = Some(*current);
-                saw_request = true;
             }
         }
-        if saw_request { target } else { None }
+        self.types.execution_checkpoint(0).ok()?;
+        agreed
     }
 
     /// A compiler-owned `None` outcome means mode is inapplicable to this exact

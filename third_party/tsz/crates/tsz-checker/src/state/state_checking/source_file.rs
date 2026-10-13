@@ -513,6 +513,19 @@ impl CheckerState<'_> {
             file = %self.ctx.file_name
         )
         .entered();
+        // Observe only existing boundaries: no extra checkpoint/type/cache work.
+        let types = self.ctx.types;
+        let file_name = self.ctx.file_name.clone();
+        let observed_file = Some(tsz_common::ProjectExecutionFile {
+            index: self.ctx.current_file_idx,
+            path: &file_name,
+        });
+        let observe = |event: tsz_common::ProjectExecutionEvent<'_>| types.observe_execution(event);
+        let preparation_span = tsz_common::ProjectExecutionSpan::with_observer(
+            &observe,
+            tsz_common::ProjectExecutionPhase::SourcePreparation,
+            observed_file,
+        );
         // Open a deterministic, per-file naming scope for inference placeholders
         // so any `__infer_*` witness that surfaces in a diagnostic is stable
         // across runs and across parallel file checks.
@@ -530,6 +543,12 @@ impl CheckerState<'_> {
             return;
         };
 
+        preparation_span.returned();
+        let statements_span = tsz_common::ProjectExecutionSpan::with_observer(
+            &observe,
+            tsz_common::ProjectExecutionPhase::SourceStatements,
+            observed_file,
+        );
         // TS2880 file-wide dynamic-import suppression fact (#16220): must be
         // computed before any statement checking so it is available
         // order-independently to every dynamic-import `assert` occurrence,
@@ -662,6 +681,12 @@ impl CheckerState<'_> {
         self.ctx.is_unreachable = prev_unreachable;
         self.ctx.has_reported_unreachable = prev_reported;
 
+        statements_span.returned();
+        let post_span = tsz_common::ProjectExecutionSpan::with_observer(
+            &observe,
+            tsz_common::ProjectExecutionPhase::SourcePostchecks,
+            observed_file,
+        );
         if self.is_js_file() && self.ctx.should_resolve_jsdoc() {
             self.recheck_checked_js_import_diagnostics(&sf.statements.nodes);
         }
@@ -905,6 +930,7 @@ impl CheckerState<'_> {
 
         self.inject_conditional_types1_indexed_access_narrowing_diagnostic(&sf.text);
         self.suppress_incorrectly_extends_on_simultaneous_extend_conflict();
+        post_span.returned();
     }
 
     /// Grammar pass for misplaced `unique symbol` type operators — the

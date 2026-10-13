@@ -183,6 +183,7 @@ fn native_failure(error: &TszAuthorityError) -> F {
             TszProjectQuerySessionError::MissingProjectModuleResolutions => {
                 F::NativeSessionMissingProjectModuleResolutions
             }
+            TszProjectQuerySessionError::ExecutionCheckpointMismatch => F::NativeSessionExecutionCheckpointMismatch,
             TszProjectQuerySessionError::FileIndexOutOfRange { .. } => {
                 F::NativeSessionFileIndexOutOfRange
             }

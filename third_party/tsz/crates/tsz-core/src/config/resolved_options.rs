@@ -942,6 +942,11 @@ pub fn resolve_compiler_options(
     }
     if let Some(skip_lib_check) = options.skip_lib_check {
         resolved.skip_lib_check = skip_lib_check;
+        resolved.checker.declaration_diagnostics = if skip_lib_check {
+            tsz_common::options::checker::DeclarationDiagnosticPolicy::SkipSemantic
+        } else {
+            tsz_common::options::checker::DeclarationDiagnosticPolicy::Check
+        };
     }
     if let Some(skip_default_lib_check) = options.skip_default_lib_check {
         resolved.skip_default_lib_check = skip_default_lib_check;

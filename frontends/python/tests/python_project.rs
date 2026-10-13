@@ -466,8 +466,16 @@ fn native_compiled_dependency_is_typed_unavailable_with_a_membership_witness() {
         &source[gap.span.start as usize..gap.span.end as usize],
         "native_ext"
     );
-    assert!(report.diagnostics().iter().all(|diagnostic| diagnostic.relative_path.as_ref() != "core.py"), "a mirror missing-import error is not authority for an actually present opaque compiled candidate");
-    assert!(matches!(report.source_status("core.py"), Some(PythonProjectSourceStatus::UnavailableCompiledImport { imports, .. }) if imports.len() == 1 && imports[0].candidates.as_ref() == [compiled.clone()]));
+    assert!(
+        report
+            .diagnostics()
+            .iter()
+            .all(|diagnostic| diagnostic.relative_path.as_ref() != "core.py"),
+        "a mirror missing-import error is not authority for an actually present opaque compiled candidate"
+    );
+    assert!(
+        matches!(report.source_status("core.py"), Some(PythonProjectSourceStatus::UnavailableCompiledImport { imports, .. }) if imports.len() == 1 && imports[0].candidates.as_ref() == [compiled.clone()])
+    );
     assert!(report.module("core.py").unwrap().inferences.is_empty());
     assert!(report.module("core.py").unwrap().symbols.is_empty());
     report
@@ -639,7 +647,7 @@ fn native_unsupported_projection_keeps_its_constructor_and_original_range() {
 
 #[cfg(unix)]
 #[test]
-fn source_frontier_ignores_asset_links_but_refuses_python_and_directory_aliases() {
+fn source_frontier_witnesses_opaque_links_but_refuses_imported_aliases() {
     let root = std::env::temp_dir().join(format!("nudox-python-link-test-{}", std::process::id()));
     std::fs::create_dir_all(root.join("vendor")).expect("excluded source directory");
     std::fs::write(root.join("vendor/omitted.py"), "value = 1\n").expect("excluded source");
@@ -686,9 +694,114 @@ fn source_frontier_ignores_asset_links_but_refuses_python_and_directory_aliases(
     );
     std::fs::remove_file(root.join("unsafe.py")).expect("remove source alias");
     std::os::unix::fs::symlink("vendor", root.join("unsafe_namespace")).expect("namespace alias");
+    let unrelated = checker
+        .analyze_project(
+            &root,
+            "pkg",
+            &sources,
+            PythonVersion::Python314,
+            publication_control(&cancelled),
+        )
+        .expect("an unrelated alias has no compiler dependency authority");
+    unrelated
+        .witness()
+        .validate_current(publication_control(&cancelled))
+        .expect("opaque alias target is stable");
+    let importing = [PythonProjectSource {
+        relative_path: "core.py",
+        source: "import unsafe_namespace\n",
+    }];
     assert!(
-        matches!(checker.analyze_project(&root, "pkg", &sources, PythonVersion::Python314, publication_control(&cancelled)), Err(CheckerError::UncapturedDependency { path }) if path == root.join("unsafe_namespace"))
+        matches!(checker.analyze_project(&root, "pkg", &importing, PythonVersion::Python314, publication_control(&cancelled)), Err(CheckerError::UncapturedDependency { path }) if path == root.join("unsafe_namespace"))
     );
+    std::fs::remove_file(root.join("unsafe_namespace")).expect("remove namespace alias");
+    std::os::unix::fs::symlink("missing-external-target", root.join("unsafe_namespace"))
+        .expect("retargeted alias");
+    assert!(
+        unrelated
+            .witness()
+            .validate_current(publication_control(&cancelled))
+            .is_err(),
+        "exact alias target changes invalidate membership without following targets"
+    );
+    std::fs::remove_dir_all(root).expect("remove fixture");
+}
+
+#[cfg(unix)]
+#[test]
+fn nested_template_alias_never_enters_the_native_dependency_tree() {
+    let root =
+        std::env::temp_dir().join(format!("nudox-python-template-link-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("utils/templates/etc/httpd")).expect("template directory");
+    std::fs::write(root.join("utils/templates/etc/httpd/config.conf"), b"asset")
+        .expect("template asset");
+    let alias = root.join("utils/templates/etc/apache2");
+    std::os::unix::fs::symlink("httpd", &alias).expect("SearXNG-shaped alias");
+    let sources = [
+        PythonProjectSource {
+            relative_path: "pkg/__init__.py",
+            source: "",
+        },
+        PythonProjectSource {
+            relative_path: "pkg/api.py",
+            source: "def run() -> int:\n    return 1\n",
+        },
+        PythonProjectSource {
+            relative_path: "pkg/client.py",
+            source: "from .api import run\nresult = run()\n",
+        },
+    ];
+    let checker = NativePythonProjectAuthority::admit().expect("compiled native producer");
+    let cancelled = AtomicBool::new(false);
+    for version in [PythonVersion::Python313, PythonVersion::Python314] {
+        let report = checker
+            .analyze_project(
+                &root,
+                "pkg",
+                &sources,
+                version,
+                publication_control(&cancelled),
+            )
+            .expect("unrelated template alias permits the captured Python program");
+        let caller = report
+            .module("pkg/client.py")
+            .expect("caller native report");
+        assert!(caller.symbols.iter().any(|symbol| matches!(&symbol.outcome,
+            SymbolOutcome::Definition { target, .. }
+                if target.relative_path.as_ref() == "pkg/api.py"
+                    && target.name_span == backend_frontend_python::legacy::Span { start: 4, end: 7 }
+                    && !target.same_module
+        )), "cross-file coordinates still come from the actual native State");
+        report
+            .witness()
+            .validate_current(publication_control(&cancelled))
+            .expect("exact membership witness");
+        // Replacing the same alias name with a real directory must not reuse
+        // the old opaque membership or admit a newly-present source module.
+        std::fs::remove_file(&alias).expect("remove alias");
+        std::fs::create_dir(&alias).expect("new regular namespace");
+        std::fs::write(alias.join("omitted.py"), "value = 1\n").expect("uncaptured new source");
+        assert!(
+            report
+                .witness()
+                .validate_current(publication_control(&cancelled))
+                .is_err()
+        );
+        assert!(
+            matches!(checker.analyze_project(&root, "pkg", &sources, version, publication_control(&cancelled)),
+            Err(CheckerError::IncompleteSourceFrontier { candidate, .. }) if candidate == alias.join("omitted.py"))
+        );
+        std::fs::remove_dir_all(&alias).expect("remove replacement");
+        std::os::unix::fs::symlink("httpd", &alias).expect("restore alias");
+        let importing = [PythonProjectSource {
+            relative_path: "core.py",
+            source: "import utils.templates.etc.apache2\n",
+        }];
+        assert!(
+            matches!(checker.analyze_project(&root, "pkg", &importing, version, publication_control(&cancelled)),
+            Err(CheckerError::UncapturedDependency { path }) if path == alias)
+        );
+    }
     std::fs::remove_dir_all(root).expect("remove fixture");
 }
 

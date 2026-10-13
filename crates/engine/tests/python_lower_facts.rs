@@ -22,11 +22,11 @@ use backend_frontend_python::legacy::{
     CheckerReport, Inference, InferenceSite, InferredType, Span, extract,
 };
 use backend_semantic::ir::{
-    ConcreteType, DecodedTypeFact, EntityId, EntityKind, FragmentView, Ir, ItemKind,
-    PrimitiveShape, SemanticCoreReader, SemanticImageView, SemanticReader, SemanticTypeTag,
-    SignatureCarrierBinding, SignatureCarrierBindingRole, SignatureCarrierBindingsObservation,
-    SignatureCarrierRole, SignatureCarrierRoleObservation, TypeExpr, TypeReason,
-    encode_full_semantic_image, full_semantic_image_len,
+    ConcreteType, DecodedTypeFact, EntityId, EntityKind, FragmentView, Ir, ItemKind, ObjectMember,
+    PrimitiveShape, PropertyKey, SemanticCoreReader, SemanticImageView, SemanticReader,
+    SemanticTypeTag, SignatureCarrierBinding, SignatureCarrierBindingRole,
+    SignatureCarrierBindingsObservation, SignatureCarrierRole, SignatureCarrierRoleObservation,
+    TypeExpr, TypeReason, encode_full_semantic_image, full_semantic_image_len,
 };
 use backend_semantic::vocabulary::{
     LanguageProfile, LoweringUnsupported, ProjectionAdmissionFault, PythonVersion, Stage,
@@ -1450,5 +1450,214 @@ fn wide_inferred_tuple_admits_as_the_honest_gap() -> Result<(), TestError> {
         operation: "remove scratch",
         source,
     })?;
+    Ok(())
+}
+
+// Exact HTTPie 5b604c37 tests/utils/__init__.py:218-227 (MIT).
+// Upstream file SHA256 653c716f9196003d5f7e57ca2e6050c9e502e891d6597f54f9c705560caeec3f.
+const HTTPIE_CLASSMETHOD: &[u8] = br"from typing import Union
+from contextlib import suppress
+
+class BaseCLIResponse:
+    @classmethod
+    def from_raw_data(self, data: Union[str, bytes]) -> 'BaseCLIResponse':
+        if isinstance(data, bytes):
+            with suppress(UnicodeDecodeError):
+                data = data.decode()
+
+        if isinstance(data, bytes):
+            return BytesCLIResponse(data)
+        else:
+            return StrCLIResponse(data)
+";
+
+#[test]
+fn exact_httpie_classmethod_omits_its_bound_receiver() -> Result<(), TestError> {
+    with_image(HTTPIE_CLASSMETHOD, "exact-httpie-classmethod", |ir| {
+        expect_function_parameters(ir, b"from_raw_data", &[b"data"])
+    })
+}
+
+#[test]
+fn httpie_classmethod_receiver_name_does_not_add_a_user_parameter() -> Result<(), TestError> {
+    // HTTPie tests/utils/__init__.py:218-219 uses @classmethod from_raw_data(self, data).
+    // Same descriptor law with conventional/custom names; an explicit staticmethod keeps self.
+    for (source, name, expected) in [
+        (b"class BaseCLIResponse:\n    @classmethod\n    def from_raw_data(self, data: int) -> int:\n        return data\n".as_slice(), b"from_raw_data".as_slice(), vec![b"data".as_slice()]),
+        (b"class Reply:\n    @classmethod\n    def from_value(klass, data: int) -> int:\n        return data\n".as_slice(), b"from_value".as_slice(), vec![b"data".as_slice()]),
+        (b"class Reply:\n    @staticmethod\n    def static_value(self: int) -> int:\n        return self\n".as_slice(), b"static_value".as_slice(), vec![b"self".as_slice()]),
+    ] {
+        with_image(source, "httpie-classmethod-receiver", |ir| {
+            expect_function_parameters(ir, name, &expected)
+        })?;
+    }
+    Ok(())
+}
+
+#[test]
+fn receiver_omission_requires_direct_class_and_first_positional_binding() -> Result<(), TestError> {
+    for (source, name, expected) in [
+        (b"def standalone(self: int) -> int:\n    return self\n".as_slice(), b"standalone".as_slice(), vec![b"self".as_slice()]),
+        (b"class Reply:\n    def outer(self):\n        def nested(self: int) -> int:\n            return self\n        return nested(1)\n".as_slice(), b"nested".as_slice(), vec![b"self".as_slice()]),
+        (b"class Reply:\n    def instance(this, self: int) -> int:\n        return self\n".as_slice(), b"instance".as_slice(), vec![b"self".as_slice()]),
+        (b"class Reply:\n    @classmethod\n    def later_name(receiver, cls: int) -> int:\n        return cls\n".as_slice(), b"later_name".as_slice(), vec![b"cls".as_slice()]),
+        (b"class Reply:\n    @classmethod\n    def positional(receiver, /, data: int) -> int:\n        return data\n".as_slice(), b"positional".as_slice(), vec![b"data".as_slice()]),
+        (b"class Reply:\n    @classmethod\n    async def asynchronous(receiver, data: int) -> int:\n        return data\n".as_slice(), b"asynchronous".as_slice(), vec![b"data".as_slice()]),
+        (b"class Reply:\n    @classmethod\n    def variadic(*values):\n        return values\n".as_slice(), b"variadic".as_slice(), vec![b"values".as_slice()]),
+        (b"class Reply:\n    @classmethod\n    def keyword_only(*, cls: int):\n        return cls\n".as_slice(), b"keyword_only".as_slice(), vec![b"cls".as_slice()]),
+    ] {
+        with_image(source, "receiver-ownership", |ir| {
+            expect_function_parameters(ir, name, &expected)
+        })?;
+    }
+    Ok(())
+}
+
+fn expect_function_parameters(ir: &Ir, name: &[u8], expected: &[&[u8]]) -> Result<(), TestError> {
+    let function = ir
+        .items()
+        .find(|item| item.kind() == ItemKind::Function && item.name() == name)
+        .ok_or(TestError::Falsified("receiver fixture function absent"))?;
+    let ty = function
+        .semantic_type()
+        .ok_or(TestError::Falsified("receiver fixture function untyped"))?;
+    let TypeExpr::Concrete(ConcreteType::Function { parameters, .. }) = ir
+        .ty(ty)
+        .ok_or(TestError::Falsified("receiver fixture type absent"))?
+    else {
+        return Err(TestError::Falsified("receiver fixture is not a function"));
+    };
+    let parameters = ir
+        .tuple_elements(parameters)
+        .ok_or(TestError::Falsified("receiver fixture parameters absent"))?;
+    if parameters.len() != expected.len() {
+        return Err(TestError::Falsified(
+            "receiver fixture has wrong public arity",
+        ));
+    }
+    for (parameter, expected) in parameters.iter().zip(expected) {
+        let label = parameter.label.ok_or(TestError::Falsified(
+            "receiver fixture parameter label absent",
+        ))?;
+        if ir.atom(label) != Some(*expected) {
+            return Err(TestError::Falsified(
+                "receiver fixture dropped or invented a binding",
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn protocol_members_and_method_declarations_share_bound_receiver_arity() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"from typing import Protocol\n\
+class Reader(Protocol):
+    def plain(this, data: int) -> int: ...
+    @classmethod
+    def from_value(klass, data: int) -> int: ...
+    @staticmethod
+    def static_value(self: int) -> int: ...
+    @property
+    def note(self) -> int: ...
+";
+    with_image(SOURCE, "protocol-bound-receiver", |ir| {
+        expect_function_parameters(ir, b"plain", &[b"data"])?;
+        expect_function_parameters(ir, b"from_value", &[b"data"])?;
+        expect_function_parameters(ir, b"static_value", &[b"self"])?;
+        // A property is a value in the interface; its getter declaration stays unchanged.
+        expect_function_parameters(ir, b"note", &[b"self"])?;
+        let class = ir
+            .items()
+            .find(|item| item.kind() == ItemKind::Record && item.name() == b"Reader")
+            .ok_or(TestError::Falsified("protocol class absent"))?;
+        let class_type = class
+            .semantic_type()
+            .ok_or(TestError::Falsified("protocol class untyped"))?;
+        let Some(TypeExpr::Concrete(ConcreteType::Object(members))) = ir.ty(class_type) else {
+            return Err(TestError::Falsified("protocol interface absent"));
+        };
+        let members = ir
+            .object_members(members)
+            .ok_or(TestError::Falsified("protocol member list absent"))?;
+        if members.len() != 4 {
+            return Err(TestError::Falsified("protocol lost a declared member"));
+        }
+        for (name, expected) in [
+            (b"plain".as_slice(), 1),
+            (b"from_value".as_slice(), 1),
+            (b"static_value".as_slice(), 1),
+        ] {
+            let member = protocol_member_type(ir, members, name)?;
+            let Some(TypeExpr::Concrete(ConcreteType::Function { parameters, .. })) = ir.ty(member)
+            else {
+                return Err(TestError::Falsified("protocol callable member untyped"));
+            };
+            if ir
+                .tuple_elements(parameters)
+                .map(|parameters| parameters.len())
+                != Some(expected)
+            {
+                return Err(TestError::Falsified(
+                    "protocol/member public arity diverged",
+                ));
+            }
+        }
+        let property = protocol_member_type(ir, members, b"note")?;
+        let getter = ir
+            .items()
+            .find(|item| item.kind() == ItemKind::Function && item.name() == b"note")
+            .and_then(|item| item.semantic_type())
+            .and_then(|ty| ir.ty(ty))
+            .ok_or(TestError::Falsified("property getter type absent"))?;
+        let TypeExpr::Concrete(ConcreteType::Function { results, .. }) = getter else {
+            return Err(TestError::Falsified("property getter is not a function"));
+        };
+        let results = ir
+            .tuple_elements(results)
+            .ok_or(TestError::Falsified("property result list absent"))?;
+        if results.len() != 1 || ir.ty(property) != ir.ty(results[0].ty) {
+            return Err(TestError::Falsified(
+                "property interface is not its declared result",
+            ));
+        }
+        Ok(())
+    })
+}
+
+fn protocol_member_type(
+    ir: &Ir,
+    members: &[ObjectMember],
+    name: &[u8],
+) -> Result<backend_semantic::ir::TypeId, TestError> {
+    members
+        .iter()
+        .find_map(|member| match *member {
+            ObjectMember::Property {
+                key: PropertyKey::Named(key),
+                ty,
+                ..
+            } if ir.atom(key) == Some(name) => Some(ty),
+            _ => None,
+        })
+        .ok_or(TestError::Falsified("exact protocol member absent"))
+}
+
+#[test]
+fn implicit_static_new_retains_cls_unless_explicitly_class_bound() -> Result<(), TestError> {
+    for (source, expected) in [
+        (
+            b"class Reply:\n    def __new__(cls, data: int) -> 'Reply': ...\n".as_slice(),
+            vec![b"cls".as_slice(), b"data".as_slice()],
+        ),
+        (
+            b"class Reply:\n    @classmethod\n    def __new__(cls, data: int) -> 'Reply': ...\n"
+                .as_slice(),
+            vec![b"data".as_slice()],
+        ),
+    ] {
+        with_image(source, "implicit-static-new", |ir| {
+            expect_function_parameters(ir, b"__new__", &expected)
+        })?;
+    }
     Ok(())
 }

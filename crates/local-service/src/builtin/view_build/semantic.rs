@@ -55,7 +55,8 @@ pub(super) type ProfileStalePaths =
 /// How a semantic publication for a package outside `sources` is treated.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ForeignPublication {
-    /// A complete publication whose package frontier is absent is corrupt.
+    /// Rejects an unsourced publication unless an authenticated capture
+    /// retains it as historical scope after source-only package removal.
     Reject,
     /// Package-scoped publication leaves every other package's image closed.
     Skip,
@@ -122,7 +123,8 @@ pub(crate) fn rows_for_indexed_sources(
     }
     let mut ledger = semantics.ledger;
     ledger.extend(projection.take_ledger());
-    let rows = projection.finish(semantics.rows)?;
+    let mut rows = projection.finish(semantics.rows)?;
+    super::super::coverage::qualify_package_rows(snapshot, &mut rows)?;
     Ok(ProjectedRows {
         rows,
         activated: semantics.activated,
@@ -560,7 +562,7 @@ fn semantic_rows(
         })?;
     // Open the exact auxiliary closure even though this projection only emits
     // publication rows; malformed capture state must still refuse the view.
-    let _capture_relation = semantic_capture_relation(snapshot)
+    let capture_relation = semantic_capture_relation(snapshot)
         .map_err(|error| BuiltinModelError(format!("open semantic capture relation: {error}")))?;
     let mut rows = Vec::new();
     let mut complete = BTreeSet::new();
@@ -609,6 +611,37 @@ fn semantic_rows(
                 && matches!(foreign, ForeignPublication::Skip)
             {
                 continue;
+            }
+            // A source-only removal retains immutable native history and its
+            // authenticated capture. That old scope is not a current package
+            // and must not be activated or resurrected into workspace rows.
+            // An unsourced publication without capture evidence still takes
+            // the existing strict missing-frontier refusal below.
+            if !projects.contains_key(key.package_key().as_bytes()) {
+                let historical_capture = capture_relation
+                    .as_ref()
+                    .map(|captures| captures.lookup(key))
+                    .transpose()
+                    .map_err(|error| {
+                        BuiltinModelError(format!("read retained semantic capture: {error}"))
+                    })?
+                    .flatten();
+                if historical_capture.is_some() {
+                    let source = snapshot
+                        .relation::<super::super::BuiltinWorkspaceRelation>()
+                        .map_err(|error| {
+                            BuiltinModelError(format!("open current package scope: {error}"))
+                        })?;
+                    if source
+                        .lookup(&key.package_key().to_bytes())
+                        .map_err(|error| {
+                            BuiltinModelError(format!("read removed package scope: {error}"))
+                        })?
+                        .is_none()
+                    {
+                        continue;
+                    }
+                }
             }
             let target = (
                 *key.package_key().as_bytes(),

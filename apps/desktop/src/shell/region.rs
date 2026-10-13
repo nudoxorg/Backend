@@ -98,8 +98,9 @@ pub(crate) trait Region: Render + Sized + 'static {
     fn measure_frame(&mut self, _frame: Bounds<Pixels>) {}
 
     /// The page keys this region draws for a snapshot. Called whenever the
-    /// route or overlay changes; the default draws no page.
-    fn keys(&self, _snapshot: &AppSnapshot) -> Vec<PageKey> {
+    /// route, overlay, selected graph subject or root changes. `store` supplies
+    /// the same current subject the region renders; the default draws no page.
+    fn keys(&self, _snapshot: &AppSnapshot, _store: &DataStore) -> Vec<PageKey> {
         Vec::new()
     }
 
@@ -141,37 +142,40 @@ fn request(store: &Entity<DataStore>, keys: Vec<PageKey>, urgency: Urgency, cx: 
     });
 }
 
-/// Subscribes a region to the store: on a route or overlay change it
-/// re-targets its keys, and it notifies itself only when its watch says a
-/// watched slice moved.
+/// Subscribes a region to the store. Retarget the exact rendered dependency
+/// set when its context changes; notify only when a watched slice moves.
 pub(crate) fn attach<R: Region>(region: &mut R, store: &Entity<DataStore>, cx: &mut Context<R>) {
     let snapshot = store.read(cx).snapshot();
-    let keys = region.keys(&snapshot);
+    let keys = region.keys(&snapshot, store.read(cx));
     region.core().watch_keys(store.read(cx), keys.clone());
     request(store, keys, region.urgency(), cx);
     let subscription = cx.subscribe(store, |region: &mut R, store, event: &StoreEvent, cx| {
+        region.observe(event, store.read(cx));
         let revoked = {
             let data = store.read(cx);
             match event {
                 StoreEvent::Resource(key)
                     if data.observation_revoked(key)
-                        && region.keys(&data.snapshot()).contains(key) => Some(key.clone()),
+                        && region.keys(&data.snapshot(), data).contains(key) => Some(key.clone()),
                 _ => None,
             }
         };
         let moved = event.is_branch(Branch::Route) || event.is_branch(Branch::Overlay);
-        let keys = if moved || event.is_branch(Branch::Root) {
-            let keys = region.keys(&store.read(cx).snapshot());
-            if moved {
-                region.core().watch_keys(store.read(cx), keys.clone());
+        let root = event.is_branch(Branch::Root);
+        let keys = if moved || root || event.is_branch(Branch::GraphFocus) {
+            let data = store.read(cx);
+            let keys = region.keys(&data.snapshot(), data);
+            let changed = !region.core().watch.watches_keys(&keys);
+            if moved || changed {
+                region.core().watch_keys(data, keys.clone());
             }
-            // A new place, or a new index root: ask for what this region
-            // shows (a root advance refreshes it, keeping the last value).
-            Some(keys)
+            // Selection may change the rendered subject without navigation.
+            // Unchanged dependency sets keep their observed stamps, so graph
+            // traffic cannot consume another region's queued Resource event.
+            (moved || root || changed).then_some(keys)
         } else {
             None
         };
-        region.observe(event, store.read(cx));
         let changed = region.core().watch.changed(store.read(cx), event);
         if let Some(keys) = keys {
             request(&store, keys, region.urgency(), cx);

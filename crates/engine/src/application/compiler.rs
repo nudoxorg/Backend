@@ -35,7 +35,7 @@ use backend_frontend_rust::legacy::{
 use backend_frontend_typescript::legacy::TypeScriptInvocationModeV1;
 use backend_frontend_typescript::{
     TszCheckerOptions, TszEnvironmentFingerprint, TszFileInput, TszProject, TszProjectAuthority,
-    TszProjectCheckerExecution, TszProjectExecutionBudget, TszProjectOptions, TszSourceError,
+    TszProjectCheckerExecution, TszProjectOptions, TszSourceError,
 };
 // Each admitted compiler lane owns its private checker pool. Two compiler
 // lanes currently admit at most four file-check workers per owner; parse,
@@ -89,7 +89,6 @@ use crate::application::executor::StagedOutputLease;
 use crate::application::package_authority::{
     enter_package_authority_with_go_authority_witness, enter_package_authority_with_rust_workspace,
 };
-use crate::application::typescript_program::TypeScriptPackageSourceMembership;
 use crate::application::{
     AdmittedRustRequestAuthority, LocalCompilerConfig, LocalCompilerControl,
     LocalCompilerExecutionIdentity, LocalCompilerOpenError, LocalCompilerPath,
@@ -1168,9 +1167,7 @@ impl StagedSemanticPackage {
     /// Exact full native program membership, including libraries and dependencies.
     /// This is not a complete-fact or complete-read certificate.
     #[must_use]
-    pub fn native_program_sources(
-        &self,
-    ) -> Option<&backend_semantic::ir::NativeProgramSourceManifest> {
+    pub fn native_program_sources(&self) -> Option<&backend_semantic::ir::NativeProgramSources> {
         self.staged.native_program_sources.as_ref()
     }
 
@@ -1765,6 +1762,9 @@ pub enum PackageSemanticError {
     /// Full native program membership could not be canonically admitted.
     #[error("native TypeScript program source manifest is invalid")]
     NativeProgramSources(#[source] backend_semantic::ir::NativeProgramSourceManifestError),
+    /// One produced forest image could not bind to its actual program owner.
+    #[error("native TypeScript forest image is invalid")]
+    NativeProgramImage(#[source] SemanticImageReopenError),
     /// A checked size computation overflowed or exceeded the package budget.
     #[error("package semantic publication exceeds its {lane} byte budget")]
     Capacity {
@@ -1960,8 +1960,8 @@ pub(crate) struct StagedPackageCompilation {
     typescript_witness:
         Option<std::sync::Arc<crate::application::typescript_host::TypeScriptProjectWitness>>,
     typescript_closure_witness:
-        Option<crate::application::typescript_program::TypeScriptProgramClosureWitness>,
-    native_program_sources: Option<backend_semantic::ir::NativeProgramSourceManifest>,
+        Option<crate::application::typescript_program::TypeScriptForestClosureWitness>,
+    native_program_sources: Option<backend_semantic::ir::NativeProgramSources>,
     python_witness: Option<StagedPythonProjectWitness>,
     embeddings: Option<StagedEmbeddingOutput>,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
@@ -2251,18 +2251,19 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
         // compiler-owned program, then all package files borrow one TSZ
         // checker session. The same finite checkpoint covers parse, bind,
         // merge, check, and every lazy per-file query.
-        let mut tsz_authority = None;
+        let mut tsz_authorities = Vec::new();
         let mut tsz_budget = None;
         let mut tsz_package_membership = BTreeMap::new();
         let mut typescript_closure_witness = None;
         let mut native_program_sources = None;
+        let mut tsz_node_metadata = Vec::new();
+        let mut forest_root = 0;
+        let mut configured_forest = false;
         if let Some(project) = typescript_project.as_ref() {
             let inputs = project.inputs();
-            let mut resolver = inputs.resolver();
             let package_sources = package.compilation_sources().collect::<Vec<_>>();
-            let native = crate::application::typescript_program::build_native_inputs(
+            let forest = crate::application::typescript_program::build_native_forest_inputs(
                 &inputs,
-                &mut resolver,
                 &package_sources,
                 control.deadline,
                 cancelled,
@@ -2273,62 +2274,86 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     .unwrap_or(ToolchainSelection::ExplicitlyUnavailable {
                         tool: NativeTool::TypeScriptCompiler,
                     });
-                let terminal = package_authority_terminal(
-                    package.package_target.target(),
-                    first_application_request,
-                    first_authority,
-                    toolchain,
-                    PackageAuthorityError::TypeScriptProjectHost(cause),
-                );
                 PackageSemanticError::Compile {
                     path: first_source.relative_path.into(),
-                    terminal: Box::new(terminal),
-                }
-            })?;
-            typescript_closure_witness = Some(native.closure_witness);
-            let budget =
-                TszProjectExecutionBudget::new(control.deadline, cancelled, native.work_units);
-            let mut authority = TszProjectAuthority::new();
-            authority
-                .update_with_checker_execution(
-                    native.sources,
-                    native.options,
-                    &native.libraries,
-                    TszProjectCheckerExecution {
-                        checkpoint: &budget,
-                        workers: TSZ_CHECKER_WORKERS_PER_COMPILER_LANE,
-                    },
-                )
-                .map_err(|cause| {
-                    let toolchain = self
-                        .toolchain_for_package(first_application_request, typescript_toolchain)
-                        .unwrap_or(ToolchainSelection::ExplicitlyUnavailable {
-                            tool: NativeTool::TypeScriptCompiler,
-                        });
-                    let terminal = package_authority_terminal(
+                    terminal: Box::new(package_authority_terminal(
                         package.package_target.target(),
                         first_application_request,
                         first_authority,
                         toolchain,
-                        PackageAuthorityError::TypeScriptTsz(cause),
-                    );
-                    PackageSemanticError::Compile {
-                        path: first_source.relative_path.into(),
-                        terminal: Box::new(terminal),
-                    }
-                })?;
-            tsz_package_membership = native.package_membership;
-            tsz_budget = Some(budget);
-            tsz_authority = Some(authority);
+                        PackageAuthorityError::TypeScriptProjectHost(cause),
+                    )),
+                }
+            })?;
+            forest_root = forest.root;
+            configured_forest = forest.configured_forest;
+            tsz_package_membership = forest.package_membership;
+            tsz_budget = Some(super::compiler_typescript_observation::ObservedTypeScriptBudget::new(
+                control.deadline,
+                cancelled,
+                forest.work_units,
+            ));
+            let budget = tsz_budget.as_ref().expect("shared forest budget");
+            let mut witnesses = Vec::with_capacity(forest.nodes.len());
+            for node in forest.nodes {
+                let native = node.native;
+                tsz_node_metadata.push((
+                    node.config,
+                    node.references,
+                    *native.options.environment.as_bytes(),
+                ));
+                witnesses.push(native.closure_witness);
+                if native.solution {
+                    tsz_authorities.push(None);
+                    continue;
+                }
+                tracing::info!(target: "compiler.typescript_project",
+                    phase = "admitted_program", program_environment = ?native.options.environment,
+                    sources = native.sources.len(), libraries = native.libraries.len(),
+                    module_requests = native.options.module_resolutions.len(),
+                    "native TypeScript project inputs admitted");
+                let mut authority = TszProjectAuthority::new();
+                authority
+                    .update_with_checker_execution(
+                        native.sources,
+                        native.options,
+                        &native.libraries,
+                        TszProjectCheckerExecution {
+                            checkpoint: budget,
+                            workers: TSZ_CHECKER_WORKERS_PER_COMPILER_LANE,
+                        },
+                    )
+                    .map_err(|cause| {
+                        let toolchain = self
+                            .toolchain_for_package(first_application_request, typescript_toolchain)
+                            .unwrap_or(ToolchainSelection::ExplicitlyUnavailable {
+                                tool: NativeTool::TypeScriptCompiler,
+                            });
+                        PackageSemanticError::Compile {
+                            path: first_source.relative_path.into(),
+                            terminal: Box::new(package_authority_terminal(
+                                package.package_target.target(),
+                                first_application_request,
+                                first_authority,
+                                toolchain,
+                                PackageAuthorityError::TypeScriptTsz(cause),
+                            )),
+                        }
+                    })?;
+                tsz_authorities.push(Some(authority));
+            }
+            typescript_closure_witness = Some(
+                crate::application::typescript_program::TypeScriptForestClosureWitness(witnesses),
+            );
         }
-        let tsz_project = tsz_authority
-            .as_ref()
-            .and_then(TszProjectAuthority::project);
-        if let (Some(project), Some(budget), Some(toolchain)) =
-            (tsz_project, tsz_budget.as_ref(), typescript_toolchain)
-        {
-            let stopped = |cause| {
-                let terminal = package_authority_terminal(
+        let tsz_projects = tsz_authorities
+            .iter()
+            .map(|authority| authority.as_ref().and_then(TszProjectAuthority::project))
+            .collect::<Vec<_>>();
+        if let (Some(budget), Some(toolchain)) = (tsz_budget.as_ref(), typescript_toolchain) {
+            let stopped = |cause| PackageSemanticError::Compile {
+                path: first_source.relative_path.into(),
+                terminal: Box::new(package_authority_terminal(
                     package.package_target.target(),
                     first_application_request,
                     first_authority,
@@ -2336,60 +2361,73 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     PackageAuthorityError::TypeScriptTsz(
                         backend_frontend_typescript::TszAuthorityError::ExecutionStopped(cause),
                     ),
-                );
-                PackageSemanticError::Compile {
-                    path: first_source.relative_path.into(),
-                    terminal: Box::new(terminal),
-                }
+                )),
             };
-            native_program_sources = Some(capture_native_program_sources(
-                project,
-                tsz_package_membership
-                    .iter()
-                    .filter_map(|(package, membership)| {
-                        membership
-                            .selected_program_path()
-                            .map(|native| (package.as_ref(), native))
+            let mut leaves = Vec::with_capacity(tsz_projects.len());
+            for (index, project) in tsz_projects.iter().enumerate() {
+                leaves.push(project.map(|project| capture_native_program_sources(
+                    project,
+                    tsz_package_membership.iter().filter_map(|(package, membership)| {
+                        match membership {
+                            crate::application::typescript_program::TypeScriptForestSourceMembership::Selected { program, program_path } if *program == index => Some((package.as_ref(), program_path.as_ref())),
+                            _ => None,
+                        }
                     }),
-                toolchain.identity,
-                |units| {
-                    backend_frontend_typescript::TszExecutionCheckpoint::checkpoint(budget, units)
-                        .map_err(&stopped)
-                },
-            )?);
+                    toolchain.identity,
+                    |units| backend_frontend_typescript::TszExecutionCheckpoint::checkpoint(budget, units).map_err(&stopped),
+                )).transpose()?);
+            }
+            native_program_sources = Some(if configured_forest {
+                let nodes = tsz_node_metadata
+                    .into_iter()
+                    .zip(leaves)
+                    .map(|((config, references, environment), program)| {
+                        let (config_path, config) =
+                            config.ok_or(PackageSemanticError::Capacity {
+                                lane: "TypeScript forest config identity",
+                            })?;
+                        Ok(backend_semantic::ir::NativeProgramNode {
+                            config_path,
+                            config,
+                            environment,
+                            references,
+                            program,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, PackageSemanticError>>()?;
+                backend_semantic::ir::NativeProgramSources::from_forest(
+                    toolchain.identity,
+                    forest_root,
+                    nodes,
+                )
+                .map_err(PackageSemanticError::NativeProgramSources)?
+            } else {
+                leaves
+                    .into_iter()
+                    .next()
+                    .flatten()
+                    .ok_or(PackageSemanticError::Capacity {
+                        lane: "TypeScript single program membership",
+                    })?
+                    .into()
+            });
         }
-        let tsz_session = match (tsz_project, tsz_budget.as_ref()) {
-            (Some(project), Some(budget)) => {
-                Some(project.checked_query_session(budget).map_err(|cause| {
-                    let toolchain = self
-                        .toolchain_for_package(first_application_request, typescript_toolchain)
-                        .unwrap_or(ToolchainSelection::ExplicitlyUnavailable {
-                            tool: NativeTool::TypeScriptCompiler,
-                        });
-                    let terminal = package_authority_terminal(
-                        package.package_target.target(),
-                        first_application_request,
-                        first_authority,
-                        toolchain,
-                        PackageAuthorityError::TypeScriptTsz(
-                            backend_frontend_typescript::TszAuthorityError::ProjectCheckerSession(
-                                cause,
-                            ),
-                        ),
-                    );
+        let tsz_sessions = tsz_projects.iter().map(|project| {
+            project.map(|project| {
+                let budget = tsz_budget.as_ref().ok_or(PackageSemanticError::Capacity { lane: "TypeScript forest checker budget" })?;
+                project.checked_query_session(budget).map_err(|cause| {
+                    let toolchain = self.toolchain_for_package(first_application_request, typescript_toolchain)
+                        .unwrap_or(ToolchainSelection::ExplicitlyUnavailable { tool: NativeTool::TypeScriptCompiler });
                     PackageSemanticError::Compile {
                         path: first_source.relative_path.into(),
-                        terminal: Box::new(terminal),
+                        terminal: Box::new(package_authority_terminal(
+                            package.package_target.target(), first_application_request, first_authority, toolchain,
+                            PackageAuthorityError::TypeScriptTsz(backend_frontend_typescript::TszAuthorityError::ProjectCheckerSession(cause)),
+                        )),
                     }
-                })?)
-            }
-            (None, None) => None,
-            _ => {
-                return Err(PackageSemanticError::Capacity {
-                    lane: "TypeScript project checker session",
-                });
-            }
-        };
+                })
+            }).transpose()
+        }).collect::<Result<Vec<_>, PackageSemanticError>>()?;
         // One fresh native Python State owns the entire selected frontier.
         // It is deliberately not reused: external/configuration negative reads
         // have no complete observation contract yet.
@@ -2943,7 +2981,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 )?;
                 if matches!(
                     membership,
-                    TypeScriptPackageSourceMembership::ExcludedFromConfiguredProgram
+                    crate::application::typescript_program::TypeScriptForestSourceMembership::ExcludedFromConfiguredProgram
                 ) {
                     coverage_gaps.push(PackageSourceCoverageGap {
                         source: source_authority,
@@ -3008,7 +3046,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 })?;
             let source_path = package.package_root.join(source.relative_path);
             let transient_authority = if rust_workspace_authority.is_none()
-                && tsz_project.is_none()
+                && typescript_project.is_none()
                 && python_project.is_none()
             {
                 Some(
@@ -3042,35 +3080,42 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             } else {
                 None
             };
-            let authority =
-                if let (Some(project), Some(session)) = (tsz_project, tsz_session.as_ref()) {
-                    let source_path = tsz_package_membership
-                        .get(source.relative_path())
-                        .and_then(TypeScriptPackageSourceMembership::selected_program_path)
+            let authority = if typescript_project.is_some() {
+                let Some(crate::application::typescript_program::TypeScriptForestSourceMembership::Selected { program, program_path }) = tsz_package_membership.get(source.relative_path()) else {
+                        return Err(PackageSemanticError::Capacity { lane: "TypeScript selected source owner" });
+                    };
+                let project = tsz_projects.get(*program).copied().flatten().ok_or(
+                    PackageSemanticError::Capacity {
+                        lane: "TypeScript owning program",
+                    },
+                )?;
+                let session = tsz_sessions.get(*program).and_then(Option::as_ref).ok_or(
+                    PackageSemanticError::Capacity {
+                        lane: "TypeScript owning query session",
+                    },
+                )?;
+                crate::driver::SemanticAuthorityInput::TypeScriptTsz {
+                    project,
+                    session,
+                    source_path: program_path,
+                }
+            } else if let Some(project) = python_project.as_ref() {
+                let report =
+                    project
+                        .module(source.relative_path)
                         .ok_or(PackageSemanticError::Capacity {
-                            lane: "TypeScript selected package source path mapping",
-                        })?;
-                    crate::driver::SemanticAuthorityInput::TypeScriptTsz {
-                        project,
-                        session,
-                        source_path,
-                    }
-                } else if let Some(project) = python_project.as_ref() {
-                    let report = project.module(source.relative_path).ok_or(
-                        PackageSemanticError::Capacity {
                             lane: "Python project module report",
-                        },
-                    )?;
-                    crate::driver::SemanticAuthorityInput::Python { report }
-                } else {
-                    let authority_owner = rust_workspace_authority
-                        .as_ref()
-                        .or(transient_authority.as_ref())
-                        .ok_or(PackageSemanticError::Capacity {
-                            lane: "package authority owner",
                         })?;
-                    authority_owner.input(&source_path)
-                };
+                crate::driver::SemanticAuthorityInput::Python { report }
+            } else {
+                let authority_owner = rust_workspace_authority
+                    .as_ref()
+                    .or(transient_authority.as_ref())
+                    .ok_or(PackageSemanticError::Capacity {
+                        lane: "package authority owner",
+                    })?;
+                authority_owner.input(&source_path)
+            };
             let compiled = match self.stage_prepared(
                 application_request,
                 source_authority,
@@ -3268,41 +3313,80 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 Coverage::Partial,
             );
         }
-        if let Some(project) = typescript_project.as_ref()
-            && let Err(cause) = project.validate_current()
-        {
-            let toolchain = self
-                .toolchain_for_package(first_application_request, typescript_toolchain)
-                .unwrap_or(ToolchainSelection::ExplicitlyUnavailable {
-                    tool: NativeTool::TypeScriptCompiler,
-                });
-            let terminal = package_authority_terminal(
-                package.package_target.target(),
-                first_application_request,
-                first_authority,
-                toolchain,
-                PackageAuthorityError::TypeScriptProjectHost(cause),
-            );
-            return Err(PackageSemanticError::Compile {
-                path: first_source.relative_path.into(),
-                terminal: Box::new(terminal),
-            });
-        }
         match (
             typescript_project.as_ref(),
             typescript_closure_witness.as_ref(),
         ) {
-            (Some(project), Some(resolver_witness)) => {
-                resolver_witness
-                    .validate_current(project.witness.as_ref())
-                    .map_err(PackageSemanticError::TypeScriptProjectWitness)?;
-            }
+            (Some(project), Some(resolver_witness)) => resolver_witness
+                .validate_current(project.witness.as_ref())
+                .map_err(PackageSemanticError::TypeScriptProjectWitness)?,
             (None, None) => {}
             _ => {
                 return Err(PackageSemanticError::Capacity {
                     lane: "TypeScript compiler read closure",
                 });
             }
+        }
+        if native_program_sources
+            .as_ref()
+            .is_some_and(|sources| sources.is_forest())
+        {
+            use backend_semantic::ir::{
+                ImageProvenance, SemanticCoreReader, SemanticImageIdentity, SemanticReader,
+            };
+            let owners = native_program_sources.as_ref().expect("forest present");
+            let toolchain = owners.toolchain();
+            let mappings = owners
+                .sources()
+                .filter_map(|row| row.package_path.map(|path| (path.to_owned(), row.source)))
+                .collect::<BTreeMap<_, _>>();
+            let mut bindings = Vec::with_capacity(image_plan.len());
+            for region in &image_plan {
+                let bytes =
+                    region
+                        .bytes(&semantic_images)
+                        .ok_or(PackageSemanticError::Capacity {
+                            lane: "TypeScript forest image region",
+                        })?;
+                let image = SemanticImageView::reopen(bytes)
+                    .map_err(PackageSemanticError::NativeProgramImage)?;
+                let ImageProvenance::Captured {
+                    source,
+                    recipe,
+                    scope,
+                    ..
+                } = image.image_facts().provenance
+                else {
+                    return Err(PackageSemanticError::Capacity {
+                        lane: "TypeScript forest image provenance",
+                    });
+                };
+                if recipe.profile.language() != backend_semantic::vocabulary::Language::TypeScript {
+                    continue;
+                }
+                let path = image
+                    .atom(scope.path)
+                    .and_then(|path| std::str::from_utf8(path).ok())
+                    .ok_or(PackageSemanticError::Capacity {
+                        lane: "TypeScript forest image path",
+                    })?;
+                if recipe.toolchain != toolchain || mappings.get(path) != Some(&source) {
+                    return Err(PackageSemanticError::Capacity {
+                        lane: "TypeScript forest image source owner",
+                    });
+                }
+                bindings.push((
+                    path.to_owned(),
+                    *SemanticImageIdentity::from_encoded_bytes(bytes).as_ref(),
+                ));
+            }
+            native_program_sources = Some(
+                native_program_sources
+                    .take()
+                    .expect("forest present")
+                    .with_image_bindings(bindings)
+                    .map_err(PackageSemanticError::NativeProgramSources)?,
+            );
         }
         let project_plane_seed = typescript_toolchain.and_then(|toolchain| {
             typescript_project.as_ref().and_then(|project| {
@@ -3353,7 +3437,9 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             input,
             execution_identity,
             plane_execution_identity: rust_plane_execution_identity.or_else(|| {
-                plane_execution_seed.or(project_plane_seed).map(|seed| seed.bind_input(input))
+                plane_execution_seed
+                    .or(project_plane_seed)
+                    .map(|seed| seed.bind_input(input))
             }),
             cargo_workspace_facts: rust_workspace_lease.as_ref().and_then(|lease| {
                 lease
@@ -3624,11 +3710,6 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
                 )
                 .map_err(PackageSemanticError::PythonProjectWitness)?;
         }
-        if let Some(witness) = staged.typescript_witness.as_ref() {
-            witness
-                .validate_current()
-                .map_err(PackageSemanticError::TypeScriptProjectWitness)?;
-        }
         match (
             staged.typescript_witness.as_ref(),
             staged.typescript_closure_witness.as_ref(),
@@ -3777,11 +3858,6 @@ impl<'path, 'scratch, 'cancel> LocalCompiler<'path, 'scratch, 'cancel> {
                     },
                 )
                 .map_err(PackageSemanticError::PythonProjectWitness)?;
-        }
-        if let Some(witness) = staged.typescript_witness.as_ref() {
-            witness
-                .validate_current()
-                .map_err(PackageSemanticError::TypeScriptProjectWitness)?;
         }
         match (
             staged.typescript_witness.as_ref(),
@@ -4487,7 +4563,7 @@ fn package_authority_terminal(
     if matches!(
         &cause,
         PackageAuthorityError::PythonPyrefly(PythonCheckerError::Cancelled { .. })
-        | PackageAuthorityError::GoOracle(backend_frontend_go::legacy::OracleError::Cancelled)
+            | PackageAuthorityError::GoOracle(backend_frontend_go::legacy::OracleError::Cancelled)
     ) || super::compiler_typescript_failure::failure_kind(&cause)
         .is_some_and(|failure| failure.is_cancelled())
     {
@@ -4551,17 +4627,24 @@ fn package_authority_terminal(
             )
         }
         cause => {
-            let pre_recipe_typescript_admission = matches!(
-                &cause,
-                PackageAuthorityError::TypeScriptProjectHost(_)
-            ) && request.profile.language() == backend_semantic::vocabulary::Language::TypeScript
-                && matches!(toolchain, ToolchainSelection::ExplicitlyUnavailable {
-                    tool: NativeTool::TypeScriptCompiler,
-                });
+            let pre_recipe_typescript_admission =
+                matches!(&cause, PackageAuthorityError::TypeScriptProjectHost(_))
+                    && request.profile.language()
+                        == backend_semantic::vocabulary::Language::TypeScript
+                    && matches!(
+                        toolchain,
+                        ToolchainSelection::ExplicitlyUnavailable {
+                            tool: NativeTool::TypeScriptCompiler,
+                        }
+                    );
             let (phase, class) = package_authority_projection(&cause);
             let typescript_failure = super::compiler_typescript_failure::failure_kind(&cause);
             let go_failure = match &cause {
-                PackageAuthorityError::GoOracle(backend_frontend_go::legacy::OracleError::DependencyClosureUnavailable { failure }) => {
+                PackageAuthorityError::GoOracle(
+                    backend_frontend_go::legacy::OracleError::DependencyClosureUnavailable {
+                        failure,
+                    },
+                ) => {
                     use backend_frontend_go::legacy::oracle::GoDependencyClosureFailure as G;
                     use backend_library::interface::GoAuthorityFailureKind as F;
                     Some(match failure {
@@ -4994,9 +5077,9 @@ fn package_authority_projection(
         | PackageAuthorityError::GoAuthorityUnavailable { .. }
         | PackageAuthorityError::ClangProject(_) => (Phase::Open, Class::Binding),
         PackageAuthorityError::PythonSyntax(_) => (Phase::Parse, Class::Syntax),
-        PackageAuthorityError::PythonPyrefly(PythonCheckerError::ProjectConfiguration { .. }) => {
-            (Phase::Parse, Class::Authority)
-        }
+        PackageAuthorityError::PythonPyrefly(PythonCheckerError::ProjectConfiguration {
+            ..
+        }) => (Phase::Parse, Class::Authority),
         PackageAuthorityError::PythonPyrefly(_) => (Phase::TypeCheck, Class::Type),
         PackageAuthorityError::RustProject(_)
         | PackageAuthorityError::RustWorkspaceWitnessUnavailable { .. } => {
@@ -5143,17 +5226,25 @@ mod tests {
             NativeTool::GoCompiler,
             host_path("/toolchain/bin/go"),
             b"go version go1.25.0 linux/amd64",
-        ).unwrap();
+        )
+        .unwrap();
         let terminal = package_authority_terminal(
-            target, request, source, ToolchainSelection::ResolvedNative(toolchain),
+            target,
+            request,
+            source,
+            ToolchainSelection::ResolvedNative(toolchain),
             PackageAuthorityError::GoOracle(OracleError::DependencyClosureUnavailable {
                 failure: GoDependencyClosureFailure::PackageLoad,
             }),
         );
-        let failure = backend_library::PackageCompilerFailure::from_package_terminal(
-            "main.go", &terminal,
-        ).unwrap().unwrap();
-        assert_eq!(failure.kind_tag(), GoAuthorityFailureKind::DependencyPackageLoad.kind_tag());
+        let failure =
+            backend_library::PackageCompilerFailure::from_package_terminal("main.go", &terminal)
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            failure.kind_tag(),
+            GoAuthorityFailureKind::DependencyPackageLoad.kind_tag()
+        );
         assert!(failure.detail().contains("go mod download"));
         assert!(!failure.detail().contains("restart"));
         assert!(!failure.cause().requires_tool_configuration());
@@ -5198,31 +5289,45 @@ mod tests {
             panic!("the concrete host error must survive without a global tsc recipe");
         };
         assert_eq!(*retained_source, source);
-        assert!(std::str::from_utf8(diagnostic.retained_bytes_for_local_debug())
-            .unwrap().contains("private original admission evidence"));
+        assert!(
+            std::str::from_utf8(diagnostic.retained_bytes_for_local_debug())
+                .unwrap()
+                .contains("private original admission evidence")
+        );
         let failure = backend_library::PackageCompilerFailure::from_package_terminal(
-            ".lintstagedrc.js", &terminal,
-        ).unwrap().unwrap();
+            ".lintstagedrc.js",
+            &terminal,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(failure.recipe_identity(), None);
         assert_eq!(failure.kind_tag(), "typescript_host_compiler_api_bridge");
         assert!(!failure.cause().requires_tool_configuration());
         let encoded = failure.encode_bounded_json().unwrap();
         assert!(!String::from_utf8_lossy(&encoded).contains("private original"));
-        let reopened = backend_library::PackageCompilerFailure::decode_bounded_json(&encoded)
-            .unwrap();
+        let reopened =
+            backend_library::PackageCompilerFailure::decode_bounded_json(&encoded).unwrap();
         assert_eq!(reopened, failure);
         assert_eq!(reopened.recipe_identity(), None);
 
         let missing = package_authority_terminal(
-            target, request, source, unavailable,
+            target,
+            request,
+            source,
+            unavailable,
             PackageAuthorityError::ToolchainUnavailable {
                 profile: request.profile,
                 tool: NativeTool::TypeScriptCompiler,
             },
         );
-        assert!(matches!(missing, CompilerTerminal::Toolchain {
-            selected: NativeTool::TypeScriptCompiler, configured: None, ..
-        }));
+        assert!(matches!(
+            missing,
+            CompilerTerminal::Toolchain {
+                selected: NativeTool::TypeScriptCompiler,
+                configured: None,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -5628,7 +5733,9 @@ mod tests {
             PythonAuthorityFailureKind::ConfigurationRefused
         );
         let request = super::ApplicationCompilerRequest {
-            profile: LanguageProfile::Python(backend_semantic::vocabulary::PythonVersion::Python313),
+            profile: LanguageProfile::Python(
+                backend_semantic::vocabulary::PythonVersion::Python313,
+            ),
             stage: Stage::LowerIr,
             source: "value = 1\n",
         };

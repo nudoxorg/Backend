@@ -1127,7 +1127,7 @@ impl CompilerImageAdmission {
 
     fn from_reopened_in_program(
         bytes: &[u8],
-        program: Option<&backend_semantic::ir::NativeProgramSourceManifest>,
+        program: Option<&backend_semantic::ir::NativeProgramSources>,
         mappings: Option<&BTreeMap<&str, backend_semantic::ir::SourceIdentity>>,
     ) -> Result<Self, BuiltinModelError> {
         let reopened = backend_semantic::ir::SemanticImageView::reopen(bytes).map_err(|error| {
@@ -1151,6 +1151,10 @@ impl CompilerImageAdmission {
                 .ok_or_else(|| BuiltinModelError("program image path is invalid".to_owned()))?;
             if recipe.toolchain != program.toolchain()
                 || mappings.and_then(|mappings| mappings.get(path)) != Some(&source)
+                || !program.image_matches(
+                    path,
+                    backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(bytes).as_ref(),
+                )
             {
                 return Err(BuiltinModelError(
                     "program image differs from captured membership".to_owned(),
@@ -1191,7 +1195,7 @@ fn admit_compiler_image_provenance_in_program(
     store: &FileStore,
     gc_pin: &backend_store::GcPinGuard,
     image: &CompilerImageMember,
-    program: Option<&backend_semantic::ir::NativeProgramSourceManifest>,
+    program: Option<&backend_semantic::ir::NativeProgramSources>,
     mappings: Option<&BTreeMap<&str, backend_semantic::ir::SourceIdentity>>,
 ) -> Result<AdmittedCompilerImage, BuiltinModelError> {
     store
@@ -3098,9 +3102,17 @@ impl SemanticAuthority {
             );
         }
         let program_member = if let Some(sources) = staged.native_program_sources() {
-            let object_id = stream_payload::<
-                backend_semantic::ir::NativeProgramSourceManifestSchema,
-            >(&mut builder, sources.as_bytes())?;
+            let object_id = if sources.is_forest() {
+                stream_payload::<backend_semantic::ir::NativeProgramForestSchema>(
+                    &mut builder,
+                    sources.as_bytes(),
+                )?
+            } else {
+                stream_payload::<backend_semantic::ir::NativeProgramSourceManifestSchema>(
+                    &mut builder,
+                    sources.as_bytes(),
+                )?
+            };
             payload_ids.insert(object_id);
             let verified = self
                 .store
@@ -3109,7 +3121,7 @@ impl SemanticAuthority {
                     BuiltinModelError(format!("verify native program source manifest: {error:?}"))
                 })?;
             Some(
-                backend_extension_turso::CompilerProgramSourceMember::from_verified_object(
+                backend_extension_turso::CompilerProgramSourceMember::from_verified_program_sources(
                     verified, sources,
                 )
                 .map_err(|error| {
@@ -3928,6 +3940,40 @@ impl SemanticAuthority {
         key: SelectedSemanticPublicationKey<'_>,
         claim: SemanticPublicationClaim,
     ) -> Result<backend_engine::SemanticVersionFreshness, BuiltinModelError> {
+        // An old native input digest cannot establish current source when
+        // the authenticated package frontier changed or left the inventory.
+        // There is no newer native input digest to invent for this case.
+        let source = snapshot
+            .relation::<super::BuiltinWorkspaceRelation>()
+            .map_err(|error| {
+                BuiltinModelError(format!("open semantic freshness source scope: {error}"))
+            })?;
+        if source
+            .lookup(&key.key.package_key().to_bytes())
+            .map_err(|error| {
+                BuiltinModelError(format!("read semantic freshness package scope: {error}"))
+            })?
+            .as_ref()
+            .and_then(|record| record.project_fields())
+            .is_none()
+        {
+            return Ok(backend_engine::SemanticVersionFreshness::Unverified);
+        }
+        let capture = semantic_capture_relation(snapshot)
+            .map_err(|error| {
+                BuiltinModelError(format!("open semantic freshness capture scope: {error}"))
+            })?
+            .map(|captures| captures.lookup(key.key))
+            .transpose()
+            .map_err(|error| {
+                BuiltinModelError(format!("read semantic freshness capture scope: {error}"))
+            })?
+            .flatten();
+        if let Some(capture) = capture {
+            if !super::coverage::capture_matches_source(&source, key.key, &capture)? {
+                return Ok(backend_engine::SemanticVersionFreshness::Unverified);
+            }
+        }
         let history_key = (key.key.clone(), *claim.binding().identity.as_ref());
         let Some(history) = self.history.get(&history_key) else {
             return Ok(backend_engine::SemanticVersionFreshness::Unverified);

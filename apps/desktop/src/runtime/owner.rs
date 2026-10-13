@@ -36,6 +36,13 @@ pub const PATIENCE: Duration = Duration::from_mins(1);
 pub enum ObservationFailure {
     /// The actor did not install its first complete root before the limit.
     InitialRoot(Duration),
+    /// The exact current actor Root definitively failed before certification.
+    InitialRootFailed {
+        /// Runtime request that failed; cancellation/supersession are excluded.
+        request: crate::navigation::RequestId,
+        /// Typed bounded failure, retained without guessing from its message.
+        error: crate::core::ErrorValue,
+    },
     /// Dial or authentication failed before a publication frame began.
     Setup(ClientError),
     /// The exact socket could not be interrupted on shutdown.
@@ -98,6 +105,7 @@ impl ObservationFailure {
     pub(crate) fn category(&self) -> &'static str {
         match self {
             Self::InitialRoot(_) => "initial-root",
+            Self::InitialRootFailed { .. } => "initial-root-failed",
             Self::Setup(_) => "setup",
             Self::MissingInterrupt => "missing-interrupt",
             Self::ResponseStalled { .. } => "response-stalled",
@@ -123,6 +131,7 @@ impl fmt::Display for ObservationFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InitialRoot(waited) => write!(formatter, "the initial complete root was not admitted within {} s", waited.as_secs()),
+            Self::InitialRootFailed { error, .. } => write!(formatter, "the initial complete root failed: {}", error.message()),
             Self::Setup(detail) => write!(formatter, "could not establish a publication connection: {detail}"),
             Self::MissingInterrupt => formatter.write_str("publication transport has no cancellation handle"),
             Self::ResponseStalled { phase, elapsed } => write!(formatter, "publication response stalled in {phase:?} for {} s", elapsed.as_secs()),
@@ -724,15 +733,30 @@ impl OwnerGate {
         !inner.closed && inner.attachment == expected && !inner.observation_cancel.is_cancelled()
     }
 
+    /// Actor failure is definitive only before this attachment has certified a
+    /// publication. Check under the same lock as withdrawal: a published root
+    /// wins even when a later catalog failure is waiting in the UI mailbox.
+    pub(crate) fn initial_root_failed(
+        &self, expected: Epoch, request: crate::navigation::RequestId,
+        error: crate::core::ErrorValue,
+    ) -> bool {
+        self.fail_observation(expected, ObservationFailure::InitialRootFailed { request, error }, true)
+    }
+
     pub(crate) fn observation_failed(&self, expected: Epoch, reason: ObservationFailure) -> bool {
-        // The publication worker is the only writer until this attachment is
-        // withdrawn. Use one lock rather than a check followed by `publish`.
+        self.fail_observation(expected, reason, false)
+    }
+
+    fn fail_observation(&self, expected: Epoch, reason: ObservationFailure, initial_only: bool) -> bool {
+        // Worker and current initial-root failures share one attachment
+        // withdrawal lock rather than a check followed by `publish`.
         let category = reason.category();
         let (waker, cancel, mutation_cancel) = {
             let mut inner = self.lock();
             if inner.closed
                 || inner.attachment != expected
                 || !matches!(inner.state, OwnerState::Ready { .. })
+                || (initial_only && inner.publication.is_some())
             {
                 return false;
             }

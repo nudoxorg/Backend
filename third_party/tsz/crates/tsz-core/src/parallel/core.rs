@@ -73,3 +73,7 @@ include!("core/project_checker_partitions.rs");
 #[cfg(test)]
 #[path = "core/selected_ambient_exports_tests.rs"]
 mod selected_ambient_exports_tests;
+
+#[cfg(test)]
+#[path = "core/project_module_consensus_tests.rs"]
+mod project_module_consensus_tests;

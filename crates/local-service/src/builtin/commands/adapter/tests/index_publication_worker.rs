@@ -184,7 +184,7 @@ fn after_grant_state(
     };
     format!(
         "expected_ticket={ticket:?}, operation={operation:?}, active={work:?}, terminal={terminal:?}, \
-             readonly_receipt={receipt:?}, captured_typescript={typescript:?}, captured_python={python:?}, \
+             readonly_receipt={receipt}, captured_typescript={typescript:?}, captured_python={python:?}, \
              actor_hook_pending={}, owner_root={:?}, owner_sequence={}",
         adapter.publication_test_hook.is_some(),
         daemon.engine().daemon().owner().head().root(),

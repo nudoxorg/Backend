@@ -1938,7 +1938,7 @@ fn fit_measured_preview(
         .strip_suffix(PREVIEW_MARKER)
         .unwrap_or(&current_text);
     let mut value = measured.into_value();
-    value["result"]["content"][0]["text"] = Value::String(PREVIEW_MARKER.to_owned());
+    value["result"]["content"][0]["text"] = Value::String(shortened_preview(prefix, 0));
     let mut best = MeasuredEnvelope::new(attach_wire_budget(value.clone(), transport), transport);
     if !best.fits() {
         return best;
@@ -1950,8 +1950,7 @@ fn fit_measured_preview(
         let midpoint = lower + (upper - lower).div_ceil(2);
         let end = readable_prefix_end(prefix, midpoint);
         let mut candidate = value.clone();
-        candidate["result"]["content"][0]["text"] =
-            Value::String(format!("{}{PREVIEW_MARKER}", &prefix[..end]));
+        candidate["result"]["content"][0]["text"] = Value::String(shortened_preview(prefix, end));
         let candidate = MeasuredEnvelope::new(attach_wire_budget(candidate, transport), transport);
         if candidate.fits() {
             lower = midpoint;
@@ -2089,7 +2088,7 @@ fn tool_result(text: &str, structured: Value, is_error: bool) -> Value {
     // Text duplicates the typed answer. A shorter, explicitly labelled
     // preview keeps every structured row, coverage fact, and owner cursor
     // intact; it never turns an oversized typed page into a partial result.
-    candidate["content"][0]["text"] = Value::String(PREVIEW_MARKER.to_owned());
+    candidate["content"][0]["text"] = Value::String(shortened_preview(text, 0));
     if serialized_bytes(&candidate) <= budget {
         let mut lower = 0;
         let mut upper = text.len();
@@ -2098,8 +2097,7 @@ fn tool_result(text: &str, structured: Value, is_error: bool) -> Value {
             let midpoint = lower + (upper - lower).div_ceil(2);
             let end = readable_prefix_end(text, midpoint);
             let mut trial = candidate.clone();
-            trial["content"][0]["text"] =
-                Value::String(format!("{}{PREVIEW_MARKER}", &text[..end]));
+            trial["content"][0]["text"] = Value::String(shortened_preview(text, end));
             if serialized_bytes(&trial) <= budget {
                 lower = midpoint;
                 if end >= best_end {
@@ -2130,6 +2128,16 @@ fn tool_result(text: &str, structured: Value, is_error: bool) -> Value {
             "isError": true
         })
     }
+}
+
+/// Shared record text retains coverage/count/continuation when rows are removed.
+/// Non-record prose retains the original UTF-8/whole-coordinate prefix policy.
+fn shortened_preview(text: &str, prefix_budget: usize) -> String {
+    if let Some(preview) = markdown::shorten_record_preview(text, prefix_budget) {
+        return format!("{preview}{PREVIEW_MARKER}");
+    }
+    let end = readable_prefix_end(text, prefix_budget);
+    format!("{}{PREVIEW_MARKER}", &text[..end])
 }
 
 /// Returns a UTF-8 boundary no later than `limit`, backing up to the start of

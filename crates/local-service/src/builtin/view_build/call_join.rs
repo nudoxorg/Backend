@@ -105,6 +105,7 @@ impl ProjectCallableIndex {
     ) -> Result<Self, BuiltinModelError> {
         let mut proven_tsz_coordinates = BTreeMap::<_, Vec<DeclarationIdentity>>::new();
         let mut program_members = BTreeMap::<_, Vec<_>>::new();
+        let mut forest_image_owners = BTreeMap::new();
         for program in programs {
             let sources = program.sources();
             let mappings = sources
@@ -135,23 +136,44 @@ impl ProjectCallableIndex {
                 let row = mappings.get(path).ok_or_else(|| {
                     BuiltinModelError("native program image has no package mapping".to_owned())
                 })?;
-                if row.source != source || sources.toolchain() != recipe.toolchain {
+                if row.source != source
+                    || sources.toolchain() != recipe.toolchain
+                    || !sources.image_matches(
+                        path,
+                        backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(
+                            image.as_ref(),
+                        )
+                        .as_ref(),
+                    )
+                {
                     return Err(BuiltinModelError(
                         "native program image differs from its owning membership".to_owned(),
                     ));
                 }
-                program_members
+                let owner = program_members
                     .entry(super::source_availability::NativeProgramImageBacking::of(
                         image.as_ref(),
                     ))
-                    .or_default()
-                    .push((
-                        sources.program(),
-                        row.program_path,
-                        path.to_owned(),
-                        source.identity,
-                        recipe.toolchain,
-                    ));
+                    .or_default();
+                if let Some(node) = row.node {
+                    let backing =
+                        super::source_availability::NativeProgramImageBacking::of(image.as_ref());
+                    if forest_image_owners
+                        .insert(backing, node)
+                        .is_some_and(|prior| prior != node)
+                    {
+                        return Err(BuiltinModelError(
+                            "native forest image has multiple leaf owners".to_owned(),
+                        ));
+                    }
+                }
+                owner.push((
+                    row.program,
+                    row.program_path,
+                    path.to_owned(),
+                    source.identity,
+                    recipe.toolchain,
+                ));
             }
         }
         let mut by_path_name = BTreeMap::<(String, String), Vec<DeclarationIdentity>>::new();

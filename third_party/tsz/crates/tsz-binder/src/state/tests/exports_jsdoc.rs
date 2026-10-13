@@ -1,6 +1,31 @@
 use super::*;
 
 #[test]
+fn duplicate_named_imports_preserve_first_source_and_type_marker() {
+    for type_only in [false, true] {
+        let first = if type_only { "type " } else { "" };
+        let second = if type_only { "" } else { "type " };
+        let source = format!(
+            "import {first}{{ original as value }} from 'first'; \
+             import {second}{{ foreign as value }} from 'second'; export const used = value;"
+        );
+        let (parser, root) = parse_test_source(&source);
+        let mut binder = BinderState::new();
+        binder.bind_source_file(parser.get_arena(), root);
+        let id = binder.file_locals.get("value").unwrap();
+        let symbol = binder.get_symbol(id).unwrap();
+        assert_eq!(symbol.import_module(), Some("first"));
+        assert_eq!(symbol.import_name(), Some("original"));
+        assert_eq!(symbol.is_type_only, type_only);
+        assert_eq!(symbol.declarations.len(), 2);
+        assert_eq!(symbol.stable_declarations.len(), 2);
+        for declaration in &symbol.declarations {
+            assert_eq!(binder.node_symbols.get(&declaration.0), Some(&id));
+        }
+    }
+}
+
+#[test]
 fn test_namespace_exports_exclude_non_exported_members() {
     let source = r"
 namespace M {

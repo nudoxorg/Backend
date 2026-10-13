@@ -1071,12 +1071,10 @@ impl<'image> Projector<'image, '_> {
 }
 
 /// The canonical reference kind of one reference row, from its closed use
-/// kind and the used object's closed class. A method use is a method call
-/// whether the source called it (`x.Close()`) or bound it as a method value
-/// (`f := x.Close`) — the lane's closed vocabulary carries both as the
-/// method reference they are. A call through a field (`x.handler()`) is a
-/// use of the field; value reads of variables, constants, and functions are
-/// variable uses.
+/// kind and the used object's closed class. Method values (`f := x.Close`)
+/// are reads of their method target; only an invocation (`x.Close()`) is a
+/// method call. A call through a field (`x.handler()`) is a use of the field;
+/// value reads of variables, constants, and functions are variable uses.
 const fn occurrence_kind(use_kind: ReferenceUseKind, class: ReferenceTargetClass) -> ReferenceKind {
     use ReferenceTargetClass as Class;
     use ReferenceUseKind as Use;
@@ -1086,7 +1084,6 @@ const fn occurrence_kind(use_kind: ReferenceUseKind, class: ReferenceTargetClass
         (Use::Call, Class::Method) => ReferenceKind::MethodCall,
         (Use::Call, Class::Field) => ReferenceKind::FieldAccess,
         (Use::Call, _) => ReferenceKind::FunctionCall,
-        (Use::Read, Class::Method) => ReferenceKind::MethodCall,
         (Use::Read, Class::Field) => ReferenceKind::FieldAccess,
         (Use::Read, _) => ReferenceKind::VariableUse,
     }
@@ -7463,7 +7460,7 @@ mod tests {
             || key.path != "Value"
             || key.display != "Value"
             || key.kind != Some(EntityKind::Function)
-            || access.occurrence.kind != ReferenceKind::MethodCall
+            || access.occurrence.kind != ReferenceKind::VariableUse
             || access.occurrence.confidence != OccurrenceConfidence::Oracle
         {
             return Err(TestError::Missing("typed foreign method key"));
@@ -7601,6 +7598,105 @@ mod tests {
             return Err(TestError::Missing(
                 "exact blocked promoted field occurrences",
             ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn method_values_stay_reads_in_ir_while_invocations_stay_calls() -> Result<(), TestError> {
+        use backend_semantic::ir::{ItemKind, LinkKind, LinkTarget, SemanticReader as _};
+        let source: &[u8] = b"package demo\n\ntype Runner struct{}\n\nfunc (r *Runner) Run() {}\n\nfunc Use() {\n\tr := &Runner{}\n\t_ = r.Run\n\t_ = (*Runner).Run\n\tr.Run()\n}\n";
+        let mut fix = Fixture::new();
+        let record = fix.start_row(ROW_STRUCT);
+        let runner = fix.declaration(KIND_TYPE, b"Runner", Some(record));
+        let use_fn = fix.declaration(KIND_FUNC, b"Use", None);
+        let method = fix.method(runner, b"Run", None);
+        fix.declarations[runner].span = (
+            at(source, b"type Runner")?.0,
+            at(source, b"func (r *Runner)")?.0,
+        );
+        fix.declarations[runner].name_span = Some(at(source, b"Runner")?);
+        fix.declarations[runner].bound = true;
+        fix.declarations[use_fn].span = (
+            at(source, b"func Use")?.0,
+            u32::try_from(source.len()).map_err(TestError::from)?,
+        );
+        fix.declarations[use_fn].name_span = Some(at(source, b"Use")?);
+        fix.declarations[use_fn].bound = true;
+        fix.methods[method].span = (
+            at(source, b"func (r *Runner)")?.0,
+            at(source, b"func Use")?.0,
+        );
+        fix.methods[method].bound = true;
+        let bound_value = at(source, b"r.Run\n")?;
+        let method_expression = at(source, b"(*Runner).Run\n")?;
+        let invocation = at(source, b"r.Run()")?;
+        let expected = [
+            (bound_value.0 + 2, bound_value.1 - 1, LinkKind::Reads),
+            (
+                method_expression.0 + 10,
+                method_expression.1 - 1,
+                LinkKind::Reads,
+            ),
+            (invocation.0 + 2, invocation.1 - 2, LinkKind::MethodCall),
+        ];
+        for (start, end, kind) in expected {
+            fix.reference_typed(
+                u32::try_from(use_fn).map_err(TestError::from)?,
+                b"",
+                b"Run",
+                b"",
+                start,
+                end,
+                if kind == LinkKind::MethodCall { 0 } else { 1 },
+                1,
+                b"Runner",
+            );
+        }
+        let ir = lower_ir(&fix, source)?;
+        let runner = ir
+            .items()
+            .find(|item| item.name() == b"Runner")
+            .ok_or(TestError::Missing("method receiver entity"))?;
+        let method = ir
+            .items()
+            .find(|item| item.name() == b"Run")
+            .ok_or(TestError::Missing("target method entity"))?;
+        let owner = ir
+            .items()
+            .find(|item| item.name() == b"Use")
+            .ok_or(TestError::Missing("reference owner entity"))?;
+        if method.kind() != ItemKind::Function
+            || ir
+                .entity(method.id())
+                .ok_or(TestError::Missing("method item"))?
+                .parent != Some(runner.id())
+        {
+            return Err(TestError::Missing("method declaration and receiver join"));
+        }
+        let mut seen = [0; 3];
+        for (_, occurrence) in ir.link_occurrences() {
+            let site = occurrence
+                .source
+                .ok_or(TestError::Missing("method occurrence site"))?;
+            let link = ir
+                .link(occurrence.link)
+                .ok_or(TestError::Missing("method link"))?;
+            let index = expected
+                .iter()
+                .position(|(start, end, _)| (*start, *end) == (site.start(), site.end()))
+                .ok_or(TestError::Missing("exact method occurrence span"))?;
+            if link.kind != expected[index].2
+                || link.from != owner.id()
+                || link.target != LinkTarget::Local(method.id())
+                || &source[site.start() as usize..site.end() as usize] != b"Run"
+            {
+                return Err(TestError::Missing("method value/call target and relation"));
+            }
+            seen[index] += 1;
+        }
+        if seen != [1, 1, 1] {
+            return Err(TestError::Missing("exact method value and invocation occurrences"));
         }
         Ok(())
     }

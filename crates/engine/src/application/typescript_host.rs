@@ -59,6 +59,7 @@ struct FileSnapshot {
     identity: FileIdentity,
     length: u64,
     digest: [u8; 32],
+    content_id: ContentId<SourceFactDomain>,
 }
 
 /// Private package-scoped proof that binds a selected compiler launch to the host's full
@@ -227,6 +228,11 @@ pub(crate) enum TypeScriptSelectionOrigin {
 }
 
 impl TypeScriptProjectInputs<'_> {
+    pub(crate) fn validated_host(
+        &self,
+    ) -> Result<ValidatedTypeScriptHost<'_>, TypeScriptProjectHostError> {
+        self.witness.validated()
+    }
     /// Starts an isolated observation ledger for one compiler program.
     pub(crate) fn resolver(&self) -> TypeScriptResolverCapability<'_> {
         TypeScriptResolverCapability {
@@ -349,6 +355,13 @@ pub(crate) struct TypeScriptResolverWitness {
     observations: ResolverObservationLedger,
 }
 
+/// Borrowed proof issued only by a fresh full host validation. It is local to
+/// one admission/publication boundary; leaf ledgers still validate every read.
+pub(crate) struct ValidatedTypeScriptHost<'a> {
+    witness: &'a TypeScriptProjectWitness,
+    sources: std::collections::BTreeMap<PathBuf, FileSnapshot>,
+}
+
 impl TypeScriptResolverWitness {
     pub(crate) const fn digest(&self) -> &[u8; 32] {
         &self.digest
@@ -358,13 +371,20 @@ impl TypeScriptResolverWitness {
         &self,
         witness: &TypeScriptProjectWitness,
     ) -> Result<(), TypeScriptProjectHostError> {
+        self.validate_with_host(&witness.validated()?)
+    }
+
+    pub(crate) fn validate_with_host(
+        &self,
+        host: &ValidatedTypeScriptHost<'_>,
+    ) -> Result<(), TypeScriptProjectHostError> {
+        let witness = host.witness;
         if self.project_fingerprint != witness.fingerprint {
             return Err(TypeScriptProjectHostError::WitnessChanged {
                 path: witness.project_root.clone(),
             });
         }
-        witness.validate_current()?;
-        validate_resolver_observations(witness, &self.observations)
+        validate_resolver_observations_with_host(witness, &self.observations, Some(host))
     }
 }
 
@@ -448,6 +468,7 @@ impl TypeScriptResolverCapability<'_> {
         }
         let path_cost = canonical.as_os_str().as_encoded_bytes().len();
         ensure_metadata_capacity(&self.observations, path_cost, &canonical)?;
+        self.witness.record_source_snapshot(&canonical, &snapshot)?;
         record_realpath_ledger(
             &mut self.observations,
             lexical,
@@ -884,7 +905,20 @@ impl TypeScriptResolverCapability<'_> {
     }
 
     pub(crate) fn seal(&mut self) -> Result<TypeScriptResolverWitness, TypeScriptProjectHostError> {
-        self.validate_current()?;
+        let witness = self.witness;
+        self.seal_with_host(&witness.validated()?)
+    }
+
+    pub(crate) fn seal_with_host(
+        &mut self,
+        host: &ValidatedTypeScriptHost<'_>,
+    ) -> Result<TypeScriptResolverWitness, TypeScriptProjectHostError> {
+        if !std::ptr::eq(self.witness, host.witness) {
+            return Err(TypeScriptProjectHostError::WitnessChanged {
+                path: self.witness.project_root.clone(),
+            });
+        }
+        validate_resolver_observations_with_host(self.witness, &self.observations, Some(host))?;
         let digest = self.resolver_witness()?;
         Ok(TypeScriptResolverWitness {
             project_fingerprint: self.witness.fingerprint,
@@ -1261,11 +1295,33 @@ fn validate_resolver_observations(
     witness: &TypeScriptProjectWitness,
     observations: &ResolverObservationLedger,
 ) -> Result<(), TypeScriptProjectHostError> {
+    validate_resolver_observations_with_host(witness, observations, None)
+}
+
+fn validate_resolver_observations_with_host(
+    witness: &TypeScriptProjectWitness,
+    observations: &ResolverObservationLedger,
+    host: Option<&ValidatedTypeScriptHost<'_>>,
+) -> Result<(), TypeScriptProjectHostError> {
+    if host.is_some_and(|host| !std::ptr::eq(host.witness, witness)) {
+        return Err(TypeScriptProjectHostError::WitnessChanged {
+            path: witness.project_root.clone(),
+        });
+    }
     for input in observations.loaded_sources.values() {
-        let observed = capture_file_snapshot(&input.path, MAX_SOURCE_FILE_BYTES)?;
+        // Common SDK/config/dynamic files were freshly checked once at this
+        // boundary. New reads made after that proof still require a capture.
+        let captured;
+        let observed =
+            if let Some(snapshot) = host.and_then(|host| host.sources.get(input.path.as_ref())) {
+                snapshot
+            } else {
+                captured = capture_file_snapshot(&input.path, MAX_SOURCE_FILE_BYTES)?;
+                &captured
+            };
         if observed.identity != input.identity
             || observed.length != u64::try_from(input.bytes.len()).unwrap_or(u64::MAX)
-            || observed.digest != *blake3::hash(&input.bytes).as_bytes()
+            || observed.content_id != input.content_id
         {
             return Err(TypeScriptProjectHostError::WitnessChanged {
                 path: input.path.clone(),
@@ -1714,15 +1770,29 @@ impl TypeScriptProjectWitness {
             });
         }
         let (snapshot, bytes) = read_regular_file(&canonical, MAX_SOURCE_FILE_BYTES)?;
+        self.record_source_snapshot(&canonical, &snapshot)?;
+        Ok(TypeScriptFileInput {
+            path: canonical.into_boxed_path(),
+            content_id: snapshot.content_id,
+            identity: snapshot.identity,
+            bytes: bytes.into_boxed_slice(),
+        })
+    }
+
+    fn record_source_snapshot(
+        &self,
+        canonical: &Path,
+        snapshot: &FileSnapshot,
+    ) -> Result<(), TypeScriptProjectHostError> {
         let mut loaded = self.loaded_source_files.lock().map_err(|_| {
             TypeScriptProjectHostError::WitnessLockPoisoned {
-                path: canonical.clone().into_boxed_path(),
+                path: canonical.to_path_buf().into_boxed_path(),
             }
         })?;
-        if let Some(previous) = loaded.get(&canonical) {
-            if previous != &snapshot {
+        if let Some(previous) = loaded.get(canonical) {
+            if previous != snapshot {
                 return Err(TypeScriptProjectHostError::WitnessChanged {
-                    path: canonical.into_boxed_path(),
+                    path: canonical.to_path_buf().into_boxed_path(),
                 });
             }
         } else {
@@ -1742,14 +1812,9 @@ impl TypeScriptProjectWitness {
                     maximum: MAX_RESOLVED_SOURCE_BYTES,
                 });
             }
-            loaded.insert(canonical.clone(), snapshot.clone());
+            loaded.insert(canonical.to_path_buf(), snapshot.clone());
         }
-        Ok(TypeScriptFileInput {
-            path: canonical.into_boxed_path(),
-            content_id: ContentId::<SourceFactDomain>::from_canonical_bytes(&bytes),
-            identity: snapshot.identity,
-            bytes: bytes.into_boxed_slice(),
-        })
+        Ok(())
     }
 
     fn path_is_admitted(&self, path: &Path) -> bool {
@@ -1785,6 +1850,12 @@ impl TypeScriptProjectWitness {
     }
 
     pub(crate) fn validate_current(&self) -> Result<(), TypeScriptProjectHostError> {
+        self.validated().map(|_| ())
+    }
+
+    pub(crate) fn validated(
+        &self,
+    ) -> Result<ValidatedTypeScriptHost<'_>, TypeScriptProjectHostError> {
         if let Some(proof) = &self.resource_proof {
             proof.validate_current().map_err(bundle_admission_error)?;
         }
@@ -1901,7 +1972,22 @@ impl TypeScriptProjectWitness {
                 });
             }
         }
-        Ok(())
+        let mut sources = self
+            .files
+            .iter()
+            .map(|snapshot| (snapshot.path.to_path_buf(), snapshot.clone()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        // Snapshot the same locked rows that were just validated. The token
+        // cannot silently adopt a later concurrently registered file.
+        sources.extend(
+            loaded
+                .iter()
+                .map(|(path, snapshot)| (path.clone(), snapshot.clone())),
+        );
+        Ok(ValidatedTypeScriptHost {
+            witness: self,
+            sources,
+        })
     }
 }
 
@@ -2347,6 +2433,7 @@ fn snapshot_from_input(input: &TypeScriptFileInput) -> FileSnapshot {
         identity: input.identity,
         length: u64::try_from(input.bytes.len()).unwrap_or(u64::MAX),
         digest: *blake3::hash(&input.bytes).as_bytes(),
+        content_id: input.content_id,
     }
 }
 
@@ -2356,6 +2443,7 @@ fn snapshot_from_config(input: &TypeScriptConfigInput) -> FileSnapshot {
         identity: input.identity,
         length: u64::try_from(input.bytes.len()).unwrap_or(u64::MAX),
         digest: *blake3::hash(&input.bytes).as_bytes(),
+        content_id: input.content_id,
     }
 }
 
@@ -2549,6 +2637,7 @@ fn read_regular_file(
         identity,
         length: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
         digest: *blake3::hash(&bytes).as_bytes(),
+        content_id: ContentId::<SourceFactDomain>::from_canonical_bytes(&bytes),
     };
     Ok((snapshot, bytes))
 }
@@ -5902,6 +5991,59 @@ printf 'Version 5.9.3\n'
             Err(TypeScriptProjectHostError::SourceOutsideCapability { .. })
         ));
         fs::remove_file(outside).expect("remove external declaration");
+    }
+
+    #[test]
+    fn validated_host_proof_is_exact_and_fresh_at_each_forest_boundary() {
+        let fixture = Fixture::new();
+        fixture.install("5.9.3");
+        let ProjectTypeScriptSearch::Found(project) = find_project_typescript(&fixture.0).unwrap()
+        else {
+            panic!("project");
+        };
+        let node = fixture.0.join("node");
+        fs::write(&node, b"identity-only host control; never executed").unwrap();
+        let package_root = fs::canonicalize(project.module_root.join("typescript")).unwrap();
+        let capture = || {
+            TypeScriptProjectWitness::capture(
+                &fixture.0,
+                None,
+                &project,
+                &project.compiler,
+                &node,
+                &project.module_root,
+                &package_root,
+                project.workspace.as_ref(),
+            )
+            .unwrap()
+        };
+        let witness = capture();
+        let source = fixture.0.join("main.ts");
+        fs::write(&source, b"export const value = 1;").unwrap();
+        let source = fs::canonicalize(source).unwrap();
+        let mut first = TypeScriptResolverCapability {
+            witness: &witness,
+            observations: ResolverObservationLedger::default(),
+        };
+        first.try_load_source(&source).unwrap().unwrap();
+        let proof = witness.validated().unwrap();
+        assert!(
+            proof.sources.contains_key(&source),
+            "registered reads enter one freshly validated index"
+        );
+        let other = capture();
+        assert!(
+            first.seal_with_host(&other.validated().unwrap()).is_err(),
+            "same physical inputs cannot substitute another witness object"
+        );
+        let sealed = first.seal_with_host(&proof).unwrap();
+        sealed.validate_with_host(&proof).unwrap();
+        fs::write(&source, b"export const value = 2;").unwrap();
+        assert!(
+            witness.validated().is_err(),
+            "next stage/publish boundary recaptures every shared file"
+        );
+        assert!(sealed.validate_current(&witness).is_err());
     }
 
     #[test]

@@ -240,3 +240,99 @@ fn truncation_faults_retain_variant_operands() {
         );
     }
 }
+
+#[test]
+fn dotted_direct_import_keeps_head_binding_and_complete_module_evidence() -> Result<(), TestError> {
+    // The real HTTPie tests/test_cli.py imports httpie.cli.argparser without `as`.
+    // Non-ASCII/CRLF prefix makes a character-offset reconstruction falsifiable.
+    let source = "# 🐍 captured UTF-8\r\nimport httpie.cli.argparser\r\nimport os.path as path_alias\r\nfrom httpie.cli import argparser\r\nfrom .cli import (\r\n    argparser as relative_alias,\r\n)\r\n";
+    let facts = extract(source.as_bytes())?;
+    let aliases = facts
+        .declarations
+        .iter()
+        .filter(|d| d.kind == DeclarationKind::Alias)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        aliases.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
+        ["httpie", "path_alias", "argparser", "relative_alias"]
+    );
+    for alias in &aliases {
+        assert_eq!(
+            &source.as_bytes()[alias.name_span.start as usize..alias.name_span.end as usize],
+            alias.name.as_bytes()
+        );
+        assert!(
+            alias.binding_span.start <= alias.name_span.start
+                && alias.name_span.end <= alias.binding_span.end
+        );
+    }
+    let direct = aliases[0];
+    assert_eq!(direct.value_source.as_deref(), Some("httpie.cli.argparser"));
+    let imported = direct
+        .value_span
+        .ok_or(TestError::MissingDeclaration("imported module span"))?;
+    assert_eq!(
+        &source.as_bytes()[imported.start as usize..imported.end as usize],
+        b"httpie.cli.argparser"
+    );
+    assert_eq!(direct.name_span.start, imported.start);
+    assert_eq!(direct.name_span.end - direct.name_span.start, 6);
+    Ok(())
+}
+
+#[test]
+fn function_local_dotted_import_shadows_head_without_inventing_tail_local() -> Result<(), TestError>
+{
+    let source = b"def resolve(httpie):\n    import httpie.cli.argparser\n    return httpie.cli.argparser.HTTPieArgumentParser()\n\ndef introduced():\n    import httpie.cli.argparser\n    return httpie.cli.argparser.HTTPieArgumentParser()\n\nasync def aliased():\n    import os.path as local_path\n    from httpie.cli import argparser\n    return local_path, argparser\n";
+    let facts = extract(source)?;
+    for (function_name, expected) in [
+        ("resolve", vec!["httpie"]),
+        ("introduced", vec!["httpie"]),
+        ("aliased", vec!["argparser", "local_path"]),
+    ] {
+        let function = facts
+            .declarations
+            .iter()
+            .find(|d| d.name == function_name)
+            .ok_or(TestError::MissingDeclaration("function"))?;
+        let scope = facts
+            .binding_scopes
+            .iter()
+            .find(|scope| scope.span == function.span)
+            .ok_or(TestError::MissingDeclaration("function binding scope"))?;
+        let mut names = scope.locals.iter().map(String::as_str).collect::<Vec<_>>();
+        names.sort_unstable();
+        assert_eq!(names, expected);
+        assert_eq!(function.is_async, function_name == "aliased");
+    }
+    assert!(
+        !facts
+            .declarations
+            .iter()
+            .any(|d| d.kind == DeclarationKind::Alias),
+        "function imports belong to the function scope, not the module shelf"
+    );
+    Ok(())
+}
+
+#[test]
+fn multiple_imports_and_star_from_import_keep_distinct_binding_rules() -> Result<(), TestError> {
+    let source = b"import pkg.child, other.branch as renamed\nfrom pkg import child, branch as member\nfrom pkg import *\n";
+    let facts = extract(source)?;
+    let aliases = facts
+        .declarations
+        .iter()
+        .filter(|d| d.kind == DeclarationKind::Alias)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        aliases.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(),
+        ["pkg", "renamed", "child", "member", "*"]
+    );
+    for alias in aliases {
+        assert_eq!(
+            &source[alias.name_span.start as usize..alias.name_span.end as usize],
+            alias.name.as_bytes()
+        );
+    }
+    Ok(())
+}

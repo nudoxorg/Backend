@@ -31,7 +31,7 @@ use backend_frontend_python::legacy::{
     Annotation, AnnotationFact, AnnotationPosition, AttributeChainRoot, AttributeStep,
     BindingScopeFact, CheckerError, CheckerReport, ClassForm, DeclarationFact, DeclarationKind,
     ExtractionError, InferredType, LiteralValue, ModuleFacts, OccurrenceFact, OccurrenceKind,
-    OccurrenceReceiver, ParameterKind, Pyrefly, ReceiverKind, Span, SymbolOutcome,
+    OccurrenceReceiver, ParameterFact, ParameterKind, Pyrefly, ReceiverKind, Span, SymbolOutcome,
     TypeReason as ExtractedReason, extract,
 };
 use backend_semantic::ir::{
@@ -231,6 +231,8 @@ struct Emitter<'a, 'source> {
     /// twin (later wins) and for the dead subtree it owns. Distinct overloads
     /// keep distinct fingerprints, so every live signature survives.
     live: Vec<bool>,
+    /// Immutable receiver roles derived once from the existing lexical owner table.
+    receiver_bindings: ReceiverBindings,
     /// Pushed declaration rows in lane order, built while emitting.
     pushed: Vec<Pushed<'source>>,
     /// Parameter and result-slot ordinals with their owning declaration
@@ -338,13 +340,18 @@ impl<'a, 'source> Emitter<'a, 'source> {
         checker: Option<&'a CheckerReport>,
     ) -> Self {
         let ordinals = vec![None; module.declarations.len()];
-        let live = compute_live_set(module);
+        let owners: Vec<Option<usize>> = (0..module.declarations.len())
+            .map(|index| innermost_owner(module, index))
+            .collect();
+        let live = compute_live_set(module, &owners);
+        let receiver_bindings = ReceiverBindings::build(module, &owners);
         Self {
             source,
             module,
             facts,
             ordinals,
             live,
+            receiver_bindings,
             pushed: Vec::new(),
             child_rows: Vec::new(),
             checker: checker.map(CheckerIndex::build),
@@ -569,7 +576,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
     /// One `Protocol` member: the callable signature row of one method —
     /// parameters in declaration order, then the optional result row with
     /// the result flag committed. A property member is the row of its
-    /// return type; a classmethod drops its `cls` receiver. Unannotated
+    /// return type; a bound method omits its first positional receiver. Unannotated
     /// parameters take the type authority's inference when it proved one,
     /// otherwise the honest unknown row, so the signature arity is always
     /// preserved. `None` means the member row is not hostable, degrading
@@ -592,9 +599,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
             };
         }
         let mut children = Vec::new();
-        for (position, parameter) in member.parameters.iter().enumerate() {
-            // A classmethod signature does not include its `cls` receiver.
-            if position == 0 && member.receiver == ReceiverKind::ClassMethod {
+        for parameter in &member.parameters {
+            // A callable member is the bound attribute value, matching the emitted method.
+            if self.receiver_bindings.is_bound(parameter) {
                 continue;
             }
             let unannotated = matches!(
@@ -917,7 +924,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
         let mut any_resolved = false;
         let mut any_checked = false;
         for parameter in &declaration.parameters {
-            if is_receiver_parameter(declaration.receiver, &parameter.name) {
+            if self.receiver_bindings.is_bound(parameter) {
                 continue;
             }
             let unannotated = matches!(
@@ -2968,7 +2975,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
             None => return false,
         };
         let function = &self.module.declarations[function_index];
-        let type_name = match receiver_annotation_name(function, receiver) {
+        let type_name = match receiver_annotation_name(&self.receiver_bindings, function, receiver)
+        {
             ReceiverAnnotationName::Unique(name) => name,
             ReceiverAnnotationName::Absent | ReceiverAnnotationName::Ambiguous => return false,
         };
@@ -2998,7 +3006,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
             None => return false,
         };
         let function = &self.module.declarations[function_index];
-        let type_name = match receiver_annotation_name(function, receiver) {
+        let type_name = match receiver_annotation_name(&self.receiver_bindings, function, receiver)
+        {
             ReceiverAnnotationName::Unique(name) => name,
             ReceiverAnnotationName::Absent | ReceiverAnnotationName::Ambiguous => return false,
         };
@@ -3040,7 +3049,8 @@ impl<'a, 'source> Emitter<'a, 'source> {
             None => return Ok(None),
         };
         let function = &self.module.declarations[function_index];
-        let type_name = match receiver_annotation_name(function, receiver) {
+        let type_name = match receiver_annotation_name(&self.receiver_bindings, function, receiver)
+        {
             ReceiverAnnotationName::Unique(name) => name,
             ReceiverAnnotationName::Absent | ReceiverAnnotationName::Ambiguous => return Ok(None),
         };
@@ -3142,17 +3152,19 @@ impl<'a, 'source> Emitter<'a, 'source> {
         {
             LocalBinding::Foreign => return foreign().map(Some),
             LocalBinding::Unique(name) => (name, true),
-            LocalBinding::Absent => match receiver_annotation_name(function, receiver) {
-                ReceiverAnnotationName::Absent => {
-                    match self.module_annotation_name(function, receiver, occurrence) {
-                        LocalBinding::Foreign => return foreign().map(Some),
-                        LocalBinding::Unique(name) => (name, true),
-                        LocalBinding::Absent => return Ok(None),
+            LocalBinding::Absent => {
+                match receiver_annotation_name(&self.receiver_bindings, function, receiver) {
+                    ReceiverAnnotationName::Absent => {
+                        match self.module_annotation_name(function, receiver, occurrence) {
+                            LocalBinding::Foreign => return foreign().map(Some),
+                            LocalBinding::Unique(name) => (name, true),
+                            LocalBinding::Absent => return Ok(None),
+                        }
                     }
+                    ReceiverAnnotationName::Ambiguous => return foreign().map(Some),
+                    ReceiverAnnotationName::Unique(name) => (name.to_owned(), false),
                 }
-                ReceiverAnnotationName::Ambiguous => return foreign().map(Some),
-                ReceiverAnnotationName::Unique(name) => (name.to_owned(), false),
-            },
+            }
         };
         if self.assigned_name_hides_annotation(occurrence, receiver) {
             return Ok(None);
@@ -3313,17 +3325,19 @@ impl<'a, 'source> Emitter<'a, 'source> {
         {
             LocalBinding::Foreign => return foreign().map(Some),
             LocalBinding::Unique(name) => (name, true),
-            LocalBinding::Absent => match receiver_annotation_name(function, receiver) {
-                ReceiverAnnotationName::Absent => {
-                    match self.module_annotation_name(function, receiver, occurrence) {
-                        LocalBinding::Foreign => return foreign().map(Some),
-                        LocalBinding::Unique(name) => (name, true),
-                        LocalBinding::Absent => return Ok(None),
+            LocalBinding::Absent => {
+                match receiver_annotation_name(&self.receiver_bindings, function, receiver) {
+                    ReceiverAnnotationName::Absent => {
+                        match self.module_annotation_name(function, receiver, occurrence) {
+                            LocalBinding::Foreign => return foreign().map(Some),
+                            LocalBinding::Unique(name) => (name, true),
+                            LocalBinding::Absent => return Ok(None),
+                        }
                     }
+                    ReceiverAnnotationName::Ambiguous => return foreign().map(Some),
+                    ReceiverAnnotationName::Unique(name) => (name.to_owned(), false),
                 }
-                ReceiverAnnotationName::Ambiguous => return foreign().map(Some),
-                ReceiverAnnotationName::Unique(name) => (name.to_owned(), false),
-            },
+            }
         };
         if self.assigned_name_hides_annotation(occurrence, receiver) {
             return Ok(None);
@@ -3512,7 +3526,11 @@ impl<'a, 'source> Emitter<'a, 'source> {
                             LocalBinding::Unique(name) => LocalBinding::Unique(name),
                             LocalBinding::Foreign => LocalBinding::Foreign,
                             LocalBinding::Absent => {
-                                match receiver_annotation_name(scope_function, receiver) {
+                                match receiver_annotation_name(
+                                    &self.receiver_bindings,
+                                    scope_function,
+                                    receiver,
+                                ) {
                                     ReceiverAnnotationName::Unique(name) => {
                                         LocalBinding::Unique(name.to_owned())
                                     }
@@ -4595,7 +4613,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             LocalBinding::Absent => {}
         }
         for parameter in &function.parameters {
-            if is_receiver_parameter(function.receiver, &parameter.name) {
+            if self.receiver_bindings.omits_annotation(parameter) {
                 continue;
             }
             if parameter.name == name {
@@ -4657,7 +4675,9 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     RawReceiverAnnotation::Blocked => return RawReceiverAnnotation::Blocked,
                     RawReceiverAnnotation::Absent => {}
                 }
-                if let Some(annotation) = parameter_annotation_raw(scope_function, name) {
+                if let Some(annotation) =
+                    parameter_annotation_raw(&self.receiver_bindings, scope_function, name)
+                {
                     return RawReceiverAnnotation::Inherited(annotation);
                 }
                 return RawReceiverAnnotation::Blocked;
@@ -5105,7 +5125,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
         match self.raw_local_annotation(function, name, occurrence) {
             RawReceiverAnnotation::Local(_) | RawReceiverAnnotation::Blocked => true,
             RawReceiverAnnotation::Inherited(_) | RawReceiverAnnotation::Absent => {
-                parameter_annotation_raw(function, name).is_some()
+                parameter_annotation_raw(&self.receiver_bindings, function, name).is_some()
             }
         }
     }
@@ -5146,7 +5166,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             RawReceiverAnnotation::Blocked => return None,
             RawReceiverAnnotation::Inherited(_) | RawReceiverAnnotation::Absent => {}
         }
-        let annotation = parameter_annotation_raw(owner, name)?;
+        let annotation = parameter_annotation_raw(&self.receiver_bindings, owner, name)?;
         if annotation_is_self_type(annotation) {
             self.lexical_class_index(owner.span)
         } else {
@@ -5171,7 +5191,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             LocalBinding::Unique(type_name) => return self.unique_live_class_index(&type_name),
             LocalBinding::Absent => {}
         }
-        match receiver_annotation_name(function, name) {
+        match receiver_annotation_name(&self.receiver_bindings, function, name) {
             ReceiverAnnotationName::Ambiguous => return None,
             ReceiverAnnotationName::Unique(type_name) => {
                 return self.unique_live_class_index(type_name);
@@ -6153,13 +6173,69 @@ fn c3_merge(mut sequences: Vec<Vec<usize>>, last: Vec<usize>) -> Option<Vec<usiz
     Some(result)
 }
 
-/// `self` on an instance method and `cls` on a classmethod are receivers, not
-/// parameters. Any other parameter with those names stays.
-fn is_receiver_parameter(receiver: ReceiverKind, name: &str) -> bool {
-    match receiver {
-        ReceiverKind::Plain => name == "self",
-        ReceiverKind::ClassMethod => name == "cls",
-        ReceiverKind::StaticMethod | ReceiverKind::Property => false,
+/// Bound signature parameters and conventional receiver annotations are separate
+/// roles. An arbitrary receiver name such as `this: Target` still supplies the
+/// annotation used by name-based attribute resolution.
+#[derive(Clone, Copy)]
+enum ReceiverBinding {
+    Positional,
+    Conventional,
+}
+
+/// Per-emission receiver membership over exact Ruff parameter-name spans.
+/// Reuses the lexical owner table already computed for shadowing; consumers
+/// perform one hash lookup instead of rescanning declarations or owners.
+struct ReceiverBindings {
+    spans: HashMap<(u32, u32), ReceiverBinding>,
+}
+
+impl ReceiverBindings {
+    fn build(module: &ModuleFacts, owners: &[Option<usize>]) -> Self {
+        let mut spans = HashMap::new();
+        for (index, function) in module.declarations.iter().enumerate() {
+            if function.kind != DeclarationKind::Function
+                // Python wraps an undecorated __new__ as staticmethod at class creation.
+                || (function.receiver == ReceiverKind::Plain && function.name == "__new__")
+                || matches!(
+                    function.receiver,
+                    ReceiverKind::StaticMethod | ReceiverKind::Property
+                )
+                || !owners[index]
+                    .is_some_and(|owner| module.declarations[owner].kind == DeclarationKind::Class)
+            {
+                continue;
+            }
+            let Some(first) = function.parameters.first() else {
+                continue;
+            };
+            if !matches!(
+                first.kind,
+                ParameterKind::PositionalOnly | ParameterKind::PositionalOrKeyword
+            ) {
+                continue;
+            }
+            let binding = match (function.receiver, first.name.as_str()) {
+                (ReceiverKind::Plain, "self") | (ReceiverKind::ClassMethod, "cls") => {
+                    ReceiverBinding::Conventional
+                }
+                _ => ReceiverBinding::Positional,
+            };
+            spans.insert((first.name_span.start, first.name_span.end), binding);
+        }
+        Self { spans }
+    }
+
+    fn is_bound(&self, parameter: &ParameterFact) -> bool {
+        self.spans
+            .contains_key(&(parameter.name_span.start, parameter.name_span.end))
+    }
+
+    fn omits_annotation(&self, parameter: &ParameterFact) -> bool {
+        matches!(
+            self.spans
+                .get(&(parameter.name_span.start, parameter.name_span.end)),
+            Some(ReceiverBinding::Conventional)
+        )
     }
 }
 
@@ -6341,11 +6417,12 @@ fn split_subscript_steps(
 }
 
 fn parameter_annotation_raw<'a>(
+    receivers: &ReceiverBindings,
     function: &'a DeclarationFact,
     name: &str,
 ) -> Option<&'a Annotation> {
     for parameter in &function.parameters {
-        if is_receiver_parameter(function.receiver, &parameter.name) {
+        if receivers.omits_annotation(parameter) {
             continue;
         }
         if parameter.name == name {
@@ -6429,11 +6506,12 @@ fn flatten_receiver_union_members<'a>(members: &'a [Annotation], out: &mut Vec<&
 /// annotation is a plain undotted name, peels to one through generics, or is
 /// a union of one class name.
 fn receiver_annotation_name<'a>(
+    receivers: &ReceiverBindings,
     declaration: &'a DeclarationFact,
     receiver: &str,
 ) -> ReceiverAnnotationName<'a> {
     for parameter in &declaration.parameters {
-        if is_receiver_parameter(declaration.receiver, &parameter.name) {
+        if receivers.omits_annotation(parameter) {
             continue;
         }
         if parameter.name != receiver {
@@ -6750,11 +6828,8 @@ fn annotation_root_name(annotation: &Annotation) -> Option<String> {
 /// twins that redirection is type-identical; an earlier call that textually
 /// precedes the shadowing definition therefore keeps its meaning while
 /// naming the surviving row.
-fn compute_live_set(module: &ModuleFacts) -> Vec<bool> {
+fn compute_live_set(module: &ModuleFacts, owners: &[Option<usize>]) -> Vec<bool> {
     let count = module.declarations.len();
-    let owners: Vec<Option<usize>> = (0..count)
-        .map(|index| innermost_owner(module, index))
-        .collect();
     let mut live = vec![true; count];
     // One group per (owner, kind, name): later bindings shadow earlier ones
     // only inside the same lexical scope.

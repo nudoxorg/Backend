@@ -241,8 +241,12 @@ impl Region for Titlebar {
         &mut self.core
     }
 
-    fn keys(&self, snapshot: &AppSnapshot) -> Vec<PageKey> {
-        crate::runtime::store::RouteDependencies::chrome_keys(snapshot.route())
+    fn keys(&self, snapshot: &AppSnapshot, store: &DataStore) -> Vec<PageKey> {
+        // This is the same subject used by the painted breadcrumbs and
+        // sibling actions, including a selected node from another package.
+        jump::bar_subject(snapshot, store).page_route()
+            .map(crate::runtime::store::RouteDependencies::chrome_keys)
+            .unwrap_or_default()
     }
 
     fn urgency(&self) -> super::region::Urgency {

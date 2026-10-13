@@ -201,7 +201,8 @@ for(const f of p.getSourceFiles()) {
   }
   visit(f);
 }
-process.stdout.write(JSON.stringify({normalized, target_value:computed('target'), target_is_esnext:computed('target') === ts.ScriptTarget.ESNext, files:p.getSourceFiles().map(f=>f.fileName), requests:Array.from(requests.values()), formats:Object.fromEntries(p.getSourceFiles().map(f=>[f.fileName, f.impliedNodeFormat === undefined ? 'unknown' : f.impliedNodeFormat === ts.ModuleKind.CommonJS ? 'common_js' : f.impliedNodeFormat === ts.ModuleKind.ESNext ? 'es_module' : 'unsupported'])), calls, errors:ts.getPreEmitDiagnostics(p).filter(d=>d.category===ts.DiagnosticCategory.Error).map(d=>d.code)}));
+const diagnostics = ts.getPreEmitDiagnostics(p).filter(d=>d.category===ts.DiagnosticCategory.Error);
+process.stdout.write(JSON.stringify({normalized, target_value:computed('target'), target_is_esnext:computed('target') === ts.ScriptTarget.ESNext, files:p.getSourceFiles().map(f=>f.fileName), requests:Array.from(requests.values()), formats:Object.fromEntries(p.getSourceFiles().map(f=>[f.fileName, f.impliedNodeFormat === undefined ? 'unknown' : f.impliedNodeFormat === ts.ModuleKind.CommonJS ? 'common_js' : f.impliedNodeFormat === ts.ModuleKind.ESNext ? 'es_module' : 'unsupported'])), calls, diagnostics:diagnostics.map(d=>({file:d.file ? d.file.fileName : null, code:d.code})), declarations:Object.fromEntries(p.getSourceFiles().map(f=>[f.fileName, f.isDeclarationFile])), errors:diagnostics.map(d=>d.code)}));
 "#;
         let args = [
             OsString::from(self.root.join("node_modules/typescript/lib/typescript.js")),
@@ -783,8 +784,16 @@ fn configured_package_keeps_selected_semantics_excluded_gaps_and_exact_source_fr
         staged.input_witness().input_root()
     );
     assert_eq!(
-        changed.native_program_sources().unwrap().program(),
-        program.program()
+        changed
+            .native_program_sources()
+            .unwrap()
+            .single_program()
+            .expect("single configured program")
+            .program(),
+        program
+            .single_program()
+            .expect("single configured program")
+            .program()
     );
     assert_eq!(
         changed.coverage_gaps()[0].source().identity,
@@ -1290,5 +1299,461 @@ fn actual_compiler_normalized_defaults_match_owned_sdk_computed_options() {
                 .as_bool()
                 .unwrap()
         );
+    }
+}
+
+/// Ordinary solution config shape: the app and configuration script are distinct
+/// actual programs, with an empty selected root acting only as their graph.
+fn write_solution(fixture: &Fixture, duplicate_member: bool) {
+    fs::write(
+        fixture.root.join("vite.config.ts"),
+        "export const buildTarget: number = 1;\n",
+    )
+    .unwrap();
+    fs::write(fixture.root.join("tsconfig.json"), r#"{"files":[],"references":[{"path":"./tsconfig.app.json"},{"path":"./tsconfig.node.json"}]}"#).unwrap();
+    fs::write(fixture.root.join("tsconfig.app.json"), r#"{"compilerOptions":{"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","strict":true,"noEmit":true,"verbatimModuleSyntax":true,"erasableSyntaxOnly":true,"allowImportingTsExtensions":true},"files":["src/main.ts"]}"#).unwrap();
+    let node_file = if duplicate_member {
+        "src/main.ts"
+    } else {
+        "vite.config.ts"
+    };
+    fs::write(
+        fixture.root.join("tsconfig.node.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "compilerOptions":{"target":"ES2020","module":"CommonJS","strict":false,"noEmit":true},
+            "files":[node_file],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+#[ignore = "requires pinned Node and TypeScript API paths in TSZ_PROGRAM_TEST_NODE and TSZ_PROGRAM_TEST_TYPESCRIPT_API"]
+fn solution_forest_keeps_actual_program_options_members_and_all_config_witnesses() {
+    use super::{
+        TypeScriptForestClosureWitness, TypeScriptForestSourceMembership,
+        build_native_forest_inputs,
+    };
+    let fixture = Fixture::new();
+    write_solution(&fixture, false);
+    let sources = [
+        PackageSource::new("src/main.ts", MAIN).unwrap(),
+        PackageSource::new("src/lib.ts", LIB).unwrap(),
+        PackageSource::new("vite.config.ts", "export const buildTarget: number = 1;\n").unwrap(),
+        PackageSource::new("eslint.config.ts", ESLINT).unwrap(),
+    ];
+    let admitted = fixture.host().admit(&fixture.root).unwrap().unwrap();
+    let forest = build_native_forest_inputs(
+        &admitted.inputs(),
+        &sources,
+        Instant::now() + Duration::from_secs(90),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(forest.configured_forest);
+    assert_eq!(forest.nodes.len(), 3);
+    let root = &forest.nodes[forest.root as usize];
+    assert!(root.native.solution);
+    assert!(root.native.sources.is_empty() && root.native.libraries.is_empty());
+    assert_eq!(root.references.len(), 2);
+    let app = forest
+        .nodes
+        .iter()
+        .position(|node| node.config.as_ref().unwrap().0 == "tsconfig.app.json")
+        .unwrap();
+    let config = forest
+        .nodes
+        .iter()
+        .position(|node| node.config.as_ref().unwrap().0 == "tsconfig.node.json")
+        .unwrap();
+    assert_ne!(app, config);
+    assert!(forest.nodes[app].native.options.checker.strict);
+    assert!(!forest.nodes[config].native.options.checker.strict);
+    assert!(
+        forest.nodes[app]
+            .native
+            .options
+            .checker
+            .verbatim_module_syntax
+    );
+    assert!(
+        forest.nodes[app]
+            .native
+            .options
+            .checker
+            .isolated_modules_from_verbatim
+    );
+    assert_ne!(
+        forest.nodes[app].native.options.environment,
+        forest.nodes[config].native.options.environment
+    );
+    assert_eq!(
+        forest.package_membership["src/main.ts"],
+        TypeScriptForestSourceMembership::Selected {
+            program: app,
+            program_path: "src/main.ts".into()
+        }
+    );
+    assert_eq!(
+        forest.package_membership["src/lib.ts"],
+        TypeScriptForestSourceMembership::Selected {
+            program: app,
+            program_path: "src/lib.ts".into()
+        }
+    );
+    assert_eq!(
+        forest.package_membership["vite.config.ts"],
+        TypeScriptForestSourceMembership::Selected {
+            program: config,
+            program_path: "vite.config.ts".into()
+        }
+    );
+    assert_eq!(
+        forest.package_membership["eslint.config.ts"],
+        TypeScriptForestSourceMembership::ExcludedFromConfiguredProgram
+    );
+    assert!(
+        forest.nodes[app]
+            .native
+            .sources
+            .iter()
+            .all(|row| row.path != "vite.config.ts")
+    );
+    assert!(
+        forest.nodes[config]
+            .native
+            .sources
+            .iter()
+            .all(|row| row.path != "src/main.ts")
+    );
+    let witness = TypeScriptForestClosureWitness(
+        forest
+            .nodes
+            .into_iter()
+            .map(|node| node.native.closure_witness)
+            .collect(),
+    );
+    witness.validate_current(admitted.witness.as_ref()).unwrap();
+    // Changing the referenced node that did not own the app query invalidates
+    // the whole staged authority, not just that node's local result.
+    fs::write(
+        fixture.root.join("tsconfig.node.json"),
+        r#"{"files":["vite.config.ts"],"compilerOptions":{"strict":true}}"#,
+    )
+    .unwrap();
+    assert!(witness.validate_current(admitted.witness.as_ref()).is_err());
+}
+
+#[test]
+#[ignore = "requires pinned Node and TypeScript API paths in TSZ_PROGRAM_TEST_NODE and TSZ_PROGRAM_TEST_TYPESCRIPT_API"]
+fn same_sources_with_different_program_options_refuse_ambiguous_package_ownership() {
+    use super::{
+        ForestAdmissionBudget, build_native_forest_inputs, build_native_inputs_for_config,
+    };
+    let fixture = Fixture::new();
+    write_solution(&fixture, true);
+    let sources = [
+        PackageSource::new("src/main.ts", MAIN).unwrap(),
+        PackageSource::new("src/lib.ts", LIB).unwrap(),
+    ];
+    let admitted = fixture.host().admit(&fixture.root).unwrap().unwrap();
+    let inputs = admitted.inputs();
+    let cancelled = AtomicBool::new(false);
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let host = inputs.validated_host().unwrap();
+    let mut children = Vec::new();
+    for name in ["tsconfig.app.json", "tsconfig.node.json"] {
+        let config = inputs
+            .config_candidates
+            .iter()
+            .find(|config| config.path.file_name().unwrap() == name)
+            .unwrap();
+        children.push(
+            build_native_inputs_for_config(
+                &inputs,
+                &mut inputs.resolver(),
+                &sources,
+                Some(config),
+                true,
+                &mut ForestAdmissionBudget::default(),
+                Some(&host),
+                deadline,
+                &cancelled,
+            )
+            .unwrap(),
+        );
+    }
+    assert_eq!(
+        children[0]
+            .sources
+            .iter()
+            .map(|s| (&s.path, &s.source))
+            .collect::<Vec<_>>(),
+        children[1]
+            .sources
+            .iter()
+            .map(|s| (&s.path, &s.source))
+            .collect::<Vec<_>>()
+    );
+    assert_ne!(
+        children[0].options.environment,
+        children[1].options.environment
+    );
+    assert_ne!(
+        children[0].options.checker.strict,
+        children[1].options.checker.strict
+    );
+    assert!(
+        matches!(build_native_forest_inputs(&inputs, &sources, deadline, &cancelled),
+        Err(super::TypeScriptProjectHostError::CompilerIoClosureMismatch { detail })
+        if detail.contains("multiple actual TypeScript programs"))
+    );
+}
+
+#[test]
+#[ignore = "requires pinned Node and TypeScript API paths in TSZ_PROGRAM_TEST_NODE and TSZ_PROGRAM_TEST_TYPESCRIPT_API"]
+fn solution_package_stages_separate_leaf_images_without_union_membership() {
+    use crate::application::{
+        LocalCompiler, LocalCompilerConfig, LocalCompilerControl, LocalCompilerScratch,
+        LocalCompilerTimeout, LocalPackageRootSet, LocalToolchainSet,
+        PackageAuthorityConfiguration, PackageSourceSet,
+    };
+    use backend_library::interface::{
+        CorrelationId, GenerateTarget, PackageCompileRequest, PackageUrl,
+    };
+    use backend_semantic::vocabulary::{LanguageProfile, Stage, TypeScriptSource};
+    use backend_store::journal::PublicationLimits;
+    let fixture = Fixture::new();
+    write_solution(&fixture, false);
+    let host = fixture.host();
+    let tools = [];
+    let cancelled = AtomicBool::new(false);
+    let artifacts = fixture.root.join("artifacts");
+    let journal = fixture.root.join("journal");
+    let work = fixture.root.join("native-work");
+    fs::create_dir(&work).unwrap();
+    let mut scratch =
+        LocalCompilerScratch::with_fragment_capacity(NonZeroUsize::new(16 * 1024 * 1024).unwrap())
+            .unwrap();
+    let mut compiler = LocalCompiler::create_with_package_authority(
+        LocalCompilerConfig {
+            toolchains: LocalToolchainSet::validate(&tools).unwrap(),
+            artifact_directory: &artifacts,
+            journal_directory: &journal,
+            native_work_directory: &work,
+            control: LocalCompilerControl {
+                timeout: LocalCompilerTimeout::new(Duration::from_secs(120)).unwrap(),
+                cancelled: &cancelled,
+            },
+        },
+        LocalPackageRootSet::EMPTY,
+        PackageAuthorityConfiguration {
+            typescript_project_host: Some(&host),
+            ..PackageAuthorityConfiguration::UNAVAILABLE
+        },
+        PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN).unwrap(),
+        &mut scratch,
+    )
+    .unwrap();
+    let request = PackageCompileRequest::new(
+        GenerateTarget {
+            correlation: CorrelationId(139),
+            profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+            stage: Stage::LowerIr,
+        },
+        PackageUrl::try_from("pkg:npm/program-membership@1.0.0".to_owned()).unwrap(),
+    )
+    .unwrap();
+    let sources = [
+        PackageSource::new("src/main.ts", MAIN).unwrap(),
+        PackageSource::new("src/lib.ts", LIB).unwrap(),
+        PackageSource::new("vite.config.ts", "export const buildTarget: number = 1;\n").unwrap(),
+        PackageSource::new("eslint.config.ts", ESLINT).unwrap(),
+    ];
+    let staged = compiler
+        .compile_package_sources_staged(
+            PackageSourceSet::new(&request, &fixture.root, &sources).unwrap(),
+            &mut |_| {},
+        )
+        .unwrap();
+    assert_eq!(staged.artifacts().len(), 3);
+    assert_eq!(staged.coverage_gaps().len(), 1);
+    assert_eq!(
+        staged.coverage_gaps()[0].relative_path(),
+        "eslint.config.ts"
+    );
+    let forest = staged.native_program_sources().unwrap();
+    assert!(forest.is_forest() && forest.single_program().is_none());
+    let (root, nodes) = forest.nodes().unwrap();
+    assert!(nodes[root as usize].program.is_none());
+    let owners = forest
+        .sources()
+        .filter_map(|row| row.package_path.map(|path| (path.to_owned(), row.program)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(owners["src/main.ts"], owners["src/lib.ts"]);
+    assert_ne!(owners["src/main.ts"], owners["vite.config.ts"]);
+    let cold = backend_semantic::ir::NativeProgramSources::decode(forest.as_bytes()).unwrap();
+    assert_eq!(cold, *forest);
+    for ordinal in 0..staged.artifacts().len() {
+        use backend_semantic::ir::{
+            ImageProvenance, SemanticCoreReader, SemanticImageIdentity, SemanticReader,
+        };
+        let object = staged.output_object(2 + 2 * ordinal).unwrap();
+        let identity = SemanticImageIdentity::from_encoded_bytes(object.bytes());
+        staged
+            .with_semantic_reader(ordinal, |image, _| -> Result<(), std::io::Error> {
+                let ImageProvenance::Captured { scope, .. } = image.image_facts().provenance else {
+                    panic!("captured image");
+                };
+                let path = std::str::from_utf8(image.atom(scope.path).unwrap()).unwrap();
+                assert!(
+                    cold.image_matches(path, identity.as_ref()),
+                    "actual produced image remains bound after cold decode"
+                );
+                assert!(!cold.image_matches(path, &[0; 32]));
+                Ok(())
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+#[ignore = "requires pinned Node and TypeScript API paths in TSZ_PROGRAM_TEST_NODE and TSZ_PROGRAM_TEST_TYPESCRIPT_API"]
+fn configured_skip_lib_check_matches_sdk_diagnostics_without_losing_declaration_types() {
+    use backend_frontend_typescript::TszDeclarationDiagnosticPolicy;
+    const DECLARATION: &str = "export interface Broken { missing: DoesNotExist; } export declare const value: { value: number };\n";
+    let fixture = Fixture::new();
+    fs::write(fixture.root.join("types/diagnostic.d.ts"), DECLARATION).unwrap();
+    let mut previous = None;
+    for wrong_application in [false, true] {
+        let app = format!(
+            "import {{ value, Broken }} from '../types/diagnostic'; export type UsedBroken = Broken; export const actual: {} = value.value;\n",
+            if wrong_application {
+                "string"
+            } else {
+                "number"
+            }
+        );
+        fs::write(fixture.root.join("src/main.ts"), &app).unwrap();
+        let sources = [PackageSource::new("src/main.ts", &app).unwrap()];
+        for skip in [false, true] {
+            fs::write(fixture.root.join("tsconfig.json"), serde_json::to_vec(&serde_json::json!({
+                "compilerOptions":{"strict":true,"target":"ES2020","module":"CommonJS","skipLibCheck":skip},
+                "files":["src/main.ts"]
+            })).unwrap()).unwrap();
+            let oracle = fixture.oracle();
+            let expected = if skip { vec![] } else { vec![2304] };
+            let sdk_declaration = oracle["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|d| {
+                    d["file"].as_str() == fixture.root.join("types/diagnostic.d.ts").to_str()
+                })
+                .map(|d| d["code"].as_u64().unwrap() as u32)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                sdk_declaration, expected,
+                "genuine SDK declaration oracle, skip={skip}"
+            );
+            let sdk_application = oracle["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|d| d["file"].as_str() == fixture.root.join("src/main.ts").to_str())
+                .map(|d| d["code"].as_u64().unwrap() as u32)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                sdk_application,
+                if wrong_application {
+                    vec![2322]
+                } else {
+                    vec![]
+                }
+            );
+            let native = fixture.native(&sources);
+            assert_eq!(
+                native.options.checker.declaration_diagnostics,
+                if skip {
+                    TszDeclarationDiagnosticPolicy::SkipSemantic
+                } else {
+                    TszDeclarationDiagnosticPolicy::Check
+                }
+            );
+            let source_rows = native
+                .sources
+                .iter()
+                .map(|row| (row.path.clone(), row.source.clone()))
+                .collect::<Vec<_>>();
+            let library_rows = native
+                .libraries
+                .iter()
+                .map(|lib| {
+                    (
+                        lib.file_name.clone(),
+                        lib.arena
+                            .get_source_file_at(lib.root_index)
+                            .unwrap()
+                            .text
+                            .to_string(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            if let Some((prior_environment, prior_sources, prior_libraries)) = previous.take() {
+                assert_ne!(
+                    native.options.environment, prior_environment,
+                    "resolved policy changes program environment"
+                );
+                if skip {
+                    assert_eq!(
+                        source_rows, prior_sources,
+                        "skipLibCheck does not drop declarations"
+                    );
+                    assert_eq!(
+                        library_rows, prior_libraries,
+                        "skipLibCheck does not drop SDK libraries"
+                    );
+                }
+            }
+            previous = Some((native.options.environment, source_rows, library_rows));
+            let mut authority = backend_frontend_typescript::TszProjectAuthority::new();
+            authority
+                .update(native.sources, native.options, &native.libraries)
+                .unwrap();
+            let project = authority.project().unwrap();
+            for (path, sdk) in [
+                ("src/main.ts", sdk_application),
+                ("types/diagnostic.d.ts", sdk_declaration),
+            ] {
+                let actual = project
+                    .check_result()
+                    .file_results
+                    .iter()
+                    .find(|row| row.file_name == path)
+                    .unwrap();
+                assert_eq!(
+                    actual
+                        .diagnostics
+                        .iter()
+                        .map(|d| d.code)
+                        .collect::<Vec<_>>(),
+                    sdk,
+                    "native vs genuine SDK {path}, skip={skip}, wrong_application={wrong_application}: {:?}",
+                    actual.diagnostics
+                );
+            }
+            assert_eq!(
+                project.source_text("types/diagnostic.d.ts"),
+                Some(DECLARATION)
+            );
+            assert!(project.bind_result("types/diagnostic.d.ts").is_some());
+            assert!(
+                oracle["declarations"]
+                    [fixture.root.join("types/diagnostic.d.ts").to_str().unwrap()]
+                .as_bool()
+                .unwrap()
+            );
+        }
     }
 }

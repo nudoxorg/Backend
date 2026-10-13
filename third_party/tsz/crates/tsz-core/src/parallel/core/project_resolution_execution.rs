@@ -142,3 +142,28 @@ fn build_project_module_resolution_outcomes_with_poll<E: From<ProjectModuleResol
     poll(0)?;
     Ok(outcomes)
 }
+
+impl MergedProgram {
+    /// Attach one complete exact outcome map under the caller's shared budget.
+    /// A stop or invalid input leaves no resolution witness for publication.
+    pub fn set_project_module_resolutions_with_execution_checkpoint(
+        &mut self,
+        resolutions: &[ProjectModuleResolution],
+        checkpoint: &dyn tsz_common::ExecutionCheckpoint,
+    ) -> Result<(), ProjectProgramCheckError> {
+        self.project_module_resolution_outcomes = None;
+        let scope = tsz_common::LatchedExecutionCheckpoint::new(checkpoint);
+        let span = tsz_common::ProjectExecutionSpan::new(
+            Some(&scope), tsz_common::ProjectExecutionPhase::ModuleOutcomes, None,
+        );
+        let outcomes = build_project_module_resolution_outcomes_with_poll(
+            self, resolutions,
+            |work| scope.checkpoint(work).map_err(ProjectProgramCheckError::ExecutionStopped),
+            |path, poll| validate_project_virtual_path_with_poll(path, poll),
+        )?;
+        scope.checkpoint(0).map_err(ProjectProgramCheckError::ExecutionStopped)?;
+        self.project_module_resolution_outcomes = Some(Arc::new(outcomes));
+        span.returned();
+        Ok(())
+    }
+}

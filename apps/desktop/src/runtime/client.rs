@@ -610,6 +610,15 @@ impl EngineClient for LocalEngineClient {
                 delta: *delta,
             }),
         };
+        // Request wakes can permanently interrupt either cached transport,
+        // including early returns from the publication revision shortcut or
+        // subscription setup. Retire both after their request-local wakes
+        // have dropped; the next request must authenticate fresh sockets.
+        // This does not erase or replay the result of an admitted mutation.
+        if request.cancelled() {
+            self.session = None;
+            self.subscription = None;
+        }
         self.active_cancel = None;
         let owner_changed = self.attached_epoch.is_some()
             && self.gate.as_ref().and_then(super::owner::OwnerGate::ready_epoch)
@@ -966,6 +975,118 @@ mod tests {
                 .interrupt_handle()
                 .is_some()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelled_publication_revision_retires_both_cached_sockets_before_same_owner_retry() {
+        use backend_replication::{LocalControlLimits, read_frame, write_frame};
+        use std::io::Read as _;
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::os::unix::net::{UnixListener, UnixStream};
+        use std::time::Instant;
+
+        struct Endpoint(PathBuf);
+        impl Drop for Endpoint {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+                let _ = std::fs::remove_dir(self.0.parent().expect("private parent"));
+            }
+        }
+        let directory = std::env::temp_dir().join(format!(
+            "ndr-{}-{:x}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos(),
+        ));
+        std::fs::create_dir(&directory).expect("fresh private endpoint directory");
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+            .expect("private directory");
+        let endpoint = Endpoint(directory.join("s"));
+        let listener = UnixListener::bind(&endpoint.0).expect("replacement listener");
+        std::fs::set_permissions(&endpoint.0, std::fs::Permissions::from_mode(0o600))
+            .expect("private endpoint");
+        listener.set_nonblocking(true).expect("bounded accept");
+        let (command, mut command_owner) = UnixStream::pair().expect("command socket pair");
+        let (subscription, mut subscription_owner) =
+            UnixStream::pair().expect("subscription socket pair");
+        for stream in [&command_owner, &subscription_owner] {
+            stream.set_read_timeout(Some(Duration::from_secs(2))).expect("bounded owner read");
+        }
+        let cancel = CancellationToken::new();
+        let owner_cancel = cancel.clone();
+        let server = std::thread::spawn(move || {
+            let limits = LocalControlLimits::default();
+            let body = read_frame(&mut command_owner, limits).expect("cached revision reached owner");
+            let request = backend_library::decode_command_body(&body).expect("revision request");
+            assert!(matches!(request.command, backend_library::Command::Revision));
+            // The frame proves the request's real interrupt wake is installed.
+            owner_cancel.cancel();
+            let mut byte = [0];
+            assert_eq!(command_owner.read(&mut byte).expect("interrupted command EOF"), 0);
+            assert_eq!(subscription_owner.read(&mut byte).expect("retired subscription EOF"), 0);
+
+            let until = Instant::now() + Duration::from_secs(2);
+            let mut fresh = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < until, "same-owner retry never authenticated a fresh stream");
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(error) => panic!("accept fresh stream: {error}"),
+                }
+            };
+            fresh.set_nonblocking(false).expect("blocking accepted stream");
+            fresh.set_read_timeout(Some(Duration::from_secs(2))).expect("bounded fresh read");
+            let body = read_frame(&mut fresh, limits).expect("fresh revision reached owner");
+            let request = backend_library::decode_command_body(&body).expect("fresh revision request");
+            assert!(matches!(request.command, backend_library::Command::Revision));
+            // A correlated refusal proves fresh physical transport, without
+            // inventing a producer certificate or claiming root admission.
+            let reply = backend_library::ReplyDto::new(
+                request.request_id,
+                backend_library::CommandReply::Error("fresh authenticated owner answered".into()),
+            );
+            write_frame(&mut fresh, &serde_json::to_vec(&reply).expect("reply body"), limits)
+                .expect("fresh owner reply");
+        });
+
+        let view = super::super::owner::publication_tests::view();
+        let cursor = backend_library::Cursor::for_view_root_at(&view, 0);
+        let basis = VersionedRoot::from_revision(1, cursor, 0);
+        let gate = super::super::owner::OwnerGate::ready(basis, crate::model::ServiceMode::Attached);
+        let attachment = gate.ready_epoch().expect("ready attachment");
+        assert_eq!(gate.publish_view(attachment, view, cursor), super::super::owner::PublicationAdmission::Admitted);
+        let mut client = LocalEngineClient::gated(
+            &endpoint.0,
+            LocalProjectId::from_path(&directory).expect("project"),
+            gate.clone(),
+        );
+        client.attached_epoch = Some(attachment);
+        client.session = Some(Session::from_transport(
+            endpoint.0.clone(),
+            backend_client::UnixCommandTransport::from_stream(command),
+        ));
+        client.subscription = Some(LocalSubscriptionTransport::from_stream(subscription));
+        assert!(client.execute(&EngineRequest::Root {
+            project: None, request: RequestId::new(1), basis, cancel: cancel.clone(),
+        }).is_err());
+        assert!(cancel.is_cancelled(), "owner cancelled the actual blocked revision");
+        assert!(client.active_cancel.is_none());
+        assert!(client.session.is_none(), "the interrupted command session cannot be reused");
+        assert!(client.subscription.is_none(), "the same request retires its other cached transport");
+        assert_eq!(gate.ready_epoch(), Some(attachment), "cancellation did not retire the live owner");
+
+        let fresh = client.execute(&EngineRequest::Root {
+            project: None, request: RequestId::new(2), basis, cancel: CancellationToken::new(),
+        });
+        server.join().expect("bounded physical socket owner");
+        assert!(matches!(fresh, Err(EngineFault::Failed(error))
+            if error.code() == FaultCode::Protocol && error.message().contains("fresh authenticated owner answered")));
+        assert_eq!(gate.ready_epoch(), Some(attachment));
     }
 
     #[test]

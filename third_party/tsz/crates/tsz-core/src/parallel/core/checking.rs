@@ -45,13 +45,83 @@ pub fn compile_files_with_libs(
 // Parallel Type Checking
 // =============================================================================
 
+/// Complete native-record ordering for exact deduplication. The shared TSC
+/// comparator intentionally omits presentation fields; its equal rows still
+/// need stable category/related-presentation ties before equal records group.
+fn compare_native_diagnostic_records(
+    left: &Diagnostic,
+    right: &Diagnostic,
+) -> std::cmp::Ordering {
+    left.compare(right)
+        .then_with(|| (left.category as u8).cmp(&(right.category as u8)))
+        .then_with(|| {
+            left.related_information
+                .iter()
+                .zip(&right.related_information)
+                .map(|(left, right)| {
+                    (left.category as u8)
+                        .cmp(&(right.category as u8))
+                        .then_with(|| left.depth.cmp(&right.depth))
+                        .then_with(|| (left.kind as u8).cmp(&(right.kind as u8)))
+                })
+                .find(|ordering| ordering.is_ne())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+}
+
+#[cfg(test)]
+#[test]
+fn parallel_native_diagnostic_records_preserve_comparator_ties() {
+    use tsz_common::diagnostics::{DiagnosticCategory, RelatedInformationKind};
+    let mut base = Diagnostic::error("src/main.ts", 4, 1, "same", 2304);
+    base.related_information.push(Diagnostic::related_message(
+        2304,
+        "src/main.ts",
+        5,
+        1,
+        "related",
+    ));
+    let mut category = base.clone();
+    category.category = DiagnosticCategory::Warning;
+    let mut related_category = base.clone();
+    related_category.related_information[0].category = DiagnosticCategory::Error;
+    let mut depth = base.clone();
+    depth.related_information[0].depth = 1;
+    let mut kind = base.clone();
+    kind.related_information[0].kind = RelatedInformationKind::LocationPointer;
+    let unique = [base.clone(), category, related_category, depth, kind];
+    assert!(unique.iter().all(|record| record.compare(&base).is_eq()));
+    let mut rows = vec![
+        unique[0].clone(),
+        unique[1].clone(),
+        unique[0].clone(),
+        unique[2].clone(),
+        unique[3].clone(),
+        unique[1].clone(),
+        unique[4].clone(),
+        unique[0].clone(),
+        unique[2].clone(),
+    ];
+    let mut reversed = rows.iter().rev().cloned().collect::<Vec<_>>();
+    ParallelCheckPlan::sort_and_dedup(&mut rows);
+    ParallelCheckPlan::sort_and_dedup(&mut reversed);
+    assert_eq!(
+        rows, reversed,
+        "full record order is independent of arrival order"
+    );
+    assert_eq!(rows.len(), unique.len());
+    for expected in unique {
+        assert_eq!(rows.iter().filter(|actual| **actual == expected).count(), 1);
+    }
+}
+
 use crate::checker::context::{CheckerOptions, LibContext};
 use crate::checker::diagnostics::Diagnostic;
 use crate::checker::state::CheckerState;
 use crate::lib_loader::LibFile;
 use crate::parser::syntax_kind_ext;
 use crate::tsz_solver::TypeId;
-use tsz_common::ProjectSemanticOptions;
+use tsz_common::{ExecutionCheckpoint as _, ProjectSemanticOptions};
 
 /// Compiler-owned `SourceFile.impliedNodeFormat`. Unknown never supplies a mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
@@ -246,6 +316,8 @@ pub enum ProjectCheckerSessionError {
     /// The merged program has not been bound to compiler-owned module
     /// resolution outcomes, so queries could otherwise guess by filename.
     MissingProjectModuleResolutions,
+    /// A prepared check or query request used a budget outside its admission.
+    ExecutionCheckpointMismatch,
     /// The requested file index is outside the exact merged program.
     FileIndexOutOfRange { file_index: usize, file_count: usize },
     /// The one shared cancellation/deadline/work budget stopped this session.
@@ -258,6 +330,9 @@ impl std::fmt::Display for ProjectCheckerSessionError {
             Self::MissingProjectModuleResolutions => {
                 formatter.write_str("project checker session requires exact module resolutions")
             }
+            Self::ExecutionCheckpointMismatch => formatter.write_str(
+                "project checker scope does not match its admitted execution budget",
+            ),
             Self::FileIndexOutOfRange {
                 file_index,
                 file_count,
@@ -791,7 +866,9 @@ impl std::fmt::Display for ProjectProgramCheckError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ModuleResolution(error) => write!(formatter, "{error}"),
-            Self::ExecutionStopped(reason) => write!(formatter, "project check stopped: {reason:?}"),
+            Self::ExecutionStopped(reason) => {
+                write!(formatter, "project check stopped: {reason:?}")
+            }
         }
     }
 }
@@ -906,13 +983,51 @@ fn project_plan_checkpoint(
     checkpoint.map_or(Ok(()), |checkpoint| checkpoint.checkpoint(work_units))
 }
 
+/// Private index authority, owned together with its exact immutable program.
+/// It is never publicly attachable to another program.
+struct SealedProjectCheckerIndexes {
+    tables: crate::checker::context::SealedProgramGlobalIndexes,
+}
+
+impl SealedProjectCheckerIndexes {
+    fn build(
+        binders: Arc<Vec<Arc<BinderState>>>,
+        arenas: Arc<Vec<Arc<NodeArena>>>,
+        declared_modules: Option<Arc<crate::checker::context::GlobalDeclaredModules>>,
+    ) -> Self {
+        Self {
+            tables: crate::checker::context::SealedProgramGlobalIndexes::build(
+                binders,
+                arenas,
+                declared_modules,
+            ),
+        }
+    }
+
+    fn install_into(&self, ctx: &mut crate::checker::context::CheckerContext<'_>) {
+        // The sealed table owns its exact views; no caller-provided filename,
+        // mutable program map, query result, or alternate owner can rebind them.
+        self.tables.install_into(ctx);
+    }
+}
+
 struct ParallelCheckPlan<'a> {
     program: &'a MergedProgram,
     checker_options: &'a CheckerOptions,
     project_semantic_options: ProjectSemanticOptions,
     project_module_resolution_outcomes:
         Option<Arc<crate::checker::context::ResolvedModuleRequestOutcomeMap>>,
-    execution_scope: Option<tsz_common::LatchedExecutionCheckpoint<'a>>,
+    execution_scope: Option<ProjectCheckerExecutionScope<'a>>,
+    views: Arc<ProjectCheckerViews>,
+}
+
+impl std::ops::Deref for ParallelCheckPlan<'_> {
+    type Target = ProjectCheckerViews;
+    fn deref(&self) -> &Self::Target { &self.views }
+}
+
+struct ProjectCheckerViews {
+    checker_indexes: SealedProjectCheckerIndexes,
     resolved_module_paths: Arc<FxHashMap<(usize, String), usize>>,
     resolved_modules: Arc<FxHashSet<String>>,
     checker_lib_files: Vec<Arc<LibFile>>,
@@ -931,6 +1046,221 @@ struct ParallelCheckPlan<'a> {
     affected_lib_extension_interfaces: FxHashSet<String>,
 }
 
+/// Immutable compiler-owned data, shared only within one exact program.
+/// Mutable solver state is confined to the existing project-scoped caches and
+/// their stop latch; neither views nor options can be rebound after sealing.
+struct ProjectCheckerImageContents {
+    program: Arc<MergedProgram>,
+    checker_options: CheckerOptions,
+    semantics: ProjectSemanticOptions,
+    views: Arc<ProjectCheckerViews>,
+    stopped: std::sync::atomic::AtomicU8,
+}
+
+/// A sealed program that has not yet completed its full check. No query API is
+/// exposed on this state. Checking consumes the builder, and only a complete
+/// result can produce [`ProjectCheckerImage`].
+pub struct PreparedProjectCheckerImage {
+    contents: ProjectCheckerImageContents,
+    execution_identity: Option<tsz_common::ProjectExecutionIdentity>,
+}
+
+/// A fully checked exact native program and reusable views/cache. Persistent
+/// validity depends on the exact program and its stop latch, not a past budget.
+/// Each query session borrows a new caller-admitted checkpoint for its lifetime.
+pub struct ProjectCheckerImage {
+    contents: ProjectCheckerImageContents,
+}
+
+impl std::ops::Deref for ProjectCheckerImage {
+    type Target = MergedProgram;
+    fn deref(&self) -> &Self::Target {
+        &self.contents.program
+    }
+}
+
+struct ProjectCheckerExecutionScope<'a> {
+    checkpoint: tsz_common::LatchedExecutionCheckpoint<'a>,
+    image_stop: Option<&'a std::sync::atomic::AtomicU8>,
+}
+
+impl<'a> ProjectCheckerExecutionScope<'a> {
+    fn new(checkpoint: &'a dyn tsz_common::ExecutionCheckpoint, image_stop: Option<&'a std::sync::atomic::AtomicU8>) -> Self {
+        Self { checkpoint: tsz_common::LatchedExecutionCheckpoint::new(checkpoint), image_stop }
+    }
+    fn decode_stop(value: u8) -> Option<tsz_common::ProjectExecutionStop> {
+        use tsz_common::ProjectExecutionStop::*;
+        match value { 1 => Some(Cancelled), 2 => Some(Deadline), 3 => Some(WorkBudgetExhausted), _ => None }
+    }
+}
+
+impl tsz_common::ExecutionCheckpoint for ProjectCheckerExecutionScope<'_> {
+    fn execution_identity(&self) -> Option<tsz_common::ProjectExecutionIdentity> { self.checkpoint.execution_identity() }
+
+    fn checkpoint(&self, work: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+        use std::sync::atomic::Ordering;
+        if let Some(stop) = self.image_stop.and_then(|stop| Self::decode_stop(stop.load(Ordering::Acquire))) {
+            return Err(stop);
+        }
+        let result = self.checkpoint.checkpoint(work);
+        if let (Err(reason), Some(stop)) = (result, self.image_stop) {
+            use tsz_common::ProjectExecutionStop::*;
+            let value = match reason { Cancelled => 1, Deadline => 2, WorkBudgetExhausted => 3 };
+            let _ = stop.compare_exchange(0, value, Ordering::AcqRel, Ordering::Acquire);
+        }
+        // A concurrent worker can poison the image after this worker's poll.
+        self.image_stop.and_then(|stop| Self::decode_stop(stop.load(Ordering::Acquire))).map_or(result, Err)
+    }
+    fn observe(&self, event: tsz_common::ProjectExecutionEvent<'_>) { self.checkpoint.observe(event); }
+}
+
+impl PreparedProjectCheckerImage {
+    /// Seal one exact program. Metered callers supply their existing checkpoint;
+    /// absence preserves the explicit unmetered test/legacy entry point.
+    pub fn new(
+        program: MergedProgram,
+        checker_options: CheckerOptions,
+        lib_files: &[Arc<LibFile>],
+        semantics: ProjectSemanticOptions,
+        checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+    ) -> Result<Self, ProjectCheckerSessionError> {
+        let outcomes = program.project_module_resolution_outcomes.clone()
+            .ok_or(ProjectCheckerSessionError::MissingProjectModuleResolutions)?;
+        let plan_span = tsz_common::ProjectExecutionSpan::new(checkpoint, tsz_common::ProjectExecutionPhase::CheckerPlan, None);
+        let views = ParallelCheckPlan::build(&program, &checker_options, lib_files, semantics, Some(outcomes), checkpoint)
+            .map_err(ProjectCheckerSessionError::ExecutionStopped)?.views;
+        plan_span.returned();
+        Ok(Self {
+            contents: ProjectCheckerImageContents {
+                program: Arc::new(program),
+                checker_options,
+                semantics,
+                views,
+                stopped: std::sync::atomic::AtomicU8::new(0),
+            },
+            execution_identity: checkpoint.and_then(|checkpoint| checkpoint.execution_identity()),
+        })
+    }
+
+    /// Build shared views inside the same caller-bounded private worker policy
+    /// used for file checking. Library cloning never enters an ambient pool.
+    pub fn new_with_checker_execution(
+        program: MergedProgram,
+        checker_options: CheckerOptions,
+        lib_files: &[Arc<LibFile>],
+        semantics: ProjectSemanticOptions,
+        execution: ProjectCheckerExecution<'_>,
+    ) -> Result<Self, ProjectPartitionCheckError> {
+        execution.checkpoint.checkpoint(0).map_err(|reason| ProjectPartitionCheckError::Program(ProjectProgramCheckError::ExecutionStopped(reason)))?;
+        let workers = execution.workers.get().min(program.files.len().max(1));
+        let build = || Self::new(program, checker_options, lib_files, semantics, Some(execution.checkpoint))
+            .map_err(|error| match error {
+                ProjectCheckerSessionError::ExecutionStopped(reason) => ProjectPartitionCheckError::Program(ProjectProgramCheckError::ExecutionStopped(reason)),
+                other => ProjectPartitionCheckError::CheckerSession(other),
+            });
+        run_on_private_checker_workers(workers, build)
+    }
+
+    fn accepts_checkpoint(
+        &self,
+        checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+    ) -> bool {
+        self.execution_identity == checkpoint.and_then(|checkpoint| checkpoint.execution_identity())
+    }
+
+    /// Complete every admitted source before exposing a queryable image. The
+    /// build and check stages must share their originally admitted budget.
+    pub fn check_with_partitions(
+        self,
+        execution: ProjectCheckerExecution<'_>,
+    ) -> Result<(ProjectCheckerImage, CheckResult), ProjectPartitionCheckError> {
+        if !self.accepts_checkpoint(Some(execution.checkpoint)) {
+            return Err(ProjectPartitionCheckError::CheckerSession(
+                ProjectCheckerSessionError::ExecutionCheckpointMismatch,
+            ));
+        }
+        let result = {
+            let plan = self.contents.plan(Some(execution.checkpoint));
+            check_prepared_project_partitions(&plan, execution.workers, &|_| {}, &|_| {})?
+        };
+        Ok((
+            ProjectCheckerImage { contents: self.contents },
+            result,
+        ))
+    }
+
+    /// Explicit fresh-file execution for legacy and test callers. A failed
+    /// check consumes and discards all prepared data, including cached sentinels.
+    pub fn check_fresh(
+        self,
+        checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+    ) -> Result<(ProjectCheckerImage, CheckResult), ProjectCheckerSessionError> {
+        if !self.accepts_checkpoint(checkpoint) {
+            return Err(ProjectCheckerSessionError::ExecutionCheckpointMismatch);
+        }
+        let result = {
+            let plan = self.contents.plan(checkpoint);
+            let poll = |work| {
+                plan.checkpoint(work)
+                    .map_err(ProjectCheckerSessionError::ExecutionStopped)
+            };
+            poll(0)?;
+            ensure_rayon_global_pool();
+            plan.prime_module_augmentation_bodies();
+            poll(0)?;
+            let mut results = plan.run_file_checks();
+            poll(0)?;
+            plan.run_lib_checks_with_execution_checkpoint(&mut results)
+                .map_err(ProjectCheckerSessionError::ExecutionStopped)?;
+            let result = plan.aggregate_with_poll(results, |work| poll(work))?;
+            poll(0)?;
+            result
+        };
+        Ok((
+            ProjectCheckerImage { contents: self.contents },
+            result,
+        ))
+    }
+}
+
+impl ProjectCheckerImageContents {
+    fn plan<'a>(
+        &'a self,
+        checkpoint: Option<&'a dyn tsz_common::ExecutionCheckpoint>,
+    ) -> ParallelCheckPlan<'a> {
+        ParallelCheckPlan {
+            program: &self.program,
+            checker_options: &self.checker_options,
+            project_semantic_options: self.semantics,
+            project_module_resolution_outcomes: self.program.project_module_resolution_outcomes.clone(),
+            execution_scope: checkpoint.map(|checkpoint| {
+                ProjectCheckerExecutionScope::new(checkpoint, Some(&self.stopped))
+            }),
+            views: Arc::clone(&self.views),
+        }
+    }
+}
+
+impl ProjectCheckerImage {
+    /// A stopped image cannot lend another session, even under a fresh budget.
+    pub fn is_usable(&self) -> bool {
+        self.contents.stopped.load(std::sync::atomic::Ordering::Acquire) == 0
+    }
+
+    /// Borrow fully checked immutable data under a caller-admitted scope. The
+    /// session retains that exact checkpoint; it has no API to swap budgets.
+    /// No views are rebuilt and full checking/augmentation priming is not repeated.
+    pub fn query_session<'a>(
+        &'a self,
+        checkpoint: &'a dyn tsz_common::ExecutionCheckpoint,
+    ) -> Result<ProjectCheckerSession<'a>, ProjectCheckerSessionError> {
+        let plan = self.contents.plan(Some(checkpoint));
+        plan.checkpoint(0)
+            .map_err(ProjectCheckerSessionError::ExecutionStopped)?;
+        Ok(ProjectCheckerSession { plan })
+    }
+}
+
 impl<'a> ParallelCheckPlan<'a> {
     /// Compute every shared input the parallel workers need, exactly once.
     fn build(
@@ -943,7 +1273,7 @@ impl<'a> ParallelCheckPlan<'a> {
         >,
         execution_checkpoint: Option<&'a dyn tsz_common::ExecutionCheckpoint>,
     ) -> Result<Self, tsz_common::ProjectExecutionStop> {
-        let execution_scope = execution_checkpoint.map(tsz_common::LatchedExecutionCheckpoint::new);
+        let execution_scope = execution_checkpoint.map(|checkpoint| ProjectCheckerExecutionScope::new(checkpoint, None));
         let execution_checkpoint = execution_scope
             .as_ref()
             .map(|scope| scope as &dyn tsz_common::ExecutionCheckpoint);
@@ -966,6 +1296,11 @@ impl<'a> ParallelCheckPlan<'a> {
         let resolved_module_paths = Arc::new(resolved_module_paths);
         let resolved_modules = Arc::new(resolved_modules);
 
+        let library_span = tsz_common::ProjectExecutionSpan::new(
+            execution_checkpoint,
+            tsz_common::ProjectExecutionPhase::LibraryViews,
+            None,
+        );
         let should_clone_libs_in_parallel = program.files.len() > 1;
         let checker_lib_files =
             clone_lib_files_for_checker(lib_files, should_clone_libs_in_parallel);
@@ -993,6 +1328,12 @@ impl<'a> ParallelCheckPlan<'a> {
                 project_plan_checkpoint(execution_checkpoint, work)
             })?;
 
+        library_span.returned();
+        let binder_span = tsz_common::ProjectExecutionSpan::new(
+            execution_checkpoint,
+            tsz_common::ProjectExecutionPhase::BinderViews,
+            None,
+        );
         // The binder constructor reads the program's existing shared maps.
         // The legacy with_shared wrapper no longer consumes SharedBinderData,
         // so do not allocate a redundant merged augmentation copy here.
@@ -1005,6 +1346,12 @@ impl<'a> ParallelCheckPlan<'a> {
             )));
         }
         let all_binders = Arc::new(all_binders_vec);
+        binder_span.returned();
+        let owner_span = tsz_common::ProjectExecutionSpan::new(
+            execution_checkpoint,
+            tsz_common::ProjectExecutionPhase::OwnershipIndex,
+            None,
+        );
         let mut all_arenas_vec = Vec::with_capacity(program.files.len());
         for file in &program.files {
             project_plan_checkpoint(execution_checkpoint, 1)?;
@@ -1048,6 +1395,19 @@ impl<'a> ParallelCheckPlan<'a> {
             });
 
         project_plan_checkpoint(execution_checkpoint, 0)?;
+        owner_span.returned();
+        let indexes_span = tsz_common::ProjectExecutionSpan::new(
+            execution_checkpoint,
+            tsz_common::ProjectExecutionPhase::SharedCheckerIndexes,
+            None,
+        );
+        let checker_indexes = SealedProjectCheckerIndexes::build(
+            Arc::clone(&all_binders),
+            Arc::clone(&all_arenas),
+            shared_declared_modules.clone(),
+        );
+        project_plan_checkpoint(execution_checkpoint, 0)?;
+        indexes_span.returned();
         // Initialize per-file delegation locks for parallel correctness.
         program
             .definition_store
@@ -1066,6 +1426,11 @@ impl<'a> ParallelCheckPlan<'a> {
         };
 
         project_plan_checkpoint(execution_checkpoint, 0)?;
+        let affected_span = tsz_common::ProjectExecutionSpan::new(
+            execution_checkpoint,
+            tsz_common::ProjectExecutionPhase::AffectedLibraries,
+            None,
+        );
         let affected_lib_interfaces = affected_lib_interface_names(program, &checker_lib_files);
         project_plan_checkpoint(execution_checkpoint, 0)?;
         let affected_lib_extension_interfaces = if affected_lib_interfaces.is_empty() {
@@ -1079,12 +1444,15 @@ impl<'a> ParallelCheckPlan<'a> {
         };
 
         project_plan_checkpoint(execution_checkpoint, 0)?;
+        affected_span.returned();
         Ok(Self {
             program,
             checker_options,
             project_semantic_options,
             project_module_resolution_outcomes,
             execution_scope,
+            views: Arc::new(ProjectCheckerViews {
+            checker_indexes,
             resolved_module_paths,
             resolved_modules,
             checker_lib_files,
@@ -1097,6 +1465,7 @@ impl<'a> ParallelCheckPlan<'a> {
             shared_query_cache,
             affected_lib_interfaces,
             affected_lib_extension_interfaces,
+            }),
         })
     }
 
@@ -1172,11 +1541,12 @@ impl<'a> ParallelCheckPlan<'a> {
         }
     }
 
-    /// Sort by position then deduplicate by `(start, code)` for deterministic
-    /// output regardless of thread scheduling.
+    /// Sort by the diagnostic comparator and remove only identical records.
+    /// Distinct missing globals can share position zero and TS2318, while
+    /// different member faults can share an anchor and diagnostic code.
     fn sort_and_dedup(diagnostics: &mut Vec<Diagnostic>) {
-        diagnostics.sort_by(|a, b| a.compare(b));
-        diagnostics.dedup_by(|a, b| a.start == b.start && a.code == b.code);
+        diagnostics.sort_by(compare_native_diagnostic_records);
+        diagnostics.dedup();
     }
 
     /// Lend a project-configured checker with all shared program context.
@@ -1219,7 +1589,7 @@ impl<'a> ParallelCheckPlan<'a> {
             self.checker_options,
             std::sync::Arc::clone(&self.program.definition_store),
         );
-        checker.ctx.set_all_arenas(Arc::clone(&self.all_arenas));
+        self.checker_indexes.install_into(&mut checker.ctx);
 
         // Use pre-computed skeleton-derived declared modules (shared via Arc::clone).
         if let Some(ref modules) = self.shared_declared_modules {
@@ -1228,7 +1598,7 @@ impl<'a> ParallelCheckPlan<'a> {
                 .set_declared_modules_from_skeleton(Arc::clone(modules));
         }
 
-        checker.ctx.set_all_binders(Arc::clone(&self.all_binders));
+        // Exact ordered binder views were installed with the sealed indexes.
         checker.ctx.set_current_file_idx(file_idx);
         checker
             .ctx
@@ -1266,8 +1636,31 @@ impl<'a> ParallelCheckPlan<'a> {
         checker
     }
 
+    /// The AST declaration bit belongs to the admitted parsed source. The
+    /// policy belongs to resolved compiler options, never a directory/name filter.
+    fn checks_file_semantics(&self, file: &BoundFile) -> bool {
+        self.checker_options.declaration_diagnostics
+            != tsz_common::options::checker::DeclarationDiagnosticPolicy::SkipSemantic
+            || !file
+                .arena
+                .get_source_file_at(file.source_file)
+                .is_some_and(|source| source.is_declaration_file)
+    }
+
+    fn checks_library_semantics(&self, lib: &LibFile) -> bool {
+        self.checker_options.declaration_diagnostics
+            != tsz_common::options::checker::DeclarationDiagnosticPolicy::SkipSemantic
+            || !lib
+                .arena
+                .get_source_file_at(lib.root_index)
+                .is_some_and(|source| source.is_declaration_file)
+    }
+
     /// Check a single user file, returning its sorted, deduplicated diagnostics.
     fn check_one_file(&self, file_idx: usize, file: &BoundFile) -> FileCheckResult {
+        if !self.checks_file_semantics(file) {
+            return Self::user_file_result(file_idx, file, Vec::new());
+        }
         let diagnostics = self.with_bound_file_checker_and_types(
             file_idx,
             file,
@@ -1286,12 +1679,13 @@ impl<'a> ParallelCheckPlan<'a> {
         mut diagnostics: Vec<Diagnostic>,
     ) -> FileCheckResult {
         // Sort diagnostics by position for deterministic output within each file.
-        diagnostics.sort_by(|a, b| a.compare(b));
+        diagnostics.sort_by(compare_native_diagnostic_records);
 
         suppress_parallel_ts2339_cascade_diagnostics(file.arena.as_ref(), &mut diagnostics);
 
-        // Deduplicate within each file: same (start, code) = same diagnostic.
-        diagnostics.dedup_by(|a, b| a.start == b.start && a.code == b.code);
+        // Preserve distinct messages, locations, lengths and related evidence
+        // even when two diagnostics have the same anchor and code.
+        diagnostics.dedup();
 
         FileCheckResult {
             file_idx,
@@ -1303,6 +1697,9 @@ impl<'a> ParallelCheckPlan<'a> {
 
     /// Check a single lib file against the merged program's affected interfaces.
     fn check_one_lib(&self, lib_idx: usize, lib_file: &Arc<LibFile>) -> FileCheckResult {
+        if !self.checks_library_semantics(lib_file) {
+            return self.lib_file_result(lib_idx, lib_file, Vec::new());
+        }
         if !lib_file_contains_affected_interface(lib_file.as_ref(), &self.affected_lib_interfaces) {
             return self.lib_file_result(lib_idx, lib_file, Vec::new());
         }
@@ -1340,13 +1737,13 @@ impl<'a> ParallelCheckPlan<'a> {
             lib_bound_file.file_name.clone(),
             self.checker_options,
         );
-        checker.ctx.set_all_arenas(Arc::clone(&self.all_arenas));
+        self.checker_indexes.install_into(&mut checker.ctx);
         if let Some(ref modules) = self.shared_declared_modules {
             checker
                 .ctx
                 .set_declared_modules_from_skeleton(Arc::clone(modules));
         }
-        checker.ctx.set_all_binders(Arc::clone(&self.all_binders));
+        // Exact ordered binder views were installed with the sealed indexes.
         checker
             .ctx
             .set_resolved_module_paths(Arc::clone(&self.resolved_module_paths));
@@ -1411,6 +1808,10 @@ impl<'a> ParallelCheckPlan<'a> {
     /// is filtered against, so only diagnostics introduced by user augmentations
     /// survive.
     fn check_one_lib_baseline(&self, lib_idx: usize, lib_file: &Arc<LibFile>) -> FileCheckResult {
+        if !self.checks_library_semantics(lib_file) {
+            return self.lib_file_result(lib_idx, lib_file, Vec::new());
+        }
+
         if !lib_file_contains_affected_interface(lib_file.as_ref(), &self.affected_lib_interfaces) {
             return self.lib_file_result(lib_idx, lib_file, Vec::new());
         }
@@ -1553,9 +1954,22 @@ impl<'a> ParallelCheckPlan<'a> {
         );
 
         poll(0)?;
+        // Cross-file augmentation passes can append declaration diagnostics.
+        // Keep their application effects, but enforce the same source policy on
+        // final declaration rows without removing any member or parse result.
         let mut diagnostic_count = 0;
-        for result in &file_results {
+        for result in &mut file_results {
             poll(1)?;
+            let check = if result.file_idx < self.program.files.len() {
+                self.checks_file_semantics(&self.program.files[result.file_idx])
+            } else {
+                self.checker_lib_files
+                    .get(result.file_idx - self.program.files.len())
+                    .is_none_or(|lib| self.checks_library_semantics(lib))
+            };
+            if !check {
+                result.diagnostics.clear();
+            }
             diagnostic_count += result.diagnostics.len();
         }
         poll(0)?;
@@ -1571,11 +1985,11 @@ impl<'a> ParallelCheckPlan<'a> {
 #[cfg(test)]
 mod project_module_resolution_tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use crate::checker::context::{
         ResolutionModeOverride, ResolutionRequestKind, ResolvedModuleRequestOutcome,
         ResolvedModuleRequestOutcomeMap,
     };
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
     struct ArmedExecutionStop {
         armed: AtomicBool,

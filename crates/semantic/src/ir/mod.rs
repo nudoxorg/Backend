@@ -25,6 +25,7 @@ pub mod lineage_match;
 #[cfg(feature = "mmap")]
 mod mapping;
 mod model;
+mod native_program_forest;
 mod native_program_sources;
 mod prepared;
 mod range;
@@ -351,6 +352,10 @@ pub use view::{
     SemanticDataFault, TypeNodeCursor, WireField,
 };
 
+pub use native_program_forest::{
+    MAX_NATIVE_PROGRAM_NODES, NativeProgramForestSchema, NativeProgramNode,
+    NativeProgramOwnedSourceRef, NativeProgramSources,
+};
 pub use native_program_sources::{
     MAX_NATIVE_PROGRAM_MANIFEST_BYTES, MAX_NATIVE_PROGRAM_SOURCES, NativeProgramSource,
     NativeProgramSourceManifest, NativeProgramSourceManifestError,
