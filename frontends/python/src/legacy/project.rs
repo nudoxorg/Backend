@@ -229,7 +229,7 @@ fn native_producer_identity(digest: blake3::Hash, size: u64) -> NativePythonProd
         ))
         .as_bytes(),
     );
-    identity.update(b"root-isolated;named-single-package-import-root.v1;declared-captured-python-source-roots.v1;captured-diagnostic-baseline.v1;root-pinned-config-inputs.v1;fresh-state;per-file-raw-intake.v1;native-syntax-diagnostics;unavailable-exact-rdeps;classdef-declaration+constructor-callee;captured-candidates;opaque-link-frontier.v1;depth64;work262144\0");
+    identity.update(b"root-isolated;named-single-package-import-root.v1;declared-captured-python-source-roots.v1;captured-diagnostic-baseline.v1;root-pinned-config-inputs.v1;fresh-state;per-file-raw-intake.v1;native-syntax-diagnostics;unavailable-exact-rdeps;classdef-declaration+constructor-callee;captured-candidates;opaque-link-frontier;native-current-module-binding.v2;depth64;work262144\0");
     identity.update(digest.as_bytes());
     identity.update(&size.to_be_bytes());
     NativePythonProducerIdentity(*identity.finalize().as_bytes())

@@ -335,6 +335,10 @@ pub(super) fn analyze(
         .zip(&raw_handles)
         .map(|(source, handle)| (handle.path().as_path(), source.relative_path))
         .collect::<BTreeMap<_, _>>();
+    let selected_native_handles = raw_handles
+        .iter()
+        .map(|handle| (handle.path().as_path(), handle))
+        .collect::<BTreeMap<_, _>>();
     let mut unavailable_dependencies = BTreeMap::<Box<str>, BTreeSet<Box<str>>>::new();
     for loaded in read.handles() {
         checkpoint(control)?;
@@ -672,9 +676,28 @@ pub(super) fn analyze(
                         "native definition module differs from captured bytes",
                     ));
                 }
+                // Native export lookup prefers the annotated/first declaration,
+                // while its committed Definitions also retain the current module
+                // binding range. Read that exact range through the selected Handle;
+                // no name matching or source-text fallback can create a target.
+                let binding_range = selected_native_handles
+                    .get(definition.module.path().as_path())
+                    .filter(|handle| {
+                        read.get_module_info(handle).is_some_and(|module| {
+                            module.path() == definition.module.path()
+                                && module.name() == definition.module.name()
+                                && module.contents() == definition.module.contents()
+                        })
+                    })
+                    .and_then(|handle| {
+                        read.with_module_binding(handle, definition.range, |view| {
+                            view.map(|view| view.binding_range())
+                        })
+                    })
+                    .unwrap_or(definition.range);
                 let span = Span {
-                    start: definition.range.start().to_u32(),
-                    end: definition.range.end().to_u32(),
+                    start: binding_range.start().to_u32(),
+                    end: binding_range.end().to_u32(),
                 };
                 if target_source
                     .get(span.start as usize..span.end as usize)
@@ -1296,7 +1319,7 @@ fn captured_finder(
     let mut effective = BTreeMap::new();
     let mut scope_identity = blake3::Hasher::new();
     scope_identity.update(b"compiler.python.effective-config-scope.v1\0");
-    scope_identity.update(b"root-isolated;named-package-import-root.v1;captured-diagnostic-baseline.v1;native-priority;candidate-kind+presence+absence;namespace-membership-only+compiled-shadow-unavailable-rdeps+binding-site-compiled-cause+parse-only-tainted-diagnostics+regular-file-finder+opaque-link-frontier.v6;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
+    scope_identity.update(b"root-isolated;named-package-import-root.v1;captured-diagnostic-baseline.v1;native-priority;candidate-kind+presence+absence;namespace-membership-only+compiled-shadow-unavailable-rdeps+binding-site-compiled-cause+parse-only-tainted-diagnostics+regular-file-finder+opaque-link-frontier+native-current-module-binding.v7;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
     for directory in directories {
         let mut candidates = Vec::new();
         for (depth, ancestor) in directory
