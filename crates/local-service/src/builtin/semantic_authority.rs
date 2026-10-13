@@ -49,7 +49,7 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::Mutex;
 use std::sync::mpsc::{self, SyncSender, TrySendError};
-use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const LOCAL_BRANCH: &str = "locald";
@@ -65,6 +65,9 @@ const MAX_PUT_CALLS: usize = 1_000_000;
 const AUTHORITY_PAGE: usize = 512;
 const MAX_NATIVE_HISTORY_STATUS_ROWS: usize = 256;
 const NATIVE_HISTORY_QUEUE_CAPACITY: usize = 8;
+// Derived-cache policy only. Over-budget catalogs remain fully readable without
+// retention; this does not limit product/source/history capability or process RSS.
+const SEMANTIC_HISTORY_CATALOG_RETAINED_ALLOCATION_BYTES: usize = 32 * 1024 * 1024;
 
 /// Durable identity retained before the owner sends a stored-result ACK.
 ///
@@ -1523,13 +1526,64 @@ impl DetachedSemanticAuthority {
 #[derive(Clone)]
 struct SemanticVersionsCatalogSnapshot {
     workspace: backend_version::WorkspaceRoot,
-    selections: SelectedClosureSnapshot,
-    statuses: Arc<VecDeque<NativeHistoryStatusEntry>>,
-    in_flight: Arc<HashSet<[u8; 32]>>,
-    history: Arc<BTreeMap<HistoryKey, HistoryFact>>,
-    retained_generations: Arc<BTreeMap<HistoryKey, u64>>,
-    committed_observations: Arc<BTreeMap<ProductSemanticPublicationKey, SourceObservationReceipt>>,
+    // Weak guards own the exact allocation against ABA without retaining its
+    // transitive map/status backing. make_mut dissociates them; get_mut refuses.
+    selected_by_binding: Weak<BTreeMap<HistoryKey, SelectedGeneration>>,
+    selected_by_product: Weak<BTreeMap<ProductSemanticPublicationKey, SemanticPublicationClaim>>,
+    statuses: Weak<VecDeque<NativeHistoryStatusEntry>>,
+    in_flight: Weak<HashSet<[u8; 32]>>,
+    history: Weak<BTreeMap<HistoryKey, HistoryFact>>,
+    retained_generations: Weak<BTreeMap<HistoryKey, u64>>,
+    committed_observations: Weak<BTreeMap<ProductSemanticPublicationKey, SourceObservationReceipt>>,
     catalog: Arc<backend_library::SemanticVersionsCatalog>,
+}
+
+fn weak_matches_arc<T>(guard: &Weak<T>, current: &Arc<T>) -> bool {
+    // Comparing never upgrades a guard or makes its backing resident again.
+    Weak::ptr_eq(guard, &Arc::downgrade(current))
+}
+
+fn arc_header_allowance<T>() -> Option<usize> {
+    // Arc retains two atomic counters plus alignment padding beside its inline
+    // T allocation. Charge an alignment allowance rather than guessing the
+    // allocator's size class or claiming a process-RSS bound.
+    (2_usize.checked_mul(std::mem::size_of::<usize>())?)
+        .checked_add(std::mem::align_of::<T>().max(std::mem::align_of::<usize>()))
+}
+
+fn weak_allocation_charge<T>() -> Option<usize> {
+    std::mem::size_of::<T>().checked_add(arc_header_allowance::<T>()?)
+}
+
+fn semantic_history_catalog_retention_charge(
+    catalog: &backend_library::SemanticVersionsCatalog,
+) -> Option<usize> {
+    let mut bytes = catalog.retained_allocation_bytes()?;
+    bytes = bytes.checked_add(arc_header_allowance::<
+        backend_library::SemanticVersionsCatalog,
+    >()?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<SemanticVersionsCatalogSnapshot>())?;
+    // Even when another owner still shares a guard, charge all control/header
+    // storage it could retain. No transitive inventory data is strongly owned
+    // by this slot; a catalog's full owned proof buffers are charged above.
+    for guard in [
+        weak_allocation_charge::<BTreeMap<HistoryKey, SelectedGeneration>>()?,
+        weak_allocation_charge::<BTreeMap<ProductSemanticPublicationKey, SemanticPublicationClaim>>(
+        )?,
+        weak_allocation_charge::<VecDeque<NativeHistoryStatusEntry>>()?,
+        weak_allocation_charge::<HashSet<[u8; 32]>>()?,
+        weak_allocation_charge::<BTreeMap<HistoryKey, HistoryFact>>()?,
+        weak_allocation_charge::<BTreeMap<HistoryKey, u64>>()?,
+        weak_allocation_charge::<BTreeMap<ProductSemanticPublicationKey, SourceObservationReceipt>>(
+        )?,
+    ] {
+        bytes = bytes.checked_add(guard)?;
+    }
+    Some(bytes)
+}
+
+fn history_catalog_fits_retention_budget(charge: Option<usize>, budget: usize) -> bool {
+    charge.is_some_and(|bytes| bytes <= budget)
 }
 
 #[cfg(test)]
@@ -1539,6 +1593,8 @@ pub(super) struct SemanticVersionsCatalogWork {
     pub hits: u64,
     pub admitted_images: u64,
     pub hashed_bytes: u64,
+    pub uncached_builds: u64,
+    pub retained_allocation_bytes: usize,
 }
 
 pub(crate) struct SemanticAuthority {
@@ -1871,8 +1927,8 @@ impl SemanticAuthority {
     }
 
     /// Returns an immutable catalog only while all exact owner inputs remain
-    /// the captured ones. This one-slot projection is bounded; alternating
-    /// packages may rebuild but cannot retain an unbounded catalog collection.
+    /// the captured ones. Retention is count- and requested-allocation-bounded;
+    /// larger catalogs remain available through the identical uncached route.
     pub(super) fn cached_semantic_versions_catalog(
         &mut self,
         workspace: backend_version::WorkspaceRoot,
@@ -1888,21 +1944,32 @@ impl SemanticAuthority {
             || entry.catalog.package() != package
             || entry.catalog.basis().semantic_relation_root != semantic_relation_root
             || entry.catalog.basis().source_relation_root != source_relation_root
-            || !Arc::ptr_eq(&entry.selections.by_product, &selections.by_product)
-            || !Arc::ptr_eq(&entry.selections.by_binding, &selections.by_binding)
-            || !Arc::ptr_eq(&entry.statuses, &self.native_history_state.statuses)
-            || !Arc::ptr_eq(&entry.in_flight, &self.native_history_state.in_flight)
-            || !Arc::ptr_eq(&entry.history, &self.history)
-            || !Arc::ptr_eq(&entry.retained_generations, &self.retained_generations)
-            || !Arc::ptr_eq(&entry.committed_observations, &self.committed_observations)
+            || !weak_matches_arc(&entry.selected_by_product, &selections.by_product)
+            || !weak_matches_arc(&entry.selected_by_binding, &selections.by_binding)
+            || !weak_matches_arc(&entry.statuses, &self.native_history_state.statuses)
+            || !weak_matches_arc(&entry.in_flight, &self.native_history_state.in_flight)
+            || !weak_matches_arc(&entry.history, &self.history)
+            || !weak_matches_arc(&entry.retained_generations, &self.retained_generations)
+            || !weak_matches_arc(&entry.committed_observations, &self.committed_observations)
         {
+            // Release stale owned catalog storage before replacement projection.
+            // Readers with their own Arc retain a legitimate immutable version.
+            self.semantic_versions_catalog = None;
+            #[cfg(test)]
+            {
+                self.semantic_versions_catalog_work
+                    .retained_allocation_bytes = 0;
+            }
             return Ok(None);
         }
         #[cfg(test)]
         {
             self.semantic_versions_catalog_work.hits += 1;
         }
-        Ok(Some(Arc::clone(&entry.catalog)))
+        Ok(self
+            .semantic_versions_catalog
+            .as_ref()
+            .map(|entry| Arc::clone(&entry.catalog)))
     }
 
     pub(super) fn admit_history_catalog_selections(
@@ -1924,7 +1991,23 @@ impl SemanticAuthority {
         catalog: backend_library::SemanticVersionsCatalog,
         selections: SelectedClosureSnapshot,
     ) -> Result<Arc<backend_library::SemanticVersionsCatalog>, BuiltinModelError> {
+        self.remember_semantic_versions_catalog_with_budget(
+            workspace,
+            catalog,
+            selections,
+            SEMANTIC_HISTORY_CATALOG_RETAINED_ALLOCATION_BYTES,
+        )
+    }
+
+    fn remember_semantic_versions_catalog_with_budget(
+        &mut self,
+        workspace: backend_version::WorkspaceRoot,
+        catalog: backend_library::SemanticVersionsCatalog,
+        selections: SelectedClosureSnapshot,
+        retention_budget: usize,
+    ) -> Result<Arc<backend_library::SemanticVersionsCatalog>, BuiltinModelError> {
         self.admit_history_catalog_selections(&selections)?;
+        let charge = semantic_history_catalog_retention_charge(&catalog);
         #[cfg(test)]
         {
             let work = catalog.preparation_work();
@@ -1933,16 +2016,34 @@ impl SemanticAuthority {
             self.semantic_versions_catalog_work.hashed_bytes += work.catalog_hashed_bytes;
         }
         let catalog = Arc::new(catalog);
+        // Failure to account or to fit affects derived retention only. The
+        // same admitted catalog still emits every complete proof and cursor.
+        if !history_catalog_fits_retention_budget(charge, retention_budget) {
+            self.semantic_versions_catalog = None;
+            #[cfg(test)]
+            {
+                self.semantic_versions_catalog_work.uncached_builds += 1;
+                self.semantic_versions_catalog_work
+                    .retained_allocation_bytes = 0;
+            }
+            return Ok(catalog);
+        }
         self.semantic_versions_catalog = Some(SemanticVersionsCatalogSnapshot {
             workspace,
-            selections,
-            statuses: Arc::clone(&self.native_history_state.statuses),
-            in_flight: Arc::clone(&self.native_history_state.in_flight),
-            history: Arc::clone(&self.history),
-            retained_generations: Arc::clone(&self.retained_generations),
-            committed_observations: Arc::clone(&self.committed_observations),
+            selected_by_binding: Arc::downgrade(&selections.by_binding),
+            selected_by_product: Arc::downgrade(&selections.by_product),
+            statuses: Arc::downgrade(&self.native_history_state.statuses),
+            in_flight: Arc::downgrade(&self.native_history_state.in_flight),
+            history: Arc::downgrade(&self.history),
+            retained_generations: Arc::downgrade(&self.retained_generations),
+            committed_observations: Arc::downgrade(&self.committed_observations),
             catalog: Arc::clone(&catalog),
         });
+        #[cfg(test)]
+        {
+            self.semantic_versions_catalog_work
+                .retained_allocation_bytes = charge.unwrap_or(0);
+        }
         Ok(catalog)
     }
 
@@ -4998,16 +5099,294 @@ mod tests {
             .expect("exact replacement observation");
         assert!(
             authority
+                .cached_semantic_versions_catalog(root, &foreign, [1; 32], [2; 32])
+                .expect("exact selector observation")
+                .is_some(),
+            "one count-limited slot replaces, rather than accumulating, catalogs"
+        );
+        assert!(
+            authority
                 .cached_semantic_versions_catalog(root, &package, [1; 32], [2; 32])
                 .expect("exact selector observation")
                 .is_none()
         );
         assert!(
+            authority.semantic_versions_catalog.is_none(),
+            "missed slot releases before replacement construction"
+        );
+    }
+
+    fn captured_history_records() -> Box<[backend_library::SemanticVersionRecord]> {
+        // Public captured DTO supplies proof shape for cache policy controls;
+        // this does not confer compiler/publication authority on this owner.
+        let packet: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../present/fixtures/semantic-versions-semver-public.json"
+        ))
+        .expect("captured public DTO");
+        let backend_library::SurfaceReply::SemanticVersions(records) =
+            serde_json::from_value(packet["surface"].clone()).expect("full public records")
+        else {
+            panic!("full history records");
+        };
+        records
+    }
+
+    #[test]
+    fn history_catalog_retention_boundary_falls_back_without_losing_proof_or_cursor() {
+        let workspace = ScratchWorkspace::new();
+        let mut authority = SemanticAuthority::open(&workspace.0).expect("actual private owner");
+        let root = super::super::genesis()
+            .expect("checked workspace root")
+            .root();
+        let records = captured_history_records();
+        let package = records[0].package.clone();
+        let source_root = records[0]
+            .selected_source_frontier
+            .as_ref()
+            .expect("captured source frontier")
+            .source_relation_root;
+        let backend_library::SemanticHistoryPublicationStatus::Published { proof, .. } =
+            &records[0].history_status
+        else {
+            panic!("captured full proof");
+        };
+        let original = proof.clone();
+        let build = || {
+            backend_library::SemanticVersionsCatalog::new(
+                package.clone(),
+                [17; 32],
+                source_root,
+                records.clone(),
+            )
+            .expect("exact admitted public observation")
+        };
+        let catalog = build();
+        let charge = semantic_history_catalog_retention_charge(&catalog).expect("complete charge");
+        assert!(charge < SEMANTIC_HISTORY_CATALOG_RETAINED_ALLOCATION_BYTES);
+        assert!(history_catalog_fits_retention_budget(Some(charge), charge));
+        assert!(!history_catalog_fits_retention_budget(
+            Some(charge),
+            charge - 1
+        ));
+        assert!(!history_catalog_fits_retention_budget(
+            usize::MAX.checked_add(1),
+            usize::MAX
+        ));
+        let selections = authority
+            .history_catalog_selections()
+            .expect("strong input snapshot");
+        let retained = authority
+            .remember_semantic_versions_catalog_with_budget(root, catalog, selections, charge)
+            .expect("exact byte-boundary retention");
+        assert_eq!(
             authority
-                .cached_semantic_versions_catalog(root, &foreign, [1; 32], [2; 32])
-                .expect("exact selector observation")
-                .is_some(),
-            "one bounded slot replaces, rather than accumulating, catalogs"
+                .semantic_versions_catalog_work()
+                .retained_allocation_bytes,
+            charge
+        );
+        assert!(
+            authority
+                .cached_semantic_versions_catalog(root, &package, [17; 32], source_root)
+                .expect("same inventories")
+                .is_some()
+        );
+        let first = retained.page(8, None).expect("complete first page");
+        let saved = first
+            .next_cursor
+            .clone()
+            .expect("captured history exceeds one page");
+        let expected = retained.page(8, Some(&saved)).expect("saved continuation");
+        let selections = authority
+            .history_catalog_selections()
+            .expect("same snapshot");
+        let uncached = authority
+            .remember_semantic_versions_catalog_with_budget(root, build(), selections, charge - 1)
+            .expect("cache allowance cannot reject a complete read");
+        assert!(authority.semantic_versions_catalog.is_none());
+        assert_eq!(
+            authority
+                .semantic_versions_catalog_work()
+                .retained_allocation_bytes,
+            0
+        );
+        assert_eq!(
+            uncached.page(8, Some(&saved)).expect("same saved cursor"),
+            expected
+        );
+        let mut cursor = None;
+        let mut images = Vec::new();
+        let mut header = None;
+        loop {
+            let page = uncached
+                .page(8, cursor.as_ref())
+                .expect("all complete uncached pages");
+            for entry in &page.entries {
+                assert_eq!(entry.start_ordinal as usize, images.len());
+                let backend_library::SemanticHistoryPublicationStatus::PublishedCatalog {
+                    catalog,
+                    ..
+                } = &entry.version.history_status
+                else {
+                    panic!("complete catalog header");
+                };
+                if let Some(previous) = &header {
+                    assert_eq!(previous, catalog);
+                }
+                header = Some(catalog.clone());
+                images.extend_from_slice(&entry.images);
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+            assert!(images.len() <= original.images.len(), "no repeated images");
+        }
+        assert_eq!(images.as_slice(), original.images.as_ref());
+        assert_eq!(
+            header
+                .expect("retained header")
+                .assemble(images.into_boxed_slice())
+                .expect("every original parent and commitment"),
+            original
+        );
+        let cold = build();
+        assert_eq!(
+            cold.page(8, Some(&saved))
+                .expect("stateless cold reconstruction"),
+            expected
+        );
+        // A large spare capacity is invisible to JSON/commitment bytes. The
+        // production 32-MiB policy must nevertheless refuse only retention.
+        let mut spare = records.clone();
+        let backend_library::SemanticHistoryPublicationStatus::Published { reference, .. } =
+            &mut spare[0].history_status
+        else {
+            panic!("full admitted record");
+        };
+        reference.reserve_exact(SEMANTIC_HISTORY_CATALOG_RETAINED_ALLOCATION_BYTES);
+        let oversize = backend_library::SemanticVersionsCatalog::new(
+            package.clone(),
+            [17; 32],
+            source_root,
+            spare,
+        )
+        .expect("unchanged full proof and fields");
+        assert!(
+            semantic_history_catalog_retention_charge(&oversize).expect("large census")
+                > SEMANTIC_HISTORY_CATALOG_RETAINED_ALLOCATION_BYTES
+        );
+        let selections = authority
+            .history_catalog_selections()
+            .expect("same exact inputs");
+        let oversize = authority
+            .remember_semantic_versions_catalog(root, oversize, selections)
+            .expect("production cache policy cannot remove read capability");
+        assert!(authority.semantic_versions_catalog.is_none());
+        assert_eq!(
+            oversize
+                .page(8, Some(&saved))
+                .expect("same exact oversized saved cursor"),
+            expected
+        );
+        assert_eq!(
+            authority.semantic_versions_catalog_work().uncached_builds,
+            2
+        );
+    }
+
+    #[test]
+    fn history_catalog_weak_guards_invalidate_without_pinning_inventory_backing() {
+        let workspace = ScratchWorkspace::new();
+        let mut authority = SemanticAuthority::open(&workspace.0).expect("actual private owner");
+        let root = super::super::genesis()
+            .expect("checked workspace root")
+            .root();
+        let package = backend_library::PackageReference::parse("/weak-cache").expect("package");
+        let stamp = backend_replication::SelectedGenerationStamp::checked(
+            [1; 16],
+            worker_test_key().profile(),
+            [2; 32],
+            1,
+            [3; 32],
+            [4; 32],
+            backend_semantic::ir::SemanticPlaneCatalogRoot::from_wire_claim([5; 32]),
+        )
+        .expect("checked stamp shape only");
+        let payload = Arc::new(backend_engine::SemanticHistoryPublicationStatus::Deferred {
+            selection_id: [6; 32],
+            reason: "waiting for a worker".to_owned(),
+        });
+        let payload_guard = Arc::downgrade(&payload);
+        authority.native_history_state.statuses =
+            Arc::new(VecDeque::from([NativeHistoryStatusEntry {
+                key: worker_test_key(),
+                stamp,
+                status: payload,
+                retry_attempts: 0,
+                retry_at: None,
+            }]));
+        let observed = authority
+            .history_catalog_selections()
+            .expect("actual strong inventory");
+        let catalog = backend_library::SemanticVersionsCatalog::new(
+            package.clone(),
+            [1; 32],
+            [2; 32],
+            Box::new([]),
+        )
+        .expect("empty admitted cache policy observation");
+        let retained = authority
+            .remember_semantic_versions_catalog(root, catalog, observed)
+            .expect("unchanged inventories");
+        let catalog_guard = Arc::downgrade(&retained);
+        drop(retained);
+        assert_eq!(
+            Arc::strong_count(&authority.history),
+            1,
+            "cache owns no strong map guard"
+        );
+        assert_eq!(
+            Arc::strong_count(&authority.native_history_state.statuses),
+            1,
+            "cache owns no strong status inventory"
+        );
+        let entry = authority
+            .semantic_versions_catalog
+            .as_ref()
+            .expect("retained cache");
+        let history_guard = entry.history.clone();
+        let status_guard = entry.statuses.clone();
+        assert!(
+            Arc::get_mut(&mut authority.history).is_none(),
+            "weak-only guard forbids in-place mutation"
+        );
+        Arc::make_mut(&mut authority.history).clear();
+        assert!(
+            history_guard.upgrade().is_none(),
+            "make_mut dissociates old exact allocation even at unchanged root"
+        );
+        authority.native_history_state.statuses = Arc::new(VecDeque::new());
+        assert!(status_guard.upgrade().is_none());
+        assert!(
+            payload_guard.upgrade().is_none(),
+            "weak inventory allocation does not pin nested payload/string backing"
+        );
+        assert!(
+            authority
+                .cached_semantic_versions_catalog(root, &package, [1; 32], [2; 32])
+                .expect("same-root comparison")
+                .is_none()
+        );
+        assert!(authority.semantic_versions_catalog.is_none());
+        assert!(
+            catalog_guard.upgrade().is_none(),
+            "miss releases stale owned catalog before new construction"
+        );
+        assert_eq!(
+            authority
+                .semantic_versions_catalog_work()
+                .retained_allocation_bytes,
+            0
         );
     }
 

@@ -367,6 +367,117 @@ pub struct SemanticHistoryReadWork {
     pub measured_page_bytes: u64,
 }
 
+fn add_owned_bytes(total: &mut usize, bytes: usize) -> Option<()> {
+    *total = total.checked_add(bytes)?;
+    Some(())
+}
+
+fn package_owned_bytes(package: &PackageReference) -> usize {
+    match package {
+        PackageReference::Local(text) => text.retained_capacity(),
+        // PackageCoordinate stores its spelling in Box<str>; facts are inline.
+        PackageReference::Purl(coordinate) => coordinate.as_str().len(),
+    }
+}
+
+fn version_owned_bytes(version: &SemanticVersionRecord) -> Option<usize> {
+    // Exhaustive destructuring makes new record/variant fields require an
+    // accounting decision rather than silently excluding nested storage.
+    let SemanticVersionRecord {
+        package,
+        coordinate,
+        profile: _,
+        generation: _,
+        generation_root: _,
+        dependency_set: _,
+        manifest: _,
+        artifacts: _,
+        semantic_bytes: _,
+        complete: _,
+        selected: _,
+        freshness: _,
+        history_status,
+        selected_source_frontier,
+    } = version;
+    let mut bytes = package_owned_bytes(package);
+    add_owned_bytes(&mut bytes, coordinate.as_str().len())?;
+    if let Some(crate::SelectedProjectSourceFrontier {
+        package,
+        source_relation_root: _,
+        source_version: _,
+        file_count: _,
+    }) = selected_source_frontier
+    {
+        add_owned_bytes(&mut bytes, package_owned_bytes(package))?;
+    }
+    match history_status {
+        SemanticHistoryPublicationStatus::Published {
+            selection_id: _,
+            commit: _,
+            reference,
+            proof,
+        } => {
+            add_owned_bytes(&mut bytes, reference.capacity())?;
+            let SemanticHistoryPublicationProof {
+                selection: _,
+                target_package,
+                target_coordinate,
+                package_identity: _,
+                images,
+                reference_tip: _,
+                reachable_commit: _,
+                input_replay_status: _,
+            } = proof;
+            add_owned_bytes(&mut bytes, target_package.capacity())?;
+            add_owned_bytes(&mut bytes, target_coordinate.capacity())?;
+            add_owned_bytes(&mut bytes, std::mem::size_of_val(images.as_ref()))?;
+            for SemanticHistoryImagePublicationProof {
+                image: _,
+                history_commit: _,
+                parent_commits,
+            } in images.iter()
+            {
+                add_owned_bytes(&mut bytes, std::mem::size_of_val(parent_commits.as_ref()))?;
+            }
+        }
+        SemanticHistoryPublicationStatus::PublishedCatalog {
+            selection_id: _,
+            commit: _,
+            reference,
+            catalog,
+        } => {
+            add_owned_bytes(&mut bytes, reference.capacity())?;
+            let SemanticHistoryCatalog {
+                selection: _,
+                target_package,
+                target_coordinate,
+                package_identity: _,
+                image_count: _,
+                reference_tip: _,
+                reachable_commit: _,
+                input_replay_status: _,
+            } = catalog;
+            add_owned_bytes(&mut bytes, target_package.capacity())?;
+            add_owned_bytes(&mut bytes, target_coordinate.capacity())?;
+        }
+        SemanticHistoryPublicationStatus::Deferred {
+            selection_id: _,
+            reason,
+        }
+        | SemanticHistoryPublicationStatus::Refused {
+            selection_id: _,
+            reason,
+        } => {
+            add_owned_bytes(&mut bytes, reason.capacity())?;
+        }
+        SemanticHistoryPublicationStatus::NotSelected
+        | SemanticHistoryPublicationStatus::NotRequested { selection_id: _ }
+        | SemanticHistoryPublicationStatus::Pending { selection_id: _ }
+        | SemanticHistoryPublicationStatus::Superseded { selection_id: _ } => {}
+    }
+    Some(bytes)
+}
+
 /// Immutable, strictly admitted owner observation reused by an exact page chain.
 /// Construction consumes the full records once. Paging touches only metadata
 /// headers, requested images, their preceding edge and the next position.
@@ -381,6 +492,34 @@ pub struct SemanticVersionsCatalog {
 }
 
 impl SemanticVersionsCatalog {
+    /// Requested storage owned by this immutable catalog, including its inline
+    /// value, both record buffers and every transitive owned allocation.
+    ///
+    /// String capacity is charged rather than encoded size. This excludes Arc
+    /// control storage, allocator overhead and transient preparation/page work;
+    /// the retaining owner must account for its own control/key allocations.
+    /// `None` means arithmetic overflow and permits only uncached use.
+    #[must_use]
+    pub fn retained_allocation_bytes(&self) -> Option<usize> {
+        let Self {
+            package,
+            package_identity: _,
+            basis: _,
+            versions,
+            page_versions,
+            reconstructing: _,
+            work: _,
+        } = self;
+        let mut bytes = std::mem::size_of::<Self>();
+        add_owned_bytes(&mut bytes, package_owned_bytes(package))?;
+        add_owned_bytes(&mut bytes, std::mem::size_of_val(versions.as_ref()))?;
+        add_owned_bytes(&mut bytes, std::mem::size_of_val(page_versions.as_ref()))?;
+        for version in versions.iter().chain(page_versions.iter()) {
+            add_owned_bytes(&mut bytes, version_owned_bytes(version)?)?;
+        }
+        Some(bytes)
+    }
+
     /// Admits and commits one immutable owner observation. Roots come from its
     /// captured workspace, never from a caller continuation.
     ///
@@ -1073,9 +1212,84 @@ mod tests {
     }
 
     #[test]
+    fn immutable_catalog_allocation_census_counts_full_proofs_headers_and_capacity() {
+        let record = retained_fixture(133);
+        let package = record.package.clone();
+        let mut catalog = SemanticVersionsCatalog::new(
+            package,
+            [17; 32],
+            CAPTURED_SOURCE_ROOT,
+            vec![record].into_boxed_slice(),
+        )
+        .expect("admitted full observation");
+        let initial = catalog.retained_allocation_bytes().expect("finite census");
+        let original_page = catalog.page(8, None).expect("original exact page");
+        let SemanticHistoryPublicationStatus::Published {
+            proof, reference, ..
+        } = &mut catalog.versions[0].history_status
+        else {
+            panic!("full proof");
+        };
+        // Retained string capacity changes without changing any committed byte.
+        let old_capacity = reference.capacity();
+        reference.reserve_exact(4096);
+        let reference_delta = reference.capacity() - old_capacity;
+        let old_target_capacity = proof.target_package.capacity();
+        proof.target_package.reserve_exact(8192);
+        let target_delta = proof.target_package.capacity() - old_target_capacity;
+        let images = proof.images.len();
+        let parents = proof
+            .images
+            .iter()
+            .map(|image| image.parent_commits.len())
+            .sum::<usize>();
+        assert_eq!(images, 133);
+        assert_eq!(parents, 132);
+        assert_eq!(
+            catalog.retained_allocation_bytes(),
+            Some(initial + reference_delta + target_delta)
+        );
+        assert!(
+            initial
+                >= std::mem::size_of::<SemanticVersionsCatalog>()
+                    + 2 * std::mem::size_of::<SemanticVersionRecord>()
+                    + images * std::mem::size_of::<SemanticHistoryImagePublicationProof>()
+                    + parents * std::mem::size_of::<[u8; 32]>()
+        );
+        let before_header = catalog
+            .retained_allocation_bytes()
+            .expect("full and header storage");
+        let SemanticHistoryPublicationStatus::PublishedCatalog {
+            catalog: header, ..
+        } = &mut catalog.page_versions[0].history_status
+        else {
+            panic!("derived whole header");
+        };
+        let old_capacity = header.target_coordinate.capacity();
+        header.target_coordinate.reserve_exact(16_384);
+        let header_delta = header.target_coordinate.capacity() - old_capacity;
+        assert_eq!(
+            catalog.retained_allocation_bytes(),
+            Some(before_header + header_delta)
+        );
+        let page = catalog
+            .page(8, None)
+            .expect("capacity cannot change exact proof/basis");
+        assert_eq!(
+            page, original_page,
+            "spare capacities change no wire/proof field"
+        );
+        let cursor = page.next_cursor.expect("whole history continuation");
+        assert!(catalog.page(8, Some(&cursor)).is_ok());
+        let mut overflow = usize::MAX;
+        assert!(add_owned_bytes(&mut overflow, 1).is_none());
+        assert_eq!(overflow, usize::MAX, "accounting never wraps");
+    }
+
+    #[test]
     fn immutable_catalog_walk_admits_and_hashes_16384_images_once() {
-        // This is the maintained selected-image bound, scaled from the real
-        // public schema; it proves algorithmic work, not genuine inference.
+        // This synthetic public-schema volume uses the package-member constant,
+        // not a global semantic-image limit. It proves structural work only.
         let record = retained_fixture(crate::MAX_PROJECT_MEMBERS as u32);
         let package = record.package.clone();
         let SemanticHistoryPublicationStatus::Published { proof, .. } = &record.history_status
