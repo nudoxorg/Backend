@@ -5,6 +5,20 @@ use crate::application::embedding_provision::tests::{
 use crate::application::{EmbeddingRuntimeProvision, PreparedEmbeddingRuntime};
 use std::fs;
 
+fn fixture_reply(
+    sender: SyncSender<
+        Result<LocalCompilerEmbeddingReceipt, LocalCompilerEmbeddingTransitionError>,
+    >,
+) -> EmbeddingTransitionReply {
+    EmbeddingTransitionReply {
+        sender,
+        reservation: Arc::new(EmbeddingRefreshReservation {
+            requests: Arc::new(Mutex::new(RequestAdmissions::Refreshing(1))),
+            sequence: 1,
+        }),
+    }
+}
+
 fn root(label: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)?
@@ -362,7 +376,7 @@ fn compiler_replacement_commit_checks_before_serving_and_preserves_late_observat
     assert!(
         RuntimeGenerationAcknowledgement::Embedding {
             authority: EmbeddingTransitionAuthority::CompilerActor,
-            response,
+            response: fixture_reply(response),
             receipt: receipt.clone(),
             configuration: witness.clone(),
             cancelled: Arc::clone(&flag),
@@ -386,7 +400,7 @@ fn compiler_replacement_commit_checks_before_serving_and_preserves_late_observat
     let (response, receiver) = sync_channel(1);
     RuntimeGenerationAcknowledgement::Embedding {
         authority: EmbeddingTransitionAuthority::CompilerActor,
-        response,
+        response: fixture_reply(response),
         receipt,
         configuration: witness.clone(),
         cancelled: Arc::clone(&flag),
@@ -436,7 +450,7 @@ fn compiler_replacement_commit_revalidates_config_after_actual_activation()
     assert!(
         RuntimeGenerationAcknowledgement::Embedding {
             authority: EmbeddingTransitionAuthority::CompilerActor,
-            response,
+            response: fixture_reply(response),
             receipt: LocalCompilerEmbeddingReceipt {
                 configuration: desired,
                 phase: LocalCompilerEmbeddingPhase::Activated { execution }
@@ -765,7 +779,7 @@ fn compiler_replacement_commit_rechecks_original_workspace_fence_after_owner_han
     assert!(
         RuntimeGenerationAcknowledgement::Embedding {
             authority: EmbeddingTransitionAuthority::Workspace(original),
-            response,
+            response: fixture_reply(response),
             receipt: receipt.clone(),
             configuration: configuration.clone(),
             cancelled: Arc::clone(&flag),
@@ -789,7 +803,7 @@ fn compiler_replacement_commit_rechecks_original_workspace_fence_after_owner_han
     let (response, receiver) = sync_channel(1);
     RuntimeGenerationAcknowledgement::Embedding {
         authority: EmbeddingTransitionAuthority::Workspace(replacement.test_identity()),
-        response,
+        response: fixture_reply(response),
         receipt,
         configuration,
         cancelled: Arc::clone(&flag),

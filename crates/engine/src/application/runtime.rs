@@ -3175,8 +3175,6 @@ pub struct PendingLocalCompilerEmbeddingTransition {
         Receiver<Result<LocalCompilerEmbeddingReceipt, LocalCompilerEmbeddingTransitionError>>,
     cancelled: Arc<AtomicBool>,
     deadline: Instant,
-    #[cfg(test)]
-    _fixture_admission: Option<LocalCompilerEmbeddingAdmission>,
 }
 
 impl PendingLocalCompilerEmbeddingTransition {
@@ -3235,11 +3233,29 @@ impl EmbeddingTransitionAuthority {
     }
 }
 
+// One affine outcome producer binds accepted work to its request reservation.
+// Neither observer loss nor caller admission drop can release queued actor work.
+struct EmbeddingTransitionReply {
+    sender:
+        SyncSender<Result<LocalCompilerEmbeddingReceipt, LocalCompilerEmbeddingTransitionError>>,
+    reservation: Arc<EmbeddingRefreshReservation>,
+}
+impl EmbeddingTransitionReply {
+    fn send(
+        self,
+        outcome: Result<LocalCompilerEmbeddingReceipt, LocalCompilerEmbeddingTransitionError>,
+    ) -> Result<(), ()> {
+        // The actual actor outcome is complete. Release before publishing it so
+        // a caller that observes completion cannot race a stale request gate.
+        drop(self.reservation);
+        self.sender.send(outcome).map_err(|_| ())
+    }
+}
+
 struct EmbeddingTransitionCommand {
     authority: EmbeddingTransitionAuthority,
     update: LocalCompilerEmbeddingTransition,
-    response:
-        SyncSender<Result<LocalCompilerEmbeddingReceipt, LocalCompilerEmbeddingTransitionError>>,
+    response: EmbeddingTransitionReply,
     cancelled: Arc<AtomicBool>,
     deadline: Instant,
 }
@@ -3260,9 +3276,7 @@ impl EmbeddingTransitionCommand {
 enum RuntimeGenerationAcknowledgement {
     Startup(SyncSender<Result<(), LocalCompilerRuntimeOpenError>>),
     Embedding {
-        response: SyncSender<
-            Result<LocalCompilerEmbeddingReceipt, LocalCompilerEmbeddingTransitionError>,
-        >,
+        response: EmbeddingTransitionReply,
         receipt: LocalCompilerEmbeddingReceipt,
         authority: EmbeddingTransitionAuthority,
         configuration: crate::application::EmbeddingRuntimeConfigWitness,
@@ -3330,13 +3344,17 @@ impl RuntimeGenerationAcknowledgement {
                     let _ = response.send(Err(error.into()));
                     return Err(());
                 }
-                *signal
-                    .lock
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                    LocalCompilerGenerationState::Serving(Some(receipt.clone()));
+                {
+                    let mut generation = signal
+                        .lock
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    *generation = LocalCompilerGenerationState::Serving(Some(receipt.clone()));
+                    // One bounded affine reply cannot already contain another
+                    // outcome. Publish only after actual Serving commit.
+                    let _ = response.send(Ok(receipt));
+                }
                 signal.changed.notify_all();
-                let _ = response.send(Ok(receipt));
                 Ok(())
             }
         }
@@ -3361,8 +3379,8 @@ impl Clone for LocalCompilerClient {
 }
 
 impl LocalCompilerClient {
-    // Standalone actor laws retain a real affine reservation until their outcome is observed.
-    // This fixture route is absent from the public production API.
+    // Standalone actor laws use the same accepted actor-owned reservation.
+    // This authority fixture route is absent from the public production API.
     #[cfg(test)]
     fn begin_embedding_transition(
         &self,
@@ -3373,9 +3391,7 @@ impl LocalCompilerClient {
     {
         let admission = self
             .admit_embedding_refresh_with_authority(EmbeddingTransitionAuthority::CompilerActor)?;
-        let mut pending = admission.begin_transition(update, cancelled, deadline)?;
-        pending._fixture_admission = Some(admission);
-        Ok(pending)
+        admission.begin_transition(update, cancelled, deadline)
     }
 
     /// Reserves this actor with the original durable workspace fence. The actor rechecks
@@ -3409,7 +3425,10 @@ impl LocalCompilerClient {
         *admission = RequestAdmissions::Refreshing(sequence);
         Ok(LocalCompilerEmbeddingAdmission {
             shared: Arc::clone(&self.shared),
-            sequence,
+            reservation: Arc::new(EmbeddingRefreshReservation {
+                requests: Arc::clone(&self.shared.requests),
+                sequence,
+            }),
             authority,
         })
     }
@@ -3507,7 +3526,7 @@ impl LocalCompilerClient {
                         command: Some(command_tx),
                         worker: Some(worker),
                         cancelled,
-                        requests: Mutex::new(RequestAdmissions::Serving(HashMap::new())),
+                        requests: Arc::new(Mutex::new(RequestAdmissions::Serving(HashMap::new()))),
                         next_request: AtomicU64::new(1),
                         next_client: AtomicU64::new(2),
                         alive,
@@ -4151,10 +4170,10 @@ impl RequestAdmissions {
 }
 
 /// Affine admission of one exclusive refresh on this exact compiler actor.
-/// Its destructor reopens request admission only after its owner worker releases it.
+/// Caller and accepted actor share the same affine reservation until their actual release.
 pub struct LocalCompilerEmbeddingAdmission {
     shared: Arc<RuntimeShared>,
-    sequence: u64,
+    reservation: Arc<EmbeddingRefreshReservation>,
     authority: EmbeddingTransitionAuthority,
 }
 impl LocalCompilerEmbeddingAdmission {
@@ -4172,15 +4191,20 @@ impl LocalCompilerEmbeddingAdmission {
             update,
             cancelled,
             deadline,
-            self.sequence,
+            Arc::clone(&self.reservation),
             self.authority.clone(),
         )
     }
 }
-impl Drop for LocalCompilerEmbeddingAdmission {
+// No RuntimeShared ownership: an accepted command must not keep the actor's
+// sender/alive/JoinHandle cycle alive after its last client disappears.
+struct EmbeddingRefreshReservation {
+    requests: Arc<Mutex<RequestAdmissions>>,
+    sequence: u64,
+}
+impl Drop for EmbeddingRefreshReservation {
     fn drop(&mut self) {
         let mut admission = self
-            .shared
             .requests
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -4195,7 +4219,7 @@ struct RuntimeShared {
     command: Option<SyncSender<RuntimeCommand>>,
     worker: Option<JoinHandle<()>>,
     cancelled: Arc<AtomicBool>,
-    requests: Mutex<RequestAdmissions>,
+    requests: Arc<Mutex<RequestAdmissions>>,
     next_request: AtomicU64,
     next_client: AtomicU64,
     alive: Arc<AtomicBool>,
@@ -4234,7 +4258,7 @@ impl RuntimeShared {
         update: LocalCompilerEmbeddingTransition,
         cancelled: Arc<AtomicBool>,
         deadline: Instant,
-        sequence: u64,
+        reservation: Arc<EmbeddingRefreshReservation>,
         authority: EmbeddingTransitionAuthority,
     ) -> Result<PendingLocalCompilerEmbeddingTransition, LocalCompilerEmbeddingTransitionError>
     {
@@ -4244,8 +4268,7 @@ impl RuntimeShared {
             .requests
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let admitted =
-            matches!(&*admission, RequestAdmissions::Refreshing(held) if *held == sequence);
+        let admitted = matches!(&*admission, RequestAdmissions::Refreshing(held) if *held == reservation.sequence);
         if !admitted {
             return Err(LocalCompilerEmbeddingTransitionError::Busy);
         }
@@ -4257,7 +4280,10 @@ impl RuntimeShared {
         let command = RuntimeCommand::EmbeddingTransition(Box::new(EmbeddingTransitionCommand {
             authority,
             update,
-            response,
+            response: EmbeddingTransitionReply {
+                sender: response,
+                reservation,
+            },
             cancelled: Arc::clone(&cancelled),
             deadline,
         }));
@@ -4266,8 +4292,6 @@ impl RuntimeShared {
                 returned,
                 cancelled,
                 deadline,
-                #[cfg(test)]
-                _fixture_admission: None,
             }),
             Err(TrySendError::Full(_)) => Err(LocalCompilerEmbeddingTransitionError::QueueFull),
             Err(TrySendError::Disconnected(_)) => {
@@ -4282,7 +4306,7 @@ impl Drop for RuntimeShared {
         self.cancelled.store(true, Ordering::Release);
         for token in self
             .requests
-            .get_mut()
+            .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
         {
@@ -4694,19 +4718,24 @@ fn retire_embedding_generation(
         .map(|runtime| runtime.memory_budget().clone());
     drop(configuration.embedding_cache_session.take());
     drop(configuration.embedding_runtime.take());
-    *capability_signal
-        .lock
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-        LocalCompilerGenerationState::Retired(desired);
-    capability_signal.changed.notify_all();
     let mut retired = LocalCompilerEmbeddingReceipt {
         configuration: desired,
         phase: LocalCompilerEmbeddingPhase::Retired {
             account: account.clone(),
         },
     };
-    let _ = command.response.send(Ok(retired.clone()));
+    {
+        let mut generation = capability_signal
+            .lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *generation = LocalCompilerGenerationState::Retired(desired);
+        // The old generation actually joined. Complete the bounded affine reply
+        // before publishing this state to another admission caller. Do not hold
+        // this accepted reservation in the actor's indefinite retired wait loop.
+        let _ = command.response.send(Ok(retired.clone()));
+    }
+    capability_signal.changed.notify_all();
     // Accepted retirement remains owned here after observer loss. Neither an absent runtime
     // nor a numeric credit count is advertised as a new usable compiler generation.
     loop {
@@ -4744,13 +4773,15 @@ fn retire_embedding_generation(
                     }
                     desired = next.identity();
                     retired.configuration = desired;
-                    *capability_signal
-                        .lock
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                        LocalCompilerGenerationState::Retired(desired);
+                    {
+                        let mut generation = capability_signal
+                            .lock
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        *generation = LocalCompilerGenerationState::Retired(desired);
+                        let _ = command.response.send(Ok(retired.clone()));
+                    }
                     capability_signal.changed.notify_all();
-                    let _ = command.response.send(Ok(retired.clone()));
                     continue;
                 }
                 let requested = match &command.update {
@@ -6835,7 +6866,7 @@ mod request_lease_tests {
             command: None,
             worker: None,
             cancelled: Arc::new(AtomicBool::new(false)),
-            requests: Mutex::new(RequestAdmissions::Serving(HashMap::new())),
+            requests: Arc::new(Mutex::new(RequestAdmissions::Serving(HashMap::new()))),
             next_request: AtomicU64::new(1),
             next_client: AtomicU64::new(1),
             alive: Arc::new(AtomicBool::new(true)),
@@ -6927,6 +6958,286 @@ mod request_lease_tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .is_empty()
         );
+    }
+
+    fn queued_transition_fixture() -> (
+        Arc<RuntimeShared>,
+        LocalCompilerClient,
+        Receiver<RuntimeCommand>,
+    ) {
+        let (send, receive) = sync_channel(1);
+        let mut runtime = shared();
+        runtime.command = Some(send);
+        let shared = Arc::new(runtime);
+        let client = LocalCompilerClient {
+            shared: Arc::clone(&shared),
+            client_id: 7,
+            last_image: Mutex::new(None),
+        };
+        (shared, client, receive)
+    }
+
+    fn captured_transition_fixture(
+        label: &str,
+    ) -> Result<(PathBuf, crate::application::PreparedEmbeddingRuntime), Box<dyn std::error::Error>>
+    {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "nudox-reservation-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))?;
+        }
+        let (path, _) = crate::application::embedding_provision::tests::install_protocol_fixture(
+            &root,
+            EmbeddingRequirement::Required,
+        )?;
+        let flag = AtomicBool::new(false);
+        let control = backend_compile::EmbeddingActivationControl::new(
+            &flag,
+            Instant::now() + Duration::from_secs(5),
+        );
+        let prepared =
+            crate::application::PreparedEmbeddingRuntime::capture_until(&path, &control)?
+                .ok_or("captured config")?;
+        Ok((root, prepared))
+    }
+
+    #[test]
+    fn accepted_transition_keeps_requests_and_new_refresh_closed_after_caller_and_waiter_drop()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (root, prepared) = captured_transition_fixture("queued")?;
+        let (shared, client, actor) = queued_transition_fixture();
+        let admission = client
+            .admit_embedding_refresh_with_authority(EmbeddingTransitionAuthority::CompilerActor)?;
+        let pending = admission.begin_transition(
+            LocalCompilerEmbeddingTransition::Retire {
+                desired: prepared.identity(),
+            },
+            Arc::new(AtomicBool::new(false)),
+            Instant::now() + Duration::from_secs(5),
+        )?;
+        drop(admission);
+        drop(pending);
+        assert!(
+            matches!(
+                &*shared
+                    .capability_signal
+                    .lock
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                LocalCompilerGenerationState::Serving(None)
+            ),
+            "queue acceptance has not yet retired or committed"
+        );
+        assert!(matches!(
+            RequestLease::acquire(&shared, 11, facts()),
+            Err(CompilerTerminal::Runtime {
+                cause: CompilerRuntimeCause::RequestInFlight,
+                ..
+            })
+        ));
+        assert!(matches!(
+            client.admit_embedding_refresh_with_authority(
+                EmbeddingTransitionAuthority::CompilerActor
+            ),
+            Err(LocalCompilerEmbeddingTransitionError::Busy)
+        ));
+        let RuntimeCommand::EmbeddingTransition(command) = actor.recv()? else {
+            return Err("accepted transition command".into());
+        };
+        assert!(
+            matches!(
+                RequestLease::acquire(&shared, 11, facts()),
+                Err(CompilerTerminal::Runtime {
+                    cause: CompilerRuntimeCause::RequestInFlight,
+                    ..
+                })
+            ),
+            "actor dequeue alone cannot release the reservation"
+        );
+        assert!(matches!(
+            client.admit_embedding_refresh_with_authority(
+                EmbeddingTransitionAuthority::CompilerActor
+            ),
+            Err(LocalCompilerEmbeddingTransitionError::Busy)
+        ));
+        let _ = command
+            .response
+            .send(Err(LocalCompilerEmbeddingTransitionError::Busy));
+        lease(&shared, Arc::new(AtomicBool::new(false))).complete(());
+        drop(client);
+        drop(shared);
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn refused_transition_send_preserves_original_gate_and_has_no_actor_reservation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (root, prepared) = captured_transition_fixture("refused-send")?;
+        for disconnected in [false, true] {
+            let (shared, client, actor) = queued_transition_fixture();
+            if disconnected {
+                drop(actor);
+            } else {
+                shared
+                    .command
+                    .as_ref()
+                    .ok_or("sender")?
+                    .send(RuntimeCommand::Compile {
+                        request: OwnedCompilerRequest::Generate {
+                            profile: facts().profile,
+                            stage: facts().stage,
+                            source: "int value;".into(),
+                        },
+                        response: sync_channel(1).0,
+                        cancelled: Arc::new(AtomicBool::new(false)),
+                    })
+                    .map_err(|_| "fill bounded command queue")?;
+                // Keep the original queued work and receiver alive through the refused send.
+                let admission = client.admit_embedding_refresh_with_authority(
+                    EmbeddingTransitionAuthority::CompilerActor,
+                )?;
+                assert!(matches!(
+                    admission.begin_transition(
+                        LocalCompilerEmbeddingTransition::Retire {
+                            desired: prepared.identity()
+                        },
+                        Arc::new(AtomicBool::new(false)),
+                        Instant::now() + Duration::from_secs(5)
+                    ),
+                    Err(LocalCompilerEmbeddingTransitionError::QueueFull)
+                ));
+                assert_eq!(
+                    Arc::strong_count(&admission.reservation),
+                    1,
+                    "no accepted actor clone after refused try_send"
+                );
+                assert!(matches!(
+                    &*shared
+                        .capability_signal
+                        .lock
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                    LocalCompilerGenerationState::Serving(None)
+                ));
+                assert!(matches!(
+                    RequestLease::acquire(&shared, 11, facts()),
+                    Err(CompilerTerminal::Runtime {
+                        cause: CompilerRuntimeCause::RequestInFlight,
+                        ..
+                    })
+                ));
+                drop(admission);
+                lease(&shared, Arc::new(AtomicBool::new(false))).complete(());
+                assert!(
+                    matches!(actor.recv()?, RuntimeCommand::Compile { .. }),
+                    "refused refresh did not replace queued work"
+                );
+                assert!(matches!(
+                    actor.try_recv(),
+                    Err(std::sync::mpsc::TryRecvError::Empty)
+                ));
+                continue;
+            }
+            let admission = client.admit_embedding_refresh_with_authority(
+                EmbeddingTransitionAuthority::CompilerActor,
+            )?;
+            assert!(matches!(
+                admission.begin_transition(
+                    LocalCompilerEmbeddingTransition::Retire {
+                        desired: prepared.identity()
+                    },
+                    Arc::new(AtomicBool::new(false)),
+                    Instant::now() + Duration::from_secs(5)
+                ),
+                Err(LocalCompilerEmbeddingTransitionError::OwnerStopped)
+            ));
+            assert_eq!(Arc::strong_count(&admission.reservation), 1);
+            assert!(matches!(
+                &*shared
+                    .capability_signal
+                    .lock
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                LocalCompilerGenerationState::Serving(None)
+            ));
+            drop(admission);
+            lease(&shared, Arc::new(AtomicBool::new(false))).complete(());
+        }
+        std::fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn accepted_reservation_survives_into_commit_without_retaining_runtime_shared()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (root, prepared) = captured_transition_fixture("commit-ownership")?;
+        let (shared, client, actor) = queued_transition_fixture();
+        let admission = client
+            .admit_embedding_refresh_with_authority(EmbeddingTransitionAuthority::CompilerActor)?;
+        let pending = admission.begin_transition(
+            LocalCompilerEmbeddingTransition::Retire {
+                desired: prepared.identity(),
+            },
+            Arc::new(AtomicBool::new(false)),
+            Instant::now() + Duration::from_secs(5),
+        )?;
+        let RuntimeCommand::EmbeddingTransition(command) = actor.recv()? else {
+            return Err("accepted command".into());
+        };
+        let response = command.response;
+        let acknowledgement = RuntimeGenerationAcknowledgement::Embedding {
+            authority: command.authority,
+            response,
+            receipt: LocalCompilerEmbeddingReceipt {
+                configuration: prepared.identity(),
+                phase: LocalCompilerEmbeddingPhase::Unavailable {
+                    cause: EmbeddingProvisioningFailure::ActivationRejected,
+                },
+            },
+            configuration: prepared.configuration_witness(),
+            cancelled: command.cancelled,
+            deadline: command.deadline,
+        };
+        drop(admission);
+        drop(pending);
+        assert_eq!(
+            Arc::strong_count(&shared),
+            2,
+            "accepted actor/ack holds the request mutex, not RuntimeShared"
+        );
+        assert!(matches!(
+            RequestLease::acquire(&shared, 11, facts()),
+            Err(CompilerTerminal::Runtime {
+                cause: CompilerRuntimeCause::RequestInFlight,
+                ..
+            })
+        ));
+        assert!(matches!(
+            client.admit_embedding_refresh_with_authority(
+                EmbeddingTransitionAuthority::CompilerActor
+            ),
+            Err(LocalCompilerEmbeddingTransitionError::Busy)
+        ));
+        acknowledgement
+            .commit(&shared.capability_signal)
+            .map_err(|()| "valid configuration/control acknowledgement refused")?;
+        assert!(
+            matches!(&*shared.capability_signal.lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner), LocalCompilerGenerationState::Serving(Some(receipt)) if receipt.configuration == prepared.identity())
+        );
+        lease(&shared, Arc::new(AtomicBool::new(false))).complete(());
+        drop(client);
+        drop(shared);
+        std::fs::remove_dir_all(root)?;
+        Ok(())
     }
 
     #[test]
