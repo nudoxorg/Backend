@@ -301,7 +301,7 @@ pub(super) fn analyze(
     let read = state.transaction();
     let errors = read.get_config_errors();
     if !errors.is_empty() {
-        let causes = super::super::project_configuration::native_loader_causes(&errors, control)?;
+        let causes = super::project_configuration::native_loader_causes(&errors, control)?;
         return Err(project_error(
             "",
             &format!("native configuration errors: {causes}"),
@@ -1250,7 +1250,7 @@ fn captured_finder(
         config.skip_lsp_config_indexing = true;
         let errors = config.configure();
         if !errors.is_empty() {
-            let causes = super::super::project_configuration::native_loader_causes(&errors, control)?;
+            let causes = super::project_configuration::native_loader_causes(&errors, control)?;
             return Err(project_error(
                 "",
                 &format!("native captured configuration errors: {causes}"),
