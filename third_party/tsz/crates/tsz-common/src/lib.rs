@@ -16,7 +16,7 @@ pub mod id;
 pub mod execution_budget;
 pub use execution_budget::{
     ExecutionCheckpoint, ExecutionWorkMeter, LatchedExecutionCheckpoint, ProjectExecutionBudget,
-    ProjectExecutionEvent, ProjectExecutionFile, ProjectExecutionPhase, ProjectExecutionSpan,
+    ProjectExecutionIdentity, ProjectExecutionEvent, ProjectExecutionFile, ProjectExecutionPhase, ProjectExecutionSpan,
     ProjectExecutionStop, ProjectExecutionTransition,
 };
 

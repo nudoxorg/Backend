@@ -7,6 +7,18 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::time::Instant;
+use std::sync::Arc;
+
+/// Opaque identity for one admitted budget. Retaining the allocation prevents
+/// address reuse after the original budget ends; equality uses allocation
+/// identity rather than matching deadlines, cancellation flags, or allowance.
+#[derive(Clone, Debug)]
+pub struct ProjectExecutionIdentity(Arc<()>);
+
+impl PartialEq for ProjectExecutionIdentity {
+    fn eq(&self, other: &Self) -> bool { Arc::ptr_eq(&self.0, &other.0) }
+}
+impl Eq for ProjectExecutionIdentity {}
 
 /// Borrowed cooperative work checkpoint shared by parser, binder, checker,
 /// and lazy semantic queries.
@@ -18,6 +30,10 @@ pub trait ExecutionCheckpoint: Send + Sync {
     /// polling cancellation, resolving types, or changing semantic state.
     /// Implementations must not re-enter the compiler from this callback.
     fn observe(&self, _event: ProjectExecutionEvent<'_>) {}
+
+    /// Stable admitted-budget identity. Custom unmetered/test checkpoints may
+    /// return `None`; production budget wrappers must forward this value.
+    fn execution_identity(&self) -> Option<ProjectExecutionIdentity> { None }
 }
 
 /// Computation boundaries of one admitted native program. These observations
@@ -192,6 +208,7 @@ impl<'checkpoint> LatchedExecutionCheckpoint<'checkpoint> {
 }
 
 impl ExecutionCheckpoint for LatchedExecutionCheckpoint<'_> {
+    fn execution_identity(&self) -> Option<ProjectExecutionIdentity> { self.source.execution_identity() }
     fn observe(&self, event: ProjectExecutionEvent<'_>) {
         self.source.observe(event);
     }
@@ -275,6 +292,7 @@ pub enum ProjectExecutionStop {
 /// work units and latches the first failure. Once stopped, the owner must not
 /// publish results from this program.
 pub struct ProjectExecutionBudget<'cancel> {
+    execution_identity: ProjectExecutionIdentity,
     deadline: Instant,
     cancelled: &'cancel AtomicBool,
     remaining_work: AtomicU64,
@@ -284,12 +302,13 @@ pub struct ProjectExecutionBudget<'cancel> {
 impl<'cancel> ProjectExecutionBudget<'cancel> {
     /// Creates one bounded program budget.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         deadline: Instant,
         cancelled: &'cancel AtomicBool,
         maximum_work_units: u64,
     ) -> Self {
         Self {
+            execution_identity: ProjectExecutionIdentity(Arc::new(())),
             deadline,
             cancelled,
             remaining_work: AtomicU64::new(maximum_work_units),
@@ -366,6 +385,7 @@ impl<'cancel> ProjectExecutionBudget<'cancel> {
 }
 
 impl ExecutionCheckpoint for ProjectExecutionBudget<'_> {
+    fn execution_identity(&self) -> Option<ProjectExecutionIdentity> { Some(self.execution_identity.clone()) }
     fn checkpoint(&self, work_units: u64) -> Result<(), ProjectExecutionStop> {
         ProjectExecutionBudget::checkpoint(self, work_units)
     }

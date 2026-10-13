@@ -56,6 +56,7 @@ pub use tsz_common::interner::Atom as TszAtom;
 pub use tsz_common::{
     ExecutionCheckpoint as TszExecutionCheckpoint,
     ProjectExecutionBudget as TszProjectExecutionBudget,
+    ProjectExecutionIdentity as TszProjectExecutionIdentity,
     ProjectExecutionEvent as TszProjectExecutionEvent,
     ProjectExecutionPhase as TszProjectExecutionPhase,
     ProjectExecutionStop as TszProjectExecutionStop,

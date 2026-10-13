@@ -4133,3 +4133,60 @@ fn owned_image_rejects_fresh_budget_after_actual_solver_stop() {
     }), Err(ProjectPartitionCheckError::Program(ProjectProgramCheckError::ExecutionStopped(ProjectExecutionStop::Cancelled)))));
     assert_eq!(fresh_budget.stop_reason(), None, "the old image stop must not poll a new lease");
 }
+
+#[test]
+fn owned_image_refuses_another_equivalent_budget_without_poisoning_original_lease() {
+    use tsz_common::ExecutionCheckpoint;
+    let cancelled = AtomicBool::new(false);
+    let first = execution_budget(&cancelled);
+    let other = execution_budget(&cancelled);
+    let first_scope = tsz_common::LatchedExecutionCheckpoint::new(&first);
+    assert_eq!(first.execution_identity(), first_scope.execution_identity());
+    assert_ne!(first.execution_identity(), other.execution_identity());
+    let mut program = compile_files_with_libs(
+        vec![("src/main.ts".into(), "export const value: number = 1;".into())], &[],
+    );
+    program.set_project_module_resolutions_with_execution_checkpoint(&[], &first).unwrap();
+    let image = ProjectCheckerImage::new(program, CheckerOptions::default(), &[], ProjectSemanticOptions::structural(), Some(&first_scope)).unwrap();
+    image.check_fresh(Some(&first)).unwrap();
+    let other_remaining = other.remaining_work_units();
+    assert!(matches!(image.query_session(&other), Err(ProjectCheckerSessionError::ExecutionCheckpointMismatch)));
+    assert!(matches!(image.check_fresh(Some(&other)), Err(ProjectCheckerSessionError::ExecutionCheckpointMismatch)));
+    assert_eq!(other.remaining_work_units(), other_remaining);
+    assert!(image.is_usable(), "wrong lease cannot invalidate an actual checked owner");
+    let session = image.query_session(&first_scope).unwrap();
+    let value = session.with_file_checker(0, |checker, binder, _| {
+        let ty = checker.get_type_of_symbol(binder.file_locals.get("value").unwrap());
+        checker.format_type(ty)
+    }).unwrap();
+    assert_eq!(value, "number");
+    drop(session);
+    cancelled.store(true, Ordering::Release);
+    assert!(matches!(image.query_session(&first), Err(ProjectCheckerSessionError::ExecutionStopped(ProjectExecutionStop::Cancelled))));
+    assert!(matches!(image.query_session(&other), Err(ProjectCheckerSessionError::ExecutionStopped(ProjectExecutionStop::Cancelled))));
+    assert_eq!(other.stop_reason(), None, "poison is reported before identity mismatch or polling a new budget");
+}
+
+#[test]
+fn metered_module_outcomes_stop_before_install_and_keep_exact_negatives() {
+    let mut program = compile_files_with_libs(
+        vec![("src/main.ts".into(), "export const value = 1;".into())], &[],
+    );
+    let request = ProjectModuleResolution {
+        importer_path: "src/main.ts".into(), specifier: "x".repeat(4096),
+        request_kind: ProjectModuleRequestKind::EsmImport, resolution_mode: None,
+        target: ProjectModuleResolutionTarget::Unresolved,
+    };
+    program.set_project_module_resolutions(&[]).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let small = ProjectExecutionBudget::new(Instant::now() + Duration::from_secs(30), &cancelled, 80);
+    assert!(matches!(program.set_project_module_resolutions_with_execution_checkpoint(&[request.clone()], &small),
+        Err(ProjectProgramCheckError::ExecutionStopped(ProjectExecutionStop::WorkBudgetExhausted))));
+    assert!(program.project_module_resolution_outcomes.is_none(), "partial or previous resolution witness must not escape");
+    let complete = execution_budget(&cancelled);
+    program.set_project_module_resolutions_with_execution_checkpoint(&[request.clone()], &complete).unwrap();
+    let exact = program.project_module_resolution_outcomes.as_ref().unwrap();
+    assert_eq!(exact.len(), 1);
+    assert!(matches!(exact.get(&(0, request.specifier, None, crate::checker::context::ResolutionRequestKind::EsmImport)),
+        Some(crate::checker::context::ResolvedModuleRequestOutcome::Unresolved)));
+}

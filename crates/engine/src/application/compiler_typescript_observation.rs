@@ -40,6 +40,10 @@ impl<'cancel> ObservedTypeScriptBudget<'cancel> {
 }
 
 impl TszExecutionCheckpoint for ObservedTypeScriptBudget<'_> {
+    fn execution_identity(&self) -> Option<backend_frontend_typescript::TszProjectExecutionIdentity> {
+        self.budget.execution_identity()
+    }
+
     fn checkpoint(&self, work_units: u64) -> Result<(), TszProjectExecutionStop> {
         // Exactly the same single caller-owned poll/charge as before.
         let result = self.budget.checkpoint(work_units);

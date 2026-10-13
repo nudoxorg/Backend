@@ -167,6 +167,8 @@ pub enum TypeScriptAuthorityFailureKind {
     NativeSessionMissingProjectModuleResolutions,
     /// Native TypeScript checker session selected a file index outside its program.
     NativeSessionFileIndexOutOfRange,
+    /// Native TypeScript warm checker image was used under a different budget.
+    NativeSessionExecutionCheckpointMismatch,
     /// Native TypeScript module resolution contained an invalid normalized path.
     NativeModuleInvalidVirtualPath,
     /// Native TypeScript module resolution contained a duplicate program path.
@@ -355,6 +357,7 @@ impl TypeScriptAuthorityFailureKind {
             Self::NativeProjectCheckModuleDuplicateRequest => {
                 "typescript_native_project_check_module_duplicate_request"
             }
+            Self::NativeSessionExecutionCheckpointMismatch => "typescript_native_session_execution_checkpoint_mismatch",
             Self::NativeSessionCancelled => "typescript_native_session_cancelled",
             Self::NativeSessionDeadline => "typescript_native_session_deadline",
             Self::NativeSessionWorkBudgetExhausted => {
@@ -611,6 +614,7 @@ impl TypeScriptAuthorityFailureKind {
             Self::NativeProjectCheckModuleDuplicateRequest => {
                 "Native TypeScript project checking module resolution contained a duplicate request"
             }
+            Self::NativeSessionExecutionCheckpointMismatch => "Native TypeScript checker image belongs to a different admitted execution budget",
             Self::NativeSessionCancelled => "Native TypeScript checker session was cancelled",
             Self::NativeSessionDeadline => {
                 "Native TypeScript checker session exceeded its admitted deadline"

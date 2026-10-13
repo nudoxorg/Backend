@@ -549,6 +549,7 @@ impl TszProjectAuthority {
                     && current.file_format_digest == file_format_digest
                     && current.library_digest == library_digest
                     && current.program.is_usable()
+                    && current.program.accepts_execution_checkpoint(checkpoint)
             })
             && report.removed_sources == 0
         {
@@ -645,8 +646,16 @@ impl TszProjectAuthority {
             None,
         );
         program.set_project_file_formats(&options.file_formats)?;
-        program.set_project_module_resolutions(&options.module_resolutions)?;
         formats.returned();
+        if let Some(checkpoint) = checkpoint {
+            program.set_project_module_resolutions_with_execution_checkpoint(&options.module_resolutions, checkpoint)
+                .map_err(|error| match error {
+                    tsz::parallel::ProjectProgramCheckError::ModuleResolution(error) => TszAuthorityError::ModuleResolution(error),
+                    stopped => TszAuthorityError::ProjectCheck(stopped),
+                })?;
+        } else {
+            program.set_project_module_resolutions(&options.module_resolutions)?;
+        }
         let partition_failure = |error| match error {
             tsz::parallel::ProjectPartitionCheckError::Program(error) => TszAuthorityError::ProjectCheck(error),
             tsz::parallel::ProjectPartitionCheckError::CheckerSession(error) => TszAuthorityError::ProjectCheckerSession(error),
@@ -672,7 +681,10 @@ impl TszProjectAuthority {
                 TszProjectCheckerExecution { checkpoint: checkpoint.expect("partition checkpoint"), workers: execution.workers },
             ).map_err(partition_failure)?,
             TszUpdateExecution::Fresh(_) | TszUpdateExecution::Unmetered => program.check_fresh(checkpoint)
-                .map_err(|reason| TszAuthorityError::ProjectCheck(tsz::parallel::ProjectProgramCheckError::ExecutionStopped(reason)))?,
+                .map_err(|cause| match cause {
+                    tsz::parallel::ProjectCheckerSessionError::ExecutionStopped(reason) => TszAuthorityError::ProjectCheck(tsz::parallel::ProjectProgramCheckError::ExecutionStopped(reason)),
+                    other => TszAuthorityError::ProjectCheckerSession(other),
+                })?,
         };
         if let Some(checkpoint) = checkpoint {
             checkpoint
@@ -1450,6 +1462,30 @@ mod tests {
         drop(session);
         let repeated = authority.update_with_execution_checkpoint(sources, options(), &[], &fresh_budget).unwrap();
         assert!(repeated.reused_project_result);
+    }
+
+    #[test]
+    fn new_budget_rebuilds_exact_image_and_reuses_source_binds() {
+        let cancelled = AtomicBool::new(false);
+        let first = execution_budget(&cancelled, 1_000_000);
+        let other = execution_budget(&cancelled, 1_000_000);
+        let sources = vec![input("src/value.ts", "export const value: number = 1;")];
+        let mut authority = TszProjectAuthority::new();
+        authority.update_with_execution_checkpoint(sources.clone(), options(), &[], &first).unwrap();
+        assert!(matches!(authority.project().unwrap().checked_query_session(&other), Err(TszProjectQuerySessionError::ExecutionCheckpointMismatch)));
+        assert!(authority.project().is_some(), "wrong caller cannot poison the admitted image");
+        let admitted = authority.update_with_execution_checkpoint(sources.clone(), options(), &[], &other).unwrap();
+        assert_eq!(admitted.parsed_and_bound, 0);
+        assert_eq!(admitted.reused_binds, 1);
+        assert!(!admitted.reused_project_result);
+        let session = authority.project().unwrap().checked_query_session(&other).unwrap();
+        let value = session.with_file_checker_and_types(0, |checker, binder, _, _| {
+            let ty = checker.get_type_of_symbol(binder.file_locals.get("value").unwrap());
+            checker.format_type(ty)
+        }).unwrap();
+        assert_eq!(value, "number");
+        drop(session);
+        assert!(authority.update_with_execution_checkpoint(sources, options(), &[], &other).unwrap().reused_project_result);
     }
 
     #[test]
