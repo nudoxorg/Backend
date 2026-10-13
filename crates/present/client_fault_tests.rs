@@ -267,6 +267,13 @@ fn cancellation_unknown_mutation_and_startup_repair_never_suggest_blind_retry() 
             .sentence()
             .contains("/fixture/replacement.sock")
     );
+    assert_eq!(delivery.unconfirmed_index_delivery(), Some(operation_key));
+    assert_eq!(crate::fault_value(&delivery)["unconfirmed_index_delivery"], serde_json::to_value(operation_key).expect("same saved key"));
+    assert!(delivery.cause().sentence().contains("is unconfirmed"));
+    assert!(delivery.cause().sentence().contains("may already be queued or accepted"));
+    assert!(!delivery.cause().sentence().contains("has no admitted outcome"));
+    assert_eq!(delivery.affordance().tool_call().expect("exact saved-key observation")["arguments"]["operation_key"],
+        serde_json::to_value(operation_key).expect("original key"));
     for error in [
         backend_runtime::RuntimeError::MissingExecutable("/fixture/backend-locald".into()),
         backend_runtime::RuntimeError::InvalidPath("fixture deterministic configuration refusal"),

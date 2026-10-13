@@ -454,6 +454,29 @@ fn journal_start_capability_refuses_foreign_connection_attachment_before_send() 
 }
 
 #[test]
+fn journal_start_retains_admitted_command_refusal_without_delivery_uncertainty() {
+    let fixture = Fixture::new();
+    let sends = Arc::new(AtomicUsize::new(0));
+    let sent = sends.clone();
+    let mut original = session(fixture.paths.endpoint(), move |request| {
+        assert!(matches!(request.command, Command::Surface(SurfaceCommand::IndexOperationStart { .. })));
+        sent.fetch_add(1, Ordering::Relaxed);
+        Ok(ReplyDto::error(request.request_id, "the admitted start was refused"))
+    });
+    let mut recovery = OwnerRecovery::from_connector(
+        fixture.paths.clone(), RequestContext::new(), |_| panic!("refusal cannot reconnect"),
+    );
+    let error = backend_client::index_with_journal_recovery(
+        &fixture.paths, fixture.package.clone(), CompileExecutionIntent::Interactive,
+        |dispatch| recovery.journal(&mut original, dispatch, None),
+    ).expect_err("actual command rejection is retained");
+    assert!(matches!(&error, ClientError::CommandFailed(_)), "{error}");
+    assert_eq!(sends.load(Ordering::Relaxed), 1);
+    assert!(!recovery.used);
+    assert_eq!(fixture.claims().len(), 1, "no durable terminal receipt was invented");
+}
+
+#[test]
 fn replacement_failure_keeps_saved_claim_and_read_recovery_keeps_original_deadline() {
     let fixture = Fixture::new();
     let commands = Arc::new(AtomicUsize::new(0));
@@ -624,6 +647,51 @@ fn replacement_failure_keeps_saved_claim_and_read_recovery_keeps_original_deadli
         fixture.claims()[0]["operation_key"],
         serde_json::to_value(operation_key).expect("original saved key")
     );
+}
+
+/// Scripted Session connectors exercise cancellation of the original request.
+/// The same saved key and deadline survive retries; no mutation is dispatched.
+#[test]
+fn repeated_saved_key_reobservation_stops_on_original_cancellation_without_start() {
+    let fixture = Fixture::new();
+    let key = backend_library::IndexOperationKey::from_bytes([59; 32]).expect("key");
+    let command = SurfaceCommand::IndexOperationStatus { operation_key: key };
+    let reads = Arc::new(AtomicUsize::new(0));
+    let seen = reads.clone();
+    let expected = command.clone();
+    let mut original = session(fixture.paths.endpoint(), move |request| {
+        assert_eq!(request.command, Command::Surface(expected.clone()));
+        seen.fetch_add(1, Ordering::Relaxed);
+        Err(reset())
+    });
+    let wait = RequestContext::new();
+    let deadline = wait.read_deadline(std::time::Duration::from_secs(10)).expect("original deadline");
+    let captured = wait.clone();
+    let connects = Arc::new(AtomicUsize::new(0));
+    let connected = connects.clone();
+    let mut recovery = OwnerRecovery::from_connector(
+        fixture.paths.clone(), RequestContext::new(), move |scope| {
+            assert!(scope.same_request(&captured));
+            assert_eq!(scope.read_deadline(std::time::Duration::from_secs(900)).expect("same deadline"), deadline);
+            if connected.fetch_add(1, Ordering::Relaxed) == 2 {
+                scope.cancel(backend_client::RequestCancellationReason::Explicit);
+                return Err(ClientError::RequestCancelled(backend_client::RequestCancellationReason::Explicit));
+            }
+            let reads = reads.clone();
+            let expected = SurfaceCommand::IndexOperationStatus { operation_key: key };
+            Ok(session(std::path::Path::new("/replacement"), move |request| {
+                assert_eq!(request.command, Command::Surface(expected.clone()));
+                reads.fetch_add(1, Ordering::Relaxed);
+                Err(reset())
+            }))
+        },
+    );
+    assert_eq!(recovery.surface(&mut original, command.clone(), Some(&wait)),
+        Err(ClientError::RequestCancelled(backend_client::RequestCancellationReason::Explicit)));
+    assert_eq!(connects.load(Ordering::Relaxed), 3);
+    assert_eq!(recovery.surface(&mut original, command, Some(&wait)),
+        Err(ClientError::RequestCancelled(backend_client::RequestCancellationReason::Explicit)));
+    assert_eq!(connects.load(Ordering::Relaxed), 3, "cancel cannot authenticate again");
 }
 
 /// Real private Unix transport and the production 256-frame server boundary.

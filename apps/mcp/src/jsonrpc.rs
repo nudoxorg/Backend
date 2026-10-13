@@ -1129,10 +1129,63 @@ impl<P: Product> Server<P> {
                         package,
                         execution_intent,
                     },
-                    None => SurfaceCommand::IndexStart {
-                        package,
-                        execution_intent,
-                    },
+                    None => {
+                        // Default starts share the same saved request claim as
+                        // CLI Add and backend.index, so an active matching
+                        // request is observed rather than queued under a new key.
+                        let reply = self
+                            .product
+                            .index(package.clone(), execution_intent)
+                            .map_err(|error| {
+                                RpcError::from_fault(&Fault::from_client_error(
+                                    &error,
+                                    backend_present::Operand::Text(package.as_str().to_owned()),
+                                ))
+                            })?;
+                        let (observation, started) = match &reply {
+                            SurfaceReply::IndexOperationStarted(observation) => (observation, true),
+                            SurfaceReply::IndexOperationStatus(observation) => (observation, false),
+                            _ => {
+                                return Err(RpcError::tool(
+                                    "default index_start did not return a durable operation receipt",
+                                ));
+                            }
+                        };
+                        let operation_key = match observation {
+                            backend_library::IndexOperationObservation::Known(status) => {
+                                status.operation_key
+                            }
+                            backend_library::IndexOperationObservation::Unknown {
+                                operation_key,
+                            }
+                            | backend_library::IndexOperationObservation::OutsideReceiptWindow {
+                                operation_key,
+                                ..
+                            } => *operation_key,
+                        };
+                        // The shared journal admits the exact canonical tuple;
+                        // retain its returned package instead of reconstructing
+                        // an absolute path from this tool's original spelling.
+                        let command = if started {
+                            let package = match observation {
+                                backend_library::IndexOperationObservation::Known(status) => {
+                                    status.package.clone()
+                                }
+                                _ => package,
+                            };
+                            SurfaceCommand::IndexOperationStart {
+                                operation_key,
+                                package,
+                                execution_intent,
+                            }
+                        } else {
+                            SurfaceCommand::IndexOperationStatus { operation_key }
+                        };
+                        backend_library::admit_surface_reply(&command, &reply).map_err(
+                            |error| RpcError::tool(format!("default index_start receipt: {error}")),
+                        )?;
+                        return self.surface_reply_result(&command, &reply, detail, context);
+                    }
                 }
             }
             INDEX_PROGRESS_TOOL => {
