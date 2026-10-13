@@ -174,6 +174,22 @@ impl Watch {
             .collect();
     }
 
+    /// Compares the dependency set without consuming its observed stamps.
+    /// Duplicate input keys name the same dependency and are counted once.
+    pub(crate) fn watches_keys(&self, keys: &[PageKey]) -> bool {
+        let mut matched = 0;
+        for (index, key) in keys.iter().enumerate() {
+            if keys[..index].contains(key) {
+                continue;
+            }
+            if !self.keys.contains_key(key) {
+                return false;
+            }
+            matched += 1;
+        }
+        matched == self.keys.len()
+    }
+
     /// Returns whether `event` changed a watched slice, recording its stamp.
     pub fn changed(&mut self, store: &DataStore, event: &StoreEvent) -> bool {
         match event {
@@ -2856,6 +2872,31 @@ mod watch_tests {
     use super::*;
     use crate::core::VersionedRoot;
     use gpui::{IntoElement, Render, TestAppContext, Window, div};
+
+    #[test]
+    fn dependency_set_comparison_ignores_duplicates_without_consuming_stamps() {
+        let pages = PageStore::default();
+        let watch = Watch {
+            keys: [PageKey::Health, PageKey::Orbit]
+                .into_iter()
+                .map(|key| {
+                    let stamp = pages.stamp(&key);
+                    (key, stamp)
+                })
+                .collect(),
+            ..Watch::default()
+        };
+        let before = watch.clone();
+        assert!(watch.watches_keys(&[PageKey::Orbit, PageKey::Health]));
+        assert!(watch.watches_keys(&[PageKey::Health, PageKey::Orbit, PageKey::Health]));
+        assert!(!watch.watches_keys(&[PageKey::Health, PageKey::Health]));
+        assert!(!watch.watches_keys(&[PageKey::Health, PageKey::Orbit,
+            PageKey::Browse(crate::model::browse::BrowseKey::FindHome)]));
+        assert!(!watch.watches_keys(&[]));
+        assert_eq!(watch, before, "set comparison must retain every observed stamp");
+        assert!(Watch::default().watches_keys(&[]));
+        assert!(!Watch::default().watches_keys(&[PageKey::Health]));
+    }
 
     /// A region view that renders one page key and the settings branch.
     struct Region {
