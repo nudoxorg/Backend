@@ -1296,6 +1296,7 @@ fn prepare_builtin_view_inner(
             source_target,
             semantic_base,
             semantic_target,
+            capture_target: view_publish::capture_root(&snapshot)?,
         },
         edit,
     );
@@ -1341,6 +1342,7 @@ fn prepare_builtin_view_inner(
         roots: view_publish::PublishedRoots {
             source: source_target,
             semantic: semantic_target,
+            capture: view_publish::capture_root(&snapshot)?,
             activated,
         },
         path: view_publish::PublicationPath::Hydrated { files },
@@ -1370,7 +1372,15 @@ fn prepare_package_view(
     }
     let (initial, _) = initial_view_for_workspace(&snapshot)?;
     let current = preparation.current.clone();
-    if let Some(edit) = edit
+    // A source-only edit may keep the capture root while making its old
+    // publication obsolete. The file splice keeps the package row, so it is
+    // admissible only when that row still has the derived package state.
+    let package_state = coverage::package_row_state(&snapshot, package)?;
+    let same_package_state = current
+        .row_ref(backend_engine::RowId::Package(package))
+        .is_some_and(|row| package_state.is_none_or(|state| row.state == state));
+    if same_package_state
+        && let Some(edit) = edit
         && let Some(changed) = view_publish::changed_structural_files(edit, &sources)
         && let Some(resident) = view_publish::resident_symbols(current.row_refs(), package)
     {
@@ -1532,6 +1542,7 @@ fn package_publication(
         roots: view_publish::PublishedRoots {
             source: source_target,
             semantic: semantic_target,
+            capture: prior.capture,
             activated: prior.activated.clone(),
         },
         path: view_publish::PublicationPath::Package { files },
@@ -1619,6 +1630,7 @@ fn admit_spliced_package(
         roots: view_publish::PublishedRoots {
             source: source_target,
             semantic: semantic_target,
+            capture: view_publish::capture_root(snapshot)?,
             activated,
         },
         path: view_publish::PublicationPath::Package { files },

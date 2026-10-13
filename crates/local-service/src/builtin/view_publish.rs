@@ -22,6 +22,8 @@ pub(super) struct PublishedRoots {
     pub(super) source: [u8; 32],
     /// Selected semantic-publication relation root.
     pub(super) semantic: [u8; 32],
+    /// Authenticated capture companion root; absent only for legacy snapshots.
+    pub(super) capture: Option<[u8; 32]>,
     /// Profiles whose images were actually opened for that view.
     pub(super) activated: super::coverage::ActivatedProfiles,
 }
@@ -60,6 +62,8 @@ pub(super) struct TransitionRoots {
     pub(super) source_base: [u8; 32],
     /// Source relation root selected by this transition.
     pub(super) source_target: [u8; 32],
+    /// Capture companion selected by this transition.
+    pub(super) capture_target: Option<[u8; 32]>,
     /// Semantic relation root before this transition.
     pub(super) semantic_base: [u8; 32],
     /// Semantic relation root selected by this transition.
@@ -100,6 +104,15 @@ pub(super) fn semantic_root(snapshot: &WorkspaceSnapshot) -> Result<[u8; 32], Bu
     relation_root::<BuiltinSemanticRelation>(snapshot, "semantic")
 }
 
+/// Reads the closure-bound companion, never an ambient capture cache.
+pub(super) fn capture_root(
+    snapshot: &WorkspaceSnapshot,
+) -> Result<Option<[u8; 32]>, BuiltinModelError> {
+    backend_engine::builtin::semantic_capture_relation(snapshot)
+        .map(|relation| relation.map(|relation| *relation.root().as_bytes()))
+        .map_err(|error| BuiltinModelError(format!("open capture relation root: {error}")))
+}
+
 fn relation_root<R>(snapshot: &WorkspaceSnapshot, lane: &str) -> Result<[u8; 32], BuiltinModelError>
 where
     R: backend_version::CanonicalRelation,
@@ -119,6 +132,11 @@ pub(super) fn publication_plan(
     let Some(prior) = prior else {
         return PublicationPlan::Hydrate;
     };
+    // A capture transition can change readiness without changing either main
+    // relation. Rebuild against the authenticated companion before reuse.
+    if prior.capture != roots.capture_target {
+        return PublicationPlan::Hydrate;
+    }
     if prior.source == roots.source_target && prior.semantic == roots.semantic_target {
         return PublicationPlan::Reuse;
     }
@@ -160,6 +178,10 @@ fn edit_is_package_local(edit: &BuiltinIntent) -> bool {
         .semantic_changes()
         .iter()
         .all(|change| change.key.package_key() == edit.package)
+        && edit
+            .capture_changes()
+            .iter()
+            .all(|change| change.key.package_key() == edit.package)
 }
 
 /// Loads one project's frontier and batches its sorted source-file keys.
@@ -370,7 +392,7 @@ pub(super) fn changed_structural_files(
     edit: &BuiltinIntent,
     sources: &IndexedSources,
 ) -> Option<BTreeSet<[u8; 32]>> {
-    if !edit.semantic_changes().is_empty() {
+    if !edit.semantic_changes().is_empty() || !edit.capture_changes().is_empty() {
         return None;
     }
     let known = BTreeSet::from_iter(sources.files.iter().map(|(key, _)| *key));
@@ -1208,6 +1230,7 @@ mod tests {
         TransitionRoots {
             source_base: [source_base; 32],
             source_target: [source_target; 32],
+            capture_target: None,
             semantic_base: [semantic_base; 32],
             semantic_target: [semantic_target; 32],
         }
@@ -1217,6 +1240,7 @@ mod tests {
         PublishedRoots {
             source: [source; 32],
             semantic: [semantic; 32],
+            capture: None,
             activated: BTreeSet::new(),
         }
     }
@@ -1287,6 +1311,35 @@ mod tests {
     }
 
     #[test]
+    fn capture_only_transition_cannot_reuse_a_complete_publication_witness() {
+        let prior = witness(1, 2);
+        let mut changed = roots(1, 1, 2, 2);
+        changed.capture_target = Some([3; 32]);
+        assert_eq!(
+            publication_plan(Some(&prior), changed, None),
+            PublicationPlan::Hydrate
+        );
+        let retained = PublishedRoots {
+            capture: Some([3; 32]),
+            ..prior
+        };
+        assert_eq!(
+            publication_plan(Some(&retained), changed, None),
+            PublicationPlan::Reuse
+        );
+        changed.capture_target = Some([4; 32]);
+        assert_eq!(
+            publication_plan(Some(&retained), changed, Some(&local_intent(false))),
+            PublicationPlan::Hydrate
+        );
+        changed.capture_target = None;
+        assert_eq!(
+            publication_plan(Some(&retained), changed, None),
+            PublicationPlan::Hydrate
+        );
+    }
+
+    #[test]
     fn structural_fixture_plans_the_workspace_and_one_package() {
         let (workspace, one) = structural_fixtures(2, 2, 1);
         assert_eq!(workspace.files.len(), 4);
@@ -1308,6 +1361,7 @@ mod tests {
         let prior = PublishedRoots {
             source: source_target,
             semantic: semantic_target,
+            capture: None,
             activated: BTreeSet::new(),
         };
         let plan = publication_plan(
@@ -1317,6 +1371,7 @@ mod tests {
                 source_target,
                 semantic_base,
                 semantic_target,
+                capture_target: None,
             },
             None,
         );
