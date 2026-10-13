@@ -1,5 +1,6 @@
 """Data and filesystem regressions for the Linux installer; no product ELF is faked."""
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -55,6 +56,166 @@ class InstallerMetadataTests(unittest.TestCase):
 
 
 class InstallerFilesystemTests(unittest.TestCase):
+    @staticmethod
+    def _fixture_release(root, source_sha, date):
+        archive = Path(root) / f"{date}-{source_sha[:10]}.tar.gz"
+        files = {
+            "bin/backend-cli": b"fixture cli image",
+            "bin/backend-mcp": b"fixture mcp image",
+            "bin/backend-locald": b"fixture locald image",
+            "README.txt": b"fixture package readme",
+        }
+        build_bytes = json.dumps({"source_sha": source_sha}, sort_keys=True).encode()
+        package_value = {
+            "schema": "nudox.linux-portable-package.v1",
+            "executables": [
+                {"name": name.removeprefix("bin/"), "packaged_path": name,
+                 "packaged_sha256": hashlib.sha256(body).hexdigest()}
+                for name, body in files.items() if name.startswith("bin/")
+            ],
+            "libraries": {},
+        }
+        package_bytes = json.dumps(package_value, sort_keys=True).encode()
+        files["build-manifest.json"] = build_bytes
+        files["packaging-manifest.json"] = package_bytes
+        with tarfile.open(archive, "w:gz") as bundle:
+            root_member = tarfile.TarInfo("nudox-linux-x86_64/")
+            root_member.type = tarfile.DIRTYPE
+            bundle.addfile(root_member)
+            for relative, body in files.items():
+                member = tarfile.TarInfo("nudox-linux-x86_64/" + relative)
+                member.size = len(body)
+                member.mode = 0o755 if relative.startswith("bin/") else 0o644
+                bundle.addfile(member, io.BytesIO(body))
+        entry = {
+            "version": "0.2.0",
+            "tag": f"checkpoint-{date}-{source_sha[:10]}-linux-x64",
+            "source_sha": source_sha,
+            "asset": f"nudox-linux-x86_64-{source_sha[:10]}.tar.gz",
+        }
+        manifest = {
+            "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+            "size_bytes": archive.stat().st_size,
+            "minimum_glibc": "2.17",
+            "build_manifest_sha256": hashlib.sha256(build_bytes).hexdigest(),
+            "packaging_manifest_sha256": hashlib.sha256(package_bytes).hexdigest(),
+        }
+        return entry, manifest, archive
+
+    def _install_fixture_release(self, prefix, entry, manifest, archive):
+        saved_umask = os.umask(0o077)
+        try:
+            with patch.object(installer, "_glibc_version", return_value=(99, 0)), \
+                 patch.object(installer.subprocess, "run", return_value=type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()):
+                installer.install(prefix, entry, manifest, archive)
+        finally:
+            os.umask(saved_umask)
+
+    def _run_channel_main(self, prefix, entry, manifest, *, download_archive):
+        from types import SimpleNamespace
+        with patch.object(installer.sys, "platform", "linux"), \
+             patch.object(installer.os, "uname", return_value=SimpleNamespace(machine="x86_64")), \
+             patch.object(installer, "load_release", return_value=(entry, manifest, "https://example.invalid/archive")), \
+             patch.object(installer, "download_archive", side_effect=download_archive) as download, \
+             patch.object(installer, "_glibc_version", return_value=(99, 0)), \
+             patch.object(installer.subprocess, "run", return_value=type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()):
+            result = installer.main(["--prefix", str(prefix)])
+        return result, download
+
+    def test_channel_rerun_skips_archive_only_after_receipt_and_file_recheck(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            prefix = root / "prefix"
+            entry, manifest, archive = self._fixture_release(root, "a" * 40, "20261013")
+            self._install_fixture_release(prefix, entry, manifest, archive)
+            current = prefix / "lib/nudox/current"
+            before_target = os.readlink(current)
+            marker_path = current.resolve() / ".installed-release.json"
+            before_marker = marker_path.read_bytes()
+
+            result, download = self._run_channel_main(
+                prefix, entry, manifest,
+                download_archive=AssertionError("verified same-release rerun downloaded its archive"),
+            )
+
+            self.assertEqual(result, 0)
+            download.assert_not_called()
+            self.assertEqual(os.readlink(current), before_target)
+            self.assertEqual(marker_path.read_bytes(), before_marker)
+            for name in installer.command_links(prefix / "lib/nudox"):
+                self.assertTrue((prefix / "bin" / name).is_symlink())
+
+    def test_tampered_required_files_and_metadata_refuse_reuse_before_download(self):
+        for relative in ("bin/backend-cli", "bin/backend-mcp", "bin/backend-locald",
+                         "build-manifest.json", "packaging-manifest.json"):
+            with self.subTest(relative=relative), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory).resolve()
+                prefix = root / "prefix"
+                entry, manifest, archive = self._fixture_release(root, "a" * 40, "20261013")
+                self._install_fixture_release(prefix, entry, manifest, archive)
+                current = prefix / "lib/nudox/current"
+                before_target = os.readlink(current)
+                marker_path = current.resolve() / ".installed-release.json"
+                before_marker = marker_path.read_bytes()
+                payload = current.resolve().joinpath(*relative.split("/"))
+                payload.write_bytes(payload.read_bytes() + b" tampered")
+
+                with self.assertRaisesRegex(installer.InstallError, "integrity/startup recheck"):
+                    self._run_channel_main(
+                        prefix, entry, manifest,
+                        download_archive=AssertionError("tampered installed package was redownloaded"),
+                    )
+
+                self.assertEqual(os.readlink(current), before_target)
+                self.assertEqual(marker_path.read_bytes(), before_marker)
+
+    def test_update_and_archive_failure_keep_the_existing_release_atomic(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            prefix = root / "prefix"
+            old_entry, old_manifest, old_archive = self._fixture_release(root, "a" * 40, "20261010")
+            self._install_fixture_release(prefix, old_entry, old_manifest, old_archive)
+            current = prefix / "lib/nudox/current"
+            before_target = os.readlink(current)
+            before_marker = (current.resolve() / ".installed-release.json").read_bytes()
+            new_entry, new_manifest, new_archive = self._fixture_release(root, "b" * 40, "20261013")
+
+            with self.assertRaisesRegex(installer.InstallError, "archive SHA-256 mismatch"):
+                self._run_channel_main(
+                    prefix, new_entry, new_manifest,
+                    download_archive=installer.InstallError("archive SHA-256 mismatch"),
+                )
+            self.assertEqual(os.readlink(current), before_target)
+            self.assertEqual((current.resolve() / ".installed-release.json").read_bytes(), before_marker)
+            self.assertFalse((prefix / "lib/nudox/versions" / new_entry["tag"]).exists())
+            versions = prefix / "lib/nudox/versions"
+            self.assertEqual(list(versions.glob(".staging-*")), [])
+
+            def deliver_corrupt_archive(_url, _digest, _size, destination):
+                Path(destination).write_bytes(b"not a gzip archive")
+
+            with self.assertRaisesRegex(installer.InstallError, "could not safely extract release archive"):
+                self._run_channel_main(
+                    prefix, new_entry, new_manifest,
+                    download_archive=deliver_corrupt_archive,
+                )
+            self.assertEqual(os.readlink(current), before_target)
+            self.assertEqual((current.resolve() / ".installed-release.json").read_bytes(), before_marker)
+            self.assertFalse((versions / new_entry["tag"]).exists())
+            self.assertEqual(list(versions.glob(".staging-*")), [])
+
+            def deliver_fixture(_url, _digest, _size, destination):
+                Path(destination).write_bytes(new_archive.read_bytes())
+
+            result, download = self._run_channel_main(
+                prefix, new_entry, new_manifest, download_archive=deliver_fixture,
+            )
+            self.assertEqual(result, 0)
+            download.assert_called_once()
+            self.assertNotEqual(os.readlink(current), before_target)
+            self.assertEqual(os.readlink(current), "versions/" + new_entry["tag"])
+            self.assertTrue((prefix / "lib/nudox/versions" / old_entry["tag"]).is_dir())
+
     @staticmethod
     def _sdk_fixture(root):
         contents = {
