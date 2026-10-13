@@ -90,6 +90,17 @@ class _LinuxProcStat:
 # Linux include/linux/sched.h: PF_KTHREAD.  This is kernel-provided stat data,
 # not a command-name or parent-process heuristic.
 _LINUX_PF_KTHREAD = 0x00200000
+_LINUX_TERMINAL_STATES = frozenset({"Z", "X", "x"})
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _LinuxTerminalProcRow:
+    pid: int
+    start_ticks: str
+    state: str
+    ppid: int
+    pgid: int
+    session: int
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -125,6 +136,7 @@ class _LinuxProcCapture:
     first: _LinuxProcStat
     last: _LinuxProcStat
     value: Any
+    terminal_row: _LinuxTerminalProcRow | None = None
 
 
 class _LinuxProcDirectory:
@@ -257,8 +269,9 @@ def _capture_linux_proc_pid(
     """Capture one proc row; tolerate only exits proved by its own pidfd.
 
     The pidfd is opened before resolving /proc/PID, then the directory identity
-    is read twice before payload access. A missing field is an exit only if
-    that pidfd is readable and a final proc read is absent or terminal;
+    is read twice before payload access. A stable terminal row is returned as
+    a proc observation, not as a pidfd exit proof. A missing field is an exit
+    only if that pidfd is readable and a final proc read is absent or terminal;
     permission errors, live ENOENTs, and start-time changes remain hard races.
     """
     try:
@@ -267,14 +280,28 @@ def _capture_linux_proc_pid(
             # has already opened the pidfd before its /proc/PID directory.
             proc.pin_pidfd()
             first = proc.read_stat()
-            if proc.pidfd_ready() is True:
-                # Since pidfd_open precedes the proc path lookup, an already
-                # ready descriptor cannot be tied to this first stat row: the
-                # PID may have been recycled between those operations.
-                raise _LinuxProcRace(errno.ESTALE, "pidfd-ready-before-first-identity")
             pinned = proc.read_stat()
             if first.start_ticks != pinned.start_ticks:
                 raise _LinuxProcRace(errno.ESTALE, "pid-start-changed-while-pinning")
+            if first.state in _LINUX_TERMINAL_STATES and pinned.state in _LINUX_TERMINAL_STATES:
+                # The held proc directory and matching start ticks identify a
+                # stable terminal row. Do not call this an exit of the task
+                # behind pidfd: that descriptor may already refer to a reaped
+                # task while this PID path names a later terminal task.
+                terminal = _LinuxTerminalProcRow(
+                    pid=pid,
+                    start_ticks=pinned.start_ticks,
+                    state=pinned.state,
+                    ppid=pinned.ppid,
+                    pgid=pinned.pgid,
+                    session=pinned.session,
+                )
+                return _LinuxProcCapture(first=first, last=pinned, value=None, terminal_row=terminal)
+            if proc.pidfd_ready() is True:
+                # Since pidfd_open precedes the proc path lookup, an already
+                # ready descriptor cannot be tied to this live stat row: the
+                # PID may have been recycled between those operations.
+                raise _LinuxProcRace(errno.ESTALE, "pidfd-ready-before-first-identity")
 
             def exited(
                 missing_path: str | None,
@@ -309,7 +336,7 @@ def _capture_linux_proc_pid(
                     last = None
                 if last is not None and last.start_ticks != first.start_ticks:
                     raise _LinuxProcRace(errno.ESTALE, "pid-start-changed-after-pidfd-exit") from error
-                if last is not None and last.state not in {"Z", "X", "x"}:
+                if last is not None and last.state not in _LINUX_TERMINAL_STATES:
                     raise _LinuxProcRace(errno.ESTALE, "pidfd-ready-for-active-proc-row") from error
                 return exited(getattr(error, "filename", None), last)
 
@@ -321,14 +348,14 @@ def _capture_linux_proc_pid(
             if last.start_ticks != first.start_ticks:
                 raise _LinuxProcRace(errno.ESTALE, "pid-start-changed-during-proc-read")
             if proc.pidfd_ready() is True:
-                if last.state not in {"Z", "X", "x"}:
+                if last.state not in _LINUX_TERMINAL_STATES:
                     try:
                         observed = proc.read_stat()
                     except (FileNotFoundError, ProcessLookupError):
                         observed = None
                     if observed is not None and observed.start_ticks != first.start_ticks:
                         raise _LinuxProcRace(errno.ESTALE, "pid-start-changed-after-pidfd-exit")
-                    if observed is not None and observed.state not in {"Z", "X", "x"}:
+                    if observed is not None and observed.state not in _LINUX_TERMINAL_STATES:
                         raise _LinuxProcRace(errno.ESTALE, "pidfd-ready-for-active-proc-row")
                     last = observed
                 raise exited(None, last)
@@ -362,6 +389,17 @@ def _capture_gui_supervisor_process(
         capture = _capture_linux_proc_pid(pid, read_fields, proc_factory=proc_factory)
     except _LinuxProcessExitedDuringRead as stopped:
         return None, stopped.proof
+    if capture.terminal_row is not None:
+        terminal = capture.terminal_row
+        return {
+            "pid": terminal.pid,
+            "state": terminal.state,
+            "ppid": terminal.ppid,
+            "pgid": terminal.pgid,
+            "sid": terminal.session,
+            "start": int(terminal.start_ticks),
+            "terminal_proc_observation": True,
+        }, None
     row = {
         "pid": pid,
         "state": capture.last.state,
@@ -1106,7 +1144,7 @@ def _linux_process_record(
     argv_budget: _ArgvBudget,
     *,
     proc_factory: Any = _LinuxProcDirectory,
-) -> ProcessRecord | _LinuxKernelThreadWithoutExecutable | None:
+) -> ProcessRecord | _LinuxKernelThreadWithoutExecutable | _LinuxTerminalProcRow | None:
     def read_process(proc: _LinuxProcDirectory, stat: _LinuxProcStat) -> dict[str, Any] | None:
         process_uids = _parse_proc_status_uids(proc.read_text("status"))
         if row.effective_uid is not None and process_uids[1] != row.effective_uid:
@@ -1163,6 +1201,8 @@ def _linux_process_record(
         }
 
     capture = _capture_linux_proc_pid(row.pid, read_process, proc_factory=proc_factory)
+    if capture.terminal_row is not None:
+        return capture.terminal_row
     if capture.value is None:
         return None
     details = capture.value
@@ -1275,7 +1315,7 @@ def _linux_processes(
             continue
         try:
             record = _linux_process_record(row, boot_id, argv_budget, proc_factory=proc_factory)
-            if isinstance(record, _LinuxKernelThreadWithoutExecutable):
+            if isinstance(record, (_LinuxKernelThreadWithoutExecutable, _LinuxTerminalProcRow)):
                 continue
             if record is not None:
                 records[row.pid] = record
