@@ -1395,7 +1395,8 @@ mod tests {
         let ceiling = backend_present::DEFAULT_RESPONSE_BUDGET_BYTES;
         let mut padding = ceiling - 512;
         for _ in 0..8 {
-            boundary["result"]["payload"] = json!("p".repeat(padding));
+            // Token-admissible padding isolates the exact HTTP byte ceiling.
+            boundary["result"]["payload"] = json!(" ".repeat(padding));
             let size = encode_response(boundary.clone(), ResponseTransport::HttpBody)
                 .expect("boundary body")
                 .len();
@@ -1434,6 +1435,10 @@ mod tests {
             );
             let emitted = assert_http_body_accounting(body.as_bytes());
             assert_eq!(emitted["id"], reply["id"]);
+            if reply["result"].get("payload").is_some() {
+                assert_eq!(body.len(), ceiling, "exact boundary reaches the HTTP wire");
+                assert_eq!(emitted["result"]["payload"], reply["result"]["payload"]);
+            }
             if reply["result"].get("structuredContent").is_some() {
                 assert_eq!(emitted["result"]["structuredContent"], structured);
                 assert_eq!(emitted["result"]["isError"], reply["result"]["isError"]);
