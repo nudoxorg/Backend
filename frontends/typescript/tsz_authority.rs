@@ -1385,9 +1385,18 @@ mod tests {
         let run = |erasable| {
             let mut authority = TszProjectAuthority::new();
             let mut policy = options();
-            policy.checker = checker_options_from_compiler_api_json(&format!(
-                r#"{{"compilerOptions":{{"target":"ES2022","module":"ESNext","noLib":true,"erasableSyntaxOnly":{erasable}}}}"#
-            )).expect("checker options");
+            policy.checker = checker_options_from_compiler_api_json(
+                &serde_json::json!({
+                    "compilerOptions": {
+                        "target": "ES2022",
+                        "module": "ESNext",
+                        "noLib": true,
+                        "erasableSyntaxOnly": erasable
+                    }
+                })
+                .to_string(),
+            )
+            .expect("checker options");
             authority
                 .update(
                     vec![input("src/value.ts", "export enum Value { A, B }")],
