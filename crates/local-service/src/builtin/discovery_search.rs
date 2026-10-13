@@ -1738,6 +1738,7 @@ impl LineageSearchIndex {
             advisories,
             generic,
             substring_generic: false,
+            exclude_coordinate_substring: false,
             lineage_group: None,
             standing: SearchStandingEvidence::Unknown,
         };
@@ -3119,13 +3120,14 @@ impl LocalDeclarationSearchIndex {
             return Ok(());
         }
         let name = row.label.rsplit("::").next().unwrap_or(&row.label);
-        let content = local_search_content(row);
-        inner.replace_document(
+        inner.remove_document(&identity);
+        inner.insert_document(
             identity,
             row.id,
             row.label.as_str(),
             name,
-            content.iter().copied(),
+            local_search_text(row),
+            None,
             local_sort_key(row.id, row.label.as_str()),
         )
     }
@@ -3143,13 +3145,15 @@ impl LocalDeclarationSearchIndex {
             .filter(|row| matches!(row.id, RowId::Symbol(_)))
         {
             let name = row.label.rsplit("::").next().unwrap_or(&row.label);
-            let content = local_search_content(row);
-            inner.add_document(
+            let sort_key = local_sort_key(row.id, row.label.as_str());
+            inner.insert_document(
+                sort_key.clone(),
                 row.id,
                 row.label.as_str(),
                 name,
-                content.iter().copied(),
-                local_sort_key(row.id, row.label.as_str()),
+                local_search_text(row),
+                None,
+                sort_key,
             )?;
         }
         inner.commit()?;
@@ -3180,6 +3184,15 @@ fn local_search_content(row: &Row) -> Vec<&str> {
         }
     }
     content
+}
+
+fn local_search_text(row: &Row) -> SearchDocumentText<'_> {
+    SearchDocumentText {
+        generic: local_search_content(row),
+        substring_generic: true,
+        exclude_coordinate_substring: true,
+        ..SearchDocumentText::default()
+    }
 }
 
 pub(super) struct TextSearchIndex<K> {
@@ -3343,6 +3356,9 @@ pub(super) struct SearchDocumentText<'a> {
     /// Whether legacy free-text content should participate in substring rank.
     /// Typed metadata and forge pins use token matching instead.
     pub(super) substring_generic: bool,
+    /// Keep exact/prefix coordinate lookup while excluding inherited project
+    /// paths from ordinary local declaration substring queries.
+    pub(super) exclude_coordinate_substring: bool,
     pub(super) aliases: SearchTextFacet<'a>,
     pub(super) keywords: SearchTextFacet<'a>,
     pub(super) descriptions: SearchTextFacet<'a>,
@@ -4640,6 +4656,7 @@ fn discovery_search_text(metadata: &DiscoveryMetadata) -> SearchDocumentText<'_>
         coordinate_variants: Vec::new(),
         generic,
         substring_generic: false,
+        exclude_coordinate_substring: false,
         aliases: search_text_facet(&metadata.aliases, aliases),
         keywords,
         descriptions,
@@ -5033,8 +5050,11 @@ impl<K: Clone> TextSearchIndex<K> {
         let name = normalize(name);
         let standing = search_text.standing;
         let generic = search_text.generic;
-        let mut substring_fields = vec![coordinate.as_str()];
-        substring_fields.extend(search_text.coordinate_variants.iter().copied());
+        let mut substring_fields = Vec::new();
+        if !search_text.exclude_coordinate_substring {
+            substring_fields.push(coordinate.as_str());
+            substring_fields.extend(search_text.coordinate_variants.iter().copied());
+        }
         substring_fields.push(name.as_str());
         if search_text.substring_generic {
             substring_fields.extend(generic.iter().copied());
@@ -9284,6 +9304,84 @@ mod tests {
         assert_eq!(
             hit_keys(index.page("newneedle", 8).expect("incremental result").hits),
             hit_keys(cold.page("newneedle", 8).expect("cold result").hits)
+        );
+    }
+
+    #[test]
+    fn httpie_local_name_search_does_not_expand_the_inherited_project_path() {
+        let (base, _) = super::super::initial_view().expect("initial view");
+        let project = "/root/sol61-python-go-acceptance-20261013/sources/httpie";
+        let parser = format!("{project}::semantic::parser::HTTPieArgumentParser");
+        let imported = format!("{project}::external::symbol:imported::httpie");
+        let parse_args = format!("{project}::semantic::parse-args::parse_args");
+        let mut labels = vec![parser.clone(), imported.clone(), parse_args.clone()];
+        labels.extend(
+            (0..256).map(|at| format!("{project}::external::symbol:{at:064x}::sleep_{at}")),
+        );
+        let mut changes = labels
+            .iter()
+            .map(|label| {
+                RowChange::Upsert(Box::new(Row::new(
+                    RowId::Symbol(backend_engine::symbol_key(label)),
+                    base.basis(),
+                    label,
+                )))
+            })
+            .collect::<Vec<_>>();
+        changes.sort_by_key(RowChange::id);
+        let prepared = base
+            .prepare(
+                ViewDelta::Patch {
+                    changes: changes.into(),
+                },
+                super::super::test_builtin_view_capability().expect("view capability"),
+            )
+            .expect("prepare HTTPie declarations");
+        let (view, _) = base.commit(prepared).expect("commit HTTPie declarations");
+        let mut local = LocalDeclarationSearchIndex::default();
+        local.sync(&view).expect("local name projection");
+        let first = local
+            .page_after("httpie", 1, None)
+            .expect("first name page");
+        assert!(
+            first.posting_candidates < 16,
+            "project path cannot expand posting work"
+        );
+        let second = local
+            .page_after("httpie", 1, first.continuation.as_ref())
+            .expect("second name page");
+        assert!(second.continuation.is_none());
+        let selected = first
+            .hits
+            .into_iter()
+            .chain(second.hits)
+            .map(|hit| hit.key)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            selected,
+            BTreeSet::from([
+                RowId::Symbol(backend_engine::symbol_key(&parser)),
+                RowId::Symbol(backend_engine::symbol_key(&imported)),
+            ])
+        );
+        assert_eq!(
+            hit_keys(local.page("parse_args", 8).expect("declaration name").hits),
+            [RowId::Symbol(backend_engine::symbol_key(&parse_args))]
+        );
+        for coordinate in &labels {
+            assert_eq!(
+                hit_keys(local.page(coordinate, 8).expect("exact coordinate").hits).first(),
+                Some(&RowId::Symbol(backend_engine::symbol_key(coordinate)))
+            );
+        }
+        let prefix = format!("{project}::semantic::");
+        assert_eq!(
+            local
+                .page(&prefix, 8)
+                .expect("explicit coordinate prefix")
+                .hits
+                .len(),
+            2
         );
     }
 
