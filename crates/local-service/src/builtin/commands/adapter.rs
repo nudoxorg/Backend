@@ -6257,9 +6257,9 @@ fn map_semantic_authority_error(
 #[cfg(test)]
 mod tests {
     use super::{
-        ADD_TARGET_REQUIRED, AddTarget, CommandAdapter, Executed, GraphProjectionStamp, IndexJob,
+        ADD_TARGET_REQUIRED, AddTarget, CommandAdapter, CommandReply, Executed, GraphProjectionStamp, IndexJob,
         IndexJobWork, IndexOperationJournalError, JournalEntry, MAX_WAITING_COMMANDS,
-        PreparedProductSelection, ProductDaemon, ProductSemanticPublicationKey, ResidentCatalog,
+        PreparedProductSelection, ProductDaemon, ProductSemanticPublicationKey, ProfileWorker, ResidentCatalog,
         ResidentDependencies, StoredOperation, StoredOperationState, admitted_project_source_root,
         capture_terminalization_failed, classify_add_target, index_operation_failure,
         index_operation_published_observation, legacy_add_compiler_failure,
