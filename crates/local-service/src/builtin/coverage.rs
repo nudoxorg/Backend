@@ -1,27 +1,14 @@
-//! Honest semantic-lane coverage for the compiled product view.
+//! Coverage of the indexed snapshot and its latest authenticated semantic capture.
 //!
-//! Every surface reads the two non-complete coverage shapes differently.
-//! `Coverage::Partial { .. }` means "work is running right now; wait and ask
-//! again", and `Coverage::Unavailable { .. }` means "this lane will not answer
-//! until the deployment or the source changes". Rendering a terminal semantic
-//! record as a fraction therefore instructs every surface to wait forever: a
-//! selected row is written once as
-//! `ProductSemanticPublicationRecord::Unavailable(SemanticUnavailableReason)`
-//! and nothing in the product ever rewrites it, so a `0/7` derived from those
-//! rows can never advance. There is no timer, retry, or promotion path behind
-//! it. This module therefore partitions selected rows by record variant so a
-//! terminal cause leaves the numerator and the denominator entirely and is
-//! reported as the typed reason it already is.
-//!
-//! The vector produced here is also the vector a health report must carry:
-//! `projection::readiness_certificate` refuses a report whose coverage differs
-//! from the published view root, so the deployment's own embedding terminal is
-//! folded in here rather than injected into the reply on the way out.
+//! Retained generations remain readable after a refused refresh, but cannot
+//! certify that refresh as complete. Optional embedding configuration also
+//! cannot erase a native compiler refusal. No claim here observes filesystem
+//! changes that have not been captured by an indexing operation.
 
 use super::BuiltinModelError;
 use backend_engine::builtin::{
-    ProductSemanticPublicationKey, ProductSemanticPublicationRecord, SemanticPublicationCoverage,
-    SemanticUnavailableReason,
+    ProductSemanticCaptureOutcome, ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
+    SemanticPublicationCoverage, SemanticUnavailableReason, semantic_capture_relation,
 };
 use backend_engine::{Lane, Reason, ViewCoverage, WorkspaceSnapshot};
 use std::collections::BTreeSet;
@@ -59,14 +46,15 @@ impl SemanticDeployment {
 
 /// Counts of selected semantic publication rows, partitioned by record variant.
 ///
-/// Published rows are the only rows that can still move, so they are the only
-/// rows that may appear in a fraction. Terminal rows are retained as one
-/// deterministic reason instead.
+/// Pending captures and complete publications awaiting activation can move.
+/// Partial publications and refused captures are terminal observed results;
+/// they must never produce a fraction that tells the user to wait forever.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct SemanticTally {
     published: u16,
     completed: u16,
     terminal: Option<SemanticUnavailableReason>,
+    incomplete: bool,
 }
 
 /// One exact fault for a selected row count that cannot fit the wire fraction.
@@ -91,6 +79,10 @@ impl SemanticTally {
         }
         match record {
             ProductSemanticPublicationRecord::Published { coverage, .. } => {
+                if matches!(coverage, SemanticPublicationCoverage::Partial(_)) {
+                    self.incomplete = true;
+                    return Ok(());
+                }
                 self.published = self.published.checked_add(1).ok_or_else(count_overflow)?;
                 if matches!(coverage, SemanticPublicationCoverage::Complete)
                     && activated.contains(&(key.package_key(), key.profile()))
@@ -103,12 +95,58 @@ impl SemanticTally {
         Ok(())
     }
 
-    /// Retains the lowest-ordinal terminal reason observed so far.
-    ///
-    /// Several selected rows may disagree. Choosing by the relation's own
-    /// declared discriminant order — `Toolchain`, `ProjectAuthority`,
-    /// `Cancelled`, `Rejected` — makes the reported reason a pure function of
-    /// the relation contents rather than of page or iteration order.
+    /// Folds the latest capture before consulting a retained generation.
+    /// A published capture must name the exact selected publication. Pending
+    /// and failed captures deliberately do not activate their prior generation.
+    pub(super) fn observe_current(
+        &mut self,
+        key: &ProductSemanticPublicationKey,
+        selected: Option<&ProductSemanticPublicationRecord>,
+        outcome: Option<ProductSemanticCaptureOutcome>,
+        activated: &ActivatedProfiles,
+    ) -> Result<(), BuiltinModelError> {
+        if !key.is_selected() {
+            return Ok(());
+        }
+        match outcome {
+            Some(ProductSemanticCaptureOutcome::Pending { .. }) => {
+                self.published = self.published.checked_add(1).ok_or_else(count_overflow)?;
+            }
+            Some(
+                ProductSemanticCaptureOutcome::Failed { reason, .. }
+                | ProductSemanticCaptureOutcome::Unavailable { reason },
+            ) => {
+                // This was an actually requested capture, including when its
+                // compiler/project authority was unavailable. Optional
+                // deployment scope cannot make that request successful.
+                self.incomplete |= !matches!(reason, SemanticUnavailableReason::Cancelled);
+                self.retain_terminal(reason);
+            }
+            Some(ProductSemanticCaptureOutcome::Published { coverage, claim }) => {
+                if selected
+                    != Some(&ProductSemanticPublicationRecord::Published { coverage, claim })
+                {
+                    return Err(BuiltinModelError(
+                        "semantic capture differs from its selected publication".to_owned(),
+                    ));
+                }
+                self.observe(
+                    key,
+                    &ProductSemanticPublicationRecord::Published { coverage, claim },
+                    activated,
+                )?;
+            }
+            None => {
+                if let Some(record) = selected {
+                    self.observe(key, record, activated)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Refused declared scope outranks missing optional configuration, with
+    /// deterministic precedence independent of page or iteration order.
     fn retain_terminal(&mut self, reason: SemanticUnavailableReason) {
         let keep = match self.terminal {
             None => true,
@@ -121,13 +159,28 @@ impl SemanticTally {
 
     /// Renders the tally as the view's coverage vector.
     ///
-    /// The source lane is always complete; only the semantic lane can be
-    /// qualified. In-flight published work outranks every terminal cause
-    /// because that fraction really does advance, and a terminal cause
-    /// outranks a claim of completeness because part of the declared scope was
-    /// never covered.
+    /// Completeness refers to the indexed source inventory. A refused or
+    /// published partial native scope prevents readiness even when another
+    /// profile remains pending. Pending captures retain their exact fraction
+    /// only when no declared native scope has already failed.
     pub(super) fn coverage(self, deployment: SemanticDeployment) -> Vec<ViewCoverage> {
         let mut coverage = vec![ViewCoverage::Complete];
+        let refused = match self.terminal {
+            Some(SemanticUnavailableReason::Rejected) => Some(Reason::Incomplete),
+            Some(SemanticUnavailableReason::Cancelled) => Some(Reason::Cancelled),
+            _ => None,
+        };
+        if let Some(reason) = if self.incomplete {
+            Some(Reason::Incomplete)
+        } else {
+            refused
+        } {
+            coverage.push(ViewCoverage::Unavailable {
+                lane: Lane::Semantic,
+                reason,
+            });
+            return coverage;
+        }
         if self.completed < self.published {
             coverage.push(ViewCoverage::Partial {
                 lane: Lane::Semantic,
@@ -145,24 +198,21 @@ impl SemanticTally {
         coverage
     }
 
-    /// Deployment terminals outrank relation terminals: an absent embedding
-    /// provider disables the whole lane, while a relation terminal disables
-    /// one compilation within it.
+    /// Native outcomes qualify declared scope even without embeddings.
     fn terminal_reason(self, deployment: SemanticDeployment) -> Option<Reason> {
-        match deployment {
-            SemanticDeployment::Unconfigured => Some(Reason::Unconfigured),
-            SemanticDeployment::Configured => self.terminal.map(terminal_reason),
-        }
+        self.terminal.map(terminal_reason).or_else(|| {
+            matches!(deployment, SemanticDeployment::Unconfigured).then_some(Reason::Unconfigured)
+        })
     }
 }
 
-/// Declared discriminant order of the relation's terminal vocabulary.
+/// Deterministic severity of native outcomes, independent of encoding ordinals.
 const fn terminal_rank(reason: SemanticUnavailableReason) -> u8 {
     match reason {
-        SemanticUnavailableReason::Toolchain => 1,
-        SemanticUnavailableReason::ProjectAuthority => 2,
-        SemanticUnavailableReason::Cancelled => 3,
-        SemanticUnavailableReason::Rejected => 4,
+        SemanticUnavailableReason::Rejected => 1,
+        SemanticUnavailableReason::Cancelled => 2,
+        SemanticUnavailableReason::ProjectAuthority => 3,
+        SemanticUnavailableReason::Toolchain => 4,
     }
 }
 
@@ -179,6 +229,121 @@ const fn terminal_reason(reason: SemanticUnavailableReason) -> Reason {
         SemanticUnavailableReason::Cancelled => Reason::Cancelled,
         SemanticUnavailableReason::Rejected => Reason::Incomplete,
     }
+}
+
+/// Package lifecycle from an authenticated observed capture. Readable rows
+/// remain present for every state; this qualifies the latest indexing intent.
+pub(super) fn capture_row_state(
+    outcome: ProductSemanticCaptureOutcome,
+) -> backend_engine::RowState {
+    use backend_engine::RowState;
+    match outcome {
+        ProductSemanticCaptureOutcome::Pending { .. } => RowState::Loading,
+        ProductSemanticCaptureOutcome::Failed { .. }
+        | ProductSemanticCaptureOutcome::Unavailable { .. }
+        | ProductSemanticCaptureOutcome::Published {
+            coverage: SemanticPublicationCoverage::Partial(_),
+            ..
+        } => RowState::Failed,
+        ProductSemanticCaptureOutcome::Published {
+            coverage: SemanticPublicationCoverage::Complete,
+            ..
+        } => RowState::Ready,
+    }
+}
+
+/// Legacy selected evidence, when no current capture exists for that key.
+fn publication_row_state(record: &ProductSemanticPublicationRecord) -> backend_engine::RowState {
+    use backend_engine::RowState;
+    match record {
+        ProductSemanticPublicationRecord::Published {
+            coverage: SemanticPublicationCoverage::Partial(_),
+            ..
+        }
+        | ProductSemanticPublicationRecord::Unavailable(
+            SemanticUnavailableReason::Rejected | SemanticUnavailableReason::Cancelled,
+        ) => RowState::Failed,
+        ProductSemanticPublicationRecord::Published {
+            coverage: SemanticPublicationCoverage::Complete,
+            ..
+        }
+        | ProductSemanticPublicationRecord::Unavailable(
+            SemanticUnavailableReason::Toolchain | SemanticUnavailableReason::ProjectAuthority,
+        ) => RowState::Ready,
+    }
+}
+
+/// Applies package-scoped observations without erasing retained declarations.
+/// Failure dominates pending and ready profiles regardless of relation order.
+pub(super) fn qualify_package_rows(
+    snapshot: &WorkspaceSnapshot,
+    rows: &mut [backend_engine::Row],
+) -> Result<(), BuiltinModelError> {
+    let captures = semantic_capture_relation(snapshot)
+        .map_err(|error| BuiltinModelError(error.to_string()))?;
+    let mut states = std::collections::BTreeMap::new();
+    let mut observed = BTreeSet::new();
+    if let Some(captures) = captures {
+        let mut after = None;
+        loop {
+            let page = captures
+                .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+                .map_err(|error| BuiltinModelError(error.to_string()))?;
+            for (key, capture) in page.entries() {
+                if !key.is_selected() {
+                    continue;
+                }
+                observed.insert(key.clone());
+                let state = capture_row_state(capture.outcome());
+                states
+                    .entry(key.package_key())
+                    .and_modify(|current: &mut backend_engine::RowState| {
+                        *current = (*current).max(state);
+                    })
+                    .or_insert(state);
+            }
+            let Some(next) = page.next().cloned() else {
+                break;
+            };
+            after = Some(next);
+        }
+    }
+    // Legacy selected publications have no companion. Preserve their native
+    // refusal/partial scope too, while optional missing authority remains an
+    // ordinary configuration gap until an actual capture requests that scope.
+    let relation = snapshot
+        .relation::<super::BuiltinSemanticRelation>()
+        .map_err(|error| BuiltinModelError(error.to_string()))?;
+    let mut after = None;
+    loop {
+        let page = relation
+            .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+            .map_err(|error| BuiltinModelError(error.to_string()))?;
+        for (key, record) in page.entries() {
+            if !key.is_selected() || observed.contains(key) {
+                continue;
+            }
+            let state = publication_row_state(record);
+            states
+                .entry(key.package_key())
+                .and_modify(|current: &mut backend_engine::RowState| {
+                    *current = (*current).max(state)
+                })
+                .or_insert(state);
+        }
+        let Some(next) = page.next().cloned() else {
+            break;
+        };
+        after = Some(next);
+    }
+    for row in rows {
+        if let backend_engine::RowId::Package(package) = row.id {
+            if let Some(state) = states.get(&package) {
+                row.state = *state;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Returns whether one coverage entry qualifies the semantic lane.
@@ -232,6 +397,8 @@ pub(super) fn view_coverage(
     let relation = snapshot
         .relation::<super::BuiltinSemanticRelation>()
         .map_err(|error| BuiltinModelError(error.to_string()))?;
+    let captures = semantic_capture_relation(snapshot)
+        .map_err(|error| BuiltinModelError(error.to_string()))?;
     let mut tally = SemanticTally::default();
     let mut after = None;
     loop {
@@ -239,12 +406,51 @@ pub(super) fn view_coverage(
             .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
             .map_err(|error| BuiltinModelError(error.to_string()))?;
         for (key, record) in page.entries() {
-            tally.observe(key, record, activated)?;
+            if !key.is_selected() {
+                continue;
+            }
+            let capture = captures
+                .as_ref()
+                .map(|captures| captures.lookup(key))
+                .transpose()
+                .map_err(|error| BuiltinModelError(error.to_string()))?
+                .flatten();
+            tally.observe_current(
+                key,
+                Some(record),
+                capture.as_ref().map(|record| record.outcome()),
+                activated,
+            )?;
         }
         let Some(next) = page.next().cloned() else {
             break;
         };
         after = Some(next);
+    }
+    // A first source-first capture may precede any selected generation.
+    // Include that requested scope without counting selected rows twice.
+    if let Some(captures) = captures {
+        let mut after = None;
+        loop {
+            let page = captures
+                .page(after.as_ref(), backend_engine::MAX_SNAPSHOT_PAGE_ROWS)
+                .map_err(|error| BuiltinModelError(error.to_string()))?;
+            for (key, capture) in page.entries() {
+                if !key.is_selected() {
+                    continue;
+                }
+                let selected = relation
+                    .lookup(key)
+                    .map_err(|error| BuiltinModelError(error.to_string()))?;
+                if selected.is_none() {
+                    tally.observe_current(key, None, Some(capture.outcome()), activated)?;
+                }
+            }
+            let Some(next) = page.next().cloned() else {
+                break;
+            };
+            after = Some(next);
+        }
     }
     Ok(tally.coverage(deployment))
 }

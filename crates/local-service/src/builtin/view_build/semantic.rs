@@ -122,7 +122,8 @@ pub(crate) fn rows_for_indexed_sources(
     }
     let mut ledger = semantics.ledger;
     ledger.extend(projection.take_ledger());
-    let rows = projection.finish(semantics.rows)?;
+    let mut rows = projection.finish(semantics.rows)?;
+    super::super::coverage::qualify_package_rows(snapshot, &mut rows)?;
     Ok(ProjectedRows {
         rows,
         activated: semantics.activated,

@@ -1296,6 +1296,7 @@ fn prepare_builtin_view_inner(
             source_target,
             semantic_base,
             semantic_target,
+            capture_target: view_publish::capture_root(&snapshot)?,
         },
         edit,
     );
@@ -1341,6 +1342,7 @@ fn prepare_builtin_view_inner(
         roots: view_publish::PublishedRoots {
             source: source_target,
             semantic: semantic_target,
+            capture: view_publish::capture_root(&snapshot)?,
             activated,
         },
         path: view_publish::PublicationPath::Hydrated { files },
@@ -1532,6 +1534,7 @@ fn package_publication(
         roots: view_publish::PublishedRoots {
             source: source_target,
             semantic: semantic_target,
+            capture: prior.capture,
             activated: prior.activated.clone(),
         },
         path: view_publish::PublicationPath::Package { files },
@@ -1619,6 +1622,7 @@ fn admit_spliced_package(
         roots: view_publish::PublishedRoots {
             source: source_target,
             semantic: semantic_target,
+            capture: view_publish::capture_root(snapshot)?,
             activated,
         },
         path: view_publish::PublicationPath::Package { files },

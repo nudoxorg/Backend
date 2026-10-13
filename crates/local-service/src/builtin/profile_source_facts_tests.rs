@@ -1178,3 +1178,220 @@ fn structural_calls_rebuild_negative_results_on_source_and_complete_manifest_cha
         "interleaving root changes stay owner local"
     );
 }
+
+#[test]
+fn capture_only_refusal_survives_cold_reopen_and_qualifies_retained_indexed_rows() {
+    use crate::builtin::{coverage, view_publish};
+    use backend_engine::builtin::{
+        ProductSemanticCaptureOutcome, SemanticSourceCapture, SemanticUnavailableReason,
+    };
+    use backend_engine::{Lane, Reason, Row, RowId, RowState, ViewCoverage};
+    use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, TypeScriptSource};
+
+    // Real parser facts, immutable capture relation, publication witness and
+    // cold store path. This is not evidence of native compiler acceptance.
+    let workspace = TempWorkspace::new();
+    let mut daemon = open_daemon(workspace.0.path());
+    let label = "pkg:npm/observed-capture@1.0.0";
+    let package = PackageKey::from_value(label);
+    let (file, facts) = parsed_file(package, "retained.ts", 3);
+    commit_files(&mut daemon, package, label, 1, &[(file, Some(facts))]);
+    let key = ProductSemanticPublicationKey::new(
+        backend_engine::PackageReference::parse(label.to_owned()).unwrap(),
+        PackageUrl::parse(label).unwrap(),
+        LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+    )
+    .unwrap();
+    let before = daemon.engine().daemon().owner().snapshot();
+    let source_root = view_publish::source_root(&before).unwrap();
+    let semantic_root = view_publish::semantic_root(&before).unwrap();
+    let capture = SemanticSourceCapture::new(None, [1; 32], [0x72; 32], 1, 1).unwrap();
+    // Capture is the only changed authority. There is no selected semantic
+    // row yet: the first pending capture must still qualify the view.
+    let intent = BuiltinIntent::index_with_capture(
+        package,
+        label,
+        Vec::new(),
+        Vec::new(),
+        vec![BuiltinCaptureChange {
+            key: key.clone(),
+            expected: None,
+            capture,
+            outcome: ProductSemanticCaptureOutcome::Pending { prior: None },
+            compiler_failure: None,
+        }],
+    )
+    .unwrap()
+    .with_capture_basis(capture_basis_for_snapshot(&before).unwrap())
+    .unwrap();
+    super::super::commands::commit_builtin_intent(&mut daemon, 2, &intent).unwrap();
+    let pending = daemon.engine().daemon().owner().snapshot();
+    let pending_row = semantic_capture_relation(&pending)
+        .unwrap()
+        .unwrap()
+        .lookup(&key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(view_publish::source_root(&pending).unwrap(), source_root);
+    assert_eq!(
+        view_publish::semantic_root(&pending).unwrap(),
+        semantic_root
+    );
+    assert_eq!(
+        coverage::view_coverage(
+            &pending,
+            &coverage::ActivatedProfiles::new(),
+            coverage::SemanticDeployment::Unconfigured
+        )
+        .unwrap(),
+        vec![
+            ViewCoverage::Complete,
+            ViewCoverage::Partial {
+                lane: Lane::Semantic,
+                completed: 0,
+                total: 1
+            }
+        ]
+    );
+    let capture_root = view_publish::capture_root(&pending).unwrap();
+    let witness = view_publish::PublishedRoots {
+        source: source_root,
+        semantic: semantic_root,
+        capture: capture_root,
+        activated: coverage::ActivatedProfiles::new(),
+    };
+    let roots = |capture_target| view_publish::TransitionRoots {
+        source_base: source_root,
+        source_target: source_root,
+        semantic_base: semantic_root,
+        semantic_target: semantic_root,
+        capture_target,
+    };
+    assert_eq!(
+        view_publish::publication_plan(Some(&witness), roots(capture_root), None),
+        view_publish::PublicationPlan::Reuse
+    );
+    let terminal = BuiltinIntent::index_with_capture(
+        package,
+        label,
+        Vec::new(),
+        Vec::new(),
+        vec![BuiltinCaptureChange {
+            key: key.clone(),
+            expected: Some(pending_row),
+            capture,
+            outcome: ProductSemanticCaptureOutcome::Unavailable {
+                reason: SemanticUnavailableReason::Rejected,
+            },
+            compiler_failure: None,
+        }],
+    )
+    .unwrap()
+    .with_capture_basis(capture_basis_for_snapshot(&pending).unwrap())
+    .unwrap();
+    super::super::commands::commit_builtin_intent(&mut daemon, 3, &terminal).unwrap();
+    let refused = daemon.engine().daemon().owner().snapshot();
+    assert_eq!(view_publish::source_root(&refused).unwrap(), source_root);
+    assert_eq!(
+        view_publish::semantic_root(&refused).unwrap(),
+        semantic_root
+    );
+    let refused_capture_root = view_publish::capture_root(&refused).unwrap();
+    assert_ne!(refused_capture_root, capture_root);
+    assert_eq!(
+        view_publish::publication_plan(
+            Some(&witness),
+            roots(refused_capture_root),
+            Some(&terminal)
+        ),
+        view_publish::PublicationPlan::Hydrate
+    );
+    // The pinned older snapshot keeps its independent in-flight outcome.
+    assert_eq!(
+        coverage::view_coverage(
+            &pending,
+            &coverage::ActivatedProfiles::new(),
+            coverage::SemanticDeployment::Configured
+        )
+        .unwrap(),
+        vec![
+            ViewCoverage::Complete,
+            ViewCoverage::Partial {
+                lane: Lane::Semantic,
+                completed: 0,
+                total: 1
+            }
+        ]
+    );
+    assert_complete(&daemon, package, "retained.ts", 3);
+    let final_root = refused.root();
+    drop(refused);
+    drop(pending);
+    drop(before);
+    drop(daemon);
+
+    let cold = open_daemon(workspace.0.path());
+    let snapshot = cold.engine().daemon().owner().snapshot();
+    assert_eq!(snapshot.root(), final_root);
+    assert_eq!(
+        view_publish::capture_root(&snapshot).unwrap(),
+        refused_capture_root
+    );
+    assert_eq!(
+        view_publish::publication_plan(None, roots(refused_capture_root), None),
+        view_publish::PublicationPlan::Hydrate
+    );
+    for deployment in [
+        coverage::SemanticDeployment::Unconfigured,
+        coverage::SemanticDeployment::Configured,
+    ] {
+        assert_eq!(
+            coverage::view_coverage(&snapshot, &coverage::ActivatedProfiles::new(), deployment)
+                .unwrap(),
+            vec![
+                ViewCoverage::Complete,
+                ViewCoverage::Unavailable {
+                    lane: Lane::Semantic,
+                    reason: Reason::Incomplete
+                }
+            ]
+        );
+    }
+    assert_complete(&cold, package, "retained.ts", 3);
+    let sources = read_package_sources(&snapshot, package).unwrap();
+    let (initial, _) = super::super::initial_view().unwrap();
+    let only = sources.files.iter().map(|(key, _)| *key).collect();
+    let mut rows =
+        view_build::rows_for_structural_files(&initial, &sources, &only, &Default::default())
+            .unwrap();
+    for index in 0..3 {
+        assert!(
+            rows.iter()
+                .any(|row| row.label.ends_with(&format!("::function_{index:04}"))),
+            "stored parser function {index} must stay readable"
+        );
+    }
+    let declaration_count = rows.len();
+    let declarations = rows.clone();
+    let sibling = PackageKey::from_value("pkg:npm/unrelated@1.0.0");
+    rows.push(Row::new(RowId::Package(package), initial.basis(), label));
+    rows.push(Row::new(
+        RowId::Package(sibling),
+        initial.basis(),
+        "unrelated",
+    ));
+    let sibling_row = rows.last().unwrap().clone();
+    coverage::qualify_package_rows(&snapshot, &mut rows).unwrap();
+    assert_eq!(
+        &rows[..declaration_count],
+        declarations.as_slice(),
+        "refusal changed retained declarations"
+    );
+    assert_eq!(rows[declaration_count].state, RowState::Failed);
+    assert_eq!(rows[declaration_count].label, label);
+    assert_eq!(
+        rows[declaration_count + 1],
+        sibling_row,
+        "package refusal changed a sibling snapshot"
+    );
+}
