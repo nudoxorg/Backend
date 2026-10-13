@@ -1997,6 +1997,24 @@ impl PackageCompilerFailure {
         }
     }
 
+    /// Installed compiler-package evidence; the retained source is request context.
+    #[must_use]
+    pub fn typescript_compiler_admission(
+        &self,
+    ) -> Option<&crate::interface::TypeScriptCompilerAdmissionDetail> {
+        match &self.cause {
+            PackageCompilerFailureCause::Authority {
+                diagnostic: Some(facts),
+                ..
+            }
+            | PackageCompilerFailureCause::AuthorityAdmission {
+                diagnostic: Some(facts),
+                ..
+            } => facts.typescript_admission.as_ref(),
+            _ => None,
+        }
+    }
+
     /// Exact compiler input content identity, retaining the SourceFact domain.
     #[must_use]
     pub const fn source_identity(&self) -> ContentId<SourceFactDomain> {
@@ -2149,6 +2167,28 @@ impl PackageCompilerFailure {
                 ))
         {
             return Err(ProductAdmissionError::PackageCompilerFailureShape);
+        }
+        if let PackageCompilerFailureCause::Authority {
+            diagnostic:
+                Some(CompilerAuthorityDiagnosticFacts {
+                    typescript_admission: Some(_),
+                    ..
+                }),
+            ..
+        }
+        | PackageCompilerFailureCause::AuthorityAdmission {
+            diagnostic:
+                Some(CompilerAuthorityDiagnosticFacts {
+                    typescript_admission: Some(_),
+                    ..
+                }),
+            ..
+        } = &self.cause
+        {
+            let expected = detail_for_package_cause(&self.cause);
+            if (self.detail.as_str(), self.detail_truncated) != (expected.0.as_str(), expected.1) {
+                return Err(ProductAdmissionError::PackageCompilerFailureShape);
+            }
         }
         Ok(())
     }
@@ -2528,6 +2568,7 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
         diagnostic:
             Some(CompilerAuthorityDiagnosticFacts {
                 typescript_failure: Some(failure),
+                typescript_admission,
                 ..
             }),
         ..
@@ -2536,12 +2577,16 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
         diagnostic:
             Some(CompilerAuthorityDiagnosticFacts {
                 typescript_failure: Some(failure),
+                typescript_admission,
                 ..
             }),
         ..
     } = cause
     {
-        return sanitize_package_compiler_detail(failure.detail(), false);
+        return match typescript_admission {
+            Some(detail) => sanitize_package_compiler_detail(&detail.detail(), false),
+            None => sanitize_package_compiler_detail(failure.detail(), false),
+        };
     }
     let prefix = match cause {
         PackageCompilerFailureCause::Fragment(_) => "compact fragment fault",
@@ -2674,7 +2719,14 @@ fn authority_diagnostic_facts_are_valid(facts: &CompilerAuthorityDiagnosticFacts
         && (facts.python_failure
             == Some(crate::interface::PythonAuthorityFailureKind::ConfigurationRefused))
             == facts.python_configuration.is_some()
+        && facts.typescript_admission.as_ref().is_none_or(|detail| {
+            facts.typescript_failure == Some(detail.failure_kind())
+        })
 }
+
+#[cfg(test)]
+#[path = "surface/typescript_admission_tests.rs"]
+mod typescript_admission_tests;
 
 fn is_canonical_package_relative_source_path(value: &str) -> bool {
     !value.is_empty()

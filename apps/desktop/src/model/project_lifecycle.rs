@@ -82,9 +82,7 @@ impl ProjectLifecycle {
     #[must_use]
     pub const fn detail(self) -> &'static str {
         match self {
-            Self::Queued => {
-                "Waiting to start. No index request has been submitted."
-            }
+            Self::Queued => "Waiting to start. No index request has been submitted.",
             Self::CheckingFolder => "Checking the folder before preparing an index operation.",
             Self::AwaitingReceipt => {
                 "Waiting for the owner's answer to this saved index operation."
@@ -158,6 +156,27 @@ impl ProjectLifecycle {
 }
 
 impl WorkspaceProject {
+    /// Shared bounded compiler explanation from an admitted typed refusal.
+    #[must_use]
+    pub fn compiler_refusal_words(&self) -> Option<String> {
+        if !matches!(self.lifecycle(), ProjectLifecycle::CompilerRefused(_)) {
+            return None;
+        }
+        let IndexOperationObservation::Known(status) =
+            self.operation.as_ref()?.observation.as_ref()?
+        else {
+            return None;
+        };
+        let IndexOperationState::Failed {
+            compiler_failure: Some(failure),
+            ..
+        } = &status.state
+        else {
+            return None;
+        };
+        Some(format!("{}; {}", failure.kind_tag(), failure.detail()))
+    }
+
     /// Typed unavailable profile details from this row's admitted partial receipt.
     /// No diagnostic text can invent a profile state or a publication.
     #[must_use]
@@ -199,9 +218,10 @@ impl WorkspaceProject {
                     }
                     if let Some(failure) = &refusal.compiler_failure {
                         words.push_str(&format!(
-                            " Compiler phase: {:?}; cause: {:?}.",
+                            " Compiler phase: {:?}; cause: {}; {}",
                             failure.phase(),
-                            failure.facts()
+                            failure.kind_tag(),
+                            failure.detail()
                         ));
                     }
                     words
@@ -245,7 +265,9 @@ impl WorkspaceProject {
                             ProjectLifecycle::Active(*stage)
                         }
                         IndexOperationState::Published(_) => ProjectLifecycle::Published,
-                        IndexOperationState::PartiallyPublished { .. } => ProjectLifecycle::PartiallyPublished,
+                        IndexOperationState::PartiallyPublished { .. } => {
+                            ProjectLifecycle::PartiallyPublished
+                        }
                         IndexOperationState::Failed {
                             reason: IndexOperationFailureReason::Cancelled,
                             ..
@@ -414,6 +436,71 @@ mod tests {
         assert_eq!(
             row, before,
             "retained availability is orthogonal to the latest operation outcome"
+        );
+    }
+
+    #[test]
+    fn typed_installed_compiler_refusal_keeps_shared_words_and_ignores_raw_owner_text() {
+        use backend_library::interface::{
+            AuthorityDiagnosticClass, AuthorityPhase, CompilerDiagnostic, CompilerTerminal,
+            SourceAuthority, TypeScriptCompilerAdmissionCause as C,
+            TypeScriptCompilerAdmissionDetail as D, TypeScriptCompilerPackageRole as R,
+            TypeScriptCompilerVersion as V,
+        };
+        use backend_semantic::vocabulary::{Language, Stage};
+        use backend_version::ContentId;
+        let detail = D::new(R::SelectedCompiler, V::new("7.0.2"), C::RuntimeFiles {
+                observed: 257,
+                maximum: 256,
+            }).unwrap();
+        let failure = backend_library::PackageCompilerFailure::from_package_terminal(
+            "main.ts",
+            &CompilerTerminal::AuthorityAdmission {
+                source: SourceAuthority {
+                    identity: ContentId::from_canonical_bytes(b"source"),
+                    byte_len: 6,
+                },
+                language: Language::TypeScript,
+                stage: Stage::LowerIr,
+                phase: AuthorityPhase::Resolve,
+                class: AuthorityDiagnosticClass::Authority,
+                diagnostic: CompilerDiagnostic::from_native(
+                    b"/private/sdk authority.secret",
+                    29,
+                    false,
+                )
+                .map(|diagnostic| diagnostic.with_typescript_admission(detail.clone())),
+            },
+        )
+        .unwrap()
+        .unwrap();
+        let mut row = WorkspaceProject::indexing("/tmp/nx-installed-compiler").unwrap();
+        row.error = Some("untrusted /private/sdk authority.secret".into());
+        let mut saved = claim(&row.id, 0x75);
+        saved.observation = Some(observation(
+            &saved,
+            IndexOperationState::Failed {
+                reason: IndexOperationFailureReason::Refused,
+                detail: backend_library::ProductText::from_static("untrusted native transcript"),
+                compiler_failure: Some(failure.clone()),
+            },
+        ));
+        row.operation = Some(saved);
+        assert_eq!(
+            row.lifecycle(),
+            ProjectLifecycle::CompilerRefused(failure.phase())
+        );
+        assert_eq!(
+            row.compiler_refusal_words(),
+            Some(format!("{}; {}", failure.kind_tag(), detail.detail()))
+        );
+        assert!(!row.compiler_refusal_words().unwrap().contains("/private"));
+        row.operation.as_mut().unwrap().key =
+            backend_library::IndexOperationKey::from_bytes([0x76; 32]).unwrap();
+        assert_eq!(
+            row.compiler_refusal_words(),
+            None,
+            "unmatched evidence cannot supply compiler words"
         );
     }
 }

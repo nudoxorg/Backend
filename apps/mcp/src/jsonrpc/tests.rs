@@ -37,6 +37,8 @@ mod semantic_source_pages;
 mod surface_fidelity;
 #[path = "tests/token_outline.rs"]
 mod token_outline;
+#[path = "tests/typescript_admission.rs"]
+mod typescript_admission;
 
 const PROJECT: &str = "/abs/polyglot";
 const MODULE: &str = "/abs/polyglot::src/lib.rs";

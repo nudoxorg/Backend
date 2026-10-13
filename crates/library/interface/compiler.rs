@@ -1040,6 +1040,8 @@ pub struct CompilerDiagnosticFacts {
     pub python_configuration: Option<PythonConfigurationRefusalFacts>,
     /// Exact TypeScript authority cause; native bytes and paths remain local.
     pub typescript_failure: Option<super::TypeScriptAuthorityFailureKind>,
+    /// Bounded compiler-package limits and API capability facts, without paths.
+    pub typescript_admission: Option<super::TypeScriptCompilerAdmissionDetail>,
     /// Exact Go dependency-admission cause; native bytes and paths remain local.
     pub go_failure: Option<super::GoAuthorityFailureKind>,
     /// Zero-filled storage whose prefix through `byte_len` is the exact diagnostic prefix.
@@ -1214,6 +1216,7 @@ impl CompilerDiagnostic {
             python_failure: None,
             python_configuration: None,
             typescript_failure: None,
+            typescript_admission: None,
             go_failure: None,
             bytes: output,
         })))
@@ -1228,6 +1231,7 @@ impl CompilerDiagnostic {
             self.0.python_configuration = None;
         }
         self.0.typescript_failure = None;
+        self.0.typescript_admission = None;
         self.0.go_failure = None;
         self
     }
@@ -1238,6 +1242,7 @@ impl CompilerDiagnostic {
         self.0.python_configuration = Some(facts);
         self.0.python_failure = Some(PythonAuthorityFailureKind::ConfigurationRefused);
         self.0.typescript_failure = None;
+        self.0.typescript_admission = None;
         self.0.go_failure = None;
         self
     }
@@ -1249,6 +1254,21 @@ impl CompilerDiagnostic {
         failure: super::TypeScriptAuthorityFailureKind,
     ) -> Self {
         self.0.typescript_failure = Some(failure);
+        self.0.typescript_admission = None;
+        self.0.python_failure = None;
+        self.0.python_configuration = None;
+        self.0.go_failure = None;
+        self
+    }
+
+    /// Adds closed installed-compiler evidence without exposing native text.
+    #[must_use]
+    pub fn with_typescript_admission(
+        mut self,
+        detail: super::TypeScriptCompilerAdmissionDetail,
+    ) -> Self {
+        self.0.typescript_failure = Some(detail.failure_kind());
+        self.0.typescript_admission = Some(detail);
         self.0.python_failure = None;
         self.0.python_configuration = None;
         self.0.go_failure = None;
@@ -1262,6 +1282,7 @@ impl CompilerDiagnostic {
         self.0.python_failure = None;
         self.0.python_configuration = None;
         self.0.typescript_failure = None;
+        self.0.typescript_admission = None;
         self
     }
 

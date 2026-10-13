@@ -70,7 +70,7 @@ pub(crate) use reply_coverage::{
     freshness_to_wire,
 };
 
-/// Current transport DTO version. Version 29 adds native semantic source
-/// ranges/version pages and mandatory captured source epochs for shape reads.
+/// Current transport DTO version. The combined version-29 cutover adds typed
+/// TypeScript compiler admission details and native semantic source pages/epochs.
 /// Persisted view rows, certificates and compact events are unchanged.
 pub const DTO_VERSION: u16 = 29;

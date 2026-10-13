@@ -2759,7 +2759,7 @@ fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants() {
     use crate::interface::TypeScriptAuthorityFailureKind as F;
     assert_eq!(
         DTO_VERSION, 29,
-        "source paging and shape epoch cutover use DTO29; worker refusal first shipped with DTO28"
+        "combined source and admission detail cutover uses DTO29; worker refusal first shipped with DTO28"
     );
     let kind = F::NativeCheckerWorkerPoolUnavailable;
     let encoded_kind = serde_json::to_vec(&kind).unwrap();
@@ -2773,7 +2773,7 @@ fn native_worker_refusal_wire_cutover_checks_version_before_payload_variants() {
     }))
     .unwrap();
     let old_peer = super::codec::check_version_header_against(&current, "reply", 27)
-        .expect_err("DTO27 peer must refuse DTO28 before decoding its new failure variant");
+        .expect_err("DTO27 peer must refuse the current DTO before decoding its failure variant");
     assert!(old_peer.contains("reply DTO version 29"));
     assert!(old_peer.contains("this build supports 27"));
     assert!(!old_peer.contains("unknown variant"));
@@ -2824,3 +2824,6 @@ fn semantic_source_live_dto29_refuses_dto28_before_new_source_or_epoch_payload()
     assert!(error.contains("command DTO version 28"));
     assert!(!error.contains("unknown variant"));
 }
+
+#[path = "typescript_admission_cutover_tests.rs"]
+mod typescript_admission_cutover;
