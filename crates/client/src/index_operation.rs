@@ -892,7 +892,7 @@ mod tests {
                 },
             )
             .expect_err("same key cannot authenticate a different request");
-            assert!(matches!(error, ClientError::IndexOperationDeliveryUnknown { cause, .. } if matches!(cause.as_ref(), ClientError::Protocol(_))));
+            assert!(matches!(&error, ClientError::IndexOperationDeliveryUnknown { cause, .. } if matches!(cause.as_ref(), ClientError::Protocol(_))));
             assert_eq!(calls, if late { 2 } else { 1 });
             assert_eq!(fixture.claims(), [observed_claim.expect("original claim")]);
         }
@@ -944,7 +944,7 @@ mod tests {
                 },
             )
             .expect_err("changed attachment/claim cannot authorize replay");
-            assert!(matches!(error, ClientError::IndexOperationDeliveryUnknown { cause, .. } if matches!(cause.as_ref(), ClientError::Io(_))));
+            assert!(matches!(&error, ClientError::IndexOperationDeliveryUnknown { cause, .. } if matches!(cause.as_ref(), ClientError::Io(_))));
             assert_eq!(calls, 1);
             let mut expected = observed_claim.expect("original claim");
             if change_claim {
@@ -988,7 +988,7 @@ mod tests {
                         .join()
                         .expect("contender drained")
                         .expect_err("held real lock excludes second caller");
-                    assert!(matches!(error, ClientError::IndexOperationDeliveryUnknown { cause, .. } if matches!(cause.as_ref(), ClientError::Io(_))));
+                    assert!(matches!(&error, ClientError::IndexOperationDeliveryUnknown { cause, .. } if matches!(cause.as_ref(), ClientError::Io(_))));
                     assert!(
                         error
                             .to_string()
