@@ -1372,7 +1372,15 @@ fn prepare_package_view(
     }
     let (initial, _) = initial_view_for_workspace(&snapshot)?;
     let current = preparation.current.clone();
-    if let Some(edit) = edit
+    // A source-only edit may keep the capture root while making its old
+    // publication obsolete. The file splice keeps the package row, so it is
+    // admissible only when that row still has the derived package state.
+    let package_state = coverage::package_row_state(&snapshot, package)?;
+    let same_package_state = current
+        .row_ref(backend_engine::RowId::Package(package))
+        .is_some_and(|row| package_state.is_none_or(|state| row.state == state));
+    if same_package_state
+        && let Some(edit) = edit
         && let Some(changed) = view_publish::changed_structural_files(edit, &sources)
         && let Some(resident) = view_publish::resident_symbols(current.row_refs(), package)
     {

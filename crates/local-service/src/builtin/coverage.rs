@@ -7,8 +7,9 @@
 
 use super::BuiltinModelError;
 use backend_engine::builtin::{
-    ProductSemanticCaptureOutcome, ProductSemanticPublicationKey, ProductSemanticPublicationRecord,
-    SemanticPublicationCoverage, SemanticUnavailableReason, semantic_capture_relation,
+    ProductSemanticCaptureOutcome, ProductSemanticCaptureRecord, ProductSemanticPublicationKey,
+    ProductSemanticPublicationRecord, SemanticPublicationCoverage, SemanticUnavailableReason,
+    semantic_capture_relation,
 };
 use backend_engine::{Lane, Reason, ViewCoverage, WorkspaceSnapshot};
 use std::collections::BTreeSet;
@@ -145,6 +146,37 @@ impl SemanticTally {
         Ok(())
     }
 
+    /// Correlates a current capture with the authenticated package frontier.
+    /// A stale pending operation no longer promises progress for current source.
+    /// Retained publications remain readable but cannot certify another frontier.
+    fn observe_scoped(
+        &mut self,
+        key: &ProductSemanticPublicationKey,
+        selected: Option<&ProductSemanticPublicationRecord>,
+        capture: Option<&ProductSemanticCaptureRecord>,
+        source: &backend_engine::WorkspaceRelationHandle<super::BuiltinWorkspaceRelation>,
+        activated: &ActivatedProfiles,
+    ) -> Result<(), BuiltinModelError> {
+        if !key.is_selected() {
+            return Ok(());
+        }
+        if let Some(capture) = capture {
+            if !capture_matches_source(source, key, capture)? {
+                // Still check a Published claim against its retained selection.
+                // Source staleness must not launder an unrelated selected claim.
+                self.observe_current(key, selected, Some(capture.outcome()), activated)?;
+                self.incomplete = true;
+                return Ok(());
+            }
+        }
+        self.observe_current(
+            key,
+            selected,
+            capture.map(|capture| capture.outcome()),
+            activated,
+        )
+    }
+
     /// Refused declared scope outranks missing optional configuration, with
     /// deterministic precedence independent of page or iteration order.
     fn retain_terminal(&mut self, reason: SemanticUnavailableReason) {
@@ -252,6 +284,22 @@ pub(super) fn capture_row_state(
     }
 }
 
+/// Package-local source correlation, without consulting global root equality
+/// or the filesystem. A removed/missing package cannot certify its old capture.
+fn capture_matches_source(
+    source: &backend_engine::WorkspaceRelationHandle<super::BuiltinWorkspaceRelation>,
+    key: &ProductSemanticPublicationKey,
+    capture: &ProductSemanticCaptureRecord,
+) -> Result<bool, BuiltinModelError> {
+    let project = source
+        .lookup(&key.package_key().to_bytes())
+        .map_err(|error| BuiltinModelError(format!("read captured package frontier: {error}")))?;
+    Ok(project
+        .as_ref()
+        .and_then(|record| record.project_fields())
+        .is_some_and(|project| &project.source_version == capture.capture().source_version()))
+}
+
 /// Legacy selected evidence, when no current capture exists for that key.
 fn publication_row_state(record: &ProductSemanticPublicationRecord) -> backend_engine::RowState {
     use backend_engine::RowState;
@@ -275,10 +323,15 @@ fn publication_row_state(record: &ProductSemanticPublicationRecord) -> backend_e
 
 /// Applies package-scoped observations without erasing retained declarations.
 /// Failure dominates pending and ready profiles regardless of relation order.
-pub(super) fn qualify_package_rows(
+fn package_states(
     snapshot: &WorkspaceSnapshot,
-    rows: &mut [backend_engine::Row],
-) -> Result<(), BuiltinModelError> {
+) -> Result<
+    std::collections::BTreeMap<backend_engine::PackageKey, backend_engine::RowState>,
+    BuiltinModelError,
+> {
+    let source = snapshot
+        .relation::<super::BuiltinWorkspaceRelation>()
+        .map_err(|error| BuiltinModelError(error.to_string()))?;
     let captures = semantic_capture_relation(snapshot)
         .map_err(|error| BuiltinModelError(error.to_string()))?;
     let mut states = std::collections::BTreeMap::new();
@@ -294,7 +347,11 @@ pub(super) fn qualify_package_rows(
                     continue;
                 }
                 observed.insert(key.clone());
-                let state = capture_row_state(capture.outcome());
+                let state = if capture_matches_source(&source, key, capture)? {
+                    capture_row_state(capture.outcome())
+                } else {
+                    backend_engine::RowState::Failed
+                };
                 states
                     .entry(key.package_key())
                     .and_modify(|current: &mut backend_engine::RowState| {
@@ -336,6 +393,23 @@ pub(super) fn qualify_package_rows(
         };
         after = Some(next);
     }
+    Ok(states)
+}
+
+/// Qualifies the structural splice shortcut against current package evidence.
+pub(super) fn package_row_state(
+    snapshot: &WorkspaceSnapshot,
+    package: backend_engine::PackageKey,
+) -> Result<Option<backend_engine::RowState>, BuiltinModelError> {
+    Ok(package_states(snapshot)?.get(&package).copied())
+}
+
+/// Applies package-scoped observations without changing retained declarations.
+pub(super) fn qualify_package_rows(
+    snapshot: &WorkspaceSnapshot,
+    rows: &mut [backend_engine::Row],
+) -> Result<(), BuiltinModelError> {
+    let states = package_states(snapshot)?;
     for row in rows {
         if let backend_engine::RowId::Package(package) = row.id {
             if let Some(state) = states.get(&package) {
@@ -399,6 +473,9 @@ pub(super) fn view_coverage(
         .map_err(|error| BuiltinModelError(error.to_string()))?;
     let captures = semantic_capture_relation(snapshot)
         .map_err(|error| BuiltinModelError(error.to_string()))?;
+    let source = snapshot
+        .relation::<super::BuiltinWorkspaceRelation>()
+        .map_err(|error| BuiltinModelError(error.to_string()))?;
     let mut tally = SemanticTally::default();
     let mut after = None;
     loop {
@@ -415,12 +492,7 @@ pub(super) fn view_coverage(
                 .transpose()
                 .map_err(|error| BuiltinModelError(error.to_string()))?
                 .flatten();
-            tally.observe_current(
-                key,
-                Some(record),
-                capture.as_ref().map(|record| record.outcome()),
-                activated,
-            )?;
+            tally.observe_scoped(key, Some(record), capture.as_ref(), &source, activated)?;
         }
         let Some(next) = page.next().cloned() else {
             break;
@@ -443,7 +515,7 @@ pub(super) fn view_coverage(
                     .lookup(key)
                     .map_err(|error| BuiltinModelError(error.to_string()))?;
                 if selected.is_none() {
-                    tally.observe_current(key, None, Some(capture.outcome()), activated)?;
+                    tally.observe_scoped(key, None, Some(capture), &source, activated)?;
                 }
             }
             let Some(next) = page.next().cloned() else {

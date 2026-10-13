@@ -1395,3 +1395,324 @@ fn capture_only_refusal_survives_cold_reopen_and_qualifies_retained_indexed_rows
         "package refusal changed a sibling snapshot"
     );
 }
+
+#[test]
+fn retained_published_capture_is_correlated_with_exact_package_source_frontier() {
+    use crate::builtin::{coverage, view_publish};
+    use backend_engine::builtin::{
+        ProductSemanticCaptureOutcome, SemanticPublicationClaim, SemanticPublicationCoverage,
+        SemanticPublicationVersion, SemanticSourceCapture, SemanticUnavailableReason,
+    };
+    use backend_engine::publication::{
+        binding::{COMPILATION_BINDING_BYTES, CompilationBindingView},
+        manifest::{CompilationManifestFacts, CompilationManifestFormat},
+    };
+    use backend_engine::{Lane, Reason, RowState, ViewCoverage, WorkspaceSnapshot};
+    use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, TypeScriptSource};
+    use backend_store::hydration::VerifiedGenerationFacts;
+    use backend_version::{
+        DependencySetDomain, GenerationId, IrManifestDomain, IrManifestEncoding,
+    };
+
+    // This is an authenticated storage/correlation law. The structurally valid
+    // claim below is not an activated compiler artifact or native acceptance.
+    let generation = VerifiedGenerationFacts {
+        pinned_root: GenerationId::from_canonical_bytes(b"source-correlation-generation"),
+        dep_set: ContentId::<DependencySetDomain>::from_canonical_bytes(b"source-correlation-deps"),
+    };
+    let manifest =
+        backend_version::ArtifactId::<IrManifestEncoding, IrManifestDomain>::from_encoded_bytes(
+            b"source-correlation-manifest",
+        );
+    let mut binding_bytes = [0; COMPILATION_BINDING_BYTES];
+    let binding =
+        CompilationBindingView::write_into(generation, manifest, &mut binding_bytes).unwrap();
+    let claim = SemanticPublicationClaim::admit(
+        CompilationManifestFacts {
+            identity: manifest,
+            format: CompilationManifestFormat::SemanticV2,
+            fragment_count: 1,
+            byte_length: 1,
+        },
+        *binding,
+    )
+    .unwrap();
+    let selected_record = ProductSemanticPublicationRecord::Published {
+        coverage: SemanticPublicationCoverage::Complete,
+        claim,
+    };
+    let version = SemanticPublicationVersion::new(SemanticPublicationCoverage::Complete, claim);
+    let workspace = TempWorkspace::new();
+    let mut daemon = open_daemon(workspace.0.path());
+    let label = "pkg:npm/source-correlated-capture@1.0.0";
+    let package = PackageKey::from_value(label);
+    let key = ProductSemanticPublicationKey::new(
+        backend_engine::PackageReference::parse(label.to_owned()).unwrap(),
+        PackageUrl::parse(label).unwrap(),
+        LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+    )
+    .unwrap();
+    let active = coverage::ActivatedProfiles::from_iter([(package, key.profile())]);
+    let (file, facts) = parsed_file(package, "retained.ts", 3);
+    commit_files(
+        &mut daemon,
+        package,
+        label,
+        1,
+        &[(file.clone(), Some(facts))],
+    );
+    let capture = SemanticSourceCapture::new(None, [1; 32], [0x72; 32], 1, 1).unwrap();
+    let commit_capture =
+        |daemon: &mut super::super::ProductDaemon, request, capture, outcome, semantic_changes| {
+            let base = daemon.engine().daemon().owner().snapshot();
+            let expected = semantic_capture_relation(&base)
+                .unwrap()
+                .and_then(|captures| captures.lookup(&key).unwrap());
+            let intent = BuiltinIntent::index_with_capture(
+                package,
+                label,
+                Vec::new(),
+                semantic_changes,
+                vec![BuiltinCaptureChange {
+                    key: key.clone(),
+                    expected,
+                    capture,
+                    outcome,
+                    compiler_failure: None,
+                }],
+            )
+            .unwrap()
+            .with_capture_basis(capture_basis_for_snapshot(&base).unwrap())
+            .unwrap();
+            super::super::commands::commit_builtin_intent(daemon, request, &intent).unwrap();
+        };
+    let assert_scope = |snapshot: &WorkspaceSnapshot, state, expected: Vec<ViewCoverage>| {
+        assert_eq!(
+            coverage::package_row_state(snapshot, package).unwrap(),
+            Some(state)
+        );
+        assert_eq!(
+            coverage::view_coverage(snapshot, &active, coverage::SemanticDeployment::Configured)
+                .unwrap(),
+            expected
+        );
+    };
+    let partial = vec![
+        ViewCoverage::Complete,
+        ViewCoverage::Partial {
+            lane: Lane::Semantic,
+            completed: 0,
+            total: 1,
+        },
+    ];
+    let stale = vec![
+        ViewCoverage::Complete,
+        ViewCoverage::Unavailable {
+            lane: Lane::Semantic,
+            reason: Reason::Incomplete,
+        },
+    ];
+    commit_capture(
+        &mut daemon,
+        2,
+        capture,
+        ProductSemanticCaptureOutcome::Pending { prior: None },
+        Vec::new(),
+    );
+    let pending = daemon.engine().daemon().owner().snapshot();
+    assert_scope(&pending, RowState::Loading, partial.clone());
+    let sibling_label = "pkg:npm/source-correlation-sibling@1.0.0";
+    let sibling = PackageKey::from_value(sibling_label);
+    let (sibling_file, sibling_facts) = parsed_file(sibling, "sibling.ts", 1);
+    commit_files(
+        &mut daemon,
+        sibling,
+        sibling_label,
+        3,
+        &[(sibling_file, Some(sibling_facts))],
+    );
+    let sibling_edit = daemon.engine().daemon().owner().snapshot();
+    assert_ne!(pending.root(), sibling_edit.root());
+    assert_eq!(
+        view_publish::capture_root(&pending).unwrap(),
+        view_publish::capture_root(&sibling_edit).unwrap()
+    );
+    assert_scope(&sibling_edit, RowState::Loading, partial.clone());
+    commit_capture(
+        &mut daemon,
+        4,
+        capture,
+        ProductSemanticCaptureOutcome::Published {
+            coverage: SemanticPublicationCoverage::Complete,
+            claim,
+        },
+        vec![BuiltinSemanticChange {
+            key: key.clone(),
+            after: Some(selected_record.clone()),
+        }],
+    );
+    let published = daemon.engine().daemon().owner().snapshot();
+    assert_scope(&published, RowState::Ready, vec![ViewCoverage::Complete]);
+    let capture_root = view_publish::capture_root(&published).unwrap();
+    let semantic_root = view_publish::semantic_root(&published).unwrap();
+    let (sibling_file, _) = parsed_file(sibling, "sibling.ts", 1);
+    let (sibling_source_only, _) = prepare_files_at_source_version(
+        &daemon,
+        sibling,
+        sibling_label,
+        [0x45; 32],
+        &[(sibling_file, None)],
+    );
+    super::super::commands::commit_builtin_intent(&mut daemon, 45, &sibling_source_only).unwrap();
+    let sibling_after_published = daemon.engine().daemon().owner().snapshot();
+    assert_ne!(sibling_after_published.root(), published.root());
+    assert_eq!(
+        view_publish::capture_root(&sibling_after_published).unwrap(),
+        capture_root
+    );
+    assert_scope(
+        &sibling_after_published,
+        RowState::Ready,
+        vec![ViewCoverage::Complete],
+    );
+    let file_key = backend_engine::product_source_file_key(package.to_bytes(), "retained.ts");
+    let remove_published =
+        BuiltinIntent::remove_project_with_semantics(package, label, &[file_key], &[], Vec::new())
+            .unwrap();
+    super::super::commands::commit_builtin_intent(&mut daemon, 46, &remove_published).unwrap();
+    let missing_published = daemon.engine().daemon().owner().snapshot();
+    assert_eq!(
+        view_publish::capture_root(&missing_published).unwrap(),
+        capture_root
+    );
+    assert_eq!(
+        view_publish::semantic_root(&missing_published).unwrap(),
+        semantic_root
+    );
+    assert_scope(&missing_published, RowState::Failed, stale.clone());
+    assert!(
+        read_package_sources(&missing_published, package)
+            .unwrap()
+            .projects
+            .is_empty()
+    );
+
+    // The production dirty-empty path can commit a new authenticated project
+    // frontier without changing either capture or semantic publication root.
+    let (source_only, _) =
+        prepare_files_at_source_version(&daemon, package, label, [5; 32], &[(file.clone(), None)]);
+    super::super::commands::commit_builtin_intent(&mut daemon, 5, &source_only).unwrap();
+    let changed = daemon.engine().daemon().owner().snapshot();
+    assert_ne!(
+        view_publish::source_root(&changed).unwrap(),
+        view_publish::source_root(&published).unwrap()
+    );
+    assert_eq!(view_publish::capture_root(&changed).unwrap(), capture_root);
+    assert_eq!(
+        view_publish::semantic_root(&changed).unwrap(),
+        semantic_root
+    );
+    assert_eq!(
+        changed
+            .relation::<BuiltinSemanticRelation>()
+            .unwrap()
+            .lookup(&key)
+            .unwrap(),
+        Some(selected_record.clone())
+    );
+    assert_scope(&changed, RowState::Failed, stale.clone());
+    assert_scope(&published, RowState::Ready, vec![ViewCoverage::Complete]);
+    for deployment in [
+        coverage::SemanticDeployment::Configured,
+        coverage::SemanticDeployment::Unconfigured,
+    ] {
+        assert_eq!(
+            coverage::view_coverage(&changed, &active, deployment).unwrap(),
+            stale
+        );
+    }
+    assert_complete(&daemon, package, "retained.ts", 3);
+    assert_eq!(
+        coverage::package_row_state(&changed, sibling).unwrap(),
+        None,
+        "unrelated package acquired foreign failure scope"
+    );
+
+    let refresh_capture = SemanticSourceCapture::new(None, [5; 32], [0x73; 32], 2, 1).unwrap();
+    commit_capture(
+        &mut daemon,
+        6,
+        refresh_capture,
+        ProductSemanticCaptureOutcome::Pending {
+            prior: Some(version),
+        },
+        Vec::new(),
+    );
+    let current_pending = daemon.engine().daemon().owner().snapshot();
+    assert_scope(&current_pending, RowState::Loading, partial);
+    let (source_only, _) =
+        prepare_files_at_source_version(&daemon, package, label, [7; 32], &[(file, None)]);
+    super::super::commands::commit_builtin_intent(&mut daemon, 7, &source_only).unwrap();
+    let old_pending = daemon.engine().daemon().owner().snapshot();
+    assert_scope(&old_pending, RowState::Failed, stale.clone());
+    commit_capture(
+        &mut daemon,
+        8,
+        refresh_capture,
+        ProductSemanticCaptureOutcome::Failed {
+            prior: version,
+            reason: SemanticUnavailableReason::Cancelled,
+        },
+        Vec::new(),
+    );
+    let failed = daemon.engine().daemon().owner().snapshot();
+    assert_scope(&failed, RowState::Failed, stale.clone());
+    assert_eq!(
+        failed
+            .relation::<BuiltinSemanticRelation>()
+            .unwrap()
+            .lookup(&key)
+            .unwrap(),
+        Some(selected_record)
+    );
+
+    let file_key = backend_engine::product_source_file_key(package.to_bytes(), "retained.ts");
+    let remove =
+        BuiltinIntent::remove_project_with_semantics(package, label, &[file_key], &[], Vec::new())
+            .unwrap();
+    super::super::commands::commit_builtin_intent(&mut daemon, 9, &remove).unwrap();
+    let removed = daemon.engine().daemon().owner().snapshot();
+    assert!(
+        removed
+            .relation::<BuiltinWorkspaceRelation>()
+            .unwrap()
+            .lookup(&package.to_bytes())
+            .unwrap()
+            .is_none()
+    );
+    assert_scope(&removed, RowState::Failed, stale.clone());
+    assert!(
+        read_package_sources(&removed, package)
+            .unwrap()
+            .projects
+            .is_empty(),
+        "removed package became a ghost source frontier"
+    );
+    let final_root = removed.root();
+    drop(removed);
+    drop(failed);
+    drop(old_pending);
+    drop(current_pending);
+    drop(changed);
+    drop(published);
+    drop(missing_published);
+    drop(sibling_after_published);
+    drop(sibling_edit);
+    drop(pending);
+    drop(daemon);
+    let cold = open_daemon(workspace.0.path());
+    let snapshot = cold.engine().daemon().owner().snapshot();
+    assert_eq!(snapshot.root(), final_root);
+    assert_scope(&snapshot, RowState::Failed, stale);
+    assert_complete(&cold, sibling, "sibling.ts", 1);
+}
