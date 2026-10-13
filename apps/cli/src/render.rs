@@ -121,6 +121,9 @@ pub fn fault(fault: &Fault, options: &Options) -> String {
 /// an endpoint failure is the machine's.
 #[must_use]
 pub fn exit_code(fault: &Fault) -> ExitCode {
+    if fault.unconfirmed_index_delivery().is_some() {
+        return ExitCode::from(crate::index_wait::EXIT_WAIT_INCOMPLETE);
+    }
     ExitCode::from(match fault.slug() {
         FaultSlug::Usage => EXIT_USAGE,
         FaultSlug::Endpoint | FaultSlug::Transport => EXIT_IO,

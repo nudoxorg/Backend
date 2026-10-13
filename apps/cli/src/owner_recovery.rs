@@ -1,4 +1,4 @@
-//! One authenticated replacement; durable starts reconcile their saved key.
+//! Authenticated read recovery; durable starts reconcile their saved key once.
 
 use backend_client::{
     ClientError, IndexJournalDispatch, JournaledIndexStart, RequestContext, Session,
@@ -169,7 +169,7 @@ impl OwnerRecovery {
         );
         let result = match (held_start, &command, result) {
             (Some(_), SurfaceCommand::IndexOperationStart { operation_key, .. }, Err(cause))
-                if !matches!(cause, ClientError::RequestCancelled(_)) =>
+                if !matches!(cause, ClientError::RequestCancelled(_) | ClientError::CommandFailed(_)) =>
             {
                 Err(ClientError::IndexOperationDeliveryUnknown {
                     operation_key: *operation_key,
@@ -199,6 +199,9 @@ impl OwnerRecovery {
         };
         let durable_start = held_start.is_some();
         let status_read = matches!(command, SurfaceCommand::IndexOperationStatus { .. });
+        if status_read && let Some(scope) = context {
+            return self.reobserve_saved_operation(session, command, scope, error);
+        }
         if self.used || !is_peer_loss(&error) || !(durable_start || status_read) {
             return Err(
                 if !durable_start
@@ -228,6 +231,47 @@ impl OwnerRecovery {
             start.reconcile_after_reconnect(|command| session.surface(command))
         } else {
             session.surface(command)
+        }
+    }
+
+    /// A receipt read cannot duplicate owner work. Frame-budget retirement
+    /// may happen repeatedly during one long wait, so re-authenticate and read
+    /// the identical saved key under the original absolute caller scope.
+    fn reobserve_saved_operation(
+        &mut self,
+        session: &mut Session,
+        command: SurfaceCommand,
+        scope: &RequestContext,
+        mut error: ClientError,
+    ) -> Result<SurfaceReply, ClientError> {
+        loop {
+            scope.check()?;
+            if !is_peer_loss(&error) {
+                return Err(error);
+            }
+            // Pace repeated immediate peer loss without resetting the deadline;
+            // cancellation remains observable during the reconnect backoff.
+            for _ in 0..4 {
+                let remaining = scope.remaining_read_budget()?.ok_or_else(|| {
+                    ClientError::Protocol(
+                        "saved-key re-observation requires the original bounded scope".to_owned(),
+                    )
+                })?;
+                std::thread::sleep(remaining.min(std::time::Duration::from_millis(25)));
+            }
+            scope.check()?;
+            match self.replace(session, scope.clone()) {
+                Ok(()) => {}
+                Err(next) if is_peer_loss(&next) => {
+                    error = next;
+                    continue;
+                }
+                Err(next) => return Err(next),
+            }
+            match session.surface(command.clone()) {
+                Ok(reply) => return Ok(reply),
+                Err(next) => error = next,
+            }
         }
     }
 
@@ -303,6 +347,14 @@ fn connect_replacement(
             "owner replacement requires the original bounded request scope".to_owned(),
         )
     })?;
+    // Authenticate the existing listener first. A healthy owner can retire
+    // a bounded connection while continuing its compile. Slow/busy listeners
+    // (WouldBlock/TimedOut) never authorize another owner candidate.
+    match Session::connect_with_context(paths.endpoint(), context.clone()) {
+        Ok(session) => return Ok(session),
+        Err(ClientError::Disconnected(ErrorKind::ConnectionRefused | ErrorKind::NotFound)) => {}
+        Err(error) => return Err(error),
+    }
     let endpoint = if passive {
         backend_runtime::connect_existing_locald(paths)
             .map_err(|error| ClientError::Startup(error.into()))?

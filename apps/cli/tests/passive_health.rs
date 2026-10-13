@@ -246,6 +246,15 @@ fn passive_health_returns_status_from_a_live_owner() {
     let config = ProcessConfig::parse(arguments).expect("parse embedded owner config");
     let owner = EmbeddedLocalService::start(config).expect("start real local owner");
 
+    let mut owner_session = backend_client::Session::connect(&endpoint)
+        .expect("authenticate against the admitted owner");
+    let admitted = owner_session
+        .health()
+        .expect("read the owner's admitted health identity");
+    let expected_revision = backend_library::encode_id(admitted.revision().root().as_bytes());
+    let expected_source = backend_library::encode_id(admitted.basis().object.as_bytes());
+    drop(owner_session);
+
     let output = Command::new(env!("CARGO_BIN_EXE_backend-cli"))
         .args([
             "--passive",
@@ -262,8 +271,6 @@ fn passive_health_returns_status_from_a_live_owner() {
         .output()
         .expect("run passive CLI health");
 
-    let close = owner.close().expect("stop embedded owner");
-    assert!(close.frames > 0, "owner received no health request");
     assert!(
         output.status.success(),
         "live owner health failed: {}",
@@ -272,8 +279,68 @@ fn passive_health_returns_status_from_a_live_owner() {
     let status: Value = serde_json::from_slice(&output.stdout).expect("status JSON");
     assert_eq!(status["answer"], "status");
     assert_eq!(status["readiness"], "ready");
-    assert_eq!(status["revision"].as_str().map(str::len), Some(64));
-    assert_eq!(status["source"].as_str().map(str::len), Some(64));
+    assert_eq!(status["detail"], "summary");
+    assert_eq!(
+        status["revision"].as_str(),
+        Some(expected_revision.as_str())
+    );
+    assert_eq!(
+        status["revision_tag"].as_str(),
+        Some(&expected_revision[..8])
+    );
+    assert!(
+        status.get("source").is_none(),
+        "summary omits exact source identity"
+    );
+    assert_eq!(status["availability"], "available");
+    assert!(status["coverage"].as_array().is_some());
+    assert!(status["capabilities"].is_object());
+
+    let full = Command::new(env!("CARGO_BIN_EXE_backend-cli"))
+        .args([
+            "--passive",
+            "--format",
+            "json",
+            "--detail",
+            "full",
+            "--project",
+            project.to_str().expect("UTF-8 project path"),
+            "--workspace",
+            workspace.to_str().expect("UTF-8 fixture path"),
+            "--endpoint",
+            endpoint.to_str().expect("UTF-8 fixture path"),
+            "health",
+        ])
+        .output()
+        .expect("run passive CLI health with full identity detail");
+    assert!(
+        full.status.success(),
+        "full live owner health failed: {}",
+        String::from_utf8_lossy(&full.stderr)
+    );
+    let full_status: Value = serde_json::from_slice(&full.stdout).expect("full status JSON");
+    assert_eq!(full_status["answer"], "status");
+    assert_eq!(full_status["detail"], "full");
+    assert_eq!(
+        full_status["revision"].as_str(),
+        Some(expected_revision.as_str())
+    );
+    assert_eq!(
+        full_status["source"].as_str(),
+        Some(expected_source.as_str())
+    );
+    assert_eq!(
+        full_status["revision_tag"].as_str(),
+        Some(&expected_revision[..8])
+    );
+    assert_eq!(
+        full_status["source_tag"].as_str(),
+        Some(&expected_source[..8])
+    );
+    assert!(full.stderr.is_empty());
+
+    let close = owner.close().expect("stop embedded owner");
+    assert_eq!(close.frames, 3, "one baseline and two passive health reads");
 
     fs::remove_dir_all(root).expect("remove fixture root");
     let _ = fs::remove_file(endpoint);

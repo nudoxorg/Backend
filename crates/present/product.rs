@@ -1264,7 +1264,10 @@ fn index_operation_view(observation: &backend_library::IndexOperationObservation
             vec![ProductRecord::new(
                 "index operation key is unknown".to_owned(),
                 Some(operation_key.to_hex()),
-                vec!["unknown does not mean published".to_owned()],
+                vec![
+                    "unknown does not mean published".to_owned(),
+                    "no retained receipt was observed; a previously delivered request may still be queued".to_owned(),
+                ],
             )],
         ),
         O::Known(status) => {

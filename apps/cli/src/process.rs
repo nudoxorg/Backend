@@ -30,10 +30,6 @@ use std::time::Duration;
 /// the deadline expires, the original command remains explicitly unsent.
 #[cfg(unix)]
 const STARTUP_COMMAND_BUDGET: Duration = backend_runtime::COMMAND_STARTUP_TIMEOUT;
-/// Status can report an unsent cold-start observation while the candidate
-/// finishes ordinary owner admission. Other commands retain their deadline.
-#[cfg(unix)]
-const STATUS_STARTUP_RESPONSE_BUDGET: Duration = Duration::from_secs(1);
 /// EX_TEMPFAIL: the bounded owner wait ended before a command was submitted.
 #[cfg(unix)]
 const EXIT_STARTUP_PENDING: u8 = 75;
@@ -149,8 +145,7 @@ fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), 
                     .map_err(|error| {
                         Fault::from_client_error(&error, Operand::Text("local startup".to_owned()))
                     })?
-                    .unwrap_or(STARTUP_COMMAND_BUDGET)
-                    .min(startup_response_budget(&plan.request)),
+                    .unwrap_or(STARTUP_COMMAND_BUDGET),
                 |phase| {
                     if let Some(progress) = &progress {
                         let _ = progress.try_send(format!("local startup: {}", phase.as_str()));
@@ -218,14 +213,6 @@ fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), 
     let (answer, outcome) =
         execute_plan_with_recovery(&mut session, &plan, &workspace, Some(&mut recovery))?;
     render_admitted_answer(&session, &answer, options).map(|output| (output, outcome))
-}
-
-#[cfg(unix)]
-fn startup_response_budget(request: &Request) -> Duration {
-    match request {
-        Request::Status => STATUS_STARTUP_RESPONSE_BUDGET.min(STARTUP_COMMAND_BUDGET),
-        _ => STARTUP_COMMAND_BUDGET,
-    }
 }
 
 #[cfg(unix)]
@@ -553,15 +540,19 @@ mod startup_tests {
     use super::*;
 
     #[test]
-    fn cold_status_response_horizon_does_not_change_command_or_passive_semantics() {
+    fn cold_status_uses_the_existing_bounded_startup_and_passive_stays_connect_only() {
         for words in [vec!["status"], vec!["health"]] {
             let words = words.into_iter().map(str::to_owned).collect::<Vec<_>>();
             let plan =
                 plan(&words, &Options::fallback(), "/repo").expect("registered command plan");
             assert!(matches!(plan.request, Request::Status));
             assert_eq!(
-                startup_response_budget(&plan.request),
-                Duration::from_secs(1)
+                STARTUP_COMMAND_BUDGET,
+                backend_runtime::COMMAND_STARTUP_TIMEOUT
+            );
+            assert!(
+                STARTUP_COMMAND_BUDGET > Duration::from_secs(8),
+                "the observed cold owner opening must not be cut off after one second"
             );
             assert!(plan.wait.is_none());
         }
@@ -569,10 +560,8 @@ mod startup_tests {
             let words = words.into_iter().map(str::to_owned).collect::<Vec<_>>();
             let plan =
                 plan(&words, &Options::fallback(), "/repo").expect("registered command plan");
-            assert_eq!(
-                startup_response_budget(&plan.request),
-                STARTUP_COMMAND_BUDGET
-            );
+            assert!(!matches!(plan.request, Request::Status));
+            assert!(plan.wait.is_none());
         }
         let (options, words) = options::split(&["--passive".to_owned(), "status".to_owned()])
             .expect("passive options");

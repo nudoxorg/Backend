@@ -211,7 +211,7 @@ pub fn help_for(grammar: CommandGrammar) -> String {
         let _ = writeln!(out, "\nalso spelled: {}", grammar.aliases().join(", "));
     }
     if grammar.name() == "health" {
-        out.push_str("\nConnect without starting an owner or creating state: nudox --passive status\nOn Unix, a cold status returns an explicit unsent startup observation after a short wait. Retry its printed command for authenticated status.\n");
+        out.push_str("\nConnect without starting an owner or creating state: nudox --passive status\nOn Unix, cold status waits for its owner under the bounded startup deadline. If that deadline expires, it returns an unsent startup observation; retry the original command.\n");
     }
     out
 }
@@ -245,7 +245,7 @@ options
   -h, --help                    Show this help, or one command's help after its name.
   -V, --version                 Show the version.
 
-On Unix, cold health/status returns an explicit pending observation after a short startup wait; the command is unsent and the candidate continues admission. Retry for the authenticated status. --passive never starts a candidate.
+On Unix, cold health/status waits for the owner under the bounded startup deadline. If it expires, the command is unsent and the candidate continues admission; retry the original command. --passive never starts a candidate.
 
 COLUMNS is honoured for width. Exit codes: 0 success, 2 the engine refused,
 64 the arguments were wrong, 1 the local endpoint failed,
