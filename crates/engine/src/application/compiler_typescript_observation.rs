@@ -47,12 +47,15 @@ impl TszExecutionCheckpoint for ObservedTypeScriptBudget<'_> {
         if let Err(stop) = result {
             if !self.stop_observed.swap(true, Ordering::AcqRel) {
                 // A rejected charge does not subtract from the remaining
-                // allowance. Keep its requested size and one counter snapshot
-                // so exhaustion cannot be mistaken for spending the full cap.
+                // allowance. This call can also observe another worker's
+                // already-latched stop: its attempted units are not necessarily
+                // the charge that originally caused exhaustion. Identify that
+                // context and retain one remaining/charged snapshot.
                 let remaining = self.budget.remaining_work_units();
                 tracing::warn!(target: "compiler.typescript_project", transition = "stopped",
                     reason = ?stop, project_elapsed_millis = self.started.elapsed().as_millis() as u64,
                     project_initial_work_units = self.initial_work,
+                    project_attempt_context = "first_observed_stopped_checkpoint",
                     project_attempted_work_units = work_units,
                     project_charged_work_units = self.initial_work.saturating_sub(remaining),
                     project_remaining_work_units = remaining,
@@ -171,6 +174,37 @@ mod tests {
         ] {
             assert_eq!(record.get(name), Some(&expected), "{name}");
         }
+    }
+
+    #[test]
+    fn release_level_latched_stop_reports_its_observed_poll_without_inventing_a_charge() {
+        let records = Arc::new(Mutex::new(Vec::new()));
+        tracing::subscriber::with_default(StopSubscriber(Arc::clone(&records)), || {
+            let cancelled = AtomicBool::new(false);
+            let budget = ObservedTypeScriptBudget::new(
+                Instant::now() + Duration::from_secs(30),
+                &cancelled,
+                7,
+            );
+            // Model another worker latching exhaustion before this wrapper's
+            // first observed failure. Its zero-work poll did not reject 5 units.
+            assert_eq!(budget.budget.checkpoint(3), Ok(()));
+            assert_eq!(
+                budget.budget.checkpoint(5),
+                Err(TszProjectExecutionStop::WorkBudgetExhausted)
+            );
+            assert_eq!(
+                budget.checkpoint(0),
+                Err(TszProjectExecutionStop::WorkBudgetExhausted)
+            );
+        });
+        let records = records.lock().unwrap();
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
+        assert_eq!(record.get("project_attempted_work_units"), Some(&0));
+        assert_eq!(record.get("project_initial_work_units"), Some(&7));
+        assert_eq!(record.get("project_charged_work_units"), Some(&3));
+        assert_eq!(record.get("project_remaining_work_units"), Some(&4));
     }
 
     #[test]
