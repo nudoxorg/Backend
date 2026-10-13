@@ -1053,7 +1053,7 @@ impl Shelf {
     /// a package hoisted into from the Library is not the one the reader is on.
     fn watch_scope(&mut self, cx: &mut Context<Self>) {
         let snapshot = self.links.snapshot(cx);
-        let keys = self.keys(&snapshot);
+        let keys = self.keys(&snapshot, self.links.store.read(cx));
         let store = self.links.store.clone();
         store.update(cx, |store, cx| {
             for key in keys.iter().cloned() {
@@ -2052,7 +2052,7 @@ impl Region for Shelf {
         &mut self.core
     }
 
-    fn keys(&self, snapshot: &AppSnapshot) -> Vec<PageKey> {
+    fn keys(&self, snapshot: &AppSnapshot, _store: &DataStore) -> Vec<PageKey> {
         if matches!(snapshot.overlay(), Some(Overlay::Settings(_))) {
             return Vec::new();
         }
