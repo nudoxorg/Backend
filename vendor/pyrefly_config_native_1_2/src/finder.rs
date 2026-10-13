@@ -89,6 +89,12 @@ impl ConfigError {
     pub fn cause(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
         self.msg.root_cause()
     }
+
+    /// Borrows the genuine cause followed by each native context, inside-out.
+    /// No contextual message is reconstructed or parsed from rendered text.
+    pub fn cause_chain(&self) -> impl Iterator<Item = &(dyn std::error::Error + 'static)> {
+        self.msg.chain().rev()
+    }
 }
 
 #[cfg(test)]
@@ -103,6 +109,17 @@ mod nudox_cause_tests {
         assert_eq!(warning.severity(), Severity::Warn);
         assert_eq!(warning.get_message(), "second loader path");
         assert_eq!(warning.cause().to_string(), "genuine inner native warning");
+        assert_eq!(
+            warning
+                .cause_chain()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            [
+                "genuine inner native warning",
+                "first loader path",
+                "second loader path"
+            ]
+        );
     }
 }
 

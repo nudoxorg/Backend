@@ -302,7 +302,8 @@
   "changes": [
     "Sibling build/python/util crates remain at the exact pinned git revision instead of sibling paths.",
     "ConfigError::cause borrows anyhow::Error::root_cause before loader path context; no native parser/loader or severity behavior is changed.",
-    "One native cause-context control is added; all upstream source and tests remain present."
+    "One native cause-context control is added; all upstream source and tests remain present.",
+    "Borrowed ConfigError::cause_chain yields the genuine root cause followed by native field/file contexts, preserving configure() diagnostics in the bounded streaming adapter."
   ],
   "overlay_files": [
     {
@@ -313,7 +314,7 @@
     {
       "path": "src/finder.rs",
       "upstream_sha256": "5d4897f7e72c89087c6e090ac4efeea3cd07211b37df10b36bddf1f0251ebc51",
-      "overlay_sha256": "86ba7249f5124580d81602ecaa67b1a3ecd589705f3fcd9962fa920d1c77af27"
+      "overlay_sha256": "6e06284ebabd2c20f50c5f6138d8bef407262bc0c0c608796de0a393003507fd"
     }
   ]
 }

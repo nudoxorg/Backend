@@ -449,12 +449,10 @@ pub(super) fn native_loader_causes(
                 if index != 0 {
                     formatter.write_str("; ")?;
                 }
-                write!(
-                    formatter,
-                    "{}: {}",
-                    error.severity().label().trim(),
-                    error.cause()
-                )?;
+                formatter.write_str(error.severity().label().trim())?;
+                for cause in error.cause_chain() {
+                    write!(formatter, ": {cause}")?;
+                }
             }
             Ok(())
         }
@@ -541,6 +539,44 @@ mod tests {
             Err(CheckerError::Cancelled { phase: "project" })
         ));
         assert!(evidence.faults.is_empty());
+    }
+
+    #[test]
+    fn actual_native_invalid_path_causes_keep_field_and_config_source_context() {
+        let root = std::env::temp_dir().join(format!(
+            "nudox-native-config-path-context-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("pyproject.toml");
+        let source = "[tool.pyrefly]\nsearch-path = ['missing-search']\nsite-package-path = ['missing-site']\n";
+        std::fs::write(&path, source).unwrap();
+        let (mut config, errors) = ConfigFile::from_file(&path);
+        assert!(errors.is_empty());
+        config.interpreters.skip_interpreter_query = true;
+        let errors = config.configure();
+        assert_eq!(
+            errors.len(),
+            2,
+            "actual native search/site-package validation"
+        );
+        let cancelled = AtomicBool::new(false);
+        let message = native_loader_causes(&errors, control(&cancelled)).unwrap();
+        for (error, field) in errors.iter().zip(["site-package-path", "search-path"]) {
+            let cause = error.cause().to_string();
+            let context = format!("Invalid {field}");
+            let file = error.get_message();
+            assert_eq!(file, path.to_string_lossy());
+            let cause_position = message.find(&cause).unwrap();
+            let field_position = message[cause_position..].find(&context).unwrap() + cause_position;
+            let file_position = message[field_position..].find(&file).unwrap() + field_position;
+            assert!(
+                cause_position < field_position && field_position < file_position,
+                "native cause, field and file context remain ordered"
+            );
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), source.as_bytes());
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn refuse(name: &str, text: &str) -> Box<[PythonProjectConfigurationFault]> {
