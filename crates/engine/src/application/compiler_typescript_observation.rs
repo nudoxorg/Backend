@@ -48,15 +48,16 @@ impl TszExecutionCheckpoint for ObservedTypeScriptBudget<'_> {
             if !self.stop_observed.swap(true, Ordering::AcqRel) {
                 // A rejected charge does not subtract from the remaining
                 // allowance. This call can also observe another worker's
-                // already-latched stop: its attempted units are not necessarily
-                // the charge that originally caused exhaustion. Identify that
-                // context and retain one remaining/charged snapshot.
+                // already-latched stop: this first observed failed call's
+                // argument is not necessarily the charge that originally
+                // caused exhaustion. Identify that context and retain one
+                // remaining/charged snapshot.
                 let remaining = self.budget.remaining_work_units();
                 tracing::warn!(target: "compiler.typescript_project", transition = "stopped",
                     reason = ?stop, project_elapsed_millis = self.started.elapsed().as_millis() as u64,
                     project_initial_work_units = self.initial_work,
                     project_attempt_context = "first_observed_stopped_checkpoint",
-                    project_attempted_work_units = work_units,
+                    project_observed_attempted_work_units = work_units,
                     project_charged_work_units = self.initial_work.saturating_sub(remaining),
                     project_remaining_work_units = remaining,
                     "native TypeScript project execution stopped");
@@ -168,7 +169,7 @@ mod tests {
         let record = &records[0];
         for (name, expected) in [
             ("project_initial_work_units", 7),
-            ("project_attempted_work_units", 5),
+            ("project_observed_attempted_work_units", 5),
             ("project_charged_work_units", 3),
             ("project_remaining_work_units", 4),
         ] {
@@ -186,22 +187,33 @@ mod tests {
                 &cancelled,
                 7,
             );
-            // Model another worker latching exhaustion before this wrapper's
-            // first observed failure. Its zero-work poll did not reject 5 units.
-            assert_eq!(budget.budget.checkpoint(3), Ok(()));
-            assert_eq!(
-                budget.budget.checkpoint(5),
-                Err(TszProjectExecutionStop::WorkBudgetExhausted)
-            );
-            assert_eq!(
-                budget.checkpoint(0),
-                Err(TszProjectExecutionStop::WorkBudgetExhausted)
-            );
+            let latched = std::sync::Barrier::new(2);
+            std::thread::scope(|workers| {
+                workers.spawn(|| {
+                    assert_eq!(budget.budget.checkpoint(3), Ok(()));
+                    assert_eq!(
+                        budget.budget.checkpoint(5),
+                        Err(TszProjectExecutionStop::WorkBudgetExhausted)
+                    );
+                    latched.wait();
+                });
+                // Another worker has latched exhaustion before the wrapper's
+                // first observed failure. This zero-work poll did not reject 5.
+                latched.wait();
+                assert_eq!(
+                    budget.checkpoint(0),
+                    Err(TszProjectExecutionStop::WorkBudgetExhausted)
+                );
+            });
         });
         let records = records.lock().unwrap();
         assert_eq!(records.len(), 1);
         let record = &records[0];
-        assert_eq!(record.get("project_attempted_work_units"), Some(&0));
+        assert_eq!(
+            record.get("project_observed_attempted_work_units"),
+            Some(&0)
+        );
+        assert!(!record.contains_key("project_attempted_work_units"));
         assert_eq!(record.get("project_initial_work_units"), Some(&7));
         assert_eq!(record.get("project_charged_work_units"), Some(&3));
         assert_eq!(record.get("project_remaining_work_units"), Some(&4));
