@@ -33,6 +33,7 @@ pub enum ProjectExecutionPhase {
     LibraryViews,
     BinderViews,
     OwnershipIndex,
+    SharedCheckerIndexes,
     AffectedLibraries,
     AugmentationPrime,
     FileReset,
