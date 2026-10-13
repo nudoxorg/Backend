@@ -2821,11 +2821,9 @@ pub(crate) fn select_project_config<'a>(
     else {
         return Ok(None);
     };
-    let nearest_candidates = candidates
-        .iter()
-        .copied()
-        .take_while(|candidate| candidate.path.components().count() == nearest)
-        .collect::<Vec<_>>();
+    let nearest_end =
+        candidates.partition_point(|candidate| candidate.path.components().count() == nearest);
+    let nearest_candidates = &candidates[..nearest_end];
     // `tsc -p <directory>` uses that directory's conventional tsconfig.json.
     // Keep sibling named configs as raw candidates, but do not let them make
     // the ordinary directory choice ambiguous. Producers such as Angular may
@@ -2838,7 +2836,7 @@ pub(crate) fn select_project_config<'a>(
     }) {
         return Ok(Some(*default));
     }
-    match nearest_candidates.as_slice() {
+    match nearest_candidates {
         [only] => Ok(Some(*only)),
         [_, _, ..] => Err(TypeScriptProjectHostError::CompilerApiBridge {
             message: "multiple equally near named TypeScript configs are present and no tsconfig.json default exists; a config selector is required".into(),
@@ -5744,6 +5742,16 @@ printf 'Version 5.9.3\n'
             .expect("shared selector")
             .expect("selected config");
         assert!(selected.path.ends_with("tsconfig.react.json"));
+
+        let both_selected = [
+            fixture.0.join("tsconfig.server.json"),
+            fixture.0.join("tsconfig.react.json"),
+        ];
+        assert!(matches!(
+            collect_project_configs(&fixture.0, &fixture.0, &module_root, &both_selected),
+            Err(TypeScriptProjectHostError::CompilerApiBridge { ref message })
+                if message.contains("more than one selected TypeScript build config")
+        ));
     }
 
     #[test]
@@ -5754,6 +5762,11 @@ printf 'Version 5.9.3\n'
         let package = fixture.0.join("packages/trpc");
         let app_store = fixture.0.join("packages/app-store");
         let config_package = module_root.join("@calcom/tsconfig");
+        fs::write(
+            fixture.0.join("tsconfig.json"),
+            r#"{"compilerOptions":{"strict":true}}"#,
+        )
+        .expect("write workspace parent config");
         fs::create_dir_all(&package).expect("create trpc package");
         fs::create_dir_all(app_store.join("src")).expect("create app-store package");
         fs::create_dir_all(&config_package).expect("create shared config package");
@@ -5813,6 +5826,14 @@ printf 'Version 5.9.3\n'
             TypeScriptConfigDependencyAuthority::Program
         );
         assert!(selected.references.is_empty());
+        let parent = configs
+            .iter()
+            .find(|config| config.path.as_ref() == fixture.0.join("tsconfig.json"))
+            .expect("workspace parent config remains captured");
+        assert_eq!(
+            parent.dependency_authority,
+            TypeScriptConfigDependencyAuthority::Unselected
+        );
         for path in [&server, &react, &server_build] {
             let variant = configs
                 .iter()
