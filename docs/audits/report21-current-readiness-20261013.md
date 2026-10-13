@@ -1,6 +1,6 @@
 # Report 21 readiness checkpoint
 
-Updated 2026-10-13, 06:46 UTC. Product readiness is **not established**. Canonical remains `8b27d833f71532a73a4d8b660661227023e9892b`; the repairs below are published review branches. A current native compile failed as recorded below. No current native test or fresh application success is asserted by this checkpoint.
+Updated 2026-10-13, 07:46 UTC. Product readiness is **not established**. The earlier documentation checkpoint merged into canonical as `f71a06c6309e4d8fada172cd86b579704c6cd197`; the product repairs below remain published review branches. Current native failures and two passing compiler controls are recorded below. No fresh application success is asserted by this checkpoint.
 
 ## Published repairs
 
@@ -19,6 +19,7 @@ Updated 2026-10-13, 06:46 UTC. Product readiness is **not established**. Canonic
 | Durable default index start | [PR 201](https://dev.nudox.org/git/Nudox/Backend/pulls/201) | Default MCP and CLI share saved claims; pre-send refusals remain refusals and uncertain delivery retains an actionable key. Socket, subprocess and scripted controls have different proof scopes; all remain unrun. |
 | Definitive initial GUI Root failure | [PR 202](https://dev.nudox.org/git/Nudox/Backend/pulls/202) | Exact owner/request carrier wakes observation without waiting for timeout; cancellation, supersession, new owner and certified publication protected. Five laws prepared; mounted startup/retry and pixels unrun. |
 | MCP outline type repairs | [PR 203](https://dev.nudox.org/git/Nudox/Backend/pulls/203) | Maps presentation faults at the JSON-RPC boundary and uses canonical relation entries for versioned fixtures. Reproduced native compile errors; corrected rerun pending. |
+| Conventional TypeScript project selection | [PR 205](https://dev.nudox.org/git/Nudox/Backend/pulls/205) | Preserves producer selection, chooses the nearest conventional default with a borrowed prefix, and retains named-only refusal with actionable guidance. Parent/default and multiple-selection controls remain; native and real Cal.com acceptance pending. |
 
 ## Exact candidates
 
@@ -43,6 +44,23 @@ Root fixed both errors and found a third occurrence of the same root API mismatc
 Separate Sol 6.1 workers prepared fresh HTTPie, SearXNG, Gitea and Caddy checkouts on ILO, plus pinned Excalidraw and Angular source archives. They have not run current product owners or indexed those projects. A fresh canonical v6 sample at 06:38:16 reported five occupied reachable-fleet slots and allowed remote admission, with approximately 56 GiB available ILO memory and 152 GiB disk. The managed RustPython shim failed ctypes process sampling; the validated CPython 3.12.14 runtime produced complete successful samples. No census source workaround or local heavy build was used.
 
 Additional isolated source atoms await native review: the conventional TypeScript config selector correction (`c535075e6e`), grouped-search tail parity (`298ee8c459`), warning cleanup, and Windows archive command alias assembly. None is silently added to the frozen successor. Cal.com's real `packages/trpc` layout exposed the selector problem: four peer configs including a valid `tsconfig.json` were treated as ambiguous. The proposed shared selector preserves producer-selected configs and recognizes the conventional default; its native controls remain unrun.
+
+## Completed successor native run
+
+The exact `7bd8` successor ran on ILO starting at approximately 07:18 UTC under custodian PID 3859295 and scope `nudox-job-96f53fa7a00046cbb8d665e6b75860da.scope`. Actual Cargo PID 3859669 and subsequent Cargo/rustc processes were observed inside that scope. No local heavy build or index owner was launched. A separate coworker's remote Cargo process used another source/cache; it was left untouched.
+
+All four primary library packages, the local-service and TypeScript frontend build/test targets, TypeScript core, and CLI/MCP executable builds failed on the same six Rust Fn/FnOnce lifetime errors in `tsz-checker` at the three observer span calls. Diagnostic-message totals include warnings; they are not additional error counts. No usable current CLI/MCP executable was produced.
+
+`backend-compile` did compile. Its real ELF was `/root/.cache/nudox/cargo-1.97/build/slot-0/debug/deps/backend_compile-7933a7484f6b7edd`, SHA-256 `9f6eb3d37c6392f41c3cd51ede78e5b153fdb377f5973ed97028f47511526942`, size 11,930,184 bytes. Its successful listing contained 140 tests; only these two selected tests ran and passed:
+
+- `process::identity::tests::owner_executable_capture_preserves_full_identity_and_original_stop_cause`
+- `process::identity::tests::executable_identity_refuses_a_fifo_without_waiting_for_a_writer`
+
+Each run reported one pass and 139 filtered tests. This is two executed passes, not 140 passes, and does not validate TypeScript, indexing or MCP. The driver's overall exit 1 correctly aggregated the failed required phases; it did not throw a source verification exception. Before/after source verification matched all 18,253 entries and clean HEAD/tree/locks. The scope drained and reaped with ECHILD and its permit was released. The outer 124 records cleanup after the failed child, not a different product result.
+
+Root corrected the observer's argument lifetime explicitly while keeping events borrowed and immediately forwarded. The new immutable candidate is `97895b5cb2a113c0eb122e548935cfeb1f0e1ba8`, tree `ca9a3c2c76387c946c8c1c85b2a9769fca858536`. Independent Luna source review passed; a fresh native rerun is pending. Its build packet also includes the matched `backend-locald` companion: current first-use bootstrap requires that third executable beside CLI/MCP. Source preparation and download status remain separate from usable binaries and real application acceptance.
+
+Two orchestration faults also became explicit. A startup reservation used 8 GiB while its declared/live attempt limit was 4 GiB; prospective admission now uses the same existing cap. A stale output generation literal then refused one actor before Cargo; that attempt was preserved and closed before the successful native launch. Global loan-registry clear checks also serialize legitimate live jobs; a separate proposal is being reviewed to validate independent live custody and slots without allowing unknown/orphaned ownership. No concurrency exception is silently deployed.
 
 ## Required remaining acceptance
 
