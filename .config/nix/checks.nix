@@ -73,6 +73,10 @@ in
         cp ${../ci/surface.py} .config/ci/surface.py
         cp ${../ci/test_surface.py} .config/ci/test_surface.py
         python3 .config/ci/test_surface.py
+        cp ${../ci/smoke.py} .config/ci/smoke.py
+        cp ${../ci/cli_contract.py} .config/ci/cli_contract.py
+        cp ${../ci/test_cli_contract.py} .config/ci/test_cli_contract.py
+        python3 .config/ci/test_cli_contract.py
         cp ${../ci/test_layout.py} test_layout.py
         cp ${../ci/test_test_layout.py} test_test_layout.py
         python3 test_test_layout.py
