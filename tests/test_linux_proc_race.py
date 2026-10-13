@@ -18,22 +18,32 @@ sys.modules[SPEC.name] = census
 SPEC.loader.exec_module(census)
 
 
-def stat_text(state: str, start: int, *, ppid: int = 11, pgid: int = 12, sid: int = 13) -> str:
+def stat_text(
+    state: str,
+    start: int,
+    *,
+    ppid: int = 11,
+    pgid: int = 12,
+    sid: int = 13,
+    flags: int = 0,
+) -> str:
     # Linux fields after comm: state is field 3 and starttime is field 22.
-    fields = [state, str(ppid), str(pgid), str(sid), "0"] + ["0"] * 14 + [str(start)]
+    fields = [state, str(ppid), str(pgid), str(sid), "0", "0", str(flags)] + ["0"] * 12 + [str(start)]
     return "41 (cargo (test)) " + " ".join(fields)
 
 
 class FakeProc:
-    def __init__(self, pid: int, *, starts: list[tuple[str, int]] | None = None,
+    def __init__(self, pid: int, *, starts: list[tuple[str, int] | tuple[str, int, int]] | None = None,
                  ready: list[bool | int | None] | None = None, failure: BaseException | None = None,
-                 fail_path: str | None = None) -> None:
+                 fail_path: str | None = None, flags: int = 0, status_uid: int = 1000) -> None:
         self.pid = pid
         self.pidfd = 73
         self.starts = list(starts or [("R", 101)] * 3)
         self.ready_values = list(ready or [False, False])
         self.failure = failure
         self.fail_path = fail_path
+        self.flags = flags
+        self.status_uid = status_uid
         self.events: list[str] = []
 
     def __enter__(self) -> "FakeProc":
@@ -46,8 +56,10 @@ class FakeProc:
 
     def read_stat(self) -> census._LinuxProcStat:
         self.events.append("stat")
-        state, start = self.starts.pop(0)
-        return census._parse_linux_proc_stat(stat_text(state, start))
+        sample = self.starts.pop(0)
+        state, start = sample[:2]
+        flags = sample[2] if len(sample) == 3 else self.flags
+        return census._parse_linux_proc_stat(stat_text(state, start, flags=flags))
 
     def pin_pidfd(self) -> None:
         pass
@@ -67,7 +79,8 @@ class FakeProc:
         if self.failure is not None and self.fail_path == relative_path:
             raise self.failure
         if relative_path == "status":
-            return "Name:\tcargo\nUid:\t1000\t1000\t1000\t1000\n"
+            uid = self.status_uid
+            return f"Name:\tcargo\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n"
         raise AssertionError(relative_path)
 
     def readlink(self, relative_path: str) -> str:
@@ -342,6 +355,84 @@ class LinuxProcRaceTests(unittest.TestCase):
         self.assertEqual(records, {})
         self.assertEqual(issues, {})
         self.assertEqual(races, {"pid-exited-during-scan": 1})
+
+    def test_stable_pf_kthread_missing_executable_is_skipped(self) -> None:
+        kthread_flag = census._LINUX_PF_KTHREAD
+        self.assertEqual(census._parse_linux_proc_stat(stat_text("S", 101, flags=kthread_flag)).flags, kthread_flag)
+        missing = FileNotFoundError(errno.ENOENT, "no executable for kernel thread", "exe")
+        factory, _rows = self.factory(
+            flags=kthread_flag,
+            status_uid=0,
+            ready=[0, 0],
+            failure=missing,
+            fail_path="exe",
+        )
+        row = census._PsRow(41, 2, 0, 0, "Mon Oct 12 00:00:00 2026", "kworker/R-fixture")
+
+        records, issues, races = census._linux_processes(
+            0,
+            [row],
+            census._ArgvBudget(),
+            proc_root=self.proc_root,
+            proc_factory=factory,
+        )
+
+        self.assertEqual(records, {})
+        self.assertEqual(issues, {})
+        self.assertEqual(races, {})
+
+    def test_kernel_thread_flag_must_match_before_and_after_missing_executable(self) -> None:
+        kthread_flag = census._LINUX_PF_KTHREAD
+        inconsistent_samples = [
+            [("S", 101, 0), ("S", 101, kthread_flag), ("S", 101, kthread_flag)],
+            [("S", 101, kthread_flag), ("S", 101, kthread_flag), ("S", 101, 0)],
+        ]
+        for starts in inconsistent_samples:
+            with self.subTest(starts=starts):
+                missing = FileNotFoundError(errno.ENOENT, "no executable for kernel thread", "exe")
+                factory, _rows = self.factory(
+                    starts=starts,
+                    status_uid=0,
+                    ready=[0, 0],
+                    failure=missing,
+                    fail_path="exe",
+                )
+                row = census._PsRow(41, 2, 0, 0, "Mon Oct 12 00:00:00 2026", "kworker/R-fixture")
+
+                records, issues, races = census._linux_processes(
+                    0,
+                    [row],
+                    census._ArgvBudget(),
+                    proc_root=self.proc_root,
+                    proc_factory=factory,
+                )
+
+                self.assertEqual(records, {})
+                self.assertEqual(issues, {"same-uid-process-snapshot-incomplete": 1})
+                self.assertEqual(races, {})
+
+    def test_kernelish_name_and_parent_do_not_excuse_userspace_missing_executable(self) -> None:
+        missing = FileNotFoundError(errno.ENOENT, "executable disappeared", "exe")
+        factory, _rows = self.factory(
+            flags=0,
+            status_uid=0,
+            ready=[0, 0],
+            failure=missing,
+            fail_path="exe",
+        )
+        row = census._PsRow(41, 2, 0, 0, "Mon Oct 12 00:00:00 2026", "kthreadd")
+
+        records, issues, races = census._linux_processes(
+            0,
+            [row],
+            census._ArgvBudget(),
+            proc_root=self.proc_root,
+            proc_factory=factory,
+        )
+
+        self.assertEqual(records, {})
+        self.assertEqual(issues, {"same-uid-process-snapshot-incomplete": 1})
+        self.assertEqual(races, {})
 
     def test_census_keeps_permission_denied_candidate_unknown(self) -> None:
         denied = PermissionError(errno.EACCES, "denied", "exe")
