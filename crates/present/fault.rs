@@ -446,6 +446,52 @@ impl Affordance {
         }
     }
 
+    /// Renders an index observation only in an admitted installed CLI context.
+    #[must_use]
+    pub fn poll_shell_in_context(
+        &self,
+        context: &crate::StartupRecoveryContext,
+        detail: Option<crate::Detail>,
+    ) -> Option<String> {
+        match self {
+            Self::PollIndex {
+                ticket,
+                after_sequence,
+            } => context.registered_shell(
+                "index_progress",
+                &[
+                    crate::product::index_ticket_json(ticket),
+                    "--after-sequence".to_owned(),
+                    after_sequence.to_string(),
+                ],
+                detail,
+            ),
+            Self::PollIndexOperation { operation_key } => context.registered_shell(
+                "index_progress",
+                &["--operation-key".to_owned(), operation_key.to_string()],
+                detail,
+            ),
+            Self::ObserveIndexChanges { reference } => match reference {
+                backend_client::IndexProgressReference::Operation { operation_key, .. } => {
+                    Self::PollIndexOperation {
+                        operation_key: *operation_key,
+                    }
+                    .poll_shell_in_context(context, detail)
+                }
+                backend_client::IndexProgressReference::Ticket {
+                    ticket,
+                    after_sequence,
+                    ..
+                } => Self::PollIndex {
+                    ticket: ticket.clone(),
+                    after_sequence: *after_sequence,
+                }
+                .poll_shell_in_context(context, detail),
+            },
+            _ => None,
+        }
+    }
+
     /// Renders the affordance as the exact MCP tool call an agent makes next.
     #[must_use]
     pub fn tool_call(&self) -> Option<serde_json::Value> {

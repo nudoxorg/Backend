@@ -30,6 +30,15 @@ impl StartupRecoveryCommand {
     }
 }
 
+/// Original owner connection policy retained by every copied command.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StartupRecoveryMode {
+    /// May start or reconnect the selected local owner.
+    Active,
+    /// Connect only to an existing owner, retaining `--passive`.
+    Existing,
+}
+
 /// Complete shell-renderable observation of one selected Unix attachment.
 /// This value grants no owner activation, directory admission, or readiness.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -38,6 +47,7 @@ pub struct StartupRecoveryContext {
     endpoint: String,
     executable: String,
     command: StartupRecoveryCommand,
+    mode: StartupRecoveryMode,
     workspace: StartupRecoveryWorkspace,
 }
 
@@ -51,6 +61,7 @@ impl StartupRecoveryContext {
         endpoint: String,
         executable: String,
         command: StartupRecoveryCommand,
+        mode: StartupRecoveryMode,
         workspace: StartupRecoveryWorkspace,
     ) -> Self {
         Self {
@@ -58,6 +69,7 @@ impl StartupRecoveryContext {
             endpoint,
             executable,
             command,
+            mode,
             workspace,
         }
     }
@@ -67,6 +79,27 @@ impl StartupRecoveryContext {
     /// only the captured anchor. Every operand uses the shared shell quoting.
     #[must_use]
     pub fn shell(&self) -> String {
+        self.selected_shell(self.command.name(), &[], None)
+    }
+
+    /// Renders only an existing registered command in this observed attachment.
+    /// The surface admits executable presence and default authority before construction.
+    pub fn registered_shell(
+        &self,
+        name: &str,
+        operands: &[String],
+        detail: Option<crate::Detail>,
+    ) -> Option<String> {
+        let grammar = crate::grammar_for(name)?;
+        Some(self.selected_shell(grammar.name(), operands, detail))
+    }
+
+    fn selected_shell(
+        &self,
+        name: &str,
+        operands: &[String],
+        detail: Option<crate::Detail>,
+    ) -> String {
         let mut command = format!(
             "{} --project {}",
             crate::shell::quote_argument(&self.executable),
@@ -76,10 +109,21 @@ impl StartupRecoveryContext {
             command.push_str(" --workspace ");
             command.push_str(&crate::shell::quote_argument(directory));
         }
+        if self.mode == StartupRecoveryMode::Existing {
+            command.push_str(" --passive");
+        }
         command.push_str(" --endpoint ");
         command.push_str(&crate::shell::quote_argument(&self.endpoint));
+        if let Some(detail) = detail {
+            command.push_str(" --detail ");
+            command.push_str(detail.name());
+        }
         command.push(' ');
-        command.push_str(self.command.name());
+        command.push_str(name);
+        for operand in operands {
+            command.push(' ');
+            command.push_str(&crate::shell::quote_argument(operand));
+        }
         let anchor = match &self.workspace {
             StartupRecoveryWorkspace::Explicit(_) => {
                 return format!("(unset BACKEND_LOCALD_AUTHORITY_SECRET_FILE; {command})");

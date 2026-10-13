@@ -549,7 +549,7 @@ fn index_poll_schema() -> Value {
         "type": "object",
         "description": "Exact next observation for accepted or active work; omitted for terminal, unknown, unresolved or expired operations.",
         "properties": {
-            "shell": {"type": "string"},
+            "shell": {"type": "string", "description":"Optional exact command for an observed CLI in the serving bundle and a reproducible default authority attachment; absent when unavailable."},
             "call": {
                 "type": "object",
                 "properties": {
@@ -560,7 +560,7 @@ fn index_poll_schema() -> Value {
                 "additionalProperties": false
             }
         },
-        "required": ["shell", "call"],
+        "required": ["call"],
         "additionalProperties": false
     })
 }

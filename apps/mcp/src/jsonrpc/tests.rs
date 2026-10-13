@@ -584,6 +584,7 @@ struct Fake {
     continuation_error: Option<ClientError>,
     /// Optional product reply used by the high-fanout surface budget case.
     surface_reply: Option<SurfaceReply>,
+    cli_context: Option<backend_present::StartupRecoveryContext>,
     /// Exact sequential observations for bounded-wait controls.
     surface_replies: std::collections::VecDeque<SurfaceReply>,
     /// Signals a real actor progress read before external cancellation.
@@ -1022,6 +1023,10 @@ impl Engine for Fake {
 }
 
 impl Product for Fake {
+    fn cli_context(&self) -> Option<backend_present::StartupRecoveryContext> {
+        self.cli_context.clone()
+    }
+
     fn encode_continuation(
         &mut self,
         continuation: backend_library::PageContinuation,
@@ -2357,7 +2362,7 @@ fn owner_index_job_tools_advertise_exact_tickets_and_immediate_progress() {
     ] {
         assert_eq!(
             tool["outputSchema"]["properties"]["index_poll"]["required"],
-            json!(["shell", "call"])
+            json!(["call"])
         );
         assert_eq!(
             tool["outputSchema"]["properties"]["index_poll"]["properties"]["call"]["properties"]["name"]
@@ -2445,9 +2450,11 @@ fn keyed_index_progress_preserves_durable_owner_evidence_and_rejects_mixed_ident
         next,
         json!({"name":"backend.index_progress", "arguments":{"operation_key":"51".repeat(32),"detail":"summary"}})
     );
-    assert_eq!(
-        result["structuredContent"]["index_poll"]["shell"],
-        format!("nudox index_progress --operation-key {}", "51".repeat(32))
+    assert!(
+        result["structuredContent"]["index_poll"]
+            .get("shell")
+            .is_none(),
+        "no observed installed CLI in this product fixture"
     );
     assert!(text_of(&result).contains(&next.to_string()));
     server.product.surface_reply = Some(SurfaceReply::IndexOperationStatus(observation.clone()));
@@ -5007,9 +5014,16 @@ fn the_handshake_reports_the_stable_protocol_and_its_instructions() {
     assert_stdio_line_accounting(std::str::from_utf8(&line).expect("UTF-8"));
     assert!(instructions.contains("absolute path"), "{instructions}");
     assert!(instructions.contains("backend.document"), "{instructions}");
-    assert!(instructions.contains("nudox add ."), "{instructions}");
     assert!(
-        instructions.contains("nudox search \"error handling\""),
+        instructions.contains("backend.index with the absolute project path"),
+        "{instructions}"
+    );
+    assert!(
+        !instructions.contains("nudox add ."),
+        "the MCP host must not assume a CLI is installed"
+    );
+    assert!(
+        instructions.contains("before backend.search"),
         "{instructions}"
     );
     assert!(
@@ -7781,4 +7795,146 @@ mod conditional_progress_tests {
             assert!(server.product.surface_commands.is_empty());
         }
     }
+}
+
+#[test]
+fn index_poll_cli_advice_is_optional_and_preserves_installed_attachment_key_and_detail() {
+    let key = backend_library::IndexOperationKey::from_bytes([0x71; 32]).expect("key");
+    let observation = backend_library::IndexOperationObservation::Known(
+        backend_library::IndexOperationStatus::new(
+            key,
+            PackageReference::parse(PROJECT).expect("package"),
+            CompileExecutionIntent::Interactive,
+            backend_library::IndexOperationState::Accepted,
+        ),
+    );
+    let context = backend_present::StartupRecoveryContext::new(
+        PROJECT.to_owned(),
+        "/private/owner.sock".to_owned(),
+        "/observed/bundle/backend-cli".to_owned(),
+        backend_present::StartupRecoveryCommand::Status,
+        backend_present::StartupRecoveryMode::Active,
+        backend_present::StartupRecoveryWorkspace::Explicit("/private/workspace".to_owned()),
+    );
+    for detail in ["summary", "standard", "full"] {
+        for installed in [false, true] {
+            let mut server = ready(Fake {
+                surface_reply: Some(SurfaceReply::IndexOperationStatus(observation.clone())),
+                cli_context: installed.then(|| context.clone()),
+                ..Fake::default()
+            });
+            let response = request(
+                &mut server,
+                "tools/call",
+                &json!({"name":INDEX_PROGRESS_TOOL,"arguments":{"operation_key":key,"detail":detail}}),
+            );
+            assert_context_bounded(&response);
+            let json = serde_json::to_string(&response).expect("actual admitted JSON envelope");
+            assert!(
+                cl100k_tokens(&json).expect("named wire token policy") <= MCP_CL100K_TOKEN_LIMIT
+            );
+            assert_eq!(
+                response["result"]["_meta"]["backend/wireBudget"]["bytes"],
+                json.len() + 1
+            );
+            let result = &response["result"];
+            assert_eq!(result["isError"], false, "{result}");
+            let poll = &result["structuredContent"]["index_poll"];
+            assert_eq!(
+                poll["call"],
+                json!({"name":"backend.index_progress","arguments":{"operation_key":key,"detail":detail}})
+            );
+            assert_eq!(poll.get("shell").is_some(), installed);
+            if installed {
+                let expected =
+                    backend_present::Affordance::PollIndexOperation { operation_key: key }
+                        .poll_shell_in_context(&context, backend_present::Detail::parse(detail));
+                assert_eq!(poll["shell"], expected.expect("same admitted CLI context"));
+                assert!(
+                    !poll["shell"]
+                        .as_str()
+                        .expect("shell")
+                        .contains("authority.secret")
+                );
+                assert!(!poll["shell"].as_str().expect("shell").contains("nudox"));
+            }
+            assert_eq!(
+                server.product.surface_commands,
+                [SurfaceCommand::IndexOperationStatus { operation_key: key }]
+            );
+            let catalog = tools::list_tools(&json!({})).expect("actual listed tool catalog");
+            let grammar = tool_named(&catalog["tools"], INDEX_PROGRESS_TOOL);
+            assert_eq!(
+                grammar["outputSchema"]["properties"]["index_poll"]["required"],
+                json!(["call"])
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn cli_attachment_metadata_does_not_connect_an_owner_or_display_custom_authority() {
+    const PROBE: &str = "jsonrpc::tests::cli_attachment_metadata_probe";
+    let executable = std::env::current_exe().expect("test binary");
+    for custom in [false, true] {
+        let mut child = std::process::Command::new(&executable);
+        child
+            .args(["--exact", PROBE, "--nocapture"])
+            .env("NUDOX_TEST_CLI_CONTEXT", "1");
+        if custom {
+            child.env(
+                backend_runtime::AUTHORITY_SECRET_ENV,
+                "/not-displayed/custom-authority",
+            );
+        } else {
+            child.env_remove(backend_runtime::AUTHORITY_SECRET_ENV);
+        }
+        let output = child.output().expect("read-only metadata subprocess");
+        assert!(output.status.success(), "{output:?}");
+        let stdout = std::str::from_utf8(&output.stdout).expect("UTF-8");
+        let data = stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("CLI_CONTEXT="))
+            .expect("context observation");
+        let value: Value = serde_json::from_str(data).expect("typed observation");
+        assert_eq!(value["has_context"], !custom);
+        assert_eq!(value["data_exists"], false);
+        assert_eq!(value["endpoint_exists"], false);
+        assert!(!data.contains("custom-authority"));
+    }
+}
+
+#[test]
+fn cli_attachment_metadata_probe() {
+    if std::env::var("NUDOX_TEST_CLI_CONTEXT").is_err() {
+        return;
+    }
+    let base = std::env::temp_dir().join(format!("cli-context-probe-{}", std::process::id()));
+    let paths = backend_runtime::WorkspacePaths::discover(
+        Some(base.join("project")),
+        Some(base.join("state")),
+        Some(base.join("owner.sock")),
+    )
+    .expect("uncreated attachment");
+    #[cfg(unix)]
+    let context = {
+        use std::os::unix::fs::PermissionsExt as _;
+        let bundle = base.with_extension("observed-bundle");
+        std::fs::create_dir(&bundle).expect("owned installed CLI fixture");
+        let cli = bundle.join("backend-cli");
+        std::fs::write(&cli, b"#!/bin/sh\nexit 0\n").expect("actual executable fixture");
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o700))
+            .expect("CLI execute mode");
+        assert!(cli_context_for_executable(&paths, &bundle.join("missing-cli")).is_none());
+        let context = cli_context_for_executable(&paths, &cli);
+        std::fs::remove_dir_all(bundle).expect("remove owned metadata fixture");
+        context
+    };
+    #[cfg(not(unix))]
+    let context: Option<backend_present::StartupRecoveryContext> = None;
+    println!(
+        "\nCLI_CONTEXT={}",
+        json!({"has_context":context.is_some(),"data_exists":paths.data().exists(),"endpoint_exists":paths.endpoint().exists(),"shell":context.map(|context|context.shell())})
+    );
 }

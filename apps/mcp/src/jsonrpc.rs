@@ -76,6 +76,11 @@ const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// It is the shared driver's [`Engine`] plus the one capability that is not a
 /// registry row: the typed Trustfall lane behind `backend.query`.
 pub(super) trait Product: Engine {
+    /// Frozen local bundle/attachment metadata, available without connecting.
+    fn cli_context(&self) -> Option<backend_present::StartupRecoveryContext> {
+        None
+    }
+
     fn set_request_context(&mut self, context: Option<RequestContext>) -> Result<(), ClientError> {
         context.as_ref().map_or(Ok(()), RequestContext::check)
     }
@@ -239,6 +244,7 @@ pub(super) struct SessionEndpoint {
     /// The complete runtime selection, retained for reconnects that need to
     /// compose a daemon after its previous process exited.
     paths: backend_runtime::WorkspacePaths,
+    cli_context: Option<backend_present::StartupRecoveryContext>,
     /// Bounded continuation state retained if the daemon is still between
     /// leases and the replacement dial has not succeeded yet.
     pending_continuation_state: Option<backend_client::SessionContinuationState>,
@@ -247,6 +253,10 @@ pub(super) struct SessionEndpoint {
 
 impl reconnect::Endpoint for SessionEndpoint {
     type Product = SessionProduct;
+
+    fn cli_context(&self) -> Option<backend_present::StartupRecoveryContext> {
+        self.cli_context.clone()
+    }
 
     fn set_request_context(&mut self, context: Option<RequestContext>) {
         self.request_context = context;
@@ -313,9 +323,64 @@ pub(super) fn disconnected_reconnecting_product(
 ) -> ReconnectingProduct {
     reconnect::Reconnecting::disconnected(SessionEndpoint {
         paths: paths.clone(),
+        cli_context: observed_cli_context(paths),
         pending_continuation_state: None,
         request_context: None,
     })
+}
+
+fn observed_cli_context(
+    paths: &backend_runtime::WorkspacePaths,
+) -> Option<backend_present::StartupRecoveryContext> {
+    #[cfg(unix)]
+    {
+        let executable = backend_runtime::installed_cli_executable()?;
+        cli_context_for_executable(paths, &executable)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = paths;
+        None
+    }
+}
+
+#[cfg(unix)]
+fn cli_context_for_executable(
+    paths: &backend_runtime::WorkspacePaths,
+    executable: &std::path::Path,
+) -> Option<backend_present::StartupRecoveryContext> {
+    fn operand(path: &std::path::Path) -> Option<String> {
+        let text = path.to_str()?;
+        (path.is_absolute() && !text.contains('\0')).then(|| text.to_owned())
+    }
+    let executable = backend_runtime::observed_cli_executable(executable)?;
+    let selected = paths.startup_recovery_selection()?;
+    if !selected.workspace_authority {
+        return None;
+    }
+    operand(selected.data)?;
+    let directory = match selected.workspace {
+        backend_runtime::StartupWorkspaceSelection::Explicit(path) => {
+            backend_present::StartupRecoveryWorkspace::Explicit(operand(path)?)
+        }
+        backend_runtime::StartupWorkspaceSelection::Home(anchor) => {
+            backend_present::StartupRecoveryWorkspace::Home(operand(anchor)?)
+        }
+        backend_runtime::StartupWorkspaceSelection::XdgState(anchor) => {
+            backend_present::StartupRecoveryWorkspace::XdgState(operand(anchor)?)
+        }
+        backend_runtime::StartupWorkspaceSelection::XdgData(anchor) => {
+            backend_present::StartupRecoveryWorkspace::XdgData(operand(anchor)?)
+        }
+    };
+    Some(backend_present::StartupRecoveryContext::new(
+        operand(selected.project)?,
+        operand(selected.endpoint)?,
+        operand(&executable)?,
+        backend_present::StartupRecoveryCommand::Status,
+        backend_present::StartupRecoveryMode::Active,
+        directory,
+    ))
 }
 
 /// Converts a daemon restart window into the same reconnectable class as a
@@ -676,8 +741,9 @@ impl<P: Product> Server<P> {
         let mut instructions = String::with_capacity(INSTRUCTIONS.len() + project.len() + 400);
         instructions.push_str(INSTRUCTIONS);
         instructions.push_str(
-            "\n\nQuick start: `nudox add .`; for accepted work, copy the returned poll command \
-             and inspect its terminal receipt before `nudox search \"error handling\"`. \
+            "\n\nQuick start: call backend.packages, then backend.index with the absolute project path. \
+             For accepted work, copy index_poll.call and inspect its terminal receipt before backend.search. CLI support is optional: \
+             source builds may have backend-cli, and index_poll.shell is absent when no runnable CLI attachment is observed. \
              Register this stdio server in Claude Code with `claude mcp add --scope user \
              --transport stdio nudox -- \"$(command -v backend-mcp)\" --project \
              '${CLAUDE_PROJECT_DIR:-.}'`, then verify with \
@@ -1277,12 +1343,15 @@ impl<P: Product> Server<P> {
         context: &[u8],
     ) -> Result<Value, RpcError> {
         let view = backend_present::product_view_for_command(command, reply);
-        let view = view.with_bounded_index_poll().map_err(|error| {
-            RpcError::from_fault(&Fault::from_client_error(
-                &error,
-                surface_error_operand(command),
-            ))
-        })?;
+        let view = view
+            .with_cli_context(self.product.cli_context())
+            .with_bounded_index_poll()
+            .map_err(|error| {
+                RpcError::from_fault(&Fault::from_client_error(
+                    &error,
+                    surface_error_operand(command),
+                ))
+            })?;
         let view = match view.cursor_family().cloned() {
             Some(cursor) => {
                 let token = self.issue_cursor(cursor, context)?;
@@ -1572,12 +1641,15 @@ impl<P: Product> Server<P> {
                     Some(token) => (**product).clone().project_cursor(token, cursor_target),
                     None => (**product).clone(),
                 };
-                let product = product.with_bounded_index_poll().map_err(|error| {
-                    RpcError::from_fault(&Fault::from_client_error(
-                        &error,
-                        backend_present::Operand::Whole,
-                    ))
-                })?;
+                let product = product
+                    .with_cli_context(self.product.cli_context())
+                    .with_bounded_index_poll()
+                    .map_err(|error| {
+                        RpcError::from_fault(&Fault::from_client_error(
+                            &error,
+                            backend_present::Operand::Whole,
+                        ))
+                    })?;
                 Some(Answer::Product(Box::new(product)))
             }
             _ => None,

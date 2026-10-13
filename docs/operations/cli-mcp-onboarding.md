@@ -1,7 +1,9 @@
 # CLI and Claude Code quick start
 
-The installed shell command is `nudox`. From the repository you want to work
-with, index it once and search it directly:
+The full installer provides the shell command `nudox`. A source build provides
+`backend-cli` only when that binary was built; it does not create a `nudox` alias.
+Use your actual CLI executable, with its matching `backend-locald` companion.
+With the full installation, index and search from the repository:
 
 ```console
 nudox add .
@@ -44,3 +46,19 @@ An empty shelf is not evidence that a project has no declarations. Run the
 index command for the project you intend to search, and use `backend.status`
 when you need to distinguish an empty index from a capability that is not
 configured.
+
+MCP does not require the CLI. Use `backend.index` with the absolute project path,
+copy `index_poll.call` while work is pending, and inspect the terminal outcome
+before searching. `index_poll.shell` is optional: it is supplied only for an
+observed CLI in the serving bundle and a reproducible default authority
+attachment. The name `nudox` in `claude mcp add` is the connector's name.
+
+For HTTP, `BACKEND_MCP_TOKEN` takes precedence over the private
+`mcp-http-token` file in the selected workspace. Without the environment
+variable, an existing admitted token file is reused; a new token is generated
+only when that file is absent. Switching debug/release executables alone does
+not rotate the persisted token. Switching from an environment token to a
+workspace token, or selecting another workspace, can select a different
+credential. Keep the server's selected token consistent with the client's
+Bearer token. The startup authentication hint identifies the token source
+without printing the token.

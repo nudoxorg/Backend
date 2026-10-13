@@ -202,6 +202,7 @@ fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), 
                                 &plan.request,
                                 &workspace,
                                 original_status_command(words),
+                                backend_present::StartupRecoveryMode::Existing,
                                 &executable,
                             )
                         })
@@ -228,6 +229,25 @@ fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), 
     // an unpinned read. No outer Add invocation is replayed after disconnect.
     let (answer, outcome) =
         execute_plan_with_recovery(&mut session, &plan, &workspace, Some(&mut recovery))?;
+    #[cfg(unix)]
+    let answer = match answer {
+        Answer::Product(view) => {
+            let context = std::env::current_exe()
+                .ok()
+                .and_then(|executable| checked_cli_executable(&executable))
+                .and_then(|executable| {
+                    startup_recovery_context(
+                        &Request::Status,
+                        &workspace,
+                        backend_present::StartupRecoveryCommand::Status,
+                        connection_mode(options),
+                        &executable,
+                    )
+                });
+            Answer::Product(Box::new((*view).with_cli_context(context)))
+        }
+        answer => answer,
+    };
     render_admitted_answer(&session, &answer, options).map(|output| (output, outcome))
 }
 
@@ -241,17 +261,17 @@ fn original_status_command(words: &[String]) -> backend_present::StartupRecovery
 }
 
 #[cfg(unix)]
-fn checked_cli_executable(path: &std::path::Path) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt as _;
-    let metadata = std::fs::metadata(path).ok()?;
-    if !path.is_absolute()
-        || path.to_str()?.contains('\0')
-        || !metadata.is_file()
-        || metadata.permissions().mode() & 0o111 == 0
-    {
-        return None;
+fn connection_mode(options: &Options) -> backend_present::StartupRecoveryMode {
+    if options.passive() {
+        backend_present::StartupRecoveryMode::Existing
+    } else {
+        backend_present::StartupRecoveryMode::Active
     }
-    Some(path.to_owned())
+}
+
+#[cfg(unix)]
+fn checked_cli_executable(path: &std::path::Path) -> Option<PathBuf> {
+    backend_runtime::observed_cli_executable(path)
 }
 
 #[cfg(unix)]
@@ -261,7 +281,13 @@ fn pending_status_retry(
     command: backend_present::StartupRecoveryCommand,
 ) -> Option<String> {
     let executable = checked_cli_executable(&std::env::current_exe().ok()?)?;
-    pending_status_retry_for_executable(request, workspace, command, &executable)
+    pending_status_retry_for_executable(
+        request,
+        workspace,
+        command,
+        backend_present::StartupRecoveryMode::Active,
+        &executable,
+    )
 }
 
 #[cfg(unix)]
@@ -269,9 +295,11 @@ fn pending_status_retry_for_executable(
     request: &Request,
     workspace: &backend_runtime::WorkspacePaths,
     command: backend_present::StartupRecoveryCommand,
+    mode: backend_present::StartupRecoveryMode,
     executable: &std::path::Path,
 ) -> Option<String> {
-    startup_recovery_context(request, workspace, command, executable).map(|context| context.shell())
+    startup_recovery_context(request, workspace, command, mode, executable)
+        .map(|context| context.shell())
 }
 
 #[cfg(unix)]
@@ -279,6 +307,7 @@ fn startup_recovery_context(
     request: &Request,
     workspace: &backend_runtime::WorkspacePaths,
     command: backend_present::StartupRecoveryCommand,
+    mode: backend_present::StartupRecoveryMode,
     executable: &std::path::Path,
 ) -> Option<backend_present::StartupRecoveryContext> {
     fn operand(path: &std::path::Path) -> Option<String> {
@@ -314,6 +343,7 @@ fn startup_recovery_context(
         operand(selected.endpoint)?,
         operand(executable)?,
         command,
+        mode,
         directory,
     ))
 }
@@ -764,6 +794,12 @@ mod startup_tests {
 
     #[test]
     fn recovery_does_not_invent_a_missing_or_non_executable_cli() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt as _;
+        assert!(
+            checked_cli_executable(&PathBuf::from(OsString::from_vec(vec![b'/', 0xff]))).is_none()
+        );
+        assert!(checked_cli_executable(std::path::Path::new("/tmp/CLI\0argument")).is_none());
         assert!(checked_cli_executable(std::path::Path::new("/nonexistent/backend-cli")).is_none());
         assert!(checked_cli_executable(std::path::Path::new("relative/backend-cli")).is_none());
         assert!(checked_cli_executable(std::path::Path::new("/tmp")).is_none());
@@ -802,6 +838,21 @@ mod startup_tests {
                 ("xdg-data", Some(anchor))
             }
         };
+        let passive_fault_shell = if options.passive() {
+            let fault =
+                run_words(&words, &options).expect_err("uncreated endpoint refuses a passive read");
+            assert!(
+                !paths.data().exists(),
+                "a passive failure never starts or prepares an owner"
+            );
+            match fault.affordance() {
+                Affordance::RecoverStartup { context } => Some(context.shell()),
+                Affordance::Retry => None,
+                other => panic!("unexpected passive missing-endpoint recovery: {other:?}"),
+            }
+        } else {
+            None
+        };
         let value = serde_json::json!({
             "project": paths.project().to_str(),
             "data": paths.data().to_str(),
@@ -810,10 +861,12 @@ mod startup_tests {
             "boundary": boundary,
             "anchor": anchor.and_then(std::path::Path::to_str),
             "command": words.first(),
+            "passive": options.passive(),
+            "passive_fault_shell": passive_fault_shell,
             "retry": match std::env::var_os("NUDOX_TEST_RECOVERY_EXECUTABLE") {
                 Some(path) => checked_cli_executable(&PathBuf::from(path)).and_then(|executable|
-                    pending_status_retry_for_executable(&Request::Status, &paths, original_status_command(&words), &executable)),
-                None => pending_status_retry(&Request::Status, &paths, original_status_command(&words)),
+                    pending_status_retry_for_executable(&Request::Status, &paths, original_status_command(&words), connection_mode(&options), &executable)),
+                None => std::env::current_exe().ok().and_then(|executable| checked_cli_executable(&executable)).and_then(|executable| pending_status_retry_for_executable(&Request::Status, &paths, original_status_command(&words), connection_mode(&options), &executable)),
             },
         });
         println!("\nRECOVERY_SELECTION={value}");
@@ -900,11 +953,11 @@ mod startup_tests {
             .expect("clock")
             .as_nanos();
         let root = PathBuf::from("/tmp").join(format!("nrri-{}-{nonce}", std::process::id()));
-        let project = root.join("project ' $(sentinel)");
+        let project = root.join("project ' $(sentinel)\nnext");
         let endpoint = root.join("owner.sock");
-        let state = root.join("explicit `sentinel`; state");
-        let home = root.join("home ' $(sentinel)");
-        let xdg = root.join("xdg ' $(sentinel)");
+        let state = root.join("explicit ' `sentinel`; state\nnext");
+        let home = root.join("home ' $(sentinel)\nnext");
+        let xdg = root.join("xdg ' $(sentinel)\nnext");
         let authority = root.join("authority ' $(sentinel)");
         let capture_root = root.with_extension("capture");
         std::fs::create_dir(&capture_root).expect("owned argv capture directory");
@@ -920,74 +973,90 @@ printf '%s\000' "$@" __ENV__ "${HOME-__UNSET__}" "${XDG_STATE_HOME-__UNSET__}" "
         #[cfg(not(target_os = "macos"))]
         let origins = ["explicit", "environment", "home", "xdg-state", "xdg-data"];
         for origin in origins {
-            for (custom_authority, action) in
-                [(false, "status"), (false, "health"), (true, "status")]
-            {
-                let mut argv = vec![
-                    "--project".to_owned(),
-                    project.to_str().expect("project").to_owned(),
-                    "--endpoint".to_owned(),
-                    endpoint.to_str().expect("endpoint").to_owned(),
-                ];
-                if origin == "explicit" {
-                    argv.extend([
-                        "--workspace".to_owned(),
-                        state.to_str().expect("state").to_owned(),
-                    ]);
-                }
-                argv.push(action.to_owned());
-                let mut original = Command::new(&executable);
-                original
-                    .env("NUDOX_TEST_RECOVERY_EXECUTABLE", &capture)
-                    .args(["--exact", PROBE, "--nocapture"])
-                    .env(
-                        "NUDOX_TEST_RECOVERY_ARGV",
-                        serde_json::to_string(&argv).expect("original argv"),
-                    )
-                    .env("HOME", &home)
-                    .env_remove("XDG_STATE_HOME")
-                    .env_remove("XDG_DATA_HOME")
-                    .env_remove(backend_runtime::DATA_ENV)
-                    .env_remove(backend_runtime::AUTHORITY_SECRET_ENV);
-                match origin {
-                    "environment" => {
-                        original.env(backend_runtime::DATA_ENV, &state);
+            for passive in [false, true] {
+                for (custom_authority, action) in
+                    [(false, "status"), (false, "health"), (true, "status")]
+                {
+                    let mut argv = vec![
+                        "--project".to_owned(),
+                        project.to_str().expect("project").to_owned(),
+                        "--endpoint".to_owned(),
+                        endpoint.to_str().expect("endpoint").to_owned(),
+                    ];
+                    if origin == "explicit" {
+                        argv.extend([
+                            "--workspace".to_owned(),
+                            state.to_str().expect("state").to_owned(),
+                        ]);
                     }
-                    "xdg-state" => {
-                        original.env("XDG_STATE_HOME", &xdg);
+                    if passive {
+                        argv.push("--passive".to_owned());
                     }
-                    "xdg-data" => {
-                        original.env("XDG_DATA_HOME", &xdg);
+                    argv.push(action.to_owned());
+                    let mut original = Command::new(&executable);
+                    original
+                        .env("NUDOX_TEST_RECOVERY_EXECUTABLE", &capture)
+                        .args(["--exact", PROBE, "--nocapture"])
+                        .env(
+                            "NUDOX_TEST_RECOVERY_ARGV",
+                            serde_json::to_string(&argv).expect("original argv"),
+                        )
+                        .env("HOME", &home)
+                        .env_remove("XDG_STATE_HOME")
+                        .env_remove("XDG_DATA_HOME")
+                        .env_remove(backend_runtime::DATA_ENV)
+                        .env_remove(backend_runtime::AUTHORITY_SECRET_ENV);
+                    match origin {
+                        "environment" => {
+                            original.env(backend_runtime::DATA_ENV, &state);
+                        }
+                        "xdg-state" => {
+                            original.env("XDG_STATE_HOME", &xdg);
+                        }
+                        "xdg-data" => {
+                            original.env("XDG_DATA_HOME", &xdg);
+                        }
+                        _ => {}
                     }
-                    _ => {}
-                }
-                if custom_authority {
-                    original.env(backend_runtime::AUTHORITY_SECRET_ENV, &authority);
-                }
-                let before = recovery_observation(&mut original);
-                assert_eq!(
-                    before["boundary"],
-                    if origin == "environment" {
-                        "explicit"
-                    } else {
-                        origin
+                    if custom_authority {
+                        original.env(backend_runtime::AUTHORITY_SECRET_ENV, &authority);
                     }
-                );
-                if custom_authority {
-                    assert!(
-                        before["retry"].is_null(),
-                        "custom authority cannot be rebound or displayed"
-                    );
-                } else {
-                    let shell = before["retry"].as_str().expect("complete captured retry");
-                    assert!(!shell.contains("authority.secret"));
-                    assert!(!shell.contains(authority.to_str().expect("fixture authority")));
-                    assert!(shell.ends_with(&format!(" {action})")));
+                    let before = recovery_observation(&mut original);
                     assert_eq!(
-                        before,
-                        replay_startup_selection(&executable, &capture, shell),
-                        "{origin}/{custom_authority}/{action}"
+                        before["boundary"],
+                        if origin == "environment" {
+                            "explicit"
+                        } else {
+                            origin
+                        }
                     );
+                    assert_eq!(before["passive"], passive);
+                    if passive && !custom_authority {
+                        let fault_shell = before["passive_fault_shell"]
+                            .as_str()
+                            .expect("actual passive refusal recovery");
+                        assert!(fault_shell.contains(" --passive "));
+                        assert!(fault_shell.ends_with(&format!(" {action})")));
+                        assert!(!fault_shell.contains("authority.secret"));
+                    } else {
+                        assert!(before["passive_fault_shell"].is_null());
+                    }
+                    if custom_authority {
+                        assert!(
+                            before["retry"].is_null(),
+                            "custom authority cannot be rebound or displayed"
+                        );
+                    } else {
+                        let shell = before["retry"].as_str().expect("complete captured retry");
+                        assert!(!shell.contains("authority.secret"));
+                        assert!(!shell.contains(authority.to_str().expect("fixture authority")));
+                        assert!(shell.ends_with(&format!(" {action})")));
+                        assert_eq!(
+                            before,
+                            replay_startup_selection(&executable, &capture, shell),
+                            "{origin}/{custom_authority}/{action}/passive={passive}"
+                        );
+                    }
                 }
             }
         }

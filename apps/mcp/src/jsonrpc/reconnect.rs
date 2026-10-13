@@ -43,6 +43,10 @@ pub(crate) trait Endpoint {
 
     fn set_request_context(&mut self, _context: Option<RequestContext>) {}
 
+    fn cli_context(&self) -> Option<backend_present::StartupRecoveryContext> {
+        None
+    }
+
     /// Opens one fresh connection, transferring owner-admitted page state
     /// from the retired product when one exists.
     ///
@@ -345,6 +349,10 @@ impl<E: Endpoint> Engine for Reconnecting<E> {
 }
 
 impl<E: Endpoint> Product for Reconnecting<E> {
+    fn cli_context(&self) -> Option<backend_present::StartupRecoveryContext> {
+        self.endpoint.cli_context()
+    }
+
     fn set_request_context(&mut self, context: Option<RequestContext>) -> Result<(), ClientError> {
         if context.is_none()
             && self
@@ -741,6 +749,17 @@ mod tests {
     impl Endpoint for Fixture {
         type Product = Connection;
 
+        fn cli_context(&self) -> Option<backend_present::StartupRecoveryContext> {
+            Some(backend_present::StartupRecoveryContext::new(
+                "/scope/project".to_owned(),
+                "/scope/owner.sock".to_owned(),
+                "/observed/bundle/backend-cli".to_owned(),
+                backend_present::StartupRecoveryCommand::Status,
+                backend_present::StartupRecoveryMode::Active,
+                backend_present::StartupRecoveryWorkspace::Explicit("/scope/workspace".to_owned()),
+            ))
+        }
+
         fn connect(
             &mut self,
             _previous: Option<Self::Product>,
@@ -751,6 +770,17 @@ mod tests {
                 alive: true,
             })
         }
+    }
+
+    #[test]
+    fn observing_frozen_cli_context_never_connects_a_deferred_owner() {
+        let handle = Reconnecting::disconnected(Fixture {
+            log: Arc::new(Mutex::new(Vec::new())),
+            connects: 0,
+        });
+        assert!(handle.cli_context().is_some());
+        assert!(handle.product.is_none());
+        assert_eq!(handle.endpoint.connects, 0);
     }
 
     /// Builds a handle whose current connection is already dead.

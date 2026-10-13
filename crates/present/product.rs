@@ -382,6 +382,7 @@ pub struct ProductView {
     index_job: Option<IndexJobProjection>,
     index_operation: Option<backend_library::IndexOperationObservation>,
     index_progress_poll: Option<backend_client::IndexProgressReference>,
+    cli_context: Option<crate::StartupRecoveryContext>,
     selected_source_frontier: Option<SelectedProjectSourceFrontier>,
     package_source_membership_page: Option<backend_library::PackageSourceMembershipPageResultV1>,
     semantic_data: Option<ProductSemanticData>,
@@ -685,6 +686,19 @@ impl ProductView {
             .and_then(IndexJobProjection::poll_affordance)
     }
 
+    /// Supplies immutable, already-admitted CLI metadata for optional shell advice.
+    #[must_use]
+    pub fn with_cli_context(mut self, context: Option<crate::StartupRecoveryContext>) -> Self {
+        self.cli_context = context;
+        self
+    }
+
+    /// A missing CLI is independent of the callable MCP observation capability.
+    #[must_use]
+    pub fn cli_context(&self) -> Option<&crate::StartupRecoveryContext> {
+        self.cli_context.as_ref()
+    }
+
     /// Adds an opt-in bounded MCP continuation to a complete pending answer.
     /// Full/immediate clients and the CLI can retain their existing projection.
     /// # Errors
@@ -910,6 +924,7 @@ impl ProductView {
             index_job: None,
             index_operation: None,
             index_progress_poll: None,
+            cli_context: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
             semantic_data: None,
@@ -929,6 +944,7 @@ impl ProductView {
             index_job: None,
             index_operation: None,
             index_progress_poll: None,
+            cli_context: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
             semantic_data: None,
@@ -946,6 +962,7 @@ impl ProductView {
             index_job: None,
             index_operation: None,
             index_progress_poll: None,
+            cli_context: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
             semantic_data: None,
@@ -963,6 +980,7 @@ impl ProductView {
             index_job: None,
             index_operation: None,
             index_progress_poll: None,
+            cli_context: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
             semantic_data: None,
@@ -980,6 +998,7 @@ impl ProductView {
             index_job: None,
             index_operation: None,
             index_progress_poll: None,
+            cli_context: None,
             selected_source_frontier: None,
             package_source_membership_page: None,
             semantic_data: None,

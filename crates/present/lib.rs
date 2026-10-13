@@ -88,7 +88,7 @@ mod status;
 mod token_count;
 
 pub use startup_recovery::{
-    StartupRecoveryCommand, StartupRecoveryContext, StartupRecoveryWorkspace,
+    StartupRecoveryCommand, StartupRecoveryContext, StartupRecoveryMode, StartupRecoveryWorkspace,
 };
 
 pub use assemble::{

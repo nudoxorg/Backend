@@ -62,10 +62,12 @@ impl<P: Product> Server<P> {
                 self.surface_reply_result(command, &reply, detail, context)?
             }
             IndexProgressUpdate::Unchanged(reference) => {
-                let index_poll = backend_present::IndexPollDto::for_reference(&reference, detail)
-                    .ok_or_else(|| {
-                    RpcError::tool("pending progress has no exact observation")
-                })?;
+                let index_poll = backend_present::IndexPollDto::for_reference_in_context(
+                    &reference,
+                    detail,
+                    self.product.cli_context().as_ref(),
+                )
+                .ok_or_else(|| RpcError::tool("pending progress has no exact observation"))?;
                 let text = format!(
                     "Operation remains pending; the referenced observation is unchanged.\n\nObserve changes with `{}`. Omit the conditional options to read the complete current receipt.",
                     index_poll.call

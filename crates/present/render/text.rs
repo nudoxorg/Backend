@@ -621,7 +621,7 @@ pub fn product(view: &ProductView, theme: Theme) -> String {
 }
 
 fn index_job_footer(view: &ProductView, lines: &mut Lines, theme: Theme) {
-    if let Some(next) = view.index_poll_affordance().and_then(|step| step.shell()) {
+    if let Some(next) = crate::IndexPollDto::new(view).and_then(|poll| poll.shell) {
         if let Some(job @ IndexJobProjection::Cancellation(_)) = view.index_job()
             && let Some(ticket) = job.ticket_json()
         {
