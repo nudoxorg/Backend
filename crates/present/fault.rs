@@ -302,6 +302,14 @@ pub enum Affordance {
         /// Exact selected project, durable workspace and local endpoint.
         context: OwnerContext,
     },
+    /// Retry a selected CLI action without changing its captured connection.
+    /// This display value grants no owner startup or mutation authority.
+    ReplayConnection {
+        /// Complete representable selection, including credential and root boundary.
+        context: crate::ConnectionReplayContext,
+        /// Exact registered action, mode and caller operands.
+        command: crate::ConnectionReplayCommand,
+    },
     /// Retry one corpus-backed search with its original text and page credit.
     RetrySearch {
         /// Exact caller-supplied search text.
@@ -393,6 +401,7 @@ impl Affordance {
             Self::Retry => Some("re-run the same command".to_owned()),
             Self::InspectOwner => crate::shell::command("health", &[]),
             Self::RecoverOwner { context } => Some(context.recovery_shell()),
+            Self::ReplayConnection { context, command } => context.command_shell(command),
             Self::RetrySearch { text, limit } => Some(format!(
                 "nudox search {} --limit {limit}",
                 crate::shell::quote_argument(text),
@@ -448,7 +457,10 @@ impl Affordance {
     #[must_use]
     pub fn tool_call(&self) -> Option<serde_json::Value> {
         match self {
-            Self::Retry | Self::RecoverOwner { .. } | Self::None => None,
+            Self::Retry
+            | Self::RecoverOwner { .. }
+            | Self::ReplayConnection { .. }
+            | Self::None => None,
             Self::InspectOwner => Some(serde_json::json!({
                 "name": "backend.status",
                 "arguments": {}

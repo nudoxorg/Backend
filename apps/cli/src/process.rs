@@ -195,12 +195,19 @@ fn run_words(words: &[String], options: &Options) -> Result<(String, ExitCode), 
             if options.passive()
                 && error.startup_recovery() == backend_client::StartupRecovery::RetryOriginalCommand
             {
-                Affordance::RecoverOwner {
-                    context: OwnerContext::new(
-                        project.clone(),
-                        workspace.data().to_string_lossy().into_owned(),
-                        workspace.endpoint().to_string_lossy().into_owned(),
-                    ),
+                if matches!(&plan.request, Request::Surface(command) if matches!(&**command,
+                backend_library::SurfaceCommand::EmbeddingRefresh {
+                    request: backend_library::EmbeddingRefreshAction::Observe { .. },
+                })) {
+                    passive_observe_replay(&plan.request, &workspace).unwrap_or(Affordance::Retry)
+                } else {
+                    Affordance::RecoverOwner {
+                        context: OwnerContext::new(
+                            project.clone(),
+                            workspace.data().to_string_lossy().into_owned(),
+                            workspace.endpoint().to_string_lossy().into_owned(),
+                        ),
+                    }
                 }
             } else {
                 startup_error_action(&error)
@@ -243,6 +250,29 @@ fn pending_status_retry(
             Vec::new(),
         ),
     )
+}
+
+fn passive_observe_replay(
+    request: &Request,
+    workspace: &backend_runtime::WorkspacePaths,
+) -> Option<Affordance> {
+    let Request::Surface(command) = request else {
+        return None;
+    };
+    let backend_library::SurfaceCommand::EmbeddingRefresh {
+        request: action @ backend_library::EmbeddingRefreshAction::Observe { .. },
+    } = &**command
+    else {
+        return None;
+    };
+    Some(Affordance::ReplayConnection {
+        context: crate::connection_replay::context(workspace)?,
+        command: backend_present::ConnectionReplayCommand::new(
+            backend_library::CommandId::EmbeddingRefresh,
+            true,
+            vec![serde_json::to_string(action).ok()?],
+        ),
+    })
 }
 
 fn startup_error_action(error: &backend_runtime::RuntimeError) -> Affordance {
@@ -932,6 +962,18 @@ mod startup_tests {
             "planned": observation,
             "passive": options.passive(),
         });
+        let mut value = value;
+        if std::env::var_os("NUDOX_TEST_NO_OWNER_OBSERVE").is_some() {
+            let fault = run_words(&words, &options).expect_err("passive Observe has no owner");
+            assert_eq!(fault.slug(), FaultSlug::Endpoint);
+            assert_eq!(fault.cause().slug(), CauseSlug::Unreachable);
+            assert!(fault.cause().sentence().contains("without starting it"));
+            value["fault"] = serde_json::to_value(backend_present::FaultDto::new(&fault))
+                .expect("actual no-owner fault projection");
+            value["fault_human"] = render::fault(&fault, &Options::plain(options::Format::Human));
+            value["fault_markdown"] =
+                render::fault(&fault, &Options::plain(options::Format::Markdown));
+        }
         println!("\nRECOVERY_SELECTION={value}");
     }
 
@@ -1250,6 +1292,130 @@ mod startup_tests {
                 !value["planned"].is_null(),
                 "typed caller action is retained without a fabricated connection command"
             );
+        }
+    }
+
+    #[test]
+    fn passive_observe_no_owner_front_door_preserves_exact_replay_or_suppresses_command() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt as _, process::Command};
+        let executable = std::env::current_exe().expect("test executable");
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = PathBuf::from("/tmp").join(format!("nopf-{}-{nonce}", std::process::id()));
+        let ticket = backend_library::EmbeddingRefreshTicket {
+            sequence: std::num::NonZeroU64::new(7).expect("sequence"),
+            owner_epoch: 29,
+            owner_fence: [0x51; 32],
+            configuration: [0x73; 32],
+        };
+        let action =
+            serde_json::to_string(&backend_library::EmbeddingRefreshAction::Observe { ticket })
+                .expect("Observe");
+        for explicit in [true, false] {
+            for authority in [
+                None,
+                Some(root.join("authority ' $(sentinel)").into_os_string()),
+                Some(OsString::from("relative authority")),
+                Some(OsString::from_vec(vec![b'/', b't', b'm', b'p', b'/', 0xff])),
+            ] {
+                let mut argv = vec![
+                    "--project".to_owned(),
+                    root.join("project ' $(sentinel)")
+                        .to_str()
+                        .expect("project")
+                        .to_owned(),
+                    "--endpoint".to_owned(),
+                    root.join("owner.sock").to_str().expect("socket").to_owned(),
+                ];
+                if explicit {
+                    argv.extend([
+                        "--workspace".to_owned(),
+                        root.join("state ' $(sentinel)")
+                            .to_str()
+                            .expect("state")
+                            .to_owned(),
+                    ]);
+                }
+                argv.extend([
+                    "--passive".to_owned(),
+                    "embedding-refresh".to_owned(),
+                    action.clone(),
+                ]);
+                let mut original = Command::new(&executable);
+                original
+                    .args([
+                        "--exact",
+                        "process::startup_tests::startup_recovery_discovery_probe",
+                        "--nocapture",
+                    ])
+                    .env(
+                        "NUDOX_TEST_RECOVERY_ARGV",
+                        serde_json::to_string(&argv).expect("argv"),
+                    )
+                    .env("NUDOX_TEST_REPLAY_ACTION", "1")
+                    .env("NUDOX_TEST_NO_OWNER_OBSERVE", "1")
+                    .env("HOME", root.join("home ' $(sentinel)"))
+                    .env_remove("XDG_STATE_HOME")
+                    .env_remove("XDG_DATA_HOME")
+                    .env_remove(backend_runtime::DATA_ENV)
+                    .env_remove(backend_runtime::AUTHORITY_SECRET_ENV);
+                if let Some(authority) = authority {
+                    original.env(backend_runtime::AUTHORITY_SECRET_ENV, authority);
+                }
+                let mut before = recovery_observation(&mut original);
+                assert_eq!(before["passive"], true);
+                assert_eq!(
+                    before["boundary"],
+                    if explicit { "explicit" } else { "home" }
+                );
+                let fault = before
+                    .as_object_mut()
+                    .expect("observation")
+                    .remove("fault")
+                    .expect("actual fault");
+                let human = before
+                    .as_object_mut()
+                    .expect("observation")
+                    .remove("fault_human")
+                    .expect("human");
+                let markdown = before
+                    .as_object_mut()
+                    .expect("observation")
+                    .remove("fault_markdown")
+                    .expect("Markdown");
+                assert!(
+                    fault["call"].is_null(),
+                    "CLI selection is not a fabricated MCP scope"
+                );
+                if let Some(shell) = before["retry"].as_str() {
+                    assert_eq!(fault["shell"], shell);
+                    assert!(human.as_str().expect("human").contains(shell));
+                    assert!(markdown.as_str().expect("Markdown").contains(shell));
+                    assert_eq!(before, replay_startup_selection(&executable, shell));
+                } else {
+                    assert_eq!(fault["shell"], "re-run the same command");
+                    assert!(!human.as_str().expect("human").contains("--workspace"));
+                    assert!(!markdown.as_str().expect("Markdown").contains("--workspace"));
+                    assert!(
+                        !human
+                            .as_str()
+                            .expect("human")
+                            .contains("BACKEND_LOCALD_AUTHORITY_SECRET_FILE=")
+                    );
+                    assert!(
+                        !markdown
+                            .as_str()
+                            .expect("Markdown")
+                            .contains("BACKEND_LOCALD_AUTHORITY_SECRET_FILE=")
+                    );
+                }
+                assert!(
+                    !root.exists(),
+                    "passive no-owner fault never starts or prepares an owner"
+                );
+            }
         }
     }
 
