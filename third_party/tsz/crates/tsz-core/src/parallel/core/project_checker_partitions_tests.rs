@@ -4064,12 +4064,12 @@ fn owned_image_keeps_pristine_diagnostics_and_reuses_exact_views_for_queries() {
     let (mut program, libs, options, resolutions, semantic) = pristine_parity_fixture();
     program.set_project_module_resolutions(&resolutions).unwrap();
     let observer = Observer { budget: &budget, entries: Mutex::new(Vec::new()) };
-    let image = ProjectCheckerImage::new_with_checker_execution(
+    let image = PreparedProjectCheckerImage::new_with_checker_execution(
         program, options, &libs, semantic,
         ProjectCheckerExecution { checkpoint: &observer, workers: NonZeroUsize::new(2).unwrap() },
     ).unwrap();
-    let original_views = Arc::clone(&image.views);
-    let checked = image.check_with_partitions(ProjectCheckerExecution {
+    let original_views = Arc::clone(&image.contents.views);
+    let (image, checked) = image.check_with_partitions(ProjectCheckerExecution {
         checkpoint: &observer, workers: NonZeroUsize::new(2).unwrap(),
     }).unwrap();
     assert_same_results(&checked, &expected);
@@ -4096,10 +4096,17 @@ fn owned_image_keeps_pristine_diagnostics_and_reuses_exact_views_for_queries() {
             construction_phases.iter().filter(|&&entry| entry == phase).count(),
             "query-session construction must not rebuild shared views or reprime augmentations");
     }
-    let repeated = image.check_with_partitions(ProjectCheckerExecution {
-        checkpoint: &observer, workers: NonZeroUsize::new(1).unwrap(),
+    // A checked image has no full-check API. Later scopes reuse pure views
+    // rather than consume a new budget to rebuild/check this exact program.
+    let later_budget = execution_budget(&cancelled);
+    let later = image.query_session(&later_budget).unwrap();
+    assert!(Arc::ptr_eq(&later.plan.views, &original_views));
+    let later_type = later.with_file_checker(a, |checker, binder, _| {
+        let ty = checker.get_type_of_symbol(binder.file_locals.get("a").unwrap());
+        checker.format_type(ty)
     }).unwrap();
-    assert_same_results(&repeated, &expected);
+    assert_eq!(later_type, expected_type);
+    assert_same_results(&checked, &expected);
 }
 
 #[test]
@@ -4114,8 +4121,8 @@ fn owned_image_rejects_fresh_budget_after_actual_solver_stop() {
         vec![("src/main.ts".into(), "export const value = 1;".into())], &[],
     );
     program.set_project_module_resolutions(&[]).unwrap();
-    let image = ProjectCheckerImage::new(program, CheckerOptions::default(), &[], ProjectSemanticOptions::structural(), None).unwrap();
-    image.check_fresh(None).unwrap();
+    let image = PreparedProjectCheckerImage::new(program, CheckerOptions::default(), &[], ProjectSemanticOptions::structural(), None).unwrap();
+    let (image, _checked) = image.check_fresh(None).unwrap();
     let one_shot = OneShotStop(AtomicBool::new(false));
     let session = image.query_session(&one_shot).unwrap();
     let discarded = session.with_file_checker_and_types(0, |_, _, _, database| {
@@ -4125,19 +4132,15 @@ fn owned_image_rejects_fresh_budget_after_actual_solver_stop() {
     });
     assert!(matches!(discarded, Err(ProjectCheckerSessionError::ExecutionStopped(ProjectExecutionStop::Cancelled))));
     assert!(!image.is_usable());
-    assert!(matches!(image.check_fresh(None), Err(ProjectCheckerSessionError::ExecutionStopped(ProjectExecutionStop::Cancelled))),
-        "explicit unmetered API cannot resurrect a poisoned image");
+    // No full-check/unmetered resurrection API exists on checked images.
     let cancelled = AtomicBool::new(false);
     let fresh_budget = execution_budget(&cancelled);
     assert!(matches!(image.query_session(&fresh_budget), Err(ProjectCheckerSessionError::ExecutionStopped(ProjectExecutionStop::Cancelled))));
-    assert!(matches!(image.check_with_partitions(ProjectCheckerExecution {
-        checkpoint: &fresh_budget, workers: NonZeroUsize::new(1).unwrap(),
-    }), Err(ProjectPartitionCheckError::Program(ProjectProgramCheckError::ExecutionStopped(ProjectExecutionStop::Cancelled)))));
     assert_eq!(fresh_budget.stop_reason(), None, "the old image stop must not poll a new lease");
 }
 
 #[test]
-fn owned_image_refuses_another_equivalent_budget_without_poisoning_original_lease() {
+fn building_image_keeps_original_budget_and_checked_image_can_lend_later_scopes() {
     use tsz_common::ExecutionCheckpoint;
     let cancelled = AtomicBool::new(false);
     let first = execution_budget(&cancelled);
@@ -4145,28 +4148,34 @@ fn owned_image_refuses_another_equivalent_budget_without_poisoning_original_leas
     let first_scope = tsz_common::LatchedExecutionCheckpoint::new(&first);
     assert_eq!(first.execution_identity(), first_scope.execution_identity());
     assert_ne!(first.execution_identity(), other.execution_identity());
-    let mut program = compile_files_with_libs(
-        vec![("src/main.ts".into(), "export const value: number = 1;".into())], &[],
-    );
-    program.set_project_module_resolutions_with_execution_checkpoint(&[], &first).unwrap();
-    let image = ProjectCheckerImage::new(program, CheckerOptions::default(), &[], ProjectSemanticOptions::structural(), Some(&first_scope)).unwrap();
-    image.check_fresh(Some(&first)).unwrap();
+    let prepare = || {
+        let mut program = compile_files_with_libs(
+            vec![("src/main.ts".into(), "export const value: number = 1;".into())], &[],
+        );
+        program.set_project_module_resolutions_with_execution_checkpoint(&[], &first).unwrap();
+        PreparedProjectCheckerImage::new(program, CheckerOptions::default(), &[], ProjectSemanticOptions::structural(), Some(&first_scope)).unwrap()
+    };
+    let building = prepare();
     let other_remaining = other.remaining_work_units();
-    assert!(matches!(image.query_session(&other), Err(ProjectCheckerSessionError::ExecutionCheckpointMismatch)));
-    assert!(matches!(image.check_fresh(Some(&other)), Err(ProjectCheckerSessionError::ExecutionCheckpointMismatch)));
-    assert_eq!(other.remaining_work_units(), other_remaining);
-    assert!(image.is_usable(), "wrong lease cannot invalidate an actual checked owner");
-    let session = image.query_session(&first_scope).unwrap();
-    let value = session.with_file_checker(0, |checker, binder, _| {
-        let ty = checker.get_type_of_symbol(binder.file_locals.get("value").unwrap());
-        checker.format_type(ty)
-    }).unwrap();
-    assert_eq!(value, "number");
-    drop(session);
+    assert!(matches!(building.check_fresh(Some(&other)), Err(ProjectCheckerSessionError::ExecutionCheckpointMismatch)));
+    assert_eq!(other.remaining_work_units(), other_remaining, "a changed budget cannot finish an in-progress full check");
+    let (image, _checked) = prepare().check_fresh(Some(&first)).unwrap();
+    let original_views = Arc::clone(&image.contents.views);
+    for scope in [&first_scope as &dyn ExecutionCheckpoint, &other] {
+        let session = image.query_session(scope).unwrap();
+        assert!(Arc::ptr_eq(&session.plan.views, &original_views));
+        let value = session.with_file_checker(0, |checker, binder, _| {
+            let ty = checker.get_type_of_symbol(binder.file_locals.get("value").unwrap());
+            checker.format_type(ty)
+        }).unwrap();
+        assert_eq!(value, "number");
+    }
     cancelled.store(true, Ordering::Release);
     assert!(matches!(image.query_session(&first), Err(ProjectCheckerSessionError::ExecutionStopped(ProjectExecutionStop::Cancelled))));
-    assert!(matches!(image.query_session(&other), Err(ProjectCheckerSessionError::ExecutionStopped(ProjectExecutionStop::Cancelled))));
-    assert_eq!(other.stop_reason(), None, "poison is reported before identity mismatch or polling a new budget");
+    let independent_cancel = AtomicBool::new(false);
+    let independent = execution_budget(&independent_cancel);
+    assert!(matches!(image.query_session(&independent), Err(ProjectCheckerSessionError::ExecutionStopped(ProjectExecutionStop::Cancelled))));
+    assert_eq!(independent.stop_reason(), None, "cached poison wins before polling another legitimate scope");
 }
 
 #[test]

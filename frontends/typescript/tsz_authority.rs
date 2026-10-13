@@ -308,6 +308,7 @@ pub struct TszProject {
     bound_sources: BTreeMap<String, Arc<tsz::parallel::BindResult>>,
     lib_files: Vec<Arc<tsz::lib_loader::LibFile>>,
     program: tsz::parallel::ProjectCheckerImage,
+    query_budget: Option<tsz_common::ProjectExecutionIdentity>,
     check: tsz::parallel::CheckResult,
 }
 
@@ -549,7 +550,6 @@ impl TszProjectAuthority {
                     && current.file_format_digest == file_format_digest
                     && current.library_digest == library_digest
                     && current.program.is_usable()
-                    && current.program.accepts_execution_checkpoint(checkpoint)
             })
             && report.removed_sources == 0
         {
@@ -559,6 +559,11 @@ impl TszProjectAuthority {
                     .map_err(TszAuthorityError::ExecutionStopped)?;
             }
             frontier.returned();
+            // The immutable checked cache remains valid. Admit the current
+            // request's query scope separately after its checkpoint succeeds.
+            if let Some(project) = self.project.as_mut() {
+                project.query_budget = checkpoint.and_then(|checkpoint| checkpoint.execution_identity());
+            }
             report.reused_project_result = true;
             return Ok(report);
         }
@@ -662,21 +667,21 @@ impl TszProjectAuthority {
             tsz::parallel::ProjectPartitionCheckError::WorkerPoolUnavailable(detail) => TszAuthorityError::CheckerWorkerPoolUnavailable(detail),
         };
         let program = match execution {
-            TszUpdateExecution::Partitions(execution) => tsz::parallel::ProjectCheckerImage::new_with_checker_execution(
+            TszUpdateExecution::Partitions(execution) => tsz::parallel::PreparedProjectCheckerImage::new_with_checker_execution(
                 program,
                 options.checker.clone(),
                 lib_files,
                 options.semantic_options,
                 TszProjectCheckerExecution { checkpoint: checkpoint.expect("partition checkpoint"), workers: execution.workers },
             ).map_err(partition_failure)?,
-            TszUpdateExecution::Fresh(_) | TszUpdateExecution::Unmetered => tsz::parallel::ProjectCheckerImage::new(
+            TszUpdateExecution::Fresh(_) | TszUpdateExecution::Unmetered => tsz::parallel::PreparedProjectCheckerImage::new(
                 program, options.checker.clone(), lib_files, options.semantic_options, checkpoint,
             ).map_err(|cause| match cause {
                 tsz::parallel::ProjectCheckerSessionError::ExecutionStopped(reason) => TszAuthorityError::ProjectCheck(tsz::parallel::ProjectProgramCheckError::ExecutionStopped(reason)),
                 other => TszAuthorityError::ProjectCheckerSession(other),
             })?,
         };
-        let check = match execution {
+        let (program, check) = match execution {
             TszUpdateExecution::Partitions(execution) => program.check_with_partitions(
                 TszProjectCheckerExecution { checkpoint: checkpoint.expect("partition checkpoint"), workers: execution.workers },
             ).map_err(partition_failure)?,
@@ -701,6 +706,7 @@ impl TszProjectAuthority {
             options,
             bound_sources,
             program,
+            query_budget: checkpoint.and_then(|checkpoint| checkpoint.execution_identity()),
             check,
         });
         Ok(report)
@@ -1465,7 +1471,7 @@ mod tests {
     }
 
     #[test]
-    fn new_budget_rebuilds_exact_image_and_reuses_source_binds() {
+    fn new_admitted_budget_reuses_exact_checked_image_without_rebuilding_views() {
         let cancelled = AtomicBool::new(false);
         let first = execution_budget(&cancelled, 1_000_000);
         let other = execution_budget(&cancelled, 1_000_000);
@@ -1474,10 +1480,15 @@ mod tests {
         authority.update_with_execution_checkpoint(sources.clone(), options(), &[], &first).unwrap();
         assert!(matches!(authority.project().unwrap().checked_query_session(&other), Err(TszProjectQuerySessionError::ExecutionCheckpointMismatch)));
         assert!(authority.project().is_some(), "wrong caller cannot poison the admitted image");
+        let checked_store = Arc::clone(&authority.project().unwrap().program.definition_store);
         let admitted = authority.update_with_execution_checkpoint(sources.clone(), options(), &[], &other).unwrap();
         assert_eq!(admitted.parsed_and_bound, 0);
         assert_eq!(admitted.reused_binds, 1);
-        assert!(!admitted.reused_project_result);
+        assert!(admitted.reused_project_result);
+        assert!(Arc::ptr_eq(&checked_store, &authority.project().unwrap().program.definition_store),
+            "a later admitted scope must not rebuild the checked program");
+        assert!(matches!(authority.project().unwrap().checked_query_session(&first), Err(TszProjectQuerySessionError::ExecutionCheckpointMismatch)),
+            "the current request still rejects a scope from its previous admission");
         let session = authority.project().unwrap().checked_query_session(&other).unwrap();
         let value = session.with_file_checker_and_types(0, |checker, binder, _, _| {
             let ty = checker.get_type_of_symbol(binder.file_locals.get("value").unwrap());

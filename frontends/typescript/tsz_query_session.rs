@@ -47,9 +47,11 @@ impl std::fmt::Debug for TszProjectQuerySession<'_> {
 impl TszProject {
     /// Opens a budgeted native query session for exact semantic projection.
     ///
-    /// The same checkpoint must have governed this project's update. The
-    /// returned session retains the exact checked project and shared query
-    /// context; each file checker remains stack-local to its callback.
+    /// Use the checkpoint admitted by the most recent successful update.
+    /// An exact update may reuse the fully checked image under a new query
+    /// scope; a changed update shares its budget through checking and queries.
+    /// The session retains that admitted scope and exact shared context, while
+    /// each file checker remains stack-local to its callback.
     ///
     /// # Errors
     /// Returns a typed failure when the project lacks an exact resolution
@@ -100,6 +102,16 @@ impl<'project> TszProjectQuerySession<'project> {
         project: &'project TszProject,
         checkpoint: &'project dyn ExecutionCheckpoint,
     ) -> Result<Self, TszProjectQuerySessionError> {
+        // Only the query scope admitted by the most recent successful update
+        // may enter this request. A later exact update can intentionally admit
+        // a new scope while retaining the same fully checked immutable image.
+        if project.program.is_usable()
+            && project.query_budget.as_ref().is_some_and(|identity| {
+                checkpoint.execution_identity().as_ref() != Some(identity)
+            })
+        {
+            return Err(TszProjectQuerySessionError::ExecutionCheckpointMismatch);
+        }
         let checker_session = project.program.query_session(checkpoint)?;
         let file_indexes = project
             .program
