@@ -3354,6 +3354,17 @@ pub(super) enum CoordinateSubstringPolicy {
     ExcludeInheritedPath,
 }
 
+impl CoordinateSubstringPolicy {
+    fn value(self, coordinate: &str) -> &str {
+        match self {
+            Self::Include => coordinate,
+            Self::ExcludeInheritedPath => coordinate
+                .split_once("::")
+                .map_or(coordinate, |(_, local)| local),
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct SearchDocumentText<'a> {
     /// Additional exact/prefix coordinate values on a grouped lineage doc.
@@ -3363,8 +3374,8 @@ pub(super) struct SearchDocumentText<'a> {
     /// Whether legacy free-text content should participate in substring rank.
     /// Typed metadata and forge pins use token matching instead.
     pub(super) substring_generic: bool,
-    /// Keep exact/prefix coordinate lookup while excluding inherited project
-    /// paths from ordinary local declaration substring queries.
+    /// Keep exact/prefix coordinates and local address/path suffixes, excluding
+    /// inherited project paths from ordinary local substring queries.
     pub(super) coordinate_substring: CoordinateSubstringPolicy,
     pub(super) aliases: SearchTextFacet<'a>,
     pub(super) keywords: SearchTextFacet<'a>,
@@ -5057,11 +5068,14 @@ impl<K: Clone> TextSearchIndex<K> {
         let name = normalize(name);
         let standing = search_text.standing;
         let generic = search_text.generic;
-        let mut substring_fields = Vec::new();
-        if search_text.coordinate_substring == CoordinateSubstringPolicy::Include {
-            substring_fields.push(coordinate.as_str());
-            substring_fields.extend(search_text.coordinate_variants.iter().copied());
-        }
+        let mut substring_fields =
+            vec![search_text.coordinate_substring.value(coordinate.as_str())];
+        substring_fields.extend(
+            search_text
+                .coordinate_variants
+                .iter()
+                .map(|value| search_text.coordinate_substring.value(value)),
+        );
         substring_fields.push(name.as_str());
         if search_text.substring_generic {
             substring_fields.extend(generic.iter().copied());
@@ -9389,6 +9403,75 @@ mod tests {
                 .hits
                 .len(),
             2
+        );
+    }
+
+    #[test]
+    fn local_search_keeps_structural_file_paths_without_checkout_path_fanout() {
+        let (base, _) = super::super::initial_view().expect("initial view");
+        let project = "/root/sol61-python-go-acceptance-20261013/sources/httpie";
+        let file_coordinate = format!("{project}::cli/argparser.py:151::parse_args");
+        let other_coordinate = format!("{project}::other/native.py:10::sleep");
+        let file_id = RowId::Symbol(backend_engine::symbol_key(&file_coordinate));
+        let other_id = RowId::Symbol(backend_engine::symbol_key(&other_coordinate));
+        let mut changes = vec![
+            RowChange::Upsert(Box::new(Row::new(file_id, base.basis(), &file_coordinate))),
+            RowChange::Upsert(Box::new(Row::new(
+                other_id,
+                base.basis(),
+                &other_coordinate,
+            ))),
+        ];
+        changes.sort_by_key(RowChange::id);
+        let prepared = base
+            .prepare(
+                ViewDelta::Patch {
+                    changes: changes.into(),
+                },
+                super::super::test_builtin_view_capability().expect("view capability"),
+            )
+            .expect("prepare structural file coordinates");
+        let (view, _) = base
+            .commit(prepared)
+            .expect("commit structural coordinates");
+        let mut local = LocalDeclarationSearchIndex::default();
+        local.sync(&view).expect("local path projection");
+        for query in [
+            "cli/argparser.py",
+            "argparser.py",
+            "argparser.py:151",
+            "parse_args",
+        ] {
+            assert_eq!(
+                hit_keys(local.page(query, 8).expect("local path/name query").hits),
+                [file_id],
+                "{query}"
+            );
+        }
+        assert!(
+            local
+                .page("httpie", 8)
+                .expect("checkout name")
+                .hits
+                .is_empty()
+        );
+        assert_eq!(
+            hit_keys(
+                local
+                    .page(&file_coordinate, 8)
+                    .expect("full exact address")
+                    .hits
+            ),
+            [file_id]
+        );
+        assert_eq!(
+            hit_keys(
+                local
+                    .page(&format!("{project}::cli/"), 8)
+                    .expect("full address prefix")
+                    .hits
+            ),
+            [file_id]
         );
     }
 
