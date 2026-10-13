@@ -642,6 +642,19 @@ impl TypeScriptAuthorityFailureKind {
         }
     }
 
+    /// This closed terminal covers the complete native program, so the retained
+    /// request source cannot be presented as the file that consumed the budget.
+    #[must_use]
+    pub const fn is_program_execution_failure(self) -> bool {
+        matches!(self,
+            Self::HostProgramCancelled | Self::HostProgramDeadline |
+            Self::NativeSessionCancelled | Self::NativeSessionDeadline | Self::NativeSessionWorkBudgetExhausted |
+            Self::NativeProjectCheckCancelled | Self::NativeProjectCheckDeadline | Self::NativeProjectCheckWorkBudgetExhausted |
+            Self::NativeUpdateCancelled | Self::NativeUpdateDeadline | Self::NativeUpdateWorkBudgetExhausted |
+            Self::NativeCheckerWorkerPoolUnavailable | Self::NativeSessionExecutionCheckpointMismatch
+        )
+    }
+
     /// Whether this exact terminal observed cooperative caller cancellation.
     #[must_use]
     pub const fn is_cancelled(self) -> bool {

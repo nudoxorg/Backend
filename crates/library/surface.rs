@@ -1978,10 +1978,23 @@ impl PackageCompilerFailure {
         Ok(Some(summary))
     }
 
-    /// Package-relative source member that reached the compiler terminal.
+    /// Package-relative request source bound into the compiler terminal. For a
+    /// complete TypeScript program refusal, this is request context, not a hot file.
     #[must_use]
     pub fn relative_path(&self) -> &str {
         self.relative_path.as_str()
+    }
+
+    /// Whether this source-bound request ended at a native TypeScript program
+    /// execution boundary. The source path then identifies request context,
+    /// rather than a measured hot file or a file-local semantic diagnosis.
+    #[must_use]
+    pub const fn is_typescript_program_execution_failure(&self) -> bool {
+        match &self.cause {
+            PackageCompilerFailureCause::Authority { diagnostic: Some(CompilerAuthorityDiagnosticFacts { typescript_failure: Some(kind), .. }), .. }
+            | PackageCompilerFailureCause::AuthorityAdmission { diagnostic: Some(CompilerAuthorityDiagnosticFacts { typescript_failure: Some(kind), .. }), .. } => kind.is_program_execution_failure(),
+            _ => false,
+        }
     }
 
     /// Exact compiler input content identity, retaining the SourceFact domain.

@@ -500,3 +500,27 @@ fn partial_publication_keeps_useful_languages_all_refusals_and_exact_machine_bas
             .any(|tag| tag == "outcome partially-published")
     );
 }
+
+#[test]
+fn native_typescript_program_refusal_retains_request_source_without_naming_a_hot_file() {
+    use backend_library::interface::{AuthorityDiagnosticClass, AuthorityPhase, CompilerCause,
+        CompilerDiagnostic, TypeScriptAuthorityFailureKind as T};
+    for (kind, program) in [(T::NativeProjectCheckDeadline, true),
+        (T::NativeSessionWorkBudgetExhausted, true), (T::NativeCheckerWorkerPoolUnavailable, true),
+        (T::NativeSessionExecutionCheckpointMismatch, true), (T::NativeSourceMismatch, false)] {
+        let failure = PackageCompilerFailure::from_package_terminal("eslint.config.mjs", &CompilerTerminal::Compile {
+            attempted: CompilerAttempt { source: source(), recipe: ContentId::<CompileRecipeDomain>::from_canonical_bytes(b"actual-request-context") },
+            cause: CompilerCause::Authority { phase: AuthorityPhase::Resolve, class: AuthorityDiagnosticClass::Authority,
+                diagnostic: CompilerDiagnostic::from_native(b"private native bytes", 20, false)
+                    .map(|diagnostic| diagnostic.with_typescript_failure(kind)) },
+        }).unwrap().unwrap();
+        assert_eq!(failure.is_typescript_program_execution_failure(), program);
+        let fault = compiler_fault(&failure);
+        assert_eq!(fault.compiler_failure(), Some(&failure));
+        assert_eq!(fault.cause().sentence().contains("TypeScript project (requested from eslint.config.mjs)"), program);
+        assert!(fault.cause().sentence().contains(kind.kind_tag()));
+        let value = fault_value(&fault);
+        assert_eq!(value["compiler_failure"], serde_json::to_value(&failure).unwrap());
+        assert_eq!(serde_json::from_value::<FaultDto>(value).unwrap(), FaultDto::new(&fault));
+    }
+}

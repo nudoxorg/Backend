@@ -4125,6 +4125,8 @@ fn owned_image_rejects_fresh_budget_after_actual_solver_stop() {
     });
     assert!(matches!(discarded, Err(ProjectCheckerSessionError::ExecutionStopped(ProjectExecutionStop::Cancelled))));
     assert!(!image.is_usable());
+    assert!(matches!(image.check_fresh(None), Err(ProjectCheckerSessionError::ExecutionStopped(ProjectExecutionStop::Cancelled))),
+        "explicit unmetered API cannot resurrect a poisoned image");
     let cancelled = AtomicBool::new(false);
     let fresh_budget = execution_budget(&cancelled);
     assert!(matches!(image.query_session(&fresh_budget), Err(ProjectCheckerSessionError::ExecutionStopped(ProjectExecutionStop::Cancelled))));
