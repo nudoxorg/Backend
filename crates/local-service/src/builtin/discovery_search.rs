@@ -52,7 +52,7 @@ const MAX_LINEAGE_FACET_VALUES: usize = 16_384;
 const SEARCH_PROJECTION_DIRECTORY: &str = "v1";
 const SEARCH_PROJECTION_MANIFEST: &str = "selected-root-v1";
 const SEARCH_PROJECTION_ROOT_LEASE: &str = ".backend-root-reader.lock";
-const SEARCH_PROJECTION_SCHEMA: &[u8] = b"backend-discovery-tantivy-v2\0";
+const SEARCH_PROJECTION_SCHEMA: &[u8] = b"backend-discovery-tantivy-v3\0";
 const MAX_RETAINED_SEARCH_PROJECTIONS: usize = 4;
 const MAX_SEARCH_PROJECTION_FILES: usize = 196_608;
 const MAX_SEARCH_PROJECTION_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
@@ -1739,6 +1739,7 @@ impl LineageSearchIndex {
             generic,
             substring_generic: false,
             coordinate_substring: CoordinateSubstringPolicy::Include,
+            local_source_path: None,
             lineage_group: None,
             standing: SearchStandingEvidence::Unknown,
         };
@@ -3190,7 +3191,8 @@ fn local_search_text(row: &Row) -> SearchDocumentText<'_> {
     SearchDocumentText {
         generic: local_search_content(row),
         substring_generic: true,
-        coordinate_substring: CoordinateSubstringPolicy::ExcludeInheritedPath,
+        coordinate_substring: CoordinateSubstringPolicy::LocalDeclarationFields,
+        local_source_path: row.source.captured().map(|location| location.path()),
         ..SearchDocumentText::default()
     }
 }
@@ -3208,6 +3210,7 @@ pub(super) struct TextSearchIndex<K> {
     searchable_keyword: Field,
     searchable_description: Field,
     searchable_advisory: Field,
+    local_source_path: Field,
     substring_unigram: Field,
     substring_bigram: Field,
     substring_trigram: Field,
@@ -3219,6 +3222,7 @@ pub(super) struct TextSearchIndex<K> {
     identities: BTreeMap<String, String>,
     standings: BTreeMap<String, SearchStandingEvidence>,
     substring_values: BTreeMap<String, Vec<String>>,
+    local_source_paths: BTreeMap<String, String>,
     dirty: bool,
 }
 
@@ -3351,18 +3355,7 @@ impl<'index, K: Clone> PreparedSearchQuery<'index, K> {
 pub(super) enum CoordinateSubstringPolicy {
     #[default]
     Include,
-    ExcludeInheritedPath,
-}
-
-impl CoordinateSubstringPolicy {
-    fn value(self, coordinate: &str) -> &str {
-        match self {
-            Self::Include => coordinate,
-            Self::ExcludeInheritedPath => coordinate
-                .split_once("::")
-                .map_or(coordinate, |(_, local)| local),
-        }
-    }
+    LocalDeclarationFields,
 }
 
 #[derive(Default)]
@@ -3374,9 +3367,11 @@ pub(super) struct SearchDocumentText<'a> {
     /// Whether legacy free-text content should participate in substring rank.
     /// Typed metadata and forge pins use token matching instead.
     pub(super) substring_generic: bool,
-    /// Keep exact/prefix coordinates and local address/path suffixes, excluding
-    /// inherited project paths from ordinary local substring queries.
+    /// Local declaration terms come from typed name/content/source fields.
+    /// Full coordinates always remain available for exact/prefix lookup.
     pub(super) coordinate_substring: CoordinateSubstringPolicy,
+    /// Compiler-captured package-relative source path; never split from labels.
+    pub(super) local_source_path: Option<&'a str>,
     pub(super) aliases: SearchTextFacet<'a>,
     pub(super) keywords: SearchTextFacet<'a>,
     pub(super) descriptions: SearchTextFacet<'a>,
@@ -4675,6 +4670,7 @@ fn discovery_search_text(metadata: &DiscoveryMetadata) -> SearchDocumentText<'_>
         generic,
         substring_generic: false,
         coordinate_substring: CoordinateSubstringPolicy::Include,
+        local_source_path: None,
         aliases: search_text_facet(&metadata.aliases, aliases),
         keywords,
         descriptions,
@@ -4859,6 +4855,7 @@ impl<K: Clone> TextSearchIndex<K> {
         let document_identity = schema.add_text_field("document_identity", STRING);
         let sort_key = schema.add_text_field(SORT_KEY_FIELD, FAST);
         let pagination_key = schema.add_text_field("pagination_key", STRING);
+        let local_source_path = schema.add_text_field("local_source_path", STRING);
         let schema = schema.build();
         let index = match mode {
             SearchIndexMode::Memory => Index::create_in_ram(schema.clone()),
@@ -4897,6 +4894,7 @@ impl<K: Clone> TextSearchIndex<K> {
             searchable_keyword,
             searchable_description,
             searchable_advisory,
+            local_source_path,
             lineage_group,
             substring_unigram,
             substring_bigram,
@@ -4908,6 +4906,7 @@ impl<K: Clone> TextSearchIndex<K> {
             identities: BTreeMap::new(),
             standings: BTreeMap::new(),
             substring_values: BTreeMap::new(),
+            local_source_paths: BTreeMap::new(),
             dirty: false,
         })
     }
@@ -5068,14 +5067,11 @@ impl<K: Clone> TextSearchIndex<K> {
         let name = normalize(name);
         let standing = search_text.standing;
         let generic = search_text.generic;
-        let mut substring_fields =
-            vec![search_text.coordinate_substring.value(coordinate.as_str())];
-        substring_fields.extend(
-            search_text
-                .coordinate_variants
-                .iter()
-                .map(|value| search_text.coordinate_substring.value(value)),
-        );
+        let mut substring_fields = Vec::new();
+        if search_text.coordinate_substring == CoordinateSubstringPolicy::Include {
+            substring_fields.push(coordinate.as_str());
+            substring_fields.extend(search_text.coordinate_variants.iter().copied());
+        }
         substring_fields.push(name.as_str());
         if search_text.substring_generic {
             substring_fields.extend(generic.iter().copied());
@@ -5085,6 +5081,11 @@ impl<K: Clone> TextSearchIndex<K> {
             .map(|field| normalize(field))
             .collect::<Vec<_>>();
         let mut document = TantivyDocument::default();
+        if let Some(path) = search_text.local_source_path {
+            let path = normalize(path);
+            document.add_text(self.local_source_path, path.as_str());
+            self.local_source_paths.insert(sort_key.clone(), path);
+        }
         document.add_text(self.exact_coordinate, coordinate.as_str());
         for coordinate in &search_text.coordinate_variants {
             let coordinate = normalize(coordinate);
@@ -5160,6 +5161,7 @@ impl<K: Clone> TextSearchIndex<K> {
         self.keys.remove(&sort_key);
         self.standings.remove(&sort_key);
         self.substring_values.remove(&sort_key);
+        self.local_source_paths.remove(&sort_key);
         self.dirty = self.writer.is_some();
     }
 
@@ -5167,6 +5169,11 @@ impl<K: Clone> TextSearchIndex<K> {
         self.substring_values
             .get(sort_key)
             .is_some_and(|values| values.iter().any(|value| value.contains(needle)))
+            || (local_source_path_intent(needle)
+                && self
+                    .local_source_paths
+                    .get(sort_key)
+                    .is_some_and(|path| path.contains(needle)))
     }
 
     pub(super) fn commit(&mut self) -> Result<(), String> {
@@ -5456,12 +5463,27 @@ impl<K: Clone> TextSearchIndex<K> {
             SearchTier::PrefixCoordinate => prefix_query(self.exact_coordinate, needle),
             SearchTier::PrefixName => prefix_query(self.exact_name, needle),
             SearchTier::PrefixAlias => prefix_query(self.exact_alias, needle),
-            SearchTier::Substring => substring_query(
-                self.substring_unigram,
-                self.substring_bigram,
-                self.substring_trigram,
-                needle,
-            ),
+            SearchTier::Substring => {
+                let text = substring_query(
+                    self.substring_unigram,
+                    self.substring_bigram,
+                    self.substring_trigram,
+                    needle,
+                );
+                if !local_source_path_intent(needle) {
+                    return text;
+                }
+                let pattern = format!(".*{}", regex_prefix_pattern(needle));
+                let path: Box<dyn Query> =
+                    RegexQuery::from_pattern(&pattern, self.local_source_path).map_or_else(
+                        |_| Box::new(EmptyQuery) as Box<dyn Query>,
+                        |query| Box::new(query),
+                    );
+                Box::new(BooleanQuery::new(vec![
+                    (Occur::Should, text),
+                    (Occur::Should, path),
+                ]))
+            }
             SearchTier::AliasTerms => searchable_content_query(self.searchable_alias, needle),
             SearchTier::KeywordTerms => searchable_content_query(self.searchable_keyword, needle),
             SearchTier::AdvisoryTerms => searchable_content_query(self.searchable_advisory, needle),
@@ -5651,6 +5673,13 @@ fn searchable_content_query(field: Field, value: &str) -> Box<dyn Query> {
         Box::new(BooleanQuery::new(clauses)),
         1.0,
     ))
+}
+
+fn local_source_path_intent(needle: &str) -> bool {
+    !needle.chars().any(char::is_whitespace)
+        && needle
+            .chars()
+            .any(|character| matches!(character, '/' | '\\' | '.'))
 }
 
 fn regex_prefix_pattern(value: &str) -> String {
@@ -9342,11 +9371,18 @@ mod tests {
         let mut changes = labels
             .iter()
             .map(|label| {
-                RowChange::Upsert(Box::new(Row::new(
+                let mut row = Row::new(
                     RowId::Symbol(backend_engine::symbol_key(label)),
                     base.basis(),
                     label,
-                )))
+                );
+                if label == &parse_args {
+                    row = row.with_source(
+                        backend_library::SourceLocation::new("httpie/cli/argparser.py", 151)
+                            .expect("typed HTTPie source"),
+                    );
+                }
+                RowChange::Upsert(Box::new(row))
             })
             .collect::<Vec<_>>();
         changes.sort_by_key(RowChange::id);
@@ -9389,6 +9425,15 @@ mod tests {
             hit_keys(local.page("parse_args", 8).expect("declaration name").hits),
             [RowId::Symbol(backend_engine::symbol_key(&parse_args))]
         );
+        assert_eq!(
+            hit_keys(
+                local
+                    .page("httpie/cli/argparser.py", 8)
+                    .expect("explicit typed source path")
+                    .hits
+            ),
+            [RowId::Symbol(backend_engine::symbol_key(&parse_args))]
+        );
         for coordinate in &labels {
             assert_eq!(
                 hit_keys(local.page(coordinate, 8).expect("exact coordinate").hits).first(),
@@ -9409,18 +9454,24 @@ mod tests {
     #[test]
     fn local_search_keeps_structural_file_paths_without_checkout_path_fanout() {
         let (base, _) = super::super::initial_view().expect("initial view");
-        let project = "/root/sol61-python-go-acceptance-20261013/sources/httpie";
-        let file_coordinate = format!("{project}::cli/argparser.py:151::parse_args");
+        let project = "/tmp/work::checkout/repo";
+        let path = "cli/arg::parser.py";
+        let file_coordinate = format!("{project}::{path}:151::parse_args");
         let other_coordinate = format!("{project}::other/native.py:10::sleep");
         let file_id = RowId::Symbol(backend_engine::symbol_key(&file_coordinate));
         let other_id = RowId::Symbol(backend_engine::symbol_key(&other_coordinate));
         let mut changes = vec![
-            RowChange::Upsert(Box::new(Row::new(file_id, base.basis(), &file_coordinate))),
-            RowChange::Upsert(Box::new(Row::new(
-                other_id,
-                base.basis(),
-                &other_coordinate,
-            ))),
+            RowChange::Upsert(Box::new(
+                Row::new(file_id, base.basis(), &file_coordinate).with_source(
+                    backend_library::SourceLocation::new(path, 151).expect("typed file source"),
+                ),
+            )),
+            RowChange::Upsert(Box::new(
+                Row::new(other_id, base.basis(), &other_coordinate).with_source(
+                    backend_library::SourceLocation::new("other/native.py", 10)
+                        .expect("other typed source"),
+                ),
+            )),
         ];
         changes.sort_by_key(RowChange::id);
         let prepared = base
@@ -9437,9 +9488,9 @@ mod tests {
         let mut local = LocalDeclarationSearchIndex::default();
         local.sync(&view).expect("local path projection");
         for query in [
-            "cli/argparser.py",
-            "argparser.py",
-            "argparser.py:151",
+            "cli/arg::parser.py",
+            "arg::parser.py",
+            "parser.py",
             "parse_args",
         ] {
             assert_eq!(
@@ -9450,7 +9501,7 @@ mod tests {
         }
         assert!(
             local
-                .page("httpie", 8)
+                .page("checkout", 8)
                 .expect("checkout name")
                 .hits
                 .is_empty()
@@ -9510,6 +9561,8 @@ mod tests {
                 "keeper",
                 "fixture::before",
                 "fixture::renamed",
+                "old/file::name.py",
+                "renamed/new.py",
                 "fixture::",
                 "",
             ] {
@@ -9527,7 +9580,12 @@ mod tests {
         let keeper_id = RowId::Symbol(backend_engine::symbol_key("fixture::keeper"));
         let mut changes = vec![
             RowChange::Upsert(Box::new(
-                Row::new(id, base.basis(), "fixture::before").with_signature("oldneedle"),
+                Row::new(id, base.basis(), "fixture::before")
+                    .with_signature("oldneedle")
+                    .with_source(
+                        backend_library::SourceLocation::new("old/file::name.py", 1)
+                            .expect("old typed source"),
+                    ),
             )),
             RowChange::Upsert(Box::new(Row::new(
                 keeper_id,
@@ -9550,10 +9608,15 @@ mod tests {
         let writer = local.index_identity().expect("cold writer identity");
         assert_cold_parity(&local, &view_one);
         assert_eq!(page_union(&local, "oldneedle"), [id]);
+        assert_eq!(page_union(&local, "old/file::name.py"), [id]);
         assert_eq!(page_union(&local, "").len(), 2);
 
-        let replacement =
-            Row::new(id, view_one.basis(), "fixture::before").with_signature("newneedle");
+        let replacement = Row::new(id, view_one.basis(), "fixture::before")
+            .with_signature("newneedle")
+            .with_source(
+                backend_library::SourceLocation::new("old/file::name.py", 1)
+                    .expect("same typed source"),
+            );
         let prepared = view_one
             .prepare(ViewDelta::Upsert { row: replacement }, capability.clone())
             .expect("prepare same-label update");
@@ -9569,8 +9632,12 @@ mod tests {
         assert_eq!(page_union(&local, "newneedle"), [id]);
         assert_cold_parity(&local, &view_two);
 
-        let renamed =
-            Row::new(id, view_two.basis(), "fixture::renamed").with_signature("finalneedle");
+        let renamed = Row::new(id, view_two.basis(), "fixture::renamed")
+            .with_signature("finalneedle")
+            .with_source(
+                backend_library::SourceLocation::new("renamed/new.py", 2)
+                    .expect("renamed typed source"),
+            );
         let prepared = view_two
             .prepare(ViewDelta::Upsert { row: renamed }, capability.clone())
             .expect("prepare same-identity rename");
@@ -9586,6 +9653,8 @@ mod tests {
         assert!(page_union(&local, "newneedle").is_empty());
         assert_eq!(page_union(&local, "renamed"), [id]);
         assert_eq!(page_union(&local, "finalneedle"), [id]);
+        assert!(page_union(&local, "old/file::name.py").is_empty());
+        assert_eq!(page_union(&local, "renamed/new.py"), [id]);
         assert_eq!(page_union(&local, "").len(), 2);
         assert_cold_parity(&local, &view_three);
 
@@ -9602,6 +9671,7 @@ mod tests {
         assert_eq!(local.index_identity(), Some(writer));
         assert!(page_union(&local, "renamed").is_empty());
         assert!(page_union(&local, "finalneedle").is_empty());
+        assert!(page_union(&local, "renamed/new.py").is_empty());
         assert_eq!(page_union(&local, ""), [keeper_id]);
         assert_cold_parity(&local, &view_four);
     }
