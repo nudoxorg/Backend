@@ -6666,7 +6666,7 @@ pub(in crate::builtin) fn package_source_membership_page_from_snapshot(
 // Keep the canonical full-history freshness control without manufacturing
 // owner source-reference authority. Production discovery uses native DTO29 pages.
 #[cfg(test)]
-pub(super) fn semantic_versions(
+pub(in crate::builtin) fn semantic_versions(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     package: &backend_engine::PackageReference,
     workspace: Option<&Path>,
