@@ -1234,12 +1234,12 @@ impl<'a> Visitor<'a> for FunctionNames {
             ast::Stmt::ClassDef(class) => self.0.push(class.name.as_str().to_owned()),
             ast::Stmt::Import(import) => {
                 for alias in &import.names {
-                    self.0.push(alias_binding(alias));
+                    self.0.push(alias_binding(alias, ImportBindingForm::Direct));
                 }
             }
             ast::Stmt::ImportFrom(import) => {
                 for alias in &import.names {
-                    self.0.push(alias_binding(alias));
+                    self.0.push(alias_binding(alias, ImportBindingForm::From));
                 }
             }
             _ => {}
@@ -1248,9 +1248,26 @@ impl<'a> Visitor<'a> for FunctionNames {
     }
 }
 
-fn alias_binding(alias: &ast::Alias) -> String {
+/// Python binds the head of `import pkg.child`, but the selected member of
+/// `from pkg import child`. Ruff owns the statement form and alias spellings.
+#[derive(Clone, Copy)]
+enum ImportBindingForm {
+    Direct,
+    From,
+}
+
+impl ImportBindingForm {
+    fn unaliased_name(self, spelling: &str) -> &str {
+        match self {
+            Self::Direct => spelling.split('.').next().unwrap_or(spelling),
+            Self::From => last_segment(spelling),
+        }
+    }
+}
+
+fn alias_binding(alias: &ast::Alias, form: ImportBindingForm) -> String {
     alias.asname.as_ref().map_or_else(
-        || last_segment(alias.name.as_str()).to_owned(),
+        || form.unaliased_name(alias.name.as_str()).to_owned(),
         |name| name.as_str().to_owned(),
     )
 }
@@ -2010,10 +2027,10 @@ impl<'a> Projection<'a> {
         self.note_local(name);
     }
 
-    fn note_import_alias(&mut self, alias: &ast::Alias) {
+    fn note_import_alias(&mut self, alias: &ast::Alias, form: ImportBindingForm) {
         if let Some(frame) = self.bodies.last() {
             if matches!(frame.kind, BodyKind::Function | BodyKind::Lambda) {
-                self.note_local(&alias_binding(alias));
+                self.note_local(&alias_binding(alias, form));
             }
         }
     }
@@ -2314,7 +2331,7 @@ impl<'a> Visitor<'a> for Projection<'a> {
             }
             ast::Stmt::Import(import) if self.function_depth > 0 => {
                 for alias in &import.names {
-                    self.note_import_alias(alias);
+                    self.note_import_alias(alias, ImportBindingForm::Direct);
                 }
             }
             ast::Stmt::ImportFrom(import) if self.function_depth == 0 && self.class_depth == 0 => {
@@ -2324,7 +2341,7 @@ impl<'a> Visitor<'a> for Projection<'a> {
             }
             ast::Stmt::ImportFrom(import) if self.function_depth > 0 => {
                 for alias in &import.names {
-                    self.note_import_alias(alias);
+                    self.note_import_alias(alias, ImportBindingForm::From);
                 }
             }
             ast::Stmt::Global(global) => {
@@ -2594,9 +2611,9 @@ impl<'a> Visitor<'a> for Projection<'a> {
 
 impl Projection<'_> {
     /// The exact source span of an alias's binding identifier: the `as`
-    /// name when written, otherwise the final dotted segment of the
-    /// imported path.
-    fn alias_binding_span(&mut self, alias: &ast::Alias) -> Option<Span> {
+    /// name when written, otherwise the statement-form-specific binding
+    /// identifier inside Ruff's exact imported-name range.
+    fn alias_binding_span(&mut self, alias: &ast::Alias, form: ImportBindingForm) -> Option<Span> {
         if let Some(asname) = alias.asname.as_ref() {
             return Some(span(asname.range()));
         }
@@ -2612,11 +2629,23 @@ impl Projection<'_> {
             });
             return None;
         };
-        let tail = spelling
-            .iter()
-            .rposition(|byte| *byte == b'.')
-            .map_or(start, |dot| start + dot + 1);
-        match source_span(bytes, tail, end) {
+        let (binding_start, binding_end) = match form {
+            ImportBindingForm::Direct => (
+                start,
+                spelling
+                    .iter()
+                    .position(|byte| *byte == b'.')
+                    .map_or(end, |dot| start + dot),
+            ),
+            ImportBindingForm::From => (
+                spelling
+                    .iter()
+                    .rposition(|byte| *byte == b'.')
+                    .map_or(start, |dot| start + dot + 1),
+                end,
+            ),
+        };
+        match source_span(bytes, binding_start, binding_end) {
             Ok(binding) => Some(binding),
             Err(error) => {
                 self.reject(error);
@@ -2626,8 +2655,8 @@ impl Projection<'_> {
     }
 
     fn add_alias(&mut self, alias: &ast::Alias, statement: &ast::Stmt) {
-        let binding = alias_binding(alias);
-        let Some(binding_span) = self.alias_binding_span(alias) else {
+        let binding = alias_binding(alias, ImportBindingForm::Direct);
+        let Some(binding_span) = self.alias_binding_span(alias, ImportBindingForm::Direct) else {
             return;
         };
         self.add_declaration(DeclarationFact {
@@ -2662,8 +2691,8 @@ impl Projection<'_> {
         alias: &ast::Alias,
         statement: &ast::Stmt,
     ) {
-        let binding = alias_binding(alias);
-        let Some(binding_span) = self.alias_binding_span(alias) else {
+        let binding = alias_binding(alias, ImportBindingForm::From);
+        let Some(binding_span) = self.alias_binding_span(alias, ImportBindingForm::From) else {
             return;
         };
         let value_source = import

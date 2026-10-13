@@ -2137,3 +2137,149 @@ fn pinned_query_preparation_disconnect_remains_an_endpoint_fault_with_original_r
     );
     assert!(fault.render(None).contains("Environment"));
 }
+
+#[test]
+fn mcp_all_record_details_use_selectable_bounded_text_without_signature_bodies() {
+    let mut row = declaration_row();
+    row.signature = Some("fn ferris() { BODY_ONLY_MARKER; }".repeat(64));
+    row.score = Some(u32::MAX);
+    let answer = Answer::Records(Box::new(RecordList::new(
+        "ferris",
+        CoverageLine::new(&[Coverage::Complete], Some(1)),
+        vec![Record::from_row(&row)],
+    )));
+    let expected =
+        markdown::summary_with_cursor(&answer, None, ContinuationTarget::McpTool("backend.search"));
+    for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
+        let preview = markdown::answer_with_detail(
+            &answer,
+            detail,
+            None,
+            ContinuationTarget::McpTool("backend.search"),
+        );
+        assert_eq!(preview, expected);
+        assert!(preview.contains(&format!("`{DECLARATION}`")));
+        assert!(!preview.contains("BODY_ONLY_MARKER"));
+        assert!(!preview.contains("4294967295"));
+        let encoded = encode_answer(&answer, detail, None, MAX_RESPONSE_BUDGET_BYTES)
+            .expect("complete typed detail");
+        let typed: serde_json::Value = serde_json::from_slice(&encoded.bytes).expect("typed JSON");
+        assert_eq!(typed["records"][0]["identity"]["coordinate"], DECLARATION);
+        if detail != Detail::Summary {
+            assert!(
+                typed["records"][0]["signature"]
+                    .to_string()
+                    .contains("BODY_ONLY_MARKER")
+            );
+        }
+        // The projection does not erase or reinterpret the retained signature.
+        assert!(match &answer {
+            Answer::Records(list) => list.records()[0].signature().is_some(),
+            _ => false,
+        });
+    }
+    assert!(
+        markdown::answer_with_detail(&answer, Detail::Full, None, ContinuationTarget::CliOption)
+            .contains("BODY_ONLY_MARKER")
+    );
+}
+
+#[test]
+fn shrinking_record_preview_retains_correct_counts_coverage_and_next_call() {
+    let name = "λ`escaped";
+    let exact = format!("{PROJECT}::src/lib.rs:2::{name}");
+    let row = backend_library::Row::new(RowId::Symbol(symbol_key(&exact)), basis(), exact.clone());
+    let answer = Answer::Records(Box::new(
+        RecordList::new(
+            name,
+            CoverageLine::new(&[Coverage::Complete], Some(25)),
+            vec![Record::from_row(&row); 25],
+        )
+        .with_continuation(Some(backend_library::PageContinuation::from_cursor(
+            backend_library::Cursor::new(),
+        ))),
+    ));
+    let full = markdown::summary_with_cursor(
+        &answer,
+        Some("signed-token"),
+        ContinuationTarget::McpTool("backend.resolve"),
+    );
+    let minimum = markdown::shorten_record_preview(&full, 0).expect("recognized shared preview");
+    assert!(minimum.contains("showing 0 exact coordinate(s); 25 omitted"));
+    assert!(minimum.contains("Continue `backend.resolve`"));
+    assert!(minimum.starts_with(&match &answer {
+        Answer::Records(list) => list.coverage().render(),
+        _ => unreachable!(),
+    }));
+    for budget in 0..=full.len() {
+        let preview =
+            markdown::shorten_record_preview(&full, budget).expect("valid shared preview");
+        let shown = preview
+            .lines()
+            .filter(|line| line.starts_with("• "))
+            .count();
+        assert!(preview.contains(&format!(
+            "showing {shown} exact coordinate(s); {} omitted",
+            25 - shown
+        )));
+        assert_eq!(
+            preview
+                .lines()
+                .filter_map(|line| test_code_span(line, "  "))
+                .collect::<Vec<_>>(),
+            vec![exact.clone(); shown]
+        );
+        assert!(preview.contains("copy `structuredContent.nextCursor` to `arguments.cursor`"));
+        assert!(!preview.contains("signed-token"));
+        assert!(preview.len() <= budget.max(minimum.len()));
+        assert_eq!(
+            markdown::shorten_record_preview(&preview, 0).as_deref(),
+            Some(minimum.as_str())
+        );
+    }
+    let forged = full.replace(
+        "showing 25 exact coordinate(s)",
+        "showing 24 exact coordinate(s)",
+    );
+    assert!(markdown::shorten_record_preview(&forged, 0).is_none());
+    let partial = full.replacen(&format!("  ``{exact}``\n"), "  `unfinished\n", 1);
+    assert!(markdown::shorten_record_preview(&partial, 0).is_none());
+    assert!(markdown::shorten_record_preview("ordinary prose", 0).is_none());
+}
+
+#[test]
+fn legacy_unpaged_record_preview_retains_counts_beyond_native_page_credit() {
+    let total = usize::from(backend_library::QueryLimit::MAX) + 107;
+    let record = Record::from_row(&declaration_row());
+    let answer = Answer::Records(Box::new(
+        RecordList::new(
+            "related",
+            CoverageLine::new(
+                &[Coverage::Complete],
+                Some(u64::try_from(total).expect("small fixture")),
+            ),
+            vec![record; total],
+        )
+        .with_more(true),
+    ));
+    let preview = markdown::summary_with_cursor(
+        &answer,
+        None,
+        ContinuationTarget::McpTool("backend.related"),
+    );
+    assert!(preview.len() <= MAX_PREVIEW_TEXT_BYTES);
+    let minimum =
+        markdown::shorten_record_preview(&preview, 0).expect("bounded legacy collection text");
+    assert!(minimum.contains(&format!(
+        "{total} row(s) on this page; showing 0 exact coordinate(s); {total} omitted"
+    )));
+    assert!(minimum.contains("more rows at this revision; raise `limit`"));
+    let short = markdown::shorten_record_preview(&preview, 1000).expect("legacy partial text");
+    let shown = short.lines().filter(|line| line.starts_with("• ")).count();
+    assert!(shown > 0 && shown < total);
+    assert!(short.contains(&format!(
+        "showing {shown} exact coordinate(s); {} omitted",
+        total - shown
+    )));
+    assert!(short.len() <= 1000);
+}

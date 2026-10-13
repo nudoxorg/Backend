@@ -16,7 +16,8 @@ pub mod id;
 pub mod execution_budget;
 pub use execution_budget::{
     ExecutionCheckpoint, ExecutionWorkMeter, LatchedExecutionCheckpoint, ProjectExecutionBudget,
-    ProjectExecutionStop,
+    ProjectExecutionIdentity, ProjectExecutionEvent, ProjectExecutionFile, ProjectExecutionPhase, ProjectExecutionSpan,
+    ProjectExecutionStop, ProjectExecutionTransition,
 };
 
 // String interning for identifier deduplication

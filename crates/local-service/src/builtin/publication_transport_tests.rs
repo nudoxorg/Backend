@@ -669,6 +669,7 @@ fn prepared_product_view_stale_snapshot_refuses_new_owner_root_without_relabelin
             roots: view_publish::PublishedRoots {
                 source: view_publish::source_root(&snapshot).expect("old source root"),
                 semantic: view_publish::semantic_root(&snapshot).expect("old semantic root"),
+                capture: view_publish::capture_root(&snapshot).expect("old capture root"),
                 activated: Default::default(),
             },
             path: view_publish::PublicationPath::Reused,
@@ -683,6 +684,7 @@ fn prepared_product_view_stale_snapshot_refuses_new_owner_root_without_relabelin
             roots: view_publish::PublishedRoots {
                 source: view_publish::source_root(&snapshot).expect("old source root"),
                 semantic: view_publish::semantic_root(&snapshot).expect("old semantic root"),
+                capture: view_publish::capture_root(&snapshot).expect("old capture root"),
                 activated: Default::default(),
             },
             path: view_publish::PublicationPath::Reused,

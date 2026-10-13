@@ -1,30 +1,11 @@
 //! Live checker falsifier for cross-file method reference module resolution.
 
-use std::path::PathBuf;
-use std::process::Command;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use backend_frontend_typescript::legacy::{Checker, CheckerError};
+use backend_frontend_typescript::legacy::{Checker, CheckerError, CheckerIndex};
 
 static TEMP_ID: AtomicU64 = AtomicU64::new(0);
-
-fn main_cjs() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/legacy/checker/main.cjs")
-}
-
-fn ensure_typescript() -> PathBuf {
-    let prefix = PathBuf::from("/tmp/nudox-typescript");
-    let package_json = prefix.join("node_modules/typescript/package.json");
-    if !package_json.is_file() {
-        let status = Command::new("npm")
-            .args(["install", "typescript@5", "--prefix"])
-            .arg(&prefix)
-            .status()
-            .expect("npm install typescript");
-        assert!(status.success(), "npm install typescript@5 failed");
-    }
-    prefix.join("node_modules")
-}
 
 fn temp_dir() -> PathBuf {
     let id = TEMP_ID.fetch_add(1, Ordering::Relaxed);
@@ -41,26 +22,21 @@ fn cross_file_method_reference_uses_the_spelled_import() -> Result<(), CheckerEr
     )
     .expect("write workout.service.ts");
     let weeks = dir.join("weeks.ts");
-    std::fs::write(
-        &weeks,
-        "import { WorkoutService } from \"./workout.service\";\nexport function sync(service: WorkoutService) { service.setNote(); }\n",
-    )
-    .expect("write weeks.ts");
+    let source = b"import { WorkoutService } from \"./workout.service\";\nexport function sync(service: WorkoutService) { service.setNote(); }\n";
+    std::fs::write(&weeks, source).expect("write weeks.ts");
 
-    let output = Command::new("node")
-        .arg(main_cjs())
-        .arg(&weeks)
-        .env("NODE_PATH", ensure_typescript())
-        .output()
-        .expect("run checker driver");
-
-    assert!(
-        output.status.success(),
-        "checker driver failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+    // Use the real bounded package authority and its selected checker seam.
+    // Missing runtime/SDK remains a typed failure; this test never installs or
+    // silently substitutes a floating TypeScript release.
+    let report = Checker::default().run_in_package_at(
+        backend_semantic::vocabulary::TypeScriptSource::TypeScript,
+        source,
+        &dir,
+        Path::new("weeks.ts"),
     );
-
-    let report = Checker::default().decode(&output.stdout)?;
+    std::fs::remove_dir_all(&dir).expect("remove fixture directory");
+    let report = report?;
+    let _bound = CheckerIndex::bind(&report, core::str::from_utf8(source).unwrap())?;
     let setnote = report
         .references
         .iter()
@@ -83,6 +59,5 @@ fn cross_file_method_reference_uses_the_spelled_import() -> Result<(), CheckerEr
         }
     }
 
-    std::fs::remove_dir_all(&dir).ok();
     Ok(())
 }

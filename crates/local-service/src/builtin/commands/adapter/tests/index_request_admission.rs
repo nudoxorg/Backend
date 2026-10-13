@@ -175,6 +175,15 @@ fn closed_failed_receipt_survives_unkeyed_replacement_cold_reopen_and_remove() {
         backend_library::IndexOperationSemanticProfileState::Unavailable { .. }
             | backend_library::IndexOperationSemanticProfileState::Failed { .. }
     )));
+    // A workspace root identifies source/semantic content, not the caller's
+    // request. Commit identity already distinguishes an unkeyed attempt with
+    // unchanged inputs; use a genuinely new source frontier for this retained
+    // receipt/replacement control so both source roots must differ.
+    fs::write(
+        Path::new(&fixture.label).join("source.py"),
+        "def retained_failure(value: int) -> int:\n    return value + 2\n",
+    )
+    .expect("replace actual captured source bytes");
     let replacement = surface(
         dispatch(
             &mut fixture,
@@ -200,6 +209,21 @@ fn closed_failed_receipt_survives_unkeyed_replacement_cold_reopen_and_remove() {
         .expect("unkeyed marker is selected");
         assert_ne!(selected.commit_identity, *captured.commit_identity());
         assert_ne!(selected.workspace_root, *captured.workspace_root());
+        assert_eq!(
+            selected.profiles.len(),
+            captured.profiles().len(),
+            "the new capture retains every original profile"
+        );
+        for (profile, original) in selected.profiles.iter().zip(captured.profiles()) {
+            assert_eq!(
+                profile.profile, original.profile,
+                "exact capture profile identity"
+            );
+            assert_ne!(
+                original.source_version, profile.source_version,
+                "replacement source version must reflect actual changed bytes"
+            );
+        }
     }
     assert_eq!(status(&mut fixture, operation), original);
     fixture = fixture.reopen();

@@ -181,11 +181,79 @@ pub struct ProgramContext {
 
 impl Default for ProgramContext {
     fn default() -> Self {
+        Self::empty(next_source_file_symbol_type_cache_scope())
+    }
+}
+
+/// One immutable set of lookup tables derived from exact ordered checker views.
+/// No definition-store body, query cache, options, or program scope is installed.
+/// Mutable construction is private; sharing starts only after all tables exist.
+pub struct SealedProgramGlobalIndexes {
+    tables: ProgramContext,
+}
+
+impl SealedProgramGlobalIndexes {
+    pub fn build(
+        all_binders: Arc<Vec<Arc<BinderState>>>,
+        all_arenas: Arc<Vec<Arc<NodeArena>>>,
+        declared_modules: Option<Arc<GlobalDeclaredModules>>,
+    ) -> Self {
+        // Index-only state never creates or installs a semantic scope stamp.
+        let mut tables = ProgramContext::empty(0);
+        tables.all_binders = all_binders;
+        tables.all_arenas = all_arenas;
+        tables.skeleton_declared_modules = declared_modules;
+        tables.build_global_index_tables();
+        Self { tables }
+    }
+
+    /// Borrow the sealed maps into a new worker before the original setters.
+    /// Only table inputs are shared; file state and checker/store policy stay local.
+    pub fn install_into(&self, ctx: &mut CheckerContext<'_>) {
+        let tables = &self.tables;
+        ctx.global_file_name_index
+            .clone_from(&tables.global_file_name_index);
+        ctx.module_specifiers = Arc::clone(
+            tables
+                .module_specifiers
+                .as_ref()
+                .expect("sealed display index"),
+        );
+        ctx.module_path_specifiers = Arc::clone(
+            tables
+                .module_path_specifiers
+                .as_ref()
+                .expect("sealed path display index"),
+        );
+        ctx.module_specifiers_prebuilt = true;
+        ctx.global_file_locals_index
+            .clone_from(&tables.global_file_locals_index);
+        ctx.global_module_exports_index
+            .clone_from(&tables.global_module_exports_index);
+        ctx.global_module_augmentations_index
+            .clone_from(&tables.global_module_augmentations_index);
+        ctx.global_augmentation_targets_index
+            .clone_from(&tables.global_augmentation_targets_index);
+        ctx.global_module_binder_index
+            .clone_from(&tables.global_module_binder_index);
+        ctx.global_arena_index
+            .clone_from(&tables.global_arena_index);
+        ctx.global_declared_modules
+            .clone_from(&tables.skeleton_declared_modules);
+        ctx.global_expando_index
+            .clone_from(&tables.skeleton_expando_index);
+        ctx.set_all_arenas(Arc::clone(&tables.all_arenas));
+        ctx.set_all_binders(Arc::clone(&tables.all_binders));
+    }
+}
+
+impl ProgramContext {
+    fn empty(source_file_symbol_type_cache_scope: u64) -> Self {
         Self {
             lib_contexts: Arc::new(vec![]),
             all_arenas: Arc::new(vec![]),
             all_binders: Arc::new(vec![]),
-            source_file_symbol_type_cache_scope: next_source_file_symbol_type_cache_scope(),
+            source_file_symbol_type_cache_scope,
             skeleton_declared_modules: None,
             skeleton_expando_index: None,
             skeleton_module_augmentations_index: None,
@@ -225,9 +293,7 @@ impl Default for ProgramContext {
             current_directory: None,
         }
     }
-}
 
-impl ProgramContext {
     /// Apply all project-level shared state to a checker context.
     ///
     /// This replaces the 10+ individual setter calls that drivers previously
@@ -386,7 +452,10 @@ impl ProgramContext {
     /// When these fields are `Some`, `set_all_binders` skips re-computing them.
     pub fn build_global_indices(&mut self) {
         self.source_file_symbol_type_cache_scope = next_source_file_symbol_type_cache_scope();
+        self.build_global_index_tables();
+    }
 
+    fn build_global_index_tables(&mut self) {
         // Phase 2 step 2: when the driver pre-built
         // `skeleton_module_augmentations_index` from `SkeletonIndex`, skip the
         // per-binder `module_augmentations` loop entirely and reuse the

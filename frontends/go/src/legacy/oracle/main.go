@@ -687,6 +687,41 @@ func declarationSpan(docs *docCatalog, decl *ast.FuncDecl) (posRange, bool) {
 	return span, ok
 }
 
+// callOperandIdentifier resolves the named call operand, including explicit
+// generic instantiation and parentheses. An indexed collection of functions
+// is a read of that collection, not a call to its declaration.
+func callOperandIdentifier(pkg *packages.Package, expression ast.Expr) *ast.Ident {
+	switch expression := expression.(type) {
+	case *ast.Ident:
+		return expression
+	case *ast.SelectorExpr:
+		return expression.Sel
+	case *ast.ParenExpr:
+		return callOperandIdentifier(pkg, expression.X)
+	case *ast.IndexExpr:
+		return instantiatedFunctionIdentifier(pkg, expression.X)
+	case *ast.IndexListExpr:
+		return instantiatedFunctionIdentifier(pkg, expression.X)
+	default:
+		return nil
+	}
+}
+
+func instantiatedFunctionIdentifier(pkg *packages.Package, expression ast.Expr) *ast.Ident {
+	ident := callOperandIdentifier(pkg, expression)
+	if ident == nil {
+		return nil
+	}
+	instance, ok := pkg.TypesInfo.Instances[ident]
+	if !ok {
+		return nil
+	}
+	if _, function := instance.Type.(*types.Signature); !function {
+		return nil
+	}
+	return ident
+}
+
 // usesIn records one reference row per identifier under node that the type
 // checker resolved to a keyable object. owner is the declaring object the
 // rows are attributed to; ownerRecv is its bare receiver type name for
@@ -701,11 +736,8 @@ func usesIn(pkg *packages.Package, owner types.Object, ownerRecv string, ownerSp
 	ast.Inspect(node, func(n ast.Node) bool {
 		switch n := n.(type) {
 		case *ast.CallExpr:
-			switch fun := n.Fun.(type) {
-			case *ast.Ident:
-				callFuns[fun] = true
-			case *ast.SelectorExpr:
-				callFuns[fun.Sel] = true
+			if ident := callOperandIdentifier(pkg, n.Fun); ident != nil {
+				callFuns[ident] = true
 			}
 		case *ast.SelectorExpr:
 			selectors[n.Sel] = n
@@ -747,6 +779,15 @@ func usesIn(pkg *packages.Package, owner types.Object, ownerRecv string, ownerSp
 	return refs
 }
 
+// packageScopedObject admits a declaration from its defining package scope.
+func packageScopedObject(obj types.Object) bool {
+	// Imported objects belong to their defining package's scope, not the
+	// caller's. Universe objects have no package; locals and type parameters
+	// belong to nested scopes and still have no package-scoped target identity.
+	declaring := obj.Pkg()
+	return declaring != nil && obj.Parent() == declaring.Scope()
+}
+
 // classifyUse resolves one identifier through the Uses table and renders
 // its reference row payload: the used object's identity in the
 // reference-target keying (bare name plus foreign package path), the
@@ -773,7 +814,7 @@ func classifyUse(pkg *packages.Package, owner types.Object, ident *ast.Ident, ca
 		// A use of a named type (or alias) is a type use. Type parameters
 		// and function-local types declare in no package scope and are
 		// excluded by the parent check.
-		if obj.Parent() != pkg.Types.Scope() {
+		if !packageScopedObject(obj) {
 			return nil, false
 		}
 		row.Class = "type"
@@ -813,7 +854,7 @@ func classifyUse(pkg *packages.Package, owner types.Object, ident *ast.Ident, ca
 			// A field selected through a value: `x.f`, `x.f = v`, `x.f()`.
 			row.Class = "field"
 			row.Recv = typeReceiverName(selection.Recv())
-		} else if obj.Parent() == pkg.Types.Scope() {
+		} else if packageScopedObject(obj) {
 			// A package-level variable.
 			row.Class = "var"
 		} else if obj.Parent() == nil {
@@ -840,7 +881,7 @@ func classifyUse(pkg *packages.Package, owner types.Object, ident *ast.Ident, ca
 		return row, true
 
 	case *types.Const:
-		if obj.Parent() != pkg.Types.Scope() {
+		if !packageScopedObject(obj) {
 			// Local constants (and the universe `iota`) declare in no
 			// package scope.
 			return nil, false

@@ -557,7 +557,8 @@ impl CheckerState<'_> {
                         .flatten()
                 })
                 .or_else(|| self.source_file_default_import_module_named(idx, name))
-            && let Some(module_type) = self.node_esm_cjs_default_import_namespace_type(&module_name)
+            && let Some(module_type) =
+                self.node_esm_cjs_default_import_namespace_type(sym_id, &module_name)
         {
             return Some(self.check_flow_usage(idx, module_type, sym_id));
         }

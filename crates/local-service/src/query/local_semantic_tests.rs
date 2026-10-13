@@ -902,6 +902,7 @@ fn fixture_with_mode_and_winner(
     let log = root.join("input.jsonl");
     let entered = root.join("second-page-entered");
     let release = root.join("second-page-release");
+    let armed = root.join("query-gate-armed");
     std::fs::write(
         &program,
         br"import json, os, struct, sys, time
@@ -927,7 +928,7 @@ mode = os.environ['FIXTURE_MODE']
 if purpose == 1 and mode == 'fail-query-once' and os.path.exists(os.environ['FIXTURE_RELEASE']):
     os.unlink(os.environ['FIXTURE_RELEASE'])
     sys.exit(9)
-if purpose == 1 and mode == 'gate-query':
+if purpose == 1 and mode == 'gate-query' and os.path.exists(os.environ['FIXTURE_ARMED']):
     with open(os.environ['FIXTURE_ENTERED'], 'w') as marker: marker.write('query entered')
     while not os.path.exists(os.environ['FIXTURE_RELEASE']): time.sleep(0.005)
 if purpose == 2 and documents == 2 and mode in ('gate-second', 'fail-second'):
@@ -970,6 +971,7 @@ sys.stdout.buffer.write(response)",
             environment: vec![
                 ("FIXTURE_LOG".into(), log.to_string_lossy().into_owned()),
                 ("FIXTURE_MODE".into(), mode.to_owned()),
+                ("FIXTURE_ARMED".into(), armed.to_string_lossy().into_owned()),
                 ("FIXTURE_WINNER_TEXT".into(), winner_text.to_owned()),
                 (
                     "FIXTURE_ENTERED".into(),
@@ -1007,7 +1009,23 @@ sys.stdout.buffer.write(response)",
     )?;
     let provision = EmbeddingRuntimeProvision::open(&config)?;
     if provision.runtime().is_none() {
-        return Err("fixture activation must actually succeed".into());
+        return Err(format!(
+            "fixture activation must actually succeed: status={:?}, provisioning_failure={:?}",
+            provision.status(),
+            provision.provisioning_failure(),
+        )
+        .into());
+    }
+    // Activation executes the real BEM2 query self-test. A held serving query
+    // is a later event under the same admitted runtime; arming before activation
+    // would block that mandatory probe and leave all ticket/cache assertions
+    // unreachable. Do not replace the probe, renew its deadline, or fake Ready.
+    if mode == "gate-query" {
+        assert!(
+            !entered.exists(),
+            "activation cannot enter the serving-query gate"
+        );
+        std::fs::write(&armed, b"real runtime activation succeeded")?;
     }
     Ok(ProtocolFixture {
         _directory: directory,

@@ -72,9 +72,9 @@ mod staged_intent;
 #[path = "builtin/staged_transport.rs"]
 mod staged_transport;
 use profile::{
-    BuiltinAuthorityVerifier, BuiltinCaptureChange, BuiltinProfile,
-    BuiltinSemanticChange, BuiltinSemanticRelation, BuiltinSourceChange, BuiltinSourceFactsChange,
-    BuiltinValidator, BuiltinWorkspaceRelation, ProfileDescriptor, ProfileIds, builtin_dispatcher,
+    BuiltinAuthorityVerifier, BuiltinCaptureChange, BuiltinProfile, BuiltinSemanticChange,
+    BuiltinSemanticRelation, BuiltinSourceChange, BuiltinSourceFactsChange, BuiltinValidator,
+    BuiltinWorkspaceRelation, ProfileDescriptor, ProfileIds, builtin_dispatcher,
     capture_basis_for_snapshot, execution_manifest, execution_resources,
     product_dependency_manifest, profile_descriptor,
 };
@@ -248,7 +248,7 @@ pub(crate) fn admitted_coverage() -> Result<CoverageWitness, BuiltinModelError> 
 /// language scope.
 pub(super) struct ActivatedProductSemantics {
     images: Arc<[backend_library::interface::SemanticImageSnapshot]>,
-    native_program_sources: Option<Arc<backend_semantic::ir::NativeProgramSourceManifest>>,
+    native_program_sources: Option<Arc<backend_semantic::ir::NativeProgramSources>>,
 }
 
 impl ActivatedProductSemantics {
@@ -1296,6 +1296,7 @@ fn prepare_builtin_view_inner(
             source_target,
             semantic_base,
             semantic_target,
+            capture_target: view_publish::capture_root(&snapshot)?,
         },
         edit,
     );
@@ -1341,6 +1342,7 @@ fn prepare_builtin_view_inner(
         roots: view_publish::PublishedRoots {
             source: source_target,
             semantic: semantic_target,
+            capture: view_publish::capture_root(&snapshot)?,
             activated,
         },
         path: view_publish::PublicationPath::Hydrated { files },
@@ -1370,7 +1372,26 @@ fn prepare_package_view(
     }
     let (initial, _) = initial_view_for_workspace(&snapshot)?;
     let current = preparation.current.clone();
-    if let Some(edit) = edit
+    // A source-only edit may keep the capture root while making its old
+    // publication obsolete. The file splice keeps the package row, so it is
+    // admissible only when that row still has the derived package state.
+    let package_reference = backend_engine::PackageReference::parse(
+        sources
+            .projects
+            .get(package.as_bytes())
+            .ok_or_else(|| {
+                BuiltinModelError("package projection lost its source frontier".to_owned())
+            })?
+            .label
+            .clone(),
+    )
+    .map_err(|error| BuiltinModelError(format!("package projection reference: {error}")))?;
+    let package_state = coverage::package_row_state(&snapshot, &package_reference)?;
+    let same_package_state = current
+        .row_ref(backend_engine::RowId::Package(package))
+        .is_some_and(|row| package_state.is_none_or(|state| row.state == state));
+    if same_package_state
+        && let Some(edit) = edit
         && let Some(changed) = view_publish::changed_structural_files(edit, &sources)
         && let Some(resident) = view_publish::resident_symbols(current.row_refs(), package)
     {
@@ -1532,6 +1553,7 @@ fn package_publication(
         roots: view_publish::PublishedRoots {
             source: source_target,
             semantic: semantic_target,
+            capture: prior.capture,
             activated: prior.activated.clone(),
         },
         path: view_publish::PublicationPath::Package { files },
@@ -1619,6 +1641,7 @@ fn admit_spliced_package(
         roots: view_publish::PublishedRoots {
             source: source_target,
             semantic: semantic_target,
+            capture: view_publish::capture_root(snapshot)?,
             activated,
         },
         path: view_publish::PublicationPath::Package { files },

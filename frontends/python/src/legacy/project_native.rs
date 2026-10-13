@@ -1296,7 +1296,7 @@ fn captured_finder(
     let mut effective = BTreeMap::new();
     let mut scope_identity = blake3::Hasher::new();
     scope_identity.update(b"compiler.python.effective-config-scope.v1\0");
-    scope_identity.update(b"root-isolated;named-package-import-root.v1;captured-diagnostic-baseline.v1;native-priority;candidate-kind+presence+absence;namespace-membership-only+compiled-shadow-unavailable-rdeps+binding-site-compiled-cause+parse-only-tainted-diagnostics+regular-file-finder.v5;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
+    scope_identity.update(b"root-isolated;named-package-import-root.v1;captured-diagnostic-baseline.v1;native-priority;candidate-kind+presence+absence;namespace-membership-only+compiled-shadow-unavailable-rdeps+binding-site-compiled-cause+parse-only-tainted-diagnostics+regular-file-finder+opaque-link-frontier.v6;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
     for directory in directories {
         let mut candidates = Vec::new();
         for (depth, ancestor) in directory

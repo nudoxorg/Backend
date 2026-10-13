@@ -41,6 +41,7 @@ pub use tsz::parallel::{
 pub use tsz::parser::{NodeIndex as TszNodeIndex, ParseDiagnostic as TszParseDiagnostic};
 pub use tsz::tsz_solver::type_handles::TypeId as TszTypeId;
 pub use tsz_common::ProjectSemanticOptions as TszProjectSemanticOptions;
+pub use tsz_common::options::checker::DeclarationDiagnosticPolicy as TszDeclarationDiagnosticPolicy;
 pub use tsz_common::options::module_detection::ModuleDetectionKind as TszModuleDetectionKind;
 
 #[path = "tsz_query_session.rs"]
@@ -226,13 +227,19 @@ pub struct TszCompilerOptionsError {
 pub fn checker_options_from_compiler_api_json(
     source: &str,
 ) -> Result<TszCheckerOptions, TszCompilerOptionsError> {
-    let config = tsz::config::parse_tsconfig(source).map_err(|error| {
-        TszCompilerOptionsError {
-            message: error.to_string().into_boxed_str(),
-        }
+    let config = tsz::config::parse_tsconfig(source).map_err(|error| TszCompilerOptionsError {
+        message: error.to_string().into_boxed_str(),
     })?;
     tsz::config::resolve_compiler_options(config.compiler_options.as_ref())
-        .map(|resolved| resolved.checker)
+        .map(|resolved| {
+            // Resolver options also control checker TS5097 diagnostics. Keep
+            // their admitted values when constructing the project checker.
+            let mut checker = resolved.checker;
+            checker.allow_importing_ts_extensions = resolved.allow_importing_ts_extensions;
+            checker.rewrite_relative_import_extensions =
+                resolved.rewrite_relative_import_extensions;
+            checker
+        })
         .map_err(|error| TszCompilerOptionsError {
             message: error.to_string().into_boxed_str(),
         })
@@ -300,7 +307,8 @@ pub struct TszProject {
     library_digest: [u8; 32],
     bound_sources: BTreeMap<String, Arc<tsz::parallel::BindResult>>,
     lib_files: Vec<Arc<tsz::lib_loader::LibFile>>,
-    program: tsz::parallel::MergedProgram,
+    program: tsz::parallel::ProjectCheckerImage,
+    query_budget: Option<tsz_common::ProjectExecutionIdentity>,
     check: tsz::parallel::CheckResult,
 }
 
@@ -440,6 +448,11 @@ impl TszProjectAuthority {
                 .checkpoint(0)
                 .map_err(TszAuthorityError::ExecutionStopped)?;
         }
+        let frontier = tsz_common::ProjectExecutionSpan::new(
+            checkpoint,
+            tsz_common::ProjectExecutionPhase::SourceFrontier,
+            None,
+        );
         if sources.is_empty() {
             return Err(TszSourceError::EmptyProject.into());
         }
@@ -536,6 +549,7 @@ impl TszProjectAuthority {
                     && current.module_resolution_digest == module_resolution_digest
                     && current.file_format_digest == file_format_digest
                     && current.library_digest == library_digest
+                    && current.program.is_usable()
             })
             && report.removed_sources == 0
         {
@@ -544,12 +558,25 @@ impl TszProjectAuthority {
                     .checkpoint(0)
                     .map_err(TszAuthorityError::ExecutionStopped)?;
             }
+            frontier.returned();
+            // The immutable checked cache remains valid. Admit the current
+            // request's query scope separately after its checkpoint succeeds.
+            if let Some(project) = self.project.as_mut() {
+                project.query_budget = checkpoint.and_then(|checkpoint| checkpoint.execution_identity());
+            }
             report.reused_project_result = true;
             return Ok(report);
         }
 
+        frontier.returned();
+        self.project = None;
         report.parsed_and_bound = files_to_parse.len();
         if !files_to_parse.is_empty() {
+            let parse = tsz_common::ProjectExecutionSpan::new(
+                checkpoint,
+                tsz_common::ProjectExecutionPhase::ParseBind,
+                None,
+            );
             let parsed = match checkpoint {
                 Some(checkpoint) => {
                     tsz::parallel::parse_and_bind_parallel_with_libs_and_options_and_execution_checkpoint(
@@ -568,6 +595,7 @@ impl TszProjectAuthority {
                     options.checker.module_detection,
                 ),
             };
+            parse.returned();
             for result in parsed {
                 let path = result.file_name.clone();
                 let source = result
@@ -592,6 +620,11 @@ impl TszProjectAuthority {
             .map(|(path, cached)| (path.clone(), Arc::clone(&cached.result)))
             .collect();
         let bind_refs: Vec<_> = bound_sources.values().map(Arc::as_ref).collect();
+        let merge = tsz_common::ProjectExecutionSpan::new(
+            checkpoint,
+            tsz_common::ProjectExecutionPhase::Merge,
+            None,
+        );
         let mut program = match checkpoint {
             Some(checkpoint) => {
                 tsz::parallel::merge_bind_results_ref_with_project_semantic_options_and_execution_checkpoint(
@@ -611,52 +644,52 @@ impl TszProjectAuthority {
                 .checkpoint(0)
                 .map_err(TszAuthorityError::ExecutionStopped)?;
         }
+        merge.returned();
+        let formats = tsz_common::ProjectExecutionSpan::new(
+            checkpoint,
+            tsz_common::ProjectExecutionPhase::FileFormats,
+            None,
+        );
         program.set_project_file_formats(&options.file_formats)?;
-        program.set_project_module_resolutions(&options.module_resolutions)?;
-        let check = match execution {
-            TszUpdateExecution::Partitions(execution) => {
-                let checkpoint = checkpoint.expect("partition execution always owns a checkpoint");
-                tsz::parallel::check_files_with_project_inputs_and_checker_partitions(
-                    &program,
-                    &options.checker,
-                    lib_files,
-                    options.semantic_options,
-                    &options.module_resolutions,
-                    TszProjectCheckerExecution {
-                        checkpoint,
-                        workers: execution.workers,
-                    },
-                )
+        formats.returned();
+        if let Some(checkpoint) = checkpoint {
+            program.set_project_module_resolutions_with_execution_checkpoint(&options.module_resolutions, checkpoint)
                 .map_err(|error| match error {
-                    tsz::parallel::ProjectPartitionCheckError::Program(error) => {
-                        TszAuthorityError::ProjectCheck(error)
-                    }
-                    tsz::parallel::ProjectPartitionCheckError::WorkerPoolUnavailable(detail) => {
-                        TszAuthorityError::CheckerWorkerPoolUnavailable(detail)
-                    }
-                })?
-            }
-            TszUpdateExecution::Fresh(_) => {
-                let checkpoint =
-                    checkpoint.expect("fresh metered execution always owns a checkpoint");
-                tsz::parallel::check_files_parallel_with_project_inputs_and_execution_checkpoint(
-                    &program,
-                    &options.checker,
-                    lib_files,
-                    options.semantic_options,
-                    &options.module_resolutions,
-                    checkpoint,
-                )
-                .map_err(TszAuthorityError::ProjectCheck)?
-            }
-            TszUpdateExecution::Unmetered => {
-                tsz::parallel::check_files_parallel_with_project_semantic_options(
-                    &program,
-                    &options.checker,
-                    lib_files,
-                    options.semantic_options,
-                )
-            }
+                    tsz::parallel::ProjectProgramCheckError::ModuleResolution(error) => TszAuthorityError::ModuleResolution(error),
+                    stopped => TszAuthorityError::ProjectCheck(stopped),
+                })?;
+        } else {
+            program.set_project_module_resolutions(&options.module_resolutions)?;
+        }
+        let partition_failure = |error| match error {
+            tsz::parallel::ProjectPartitionCheckError::Program(error) => TszAuthorityError::ProjectCheck(error),
+            tsz::parallel::ProjectPartitionCheckError::CheckerSession(error) => TszAuthorityError::ProjectCheckerSession(error),
+            tsz::parallel::ProjectPartitionCheckError::WorkerPoolUnavailable(detail) => TszAuthorityError::CheckerWorkerPoolUnavailable(detail),
+        };
+        let program = match execution {
+            TszUpdateExecution::Partitions(execution) => tsz::parallel::PreparedProjectCheckerImage::new_with_checker_execution(
+                program,
+                options.checker.clone(),
+                lib_files,
+                options.semantic_options,
+                TszProjectCheckerExecution { checkpoint: checkpoint.expect("partition checkpoint"), workers: execution.workers },
+            ).map_err(partition_failure)?,
+            TszUpdateExecution::Fresh(_) | TszUpdateExecution::Unmetered => tsz::parallel::PreparedProjectCheckerImage::new(
+                program, options.checker.clone(), lib_files, options.semantic_options, checkpoint,
+            ).map_err(|cause| match cause {
+                tsz::parallel::ProjectCheckerSessionError::ExecutionStopped(reason) => TszAuthorityError::ProjectCheck(tsz::parallel::ProjectProgramCheckError::ExecutionStopped(reason)),
+                other => TszAuthorityError::ProjectCheckerSession(other),
+            })?,
+        };
+        let (program, check) = match execution {
+            TszUpdateExecution::Partitions(execution) => program.check_with_partitions(
+                TszProjectCheckerExecution { checkpoint: checkpoint.expect("partition checkpoint"), workers: execution.workers },
+            ).map_err(partition_failure)?,
+            TszUpdateExecution::Fresh(_) | TszUpdateExecution::Unmetered => program.check_fresh(checkpoint)
+                .map_err(|cause| match cause {
+                    tsz::parallel::ProjectCheckerSessionError::ExecutionStopped(reason) => TszAuthorityError::ProjectCheck(tsz::parallel::ProjectProgramCheckError::ExecutionStopped(reason)),
+                    other => TszAuthorityError::ProjectCheckerSession(other),
+                })?,
         };
         if let Some(checkpoint) = checkpoint {
             checkpoint
@@ -673,6 +706,7 @@ impl TszProjectAuthority {
             options,
             bound_sources,
             program,
+            query_budget: checkpoint.and_then(|checkpoint| checkpoint.execution_identity()),
             check,
         });
         Ok(report)
@@ -681,14 +715,14 @@ impl TszProjectAuthority {
     /// Returns the most recently updated real TSZ project, if one exists.
     #[must_use]
     pub fn project(&self) -> Option<&TszProject> {
-        self.project.as_ref()
+        self.project.as_ref().filter(|project| project.program.is_usable())
     }
 }
 
 impl TszProject {
     /// TSZ's project-wide merged cross-file program.
     #[must_use]
-    pub const fn program(&self) -> &tsz::parallel::MergedProgram {
+    pub fn program(&self) -> &tsz::parallel::MergedProgram {
         &self.program
     }
 
@@ -1315,12 +1349,75 @@ mod tests {
         assert!(!checker.no_implicit_any);
         assert!(checker.strict_null_checks);
         assert!(checker.no_unchecked_indexed_access);
-        // TSZ keeps this program-level flag outside CheckerOptions.
-        let config = tsz::config::parse_tsconfig(source).expect("valid compiler options");
-        let resolved = tsz::config::resolve_compiler_options(config.compiler_options.as_ref())
-            .expect("resolved program options");
-        assert!(resolved.skip_lib_check);
+        assert_eq!(
+            checker.declaration_diagnostics,
+            tsz_common::options::checker::DeclarationDiagnosticPolicy::SkipSemantic
+        );
+        let full =
+            checker_options_from_compiler_api_json(r#"{"compilerOptions":{"skipLibCheck":false}}"#)
+                .unwrap();
+        assert_eq!(
+            full.declaration_diagnostics,
+            tsz_common::options::checker::DeclarationDiagnosticPolicy::Check
+        );
         assert!(checker.module_explicitly_set);
+    }
+
+    #[test]
+    fn compiler_api_options_preserve_vite_flags_and_raw_isolated_modules() {
+        let parse = |raw_isolated| {
+            checker_options_from_compiler_api_json(&format!(
+            r#"{{"compilerOptions":{{"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","verbatimModuleSyntax":true,"isolatedModules":{raw_isolated},"erasableSyntaxOnly":true,"allowImportingTsExtensions":true,"noEmit":true}}}}"#
+        )).expect("modeled Vite checker flags")
+        };
+        let implied = parse(false);
+        let explicit = parse(true);
+        assert!(implied.verbatim_module_syntax && implied.isolated_modules);
+        assert!(implied.isolated_modules_from_verbatim);
+        assert!(explicit.isolated_modules && !explicit.isolated_modules_from_verbatim);
+        assert!(implied.erasable_syntax_only && implied.allow_importing_ts_extensions);
+        assert_ne!(
+            checker_options_digest(&implied),
+            checker_options_digest(&explicit)
+        );
+    }
+
+    #[test]
+    fn admitted_erasable_syntax_option_changes_actual_checker_diagnostics() {
+        let run = |erasable| {
+            let mut authority = TszProjectAuthority::new();
+            let mut policy = options();
+            policy.checker = checker_options_from_compiler_api_json(
+                &serde_json::json!({
+                    "compilerOptions": {
+                        "target": "ES2022",
+                        "module": "ESNext",
+                        "noLib": true,
+                        "erasableSyntaxOnly": erasable
+                    }
+                })
+                .to_string(),
+            )
+            .expect("checker options");
+            authority
+                .update(
+                    vec![input("src/value.ts", "export enum Value { A, B }")],
+                    policy,
+                    &[],
+                )
+                .expect("actual checker");
+            authority
+                .project()
+                .unwrap()
+                .check_result()
+                .file_results
+                .iter()
+                .flat_map(|file| &file.diagnostics)
+                .map(|d| d.code)
+                .collect::<Vec<_>>()
+        };
+        assert!(run(true).contains(&1294));
+        assert!(!run(false).contains(&1294));
     }
 
     fn input(path: &str, source: &str) -> TszFileInput {
@@ -1339,6 +1436,76 @@ mod tests {
             cancelled,
             maximum_work_units,
         )
+    }
+
+    #[test]
+    fn stopped_owned_query_image_is_hidden_and_exact_update_rebuilds_retained_binds() {
+        use std::sync::atomic::Ordering;
+        struct OneShotStop(AtomicBool);
+        impl ExecutionCheckpoint for OneShotStop {
+            fn checkpoint(&self, _work: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+                if self.0.swap(false, Ordering::AcqRel) { Err(tsz_common::ProjectExecutionStop::Cancelled) } else { Ok(()) }
+            }
+        }
+        let sources = vec![input("src/value.ts", "export const value: number = 1;")];
+        let mut authority = TszProjectAuthority::new();
+        authority.update(sources.clone(), options(), &[]).unwrap();
+        let one_shot = OneShotStop(AtomicBool::new(false));
+        {
+            let session = authority.project().unwrap().checked_query_session(&one_shot).unwrap();
+            let rejected = session.with_file_checker_and_types(0, |_, _, _, database| {
+                one_shot.0.store(true, Ordering::Release);
+                assert_eq!(database.union(vec![TszTypeId::NUMBER, TszTypeId::STRING]), TszTypeId::UNKNOWN);
+                "discard this partial query"
+            });
+            assert!(matches!(rejected, Err(TszProjectQuerySessionError::ExecutionStopped(tsz_common::ProjectExecutionStop::Cancelled))));
+        }
+        assert!(authority.project().is_none(), "stopped image is no longer a ready project");
+        let cancelled = AtomicBool::new(false);
+        let fresh_budget = execution_budget(&cancelled, 1_000_000);
+        let rebuilt = authority.update_with_execution_checkpoint(sources.clone(), options(), &[], &fresh_budget).unwrap();
+        assert_eq!(rebuilt.parsed_and_bound, 0);
+        assert_eq!(rebuilt.reused_binds, 1);
+        assert!(!rebuilt.reused_project_result);
+        let project = authority.project().unwrap();
+        let session = project.checked_query_session(&fresh_budget).unwrap();
+        let value = session.with_file_checker_and_types(0, |checker, binder, _, _| {
+            let ty = checker.get_type_of_symbol(binder.file_locals.get("value").unwrap());
+            checker.format_type(ty)
+        }).unwrap();
+        assert_eq!(value, "number");
+        drop(session);
+        let repeated = authority.update_with_execution_checkpoint(sources, options(), &[], &fresh_budget).unwrap();
+        assert!(repeated.reused_project_result);
+    }
+
+    #[test]
+    fn new_admitted_budget_reuses_exact_checked_image_without_rebuilding_views() {
+        let cancelled = AtomicBool::new(false);
+        let first = execution_budget(&cancelled, 1_000_000);
+        let other = execution_budget(&cancelled, 1_000_000);
+        let sources = vec![input("src/value.ts", "export const value: number = 1;")];
+        let mut authority = TszProjectAuthority::new();
+        authority.update_with_execution_checkpoint(sources.clone(), options(), &[], &first).unwrap();
+        assert!(matches!(authority.project().unwrap().checked_query_session(&other), Err(TszProjectQuerySessionError::ExecutionCheckpointMismatch)));
+        assert!(authority.project().is_some(), "wrong caller cannot poison the admitted image");
+        let checked_store = Arc::clone(&authority.project().unwrap().program.definition_store);
+        let admitted = authority.update_with_execution_checkpoint(sources.clone(), options(), &[], &other).unwrap();
+        assert_eq!(admitted.parsed_and_bound, 0);
+        assert_eq!(admitted.reused_binds, 1);
+        assert!(admitted.reused_project_result);
+        assert!(Arc::ptr_eq(&checked_store, &authority.project().unwrap().program.definition_store),
+            "a later admitted scope must not rebuild the checked program");
+        assert!(matches!(authority.project().unwrap().checked_query_session(&first), Err(TszProjectQuerySessionError::ExecutionCheckpointMismatch)),
+            "the current request still rejects a scope from its previous admission");
+        let session = authority.project().unwrap().checked_query_session(&other).unwrap();
+        let value = session.with_file_checker_and_types(0, |checker, binder, _, _| {
+            let ty = checker.get_type_of_symbol(binder.file_locals.get("value").unwrap());
+            checker.format_type(ty)
+        }).unwrap();
+        assert_eq!(value, "number");
+        drop(session);
+        assert!(authority.update_with_execution_checkpoint(sources, options(), &[], &other).unwrap().reused_project_result);
     }
 
     #[test]
@@ -1660,16 +1827,10 @@ mod tests {
             };
             let opposite_target = checker
                 .ctx
-                .resolve_import_target_from_file_for_request(
-                    main,
-                    specifier,
-                    Some(opposite),
-                    kind,
-                )
+                .resolve_import_target_from_file_for_request(main, specifier, Some(opposite), kind)
                 .unwrap();
             assert_ne!(
-                opposite_target,
-                target,
+                opposite_target, target,
                 "the other admitted mode cannot borrow this syntax target"
             );
             target
@@ -2820,5 +2981,102 @@ mod tests {
             ))
         ));
         assert!(authority.project().is_none());
+    }
+}
+
+#[cfg(test)]
+mod declaration_policy_tests {
+    use super::*;
+
+    #[test]
+    fn resolved_declaration_policy_rechecks_diagnostics_without_removing_sources_or_syntax() {
+        let declaration = "export interface Broken { missing: DoesNotExist; }";
+        // noLib makes required globals a program obligation independent of
+        // the declaration member under test. Supply this unit program's own
+        // globals explicitly; these are source inputs, not a substitute SDK.
+        let globals = "interface Object {} interface Function {} interface CallableFunction {} \
+            interface NewableFunction {} interface String {} interface Number {} \
+            interface Boolean {} interface RegExp {} interface IArguments {} \
+            interface Array<T> { length: number; [n: number]: T; }";
+        let sources = vec![
+            TszFileInput {
+                path: "types/dep.d.ts".into(),
+                source: declaration.into(),
+            },
+            TszFileInput {
+                path: "types/globals.d.ts".into(),
+                source: globals.into(),
+            },
+        ];
+        let mut options = TszProjectOptions {
+            checker: checker_options_from_compiler_api_json(
+                r#"{"compilerOptions":{"skipLibCheck":true,"noLib":true}}"#,
+            )
+            .unwrap(),
+            semantic_options: TszProjectSemanticOptions::declaration_scoped(),
+            module_resolutions: Vec::new(),
+            file_formats: Vec::new(),
+            environment: TszEnvironmentFingerprint::from_sha256([0x67; 32]),
+        };
+        let mut authority = TszProjectAuthority::new();
+        authority
+            .update(sources.clone(), options.clone(), &[])
+            .unwrap();
+        assert!(
+            authority.project().unwrap().check_result().file_results[0]
+                .diagnostics
+                .is_empty()
+        );
+        assert_eq!(
+            authority.project().unwrap().source_text("types/dep.d.ts"),
+            Some(declaration)
+        );
+        assert_eq!(
+            authority.project().unwrap().source_text("types/globals.d.ts"),
+            Some(globals)
+        );
+        assert_eq!(authority.project().unwrap().program.files.len(), 2);
+        options.checker = checker_options_from_compiler_api_json(
+            r#"{"compilerOptions":{"skipLibCheck":false,"noLib":true}}"#,
+        )
+        .unwrap();
+        let report = authority.update(sources, options.clone(), &[]).unwrap();
+        assert!(
+            !report.reused_project_result,
+            "typed policy participates in checker cache identity"
+        );
+        assert_eq!(
+            authority.project().unwrap().check_result().file_results[0]
+                .diagnostics
+                .iter()
+                .map(|d| d.code)
+                .collect::<Vec<_>>(),
+            [2304]
+        );
+        options.checker = checker_options_from_compiler_api_json(
+            r#"{"compilerOptions":{"skipLibCheck":true,"noLib":true}}"#,
+        )
+        .unwrap();
+        let invalid = vec![
+            TszFileInput {
+                path: "types/dep.d.ts".into(),
+                source: "export interface Broken { value: ; }".into(),
+            },
+            TszFileInput {
+                path: "types/globals.d.ts".into(),
+                source: globals.into(),
+            },
+        ];
+        authority.update(invalid, options, &[]).unwrap();
+        assert!(
+            !authority
+                .project()
+                .unwrap()
+                .bind_result("types/dep.d.ts")
+                .unwrap()
+                .parse_diagnostics
+                .is_empty(),
+            "skipLibCheck cannot suppress parser diagnostics or remove syntax authority"
+        );
     }
 }

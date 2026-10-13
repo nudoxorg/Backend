@@ -870,3 +870,183 @@ fn mounted_go_companion_refreshes_without_navigation_and_stays_lazy_after_leavin
     rig.go(Intent::Navigate(go_route()));
     assert_eq!(observed.count(&companion), settled_reads + 1, "visiting the same companion list renews its revoked observations");
 }
+
+
+struct SelectedChromeReads {
+    reads: Arc<Observations>,
+    selected: PackageRef,
+}
+
+impl PageReader for SelectedChromeReads {
+    fn read(&mut self, request: &ReadRequest, context: &ReadContext<'_>) -> Result<PageValue, ReadFailure> {
+        match request {
+            ReadRequest::Package(package) if package == &self.selected => {
+                *self.reads.reads.lock().expect("read counts").entry(PageKey::Package(package.clone())).or_default() += 1;
+                let mut dossier = registry_dossier(package);
+                if !self.reads.published.load(Ordering::Acquire) {
+                    dossier.outline = Known::unknown(GapReason::ReadFailed, "selected package outline not yet available");
+                }
+                Ok(PageValue::Package(dossier))
+            }
+            ReadRequest::Symbol(symbol) if symbol.as_str().starts_with(self.selected.as_str()) => {
+                *self.reads.reads.lock().expect("read counts").entry(PageKey::Symbol(symbol.clone())).or_default() += 1;
+                let mut page = page(symbol.identity().name());
+                page.identity = DeclRef::from_label(symbol.as_str(), None, Some(DeclarationKind::Enum), None).expect("selected declaration");
+                page.package = Known::Known(self.selected.clone());
+                Ok(PageValue::Symbol(page))
+            }
+            _ => Fixture.read(request, context),
+        }
+    }
+}
+
+/// Selection is real mounted GraphView state. Only its bounded projection and
+/// PageReader contents are fixture data; worker/stamp/subscription/native
+/// action routing are the ordinary production path.
+#[gpui::test]
+fn mounted_graph_header_watches_the_selected_package_and_renews_without_back(cx: &mut TestAppContext) {
+    use super::super::bodies::graph::identity::{IdentityAdapter, ResolvedSymbol};
+    use facet::graph::{Kind, Module, Node, Package, World};
+    use crate::runtime::store::{Branch, StoreEvent};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let selected = PackageRef::parse("pkg:cargo/selected@1.0.0").expect("different exact package");
+    let selected_symbol = super::symbol("RelationDirection").rebased(&package(), &selected).expect("selected coordinate");
+    let selected_key = PageKey::Package(selected.clone());
+    let observations = Arc::new(Observations::default());
+    let reads = Arc::clone(&observations);
+    let package_for_reader = selected.clone();
+    let pool = ReadPool::start(2, move |_| SelectedChromeReads {
+        reads: Arc::clone(&reads), selected: package_for_reader.clone(),
+    }).expect("real chrome read pool");
+    let mut rig = rig_with_reads(cx, None, 1440.0, 900.0, pool);
+    rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    let world = Arc::new(World::new(
+        vec![
+            Package { name: "present".into(), version: "1".into(), yours: true, external: false, deps: vec![] },
+            Package { name: "selected".into(), version: "1.0.0".into(), yours: false, external: true, deps: vec![] },
+        ],
+        vec![Module { pkg: 0, path: "glyph".into(), file: "glyph.rs".into() },
+            Module { pkg: 1, path: "glyph".into(), file: "glyph.rs".into() }],
+        vec![Node::new(Kind::Enum, "RelationLabel", 0, 0), Node::new(Kind::Enum, "RelationDirection", 1, 1)],
+        vec![],
+    ).expect("two-package scene"));
+    let identities = Arc::new(IdentityAdapter::indexed(&world,
+        &BTreeMap::from([(package(), 0), (selected.clone(), 1)]),
+        BTreeMap::from([
+            (0, ResolvedSymbol { package: package(), symbol: super::symbol("RelationLabel"), line: Some(138) }),
+            (1, ResolvedSymbol { package: selected.clone(), symbol: selected_symbol.clone(), line: Some(138) }),
+        ])));
+    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    rig.cx.update(|_, cx| super::super::bodies::graph::install_test_world(root, world, identities, cx));
+    let route = super::view_route("RelationLabel", View::Graph);
+    rig.go(Intent::Navigate(route.clone()));
+    assert_eq!(observations.count(&selected_key), 0, "unselected cross-package chrome is lazy");
+    let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    crate::runtime::wait::until("selected chrome lands through ordinary worker effects", || {
+        rig.cx.run_until_parked();
+        rig.graph.store.read_with(rig.cx, |store, _| store.pool_activity().is_idle()
+            && store.package(&selected).is_loaded() && store.symbol(&selected_symbol).is_loaded())
+    });
+    assert_eq!(observations.count(&selected_key), 1);
+    assert_eq!(observations.count(&PageKey::Symbol(selected_symbol.clone())), 1);
+    rig.cx.update(|window, _| {
+        assert!(!window.a11y_tree().expect("selected unknown outline AX").nodes.iter()
+            .any(|(_, node)| node.label() == Some("Show glyph siblings")), "unknown outline offers no guessed sibling action");
+    });
+    let renders = rig.counts().titlebar;
+    let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let observed = Rc::clone(&events);
+    let _subscription = rig.cx.update(|_, cx| cx.subscribe(&rig.graph.store,
+        move |_, event: &StoreEvent, _| observed.borrow_mut().push(event.clone())));
+    observations.published.store(true, Ordering::Release);
+    // A Resource-only landing is important: a GraphFocus publication or a
+    // forced repaint would hide an incorrect cached header subscription.
+    rig.graph.store.update(rig.cx, |store, cx| store.retry(selected_key.clone(), cx));
+    crate::runtime::wait::until("selected outline renewal lands", || {
+        rig.cx.run_until_parked();
+        rig.graph.store.read_with(rig.cx, |store, _| store.pool_activity().is_idle()
+            && store.package(&selected).loaded_value().is_some_and(|page| page.outline.known().is_some()))
+    });
+    assert_eq!(observations.count(&selected_key), 2);
+    assert!(!events.borrow().iter().any(|event| event.is_branch(Branch::GraphFocus)), "the selected identity itself did not change");
+    assert!(rig.counts().titlebar > renders, "the selected package stamp autonomously renews cached chrome");
+    rig.cx.update(|window, _| {
+        assert!(window.a11y_frame_number() > frame);
+        assert!(window.a11y_tree().expect("renewed selected outline AX").nodes.iter()
+            .any(|(_, node)| node.label() == Some("Show glyph siblings") && node.supports_action(gpui::AccessibleAction::Click)));
+    });
+    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_targets(cx));
+    let (target, bounds) = targets.placed().into_iter().find(|(target, _)| target.label.as_ref() == "Show glyph siblings")
+        .expect("fresh native selected-package breadcrumb");
+    assert!(target.action.admits(rig.cx));
+    rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    rig.cx.run_until_parked();
+    assert!(rig.cx.update(|window, cx| super::super::titlebar::menu_open(window, cx)), "fresh native input opens the real siblings menu");
+    rig.keys("escape");
+    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(0, cx));
+    rig.settle();
+    assert!(!target.action.admits(rig.cx), "previous selected-package callbacks retire when selection returns to A");
+    let hidden_reads = observations.count(&selected_key);
+    rig.graph.store.update(rig.cx, |store, cx| store.packages_published(&BTreeSet::from([selected.clone()]), cx));
+    rig.cx.run_until_parked();
+    assert_eq!(observations.count(&selected_key), hidden_reads, "publication cannot eagerly read retired selected chrome");
+    rig.graph.store.read_with(rig.cx, |store, _| {
+        let now = store.snapshot();
+        assert_eq!(now.route(), &route);
+        assert!(before.key().same_authority(now.key()));
+        assert_eq!(before.session().back, now.session().back);
+        assert_eq!(before.session().forward, now.session().forward);
+    });
+}
+
+
+#[gpui::test]
+fn graph_context_event_cannot_consume_a_queued_mounted_page_landing(cx: &mut TestAppContext) {
+    let route = Route::Symbol(SymbolRoute {
+        project: None, package: crate::core::PackageId::new(PACKAGE).expect("package"),
+        id: Coordinate::new(CONTINUE).expect("constant"), at: None, view: View::Page, line: None, selected: None,
+    });
+    let (mut rig, reads) = open(cx, route.clone());
+    rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
+    rig.cx.update(|window, _| window.set_a11y_forced(true));
+    let symbol = SymbolRef::new(CONTINUE).expect("open constant");
+    let key = PageKey::Symbol(symbol.clone());
+    let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let count = reads.count(&key);
+    let rendered = rig.counts().reader;
+    let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+    reads.published.store(true, Ordering::Release);
+    rig.cx.update(|window, cx| {
+        rig.graph.store.update(cx, |store, cx| {
+            // This GraphFocus event enters the effects queue before the read
+            // lands. Reader's keys are unchanged, and Reader does not watch
+            // GraphFocus; it needs the later Resource event to renew its body.
+            store.set_notice(Some(crate::runtime::graph_focus::Notice {
+                visit: route.clone(), root: before.key(), message: Arc::from("Local graph observation changed"), retry: None,
+            }), cx);
+            store.retry(key.clone(), cx);
+        });
+        crate::runtime::wait::until("the current real pool read is ready", || {
+            rig.graph.store.read(cx).pool_activity().undelivered > 0
+        });
+        assert_eq!(rig.graph.store.update(cx, |store, cx| store.drain(cx)), 1);
+        assert_eq!(reads.count(&key), count + 1);
+        assert_eq!(window.a11y_frame_number(), frame, "the effect boundary still holds both notifications");
+    });
+    rig.cx.run_until_parked();
+    assert!(rig.counts().reader > rendered, "GraphFocus cannot snapshot away the queued Resource movement");
+    rig.cx.update(|window, _| {
+        assert!(window.a11y_frame_number() > frame);
+        assert!(window.painted_texts().iter().any(|text| text.text.to_string().contains("After publication.")),
+            "ordinary page landing replaces the mounted words without refresh, Back or navigation");
+    });
+    rig.graph.store.read_with(rig.cx, |store, _| {
+        assert!(Arc::ptr_eq(&before, &store.snapshot()));
+        assert!(!store.observation_revoked(&key));
+    });
+}

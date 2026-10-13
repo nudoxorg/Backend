@@ -1392,6 +1392,12 @@ impl TypeDatabase for QueryCache<'_> {
 }
 
 impl super::db_base_traits::TypeExecutionCheckpoint for QueryCache<'_> {
+    fn observe_execution(&self, event: tsz_common::ProjectExecutionEvent<'_>) {
+        if let Some(checkpoint) = self.execution_checkpoint.as_ref() {
+            checkpoint.observe(event);
+        }
+    }
+
     fn execution_checkpoint(
         &self,
         work_units: u64,

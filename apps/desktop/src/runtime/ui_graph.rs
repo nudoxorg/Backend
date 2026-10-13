@@ -1296,6 +1296,12 @@ impl UiRootEntity {
                         self.dispatch_runtime(intent, cx);
                     }
                 }
+                RuntimeEvent::InitialRootFailed(failure) => {
+                    // This is an observation failure, not a dead-owner claim.
+                    // The gate rechecks its captured attachment and rejects a
+                    // failure after the actor has installed a certified root.
+                    self.runtime.report_initial_root_failure(failure);
+                }
                 RuntimeEvent::RejectedStale(_) => {}
             }
         }
@@ -1480,13 +1486,14 @@ impl UiEntityGraph {
 
     pub(crate) fn install_with_bootstrap(
         cx: &mut App,
-        runtime: DesktopRuntime,
+        mut runtime: DesktopRuntime,
         persistence: Option<PersistentState>,
         reads: Option<ReadPool>,
         gate: Option<super::owner::OwnerGate>,
         keep: Option<super::snapshot::Keep>,
         binding: Option<crate::host::bootstrap::Binding>,
     ) -> Self {
+        runtime.observe_initial_root(gate.clone());
         let store = DataStore::install_with_owner(cx, runtime.snapshot(), reads, gate.clone(), keep);
         let attached = store.clone();
         let root = cx.new(|cx| {

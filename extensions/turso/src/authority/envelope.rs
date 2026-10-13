@@ -66,6 +66,9 @@ pub const COMPILER_PROGRAM_METADATA_SCHEMA: SchemaIdentity = SchemaIdentity::new
 pub const NATIVE_PROGRAM_SOURCE_MANIFEST_SCHEMA: SchemaIdentity =
     SchemaIdentity::new(0x7a, 0xc009, 1);
 
+/// Exact schema of a reference forest containing independently verified leaves.
+pub const NATIVE_PROGRAM_FOREST_SCHEMA: SchemaIdentity = SchemaIdentity::new(0x7a, 0xc009, 2);
+
 /// A small immutable CAS reference, never a repeated source list in metadata.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CompilerProgramSourceMember {
@@ -79,18 +82,40 @@ impl CompilerProgramSourceMember {
         object: VerifiedObjectEnvelope,
         sources: &backend_semantic::ir::NativeProgramSourceManifest,
     ) -> Result<Self, CompilerEnvelopeError> {
-        let key = ObjectKey::<backend_semantic::ir::NativeProgramSourceManifestSchema>::from_value(
-            sources.as_bytes(),
-        );
-        if object.schema() != NATIVE_PROGRAM_SOURCE_MANIFEST_SCHEMA
-            || object.key() != key.as_bytes()
+        Self::from_verified_program_sources(object, &sources.clone().into())
+    }
+    /// Binds a typed single/forest object. The stored digest is an envelope
+    /// identity, not a synthetic union-program coordinate.
+    pub fn from_verified_program_sources(
+        object: VerifiedObjectEnvelope,
+        sources: &backend_semantic::ir::NativeProgramSources,
+    ) -> Result<Self, CompilerEnvelopeError> {
+        let (schema, key) = if sources.is_forest() {
+            (
+                NATIVE_PROGRAM_FOREST_SCHEMA,
+                *ObjectKey::<backend_semantic::ir::NativeProgramForestSchema>::from_value(
+                    sources.as_bytes(),
+                )
+                .as_bytes(),
+            )
+        } else {
+            (
+                NATIVE_PROGRAM_SOURCE_MANIFEST_SCHEMA,
+                *ObjectKey::<backend_semantic::ir::NativeProgramSourceManifestSchema>::from_value(
+                    sources.as_bytes(),
+                )
+                .as_bytes(),
+            )
+        };
+        if object.schema() != schema
+            || object.key() != &key
             || object.payload_len() != sources.as_bytes().len() as u64
         {
             return Err(CompilerEnvelopeError::NativeProgramSources);
         }
         Ok(Self {
             object_id: *object.id().as_bytes(),
-            program: sources.program(),
+            program: sources.membership_identity(),
             byte_length: sources.as_bytes().len() as u32,
         })
     }
@@ -99,9 +124,9 @@ impl CompilerProgramSourceMember {
     pub const fn object_id(&self) -> &AuthorityHash {
         &self.object_id
     }
-    /// Independently verified full native program identity.
+    /// Single membership ID or typed forest envelope digest, never a union program.
     #[must_use]
-    pub const fn program(&self) -> &AuthorityHash {
+    pub const fn membership_identity(&self) -> &AuthorityHash {
         &self.program
     }
     /// Bounded canonical payload length.
@@ -1312,7 +1337,7 @@ fn metadata_member_count(
 pub fn reopen_native_program_sources(
     closure: &backend_store::DurableManifest,
     metadata: &CompilerPublicationMetadata,
-) -> Result<Option<backend_semantic::ir::NativeProgramSourceManifest>, String> {
+) -> Result<Option<backend_semantic::ir::NativeProgramSources>, String> {
     let Some(member) = metadata.native_program_sources() else {
         return Ok(None);
     };
@@ -1324,14 +1349,20 @@ pub fn reopen_native_program_sources(
         .get(id)
         .map_err(|e| format!("read native program source member: {e:?}"))?
         .ok_or_else(|| "native program source member disappeared".to_owned())?;
-    if object.schema() != NATIVE_PROGRAM_SOURCE_MANIFEST_SCHEMA
+    if ![
+        NATIVE_PROGRAM_SOURCE_MANIFEST_SCHEMA,
+        NATIVE_PROGRAM_FOREST_SCHEMA,
+    ]
+    .contains(&object.schema())
         || object.bytes().len() != member.byte_length() as usize
     {
         return Err("native program source schema or extent mismatch".to_owned());
     }
-    let sources = backend_semantic::ir::NativeProgramSourceManifest::decode(object.bytes())
+    let sources = backend_semantic::ir::NativeProgramSources::decode(object.bytes())
         .map_err(|e| e.to_string())?;
-    if sources.program() != *member.program() {
+    if sources.is_forest() != (object.schema() == NATIVE_PROGRAM_FOREST_SCHEMA)
+        || sources.membership_identity() != *member.membership_identity()
+    {
         return Err("native program membership identity mismatch".to_owned());
     }
     Ok(Some(sources))
@@ -1339,7 +1370,7 @@ pub fn reopen_native_program_sources(
 
 fn verify_native_program_image(
     bytes: &[u8],
-    program: Option<&backend_semantic::ir::NativeProgramSourceManifest>,
+    program: Option<&backend_semantic::ir::NativeProgramSources>,
     mappings: Option<&std::collections::BTreeMap<&str, backend_semantic::ir::SourceIdentity>>,
 ) -> Result<(), String> {
     use backend_semantic::ir::{
@@ -1365,6 +1396,10 @@ fn verify_native_program_image(
     if recipe.profile.language() != backend_semantic::vocabulary::Language::TypeScript
         || recipe.toolchain != program.toolchain()
         || mappings.and_then(|mappings| mappings.get(path)) != Some(&source)
+        || !program.image_matches(
+            path,
+            backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(bytes).as_ref(),
+        )
     {
         return Err("program member differs from compiler image source or recipe".to_owned());
     }
@@ -2146,6 +2181,171 @@ mod tests {
             CompilerPublicationMetadata::decode(&future),
             Err(CompilerEnvelopeError::MetadataVersion)
         );
+        drop(store);
+        std::fs::remove_dir_all(directory).expect("cleanup");
+    }
+
+    #[test]
+    fn forest_membership_reopens_one_durable_object_with_exact_leaf_owners() {
+        use backend_semantic::ir::{
+            NativeProgramForestSchema, NativeProgramNode, NativeProgramSource,
+            NativeProgramSourceManifest, NativeProgramSources, SourceIdentity,
+        };
+        let toolchain = ContentId::from_canonical_bytes(b"compiler");
+        let leaf = |path: &str| {
+            NativeProgramSourceManifest::from_sources(
+                toolchain,
+                vec![NativeProgramSource {
+                    program_path: path.into(),
+                    package_path: Some(path.into()),
+                    source: SourceIdentity::from_bytes(b"export {};").expect("source"),
+                }],
+            )
+            .expect("leaf")
+        };
+        let app = leaf("src/app.ts");
+        let config = leaf("vite.config.ts");
+        let mut builder = backend_semantic::ir::IrBuilder::new();
+        let source = SourceIdentity::from_bytes(b"export {};").expect("source");
+        let recipe = backend_semantic::vocabulary::CompileRecipeFact::derive(
+            backend_semantic::vocabulary::LanguageProfile::TypeScript(
+                backend_semantic::vocabulary::TypeScriptSource::TypeScript,
+            ),
+            backend_semantic::vocabulary::Stage::LowerIr,
+            backend_semantic::vocabulary::NativeTool::TypeScriptCompiler,
+            source.identity,
+            toolchain,
+        );
+        builder
+            .set_image_provenance(
+                source,
+                recipe,
+                backend_semantic::ir::PackageLineage::new("npm", "forest-fixture")
+                    .expect("lineage"),
+                "src/app.ts",
+            )
+            .expect("image owner");
+        let ir = builder.finish().expect("image");
+        let mut image_bytes =
+            vec![0; backend_semantic::ir::full_semantic_image_len(&ir).expect("length")];
+        backend_semantic::ir::encode_full_semantic_image(&ir, &mut image_bytes)
+            .expect("encoded image");
+        let image_identity = *SemanticImageIdentity::from_encoded_bytes(&image_bytes).as_ref();
+        let (image, image_object) = compiler_image_from_bytes(&image_bytes);
+        let sources = NativeProgramSources::from_forest(
+            toolchain,
+            1,
+            vec![
+                NativeProgramNode {
+                    config_path: "tsconfig.app.json".into(),
+                    config: ContentId::from_canonical_bytes(b"app"),
+                    environment: [1; 32],
+                    references: vec![],
+                    program: Some(app.clone()),
+                },
+                NativeProgramNode {
+                    config_path: "tsconfig.json".into(),
+                    config: ContentId::from_canonical_bytes(b"root"),
+                    environment: [2; 32],
+                    references: vec![0, 2],
+                    program: None,
+                },
+                NativeProgramNode {
+                    config_path: "tsconfig.node.json".into(),
+                    config: ContentId::from_canonical_bytes(b"node"),
+                    environment: [3; 32],
+                    references: vec![],
+                    program: Some(config.clone()),
+                },
+            ],
+        )
+        .expect("forest")
+        .with_image_bindings([("src/app.ts".to_owned(), image_identity)])
+        .expect("partial image binding");
+        let object = TypedObject::from_value(
+            &ObjectKey::<NativeProgramForestSchema>::from_value(sources.as_bytes()),
+            sources.as_bytes(),
+        );
+        let directory = scratch_store();
+        let store = FileStore::open(&directory, 1024 * 1024).expect("store");
+        let id = store
+            .write_closure(
+                &ClosureManifest::new(vec![object.clone(), image_object.clone()])
+                    .expect("one membership object and exact image"),
+            )
+            .expect("durable closure");
+        let verified = store
+            .verify_object_claim(UntrustedObjectId::from_bytes(*object.id().as_bytes()))
+            .expect("verified");
+        let member = CompilerProgramSourceMember::from_verified_program_sources(verified, &sources)
+            .expect("forest member");
+        let metadata = metadata(image.clone())
+            .with_native_program_sources(member)
+            .expect("metadata");
+        let metadata = CompilerPublicationMetadata::decode(&metadata.canonical_bytes())
+            .expect("metadata cold decode");
+        drop(store);
+        let store = FileStore::open(&directory, 1024 * 1024).expect("cold store");
+        let closure = store.open_closure(id).expect("selected closure");
+        let reopened = reopen_native_program_sources(&closure, &metadata)
+            .expect("reopen forest")
+            .expect("present");
+        assert_eq!(reopened, sources);
+        verify_semantic_image_members(&closure, &metadata)
+            .expect("cold image binds exact program node");
+        for bindings in [
+            vec![],
+            vec![(
+                "src/app.ts".to_owned(),
+                *SemanticImageIdentity::from_encoded_bytes(b"another program output").as_ref(),
+            )],
+        ] {
+            let invalid = sources
+                .clone()
+                .with_image_bindings(bindings)
+                .expect("canonical alternative binding");
+            let invalid_object = TypedObject::from_value(
+                &ObjectKey::<NativeProgramForestSchema>::from_value(invalid.as_bytes()),
+                invalid.as_bytes(),
+            );
+            let invalid_id = store
+                .write_closure(
+                    &ClosureManifest::new(vec![invalid_object.clone(), image_object.clone()])
+                        .unwrap(),
+                )
+                .unwrap();
+            let verified = store
+                .verify_object_claim(UntrustedObjectId::from_bytes(
+                    *invalid_object.id().as_bytes(),
+                ))
+                .unwrap();
+            let invalid_member =
+                CompilerProgramSourceMember::from_verified_program_sources(verified, &invalid)
+                    .unwrap();
+            let invalid_metadata = super::tests::metadata(image.clone())
+                .with_native_program_sources(invalid_member)
+                .unwrap();
+            let invalid_closure = store.open_closure(invalid_id).unwrap();
+            assert!(
+                verify_semantic_image_members(&invalid_closure, &invalid_metadata).is_err(),
+                "missing or mismatched image binding cannot reopen positive authority"
+            );
+        }
+        assert!(reopened.single_program().is_none());
+        let owners = reopened
+            .sources()
+            .map(|row| (row.package_path.unwrap().to_owned(), row.program))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(owners["src/app.ts"], app.program());
+        assert_eq!(owners["vite.config.ts"], config.program());
+        assert_ne!(owners["src/app.ts"], owners["vite.config.ts"]);
+        let unrelated =
+            ClosureManifest::new(vec![super::tests::member(b"unrelated")]).expect("unrelated");
+        let unrelated_id = store.write_closure(&unrelated).expect("write unrelated");
+        let unrelated = store.open_closure(unrelated_id).expect("open unrelated");
+        assert!(reopen_native_program_sources(&unrelated, &metadata).is_err());
+        drop(unrelated);
+        drop(closure);
         drop(store);
         std::fs::remove_dir_all(directory).expect("cleanup");
     }

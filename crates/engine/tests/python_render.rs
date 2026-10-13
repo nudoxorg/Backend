@@ -681,10 +681,12 @@ fn child_local_target(payload: &[u8], cursor: &mut usize) -> Result<Option<u32>,
     Ok(target)
 }
 
-/// Decodes one Apply record's base child local row target from the raw
-/// payload: skip every record of both segments, then walk the pooled child
-/// lane to the record's span start.
-fn apply_base_child(payload: &[u8], fact: &DecodedTypeFact<'_>) -> Result<u32, TestError> {
+/// Decodes the selected local child from the existing pooled type-fact grammar.
+fn type_child_target(
+    payload: &[u8],
+    fact: &DecodedTypeFact<'_>,
+    child_index: usize,
+) -> Result<u32, TestError> {
     const RECORD_FIXED_CELLS: usize = 4 + 1 + 4 + 4;
 
     let declared = usize::try_from(wire_word(payload, 0)?).map_err(|_| TestError::Coordinate)?;
@@ -699,6 +701,12 @@ fn apply_base_child(payload: &[u8], fact: &DecodedTypeFact<'_>) -> Result<u32, T
     let start = usize::try_from(fact.record.children.start).map_err(|_| TestError::Coordinate)?;
     let length = usize::try_from(fact.record.children.length).map_err(|_| TestError::Coordinate)?;
     let end = start.checked_add(length).ok_or(TestError::Coordinate)?;
+    if child_index >= length {
+        return Err(TestError::Falsified("requested child outside the record"));
+    }
+    let selected = start
+        .checked_add(child_index)
+        .ok_or(TestError::Coordinate)?;
     let child_count =
         usize::try_from(wire_word(payload, cursor)?).map_err(|_| TestError::Coordinate)?;
     cursor = cursor.checked_add(4).ok_or(TestError::Coordinate)?;
@@ -707,11 +715,11 @@ fn apply_base_child(payload: &[u8], fact: &DecodedTypeFact<'_>) -> Result<u32, T
     }
     for position in 0..end {
         let target = child_local_target(payload, &mut cursor)?;
-        if position == start {
-            return target.ok_or(TestError::Falsified("base child is not a local row"));
+        if position == selected {
+            return target.ok_or(TestError::Falsified("typed child is not a local row"));
         }
     }
-    Err(TestError::Falsified("base child outside the child span"))
+    Err(TestError::Falsified("typed child outside the child span"))
 }
 
 /// The fragment lane itself carries the lifted compound root: the `items`
@@ -753,11 +761,12 @@ fn python_fragment_apply_base_decodes_to_the_list_builtin_row() -> Result<(), Te
             "items Apply record does not own exactly a base and one argument",
         ));
     }
-    let base = apply_base_child(
+    let base = type_child_target(
         decoded
             .type_fact_payload()
             .ok_or(TestError::Falsified("no type fact section"))?,
         fact,
+        0,
     )?;
     let row = types
         .get(usize::try_from(base).map_err(|_| TestError::Coordinate)?)
@@ -872,7 +881,8 @@ fn python_fragment_forward_reference_structural_rows_validate() -> Result<(), Te
     // declaration) reserves its own ordinal, Reader follows. Each record
     // names its member count; the method FnPtr exists twice — once as
     // Reader's pooled member row, once as the `read` function's own typed
-    // fact.
+    // fact. Both callable rows have one public size parameter and one result;
+    // the bound instance receiver is absent from both representations.
     if records.len() != 2
         || pointers.len() != 2
         || !records
@@ -883,12 +893,38 @@ fn python_fragment_forward_reference_structural_rows_validate() -> Result<(), Te
             .any(|row| row.owner.raw as usize == reader && row.record.children.length == 1)
         || !pointers
             .iter()
-            .any(|row| row.owner.raw as usize == reader && row.record.children.length == 3)
+            .any(|row| row.owner.raw as usize == reader && row.record.children.length == 2)
         || !pointers
             .iter()
-            .any(|row| row.owner.raw as usize == read && row.record.children.length == 3)
+            .any(|row| row.owner.raw as usize == read && row.record.children.length == 2)
     {
         return Err(TestError::Falsified("structural member rows absent"));
+    }
+    let payload = decoded
+        .type_fact_payload()
+        .ok_or(TestError::Falsified("type payload absent"))?;
+    for pointer in pointers {
+        if pointer.record.function_result_count() != Some(1) {
+            return Err(TestError::Falsified("Reader.read must have one result"));
+        }
+        for (position, shape, text) in [
+            (0, PrimitiveShape::ArbitraryInteger, None),
+            (1, PrimitiveShape::Builtin, Some(b"bytes".as_slice())),
+        ] {
+            let target = type_child_target(payload, pointer, position)?;
+            let child = usize::try_from(target)
+                .ok()
+                .and_then(|target| rows.get(target))
+                .ok_or(TestError::Falsified("Reader.read child type absent"))?;
+            if child.record.tag != SemanticTypeTag::Primitive
+                || child.record.payload0 != u32::from(shape)
+                || child.record.text != text
+            {
+                return Err(TestError::Falsified(
+                    "Reader.read lost ordered int parameter/bytes result",
+                ));
+            }
+        }
     }
     Ok(())
 }

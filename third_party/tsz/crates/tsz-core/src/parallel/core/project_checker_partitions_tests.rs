@@ -1,9 +1,9 @@
 use super::*;
-use tsz_parser::parser::node::NodeAccess;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tsz_common::{ProjectExecutionBudget, ProjectExecutionStop};
+use tsz_parser::parser::node::NodeAccess;
 
 fn execution_budget(cancelled: &AtomicBool) -> ProjectExecutionBudget<'_> {
     ProjectExecutionBudget::new(
@@ -24,6 +24,64 @@ fn assert_same_results(actual: &CheckResult, expected: &CheckResult) {
         assert!(actual.function_results.is_empty());
         assert!(expected.function_results.is_empty());
     }
+}
+
+#[test]
+fn checker_partition_preserves_distinct_missing_global_diagnostics() {
+    let program = compile_files_with_libs(
+        vec![(
+            "src/main.ts".to_owned(),
+            "export const value = 1;".to_owned(),
+        )],
+        &[],
+    );
+    let options = CheckerOptions {
+        no_lib: true,
+        module: tsz_common::common::ModuleKind::ESNext,
+        ..CheckerOptions::default()
+    };
+    let plan = ParallelCheckPlan::build(
+        &program,
+        &options,
+        &[],
+        ProjectSemanticOptions::declaration_scoped(),
+        None,
+        None,
+    )
+    .unwrap();
+    let result = plan.check_file_partition(0, &program.files).unwrap();
+    let globals = result[0]
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == 2318)
+        .collect::<Vec<_>>();
+    assert_eq!(globals.len(), 10, "{:?}", result[0].diagnostics);
+    for name in [
+        "Array",
+        "Boolean",
+        "CallableFunction",
+        "Function",
+        "IArguments",
+        "NewableFunction",
+        "Number",
+        "Object",
+        "RegExp",
+        "String",
+    ] {
+        assert_eq!(
+            globals
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic.message_text == format!("Cannot find global type '{name}'.")
+                })
+                .count(),
+            1,
+            "each missing global keeps its distinct native message"
+        );
+    }
+    assert!(globals.iter().all(|diagnostic| {
+        diagnostic.file.is_empty() && diagnostic.start == 0 && diagnostic.length == 0
+    }));
 }
 
 fn in_memory_lib() -> Arc<LibFile> {
@@ -1314,6 +1372,127 @@ fn ordinary_import_none_mode_keeps_its_exact_file_and_members() {
             );
         }
     }
+}
+
+#[test]
+fn refused_import_recovery_keeps_explicit_unknown_semantics() {
+    let program = compile_files_with_libs(
+        vec![(
+            "src/main.ts".to_owned(),
+            "import type { Shape } from 'absent'; declare const unresolved: Shape; \
+             declare const explicit: unknown; export function missing(): number { return unresolved.value; } \
+             export function known(): number { return explicit.value; }".to_owned(),
+        )],
+        &[],
+    );
+    let resolutions = [ProjectModuleResolution {
+        importer_path: "src/main.ts".to_owned(),
+        specifier: "absent".to_owned(),
+        request_kind: ProjectModuleRequestKind::EsmImport,
+        resolution_mode: None,
+        target: ProjectModuleResolutionTarget::Unresolved,
+    }];
+    let options = CheckerOptions {
+        module: tsz_common::common::ModuleKind::ESNext,
+        ..CheckerOptions::default()
+    };
+    let plan = ParallelCheckPlan::build(
+        &program,
+        &options,
+        &[],
+        ProjectSemanticOptions::declaration_scoped(),
+        Some(Arc::new(
+            build_project_module_resolution_outcomes(&program, &resolutions).unwrap(),
+        )),
+        None,
+    )
+    .unwrap();
+    let checked = plan.check_file_partition(0, &program.files).unwrap();
+    assert_eq!(
+        checked[0]
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>(),
+        [2307, 18046],
+        "{:?}",
+        checked[0].diagnostics
+    );
+    assert!(checked[0].diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == 18046 && diagnostic.message_text == "'explicit' is of type 'unknown'."
+    }));
+    let file = &program.files[0];
+    let usage = file
+        .arena
+        .nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(raw, node)| {
+            file.arena
+                .get_identifier(node)
+                .filter(|identifier| identifier.escaped_text == "explicit")
+                .map(|_| NodeIndex(raw as u32))
+        })
+        .max_by_key(|&index| file.arena.get(index).unwrap().pos)
+        .unwrap();
+    assert_eq!(
+        plan.with_bound_file_checker_and_types(0, file, |checker, _, _, _| {
+            checker.get_type_of_node(usage)
+        }),
+        TypeId::UNKNOWN,
+        "explicit source unknown is never recovery-any or ERROR"
+    );
+}
+
+#[test]
+fn admitted_import_of_explicit_unknown_keeps_unknown_semantics() {
+    let program = compile_files_with_libs(
+        vec![
+            ("src/main.ts".to_owned(),
+                "import type { Shape } from './dep'; declare const explicit: Shape; export function read(): number { return explicit.value; }".to_owned()),
+            ("src/dep.ts".to_owned(), "export type Shape = unknown;".to_owned()),
+        ],
+        &[],
+    );
+    let resolutions = [ProjectModuleResolution {
+        importer_path: "src/main.ts".to_owned(),
+        specifier: "./dep".to_owned(),
+        request_kind: ProjectModuleRequestKind::EsmImport,
+        resolution_mode: None,
+        target: ProjectModuleResolutionTarget::File {
+            path: "src/dep.ts".to_owned(),
+        },
+    }];
+    let options = CheckerOptions {
+        module: tsz_common::common::ModuleKind::ESNext,
+        ..CheckerOptions::default()
+    };
+    let plan = ParallelCheckPlan::build(
+        &program,
+        &options,
+        &[],
+        ProjectSemanticOptions::declaration_scoped(),
+        Some(Arc::new(
+            build_project_module_resolution_outcomes(&program, &resolutions).unwrap(),
+        )),
+        None,
+    )
+    .unwrap();
+    let checked = plan.check_file_partition(0, &program.files[..1]).unwrap();
+    assert_eq!(
+        checked[0]
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>(),
+        [18046],
+        "{:?}",
+        checked[0].diagnostics
+    );
+    assert_eq!(
+        checked[0].diagnostics[0].message_text,
+        "'explicit' is of type 'unknown'."
+    );
 }
 
 #[test]
@@ -3677,4 +3856,527 @@ fn assert_cold_selected_diagnostics_with_options(
         "{:?}",
         checked[0].diagnostics
     );
+}
+
+#[test]
+fn observed_partitions_preserve_diagnostics_and_exact_file_boundaries() {
+    use std::sync::Mutex;
+    use tsz_common::{
+        ExecutionCheckpoint, ProjectExecutionEvent, ProjectExecutionPhase as P,
+        ProjectExecutionTransition as T,
+    };
+    struct Observed<'a> {
+        budget: ProjectExecutionBudget<'a>,
+        rows: Mutex<Vec<(P, T, Option<(usize, String)>)>>,
+    }
+    impl ExecutionCheckpoint for Observed<'_> {
+        fn checkpoint(&self, work: u64) -> Result<(), ProjectExecutionStop> {
+            self.budget.checkpoint(work)
+        }
+        fn observe(&self, event: ProjectExecutionEvent<'_>) {
+            self.rows.lock().unwrap().push((
+                event.phase,
+                event.transition,
+                event.file.map(|file| (file.index, file.path.to_owned())),
+            ));
+        }
+    }
+    let cancelled = AtomicBool::new(false);
+    let (baseline, libs, options, resolutions, semantic) = pristine_parity_fixture();
+    let expected = check_files_with_project_inputs_and_checker_partitions(
+        &baseline,
+        &options,
+        &libs,
+        semantic,
+        &resolutions,
+        ProjectCheckerExecution {
+            checkpoint: &execution_budget(&cancelled),
+            workers: NonZeroUsize::new(2).unwrap(),
+        },
+    )
+    .unwrap();
+    let (program, libs, options, resolutions, semantic) = pristine_parity_fixture();
+    let observer = Observed {
+        budget: execution_budget(&cancelled),
+        rows: Mutex::new(Vec::new()),
+    };
+    let actual = check_files_with_project_inputs_and_checker_partitions(
+        &program,
+        &options,
+        &libs,
+        semantic,
+        &resolutions,
+        ProjectCheckerExecution {
+            checkpoint: &observer,
+            workers: NonZeroUsize::new(2).unwrap(),
+        },
+    )
+    .unwrap();
+    assert_same_results(&actual, &expected);
+    let rows = observer.rows.lock().unwrap();
+    for (index, file) in program.files.iter().enumerate() {
+        for phase in [
+            P::FileReset,
+            P::FileCheck,
+            P::FilePostprocess,
+            P::SourcePreparation,
+            P::SourceStatements,
+            P::SourcePostchecks,
+        ] {
+            for transition in [T::Entered, T::Returned] {
+                assert_eq!(
+                    rows.iter()
+                        .filter(|(p, t, path)| *p == phase
+                            && *t == transition
+                            && path.as_ref() == Some(&(index, file.file_name.clone())))
+                        .count(),
+                    1,
+                    "exact admitted file must expose each boundary once: {phase:?} {transition:?} {}",
+                    file.file_name
+                );
+            }
+        }
+    }
+    assert!(
+        !rows
+            .iter()
+            .any(|(_, transition, _)| *transition == T::Unwound)
+    );
+}
+
+#[test]
+fn sealed_program_indexes_match_legacy_rows_and_share_across_workers_and_resets() {
+    fn fixture(extra: &str) -> MergedProgram {
+        let binds = parse_and_bind_parallel_with_libs(vec![
+            ("src/owner.ts".to_owned(), "export interface Shape { left: number }".to_owned()),
+            ("src/augment.ts".to_owned(), "import './owner'; declare module './owner' { interface Shape { right: string } }".to_owned()),
+            ("src/ambient.d.ts".to_owned(), format!("declare module 'owned' {{ export interface Direct {{ value: string }} {extra} }}")),
+        ], &[]);
+        let refs = binds.iter().collect::<Vec<_>>();
+        merge_bind_results_ref_with_project_semantic_options(
+            &refs,
+            ProjectSemanticOptions::declaration_scoped(),
+        )
+    }
+    let program = fixture("");
+    let options = CheckerOptions::default();
+    let plan = ParallelCheckPlan::build(
+        &program,
+        &options,
+        &[],
+        ProjectSemanticOptions::declaration_scoped(),
+        None,
+        None,
+    )
+    .unwrap();
+    let cache = plan.make_query_cache();
+    let mut actual = plan.configured_file_checker(0, &program.files[0], &cache);
+    let mut legacy = CheckerState::with_options_and_shared_def_store(
+        &program.files[0].arena,
+        plan.all_binders[0].as_ref(),
+        &cache,
+        program.files[0].file_name.clone(),
+        &options,
+        Arc::clone(&program.definition_store),
+    );
+    legacy.ctx.set_all_arenas(Arc::clone(&plan.all_arenas));
+    if let Some(modules) = plan.shared_declared_modules.as_ref() {
+        legacy
+            .ctx
+            .set_declared_modules_from_skeleton(Arc::clone(modules));
+    }
+    legacy.ctx.set_all_binders(Arc::clone(&plan.all_binders));
+    assert_eq!(
+        actual.ctx.global_file_locals_index,
+        legacy.ctx.global_file_locals_index
+    );
+    assert_eq!(
+        actual.ctx.global_module_exports_index,
+        legacy.ctx.global_module_exports_index
+    );
+    assert_eq!(
+        actual.ctx.global_augmentation_targets_index,
+        legacy.ctx.global_augmentation_targets_index
+    );
+    assert_eq!(
+        actual.ctx.global_module_binder_index,
+        legacy.ctx.global_module_binder_index
+    );
+    assert_eq!(actual.ctx.global_arena_index, legacy.ctx.global_arena_index);
+    assert_eq!(
+        actual.ctx.global_expando_index,
+        legacy.ctx.global_expando_index
+    );
+    assert_eq!(actual.ctx.module_specifiers, legacy.ctx.module_specifiers);
+    assert_eq!(
+        actual.ctx.module_path_specifiers,
+        legacy.ctx.module_path_specifiers
+    );
+    let augmentation_rows = |ctx: &crate::checker::context::CheckerContext<'_>| {
+        let mut rows = ctx
+            .global_module_augmentations_index
+            .as_ref()
+            .unwrap()
+            .iter()
+            .flat_map(|(specifier, rows)| {
+                rows.iter().map(move |(file, aug)| {
+                    (
+                        specifier.clone(),
+                        *file,
+                        aug.name.clone(),
+                        aug.node,
+                        aug.arena.as_ref().map(|arena| Arc::as_ptr(arena) as usize),
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        rows.sort_by_key(|row| (row.0.clone(), row.1, row.2.clone(), row.3.0));
+        rows
+    };
+    assert!(
+        !augmentation_rows(&actual.ctx).is_empty(),
+        "fixture must exercise actual augmentation owner rows"
+    );
+    assert_eq!(
+        augmentation_rows(&actual.ctx),
+        augmentation_rows(&legacy.ctx)
+    );
+    let other_cache = plan.make_query_cache();
+    let other = plan.configured_file_checker(1, &program.files[1], &other_cache);
+    assert!(Arc::ptr_eq(
+        actual.ctx.global_module_exports_index.as_ref().unwrap(),
+        other.ctx.global_module_exports_index.as_ref().unwrap()
+    ));
+    assert!(Arc::ptr_eq(
+        actual.ctx.global_file_locals_index.as_ref().unwrap(),
+        other.ctx.global_file_locals_index.as_ref().unwrap()
+    ));
+    actual.ctx.switch_to_file(
+        &program.files[1].arena,
+        plan.all_binders[1].as_ref(),
+        program.files[1].file_name.clone(),
+        1,
+    );
+    assert!(Arc::ptr_eq(
+        actual.ctx.global_module_exports_index.as_ref().unwrap(),
+        other.ctx.global_module_exports_index.as_ref().unwrap()
+    ));
+    let changed = fixture("export const Later: number;");
+    let changed_plan = ParallelCheckPlan::build(
+        &changed,
+        &options,
+        &[],
+        ProjectSemanticOptions::declaration_scoped(),
+        None,
+        None,
+    )
+    .unwrap();
+    let changed_cache = changed_plan.make_query_cache();
+    let changed_checker =
+        changed_plan.configured_file_checker(0, &changed.files[0], &changed_cache);
+    assert!(!Arc::ptr_eq(
+        actual.ctx.global_module_exports_index.as_ref().unwrap(),
+        changed_checker
+            .ctx
+            .global_module_exports_index
+            .as_ref()
+            .unwrap()
+    ));
+    assert!(
+        changed_checker
+            .ctx
+            .global_module_exports_index
+            .as_ref()
+            .unwrap()
+            .values()
+            .any(|exports| exports.contains_key("Later"))
+    );
+    assert!(
+        !actual
+            .ctx
+            .global_module_exports_index
+            .as_ref()
+            .unwrap()
+            .values()
+            .any(|exports| exports.contains_key("Later"))
+    );
+}
+
+#[test]
+fn configured_declaration_diagnostics_preserve_members_types_and_application_errors() {
+    use tsz_common::options::checker::DeclarationDiagnosticPolicy;
+    let declaration = "export interface Broken { missing: DoesNotExist; } export declare const value: { value: number };";
+    for skip in [false, true] {
+        let files = vec![
+            (
+                "src/main.ts".to_owned(),
+                "import { value, Broken } from '../types/dep'; export type UsedBroken = Broken; export const wrong: string = value.value;"
+                    .to_owned(),
+            ),
+            ("types/dep.d.ts".to_owned(), declaration.to_owned()),
+        ];
+        let resolutions = [ProjectModuleResolution {
+            importer_path: "src/main.ts".to_owned(),
+            specifier: "../types/dep".to_owned(),
+            request_kind: ProjectModuleRequestKind::EsmImport,
+            resolution_mode: None,
+            target: ProjectModuleResolutionTarget::File {
+                path: "types/dep.d.ts".to_owned(),
+            },
+        }];
+        let options = CheckerOptions {
+            declaration_diagnostics: if skip {
+                DeclarationDiagnosticPolicy::SkipSemantic
+            } else {
+                DeclarationDiagnosticPolicy::Check
+            },
+            ..CheckerOptions::default()
+        };
+        let cancelled = AtomicBool::new(false);
+        let fresh_program = compile_files_with_libs(files.clone(), &[]);
+        let fresh = check_files_parallel_with_project_inputs_and_execution_checkpoint(
+            &fresh_program,
+            &options,
+            &[],
+            ProjectSemanticOptions::declaration_scoped(),
+            &resolutions,
+            &execution_budget(&cancelled),
+        )
+        .unwrap();
+        let program = compile_files_with_libs(files, &[]);
+        let partitioned = check_files_with_project_inputs_and_checker_partitions(
+            &program,
+            &options,
+            &[],
+            ProjectSemanticOptions::declaration_scoped(),
+            &resolutions,
+            ProjectCheckerExecution {
+                checkpoint: &execution_budget(&cancelled),
+                workers: NonZeroUsize::new(2).unwrap(),
+            },
+        )
+        .unwrap();
+        assert_same_results(&fresh, &partitioned);
+        assert_eq!(
+            partitioned.file_results.len(),
+            2,
+            "skipping diagnostics never removes a member"
+        );
+        let app = partitioned
+            .file_results
+            .iter()
+            .find(|row| row.file_name == "src/main.ts")
+            .unwrap();
+        assert_eq!(
+            app.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+            [2322],
+            "application still consumes the declared NUMBER type: {:?}",
+            app.diagnostics
+        );
+        let decl = partitioned
+            .file_results
+            .iter()
+            .find(|row| row.file_name == "types/dep.d.ts")
+            .unwrap();
+        assert_eq!(
+            decl.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+            if skip { vec![] } else { vec![2304] },
+            "skipLibCheck={skip}: {:?}",
+            decl.diagnostics
+        );
+        let source = program
+            .files
+            .iter()
+            .find(|file| file.file_name == "types/dep.d.ts")
+            .unwrap();
+        assert!(
+            source
+                .arena
+                .get_source_file_at(source.source_file)
+                .unwrap()
+                .is_declaration_file
+        );
+        assert_eq!(
+            source
+                .arena
+                .get_source_file_at(source.source_file)
+                .unwrap()
+                .text
+                .as_ref(),
+            declaration
+        );
+    }
+}
+
+#[test]
+fn owned_image_keeps_pristine_diagnostics_and_reuses_exact_views_for_queries() {
+    use std::sync::Mutex;
+    use tsz_common::{ExecutionCheckpoint, ProjectExecutionEvent, ProjectExecutionPhase, ProjectExecutionTransition};
+    struct Observer<'a> {
+        budget: &'a ProjectExecutionBudget<'a>,
+        entries: Mutex<Vec<ProjectExecutionPhase>>,
+    }
+    impl ExecutionCheckpoint for Observer<'_> {
+        fn checkpoint(&self, work: u64) -> Result<(), ProjectExecutionStop> {
+            self.budget.checkpoint(work)
+        }
+        fn observe(&self, event: ProjectExecutionEvent<'_>) {
+            if event.transition == ProjectExecutionTransition::Entered {
+                self.entries.lock().unwrap().push(event.phase);
+            }
+        }
+    }
+    let (mut expected_program, libs, options, resolutions, semantic) = pristine_parity_fixture();
+    expected_program.set_project_module_resolutions(&resolutions).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let budget = execution_budget(&cancelled);
+    let expected = check_files_parallel_with_project_inputs_and_execution_checkpoint(
+        &expected_program, &options, &libs, semantic, &resolutions, &budget,
+    ).unwrap();
+    let expected_session = ProjectCheckerSession::new(&expected_program, &options, &libs, semantic, &budget).unwrap();
+    let expected_a = expected_program.files.iter().position(|file| file.file_name == "src/a.ts").unwrap();
+    let expected_type = expected_session.with_file_checker(expected_a, |checker, binder, _| {
+        let symbol = binder.file_locals.get("a").unwrap();
+        let ty = checker.get_type_of_symbol(symbol);
+        checker.format_type(ty)
+    }).unwrap();
+    let (mut program, libs, options, resolutions, semantic) = pristine_parity_fixture();
+    program.set_project_module_resolutions(&resolutions).unwrap();
+    let observer = Observer { budget: &budget, entries: Mutex::new(Vec::new()) };
+    let image = PreparedProjectCheckerImage::new_with_checker_execution(
+        program, options, &libs, semantic,
+        ProjectCheckerExecution { checkpoint: &observer, workers: NonZeroUsize::new(2).unwrap() },
+    ).unwrap();
+    let original_views = Arc::clone(&image.contents.views);
+    let (image, checked) = image.check_with_partitions(ProjectCheckerExecution {
+        checkpoint: &observer, workers: NonZeroUsize::new(2).unwrap(),
+    }).unwrap();
+    assert_same_results(&checked, &expected);
+    let construction_phases = observer.entries.lock().unwrap().clone();
+    for phase in [ProjectExecutionPhase::LibraryViews, ProjectExecutionPhase::BinderViews, ProjectExecutionPhase::SharedCheckerIndexes] {
+        assert_eq!(construction_phases.iter().filter(|&&entry| entry == phase).count(), 1);
+    }
+    let a = image.files.iter().position(|file| file.file_name == "src/a.ts").unwrap();
+    let mut observed_types = Vec::new();
+    for _ in 0..3 {
+        let session = image.query_session(&observer).unwrap();
+        assert!(Arc::ptr_eq(&session.plan.views, &original_views));
+        observed_types.push(session.with_file_checker(a, |checker, binder, _| {
+            let symbol = binder.file_locals.get("a").expect("actual imported generic value");
+            let ty = checker.get_type_of_symbol(symbol);
+            checker.format_type(ty)
+        }).unwrap());
+    }
+    assert!(observed_types.iter().all(|ty| ty == &expected_type));
+    assert!(!observed_types[0].contains("unknown"), "actual imported generic type: {:?}", observed_types);
+    let after_queries = observer.entries.lock().unwrap().clone();
+    for phase in [ProjectExecutionPhase::LibraryViews, ProjectExecutionPhase::BinderViews, ProjectExecutionPhase::SharedCheckerIndexes, ProjectExecutionPhase::AugmentationPrime] {
+        assert_eq!(after_queries.iter().filter(|&&entry| entry == phase).count(),
+            construction_phases.iter().filter(|&&entry| entry == phase).count(),
+            "query-session construction must not rebuild shared views or reprime augmentations");
+    }
+    // A checked image has no full-check API. Later scopes reuse pure views
+    // rather than consume a new budget to rebuild/check this exact program.
+    let later_budget = execution_budget(&cancelled);
+    let later = image.query_session(&later_budget).unwrap();
+    assert!(Arc::ptr_eq(&later.plan.views, &original_views));
+    let later_type = later.with_file_checker(a, |checker, binder, _| {
+        let ty = checker.get_type_of_symbol(binder.file_locals.get("a").unwrap());
+        checker.format_type(ty)
+    }).unwrap();
+    assert_eq!(later_type, expected_type);
+    assert_same_results(&checked, &expected);
+}
+
+#[test]
+fn owned_image_rejects_fresh_budget_after_actual_solver_stop() {
+    struct OneShotStop(AtomicBool);
+    impl tsz_common::ExecutionCheckpoint for OneShotStop {
+        fn checkpoint(&self, _work: u64) -> Result<(), ProjectExecutionStop> {
+            if self.0.swap(false, Ordering::AcqRel) { Err(ProjectExecutionStop::Cancelled) } else { Ok(()) }
+        }
+    }
+    let mut program = compile_files_with_libs(
+        vec![("src/main.ts".into(), "export const value = 1;".into())], &[],
+    );
+    program.set_project_module_resolutions(&[]).unwrap();
+    let image = PreparedProjectCheckerImage::new(program, CheckerOptions::default(), &[], ProjectSemanticOptions::structural(), None).unwrap();
+    let (image, _checked) = image.check_fresh(None).unwrap();
+    let one_shot = OneShotStop(AtomicBool::new(false));
+    let session = image.query_session(&one_shot).unwrap();
+    let discarded = session.with_file_checker_and_types(0, |_, _, _, database| {
+        one_shot.0.store(true, Ordering::Release);
+        assert_eq!(database.union(vec![TypeId::NUMBER, TypeId::STRING]), TypeId::UNKNOWN);
+        "this callback output must be discarded"
+    });
+    assert!(matches!(discarded, Err(ProjectCheckerSessionError::ExecutionStopped(ProjectExecutionStop::Cancelled))));
+    assert!(!image.is_usable());
+    // No full-check/unmetered resurrection API exists on checked images.
+    let cancelled = AtomicBool::new(false);
+    let fresh_budget = execution_budget(&cancelled);
+    assert!(matches!(image.query_session(&fresh_budget), Err(ProjectCheckerSessionError::ExecutionStopped(ProjectExecutionStop::Cancelled))));
+    assert_eq!(fresh_budget.stop_reason(), None, "the old image stop must not poll a new lease");
+}
+
+#[test]
+fn building_image_keeps_original_budget_and_checked_image_can_lend_later_scopes() {
+    use tsz_common::ExecutionCheckpoint;
+    let cancelled = AtomicBool::new(false);
+    let first = execution_budget(&cancelled);
+    let other = execution_budget(&cancelled);
+    let first_scope = tsz_common::LatchedExecutionCheckpoint::new(&first);
+    assert_eq!(first.execution_identity(), first_scope.execution_identity());
+    assert_ne!(first.execution_identity(), other.execution_identity());
+    let prepare = || {
+        let mut program = compile_files_with_libs(
+            vec![("src/main.ts".into(), "export const value: number = 1;".into())], &[],
+        );
+        program.set_project_module_resolutions_with_execution_checkpoint(&[], &first).unwrap();
+        PreparedProjectCheckerImage::new(program, CheckerOptions::default(), &[], ProjectSemanticOptions::structural(), Some(&first_scope)).unwrap()
+    };
+    let building = prepare();
+    let other_remaining = other.remaining_work_units();
+    assert!(matches!(building.check_fresh(Some(&other)), Err(ProjectCheckerSessionError::ExecutionCheckpointMismatch)));
+    assert_eq!(other.remaining_work_units(), other_remaining, "a changed budget cannot finish an in-progress full check");
+    let (image, _checked) = prepare().check_fresh(Some(&first)).unwrap();
+    let original_views = Arc::clone(&image.contents.views);
+    for scope in [&first_scope as &dyn ExecutionCheckpoint, &other] {
+        let session = image.query_session(scope).unwrap();
+        assert!(Arc::ptr_eq(&session.plan.views, &original_views));
+        let value = session.with_file_checker(0, |checker, binder, _| {
+            let ty = checker.get_type_of_symbol(binder.file_locals.get("value").unwrap());
+            checker.format_type(ty)
+        }).unwrap();
+        assert_eq!(value, "number");
+    }
+    cancelled.store(true, Ordering::Release);
+    assert!(matches!(image.query_session(&first), Err(ProjectCheckerSessionError::ExecutionStopped(ProjectExecutionStop::Cancelled))));
+    let independent_cancel = AtomicBool::new(false);
+    let independent = execution_budget(&independent_cancel);
+    assert!(matches!(image.query_session(&independent), Err(ProjectCheckerSessionError::ExecutionStopped(ProjectExecutionStop::Cancelled))));
+    assert_eq!(independent.stop_reason(), None, "cached poison wins before polling another legitimate scope");
+}
+
+#[test]
+fn metered_module_outcomes_stop_before_install_and_keep_exact_negatives() {
+    let mut program = compile_files_with_libs(
+        vec![("src/main.ts".into(), "export const value = 1;".into())], &[],
+    );
+    let request = ProjectModuleResolution {
+        importer_path: "src/main.ts".into(), specifier: "x".repeat(4096),
+        request_kind: ProjectModuleRequestKind::EsmImport, resolution_mode: None,
+        target: ProjectModuleResolutionTarget::Unresolved,
+    };
+    program.set_project_module_resolutions(&[]).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let small = ProjectExecutionBudget::new(Instant::now() + Duration::from_secs(30), &cancelled, 80);
+    assert!(matches!(program.set_project_module_resolutions_with_execution_checkpoint(&[request.clone()], &small),
+        Err(ProjectProgramCheckError::ExecutionStopped(ProjectExecutionStop::WorkBudgetExhausted))));
+    assert!(program.project_module_resolution_outcomes.is_none(), "partial or previous resolution witness must not escape");
+    let complete = execution_budget(&cancelled);
+    program.set_project_module_resolutions_with_execution_checkpoint(&[request.clone()], &complete).unwrap();
+    let exact = program.project_module_resolution_outcomes.as_ref().unwrap();
+    assert_eq!(exact.len(), 1);
+    assert!(matches!(exact.get(&(0, request.specifier, None, crate::checker::context::ResolutionRequestKind::EsmImport)),
+        Some(crate::checker::context::ResolvedModuleRequestOutcome::Unresolved)));
 }
