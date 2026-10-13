@@ -76,3 +76,28 @@ estimated tokens each), safely within the unchanged 49,152-byte limit.
 Accept those visible preview changes; no fields are normalized away, fixture
 expectations weakened, or performance baselines widened. A fresh consumer run
 must match this revised golden before merge.
+
+### MCP token and owner-page review (2026-10-13, W2.4)
+
+Concourse **473058** rejected the old golden for exact source
+`d9c0f1e2a83bf5636e03a90b73e97e3d6d5eb284`. This is the observable contract
+introduced by canonical `db5c7238f`: MCP replies name the pinned cl100k token
+policy/vocabulary and token limit, and outline uses an owner-certified page.
+Both independent cases in that build produced byte-identical answer diffs.
+
+Reviewed every changed field against the product change. All CLI answers and
+both MCP search structured answers are unchanged. The MCP outline retains all
+19 declarations, their exact coordinates/keys/kinds/names and parent-child
+relationships; its roots and Java members now follow native page order rather
+than the previous presentation order. The human-readable text follows that
+same order. The new page is complete (`more: false`, limit 200), retains exact
+source/branch/log identities, and reports exact/name/graph coverage complete
+with embedding-based semantic coverage explicitly unconfigured.
+
+Accept that documented paging and token-metadata contract. Search wire sizes
+are 1,942/1,943 bytes and outline is 5,832 bytes, below the unchanged 49,152-byte
+limit; 12,000-token admission and its pinned vocabulary are now also visible.
+`estimatedTokens` remains the product's byte-derived estimate, not a measured
+token count. No semantic IDs, page identities or ordering are normalized away;
+no performance baselines or tolerance bands are changed. A fresh exact-head
+artifact consumer must match this reviewed candidate before merge.
