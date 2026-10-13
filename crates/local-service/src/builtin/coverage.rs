@@ -312,6 +312,18 @@ pub(super) fn capture_matches_source(
         .is_some_and(|project| &project.source_version == capture.capture().source_version()))
 }
 
+fn captured_package_state(
+    source: &backend_engine::WorkspaceRelationHandle<super::BuiltinWorkspaceRelation>,
+    key: &ProductSemanticPublicationKey,
+    capture: &ProductSemanticCaptureRecord,
+) -> Result<backend_engine::RowState, BuiltinModelError> {
+    Ok(if capture_matches_source(source, key, capture)? {
+        capture_row_state(capture.outcome())
+    } else {
+        backend_engine::RowState::Failed
+    })
+}
+
 /// Legacy selected evidence, when no current capture exists for that key.
 fn publication_row_state(record: &ProductSemanticPublicationRecord) -> backend_engine::RowState {
     use backend_engine::RowState;
@@ -359,11 +371,7 @@ fn package_states(
                     continue;
                 }
                 observed.insert(key.clone());
-                let state = if capture_matches_source(&source, key, capture)? {
-                    capture_row_state(capture.outcome())
-                } else {
-                    backend_engine::RowState::Failed
-                };
+                let state = captured_package_state(&source, key, capture)?;
                 states
                     .entry(key.package_key())
                     .and_modify(|current: &mut backend_engine::RowState| {
@@ -408,12 +416,86 @@ fn package_states(
     Ok(states)
 }
 
-/// Qualifies the structural splice shortcut against current package evidence.
+#[cfg(test)]
+thread_local! {
+    static PACKAGE_STATE_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(super) fn reset_package_state_visits() {
+    PACKAGE_STATE_VISITS.with(|visits| visits.set(0));
+}
+
+#[cfg(test)]
+pub(super) fn package_state_visits() -> usize {
+    PACKAGE_STATE_VISITS.with(std::cell::Cell::get)
+}
+
+/// Seeks one typed package prefix rather than collecting workspace keys.
+fn visit_selected_package<R>(
+    relation: &backend_engine::WorkspaceRelationHandle<R>,
+    package: &backend_engine::PackageReference,
+    mut visit: impl FnMut(&ProductSemanticPublicationKey, &R::Value) -> Result<(), BuiltinModelError>,
+) -> Result<(), BuiltinModelError>
+where
+    R: backend_version::CanonicalRelation<Key = ProductSemanticPublicationKey>,
+{
+    let start = ProductSemanticPublicationKey::package_lower_bound(package.clone());
+    let mut after = None;
+    loop {
+        let page = match after.as_ref() {
+            None => relation.page_from(&start, backend_engine::MAX_SNAPSHOT_PAGE_ROWS),
+            Some(after) => relation.page(Some(after), backend_engine::MAX_SNAPSHOT_PAGE_ROWS),
+        }
+        .map_err(|error| BuiltinModelError(error.to_string()))?;
+        for (key, record) in page.entries() {
+            if key.package() != package {
+                return Ok(());
+            }
+            if key.is_selected() {
+                #[cfg(test)]
+                PACKAGE_STATE_VISITS.with(|visits| visits.set(visits.get() + 1));
+                visit(key, record)?;
+            }
+        }
+        let Some(next) = page.next().cloned() else {
+            return Ok(());
+        };
+        after = Some(next);
+    }
+}
+
+/// Qualifies one package against its exact typed capture/publication prefix.
 pub(super) fn package_row_state(
     snapshot: &WorkspaceSnapshot,
-    package: backend_engine::PackageKey,
+    package: &backend_engine::PackageReference,
 ) -> Result<Option<backend_engine::RowState>, BuiltinModelError> {
-    Ok(package_states(snapshot)?.get(&package).copied())
+    let source = snapshot
+        .relation::<super::BuiltinWorkspaceRelation>()
+        .map_err(|error| BuiltinModelError(error.to_string()))?;
+    let captures = semantic_capture_relation(snapshot)
+        .map_err(|error| BuiltinModelError(error.to_string()))?;
+    let mut observed = BTreeSet::new();
+    let mut state: Option<backend_engine::RowState> = None;
+    if let Some(captures) = captures {
+        visit_selected_package(&captures, package, |key, capture| {
+            observed.insert(key.clone());
+            let current = captured_package_state(&source, key, capture)?;
+            state = Some(state.map_or(current, |prior| prior.max(current)));
+            Ok(())
+        })?;
+    }
+    let relation = snapshot
+        .relation::<super::BuiltinSemanticRelation>()
+        .map_err(|error| BuiltinModelError(error.to_string()))?;
+    visit_selected_package(&relation, package, |key, record| {
+        if !observed.contains(key) {
+            let current = publication_row_state(record);
+            state = Some(state.map_or(current, |prior| prior.max(current)));
+        }
+        Ok(())
+    })?;
+    Ok(state)
 }
 
 /// Applies package-scoped observations without changing retained declarations.

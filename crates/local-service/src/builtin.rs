@@ -1375,7 +1375,18 @@ fn prepare_package_view(
     // A source-only edit may keep the capture root while making its old
     // publication obsolete. The file splice keeps the package row, so it is
     // admissible only when that row still has the derived package state.
-    let package_state = coverage::package_row_state(&snapshot, package)?;
+    let package_reference = backend_engine::PackageReference::parse(
+        sources
+            .projects
+            .get(package.as_bytes())
+            .ok_or_else(|| {
+                BuiltinModelError("package projection lost its source frontier".to_owned())
+            })?
+            .label
+            .clone(),
+    )
+    .map_err(|error| BuiltinModelError(format!("package projection reference: {error}")))?;
+    let package_state = coverage::package_row_state(&snapshot, &package_reference)?;
     let same_package_state = current
         .row_ref(backend_engine::RowId::Package(package))
         .is_some_and(|row| package_state.is_none_or(|state| row.state == state));
