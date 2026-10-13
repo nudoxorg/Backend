@@ -6960,6 +6960,7 @@ mod request_lease_tests {
         );
     }
 
+    #[cfg(unix)]
     fn queued_transition_fixture() -> (
         Arc<RuntimeShared>,
         LocalCompilerClient,
@@ -6977,6 +6978,7 @@ mod request_lease_tests {
         (shared, client, receive)
     }
 
+    #[cfg(unix)]
     fn captured_transition_fixture(
         label: &str,
     ) -> Result<(PathBuf, crate::application::PreparedEmbeddingRuntime), Box<dyn std::error::Error>>
@@ -7010,6 +7012,7 @@ mod request_lease_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn accepted_transition_keeps_requests_and_new_refresh_closed_after_caller_and_waiter_drop()
     -> Result<(), Box<dyn std::error::Error>> {
         let (root, prepared) = captured_transition_fixture("queued")?;
@@ -7079,6 +7082,7 @@ mod request_lease_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn refused_transition_send_preserves_original_gate_and_has_no_actor_reservation()
     -> Result<(), Box<dyn std::error::Error>> {
         let (root, prepared) = captured_transition_fixture("refused-send")?;
@@ -7177,6 +7181,7 @@ mod request_lease_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn accepted_reservation_survives_into_commit_without_retaining_runtime_shared()
     -> Result<(), Box<dyn std::error::Error>> {
         let (root, prepared) = captured_transition_fixture("commit-ownership")?;
