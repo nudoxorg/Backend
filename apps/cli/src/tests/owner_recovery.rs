@@ -649,8 +649,8 @@ fn replacement_failure_keeps_saved_claim_and_read_recovery_keeps_original_deadli
     );
 }
 
-/// Real private Unix transport and the production 256-frame server boundary.
-/// Scripted Accepted receipts prove recovery/identity, not compiler publication.
+/// Scripted Session connectors exercise cancellation of the original request.
+/// The same saved key and deadline survive retries; no mutation is dispatched.
 #[test]
 fn repeated_saved_key_reobservation_stops_on_original_cancellation_without_start() {
     let fixture = Fixture::new();
