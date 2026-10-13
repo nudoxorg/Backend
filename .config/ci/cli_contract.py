@@ -49,7 +49,7 @@ def check_fault(result: subprocess.CompletedProcess, fmt: str, code: int,
         require(not result.stderr, f"JSON fault leaked diagnostics to stderr: {result.stderr!r}")
         if operand is not None:
             require(body.get("operand") == operand, f"lost offending operand: {body}")
-        text = body.get("cause", "")
+        text = body.get("detail", "")
     else:
         body = None
         require(not result.stdout, "human fault unexpectedly used stdout")
@@ -93,7 +93,8 @@ def run_one(bin_dir: Path, name: str) -> float:
             command = name.removeprefix("passive-absent-")
             result = invoke(["--passive", command])
             # An absent endpoint is an I/O failure (exit 1), not a usage error.
-            body = check_fault(result, "json", 1, str(endpoint), ["unreachable"], "endpoint")
+            body = check_fault(result, "json", 1, str(endpoint), [], "endpoint")
+            require(body.get("cause") == "unreachable", "absent owner lost unreachable cause")
             require("without starting it" in body.get("detail", ""), "passive refusal lost no-start explanation")
             require("call" not in body, "CLI refusal exposed MCP-only recovery arguments")
             recovery = body.get("shell", "")

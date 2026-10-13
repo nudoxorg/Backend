@@ -14,7 +14,7 @@ class RefusalAdmissionTests(unittest.TestCase):
         for mutation in ("success", "state"):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
                 binary = Path(temporary) / "backend-cli"
-                body = {"answer": "fault", "slug": "usage", "operand": "serch", "cause": "did you mean `search`"}
+                body = {"answer": "fault", "slug": "usage", "operand": "serch", "cause": "unknown", "detail": "did you mean `search`"}
                 state = "Path(sys.argv[sys.argv.index('--workspace') + 1]).mkdir()" if mutation == "state" else "pass"
                 binary.write_text(f"#!{sys.executable}\nimport sys\nfrom pathlib import Path\n{state}\nprint({json.dumps(body)!r})\nraise SystemExit({0 if mutation == 'success' else 64})\n")
                 binary.chmod(0o700)
@@ -22,8 +22,8 @@ class RefusalAdmissionTests(unittest.TestCase):
                     run_cases(Path(temporary), ["unknown-command"])
 
     def test_lost_suggestion_or_operand_cannot_pass(self):
-        for field in ("operand", "cause"):
-            body = {"answer": "fault", "slug": "usage", "operand": "serch", "cause": "did you mean `search`"}
+        for field in ("operand", "detail"):
+            body = {"answer": "fault", "slug": "usage", "operand": "serch", "cause": "unknown", "detail": "did you mean `search`"}
             body[field] = "wrong"
             with self.subTest(field=field), self.assertRaises(RuntimeError):
                 check_fault(subprocess.CompletedProcess([], 64, json.dumps(body), ""), "json", 64, "serch", ["did you mean `search`"])
