@@ -2,9 +2,12 @@
 //!
 //! A session is created from one fully checked [`TszProject`] and borrows its
 //! exact merged program, checker options, resolved library closure, and
-//! exact project context. Production sessions borrow the execution
-//! checkpoint that governed parsing, binding, merging, and checking. The
-//! vendored TSZ session owns the project-wide
+//! exact project context. Production sessions borrow the execution checkpoint
+//! admitted by the most recent successful update. A changed update shares its
+//! budget through parsing, binding, merging, checking, and queries. An exact
+//! cache update may admit a new query checkpoint while retaining the fully
+//! checked image without repeating those stages. The vendored TSZ session owns
+//! the project-wide
 //! binders, arenas, resolution outcomes, symbol-to-file map, library contexts,
 //! and shared query cache.
 //! Each file checker is created on the stack from that shared context and is
