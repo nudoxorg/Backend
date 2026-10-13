@@ -605,7 +605,7 @@ impl<'a> CheckerState<'a> {
             && member_symbol.import_name() == Some("default")
             && let Some(module_specifier) = member_symbol.import_module().map(str::to_string)
             && let Some(namespace_type) =
-                self.node_esm_cjs_default_import_namespace_type(&module_specifier)
+                self.node_esm_cjs_default_import_namespace_type(member_id, &module_specifier)
         {
             return Some(namespace_type);
         }

@@ -138,19 +138,50 @@ impl<'a> CheckerState<'a> {
 
     pub(crate) fn node_esm_cjs_default_import_namespace_type(
         &mut self,
+        alias: SymbolId,
         module_name: &str,
     ) -> Option<TypeId> {
-        if !self.ctx.compiler_options.module.is_node_module()
-            || self.ctx.file_is_esm != Some(true)
-            || self.module_is_esm(module_name)
-        {
+        if !self.ctx.compiler_options.module.is_node_module() {
             return None;
         }
+        let configured = self.ctx.project_module_resolution_outcomes.is_some();
+        let exports_table = if configured {
+            let request = self.ctx.bound_module_request_for_alias(alias)?;
+            if request.specifier != module_name
+                || request.kind != crate::context::ResolutionRequestKind::EsmImport
+            {
+                return None;
+            }
+            let selected = self.ctx.select_module_request(request)?;
+            let target = selected.file_target()?;
+            let known_format = |file_idx: usize| {
+                let arena = self.ctx.get_arena_for_file(file_idx as u32);
+                let name = arena.source_files.first()?.file_name.as_str();
+                if name.ends_with(".mts") || name.ends_with(".mjs") {
+                    Some(true)
+                } else if name.ends_with(".cts") || name.ends_with(".cjs") {
+                    Some(false)
+                } else {
+                    self.lookup_file_is_esm(name)
+                }
+            };
+            if known_format(request.importer) != Some(true)
+                || known_format(target) != Some(false)
+            {
+                return None;
+            }
+            self.resolve_exports_for_selected_request(selected)
+        } else {
+            if self.ctx.file_is_esm != Some(true) || self.module_is_esm(module_name) {
+                return None;
+            }
+            self.resolve_effective_module_exports_from_file(
+                module_name,
+                Some(self.ctx.current_file_idx),
+            )
+        };
 
-        if let Some(exports_table) = self.resolve_effective_module_exports_from_file(
-            module_name,
-            Some(self.ctx.current_file_idx),
-        ) {
+        if let Some(exports_table) = exports_table {
             // For CJS modules using `export = X`, an ESM `import x from 'cjs'`
             // resolves to the type of X directly — the bare `module.exports`
             // value — not a synthesized namespace wrapper. This matches tsc:
@@ -186,6 +217,10 @@ impl<'a> CheckerState<'a> {
                 self.imported_namespace_display_module_name(module_name),
             );
             return Some(module_type);
+        }
+
+        if configured {
+            return None;
         }
 
         let default_sym_id = self.resolve_cross_file_export_from_file(
@@ -926,7 +961,8 @@ impl<'a> CheckerState<'a> {
         if flags & symbol_flags::ALIAS != 0
             && import_name.as_deref() == Some("default")
             && let Some(module_spec) = import_module.as_deref()
-            && let Some(module_type) = self.node_esm_cjs_default_import_namespace_type(module_spec)
+            && let Some(module_type) =
+                self.node_esm_cjs_default_import_namespace_type(sym_id, module_spec)
         {
             return (module_type, Vec::new());
         }
