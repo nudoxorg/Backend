@@ -86,7 +86,7 @@ impl ConfigError {
     ///
     /// Callers can format this directly into their bounded diagnostic sink
     /// without allocating or parsing the contextual `get_message` string.
-    pub fn cause(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+    pub fn cause(&self) -> &(dyn std::error::Error + 'static) {
         self.msg.root_cause()
     }
 

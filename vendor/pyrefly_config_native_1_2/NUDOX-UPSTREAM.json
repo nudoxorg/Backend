@@ -314,7 +314,7 @@
     {
       "path": "src/finder.rs",
       "upstream_sha256": "5d4897f7e72c89087c6e090ac4efeea3cd07211b37df10b36bddf1f0251ebc51",
-      "overlay_sha256": "6e06284ebabd2c20f50c5f6138d8bef407262bc0c0c608796de0a393003507fd"
+      "overlay_sha256": "660113d27e1501f8eb5ae0d7833675028609170f063281a6f569ae097f9ec42b"
     }
   ]
 }
