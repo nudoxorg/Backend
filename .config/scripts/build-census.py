@@ -93,6 +93,29 @@ _LINUX_PF_KTHREAD = 0x00200000
 _LINUX_TERMINAL_STATES = frozenset({"Z", "X", "x"})
 
 
+def _linux_proc_path_absence(error: OSError) -> bool:
+    """Only ENOENT and ESRCH can establish that a proc path is absent."""
+    return error.errno in {errno.ENOENT, errno.ESRCH}
+
+
+def _linux_proc_display_path(pid: int, proc_path: pathlib.Path | None, filename: Any) -> str:
+    prefix = pathlib.PurePosixPath("/proc") / str(pid)
+    if filename is None:
+        return str(prefix)
+    value = os.fsdecode(filename)
+    if proc_path is not None:
+        try:
+            relative = pathlib.Path(value).relative_to(proc_path)
+        except ValueError:
+            pass
+        else:
+            suffix = relative.as_posix()
+            return str(prefix) if suffix == "." else str(prefix / suffix)
+    if value == str(prefix) or value.startswith(f"{prefix}/"):
+        return value
+    return str(prefix / pathlib.PurePosixPath(value).name)
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class _LinuxTerminalProcRow:
     pid: int
@@ -106,18 +129,25 @@ class _LinuxTerminalProcRow:
 @dataclasses.dataclass(frozen=True, slots=True)
 class _LinuxProcExitProof:
     pid: int
-    first_start_ticks: str
+    first_start_ticks: str | None
     last_start_ticks: str | None
-    first_state: str
+    first_state: str | None
     last_state: str | None
-    pidfd_ready: bool
+    pidfd_ready: bool | None
     missing_path: str | None
     missing_filename: str | None
+    identity_observed: bool = True
+    evidence: str = "pidfd-ready-and-matching-start-identity"
+    pidfd_open_errno: int | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "pid": self.pid,
-            "first_identity": {"pid": self.pid, "start_ticks": self.first_start_ticks},
+            "first_identity": (
+                {"pid": self.pid, "start_ticks": self.first_start_ticks}
+                if self.first_start_ticks is not None
+                else None
+            ),
             "last_identity": (
                 {"pid": self.pid, "start_ticks": self.last_start_ticks}
                 if self.last_start_ticks is not None
@@ -128,6 +158,9 @@ class _LinuxProcExitProof:
             "pidfd_ready": self.pidfd_ready,
             "missing_path": self.missing_path,
             "missing_filename": self.missing_filename,
+            "identity_observed": self.identity_observed,
+            "evidence": self.evidence,
+            "pidfd_open_errno": self.pidfd_open_errno,
         }
 
 
@@ -147,6 +180,8 @@ class _LinuxProcDirectory:
         self.proc_path = proc_root / str(pid)
         self.directory_fd: int | None = None
         self.pidfd: int | None = None
+        self.pidfd_open_error: ProcessLookupError | None = None
+        self.directory_open_error: OSError | None = None
         self._closed = False
 
     def __enter__(self) -> "_LinuxProcDirectory":
@@ -159,6 +194,14 @@ class _LinuxProcDirectory:
                 self.proc_path,
                 os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
             )
+        except OSError as error:
+            if not _linux_proc_path_absence(error):
+                self.close()
+                raise
+            # Keep the pidfd open so the capture layer can distinguish a
+            # task that disappeared between enumeration and /proc open from
+            # a live process whose path is simply unreadable.
+            self.directory_open_error = error
         except BaseException:
             self.close()
             raise
@@ -168,13 +211,20 @@ class _LinuxProcDirectory:
         self.close()
 
     def pin_pidfd(self) -> None:
-        if self.pidfd is not None:
+        if self.pidfd is not None or self.pidfd_open_error is not None:
             return
         opener = getattr(os, "pidfd_open", None)
         if opener is None:
             return
         try:
             self.pidfd = opener(self.pid, 0)
+        except ProcessLookupError as error:
+            if error.errno != errno.ESRCH:
+                raise
+            # The kernel says this PID is already absent. Keep that exact
+            # result so the capture layer can require two fresh path checks;
+            # do not retry pidfd_open and accidentally pin a replacement PID.
+            self.pidfd_open_error = error
         except OSError as error:
             # Old kernels may not implement pidfds. Ordinary stable reads can
             # still use the pinned proc-directory identity; a later ENOENT
@@ -196,7 +246,8 @@ class _LinuxProcDirectory:
                 raise OSError(errno.EBADF, "pidfd-poll-error")
         # A pidfd reports POLLIN while its task is zombie and may report only
         # POLLHUP after the task is reaped. Both are exact terminal readiness;
-        # later proof still checks this pidfd and the captured proc identity.
+        # later proof checks this pidfd and, before identity, re-resolves the
+        # current PID path twice to reject a replacement.
         return any(event & (select.POLLIN | select.POLLHUP) for _, event in events)
 
     def read_bytes(self, relative_path: str, limit: int) -> bytes:
@@ -225,6 +276,14 @@ class _LinuxProcDirectory:
 
     def read_stat(self) -> _LinuxProcStat:
         return _parse_linux_proc_stat(self.read_text("stat", 4 * 1024))
+
+    def read_current_stat(self) -> _LinuxProcStat:
+        """Re-resolve /proc/PID, detecting a replacement after a pidfd exit."""
+        with (self.proc_path / "stat").open("rb") as source:
+            raw = source.read(4 * 1024 + 1)
+        if len(raw) > 4 * 1024:
+            raise CensusError("linux-proc-file-limit")
+        return _parse_linux_proc_stat(raw.decode("ascii"))
 
     def _directory_fd(self) -> int:
         if self.directory_fd is None:
@@ -270,16 +329,102 @@ def _capture_linux_proc_pid(
 
     The pidfd is opened before resolving /proc/PID, then the directory identity
     is read twice before payload access. A stable terminal row is returned as
-    a proc observation, not as a pidfd exit proof. A missing field is an exit
-    only if that pidfd is readable and a final proc read is absent or terminal;
-    permission errors, live ENOENTs, and start-time changes remain hard races.
+    a proc observation, not as a pidfd exit proof. Before a first identity is
+    captured, a missing proc path is an exit only if the pinned pidfd is ready,
+    or pidfd_open specifically returned ESRCH, and two fresh /proc/PID/stat
+    reads are absent. Permission errors, live or replaced PID paths, and
+    start-time changes remain hard races.
     """
+
+    def prove_unidentified_exit(proc: Any, error: OSError) -> _LinuxProcessExitedDuringRead:
+        # Without an initial /proc identity, pidfd readiness alone could name
+        # an earlier PID incarnation. Require the current PID path to be
+        # absent twice with the exact pidfd still terminal after each read.
+        # If pidfd_open itself returned ESRCH, its kernel result plus repeated
+        # path absence is the proof; a readable or inaccessible path still
+        # refuses the snapshot.
+        if not _linux_proc_path_absence(error):
+            raise error
+        pidfd_open_esrch = getattr(proc, "pidfd_open_error", None)
+        pidfd_ready = proc.pidfd_ready()
+        has_open_esrch = (
+            isinstance(pidfd_open_esrch, ProcessLookupError)
+            and pidfd_open_esrch.errno == errno.ESRCH
+        )
+        if pidfd_ready is not True and not (has_open_esrch and pidfd_ready is None):
+            raise _LinuxProcRace(
+                errno.ESTALE,
+                "proc-path-missing-before-identity-without-pidfd-exit-proof",
+                getattr(error, "filename", None),
+            ) from error
+        missing_filename = getattr(error, "filename", None)
+        missing_path = _linux_proc_display_path(
+            proc.pid, getattr(proc, "proc_path", None), missing_filename
+        )
+        for _ in range(2):
+            try:
+                proc.read_current_stat()
+            except OSError as current_error:
+                if not _linux_proc_path_absence(current_error):
+                    raise
+                current_ready = proc.pidfd_ready()
+                if has_open_esrch and current_ready is not None:
+                    raise _LinuxProcRace(
+                        errno.ESTALE,
+                        "pidfd-open-esrch-proof-changed-during-proc-absence-checks",
+                        getattr(error, "filename", None),
+                    ) from error
+                if not has_open_esrch and current_ready is not True:
+                    raise _LinuxProcRace(
+                        errno.ESTALE,
+                        "pidfd-exit-not-stable-across-proc-absence-checks",
+                        getattr(error, "filename", None),
+                    ) from error
+                continue
+            # Any reappearing PID, terminal or live, may be another
+            # incarnation that was not represented by the admitted ps row.
+            raise _LinuxProcRace(
+                errno.ESTALE,
+                "proc-path-reappeared-before-identity-was-captured",
+                getattr(error, "filename", None),
+            ) from error
+        return _LinuxProcessExitedDuringRead(
+            _LinuxProcExitProof(
+                pid=proc.pid,
+                first_start_ticks=None,
+                last_start_ticks=None,
+                first_state=None,
+                last_state=None,
+                pidfd_ready=None if has_open_esrch else True,
+                missing_path=missing_path,
+                missing_filename=missing_filename,
+                identity_observed=False,
+                evidence=(
+                    "pidfd-open-esrch-and-current-proc-path-absent-twice"
+                    if has_open_esrch
+                    else "ready-pidfd-and-current-proc-path-absent-twice"
+                ),
+                pidfd_open_errno=errno.ESRCH if has_open_esrch else None,
+            )
+        )
+
     try:
         with proc_factory(pid) as proc:
             # Custom test adapters may not pin in __enter__; the real adapter
             # has already opened the pidfd before its /proc/PID directory.
             proc.pin_pidfd()
-            first = proc.read_stat()
+            pidfd_open_error = getattr(proc, "pidfd_open_error", None)
+            if pidfd_open_error is not None:
+                raise prove_unidentified_exit(proc, pidfd_open_error)
+            directory_open_error = getattr(proc, "directory_open_error", None)
+            if directory_open_error is not None:
+                raise prove_unidentified_exit(proc, directory_open_error)
+            try:
+                first = proc.read_stat()
+            except OSError as error:
+                if not _linux_proc_path_absence(error):
+                    raise
+                raise prove_unidentified_exit(proc, error)
             pinned = proc.read_stat()
             if first.start_ticks != pinned.start_ticks:
                 raise _LinuxProcRace(errno.ESTALE, "pid-start-changed-while-pinning")
@@ -329,6 +474,8 @@ def _capture_linux_proc_pid(
                 return _LinuxProcessExitedDuringRead(proof)
 
             def prove_exit(error: OSError) -> _LinuxProcessExitedDuringRead:
+                if not _linux_proc_path_absence(error):
+                    raise error
                 if proc.pidfd_ready() is not True:
                     raise _LinuxProcRace(
                         errno.ESTALE,
@@ -337,7 +484,9 @@ def _capture_linux_proc_pid(
                     ) from error
                 try:
                     last = proc.read_stat()
-                except (FileNotFoundError, ProcessLookupError):
+                except OSError as last_error:
+                    if not _linux_proc_path_absence(last_error):
+                        raise
                     last = None
                 if last is not None and last.start_ticks != first.start_ticks:
                     raise _LinuxProcRace(errno.ESTALE, "pid-start-changed-after-pidfd-exit") from error
@@ -348,7 +497,9 @@ def _capture_linux_proc_pid(
             try:
                 value = read_payload(proc, pinned)
                 last = proc.read_stat()
-            except (FileNotFoundError, ProcessLookupError) as error:
+            except OSError as error:
+                if not _linux_proc_path_absence(error):
+                    raise
                 raise prove_exit(error)
             if last.start_ticks != first.start_ticks:
                 raise _LinuxProcRace(errno.ESTALE, "pid-start-changed-during-proc-read")
@@ -356,7 +507,9 @@ def _capture_linux_proc_pid(
                 if last.state not in _LINUX_TERMINAL_STATES:
                     try:
                         observed = proc.read_stat()
-                    except (FileNotFoundError, ProcessLookupError):
+                    except OSError as observed_error:
+                        if not _linux_proc_path_absence(observed_error):
+                            raise
                         observed = None
                     if observed is not None and observed.start_ticks != first.start_ticks:
                         raise _LinuxProcRace(errno.ESTALE, "pid-start-changed-after-pidfd-exit")
@@ -366,8 +519,9 @@ def _capture_linux_proc_pid(
                 raise exited(None, last)
             return _LinuxProcCapture(first=first, last=last, value=value)
     except ProcessLookupError:
-        # ESRCH before the first proc identity is not an exit proof for the
-        # enumerated row. Leave it as an incomplete observation for the caller.
+        # An injected adapter may raise before returning a context, leaving no
+        # proc object on which to perform the repeated path checks. Keep that
+        # observation incomplete instead of treating the exception as proof.
         raise
 
 
@@ -1338,8 +1492,14 @@ def _linux_processes(
                 records[row.pid] = _unknown_compiler_candidate(row)
             elif runtime_hint:
                 records[row.pid] = _unknown_runtime_owner_candidate(row)
-        except _LinuxProcessExitedDuringRead:
-            races["pid-exited-during-scan"] = races.get("pid-exited-during-scan", 0) + 1
+        except _LinuxProcessExitedDuringRead as stopped:
+            if stopped.proof.identity_observed:
+                race = "pid-exited-during-scan"
+            elif stopped.proof.pidfd_open_errno == errno.ESRCH:
+                race = "pidfd-open-esrch-and-proc-absent-twice"
+            else:
+                race = "pid-exited-before-identity"
+            races[race] = races.get(race, 0) + 1
         except FileNotFoundError:
             if cargo_hint:
                 records[row.pid] = _unknown_cargo_candidate(row)

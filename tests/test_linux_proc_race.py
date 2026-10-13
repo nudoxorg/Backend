@@ -35,7 +35,10 @@ def stat_text(
 class FakeProc:
     def __init__(self, pid: int, *, starts: list[tuple[str, int] | tuple[str, int, int]] | None = None,
                  ready: list[bool | int | None] | None = None, failure: BaseException | None = None,
-                 fail_path: str | None = None, flags: int = 0, status_uid: int = 1000) -> None:
+                 fail_path: str | None = None, flags: int = 0, status_uid: int = 1000,
+                 directory_error: OSError | None = None,
+                 current_stats: list[tuple[str, int] | BaseException] | None = None,
+                 pidfd_open_error: ProcessLookupError | None = None) -> None:
         self.pid = pid
         self.pidfd = 73
         self.starts = list(starts or [("R", 101)] * 3)
@@ -44,6 +47,9 @@ class FakeProc:
         self.fail_path = fail_path
         self.flags = flags
         self.status_uid = status_uid
+        self.directory_open_error = directory_error
+        self.current_stats = list(current_stats or [])
+        self.pidfd_open_error = pidfd_open_error
         self.events: list[str] = []
 
     def __enter__(self) -> "FakeProc":
@@ -60,6 +66,14 @@ class FakeProc:
         state, start = sample[:2]
         flags = sample[2] if len(sample) == 3 else self.flags
         return census._parse_linux_proc_stat(stat_text(state, start, flags=flags))
+
+    def read_current_stat(self) -> census._LinuxProcStat:
+        self.events.append("current-stat")
+        sample = self.current_stats.pop(0)
+        if isinstance(sample, BaseException):
+            raise sample
+        state, start = sample
+        return census._parse_linux_proc_stat(stat_text(state, start))
 
     def pin_pidfd(self) -> None:
         pass
@@ -217,9 +231,334 @@ class LinuxProcRaceTests(unittest.TestCase):
                     with self.assertRaisesRegex(OSError, "pidfd-poll-error"):
                         proc.pidfd_ready()
 
-    def test_pidfd_open_esrch_before_first_identity_is_incomplete_not_proof(self) -> None:
+    def test_factory_esrch_without_repeated_path_evidence_is_not_proof(self) -> None:
         with self.assertRaises(ProcessLookupError):
             census._capture_gui_supervisor_process(41, proc_factory=GoneAtPidfdOpen)
+
+    def test_missing_proc_directory_is_a_typed_exit_only_with_pidfd_and_two_absent_rechecks(self) -> None:
+        missing = FileNotFoundError(errno.ENOENT, "gone", "/proc/41")
+        absent = FileNotFoundError(errno.ENOENT, "gone", "/proc/41/stat")
+        factory, rows = self.factory(
+            ready=[True, True, True], directory_error=missing,
+            current_stats=[absent, absent],
+        )
+        with self.assertRaises(census._LinuxProcessExitedDuringRead) as stopped:
+            census._capture_linux_proc_pid(41, lambda _proc, _stat: None, proc_factory=factory)
+        proof = stopped.exception.proof
+        self.assertFalse(proof.identity_observed)
+        self.assertEqual(proof.missing_path, "/proc/41")
+        self.assertEqual(proof.missing_filename, "/proc/41")
+        self.assertEqual(
+            proof.as_dict(),
+            {
+                "pid": 41,
+                "first_identity": None,
+                "last_identity": None,
+                "first_state": None,
+                "last_state": None,
+                "pidfd_ready": True,
+                "missing_path": "/proc/41",
+                "missing_filename": "/proc/41",
+                "identity_observed": False,
+                "evidence": "ready-pidfd-and-current-proc-path-absent-twice",
+                "pidfd_open_errno": None,
+            },
+        )
+        self.assertEqual(rows[0].events, [
+            "pidfd-open", "open-pid-directory", "pidfd-poll", "current-stat",
+            "pidfd-poll", "current-stat", "pidfd-poll", "close-pid-directory-and-pidfd",
+        ])
+
+        # The process table reducer publishes only the typed race count; it
+        # must not turn that one proven exit into an incomplete snapshot.
+        factory, _rows = self.factory(
+            ready=[True, True, True], directory_error=missing,
+            current_stats=[absent, absent],
+        )
+        row = census._PsRow(41, 1, 41, 1000, "Mon Oct 12 00:00:00 2026", "python")
+
+        records, issues, races = census._linux_processes(
+            1000, [row], census._ArgvBudget(), proc_root=self.proc_root,
+            proc_factory=factory,
+        )
+
+        self.assertEqual(records, {})
+        self.assertEqual(issues, {})
+        self.assertEqual(races, {"pid-exited-before-identity": 1})
+
+    def test_real_proc_adapter_requires_pidfd_and_two_absent_path_checks(self) -> None:
+        pid = 41
+        path_checks: list[int] = []
+
+        class TracedProc(census._LinuxProcDirectory):
+            def read_current_stat(self) -> census._LinuxProcStat:
+                path_checks.append(self.pid)
+                return super().read_current_stat()
+
+        factory = lambda selected_pid: TracedProc(selected_pid, self.proc_root)
+        with (
+            patch.object(census.os, "pidfd_open", create=True, return_value=73) as open_pidfd,
+            patch.object(census.os, "close") as close_fd,
+            patch.object(
+                census.select,
+                "poll",
+                return_value=FakePoll(73, census.select.POLLIN),
+            ) as poll,
+        ):
+            with self.assertRaises(census._LinuxProcessExitedDuringRead) as stopped:
+                census._capture_linux_proc_pid(pid, lambda _proc, _stat: None, proc_factory=factory)
+
+        self.assertFalse(stopped.exception.proof.identity_observed)
+        self.assertEqual(stopped.exception.proof.missing_path, "/proc/41")
+        self.assertEqual(path_checks, [pid, pid])
+        open_pidfd.assert_called_once_with(pid, 0)
+        self.assertEqual(poll.call_count, 3)
+        close_fd.assert_called_once_with(73)
+
+    def test_real_proc_adapter_preserves_missing_stat_path_in_exit_evidence(self) -> None:
+        pid = 41
+        (self.proc_root / str(pid)).mkdir()
+        path_checks: list[int] = []
+
+        class TracedProc(census._LinuxProcDirectory):
+            def read_current_stat(self) -> census._LinuxProcStat:
+                path_checks.append(self.pid)
+                return super().read_current_stat()
+
+        factory = lambda selected_pid: TracedProc(selected_pid, self.proc_root)
+        original_close = census.os.close
+        closed: list[int] = []
+
+        def close_fd(descriptor: int) -> None:
+            closed.append(descriptor)
+            if descriptor != 73:
+                original_close(descriptor)
+
+        with (
+            patch.object(census.os, "pidfd_open", create=True, return_value=73),
+            patch.object(census.os, "close", side_effect=close_fd),
+            patch.object(
+                census.select,
+                "poll",
+                return_value=FakePoll(73, census.select.POLLIN),
+            ) as poll,
+        ):
+            with self.assertRaises(census._LinuxProcessExitedDuringRead) as stopped:
+                census._capture_linux_proc_pid(pid, lambda _proc, _stat: None, proc_factory=factory)
+
+        self.assertFalse(stopped.exception.proof.identity_observed)
+        self.assertEqual(stopped.exception.proof.missing_path, "/proc/41/stat")
+        self.assertEqual(path_checks, [pid, pid])
+        self.assertEqual(poll.call_count, 3)
+        self.assertIn(73, closed)
+        self.assertGreaterEqual(len(closed), 2)
+
+    def test_real_pidfd_open_esrch_needs_two_absent_path_checks(self) -> None:
+        pid = 41
+        path_checks: list[int] = []
+        lookup_error = ProcessLookupError(errno.ESRCH, "no such process")
+
+        class TracedProc(census._LinuxProcDirectory):
+            def read_current_stat(self) -> census._LinuxProcStat:
+                path_checks.append(self.pid)
+                return super().read_current_stat()
+
+        factory = lambda selected_pid: TracedProc(selected_pid, self.proc_root)
+        with (
+            patch.object(census.os, "pidfd_open", create=True, side_effect=lookup_error) as open_pidfd,
+            patch.object(census.select, "poll") as poll,
+        ):
+            with self.assertRaises(census._LinuxProcessExitedDuringRead) as stopped:
+                census._capture_linux_proc_pid(pid, lambda _proc, _stat: None, proc_factory=factory)
+
+        proof = stopped.exception.proof
+        self.assertFalse(proof.identity_observed)
+        self.assertIsNone(proof.pidfd_ready)
+        self.assertEqual(proof.missing_path, "/proc/41")
+        self.assertEqual(proof.evidence, "pidfd-open-esrch-and-current-proc-path-absent-twice")
+        self.assertEqual(proof.pidfd_open_errno, errno.ESRCH)
+        self.assertEqual(path_checks, [pid, pid])
+        open_pidfd.assert_called_once_with(pid, 0)
+        poll.assert_not_called()
+
+        path_checks.clear()
+        factory = lambda selected_pid: TracedProc(selected_pid, self.proc_root)
+        row = census._PsRow(pid, 1, pid, 1000, "Mon Oct 12 00:00:00 2026", "python")
+        with (
+            patch.object(census.os, "pidfd_open", create=True, side_effect=lookup_error),
+            patch.object(census.select, "poll") as poll,
+        ):
+            records, issues, races = census._linux_processes(
+                1000, [row], census._ArgvBudget(), proc_root=self.proc_root,
+                proc_factory=factory,
+            )
+
+        self.assertEqual(records, {})
+        self.assertEqual(issues, {})
+        self.assertEqual(races, {"pidfd-open-esrch-and-proc-absent-twice": 1})
+        self.assertEqual(path_checks, [pid, pid])
+        poll.assert_not_called()
+
+    def test_pidfd_open_esrch_does_not_accept_a_reappeared_pid_path(self) -> None:
+        pid = 41
+        process_dir = self.proc_root / str(pid)
+        process_dir.mkdir()
+        (process_dir / "stat").write_text(stat_text("R", 202), encoding="ascii")
+        lookup_error = ProcessLookupError(errno.ESRCH, "no such process")
+        factory = lambda selected_pid: census._LinuxProcDirectory(selected_pid, self.proc_root)
+
+        with patch.object(census.os, "pidfd_open", create=True, side_effect=lookup_error):
+            with self.assertRaisesRegex(census._LinuxProcRace, "reappeared-before-identity"):
+                census._capture_linux_proc_pid(pid, lambda _proc, _stat: None, proc_factory=factory)
+
+    def test_non_absence_errno_and_malformed_current_stat_remain_incomplete(self) -> None:
+        row = census._PsRow(41, 1, 41, 1000, "Mon Oct 12 00:00:00 2026", "python")
+        missing = FileNotFoundError(errno.ENOENT, "gone", "/proc/41")
+        invalid_lookup = ProcessLookupError(errno.EACCES, "denied", "/proc/41/stat")
+        malformed: ValueError = ValueError("malformed-stat")
+        for current_error in (invalid_lookup, malformed):
+            with self.subTest(error=type(current_error).__name__):
+                factory, _rows = self.factory(
+                    ready=[True], directory_error=missing,
+                    current_stats=[current_error],
+                )
+                records, issues, races = census._linux_processes(
+                    1000, [row], census._ArgvBudget(), proc_root=self.proc_root,
+                    proc_factory=factory,
+                )
+                self.assertEqual(records, {})
+                self.assertEqual(issues, {"same-uid-process-snapshot-incomplete": 1})
+                self.assertEqual(races, {})
+
+        invalid_initial = ProcessLookupError(errno.EACCES, "denied", "/proc/41")
+        factory, _rows = self.factory(
+            ready=[True], directory_error=invalid_initial,
+            current_stats=[FileNotFoundError(errno.ENOENT, "gone", "/proc/41/stat")],
+        )
+        records, issues, races = census._linux_processes(
+            1000, [row], census._ArgvBudget(), proc_root=self.proc_root,
+            proc_factory=factory,
+        )
+        self.assertEqual(records, {})
+        self.assertEqual(issues, {"same-uid-process-snapshot-incomplete": 1})
+        self.assertEqual(races, {})
+
+    def test_proven_preidentity_absence_skips_both_candidate_and_ordinary_rows(self) -> None:
+        def make(pid: int) -> FakeProc:
+            return FakeProc(
+                pid,
+                ready=[True, True, True],
+                directory_error=FileNotFoundError(errno.ENOENT, "gone", f"/proc/{pid}"),
+                current_stats=[
+                    FileNotFoundError(errno.ENOENT, "gone", f"/proc/{pid}/stat"),
+                    FileNotFoundError(errno.ESRCH, "gone", f"/proc/{pid}/stat"),
+                ],
+            )
+
+        rows = [
+            self.cargo_row(),
+            census._PsRow(42, 1, 42, 1000, "Mon Oct 12 00:00:00 2026", "python"),
+        ]
+        records, issues, races = census._linux_processes(
+            1000,
+            rows,
+            census._ArgvBudget(),
+            proc_root=self.proc_root,
+            proc_factory=make,
+        )
+
+        self.assertEqual(records, {})
+        self.assertEqual(issues, {})
+        self.assertEqual(races, {"pid-exited-before-identity": 2})
+
+        def make_after_pidfd_esrch(pid: int) -> FakeProc:
+            return FakeProc(
+                pid,
+                ready=[None, None, None],
+                pidfd_open_error=ProcessLookupError(errno.ESRCH, "no such process"),
+                directory_error=FileNotFoundError(errno.ENOENT, "gone", f"/proc/{pid}"),
+                current_stats=[
+                    FileNotFoundError(errno.ENOENT, "gone", f"/proc/{pid}/stat"),
+                    ProcessLookupError(errno.ESRCH, "gone", f"/proc/{pid}/stat"),
+                ],
+            )
+
+        records, issues, races = census._linux_processes(
+            1000,
+            rows,
+            census._ArgvBudget(),
+            proc_root=self.proc_root,
+            proc_factory=make_after_pidfd_esrch,
+        )
+
+        self.assertEqual(records, {})
+        self.assertEqual(issues, {})
+        self.assertEqual(races, {"pidfd-open-esrch-and-proc-absent-twice": 2})
+
+    def test_real_proc_adapter_does_not_reclassify_directory_permission_denial(self) -> None:
+        pid = 41
+        factory = lambda selected_pid: census._LinuxProcDirectory(selected_pid, self.proc_root)
+        denied = PermissionError(errno.EACCES, "denied", str(self.proc_root / str(pid)))
+        original_open = census.os.open
+
+        def denied_directory(path: object, flags: int, *args: object, **kwargs: object) -> int:
+            if pathlib.Path(path) == self.proc_root / str(pid):
+                raise denied
+            return original_open(path, flags, *args, **kwargs)
+
+        with (
+            patch.object(census.os, "pidfd_open", create=True, return_value=73),
+            patch.object(census.os, "close") as close_fd,
+            patch.object(census.os, "open", side_effect=denied_directory),
+        ):
+            with self.assertRaises(PermissionError):
+                census._capture_linux_proc_pid(pid, lambda _proc, _stat: None, proc_factory=factory)
+
+        close_fd.assert_called_once_with(73)
+
+    def test_pidfd_exit_does_not_hide_a_reappearing_pid_or_unreadable_live_path(self) -> None:
+        row = census._PsRow(41, 1, 41, 1000, "Mon Oct 12 00:00:00 2026", "python")
+        replacement_factory, _rows = self.factory(
+            ready=[True], directory_error=FileNotFoundError(errno.ENOENT, "gone", "/proc/41"),
+            current_stats=[("R", 202)],
+        )
+        records, issues, races = census._linux_processes(
+            1000, [row], census._ArgvBudget(), proc_root=self.proc_root,
+            proc_factory=replacement_factory,
+        )
+        self.assertEqual(records, {})
+        self.assertEqual(issues, {"same-uid-process-snapshot-incomplete": 1})
+        self.assertEqual(races, {})
+
+        denied_factory, _rows = self.factory(
+            ready=[True], directory_error=FileNotFoundError(errno.ENOENT, "gone", "/proc/41"),
+            current_stats=[PermissionError(errno.EACCES, "denied", "/proc/41/stat")],
+        )
+        records, issues, races = census._linux_processes(
+            1000, [row], census._ArgvBudget(), proc_root=self.proc_root,
+            proc_factory=denied_factory,
+        )
+        self.assertEqual(records, {})
+        self.assertEqual(issues, {"same-uid-process-unreadable": 1})
+        self.assertEqual(races, {})
+
+    def test_unavailable_pidfd_or_unstable_absence_keeps_snapshot_incomplete(self) -> None:
+        row = census._PsRow(41, 1, 41, 1000, "Mon Oct 12 00:00:00 2026", "python")
+        missing = FileNotFoundError(errno.ENOENT, "gone", "/proc/41")
+        absent = FileNotFoundError(errno.ENOENT, "gone", "/proc/41/stat")
+        for ready in ([None], [True, False]):
+            with self.subTest(ready=ready):
+                factory, _rows = self.factory(
+                    ready=list(ready), directory_error=missing,
+                    current_stats=[absent, absent],
+                )
+                records, issues, races = census._linux_processes(
+                    1000, [row], census._ArgvBudget(), proc_root=self.proc_root,
+                    proc_factory=factory,
+                )
+                self.assertEqual(records, {})
+                self.assertEqual(issues, {"same-uid-process-snapshot-incomplete": 1})
+                self.assertEqual(races, {})
 
     def test_live_namespace_enoent_fails_closed_without_retries(self) -> None:
         factory, rows = self.factory(
@@ -238,6 +577,15 @@ class LinuxProcRaceTests(unittest.TestCase):
         )
 
         with self.assertRaises(PermissionError):
+            census._capture_gui_supervisor_process(41, proc_factory=factory)
+
+        # Exception subclasses are not enough: only the actual ENOENT/ESRCH
+        # errno values may become an exit proof.
+        odd_denial = ProcessLookupError(errno.EACCES, "denied", "/proc/41/ns/mnt")
+        factory, _rows = self.factory(
+            ready=[False, True], failure=odd_denial, fail_path="ns/mnt",
+        )
+        with self.assertRaises(ProcessLookupError):
             census._capture_gui_supervisor_process(41, proc_factory=factory)
 
     def test_pid_reuse_between_first_and_pinned_stat_fails_closed(self) -> None:
