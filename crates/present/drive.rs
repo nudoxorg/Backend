@@ -1096,7 +1096,7 @@ mod document_member_paging_controls {
             );
         }
         rows.extend((0..532).map(|index| {
-            let coordinate = format!("{PATH}::unrelated.ts:{}::function_{index}", index + 1);
+            let coordinate = format!("{PATH}::a-unrelated.ts:{}::function_{index}", index + 1);
             Row::in_package(
                 RowId::Symbol(symbol_key(&coordinate)),
                 basis,
@@ -1104,7 +1104,7 @@ mod document_member_paging_controls {
                 coordinate,
             )
             .with_kind(DeclarationKind::Function)
-            .with_source(SourceLocation::new("unrelated.ts", 1).expect("source location"))
+            .with_source(SourceLocation::new("a-unrelated.ts", 1).expect("source location"))
         }));
         let root = ViewRoot::new_incomplete(
             view_key(b"member pagination control"),

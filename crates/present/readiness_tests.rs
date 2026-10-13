@@ -24,12 +24,18 @@ fn readiness_guidance_is_an_installed_observation_without_a_ready_claim() {
     assert_eq!(fault.affordance().shell().as_deref(), Some("nudox health"));
     let expected_call = serde_json::json!({"name":"backend.status", "arguments":{}});
     assert_eq!(fault.affordance().tool_call(), Some(expected_call.clone()));
-    for text in [text::fault(&fault, Theme::plain()), markdown::fault(&fault)] {
-        assert!(text.contains("nudox health"));
-        assert!(!text.contains("backend health"));
-        assert!(!text.contains("wait for ~lanes to read ready"));
-        assert!(text.contains(fault.cause().sentence()));
-    }
+    let cli = text::fault(&fault, Theme::plain());
+    assert!(cli.contains("nudox health"));
+    assert!(!cli.contains("backend health"));
+    assert!(!cli.contains("wait for ~lanes to read ready"));
+    assert!(cli.contains(fault.cause().sentence()));
+
+    let agent = markdown::fault(&fault);
+    assert!(agent.contains("backend.status"));
+    assert!(!agent.contains("nudox health"));
+    assert!(!agent.contains("backend health"));
+    assert!(!agent.contains("wait for ~lanes to read ready"));
+    assert!(agent.contains(fault.cause().sentence()));
     for detail in [Detail::Summary, Detail::Standard, Detail::Full] {
         let payload = encode_serializable(
             "fault",

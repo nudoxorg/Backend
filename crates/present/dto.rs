@@ -391,16 +391,16 @@ pub struct PageDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
     /// The classified signature tokens.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tokens: Vec<SignatureTokenDto>,
     /// The producer's captured documentation, as paragraphs.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prose: Vec<String>,
     /// Members grouped by kind.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<MemberGroupDto>,
     /// Labelled relation groups.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relations: Vec<RelationGroupDto>,
     /// The captured source, when there is any.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -409,7 +409,7 @@ pub struct PageDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_fault: Option<FaultDto>,
     /// Faults explaining any section this page could not fill.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<FaultDto>,
 }
 
@@ -730,7 +730,7 @@ pub struct OutlineNodeDto {
     /// The display abbreviation of the node's key.
     pub key: String,
     /// The child nodes.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<OutlineNodeDto>,
 }
 
@@ -790,6 +790,36 @@ impl OutlineDto {
                 sequence: page.sequence,
             }),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PageDto;
+
+    #[test]
+    fn omitted_empty_page_sections_decode_and_remain_omitted() {
+        let value = serde_json::json!({
+            "identity": {
+                "coordinate": "/workspace::Widget",
+                "trail": "Widget",
+                "name": "Widget",
+                "shape": "declaration",
+                "segments": ["Widget"]
+            },
+            "language": "typescript"
+        });
+
+        let page: PageDto = serde_json::from_value(value.clone()).expect("sparse page DTO");
+        assert!(page.tokens.is_empty());
+        assert!(page.prose.is_empty());
+        assert!(page.members.is_empty());
+        assert!(page.relations.is_empty());
+        assert!(page.notes.is_empty());
+        assert_eq!(
+            serde_json::to_value(page).expect("serialized page DTO"),
+            value
+        );
     }
 }
 
