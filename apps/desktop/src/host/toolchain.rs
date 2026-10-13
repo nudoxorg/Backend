@@ -320,7 +320,10 @@ mod tests {
         assert_eq!(desktop.path(LocalHostVariable::NudoxTypeScriptDefaultCompiler), Some(expected_compiler.as_path()));
         assert_eq!(desktop.path(LocalHostVariable::NudoxTypeScriptCompiler), None);
         assert_eq!(desktop.path(LocalHostVariable::NudoxTypeScriptDefaultNode), Some(expected_node.as_path()));
-        assert!(desktop.path(LocalHostVariable::NudoxTypeScriptModuleRoot).is_some());
+        assert!(desktop.path(LocalHostVariable::NudoxTypeScriptDefaultModuleRoot).is_some(),
+            "the actual installed SDK must retain its captured default module root");
+        assert_eq!(desktop.path(LocalHostVariable::NudoxTypeScriptModuleRoot), None,
+            "an installed global module root cannot become an explicit project SDK override");
         let restarted = prepared_by_the_process().expect("repeat actual desktop composition");
         assert_eq!(desktop, restarted, "unchanged launch inputs yield the same closed owner paths");
         println!("actual-default-host-snapshot={}", desktop.encode().expect("closed snapshot receipt"));
