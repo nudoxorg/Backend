@@ -140,6 +140,15 @@ impl std::error::Error for LocalSubscriptionExchangeError {
 }
 
 #[cfg(any(unix, windows))]
+impl LocalSubscriptionExchangeError {
+    /// Projects the established client error surface after typed classification.
+    #[must_use]
+    pub fn into_client_error(self) -> ClientError {
+        subscription_exchange_error(self)
+    }
+}
+
+#[cfg(any(unix, windows))]
 fn control_limits() -> LocalControlLimits {
     LocalControlLimits {
         max_frame: MAX_FRAME,
@@ -392,16 +401,33 @@ impl LocalSubscriptionTransport {
     /// Returns an error when the local peer is unauthenticated or any page,
     /// continuation, descriptor, or final root commitment fails admission.
     pub fn bootstrap_root(&mut self) -> Result<(ViewRoot, Cursor), ClientError> {
+        self.bootstrap_root_with_exchange_error()
+            .map_err(subscription_exchange_error)
+    }
+
+    /// Hydrates and releases the exact bootstrap lease, retaining typed raw
+    /// lease-release failures so callers can distinguish transport loss from an
+    /// invalid proof or acknowledgement. A complete root is never returned
+    /// without the exact release acknowledgement.
+    /// # Errors
+    /// Returns the original admission failure or the typed lease-release failure.
+    pub fn bootstrap_root_with_exchange_error(
+        &mut self,
+    ) -> Result<(ViewRoot, Cursor), LocalSubscriptionExchangeError> {
         let previous = Cursor::new();
-        let mut hydration = ResetHydration::begin(previous, self.now())?;
-        let response = self.lease_request_until(
-            LocalSubscriptionOperation::Open {
-                cursor: Box::new([]),
-                credit: PUBLICATION_CREDIT,
-                lease_ms: BOOTSTRAP_LEASE.get(),
-            },
-            hydration.budget().deadline(),
-        )?;
+        let mut hydration = ResetHydration::begin(previous, self.now())
+            .map_err(ClientError::from)
+            .map_err(LocalSubscriptionExchangeError::Invalid)?;
+        let response = self
+            .lease_request_until(
+                LocalSubscriptionOperation::Open {
+                    cursor: Box::new([]),
+                    credit: PUBLICATION_CREDIT,
+                    lease_ms: BOOTSTRAP_LEASE.get(),
+                },
+                hydration.budget().deadline(),
+            )
+            .map_err(LocalSubscriptionExchangeError::Invalid)?;
         let lease = response.lease();
         let mut cleanup_on = self.connection();
         let root = self.bootstrap_pages(response, lease, &mut hydration, &mut cleanup_on);
@@ -410,7 +436,7 @@ impl LocalSubscriptionTransport {
         match root {
             Err(error) => {
                 let _ = cleanup;
-                Err(error)
+                Err(LocalSubscriptionExchangeError::Invalid(error))
             }
             Ok(root) => match cleanup? {
                 BootstrapRelease::Reusable | BootstrapRelease::RetiredAfterAcknowledgement => {
@@ -512,16 +538,18 @@ impl LocalSubscriptionTransport {
         lease: LocalSubscriptionId,
         cleanup_on: ConnectionId,
         timeout: Duration,
-    ) -> Result<BootstrapRelease, ClientError> {
+    ) -> Result<BootstrapRelease, LocalSubscriptionExchangeError> {
         if self.connection != cleanup_on {
-            return Err(ClientError::Protocol(
-                "bootstrap lease cleanup socket is no longer current".to_owned(),
+            return Err(LocalSubscriptionExchangeError::Invalid(
+                ClientError::Protocol(
+                    "bootstrap lease cleanup socket is no longer current".to_owned(),
+                ),
             ));
         }
         if self.lifecycle == Lifecycle::Released {
-            return Err(ClientError::Io(
+            return Err(LocalSubscriptionExchangeError::Setup(ClientError::Io(
                 "transport already released by a terminal lease cancellation".to_owned(),
-            ));
+            )));
         }
         let request_id = self.next_request_id;
         let Some(next_request_id) = request_id.checked_add(1) else {
@@ -529,8 +557,8 @@ impl LocalSubscriptionTransport {
             // the exact last-correlated socket and let the finite bootstrap
             // term expire at the owner; never leave this stream reusable.
             self.retire_connection();
-            return Err(ClientError::Protocol(
-                "subscription request id exhausted".to_owned(),
+            return Err(LocalSubscriptionExchangeError::Invalid(
+                ClientError::Protocol("subscription request id exhausted".to_owned()),
             ));
         };
         self.next_request_id = next_request_id;
@@ -545,7 +573,9 @@ impl LocalSubscriptionTransport {
             .and_then(|()| self.client.stream().set_write_timeout(Some(timeout)));
         if let Err(error) = configured {
             self.retire_connection();
-            return Err(ClientError::Io(error.to_string()));
+            return Err(LocalSubscriptionExchangeError::Setup(ClientError::Io(
+                error.to_string(),
+            )));
         }
         let result = match self
             .client
@@ -553,8 +583,10 @@ impl LocalSubscriptionTransport {
         {
             Ok(mut exchange) => exchange
                 .wait_with(|_| LocalControlExchangeDecision::Continue)
-                .map_err(|error| ClientError::Protocol(error.to_string())),
-            Err(error) => Err(map_control_error(error)),
+                .map_err(LocalSubscriptionExchangeError::Exchange),
+            Err(error) => Err(LocalSubscriptionExchangeError::Setup(map_control_error(
+                error,
+            ))),
         };
         let acknowledged = match &result {
             Ok(LocalControlResponse::Subscription(LocalSubscriptionResponse::Cancelled {
@@ -567,9 +599,9 @@ impl LocalSubscriptionTransport {
             self.retire_connection();
             return Err(match result {
                 Err(error) => error,
-                Ok(_) => ClientError::Protocol(
+                Ok(_) => LocalSubscriptionExchangeError::Invalid(ClientError::Protocol(
                     "bootstrap lease cancellation was not acknowledged".to_owned(),
-                ),
+                )),
             });
         }
         self.frames_on_connection = self.frames_on_connection.saturating_add(1);
@@ -1221,11 +1253,12 @@ mod bootstrap_exhaustion_tests {
             )
             .expect("send complete correlated response");
         });
-        assert!(
-            transport
-                .release_bootstrap_lease_current(lease, connection, Duration::from_millis(50))
-                .is_err()
-        );
+        assert!(matches!(
+            transport.release_bootstrap_lease_current(lease, connection, Duration::from_millis(50)),
+            Err(LocalSubscriptionExchangeError::Invalid(
+                ClientError::Protocol(_)
+            ))
+        ));
         assert!(transport.interrupt.is_none());
         assert!(transport.prepare_request().is_err());
         worker.join().expect("bounded release owner");

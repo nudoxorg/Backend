@@ -31,6 +31,24 @@ pub struct LocalEngineClient {
     gate: Option<super::owner::OwnerGate>,
 }
 
+// A lease-release transport failure requires a fresh authenticated stream;
+// malformed proofs and acknowledgements must never be retried as connectivity.
+fn bootstrap_transport_break(error: &backend_client::LocalSubscriptionExchangeError) -> bool {
+    use backend_client::LocalSubscriptionExchangeError;
+    use backend_replication::LocalControlExchangeFailure;
+    match error {
+        LocalSubscriptionExchangeError::Setup(error)
+        | LocalSubscriptionExchangeError::Invalid(error) => transport_break(error),
+        LocalSubscriptionExchangeError::Exchange(error) => matches!(
+            error.failure,
+            LocalControlExchangeFailure::Stalled
+                | LocalControlExchangeFailure::Closed
+                | LocalControlExchangeFailure::Io(_)
+        ),
+        LocalSubscriptionExchangeError::Rejected { .. } => false,
+    }
+}
+
 impl LocalEngineClient {
     fn current_cancel(&self) -> Result<CancellationToken, EngineFault> {
         self.active_cancel.clone().ok_or_else(|| EngineFault::Failed(
@@ -97,6 +115,33 @@ impl LocalEngineClient {
         fault(error)
     }
 
+    fn bootstrap_fault(
+        &self,
+        error: backend_client::LocalSubscriptionExchangeError,
+    ) -> EngineFault {
+        if self
+            .active_cancel
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            return EngineFault::Cancelled;
+        }
+        if let backend_client::LocalSubscriptionExchangeError::Exchange(exchange) = &error {
+            if exchange.failure == backend_replication::LocalControlExchangeFailure::Cancelled {
+                return EngineFault::Cancelled;
+            }
+            if bootstrap_transport_break(&error) {
+                // A failed release does not prove the owner died. Preserve the
+                // exact exchange diagnostic after the one bounded retry.
+                return EngineFault::Failed(crate::core::ErrorValue::new(
+                    FaultCode::Transport,
+                    error.to_string(),
+                ));
+            }
+        }
+        self.client_fault(error.into_client_error())
+    }
+
     fn bootstrap_root(
         &mut self,
         use_publication: bool,
@@ -135,7 +180,7 @@ impl LocalEngineClient {
             if cancel.is_cancelled() {
                 return Err(EngineFault::Cancelled);
             }
-            subscription.bootstrap_root()
+            subscription.bootstrap_root_with_exchange_error()
         };
         if cancel.is_cancelled() {
             self.subscription = None;
@@ -143,7 +188,7 @@ impl LocalEngineClient {
         }
         let admitted = match result {
             Ok(root) => Ok(root),
-            Err(error) if transport_break(&error) => {
+            Err(error) if bootstrap_transport_break(&error) => {
                 self.subscription = None;
                 if self
                     .active_cancel
@@ -158,15 +203,15 @@ impl LocalEngineClient {
                     if cancel.is_cancelled() {
                         return Err(EngineFault::Cancelled);
                     }
-                    subscription.bootstrap_root()
+                    subscription.bootstrap_root_with_exchange_error()
                 };
                 if cancel.is_cancelled() {
                     self.subscription = None;
                     return Err(EngineFault::Cancelled);
                 }
-                retry.map_err(|error| self.client_fault(error))
+                retry.map_err(|error| self.bootstrap_fault(error))
             }
-            Err(error) => Err(self.client_fault(error)),
+            Err(error) => Err(self.bootstrap_fault(error)),
         }?;
         let (view, cursor) = admitted;
         if self.subscription.as_ref().is_some_and(|transport| {
@@ -718,6 +763,82 @@ fn owner_fault(fault: OwnerFault) -> EngineFault {
 mod tests {
     use super::*;
     use crate::navigation::RequestId;
+
+    #[test]
+    fn bootstrap_retry_preserves_transport_cause_and_never_retries_invalid_or_cancelled_frames() {
+        use backend_client::LocalSubscriptionExchangeError;
+        use backend_replication::{
+            LocalControlError, LocalControlExchangeError, LocalControlExchangeFailure,
+            LocalControlExchangePhase, LocalControlExchangeProgress,
+        };
+        let project = LocalProjectId::new("bootstrap-policy").expect("project");
+        let mut client = LocalEngineClient::new("unopened-bootstrap-policy", project);
+        let cancel = CancellationToken::new();
+        client.active_cancel = Some(cancel.clone());
+        for (failure, retry) in [
+            (LocalControlExchangeFailure::Stalled, true),
+            (LocalControlExchangeFailure::Closed, true),
+            (
+                LocalControlExchangeFailure::Io(std::io::ErrorKind::ConnectionReset),
+                true,
+            ),
+            (LocalControlExchangeFailure::Cancelled, false),
+            (
+                LocalControlExchangeFailure::Protocol(LocalControlError::Invalid("wrong lease")),
+                false,
+            ),
+        ] {
+            let error = LocalSubscriptionExchangeError::Exchange(LocalControlExchangeError {
+                failure,
+                progress: LocalControlExchangeProgress {
+                    request_id: 2,
+                    phase: LocalControlExchangePhase::ReadingHeader,
+                    write_offset: 30,
+                    header_offset: 0,
+                    body_len: None,
+                    body_offset: 0,
+                    deadline: std::time::Instant::now(),
+                    elapsed: Duration::from_millis(50),
+                },
+            });
+            assert_eq!(bootstrap_transport_break(&error), retry);
+            let diagnostic = error.to_string();
+            let fault = client.bootstrap_fault(error);
+            match (failure, fault) {
+                (LocalControlExchangeFailure::Cancelled, EngineFault::Cancelled) => {}
+                (_, EngineFault::Failed(value)) => {
+                    assert_eq!(
+                        value.code(),
+                        if retry {
+                            FaultCode::Transport
+                        } else {
+                            FaultCode::Protocol
+                        }
+                    );
+                    assert_eq!(value.message(), diagnostic);
+                }
+                other => panic!("unexpected bootstrap fault: {other:?}"),
+            }
+        }
+        for error in [
+            LocalSubscriptionExchangeError::Invalid(ClientError::Protocol(
+                "wrong release acknowledgement".into(),
+            )),
+            LocalSubscriptionExchangeError::Rejected {
+                request_id: 2,
+                message: "unknown lease".into(),
+            },
+        ] {
+            assert!(!bootstrap_transport_break(&error));
+            cancel.cancel();
+            assert!(
+                matches!(client.bootstrap_fault(error), EngineFault::Cancelled),
+                "original cancellation wins over every terminal release outcome"
+            );
+        }
+        assert!(client.subscription.is_none());
+        assert!(client.session.is_none());
+    }
 
     #[cfg(unix)]
     #[test]
