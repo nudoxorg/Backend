@@ -213,7 +213,9 @@ mod bounded_child {
             .map_err(|_| "explicit script configuration")?;
         // This falsifier tests the bounded script child, not a preliminary
         // real-Go environment probe through the compatibility override.
-        let result = oracle.with_configuration(configuration).run(&root)
+        let result = oracle
+            .with_configuration(configuration)
+            .run(&root)
             .expect_err("script must fail");
         std::fs::remove_dir_all(root).map_err(|_| "cleanup")?;
         Ok(result)
@@ -376,8 +378,16 @@ fn end_to_end_fixture_preserves_package_and_tagged_declarations()
     );
     // Build constraints describe excluded files; linux.go is active on
     // Linux, while darwin.go is excluded there (and vice versa on macOS).
-    let excluded = if cfg!(target_os = "linux") { "darwin.go" } else { "linux.go" };
-    assert!(demo.build_constraints.iter().any(|constraint| constraint.file.ends_with(excluded)));
+    let excluded = if cfg!(target_os = "linux") {
+        "darwin.go"
+    } else {
+        "linux.go"
+    };
+    assert!(
+        demo.build_constraints
+            .iter()
+            .any(|constraint| constraint.file.ends_with(excluded))
+    );
     Ok(())
 }
 
@@ -385,8 +395,8 @@ fn end_to_end_fixture_preserves_package_and_tagged_declarations()
 /// authority image; instantiated function values and indexed containers keep
 /// Read rows. Requires an explicitly admitted Go toolchain.
 #[test]
-fn generic_call_authority_image_distinguishes_calls_from_values(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn generic_call_authority_image_distinguishes_calls_from_values()
+-> Result<(), Box<dyn std::error::Error>> {
     use backend_frontend_go::legacy::{ReferenceTargetClass as Class, ReferenceUseKind as Kind};
     let _guard = ENVIRONMENT
         .get_or_init(|| std::sync::Mutex::new(()))
@@ -404,21 +414,98 @@ fn generic_call_authority_image_distinguishes_calls_from_values(
         .collect::<Result<Vec<_>, _>>()
         .map_err(image_fault)?;
     for (owner, target, class, kind, package, count) in [
-        ("ExplicitSingle", "One", Class::Func, Kind::Call, "example.com/genericcalls/exports", 1),
-        ("ExplicitMultiple", "Two", Class::Func, Kind::Call, "example.com/genericcalls/exports", 1),
-        ("Inferred", "One", Class::Func, Kind::Call, "example.com/genericcalls/exports", 1),
-        ("Parenthesized", "One", Class::Func, Kind::Call, "example.com/genericcalls/exports", 1),
-        ("MultipleParentheses", "Two", Class::Func, Kind::Call, "example.com/genericcalls/exports", 1),
-        ("PlainParentheses", "One", Class::Func, Kind::Call, "example.com/genericcalls/exports", 1),
+        (
+            "ExplicitSingle",
+            "One",
+            Class::Func,
+            Kind::Call,
+            "example.com/genericcalls/exports",
+            1,
+        ),
+        (
+            "ExplicitMultiple",
+            "Two",
+            Class::Func,
+            Kind::Call,
+            "example.com/genericcalls/exports",
+            1,
+        ),
+        (
+            "Inferred",
+            "One",
+            Class::Func,
+            Kind::Call,
+            "example.com/genericcalls/exports",
+            1,
+        ),
+        (
+            "Parenthesized",
+            "One",
+            Class::Func,
+            Kind::Call,
+            "example.com/genericcalls/exports",
+            1,
+        ),
+        (
+            "MultipleParentheses",
+            "Two",
+            Class::Func,
+            Kind::Call,
+            "example.com/genericcalls/exports",
+            1,
+        ),
+        (
+            "PlainParentheses",
+            "One",
+            Class::Func,
+            Kind::Call,
+            "example.com/genericcalls/exports",
+            1,
+        ),
         ("LocalExplicit", "LocalOne", Class::Func, Kind::Call, "", 1),
-        ("DotSingle", "One", Class::Func, Kind::Call, "example.com/genericcalls/exports", 1),
-        ("DotMultiple", "Two", Class::Func, Kind::Call, "example.com/genericcalls/exports", 1),
-        ("InstantiatedValue", "One", Class::Func, Kind::Read, "example.com/genericcalls/exports", 1),
+        (
+            "DotSingle",
+            "One",
+            Class::Func,
+            Kind::Call,
+            "example.com/genericcalls/exports",
+            1,
+        ),
+        (
+            "DotMultiple",
+            "Two",
+            Class::Func,
+            Kind::Call,
+            "example.com/genericcalls/exports",
+            1,
+        ),
+        (
+            "InstantiatedValue",
+            "One",
+            Class::Func,
+            Kind::Read,
+            "example.com/genericcalls/exports",
+            1,
+        ),
         ("LocalValue", "LocalOne", Class::Func, Kind::Read, "", 1),
         ("Indexed", "Callbacks", Class::Var, Kind::Read, "", 2),
         ("FieldIndexed", "Callbacks", Class::Field, Kind::Read, "", 1),
-        ("FieldIndexed", "GlobalRegistry", Class::Var, Kind::Read, "", 1),
-        ("TypeConversion", "LocalNamed", Class::Type, Kind::TypeRef, "", 1),
+        (
+            "FieldIndexed",
+            "GlobalRegistry",
+            Class::Var,
+            Kind::Read,
+            "",
+            1,
+        ),
+        (
+            "TypeConversion",
+            "LocalNamed",
+            Class::Type,
+            Kind::TypeRef,
+            "",
+            1,
+        ),
     ] {
         let mut found = 0;
         for row in &rows {
@@ -440,7 +527,10 @@ fn generic_call_authority_image_distinguishes_calls_from_values(
                 "{owner} -> {target} name token"
             );
         }
-        assert_eq!(found, count, "{owner} -> {target} must retain all occurrences");
+        assert_eq!(
+            found, count,
+            "{owner} -> {target} must retain all occurrences"
+        );
     }
     Ok(())
 }
@@ -771,8 +861,8 @@ fn json_signature_facts(output: &backend_frontend_go::legacy::oracle::Output) ->
 /// name-token span, while lexical locals and universe objects stay excluded.
 /// Requires an explicitly admitted Go toolchain.
 #[test]
-fn foreign_package_scope_references_keep_identity_and_source_span(
-) -> Result<(), Box<dyn std::error::Error>> {
+fn foreign_package_scope_references_keep_identity_and_source_span()
+-> Result<(), Box<dyn std::error::Error>> {
     use backend_frontend_go::legacy::{ReferenceTargetClass as Class, ReferenceUseKind as Kind};
     let _guard = ENVIRONMENT
         .get_or_init(|| std::sync::Mutex::new(()))
@@ -821,13 +911,21 @@ fn foreign_package_scope_references_keep_identity_and_source_span(
                 *row_owner == owner.as_bytes() && row.target == target.as_bytes()
             })
             .collect();
-        assert_eq!(found.len(), 1, "{owner} -> {target} must appear exactly once");
+        assert_eq!(
+            found.len(),
+            1,
+            "{owner} -> {target} must appear exactly once"
+        );
         let (_, row) = found[0];
         assert_eq!(row.target_package, b"example.com/foreignscope/exports");
         assert_eq!((row.target_class, row.use_kind), (class, kind));
         assert_eq!(
             row.recv_type,
-            if class == Class::Method { b"External".as_slice() } else { b"" }
+            if class == Class::Method {
+                b"External".as_slice()
+            } else {
+                b""
+            }
         );
         let file = fs::read(std::path::Path::new(std::str::from_utf8(row.file)?))?;
         let span = usize::try_from(row.span.0)?..usize::try_from(row.span.1)?;
@@ -846,11 +944,14 @@ fn foreign_package_scope_references_keep_identity_and_source_span(
                 b"LocalGeneric",
                 b"UsesError",
                 b"UsesIota",
-            ].contains(owner),
+            ]
+            .contains(owner),
             "local/universe object became a package reference: {owner:?} -> {row:?}"
         );
         if *owner == b"Local" {
-            assert!(![b"Shadow".as_slice(), b"ShadowLimit", b"value", b"len"].contains(&row.target));
+            assert!(
+                ![b"Shadow".as_slice(), b"ShadowLimit", b"value", b"len"].contains(&row.target)
+            );
         }
     }
     for (target, class) in [
@@ -860,8 +961,10 @@ fn foreign_package_scope_references_keep_identity_and_source_span(
     ] {
         assert!(
             rows.iter().any(|(owner, row)| {
-                *owner == b"Local" && row.target == target.as_bytes()
-                    && row.target_package.is_empty() && row.target_class == class
+                *owner == b"Local"
+                    && row.target == target.as_bytes()
+                    && row.target_package.is_empty()
+                    && row.target_class == class
             }),
             "same-package target {target} must remain admitted"
         );
@@ -911,8 +1014,12 @@ fn authority_image_round_trips_the_full_output() -> Result<(), Box<dyn std::erro
     // module transcript still proves both packages were actually loaded.
     assert_eq!(output.packages.len(), 2);
     let selected = image.package(0).map_err(image_fault)?.import_path;
-    output.packages = output.packages.into_vec().into_iter()
-        .filter(|package| package.import_path.as_bytes() == selected).collect();
+    output.packages = output
+        .packages
+        .into_vec()
+        .into_iter()
+        .filter(|package| package.import_path.as_bytes() == selected)
+        .collect();
     assert_eq!(output.packages.len(), 1);
 
     // Package rows: identity and files. The image's declarations follow the
@@ -1185,13 +1292,17 @@ func main() {
     // The sibling remains compiler import context, not a second selected
     // package serialized into this source-bound authority image.
     assert_eq!(output.packages.len(), 2);
-    assert!(output.packages.iter().any(|package| package.import_path == "example.com/params/api"));
+    assert!(
+        output
+            .packages
+            .iter()
+            .any(|package| package.import_path == "example.com/params/api")
+    );
     assert_eq!(image.package_count(), 1);
     assert_eq!(
         image.package(0).map_err(image_fault)?.import_path,
         b"example.com/params".as_slice()
     );
-
 
     // Greet's func row carries [name, greeting] then two unnamed results;
     // Sum's final variadic parameter is named vals; Unnamed's parameters
