@@ -7,6 +7,79 @@ use backend_frontend_typescript::{
     TszProjectProgramCheckError, TszProjectQuerySessionError, TszSourceError,
 };
 use backend_library::interface::TypeScriptAuthorityFailureKind as F;
+use backend_library::interface::{
+    TypeScriptCompilerAdmissionCause as C, TypeScriptCompilerAdmissionDetail,
+    TypeScriptCompilerApiExport, TypeScriptCompilerPackageRole as R, TypeScriptCompilerVersion,
+};
+
+pub(super) fn admission_detail(
+    error: &PackageAuthorityError,
+) -> Option<TypeScriptCompilerAdmissionDetail> {
+    let PackageAuthorityError::TypeScriptProjectHost(error) = error else {
+        return None;
+    };
+    let (error, role, version) = match error {
+        TypeScriptProjectHostError::CompilerPackageAdmission {
+            source,
+            role,
+            package_version,
+        } => (
+            source.as_ref(),
+            *role,
+            TypeScriptCompilerVersion::new(package_version),
+        ),
+        TypeScriptProjectHostError::CompilerApiEntryMissing {
+            package_version, ..
+        }
+        | TypeScriptProjectHostError::CompilerApiExportMissing {
+            package_version, ..
+        } => (
+            error,
+            R::SelectedCompiler,
+            Some(TypeScriptCompilerVersion::new(package_version)?),
+        ),
+        _ => (error, R::Unspecified, None),
+    };
+    let detail = TypeScriptCompilerAdmissionDetail {
+        schema_version: 1,
+        role,
+        version,
+        cause: match error {
+            TypeScriptProjectHostError::ModuleFileLimit {
+                observed, maximum, ..
+            } => C::RuntimeFiles {
+                observed: u64::try_from(*observed).ok()?,
+                maximum: u64::try_from(*maximum).ok()?,
+            },
+            TypeScriptProjectHostError::ModuleEntryLimit {
+                observed, maximum, ..
+            } => C::FilesystemEntries {
+                observed: u64::try_from(*observed).ok()?,
+                maximum: u64::try_from(*maximum).ok()?,
+            },
+            TypeScriptProjectHostError::ModuleDirectoryDepth {
+                observed, maximum, ..
+            } => C::DirectoryDepth {
+                observed: u64::try_from(*observed).ok()?,
+                maximum: u64::try_from(*maximum).ok()?,
+            },
+            TypeScriptProjectHostError::FileTooLarge {
+                observed, maximum, ..
+            } if role != R::Unspecified => C::InputBytes {
+                observed: *observed,
+                maximum: *maximum,
+            },
+            TypeScriptProjectHostError::CompilerApiEntryMissing { .. } => C::MissingApiEntry,
+            TypeScriptProjectHostError::CompilerApiExportMissing { export, .. } => {
+                C::MissingApiExport {
+                    export: TypeScriptCompilerApiExport::from_name(export)?,
+                }
+            }
+            _ => return None,
+        },
+    };
+    (detail.is_valid() && detail.failure_kind() == host_failure(error)).then_some(detail)
+}
 
 pub(super) fn failure_kind(error: &PackageAuthorityError) -> Option<F> {
     match error {
@@ -45,6 +118,7 @@ fn checker_failure(error: &CheckerError) -> F {
 
 fn host_failure(error: &TypeScriptProjectHostError) -> F {
     match error {
+        TypeScriptProjectHostError::CompilerPackageAdmission { source, .. } => host_failure(source),
         TypeScriptProjectHostError::BundledSdkAdmission { .. } => F::HostToolchainResolution,
         TypeScriptProjectHostError::ToolchainResolution { .. } => F::HostToolchainResolution,
         TypeScriptProjectHostError::RelativePackageRoot { .. } => F::HostRelativePackageRoot,
@@ -187,7 +261,9 @@ fn native_failure(error: &TszAuthorityError) -> F {
             TszProjectQuerySessionError::MissingProjectModuleResolutions => {
                 F::NativeSessionMissingProjectModuleResolutions
             }
-            TszProjectQuerySessionError::ExecutionCheckpointMismatch => F::NativeSessionExecutionCheckpointMismatch,
+            TszProjectQuerySessionError::ExecutionCheckpointMismatch => {
+                F::NativeSessionExecutionCheckpointMismatch
+            }
             TszProjectQuerySessionError::FileIndexOutOfRange { .. } => {
                 F::NativeSessionFileIndexOutOfRange
             }

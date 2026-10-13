@@ -1572,6 +1572,7 @@ impl TypeScriptProjectWitness {
             node,
             module_root,
             package_root,
+            &discovered.version,
             workspace,
             None,
         )
@@ -1585,6 +1586,7 @@ impl TypeScriptProjectWitness {
         node: &Path,
         module_root: &Path,
         package_root: &Path,
+        selected_package_version: &str,
         workspace: Option<&WorkspaceBoundary>,
         admitted_node_snapshot: Option<&FileSnapshot>,
     ) -> Result<Self, TypeScriptProjectHostError> {
@@ -1622,7 +1624,13 @@ impl TypeScriptProjectWitness {
             None => capture_file_snapshot(node, MAX_NODE_EXECUTABLE_BYTES)?,
         };
         files.push(node_snapshot);
-        let typescript_files = collect_module_inputs(&package_root)?;
+        let typescript_files = collect_module_inputs(&package_root).map_err(|error| {
+            compiler_package_admission_error(
+                error,
+                selected_package_version,
+                backend_library::interface::TypeScriptCompilerPackageRole::SelectedCompiler,
+            )
+        })?;
         files.extend(
             typescript_files
                 .iter()
@@ -1636,7 +1644,10 @@ impl TypeScriptProjectWitness {
         // selected compiler's inputs or expanding its source capability.
         if discovered_package_root != package_root {
             files.extend(
-                collect_module_inputs(&discovered_package_root)?
+                collect_module_inputs(&discovered_package_root).map_err(|error| {
+                    compiler_package_admission_error(error, &discovered.version,
+                        backend_library::interface::TypeScriptCompilerPackageRole::DiscoveredProjectPackage)
+                })?
                     .iter()
                     .map(snapshot_from_input),
             );
@@ -2758,6 +2769,28 @@ fn collect_module_inputs(
         });
     }
     Ok(output)
+}
+
+fn compiler_package_admission_error(
+    error: TypeScriptProjectHostError,
+    package_version: &str,
+    role: backend_library::interface::TypeScriptCompilerPackageRole,
+) -> TypeScriptProjectHostError {
+    if matches!(
+        error,
+        TypeScriptProjectHostError::ModuleFileLimit { .. }
+            | TypeScriptProjectHostError::ModuleEntryLimit { .. }
+            | TypeScriptProjectHostError::ModuleDirectoryDepth { .. }
+            | TypeScriptProjectHostError::FileTooLarge { .. }
+    ) {
+        TypeScriptProjectHostError::CompilerPackageAdmission {
+            package_version: package_version.into(),
+            role,
+            source: Box::new(error),
+        }
+    } else {
+        error
+    }
 }
 
 fn collect_project_configs(
@@ -3954,6 +3987,7 @@ impl TypeScriptProjectHost {
             &node,
             &module_root,
             &package_root,
+            &expected_version,
             project.workspace.as_ref(),
             Some(&node_identity.snapshot),
         )?;
@@ -4723,6 +4757,13 @@ fn bundle_admission_error(
 #[derive(Debug, Error)]
 #[allow(missing_docs)]
 pub enum TypeScriptProjectHostError {
+    #[error("TypeScript compiler package version {package_version} admission refused: {source}")]
+    CompilerPackageAdmission {
+        package_version: Box<str>,
+        role: backend_library::interface::TypeScriptCompilerPackageRole,
+        #[source]
+        source: Box<TypeScriptProjectHostError>,
+    },
     #[error("selected bundled TypeScript resource refused at {path:?}: {message}")]
     BundledSdkAdmission { path: Box<Path>, message: Box<str> },
     #[error("admitted TypeScript executable could not be bound to its version identity")]

@@ -524,3 +524,81 @@ fn native_typescript_program_refusal_retains_request_source_without_naming_a_hot
         assert_eq!(serde_json::from_value::<FaultDto>(value).unwrap(), FaultDto::new(&fault));
     }
 }
+
+#[test]
+fn installed_typescript_admission_uses_shared_bounded_facts_and_actionable_words() {
+    use backend_library::interface::{
+        AuthorityDiagnosticClass, AuthorityPhase, CompilerDiagnostic,
+        TypeScriptCompilerAdmissionCause as C, TypeScriptCompilerAdmissionDetail as D,
+        TypeScriptCompilerApiExport as E, TypeScriptCompilerPackageRole as R,
+        TypeScriptCompilerVersion as V,
+    };
+    for cause in [
+        C::RuntimeFiles {
+            observed: 257,
+            maximum: 256,
+        },
+        C::FilesystemEntries {
+            observed: 4097,
+            maximum: 4096,
+        },
+        C::DirectoryDepth {
+            observed: 9,
+            maximum: 8,
+        },
+        C::InputBytes {
+            observed: 100,
+            maximum: 99,
+        },
+        C::MissingApiEntry,
+        C::MissingApiExport {
+            export: E::GetModeForUsageLocation,
+        },
+    ] {
+        let detail = D {
+            schema_version: 1,
+            role: R::SelectedCompiler,
+            version: V::new("7.0.2"),
+            cause,
+        };
+        let failure = PackageCompilerFailure::from_package_terminal(
+            "main.ts",
+            &CompilerTerminal::AuthorityAdmission {
+                source: source(),
+                language: Language::TypeScript,
+                stage: Stage::LowerIr,
+                phase: AuthorityPhase::Resolve,
+                class: AuthorityDiagnosticClass::Authority,
+                diagnostic: CompilerDiagnostic::from_native(
+                    b"/private/sdk authority.secret RAW SOURCE",
+                    40,
+                    false,
+                )
+                .map(|diagnostic| diagnostic.with_typescript_admission(detail.clone())),
+            },
+        )
+        .unwrap()
+        .unwrap();
+        let fault = compiler_fault(&failure);
+        let rendered = fault.render(None);
+        assert!(rendered.contains("TypeScript compiler package (requested from main.ts)"));
+        assert!(rendered.contains(failure.kind_tag()));
+        assert!(rendered.contains(&detail.detail()));
+        assert!(rendered.contains("before retrying"));
+        for private in ["/private", "authority.secret", "RAW SOURCE"] {
+            assert!(!rendered.contains(private));
+        }
+        let value = fault_value(&fault);
+        assert_eq!(
+            value["compiler_failure"],
+            serde_json::to_value(&failure).unwrap()
+        );
+        assert!(value.get("compiler_tool_requirement").is_none());
+        let dto = FaultDto::new(&fault);
+        assert_eq!(
+            serde_json::from_value::<FaultDto>(value.clone()).unwrap(),
+            dto
+        );
+        assert!(encode_value(&value, DEFAULT_RESPONSE_BUDGET_BYTES).is_ok());
+    }
+}
