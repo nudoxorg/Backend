@@ -20,12 +20,26 @@ struct InflightRequest {
     rooted: bool,
     /// A connection check may only succeed from its own revision DTO.
     connection_probe: bool,
+    /// Initial-root failure can only withdraw the owner captured at ingress.
+    initial_root_owner: Option<(super::owner::OwnerGate, super::owner::Epoch)>,
+}
+
+/// A definitive failure of the exact current Root request. The receipt keeps
+/// the submitted attachment; reporting never discovers a newer owner.
+#[derive(Clone, Debug)]
+pub struct InitialRootFailure {
+    gate: super::owner::OwnerGate,
+    attachment: super::owner::Epoch,
+    request: RequestId,
+    error: crate::core::ErrorValue,
 }
 
 /// Runtime events observed by the UI entity graph.
 #[derive(Clone, Debug)]
 #[allow(clippy::large_enum_variant)] // short-lived, drained once per wake
 pub enum RuntimeEvent {
+    /// The current actor Root failed before its captured owner certified a root.
+    InitialRootFailed(InitialRootFailure),
     /// A new immutable snapshot was accepted.
     SnapshotChanged(Arc<AppSnapshot>),
     /// A result was rejected because a newer root/request won.
@@ -74,6 +88,9 @@ pub struct DesktopRuntime {
     inflight: BTreeMap<RequestId, InflightRequest>,
     next_request: u64,
     admitted_project: Option<LocalProjectId>,
+    initial_root_gate: Option<super::owner::OwnerGate>,
+    /// Retain the last Root identity through UI event delivery, not its result.
+    current_root_request: Option<RequestId>,
 }
 
 impl std::fmt::Debug for DesktopRuntime {
@@ -100,7 +117,23 @@ impl DesktopRuntime {
             inflight: BTreeMap::new(),
             next_request: 1,
             admitted_project: None,
+            initial_root_gate: None,
+            current_root_request: None,
         }
+    }
+
+    /// Bind the installed host gate before any queued startup intent is sent.
+    /// Each Root captures its own attachment at submission, independently of
+    /// the store watcher (which may still represent an earlier owner).
+    pub(crate) fn observe_initial_root(&mut self, gate: Option<super::owner::OwnerGate>) {
+        self.initial_root_gate = gate;
+    }
+
+    /// A later Root or Stop can retire a receipt after polling but before its
+    /// UI delivery. Never let that old terminal withdraw the current attempt.
+    pub(crate) fn report_initial_root_failure(&self, failure: InitialRootFailure) -> bool {
+        self.current_root_request == Some(failure.request)
+            && failure.gate.initial_root_failed(failure.attachment, failure.request, failure.error)
     }
 
     /// Returns the immutable snapshot shared with views/selectors.
@@ -347,6 +380,9 @@ impl DesktopRuntime {
                 )
             }
         };
+        if matches!(&engine_request, EngineRequest::Root { .. }) {
+            self.current_root_request = Some(request);
+        }
         let lane = engine_request.coalesce_key();
         let mut events = self.retire_lane(request, lane, RequestOutcome::Superseded);
         self.inflight.insert(
@@ -363,6 +399,10 @@ impl DesktopRuntime {
                 observation_owner: observation_owner.clone(),
                 rooted: true,
                 connection_probe: matches!(&engine_request, EngineRequest::ConnectionProbe { .. }),
+                initial_root_owner: if matches!(&engine_request, EngineRequest::Root { .. }) {
+                    self.initial_root_gate.as_ref().and_then(|gate|
+                        gate.ready_epoch().map(|attachment| (gate.clone(), attachment)))
+                } else { None },
             },
         );
         let submitted = match observation_owner {
@@ -431,6 +471,7 @@ impl DesktopRuntime {
                 observation_owner: None,
                 rooted: false,
                 connection_probe: false,
+                initial_root_owner: None,
             },
         );
         match self.actor.try_submit_local(read) {
@@ -478,6 +519,7 @@ impl DesktopRuntime {
     }
 
     fn cancel_all(&mut self) -> Vec<RuntimeEvent> {
+        self.current_root_request = None;
         let inflight = std::mem::take(&mut self.inflight);
         let mut events = Vec::new();
         for (id, request) in inflight {
@@ -552,6 +594,18 @@ impl DesktopRuntime {
                     outcome: RequestOutcome::Failed(FaultCode::Protocol),
                 });
                 continue;
+            }
+            // Only an admitted, still-current Root actor failure carries this
+            // signal. Mapping failures, cancellation, supersession, and reads
+            // of other lanes cannot declare initial root observation failed.
+            if !inflight.cancel.is_cancelled() {
+                if let (Some((gate, attachment)), Err(super::actor::EngineFault::Failed(error))) =
+                    (&inflight.initial_root_owner, &event.result)
+                {
+                    events.push(RuntimeEvent::InitialRootFailed(InitialRootFailure {
+                        gate: gate.clone(), attachment: *attachment, request, error: error.clone(),
+                    }));
+                }
             }
             let actor_outcome = match &event.result {
                 Err(
@@ -722,6 +776,7 @@ impl DesktopRuntime {
         outcome: RequestOutcome,
     ) -> Option<RuntimeEvent> {
         let inflight = self.inflight.remove(&request)?;
+        if self.current_root_request == Some(request) { self.current_root_request = None; }
         inflight.cancel.cancel();
         Some(RuntimeEvent::RequestCompleted { request, outcome })
     }
