@@ -747,6 +747,15 @@ func usesIn(pkg *packages.Package, owner types.Object, ownerRecv string, ownerSp
 	return refs
 }
 
+// packageScopedObject admits a declaration from its defining package scope.
+func packageScopedObject(obj types.Object) bool {
+	// Imported objects belong to their defining package's scope, not the
+	// caller's. Universe objects have no package; locals and type parameters
+	// belong to nested scopes and still have no package-scoped target identity.
+	declaring := obj.Pkg()
+	return declaring != nil && obj.Parent() == declaring.Scope()
+}
+
 // classifyUse resolves one identifier through the Uses table and renders
 // its reference row payload: the used object's identity in the
 // reference-target keying (bare name plus foreign package path), the
@@ -773,7 +782,7 @@ func classifyUse(pkg *packages.Package, owner types.Object, ident *ast.Ident, ca
 		// A use of a named type (or alias) is a type use. Type parameters
 		// and function-local types declare in no package scope and are
 		// excluded by the parent check.
-		if obj.Parent() != pkg.Types.Scope() {
+		if !packageScopedObject(obj) {
 			return nil, false
 		}
 		row.Class = "type"
@@ -813,7 +822,7 @@ func classifyUse(pkg *packages.Package, owner types.Object, ident *ast.Ident, ca
 			// A field selected through a value: `x.f`, `x.f = v`, `x.f()`.
 			row.Class = "field"
 			row.Recv = typeReceiverName(selection.Recv())
-		} else if obj.Parent() == pkg.Types.Scope() {
+		} else if packageScopedObject(obj) {
 			// A package-level variable.
 			row.Class = "var"
 		} else if obj.Parent() == nil {
@@ -840,7 +849,7 @@ func classifyUse(pkg *packages.Package, owner types.Object, ident *ast.Ident, ca
 		return row, true
 
 	case *types.Const:
-		if obj.Parent() != pkg.Types.Scope() {
+		if !packageScopedObject(obj) {
 			// Local constants (and the universe `iota`) declare in no
 			// package scope.
 			return nil, false
