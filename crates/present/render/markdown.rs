@@ -75,6 +75,9 @@ pub fn answer_with_detail(
 ) -> String {
     match value {
         Answer::Page(value) => page_projection(&PageProjection::new(value, detail)),
+        Answer::Records(_) if !matches!(target, ContinuationTarget::CliOption) => {
+            summary_with_cursor(value, cursor, target)
+        }
         Answer::Records(value) => records_with_cursor(value, None, cursor, target),
         Answer::Product(value) => product_with_detail(value, detail),
         _ => answer(value),
@@ -111,9 +114,7 @@ pub fn summary_with_cursor(
     // Reserve the longest possible count line before adding records. Both
     // shown and omitted are at most `total`, so the final line cannot grow
     // beyond this reservation.
-    let count_reservation = format!(
-        "{total} row(s) on this page; showing {total} exact coordinate(s); {total} omitted from text preview. Full page: `structuredContent.records`."
-    );
+    let count_reservation = record_preview_count(total, total, total);
     let heading_bytes = coverage_line
         .len()
         .saturating_add(1)
@@ -149,9 +150,7 @@ pub fn summary_with_cursor(
         shown += 1;
     }
     let omitted = total.saturating_sub(shown);
-    let count_line = format!(
-        "{total} row(s) on this page; showing {shown} exact coordinate(s); {omitted} omitted from text preview. Full page: `structuredContent.records`."
-    );
+    let count_line = record_preview_count(total, shown, omitted);
 
     let mut preview = String::with_capacity(fixed_bytes.saturating_add(rendered_rows.len()));
     preview.push_str(&coverage_line);
@@ -165,6 +164,139 @@ pub fn summary_with_cursor(
     }
     debug_assert!(preview.len() <= MAX_PREVIEW_TEXT_BYTES);
     preview
+}
+
+/// Shrinks only the shared MCP record-preview dialect, retaining its coverage,
+/// exact whole row operands, corrected counts and continuation instructions.
+/// This is a text projection, never a source of row or cursor authority. Other
+/// text and malformed preview claims return `None` for the caller's fallback.
+/// A budget below the fixed coverage/count/footer size returns that zero-row
+/// minimum intact; the final transport must admit or refuse it, never cut it.
+#[must_use]
+pub fn shorten_record_preview(text: &str, budget: usize) -> Option<String> {
+    let preview = RecordPreviewText::parse(text)?;
+    let reservation = record_preview_count(preview.total, preview.total, preview.total);
+    let fixed = preview
+        .header
+        .len()
+        .checked_add(reservation.len())?
+        .checked_add(1)?
+        .checked_add(preview.footer.len())?;
+    let available = budget.saturating_sub(fixed);
+    let mut row_bytes = 0_usize;
+    let mut shown = 0;
+    for row in &preview.rows {
+        let next = row_bytes.checked_add(row.len())?;
+        if next > available {
+            break;
+        }
+        row_bytes = next;
+        shown += 1;
+    }
+    let mut out = String::with_capacity(fixed.checked_add(row_bytes)?);
+    out.push_str(preview.header);
+    for row in &preview.rows[..shown] {
+        out.push_str(row);
+    }
+    out.push_str(&record_preview_count(
+        preview.total,
+        shown,
+        preview.total - shown,
+    ));
+    out.push('\n');
+    out.push_str(preview.footer);
+    debug_assert!(out.len() <= budget.max(fixed));
+    Some(out)
+}
+
+fn record_preview_count(total: usize, shown: usize, omitted: usize) -> String {
+    format!(
+        "{total} row(s) on this page; showing {shown} exact coordinate(s); {omitted} omitted from text preview. Full page: `structuredContent.records`."
+    )
+}
+
+/// A borrowed, fully validated layout of the renderer's own bounded row text.
+struct RecordPreviewText<'a> {
+    header: &'a str,
+    rows: Vec<&'a str>,
+    total: usize,
+    footer: &'a str,
+}
+
+impl<'a> RecordPreviewText<'a> {
+    fn parse(text: &'a str) -> Option<Self> {
+        let (coverage, mut rest) = text.split_once('\n')?;
+        if !coverage.starts_with('~') || text.len() > MAX_PREVIEW_TEXT_BYTES {
+            return None;
+        }
+        let header = &text[..coverage.len() + 1];
+        let mut rows = Vec::new();
+        while rest.starts_with("• ") {
+            // Work and borrowed row indexes are bounded by the shared preview
+            // bytes; legacy Related may describe more than one query page.
+            let (label, after_label) = rest.split_once('\n')?;
+            let (coordinate, after_row) = after_label.split_once('\n')?;
+            let label_end = preview_code_span_end(label.strip_prefix("• ")?)? + "• ".len();
+            let operand = coordinate.strip_prefix("  ")?;
+            if !label[label_end..].starts_with(" · ")
+                || preview_code_span_end(operand)? != operand.len()
+            {
+                return None;
+            }
+            let consumed = rest.len() - after_row.len();
+            rows.push(&rest[..consumed]);
+            rest = after_row;
+        }
+        let (count, footer) = rest.split_once('\n')?;
+        let (total, count) = count.split_once(" row(s) on this page; showing ")?;
+        let (shown, count) = count.split_once(" exact coordinate(s); ")?;
+        let omitted = count
+            .strip_suffix(" omitted from text preview. Full page: `structuredContent.records`.")?;
+        let total: usize = total.parse().ok()?;
+        let shown: usize = shown.parse().ok()?;
+        let omitted: usize = omitted.parse().ok()?;
+        if shown != rows.len() || shown.checked_add(omitted)? != total {
+            return None;
+        }
+        // The renderer emits either no footer or exactly one continuation line.
+        if !footer.is_empty() {
+            let line = footer.strip_suffix('\n')?;
+            if line.contains('\n')
+                || !(line.starts_with("Continue `") || line.starts_with("… more rows"))
+            {
+                return None;
+            }
+        }
+        Some(Self {
+            header,
+            rows,
+            total,
+            footer,
+        })
+    }
+}
+
+fn preview_code_span_end(span: &str) -> Option<usize> {
+    let delimiter = span.bytes().take_while(|byte| *byte == b'`').count();
+    if delimiter == 0 {
+        return None;
+    }
+    let bytes = span.as_bytes();
+    let mut position = delimiter;
+    while position < bytes.len() {
+        if bytes[position] != b'`' {
+            position += 1;
+            continue;
+        }
+        let start = position;
+        while bytes.get(position) == Some(&b'`') {
+            position += 1;
+        }
+        if position - start == delimiter {
+            return Some(position);
+        }
+    }
+    None
 }
 
 fn summary_continuation(
