@@ -51,14 +51,8 @@ fn typescript_admission_all_categories_keep_closed_kinds_and_roundtrip_facts() {
             export: E::GetModeForUsageLocation,
         },
     ] {
-        let detail = D {
-            schema_version: 1,
-            role: R::SelectedCompiler,
-            version: V::new("7.0.2"),
-            cause,
-        };
+        let detail = D::new(R::SelectedCompiler, V::new("7.0.2"), cause).unwrap();
         let kind = detail.failure_kind();
-        assert!(detail.is_valid());
         let failure = failure(detail.clone(), "main.ts");
         assert_eq!(failure.kind_tag(), kind.kind_tag());
         assert_eq!(failure.phase(), PackageCompilerFailurePhase::Setup);
@@ -112,13 +106,12 @@ fn typescript_admission_versions_and_api_export_names_are_bounded_closed_values(
             serde_json::json!(export.name())
         );
         assert!(
-            D {
-                schema_version: 1,
-                role: R::SelectedCompiler,
-                version: V::new("5.9.3"),
-                cause: C::MissingApiExport { export }
-            }
-            .is_valid()
+            D::new(
+                R::SelectedCompiler,
+                V::new("5.9.3"),
+                C::MissingApiExport { export }
+            )
+            .is_some()
         );
     }
     assert!(E::from_name(&"/private/raw-output".repeat(8192)).is_none());
@@ -128,15 +121,15 @@ fn typescript_admission_versions_and_api_export_names_are_bounded_closed_values(
 fn typescript_admission_worst_case_packet_and_forged_details_are_bounded() {
     let version = format!("5.9.3-{}", "a".repeat(122));
     assert_eq!(version.len(), V::MAX_BYTES);
-    let detail = D {
-        schema_version: 1,
-        role: R::SelectedCompiler,
-        version: V::new(&version),
-        cause: C::RuntimeFiles {
+    let detail = D::new(
+        R::SelectedCompiler,
+        V::new(&version),
+        C::RuntimeFiles {
             observed: u64::MAX,
             maximum: u64::MAX - 1,
         },
-    };
+    )
+    .unwrap();
     let path = "\"".repeat(PackageCompilerFailure::MAX_RELATIVE_PATH_BYTES);
     let failure = failure(detail, &path);
     assert!(!failure.detail_truncated());
@@ -188,22 +181,56 @@ fn typescript_admission_worst_case_packet_and_forged_details_are_bounded() {
 
 #[test]
 fn typescript_admission_does_not_misidentify_a_discovered_package_as_selected() {
-    let detail = D {
-        schema_version: 1,
-        role: R::DiscoveredProjectPackage,
-        version: V::new("5.9.3"),
-        cause: C::FilesystemEntries {
+    let detail = D::new(
+        R::DiscoveredProjectPackage,
+        V::new("5.9.3"),
+        C::FilesystemEntries {
             observed: 4097,
             maximum: 4096,
         },
-    };
+    )
+    .unwrap();
     assert!(
         detail
             .detail()
             .starts_with("Discovered TypeScript package typescript 5.9.3")
     );
     assert!(!detail.detail().contains("Selected"));
-    let mut invalid = detail;
-    invalid.cause = C::MissingApiEntry;
-    assert!(!invalid.is_valid());
+    assert!(D::new(detail.role(), detail.version().cloned(), C::MissingApiEntry).is_none());
+}
+
+#[test]
+fn typescript_admission_constructor_rejects_invalid_counts_and_api_pairings() {
+    for cause in [
+        C::RuntimeFiles {
+            observed: 256,
+            maximum: 256,
+        },
+        C::FilesystemEntries {
+            observed: 0,
+            maximum: 4096,
+        },
+        C::DirectoryDepth {
+            observed: 8,
+            maximum: 8,
+        },
+        C::InputBytes {
+            observed: 99,
+            maximum: 100,
+        },
+    ] {
+        assert!(D::new(R::SelectedCompiler, V::new("5.9.3"), cause).is_none());
+    }
+    for cause in [
+        C::MissingApiEntry,
+        C::MissingApiExport {
+            export: E::MatchFiles,
+        },
+    ] {
+        assert!(D::new(R::SelectedCompiler, None, cause).is_none());
+        for role in [R::DiscoveredProjectPackage, R::Unspecified] {
+            assert!(D::new(role, V::new("5.9.3"), cause).is_none());
+        }
+    }
+    assert_eq!(D::SCHEMA_VERSION, 1);
 }

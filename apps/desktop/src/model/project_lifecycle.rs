@@ -449,15 +449,10 @@ mod tests {
         };
         use backend_semantic::vocabulary::{Language, Stage};
         use backend_version::ContentId;
-        let detail = D {
-            schema_version: 1,
-            role: R::SelectedCompiler,
-            version: V::new("7.0.2"),
-            cause: C::RuntimeFiles {
+        let detail = D::new(R::SelectedCompiler, V::new("7.0.2"), C::RuntimeFiles {
                 observed: 257,
                 maximum: 256,
-            },
-        };
+            }).unwrap();
         let failure = backend_library::PackageCompilerFailure::from_package_terminal(
             "main.ts",
             &CompilerTerminal::AuthorityAdmission {

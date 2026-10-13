@@ -179,14 +179,10 @@ pub enum TypeScriptCompilerAdmissionCause {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TypeScriptCompilerAdmissionDetail {
-    /// Closed wire schema version; only version one is admitted.
-    pub schema_version: u8,
-    /// Closed relationship to the selected compiler.
-    pub role: TypeScriptCompilerPackageRole,
-    /// Exact validated version when retained by host selection.
-    pub version: Option<TypeScriptCompilerVersion>,
-    /// Exact bounded limit or missing compiler API capability.
-    pub cause: TypeScriptCompilerAdmissionCause,
+    schema_version: u8,
+    role: TypeScriptCompilerPackageRole,
+    version: Option<TypeScriptCompilerVersion>,
+    cause: TypeScriptCompilerAdmissionCause,
 }
 
 #[derive(Deserialize)]
@@ -201,22 +197,64 @@ struct TypeScriptCompilerAdmissionWire {
 impl<'de> Deserialize<'de> for TypeScriptCompilerAdmissionDetail {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let wire = TypeScriptCompilerAdmissionWire::deserialize(deserializer)?;
-        let detail = Self {
-            schema_version: wire.schema_version,
-            role: wire.role,
-            version: wire.version,
-            cause: wire.cause,
-        };
-        if !detail.is_valid() {
+        if wire.schema_version != Self::SCHEMA_VERSION {
             return Err(serde::de::Error::custom(
-                "invalid TypeScript compiler admission facts",
+                "unsupported TypeScript compiler admission schema",
             ));
         }
-        Ok(detail)
+        Self::new(wire.role, wire.version, wire.cause)
+            .ok_or_else(|| serde::de::Error::custom("invalid TypeScript compiler admission facts"))
     }
 }
 
 impl TypeScriptCompilerAdmissionDetail {
+    /// Closed wire schema shared by constructor and deserializer.
+    pub const SCHEMA_VERSION: u8 = 1;
+
+    /// Admits count semantics and selected-compiler/version/API pairing once.
+    /// Returns `None` for a non-exceeded limit or missing API selection proof.
+    #[must_use]
+    pub fn new(
+        role: TypeScriptCompilerPackageRole,
+        version: Option<TypeScriptCompilerVersion>,
+        cause: TypeScriptCompilerAdmissionCause,
+    ) -> Option<Self> {
+        use TypeScriptCompilerAdmissionCause as C;
+        let admitted = match cause {
+            C::RuntimeFiles { observed, maximum }
+            | C::FilesystemEntries { observed, maximum }
+            | C::DirectoryDepth { observed, maximum }
+            | C::InputBytes { observed, maximum } => observed > maximum,
+            C::MissingApiEntry | C::MissingApiExport { .. } => {
+                version.is_some() && matches!(role, TypeScriptCompilerPackageRole::SelectedCompiler)
+            }
+        };
+        admitted.then_some(Self {
+            schema_version: Self::SCHEMA_VERSION,
+            role,
+            version,
+            cause,
+        })
+    }
+
+    /// Closed relationship to the selected compiler.
+    #[must_use]
+    pub const fn role(&self) -> TypeScriptCompilerPackageRole {
+        self.role
+    }
+
+    /// Exact validated version when retained by host selection.
+    #[must_use]
+    pub fn version(&self) -> Option<&TypeScriptCompilerVersion> {
+        self.version.as_ref()
+    }
+
+    /// Exact bounded limit or missing compiler API capability.
+    #[must_use]
+    pub const fn cause(&self) -> TypeScriptCompilerAdmissionCause {
+        self.cause
+    }
+
     /// Existing authority kind implied by these additional facts.
     #[must_use]
     pub const fn failure_kind(&self) -> TypeScriptAuthorityFailureKind {
@@ -228,25 +266,6 @@ impl TypeScriptCompilerAdmissionDetail {
             C::InputBytes { .. } => TypeScriptAuthorityFailureKind::HostFileTooLarge,
             C::MissingApiEntry | C::MissingApiExport { .. } => {
                 TypeScriptAuthorityFailureKind::HostCompilerApiBridge
-            }
-        }
-    }
-
-    /// Checks count semantics before the facts become a durable public refusal.
-    #[must_use]
-    pub const fn is_valid(&self) -> bool {
-        if self.schema_version != 1 {
-            return false;
-        }
-        use TypeScriptCompilerAdmissionCause as C;
-        match self.cause {
-            C::RuntimeFiles { observed, maximum }
-            | C::FilesystemEntries { observed, maximum }
-            | C::DirectoryDepth { observed, maximum }
-            | C::InputBytes { observed, maximum } => observed > maximum,
-            C::MissingApiEntry | C::MissingApiExport { .. } => {
-                self.version.is_some()
-                    && matches!(self.role, TypeScriptCompilerPackageRole::SelectedCompiler)
             }
         }
     }
@@ -270,7 +289,7 @@ impl TypeScriptCompilerAdmissionDetail {
             .map_or("version unavailable", TypeScriptCompilerVersion::as_str);
         let issue = match self.cause {
             C::RuntimeFiles { observed, maximum } => {
-                format!("contains at least {observed} admitted runtime files; limit {maximum}")
+                format!("contains at least {observed} runtime files; limit {maximum}")
             }
             C::FilesystemEntries { observed, maximum } => {
                 format!("visited at least {observed} filesystem entries; limit {maximum}")

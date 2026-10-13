@@ -88,8 +88,8 @@ fn installed_typescript_limits_retain_version_counts_and_exact_original_failure_
             Some(kind)
         );
         let detail = super::super::compiler_typescript_failure::admission_detail(&error).unwrap();
-        assert_eq!(detail.cause, cause);
-        assert_eq!(detail.version.as_ref().unwrap().as_str(), "5.9.3");
+        assert_eq!(detail.cause(), cause);
+        assert_eq!(detail.version().unwrap().as_str(), "5.9.3");
         let request = ApplicationCompilerRequest {
             profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
             stage: Stage::LowerIr,
@@ -155,8 +155,7 @@ fn installed_typescript_api_capabilities_remain_closed_without_raw_export_or_pat
             Some(F::HostCompilerApiBridge)
         );
         let detail = super::super::compiler_typescript_failure::admission_detail(&error).unwrap();
-        assert!(detail.is_valid());
-        assert_eq!(detail.role, R::SelectedCompiler);
+        assert_eq!(detail.role(), R::SelectedCompiler);
         assert!(detail.detail().contains("JavaScript Compiler API"));
         assert!(!detail.detail().contains("/private"));
         match export {
@@ -185,7 +184,7 @@ fn installed_typescript_api_capabilities_remain_closed_without_raw_export_or_pat
         &"malicious version /private/authority.secret".repeat(100_000),
     );
     let detail = super::super::compiler_typescript_failure::admission_detail(&error).unwrap();
-    assert!(detail.version.is_none());
+    assert!(detail.version().is_none());
     assert!(detail.detail().contains("version unavailable"));
     assert!(detail.detail().len() < 384);
     assert!(!detail.detail().contains("authority.secret"));

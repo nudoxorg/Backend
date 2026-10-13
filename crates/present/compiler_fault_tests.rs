@@ -555,12 +555,7 @@ fn installed_typescript_admission_uses_shared_bounded_facts_and_actionable_words
             export: E::GetModeForUsageLocation,
         },
     ] {
-        let detail = D {
-            schema_version: 1,
-            role: R::SelectedCompiler,
-            version: V::new("7.0.2"),
-            cause,
-        };
+        let detail = D::new(R::SelectedCompiler, V::new("7.0.2"), cause).unwrap();
         let failure = PackageCompilerFailure::from_package_terminal(
             "main.ts",
             &CompilerTerminal::AuthorityAdmission {

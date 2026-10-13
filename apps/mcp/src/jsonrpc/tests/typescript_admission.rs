@@ -33,12 +33,7 @@ fn installed_typescript_details_survive_mcp_routes_with_actual_named_token_admis
             export: E::GetAllowSyntheticDefaultImports,
         },
     ] {
-        let detail = D {
-            schema_version: 1,
-            role: R::SelectedCompiler,
-            version: V::new(&version),
-            cause,
-        };
+        let detail = D::new(R::SelectedCompiler, V::new(&version), cause).unwrap();
         let failure = backend_library::PackageCompilerFailure::from_package_terminal(
             "main.ts",
             &CompilerTerminal::AuthorityAdmission {

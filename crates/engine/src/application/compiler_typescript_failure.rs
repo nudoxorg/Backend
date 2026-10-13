@@ -40,45 +40,41 @@ pub(super) fn admission_detail(
         ),
         _ => (error, R::Unspecified, None),
     };
-    let detail = TypeScriptCompilerAdmissionDetail {
-        schema_version: 1,
-        role,
-        version,
-        cause: match error {
-            TypeScriptProjectHostError::ModuleFileLimit {
-                observed, maximum, ..
-            } => C::RuntimeFiles {
-                observed: u64::try_from(*observed).ok()?,
-                maximum: u64::try_from(*maximum).ok()?,
-            },
-            TypeScriptProjectHostError::ModuleEntryLimit {
-                observed, maximum, ..
-            } => C::FilesystemEntries {
-                observed: u64::try_from(*observed).ok()?,
-                maximum: u64::try_from(*maximum).ok()?,
-            },
-            TypeScriptProjectHostError::ModuleDirectoryDepth {
-                observed, maximum, ..
-            } => C::DirectoryDepth {
-                observed: u64::try_from(*observed).ok()?,
-                maximum: u64::try_from(*maximum).ok()?,
-            },
-            TypeScriptProjectHostError::FileTooLarge {
-                observed, maximum, ..
-            } if role != R::Unspecified => C::InputBytes {
-                observed: *observed,
-                maximum: *maximum,
-            },
-            TypeScriptProjectHostError::CompilerApiEntryMissing { .. } => C::MissingApiEntry,
-            TypeScriptProjectHostError::CompilerApiExportMissing { export, .. } => {
-                C::MissingApiExport {
-                    export: TypeScriptCompilerApiExport::from_name(export)?,
-                }
-            }
-            _ => return None,
+    let cause = match error {
+        TypeScriptProjectHostError::ModuleFileLimit {
+            observed, maximum, ..
+        } => C::RuntimeFiles {
+            observed: u64::try_from(*observed).ok()?,
+            maximum: u64::try_from(*maximum).ok()?,
         },
+        TypeScriptProjectHostError::ModuleEntryLimit {
+            observed, maximum, ..
+        } => C::FilesystemEntries {
+            observed: u64::try_from(*observed).ok()?,
+            maximum: u64::try_from(*maximum).ok()?,
+        },
+        TypeScriptProjectHostError::ModuleDirectoryDepth {
+            observed, maximum, ..
+        } => C::DirectoryDepth {
+            observed: u64::try_from(*observed).ok()?,
+            maximum: u64::try_from(*maximum).ok()?,
+        },
+        TypeScriptProjectHostError::FileTooLarge {
+            observed, maximum, ..
+        } if role != R::Unspecified => C::InputBytes {
+            observed: *observed,
+            maximum: *maximum,
+        },
+        TypeScriptProjectHostError::CompilerApiEntryMissing { .. } => C::MissingApiEntry,
+        TypeScriptProjectHostError::CompilerApiExportMissing { export, .. } => {
+            C::MissingApiExport {
+                export: TypeScriptCompilerApiExport::from_name(export)?,
+            }
+        }
+        _ => return None,
     };
-    (detail.is_valid() && detail.failure_kind() == host_failure(error)).then_some(detail)
+    TypeScriptCompilerAdmissionDetail::new(role, version, cause)
+        .filter(|detail| detail.failure_kind() == host_failure(error))
 }
 
 pub(super) fn failure_kind(error: &PackageAuthorityError) -> Option<F> {

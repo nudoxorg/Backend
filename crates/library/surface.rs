@@ -2720,7 +2720,7 @@ fn authority_diagnostic_facts_are_valid(facts: &CompilerAuthorityDiagnosticFacts
             == Some(crate::interface::PythonAuthorityFailureKind::ConfigurationRefused))
             == facts.python_configuration.is_some()
         && facts.typescript_admission.as_ref().is_none_or(|detail| {
-            detail.is_valid() && facts.typescript_failure == Some(detail.failure_kind())
+            facts.typescript_failure == Some(detail.failure_kind())
         })
 }
 
