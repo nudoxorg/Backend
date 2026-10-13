@@ -1580,7 +1580,7 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
     };
     let assert_scope = |snapshot: &WorkspaceSnapshot, state, expected: Vec<ViewCoverage>| {
         assert_eq!(
-            coverage::package_row_state(snapshot, package).unwrap(),
+            coverage::package_row_state(snapshot, key.package()).unwrap(),
             Some(state)
         );
         assert_eq!(
@@ -1706,7 +1706,11 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
     }
     assert_complete(&daemon, package, "retained.ts", 3);
     assert_eq!(
-        coverage::package_row_state(&changed, sibling).unwrap(),
+        coverage::package_row_state(
+            &changed,
+            &backend_engine::PackageReference::parse(sibling_label).unwrap()
+        )
+        .unwrap(),
         None,
         "unrelated package acquired foreign failure scope"
     );
@@ -1860,4 +1864,147 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
     );
     assert_remaining_projection(&snapshot, sibling);
     assert_complete(&cold, sibling, "sibling.ts", 1);
+}
+
+#[test]
+fn one_package_state_seeks_its_typed_prefix_without_folding_foreign_refusals() {
+    use crate::builtin::coverage;
+    use backend_engine::RowState;
+    use backend_engine::builtin::{
+        ProductSemanticCaptureOutcome, SemanticSourceCapture, SemanticUnavailableReason,
+    };
+    use backend_semantic::vocabulary::{LanguageProfile, PackageUrl, TypeScriptSource};
+    let workspace = TempWorkspace::new();
+    let mut daemon = open_daemon(workspace.0.path());
+    let target_label = "pkg:npm/mm-scoped-state@1.0.0";
+    let labels = [
+        "pkg:npm/aa-foreign-state@1.0.0",
+        "pkg:npm/bb-foreign-state@1.0.0",
+        "pkg:npm/cc-foreign-state@1.0.0",
+        target_label,
+        "pkg:npm/xx-foreign-state@1.0.0",
+        "pkg:npm/yy-foreign-state@1.0.0",
+        "pkg:npm/zz-foreign-state@1.0.0",
+    ];
+    let mut target_key = None;
+    let mut target_capture = None;
+    // Authenticated relation-range/storage control, not native acceptance.
+    for (index, label) in labels.into_iter().enumerate() {
+        let package = PackageKey::from_value(label);
+        let key = ProductSemanticPublicationKey::new(
+            backend_engine::PackageReference::parse(label).unwrap(),
+            PackageUrl::parse(label).unwrap(),
+            LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+        )
+        .unwrap();
+        let version = [index as u8 + 1; 32];
+        let changes = vec![BuiltinSourceChange {
+            key: package.to_bytes(),
+            after: Some(ProductSourceRecord::project(label, version, Vec::new()).unwrap()),
+        }];
+        let selected = vec![BuiltinSemanticChange {
+            key: key.clone(),
+            after: Some(ProductSemanticPublicationRecord::Unavailable(
+                if label == target_label {
+                    SemanticUnavailableReason::Toolchain
+                } else {
+                    SemanticUnavailableReason::Rejected
+                },
+            )),
+        }];
+        let intent = if label == target_label {
+            let capture = SemanticSourceCapture::new(None, version, [0x71; 32], 1, 0).unwrap();
+            target_key = Some(key.clone());
+            target_capture = Some(capture);
+            let base = daemon.engine().daemon().owner().snapshot();
+            BuiltinIntent::index_with_capture(
+                package,
+                label,
+                changes,
+                selected,
+                vec![BuiltinCaptureChange {
+                    key,
+                    expected: None,
+                    capture,
+                    outcome: ProductSemanticCaptureOutcome::Pending { prior: None },
+                    compiler_failure: None,
+                }],
+            )
+            .unwrap()
+            .with_capture_basis(capture_basis_for_snapshot(&base).unwrap())
+            .unwrap()
+        } else {
+            BuiltinIntent::index_with_semantics(package, label, changes, selected).unwrap()
+        };
+        super::super::commands::commit_builtin_intent(&mut daemon, index as u64 + 1, &intent)
+            .unwrap();
+    }
+    let key = target_key.unwrap();
+    let snapshot = daemon.engine().daemon().owner().snapshot();
+    coverage::reset_package_state_visits();
+    assert_eq!(
+        coverage::package_row_state(&snapshot, key.package()).unwrap(),
+        Some(RowState::Loading)
+    );
+    assert_eq!(
+        coverage::package_state_visits(),
+        2,
+        "foreign selected keys were folded into one package's state"
+    );
+    let (initial, _) = crate::builtin::initial_view().unwrap();
+    let mut rows = vec![backend_engine::Row::new(
+        backend_engine::RowId::Package(key.package_key()),
+        initial.basis(),
+        target_label,
+    )];
+    coverage::qualify_package_rows(&snapshot, &mut rows).unwrap();
+    assert_eq!(
+        rows[0].state,
+        RowState::Loading,
+        "scoped and workspace folds diverged"
+    );
+    let missing =
+        backend_engine::PackageReference::parse("pkg:npm/nn-missing-state@1.0.0").unwrap();
+    coverage::reset_package_state_visits();
+    assert_eq!(
+        coverage::package_row_state(&snapshot, &missing).unwrap(),
+        None
+    );
+    assert_eq!(
+        coverage::package_state_visits(),
+        0,
+        "absent prefix folded the next package"
+    );
+    let expected = semantic_capture_relation(&snapshot)
+        .unwrap()
+        .unwrap()
+        .lookup(&key)
+        .unwrap()
+        .unwrap();
+    let terminal = BuiltinIntent::index_with_capture(
+        key.package_key(),
+        target_label,
+        Vec::new(),
+        Vec::new(),
+        vec![BuiltinCaptureChange {
+            key: key.clone(),
+            expected: Some(expected),
+            capture: target_capture.unwrap(),
+            outcome: ProductSemanticCaptureOutcome::Unavailable {
+                reason: SemanticUnavailableReason::Cancelled,
+            },
+            compiler_failure: None,
+        }],
+    )
+    .unwrap()
+    .with_capture_basis(capture_basis_for_snapshot(&snapshot).unwrap())
+    .unwrap();
+    super::super::commands::commit_builtin_intent(&mut daemon, 8, &terminal).unwrap();
+    let failed = daemon.engine().daemon().owner().snapshot();
+    coverage::reset_package_state_visits();
+    assert_eq!(
+        coverage::package_row_state(&failed, key.package()).unwrap(),
+        Some(RowState::Failed)
+    );
+    assert_eq!(coverage::package_state_visits(), 2);
 }
