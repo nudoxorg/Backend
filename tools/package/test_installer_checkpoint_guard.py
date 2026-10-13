@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 import test_install_preview as preview
 
@@ -96,6 +97,60 @@ class GuardTests(unittest.TestCase):
                         with self.assertRaisesRegex(RuntimeError, "control"):
                             with module._install_lease(root): raise RuntimeError("control")
                         with module._install_lease(root): pass
+
+    def test_keyboard_interrupt_cleans_staging_and_keeps_committed_release(self):
+        for module in (mac, linux):
+            with self.subTest(platform=module.PLATFORM), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary).resolve(); prefix = root / "prefix"
+                prefix.mkdir(mode=0o700)
+                old = marker(module.PLATFORM, "20261010", "a" * 40)
+                old_release = prefix / "lib/nudox/versions" / old["tag"]
+                old_release.mkdir(parents=True, mode=0o700)
+                marker_path = old_release / ".installed-release.json"
+                marker_path.write_text(json.dumps(old, sort_keys=True) + "\n")
+                current = prefix / "lib/nudox/current"
+                current.symlink_to("versions/" + old["tag"])
+                old_target = os.readlink(current)
+                old_marker = marker_path.read_bytes()
+
+                selected = marker(module.PLATFORM, "20261013", "b" * 40)
+                entry = {key: value for key, value in selected.items() if key != "sha256"}
+                manifest = {"sha256": selected["sha256"]}
+                archive = root / "unused.tar.gz"; archive.write_bytes(b"fixture")
+
+                saved_umask = os.umask(0o077)
+                try:
+                    with patch.object(module, "safe_extract", side_effect=KeyboardInterrupt()):
+                        with self.assertRaises(KeyboardInterrupt):
+                            module.install(prefix, entry, manifest, archive)
+                    self.assertTrue(current.is_symlink())
+                    self.assertEqual(os.readlink(current), old_target)
+                    self.assertEqual(marker_path.read_bytes(), old_marker)
+                    versions = prefix / "lib/nudox/versions"
+                    self.assertFalse((versions / entry["tag"]).exists())
+                    self.assertEqual(list(versions.glob(".staging-*")), [])
+
+                    real_replace = os.replace
+                    final = versions / entry["tag"]
+
+                    def replace_then_interrupt(source, destination):
+                        real_replace(source, destination)
+                        if Path(source).name.startswith(".staging-") and Path(destination) == final:
+                            raise KeyboardInterrupt()
+
+                    with patch.object(module, "safe_extract"), \
+                         patch.object(module, "verify_package", return_value="bin"), \
+                         patch.object(module.os, "replace", side_effect=replace_then_interrupt):
+                        with self.assertRaises(KeyboardInterrupt):
+                            module.install(prefix, entry, manifest, archive)
+                    self.assertTrue(current.is_symlink())
+                    self.assertEqual(os.readlink(current), old_target)
+                    self.assertEqual(marker_path.read_bytes(), old_marker)
+                    self.assertTrue(final.is_dir())
+                    self.assertEqual(json.loads((final / ".installed-release.json").read_text()), selected)
+                    self.assertEqual(list(versions.glob(".staging-*")), [])
+                finally:
+                    os.umask(saved_umask)
 
     def test_actual_two_python_installers_serialize_admission_through_publication(self):
         child_source = r'''

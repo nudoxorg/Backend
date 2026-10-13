@@ -869,7 +869,7 @@ def _install_locked(prefix, entry, manifest, archive, *, allow_downgrade=False):
             shutil.rmtree(stage)
         else:
             os.replace(stage, final)
-    except Exception:
+    except BaseException:
         shutil.rmtree(stage, ignore_errors=True)
         raise
 
