@@ -165,8 +165,7 @@ pub(crate) fn attach<R: Region>(region: &mut R, store: &Entity<DataStore>, cx: &
         let keys = if moved || root || event.is_branch(Branch::GraphFocus) {
             let data = store.read(cx);
             let keys = region.keys(&data.snapshot(), data);
-            let changed = region.core().watch.keys().collect::<std::collections::BTreeSet<_>>()
-                != keys.iter().collect();
+            let changed = !region.core().watch.watches_keys(&keys);
             if moved || changed {
                 region.core().watch_keys(data, keys.clone());
             }
