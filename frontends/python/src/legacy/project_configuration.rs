@@ -5,6 +5,7 @@
 //! config or removes settings to admit an otherwise refused project.
 
 use std::collections::BTreeMap;
+use std::fmt::{self, Write as _};
 use std::path::Path;
 
 use pyrefly_config::config::ConfigFile;
@@ -133,13 +134,57 @@ impl Evidence {
         self.faults.push(fault);
     }
 
-    fn message(&mut self, text: &str, maximum: usize) -> Box<str> {
-        let mut end = text.len().min(maximum);
-        while !text.is_char_boundary(end) {
-            end -= 1;
+    fn display(
+        &mut self,
+        value: impl fmt::Display,
+        maximum: usize,
+        control: PythonProjectControl<'_>,
+    ) -> Result<Box<str>, CheckerError> {
+        struct Bounded<'a> {
+            text: String,
+            maximum: usize,
+            truncated: bool,
+            control: PythonProjectControl<'a>,
+            refusal: Option<CheckerError>,
         }
-        self.truncated |= end != text.len();
-        text[..end].into()
+        impl fmt::Write for Bounded<'_> {
+            fn write_str(&mut self, text: &str) -> fmt::Result {
+                if let Err(error) = checkpoint(self.control) {
+                    self.refusal = Some(error);
+                    return Err(fmt::Error);
+                }
+                let mut end = text.len().min(self.maximum - self.text.len());
+                while !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                self.text.push_str(&text[..end]);
+                self.truncated |= end != text.len();
+                if self.truncated {
+                    Err(fmt::Error)
+                } else {
+                    Ok(())
+                }
+            }
+        }
+        let mut sink = Bounded {
+            text: String::new(),
+            maximum,
+            truncated: false,
+            control,
+            refusal: None,
+        };
+        let result = write!(&mut sink, "{value}");
+        if let Some(error) = sink.refusal {
+            return Err(error);
+        }
+        if result.is_err() && !sink.truncated {
+            return Err(super::project::project_error(
+                "",
+                "native diagnostic cause formatter refused",
+            ));
+        }
+        self.truncated |= sink.truncated;
+        Ok(sink.text.into_boxed_str())
     }
 }
 
@@ -293,8 +338,15 @@ pub(super) fn configuration_error(
                 checkpoint(control)?;
                 if let Some(error) = native_parse_error {
                     diagnostic_faults(text, pyproject, &mut evidence, control)?;
-                    let message =
-                        evidence.message(error.message(), evidence.remaining().saturating_sub(1));
+                    // Keep the native cause first, then its own source/field
+                    // context. A long context can exhaust the existing allowance
+                    // without hiding the original parser cause or allocating a
+                    // second complete captured-document string.
+                    let message = evidence.display(
+                        format_args!("{}\n{error}", error.message()),
+                        evidence.remaining().saturating_sub(1),
+                        control,
+                    )?;
                     let width = message.len();
                     let error_span = error.span().and_then(span);
                     let fault = if evidence.faults.is_empty() && evidence.omitted == 0 {
@@ -366,12 +418,13 @@ fn loader_faults(
             evidence.omit();
             continue;
         }
-        // This pinned public API only exposes an owned message. Its producer
-        // already consumed a <=1 MiB captured document; retain only our shared
-        // remaining allowance and do not accumulate the returned strings.
-        let original = error.get_message();
-        checkpoint(control)?;
-        let message = evidence.message(&original, evidence.remaining() - severity.len() - 1);
+        // The borrowed native cause survives loader file-path context. Format
+        // it directly into the shared allowance, without message reconstruction.
+        let message = evidence.display(
+            error.cause(),
+            evidence.remaining() - severity.len() - 1,
+            control,
+        )?;
         let width = severity.len() + message.len();
         evidence.retain(
             PythonProjectConfigurationFault::NativeLoaderRefusal { severity, message },
@@ -379,6 +432,30 @@ fn loader_faults(
         );
     }
     checkpoint(control)
+}
+
+pub(super) fn native_loader_causes(
+    errors: &[ConfigError],
+    control: PythonProjectControl<'_>,
+) -> Result<Box<str>, CheckerError> {
+    struct Causes<'a>(&'a [ConfigError]);
+    impl fmt::Display for Causes<'_> {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            for (index, error) in self.0.iter().enumerate() {
+                if index != 0 {
+                    formatter.write_str("; ")?;
+                }
+                write!(
+                    formatter,
+                    "{}: {}",
+                    error.severity().label().trim(),
+                    error.cause()
+                )?;
+            }
+            Ok(())
+        }
+    }
+    Evidence::default().display(Causes(errors), MAX_NATIVE_DIAGNOSTIC_BYTES, control)
 }
 
 #[cfg(test)]
@@ -393,6 +470,50 @@ mod tests {
             cancelled,
             deadline: Instant::now() + Duration::from_secs(30),
         }
+    }
+
+    #[test]
+    fn borrowed_native_display_stops_at_utf8_bound_before_later_chunks() {
+        struct NativeChunks<'a>(&'a AtomicBool);
+        impl fmt::Display for NativeChunks<'_> {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a🐍")?;
+                self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+                formatter.write_str("unreachable trailing native context")
+            }
+        }
+        let continued = AtomicBool::new(false);
+        let cancelled = AtomicBool::new(false);
+        let mut evidence = Evidence::default();
+        let message = evidence
+            .display(NativeChunks(&continued), 2, control(&cancelled))
+            .unwrap();
+        assert_eq!(message.as_ref(), "a");
+        assert!(evidence.truncated);
+        assert!(!continued.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
+    #[test]
+    fn borrowed_native_display_observes_cancellation_between_cause_chunks() {
+        struct CancellingCause<'a>(&'a AtomicBool);
+        impl fmt::Display for CancellingCause<'_> {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("native cause")?;
+                self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+                formatter.write_str("native context")
+            }
+        }
+        let cancelled = AtomicBool::new(false);
+        let mut evidence = Evidence::default();
+        assert!(matches!(
+            evidence.display(
+                CancellingCause(&cancelled),
+                MAX_NATIVE_DIAGNOSTIC_BYTES,
+                control(&cancelled)
+            ),
+            Err(CheckerError::Cancelled { phase: "project" })
+        ));
+        assert!(evidence.faults.is_empty());
     }
 
     fn refuse(name: &str, text: &str) -> Box<[PythonProjectConfigurationFault]> {

@@ -9,7 +9,7 @@ use pyrefly::state::require::Require;
 use pyrefly::state::state::State;
 use pyrefly_config::base::{InferReturnTypes, Preset};
 use pyrefly_config::config::{ConfigFile, ConfigSource, FallbackSearchPath, ProjectLayout};
-use pyrefly_config::finder::{ConfigError, ConfigFinder};
+use pyrefly_config::finder::ConfigFinder;
 use pyrefly_config::error_kind::ErrorKind;
 use pyrefly_python::ast::Ast;
 use pyrefly_python::module::TextRangeWithModule;
@@ -301,16 +301,10 @@ pub(super) fn analyze(
     let read = state.transaction();
     let errors = read.get_config_errors();
     if !errors.is_empty() {
+        let causes = super::super::project_configuration::native_loader_causes(&errors, control)?;
         return Err(project_error(
             "",
-            &format!(
-                "native configuration errors: {}",
-                errors
-                    .iter()
-                    .map(ConfigError::get_message)
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            ),
+            &format!("native configuration errors: {causes}"),
         ));
     }
     // Recovery answers from an unavailable resource must not leak precise
@@ -1187,6 +1181,7 @@ fn captured_finder(
         original: &Path,
         baselines: &CapturedBaselines,
         version: NativeVersion,
+        control: PythonProjectControl<'_>,
     ) -> Result<ArcId<ConfigFile>, CheckerError> {
         if let Some(path) = &config.typeshed_path {
             return Err(CheckerError::UncapturedDependency { path: path.clone() });
@@ -1245,16 +1240,10 @@ fn captured_finder(
         config.skip_lsp_config_indexing = true;
         let errors = config.configure();
         if !errors.is_empty() {
+            let causes = super::super::project_configuration::native_loader_causes(&errors, control)?;
             return Err(project_error(
                 "",
-                &format!(
-                    "native captured configuration errors: {}",
-                    errors
-                        .iter()
-                        .map(ConfigError::get_message)
-                        .collect::<Vec<_>>()
-                        .join("; ")
-                ),
+                &format!("native captured configuration errors: {causes}"),
             ));
         }
         Ok(ArcId::new(config))
@@ -1275,6 +1264,7 @@ fn captured_finder(
         original_root,
         baselines,
         version,
+        control,
     )?;
     let mut loaded = BTreeMap::new();
     for directory in &directories {
@@ -1308,7 +1298,7 @@ fn captured_finder(
                 path,
                 (
                     priority,
-                    configure(config, layout, original_root, baselines, version)?,
+                    configure(config, layout, original_root, baselines, version, control)?,
                 ),
             );
         }
@@ -1316,7 +1306,7 @@ fn captured_finder(
     let mut effective = BTreeMap::new();
     let mut scope_identity = blake3::Hasher::new();
     scope_identity.update(b"compiler.python.effective-config-scope.v1\0");
-    scope_identity.update(b"root-isolated;named-package-import-root.v1;captured-diagnostic-baseline.v1;native-priority;candidate-kind+presence+absence;namespace-membership-only+compiled-shadow-unavailable-rdeps+binding-site-compiled-cause+parse-only-tainted-diagnostics+regular-file-finder+opaque-link-frontier+native-current-module-binding.v7;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
+    scope_identity.update(b"root-isolated;named-package-import-root.v1;captured-diagnostic-baseline.v1;native-priority;candidate-kind+presence+absence;namespace-membership-only+compiled-shadow-unavailable-rdeps+binding-site-compiled-cause+parse-only-tainted-diagnostics+regular-file-finder+opaque-link-frontier+native-current-module-binding+borrowed-native-config-cause.v8;checked-unannotated;checked-returns;no-interpreter;no-fallback;no-ignore;no-index;classdef+ctor;depth=64;work=262144\0");
     for directory in directories {
         let mut candidates = Vec::new();
         for (depth, ancestor) in directory
