@@ -543,13 +543,12 @@ mod tests {
 
     #[test]
     fn actual_native_invalid_path_causes_keep_field_and_config_source_context() {
-        let root = std::env::temp_dir().join(format!(
-            "nudox-native-config-path-context-{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("c{:x}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
-        let path = root.join("pyproject.toml");
-        let source = "[tool.pyrefly]\nsearch-path = ['missing-search']\nsite-package-path = ['missing-site']\n";
+        // The native API accepts a supplied TOML path. Keep this actual
+        // fixture short so each complete cause chain fits the fixed allowance.
+        let path = root.join("p");
+        let source = "search-path = ['s']\nsite-package-path = ['t']\n";
         std::fs::write(&path, source).unwrap();
         let (mut config, errors) = ConfigFile::from_file(&path);
         assert!(errors.is_empty());
@@ -561,8 +560,25 @@ mod tests {
             "actual native search/site-package validation"
         );
         let cancelled = AtomicBool::new(false);
-        let message = native_loader_causes(&errors, control(&cancelled)).unwrap();
+        let mut complete_messages = Vec::new();
         for (error, field) in errors.iter().zip(["site-package-path", "search-path"]) {
+            let complete = format!(
+                "{}: {}",
+                error.severity().label().trim(),
+                error
+                    .cause_chain()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(": ")
+            );
+            assert!(
+                complete.len() <= MAX_NATIVE_DIAGNOSTIC_BYTES,
+                "complete genuine fixture chain must fit the fixed allowance"
+            );
+            let message =
+                native_loader_causes(std::slice::from_ref(error), control(&cancelled)).unwrap();
+            assert_eq!(message.as_ref(), complete);
+            complete_messages.push(complete);
             let cause = error.cause().to_string();
             let context = format!("Invalid {field}");
             let file = error.get_message();
@@ -575,6 +591,11 @@ mod tests {
                 "native cause, field and file context remain ordered"
             );
         }
+        let complete = complete_messages.join("; ");
+        assert!(complete.len() > MAX_NATIVE_DIAGNOSTIC_BYTES);
+        let aggregate = native_loader_causes(&errors, control(&cancelled)).unwrap();
+        assert_eq!(aggregate.len(), MAX_NATIVE_DIAGNOSTIC_BYTES);
+        assert!(complete.starts_with(aggregate.as_ref()));
         assert_eq!(std::fs::read(&path).unwrap(), source.as_bytes());
         std::fs::remove_dir_all(root).unwrap();
     }
