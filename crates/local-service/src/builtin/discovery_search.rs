@@ -3427,14 +3427,15 @@ impl LineageEvidenceResolver<'_, '_, '_> {
         key: &LineageKey,
         tier: u8,
     ) -> Result<bool, String> {
-        if tier < SearchTier::Substring as u8
-            || !self.lineages.oversized_lineages.contains(sort_key)
-        {
+        if !self.lineages.oversized_lineages.contains(sort_key) {
             return Ok(true);
         }
-        Ok(self
-            .best_evidence(sort_key, key)?
-            .is_some_and(|evidence| evidence.rank() == tier))
+        let evidence = self.best_evidence(sort_key, key)?;
+        Ok(evidence.is_some_and(|evidence| evidence.rank() == tier)
+            // The lineage aggregate does not compute fuzzy evidence. Keep
+            // genuine Tantivy fuzzy-only candidates unless stronger indexed
+            // evidence proves they belong to an earlier tier.
+            || (evidence.is_none() && tier >= SearchTier::FuzzyName as u8))
     }
 }
 
@@ -8159,6 +8160,54 @@ mod tests {
             cursor.is_none(),
             "all unique ranked groups should be consumed"
         );
+    }
+
+    #[test]
+    fn grouped_search_does_not_resurface_overflow_alias_at_prefix_name_tier() {
+        let cargo = source(RegistryEcosystem::Cargo, "https://index.crates.io");
+        const TEST_FACET_VALUE_LIMIT: usize = 2;
+        let mut entries = Vec::new();
+        for lineage in ["widget-long", "widget-z"] {
+            for version in ["1.0.0", "1.0.1", "1.0.2"] {
+                entries.push((
+                    key(cargo, &format!("pkg:cargo/{lineage}@{version}")),
+                    DiscoveryMetadata {
+                        aliases: DiscoveryFacet::Known(vec![
+                            "alpha".to_owned(),
+                            "beta".to_owned(),
+                            "widget".to_owned(),
+                        ]),
+                        ..DiscoveryMetadata::default()
+                    },
+                ));
+            }
+        }
+        let index = build_discovery_projection_with_metadata_and_facet_limit(
+            &entries,
+            TEST_FACET_VALUE_LIMIT,
+        );
+        assert_eq!(index.lineages.oversized_lineages.len(), 2);
+        let request = DiscoverySearchRequest {
+            text: "widget",
+            ecosystem: Some(RegistryEcosystem::Cargo),
+        };
+
+        let mut cursor = None;
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            let page = index
+                .search_groups_after(request, 1, cursor.as_ref())
+                .expect("continued exact-alias search");
+            assert_eq!(page.groups.len(), 1);
+            assert_eq!(page.groups[0].evidence, SearchMatchEvidence::ExactAlias);
+            seen.push(page.groups[0].lineage.clone());
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert!(cursor.is_none(), "all alias groups should be consumed");
+        assert_eq!(seen, ["widget-long", "widget-z"]);
     }
 
     #[test]
