@@ -783,8 +783,16 @@ fn configured_package_keeps_selected_semantics_excluded_gaps_and_exact_source_fr
         staged.input_witness().input_root()
     );
     assert_eq!(
-        changed.native_program_sources().unwrap().program(),
-        program.program()
+        changed
+            .native_program_sources()
+            .unwrap()
+            .single_program()
+            .expect("single configured program")
+            .program(),
+        program
+            .single_program()
+            .expect("single configured program")
+            .program()
     );
     assert_eq!(
         changed.coverage_gaps()[0].source().identity,
@@ -1290,5 +1298,321 @@ fn actual_compiler_normalized_defaults_match_owned_sdk_computed_options() {
                 .as_bool()
                 .unwrap()
         );
+    }
+}
+
+/// Ordinary solution config shape: the app and configuration script are distinct
+/// actual programs, with an empty selected root acting only as their graph.
+fn write_solution(fixture: &Fixture, duplicate_member: bool) {
+    fs::write(
+        fixture.root.join("vite.config.ts"),
+        "export const buildTarget: number = 1;\n",
+    )
+    .unwrap();
+    fs::write(fixture.root.join("tsconfig.json"), r#"{"files":[],"references":[{"path":"./tsconfig.app.json"},{"path":"./tsconfig.node.json"}]}"#).unwrap();
+    fs::write(fixture.root.join("tsconfig.app.json"), r#"{"compilerOptions":{"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","strict":true,"noEmit":true,"verbatimModuleSyntax":true,"erasableSyntaxOnly":true,"allowImportingTsExtensions":true},"files":["src/main.ts"]}"#).unwrap();
+    let node_file = if duplicate_member {
+        "src/main.ts"
+    } else {
+        "vite.config.ts"
+    };
+    fs::write(
+        fixture.root.join("tsconfig.node.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "compilerOptions":{"target":"ES2020","module":"CommonJS","strict":false,"noEmit":true},
+            "files":[node_file],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+#[ignore = "requires pinned Node and TypeScript API paths in TSZ_PROGRAM_TEST_NODE and TSZ_PROGRAM_TEST_TYPESCRIPT_API"]
+fn solution_forest_keeps_actual_program_options_members_and_all_config_witnesses() {
+    use super::{
+        TypeScriptForestClosureWitness, TypeScriptForestSourceMembership,
+        build_native_forest_inputs,
+    };
+    let fixture = Fixture::new();
+    write_solution(&fixture, false);
+    let sources = [
+        PackageSource::new("src/main.ts", MAIN).unwrap(),
+        PackageSource::new("src/lib.ts", LIB).unwrap(),
+        PackageSource::new("vite.config.ts", "export const buildTarget: number = 1;\n").unwrap(),
+        PackageSource::new("eslint.config.ts", ESLINT).unwrap(),
+    ];
+    let admitted = fixture.host().admit(&fixture.root).unwrap().unwrap();
+    let forest = build_native_forest_inputs(
+        &admitted.inputs(),
+        &sources,
+        Instant::now() + Duration::from_secs(90),
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert!(forest.configured_forest);
+    assert_eq!(forest.nodes.len(), 3);
+    let root = &forest.nodes[forest.root as usize];
+    assert!(root.native.solution);
+    assert!(root.native.sources.is_empty() && root.native.libraries.is_empty());
+    assert_eq!(root.references.len(), 2);
+    let app = forest
+        .nodes
+        .iter()
+        .position(|node| node.config.as_ref().unwrap().0 == "tsconfig.app.json")
+        .unwrap();
+    let config = forest
+        .nodes
+        .iter()
+        .position(|node| node.config.as_ref().unwrap().0 == "tsconfig.node.json")
+        .unwrap();
+    assert_ne!(app, config);
+    assert!(forest.nodes[app].native.options.checker.strict);
+    assert!(!forest.nodes[config].native.options.checker.strict);
+    assert!(
+        forest.nodes[app]
+            .native
+            .options
+            .checker
+            .verbatim_module_syntax
+    );
+    assert!(
+        forest.nodes[app]
+            .native
+            .options
+            .checker
+            .isolated_modules_from_verbatim
+    );
+    assert_ne!(
+        forest.nodes[app].native.options.environment,
+        forest.nodes[config].native.options.environment
+    );
+    assert_eq!(
+        forest.package_membership["src/main.ts"],
+        TypeScriptForestSourceMembership::Selected {
+            program: app,
+            program_path: "src/main.ts".into()
+        }
+    );
+    assert_eq!(
+        forest.package_membership["src/lib.ts"],
+        TypeScriptForestSourceMembership::Selected {
+            program: app,
+            program_path: "src/lib.ts".into()
+        }
+    );
+    assert_eq!(
+        forest.package_membership["vite.config.ts"],
+        TypeScriptForestSourceMembership::Selected {
+            program: config,
+            program_path: "vite.config.ts".into()
+        }
+    );
+    assert_eq!(
+        forest.package_membership["eslint.config.ts"],
+        TypeScriptForestSourceMembership::ExcludedFromConfiguredProgram
+    );
+    assert!(
+        forest.nodes[app]
+            .native
+            .sources
+            .iter()
+            .all(|row| row.path != "vite.config.ts")
+    );
+    assert!(
+        forest.nodes[config]
+            .native
+            .sources
+            .iter()
+            .all(|row| row.path != "src/main.ts")
+    );
+    let witness = TypeScriptForestClosureWitness(
+        forest
+            .nodes
+            .into_iter()
+            .map(|node| node.native.closure_witness)
+            .collect(),
+    );
+    witness.validate_current(admitted.witness.as_ref()).unwrap();
+    // Changing the referenced node that did not own the app query invalidates
+    // the whole staged authority, not just that node's local result.
+    fs::write(
+        fixture.root.join("tsconfig.node.json"),
+        r#"{"files":["vite.config.ts"],"compilerOptions":{"strict":true}}"#,
+    )
+    .unwrap();
+    assert!(witness.validate_current(admitted.witness.as_ref()).is_err());
+}
+
+#[test]
+#[ignore = "requires pinned Node and TypeScript API paths in TSZ_PROGRAM_TEST_NODE and TSZ_PROGRAM_TEST_TYPESCRIPT_API"]
+fn same_sources_with_different_program_options_refuse_ambiguous_package_ownership() {
+    use super::{
+        ForestAdmissionBudget, build_native_forest_inputs, build_native_inputs_for_config,
+    };
+    let fixture = Fixture::new();
+    write_solution(&fixture, true);
+    let sources = [
+        PackageSource::new("src/main.ts", MAIN).unwrap(),
+        PackageSource::new("src/lib.ts", LIB).unwrap(),
+    ];
+    let admitted = fixture.host().admit(&fixture.root).unwrap().unwrap();
+    let inputs = admitted.inputs();
+    let cancelled = AtomicBool::new(false);
+    let deadline = Instant::now() + Duration::from_secs(90);
+    let host = inputs.validated_host().unwrap();
+    let mut children = Vec::new();
+    for name in ["tsconfig.app.json", "tsconfig.node.json"] {
+        let config = inputs
+            .config_candidates
+            .iter()
+            .find(|config| config.path.file_name().unwrap() == name)
+            .unwrap();
+        children.push(
+            build_native_inputs_for_config(
+                &inputs,
+                &mut inputs.resolver(),
+                &sources,
+                Some(config),
+                true,
+                &mut ForestAdmissionBudget::default(),
+                Some(&host),
+                deadline,
+                &cancelled,
+            )
+            .unwrap(),
+        );
+    }
+    assert_eq!(
+        children[0]
+            .sources
+            .iter()
+            .map(|s| (&s.path, &s.source))
+            .collect::<Vec<_>>(),
+        children[1]
+            .sources
+            .iter()
+            .map(|s| (&s.path, &s.source))
+            .collect::<Vec<_>>()
+    );
+    assert_ne!(
+        children[0].options.environment,
+        children[1].options.environment
+    );
+    assert_ne!(
+        children[0].options.checker.strict,
+        children[1].options.checker.strict
+    );
+    assert!(
+        matches!(build_native_forest_inputs(&inputs, &sources, deadline, &cancelled),
+        Err(super::TypeScriptProjectHostError::CompilerIoClosureMismatch { detail })
+        if detail.contains("multiple actual TypeScript programs"))
+    );
+}
+
+#[test]
+#[ignore = "requires pinned Node and TypeScript API paths in TSZ_PROGRAM_TEST_NODE and TSZ_PROGRAM_TEST_TYPESCRIPT_API"]
+fn solution_package_stages_separate_leaf_images_without_union_membership() {
+    use crate::application::{
+        LocalCompiler, LocalCompilerConfig, LocalCompilerControl, LocalCompilerScratch,
+        LocalCompilerTimeout, LocalPackageRootSet, LocalToolchainSet,
+        PackageAuthorityConfiguration, PackageSourceSet,
+    };
+    use backend_library::interface::{
+        CorrelationId, GenerateTarget, PackageCompileRequest, PackageUrl,
+    };
+    use backend_semantic::vocabulary::{LanguageProfile, Stage, TypeScriptSource};
+    use backend_store::journal::PublicationLimits;
+    let fixture = Fixture::new();
+    write_solution(&fixture, false);
+    let host = fixture.host();
+    let tools = [];
+    let cancelled = AtomicBool::new(false);
+    let artifacts = fixture.root.join("artifacts");
+    let journal = fixture.root.join("journal");
+    let work = fixture.root.join("native-work");
+    fs::create_dir(&work).unwrap();
+    let mut scratch =
+        LocalCompilerScratch::with_fragment_capacity(NonZeroUsize::new(16 * 1024 * 1024).unwrap())
+            .unwrap();
+    let mut compiler = LocalCompiler::create_with_package_authority(
+        LocalCompilerConfig {
+            toolchains: LocalToolchainSet::validate(&tools).unwrap(),
+            artifact_directory: &artifacts,
+            journal_directory: &journal,
+            native_work_directory: &work,
+            control: LocalCompilerControl {
+                timeout: LocalCompilerTimeout::new(Duration::from_secs(120)).unwrap(),
+                cancelled: &cancelled,
+            },
+        },
+        LocalPackageRootSet::EMPTY,
+        PackageAuthorityConfiguration {
+            typescript_project_host: Some(&host),
+            ..PackageAuthorityConfiguration::UNAVAILABLE
+        },
+        PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN).unwrap(),
+        &mut scratch,
+    )
+    .unwrap();
+    let request = PackageCompileRequest::new(
+        GenerateTarget {
+            correlation: CorrelationId(139),
+            profile: LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+            stage: Stage::LowerIr,
+        },
+        PackageUrl::try_from("pkg:npm/program-membership@1.0.0".to_owned()).unwrap(),
+    )
+    .unwrap();
+    let sources = [
+        PackageSource::new("src/main.ts", MAIN).unwrap(),
+        PackageSource::new("src/lib.ts", LIB).unwrap(),
+        PackageSource::new("vite.config.ts", "export const buildTarget: number = 1;\n").unwrap(),
+        PackageSource::new("eslint.config.ts", ESLINT).unwrap(),
+    ];
+    let staged = compiler
+        .compile_package_sources_staged(
+            PackageSourceSet::new(&request, &fixture.root, &sources).unwrap(),
+            &mut |_| {},
+        )
+        .unwrap();
+    assert_eq!(staged.artifacts().len(), 3);
+    assert_eq!(staged.coverage_gaps().len(), 1);
+    assert_eq!(
+        staged.coverage_gaps()[0].relative_path(),
+        "eslint.config.ts"
+    );
+    let forest = staged.native_program_sources().unwrap();
+    assert!(forest.is_forest() && forest.single_program().is_none());
+    let (root, nodes) = forest.nodes().unwrap();
+    assert!(nodes[root as usize].program.is_none());
+    let owners = forest
+        .sources()
+        .filter_map(|row| row.package_path.map(|path| (path.to_owned(), row.program)))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(owners["src/main.ts"], owners["src/lib.ts"]);
+    assert_ne!(owners["src/main.ts"], owners["vite.config.ts"]);
+    let cold = backend_semantic::ir::NativeProgramSources::decode(forest.as_bytes()).unwrap();
+    assert_eq!(cold, *forest);
+    for ordinal in 0..staged.artifacts().len() {
+        use backend_semantic::ir::{
+            ImageProvenance, SemanticCoreReader, SemanticImageIdentity, SemanticReader,
+        };
+        let object = staged.output_object(2 + 2 * ordinal).unwrap();
+        let identity = SemanticImageIdentity::from_encoded_bytes(object.bytes());
+        staged
+            .with_semantic_reader(ordinal, |image, _| -> Result<(), std::io::Error> {
+                let ImageProvenance::Captured { scope, .. } = image.image_facts().provenance else {
+                    panic!("captured image");
+                };
+                let path = std::str::from_utf8(image.atom(scope.path).unwrap()).unwrap();
+                assert!(
+                    cold.image_matches(path, identity.as_ref()),
+                    "actual produced image remains bound after cold decode"
+                );
+                assert!(!cold.image_matches(path, &[0; 32]));
+                Ok(())
+            })
+            .unwrap();
     }
 }

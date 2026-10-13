@@ -72,9 +72,9 @@ mod staged_intent;
 #[path = "builtin/staged_transport.rs"]
 mod staged_transport;
 use profile::{
-    BuiltinAuthorityVerifier, BuiltinCaptureChange, BuiltinProfile,
-    BuiltinSemanticChange, BuiltinSemanticRelation, BuiltinSourceChange, BuiltinSourceFactsChange,
-    BuiltinValidator, BuiltinWorkspaceRelation, ProfileDescriptor, ProfileIds, builtin_dispatcher,
+    BuiltinAuthorityVerifier, BuiltinCaptureChange, BuiltinProfile, BuiltinSemanticChange,
+    BuiltinSemanticRelation, BuiltinSourceChange, BuiltinSourceFactsChange, BuiltinValidator,
+    BuiltinWorkspaceRelation, ProfileDescriptor, ProfileIds, builtin_dispatcher,
     capture_basis_for_snapshot, execution_manifest, execution_resources,
     product_dependency_manifest, profile_descriptor,
 };
@@ -248,7 +248,7 @@ pub(crate) fn admitted_coverage() -> Result<CoverageWitness, BuiltinModelError> 
 /// language scope.
 pub(super) struct ActivatedProductSemantics {
     images: Arc<[backend_library::interface::SemanticImageSnapshot]>,
-    native_program_sources: Option<Arc<backend_semantic::ir::NativeProgramSourceManifest>>,
+    native_program_sources: Option<Arc<backend_semantic::ir::NativeProgramSources>>,
 }
 
 impl ActivatedProductSemantics {

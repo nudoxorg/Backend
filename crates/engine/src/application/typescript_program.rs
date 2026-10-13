@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 
 use super::typescript_host::{
     TypeScriptDirectoryEntryKind, TypeScriptProjectHostError, TypeScriptProjectInputs,
-    TypeScriptResolverCapability, TypeScriptResolverWitness,
+    TypeScriptResolverCapability, TypeScriptResolverWitness, ValidatedTypeScriptHost,
 };
 use super::{ToolchainProbeLimits, toolchain_probe::run_typescript_program_bridge};
 use crate::application::compiler::PackageSource;
@@ -54,6 +54,7 @@ pub(crate) struct NativeTypeScriptInputs {
     /// Membership of every captured package source in the exact configured program.
     pub(crate) package_membership: BTreeMap<Box<str>, TypeScriptPackageSourceMembership>,
     pub(crate) work_units: u64,
+    pub(crate) solution: bool,
 }
 
 /// A captured source can retain provenance without being a Compiler API program member.
@@ -88,6 +89,13 @@ impl TypeScriptProgramClosureWitness {
         &self,
         witness: &super::typescript_host::TypeScriptProjectWitness,
     ) -> Result<(), TypeScriptProjectHostError> {
+        self.validate_with_host(&witness.validated()?)
+    }
+
+    fn validate_with_host(
+        &self,
+        host: &ValidatedTypeScriptHost<'_>,
+    ) -> Result<(), TypeScriptProjectHostError> {
         if compiler_access_digest(&self.compiler_accesses, &self.directory_views, self.metrics)?
             != self.access_digest
         {
@@ -95,7 +103,7 @@ impl TypeScriptProgramClosureWitness {
                 "retained Compiler API directory transcript changed after construction",
             ));
         }
-        self.resolver.validate_current(witness)
+        self.resolver.validate_with_host(host)
     }
 }
 
@@ -108,6 +116,7 @@ struct ProgramReport {
     compiler_options: serde_json::Value,
     #[serde(default)]
     project_references: Vec<serde_json::Value>,
+    root_names: Vec<String>,
     files: Vec<ProgramFile>,
     resolutions: Vec<ProgramResolution>,
     #[serde(default)]
@@ -238,7 +247,7 @@ enum ProgramMatcherArgument {
     Value(serde_json::Value),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct ProgramClosureMetrics {
     access_operations: usize,
     directory_queries: usize,
@@ -277,20 +286,29 @@ const compilerApiPath = process.argv[1];
 const configPath = process.argv[2];
 const workspaceRoot = process.argv[3];
 const inferredRootNames = JSON.parse(process.argv[4] || "null");
+const admitProjectForest = process.argv[5] === 'forest';
+const remainingForestLimits = JSON.parse(process.argv[6] || '{}');
+const admittedLimit = (name, maximum) => {
+  const value = remainingForestLimits[name] === undefined ? maximum : remainingForestLimits[name];
+  if (!Number.isSafeInteger(value) || value < 0 || value > maximum) throw new Error('invalid trusted forest allowance');
+  return value;
+};
 const observations = new Map();
 const directoryViews = new Map();
 const directoryEntryCache = new Map();
 const directoryQueryCache = new Map();
-const MAX_ACCESS_OPERATIONS = 131072;
-const MAX_DIRECTORY_QUERIES = 16384;
-const MAX_DIRECTORY_ENUMERATIONS = 65536;
-const MAX_DIRECTORY_ENTRIES = 65536;
+const MAX_PROGRAM_FILES = admittedLimit('files', 16384);
+const MAX_PROGRAM_REQUESTS = admittedLimit('requests', 131072);
+const MAX_ACCESS_OPERATIONS = admittedLimit('access_operations', 131072);
+const MAX_DIRECTORY_QUERIES = admittedLimit('directory_queries', 16384);
+const MAX_DIRECTORY_ENUMERATIONS = admittedLimit('directory_enumerations', 65536);
+const MAX_DIRECTORY_ENTRIES = admittedLimit('directory_entries', 65536);
 const MAX_ENTRIES_PER_DIRECTORY = 16384;
 const MAX_MATCHER_RESULT_ENTRIES = 65536;
-const MAX_MATCHER_RESULT_WORK = 196608;
-const MAX_MATCHER_PATTERN_ITEMS = 131072;
-const MAX_MATCHER_PATTERN_BYTES = 512 * 1024;
-const MAX_DIRECTORY_QUERY_CACHE_BYTES = 1024 * 1024;
+const MAX_MATCHER_RESULT_WORK = admittedLimit('matcher_result_entries', 196608);
+const MAX_MATCHER_PATTERN_ITEMS = admittedLimit('matcher_pattern_items', 131072);
+const MAX_MATCHER_PATTERN_BYTES = admittedLimit('matcher_pattern_bytes', 512 * 1024);
+const MAX_DIRECTORY_QUERY_CACHE_BYTES = admittedLimit('directory_query_cache_bytes', 1024 * 1024);
 let accessOperations = 0;
 let directoryQueries = 0;
 let directoryEnumerations = 0;
@@ -716,8 +734,10 @@ try {
     ? ts.getParsedCommandLineOfConfigFile(configPath, {}, parseHost)
     : {options:ts.getDefaultCompilerOptions(), fileNames:inferredRootNames, errors:[], projectReferences:[]};
   if (!parsed) throw new Error('getParsedCommandLineOfConfigFile returned no project');
-  if (parsed.projectReferences && parsed.projectReferences.length) {
+  if (configDiagnostics.length || (parsed.errors || []).length) throw new Error('selected config has Compiler API parse diagnostics');
+  if (!admitProjectForest && parsed.projectReferences && parsed.projectReferences.length) {
     result({schema:1, version:ts.version, config_path:configPath ? path.resolve(configPath) : "", compiler_options:{compilerOptions:{}},
+      root_names:parsed.fileNames.map(name => path.resolve(name)),
       project_references:parsed.projectReferences.map(r => r.path), files:[], resolutions:[], accesses:Array.from(observations.values()),
       directory_views:Array.from(directoryViews.values()), access_operations:accessOperations, directory_queries:directoryQueries,
       directory_enumerations:directoryEnumerations, directory_visited_entries:directoryVisitedEntries, directory_verification_entries:directoryVerificationEntries,
@@ -739,8 +759,10 @@ try {
     for (const name of ['readFile', 'fileExists', 'directoryExists', 'realpath', 'readDirectory', 'getDirectories']) {
       if (typeof host[name] === 'function' && typeof ts.sys[name] === 'function') host[name] = ts.sys[name].bind(ts.sys);
     }
-    const program = ts.createProgram({rootNames:parsed.fileNames, options, host});
+    const program = ts.createProgram({rootNames:parsed.fileNames, options, host,
+      projectReferences:admitProjectForest ? parsed.projectReferences : undefined});
     const programFiles = program.getSourceFiles();
+    if (programFiles.length > MAX_PROGRAM_FILES) throw closureFault('limit','forest source count');
     const byPath = new Map(programFiles.map(file => [path.resolve(file.fileName), file]));
     const sourceFiles = programFiles.map(file => ({
       path:path.resolve(file.fileName),
@@ -773,7 +795,10 @@ try {
       const requestKey = JSON.stringify([value.importer, value.specifier, value.kind, value.mode]);
       const encoded = JSON.stringify(value);
       if (resolutionKeys.has(requestKey) && resolutionKeys.get(requestKey) !== encoded) throw new Error('conflicting compiler resolutions for one request key');
-      if (!resolutionKeys.has(requestKey)) { resolutionKeys.set(requestKey, encoded); resolutions.push(value); }
+      if (!resolutionKeys.has(requestKey)) {
+        if (resolutions.length >= MAX_PROGRAM_REQUESTS) throw closureFault('limit','forest request count');
+        resolutionKeys.set(requestKey, encoded); resolutions.push(value);
+      }
     };
     const visit = (file, node) => {
       if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) addRequest(file,node.moduleSpecifier,'EsmImport');
@@ -837,16 +862,22 @@ try {
       jsxFactory:options.jsxFactory, jsxFragmentFactory:options.jsxFragmentFactory,
       jsxImportSource:options.jsxImportSource, reactNamespace:options.reactNamespace,
       lib:options.lib, types:options.types, typeRoots:options.typeRoots,
-      baseUrl:options.baseUrl, paths:options.paths
+      baseUrl:options.baseUrl, paths:options.paths,
     };
-    const checkerRelevant = new Set(['target','module','moduleResolution','moduleDetection','jsx','jsxFactory','jsxFragmentFactory','jsxImportSource','reactNamespace','lib','types','typeRoots','baseUrl','paths','strict','noImplicitAny','strictNullChecks','strictFunctionTypes','strictBindCallApply','strictPropertyInitialization','noImplicitThis','useUnknownInCatchVariables','alwaysStrict','exactOptionalPropertyTypes','noUncheckedIndexedAccess','noImplicitReturns','noPropertyAccessFromIndexSignature','noImplicitOverride','noUnusedLocals','noUnusedParameters','noFallthroughCasesInSwitch','allowUnreachableCode','allowUnusedLabels','experimentalDecorators','esModuleInterop','allowSyntheticDefaultImports','resolveJsonModule','noResolve','allowJs','checkJs','skipLibCheck','noUncheckedSideEffectImports','noTypesAndSymbols','useDefineForClassFields']);
+    // Preserve absent legacy fields byte-for-byte. Newly admitted flags retain
+    // their raw values; TSZ derives implications such as isolated-from-verbatim.
+    for (const name of ['verbatimModuleSyntax','isolatedModules','erasableSyntaxOnly','allowImportingTsExtensions','noEmit','emitDeclarationOnly','declaration','composite','preserveConstEnums','rewriteRelativeImportExtensions','isolatedDeclarations']) {
+      if (options[name] !== undefined) normalized[name] = options[name];
+    }
+    const checkerRelevant = new Set(['verbatimModuleSyntax','isolatedModules','erasableSyntaxOnly','allowImportingTsExtensions','noEmit','emitDeclarationOnly','declaration','composite','rewriteRelativeImportExtensions','preserveConstEnums','isolatedDeclarations','target','module','moduleResolution','moduleDetection','jsx','jsxFactory','jsxFragmentFactory','jsxImportSource','reactNamespace','lib','types','typeRoots','baseUrl','paths','strict','noImplicitAny','strictNullChecks','strictFunctionTypes','strictBindCallApply','strictPropertyInitialization','noImplicitThis','useUnknownInCatchVariables','alwaysStrict','exactOptionalPropertyTypes','noUncheckedIndexedAccess','noImplicitReturns','noPropertyAccessFromIndexSignature','noImplicitOverride','noUnusedLocals','noUnusedParameters','noFallthroughCasesInSwitch','allowUnreachableCode','allowUnusedLabels','experimentalDecorators','esModuleInterop','allowSyntheticDefaultImports','resolveJsonModule','noResolve','allowJs','checkJs','skipLibCheck','noUncheckedSideEffectImports','noTypesAndSymbols','useDefineForClassFields']);
     const unsupported = [];
     for (const declaration of (ts.optionDeclarations || [])) {
       const name = declaration.name;
       if ((declaration.affectsSemanticDiagnostics || declaration.affectsBindDiagnostics) && options[name] !== undefined && !checkerRelevant.has(name)) unsupported.push(name);
     }
     result({schema:1, version:ts.version, config_path:configPath ? path.resolve(configPath) : "", compiler_options:{compilerOptions:normalized},
-      project_references:[], files:sourceFiles, resolutions, accesses:Array.from(observations.values()),
+      root_names:parsed.fileNames.map(name => path.resolve(name)),
+      project_references:admitProjectForest ? (parsed.projectReferences || []).map(r => path.resolve(ts.resolveProjectReferencePath(r))) : [], files:sourceFiles, resolutions, accesses:Array.from(observations.values()),
       directory_views:Array.from(directoryViews.values()), access_operations:accessOperations, directory_queries:directoryQueries,
       directory_enumerations:directoryEnumerations, directory_visited_entries:directoryVisitedEntries, directory_verification_entries:directoryVerificationEntries,
       matcher_result_entries:matcherResultEntries,
@@ -856,7 +887,7 @@ try {
   }
 } catch (error) {
   result({schema:1, version:'', config_path:configPath ? path.resolve(configPath) : "", compiler_options:{compilerOptions:{}},
-    project_references:[], files:[], resolutions:[], accesses:Array.from(observations.values()), directory_views:Array.from(directoryViews.values()),
+    root_names:[], project_references:[], files:[], resolutions:[], accesses:Array.from(observations.values()), directory_views:Array.from(directoryViews.values()),
     access_operations:accessOperations, directory_queries:directoryQueries, directory_enumerations:directoryEnumerations,
     directory_visited_entries:directoryVisitedEntries, directory_verification_entries:directoryVerificationEntries,
     matcher_result_entries:matcherResultEntries,
@@ -875,6 +906,288 @@ try {
 /// caller retains the resulting closure witness in staged compilation and validates it before
 /// staging, preparation, and publication. Thus the captured TypeScript query closure stays
 /// attached to the full package result, rather than ending with this adapter call.
+
+/// Separate programs, selected by the captured configuration DAG. Edges never
+/// imply that a source is a member of the referencing program.
+pub(crate) struct NativeTypeScriptForestInputs {
+    pub(crate) root: u32,
+    pub(crate) configured_forest: bool,
+    pub(crate) nodes: Vec<NativeTypeScriptProgramNode>,
+    pub(crate) package_membership: BTreeMap<Box<str>, TypeScriptForestSourceMembership>,
+    pub(crate) work_units: u64,
+}
+pub(crate) struct NativeTypeScriptProgramNode {
+    pub(crate) config: Option<(String, ContentId<SourceFactDomain>)>,
+    pub(crate) references: Vec<u32>,
+    pub(crate) native: NativeTypeScriptInputs,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum TypeScriptForestSourceMembership {
+    Selected {
+        program: usize,
+        program_path: Box<str>,
+    },
+    ExcludedFromConfiguredProgram,
+}
+#[derive(Debug)]
+pub(crate) struct TypeScriptForestClosureWitness(pub(crate) Vec<TypeScriptProgramClosureWitness>);
+impl TypeScriptForestClosureWitness {
+    pub(crate) fn validate_current(
+        &self,
+        witness: &super::typescript_host::TypeScriptProjectWitness,
+    ) -> Result<(), TypeScriptProjectHostError> {
+        let host = witness.validated()?;
+        for program in &self.0 {
+            program.validate_with_host(&host)?;
+        }
+        Ok(())
+    }
+}
+
+/// A single aggregate allowance across the actual Compiler API reports. The
+/// next child stdout limit uses the remaining allowance before its allocation.
+#[derive(Default)]
+struct ForestAdmissionBudget {
+    report_bytes: usize,
+    files: usize,
+    requests: usize,
+    source_bytes: usize,
+    replay_work: u64,
+    metrics: ProgramClosureMetrics,
+    libraries: BTreeMap<
+        (String, ContentId<SourceFactDomain>),
+        std::sync::Arc<backend_frontend_typescript::TszLibFile>,
+    >,
+}
+impl ForestAdmissionBudget {
+    fn child_limits(&self) -> serde_json::Value {
+        serde_json::json!({
+            "files": MAX_BRIDGE_FILES.saturating_sub(self.files),
+            "requests": MAX_BRIDGE_REQUESTS.saturating_sub(self.requests),
+            "access_operations": MAX_BRIDGE_ACCESS_OPERATIONS.saturating_sub(self.metrics.access_operations),
+            "directory_queries": MAX_BRIDGE_DIRECTORY_QUERIES.saturating_sub(self.metrics.directory_queries),
+            "directory_enumerations": MAX_BRIDGE_DIRECTORY_ENUMERATIONS.saturating_sub(self.metrics.directory_enumerations),
+            "directory_entries": MAX_BRIDGE_DIRECTORY_ENTRIES.saturating_sub(self.metrics.directory_visited_entries.max(self.metrics.directory_verification_entries)),
+            "matcher_result_entries": MAX_BRIDGE_MATCHER_RESULT_WORK.saturating_sub(self.metrics.matcher_result_entries),
+            "matcher_pattern_items": MAX_BRIDGE_MATCHER_PATTERN_ITEMS.saturating_sub(self.metrics.matcher_pattern_items),
+            "matcher_pattern_bytes": MAX_BRIDGE_MATCHER_PATTERN_BYTES.saturating_sub(self.metrics.matcher_pattern_bytes),
+            "directory_query_cache_bytes": MAX_BRIDGE_DIRECTORY_QUERY_CACHE_BYTES.saturating_sub(self.metrics.directory_query_cache_bytes),
+        })
+    }
+    fn retain(&mut self, report: &ProgramReport) -> Result<(), TypeScriptProjectHostError> {
+        macro_rules! charge {
+            ($field:ident, $amount:expr, $maximum:expr) => {{
+                self.$field = self.$field.saturating_add($amount);
+                if self.$field > $maximum {
+                    return Err(closure_limit(
+                        concat!("forest ", stringify!($field)),
+                        self.$field,
+                        $maximum,
+                    ));
+                }
+            }};
+        }
+        charge!(files, report.files.len(), MAX_BRIDGE_FILES);
+        charge!(requests, report.resolutions.len(), MAX_BRIDGE_REQUESTS);
+        let metrics = report.closure_metrics();
+        macro_rules! metric {
+            ($field:ident, $maximum:expr) => {{
+                self.metrics.$field = self.metrics.$field.saturating_add(metrics.$field);
+                if self.metrics.$field > $maximum {
+                    return Err(closure_limit(
+                        concat!("forest ", stringify!($field)),
+                        self.metrics.$field,
+                        $maximum,
+                    ));
+                }
+            }};
+        }
+        metric!(access_operations, MAX_BRIDGE_ACCESS_OPERATIONS);
+        metric!(directory_queries, MAX_BRIDGE_DIRECTORY_QUERIES);
+        metric!(directory_enumerations, MAX_BRIDGE_DIRECTORY_ENUMERATIONS);
+        metric!(directory_visited_entries, MAX_BRIDGE_DIRECTORY_ENTRIES);
+        metric!(directory_verification_entries, MAX_BRIDGE_DIRECTORY_ENTRIES);
+        metric!(matcher_result_entries, MAX_BRIDGE_MATCHER_RESULT_WORK);
+        metric!(matcher_pattern_items, MAX_BRIDGE_MATCHER_PATTERN_ITEMS);
+        metric!(matcher_pattern_bytes, MAX_BRIDGE_MATCHER_PATTERN_BYTES);
+        metric!(
+            directory_query_cache_bytes,
+            MAX_BRIDGE_DIRECTORY_QUERY_CACHE_BYTES
+        );
+        Ok(())
+    }
+}
+
+pub(crate) fn build_native_forest_inputs(
+    inputs: &TypeScriptProjectInputs<'_>,
+    package_sources: &[PackageSource<'_>],
+    deadline: Instant,
+    cancelled: &AtomicBool,
+) -> Result<NativeTypeScriptForestInputs, TypeScriptProjectHostError> {
+    let selected = select_config(inputs)?;
+    let configured_forest = selected.is_some_and(|config| !config.references.is_empty());
+    let mut configs = Vec::new();
+    if let Some(root) = selected {
+        fn visit<'a>(
+            config: &'a super::typescript_host::TypeScriptConfigInput,
+            inputs: &TypeScriptProjectInputs<'a>,
+            active: &mut BTreeSet<PathBuf>,
+            seen: &mut BTreeSet<PathBuf>,
+            output: &mut Vec<&'a super::typescript_host::TypeScriptConfigInput>,
+        ) -> Result<(), TypeScriptProjectHostError> {
+            use super::typescript_host::TypeScriptConfigDependencyAuthority;
+            let path = normalize_path(&config.path);
+            if active.contains(&path) {
+                return Err(closure_mismatch("project-reference graph contains a cycle"));
+            }
+            if !seen.insert(path.clone()) {
+                return Ok(());
+            }
+            if config.dependency_authority != TypeScriptConfigDependencyAuthority::Program {
+                return Err(closure_mismatch(
+                    "project reference was not admitted as a program config",
+                ));
+            }
+            active.insert(path.clone());
+            output.push(config);
+            if output.len() > backend_semantic::ir::MAX_NATIVE_PROGRAM_NODES {
+                return Err(closure_limit(
+                    "project-reference nodes",
+                    output.len(),
+                    backend_semantic::ir::MAX_NATIVE_PROGRAM_NODES,
+                ));
+            }
+            let mut unique = BTreeSet::new();
+            for reference in &config.references {
+                let reference = normalize_path(reference);
+                if !unique.insert(reference.clone()) {
+                    return Err(closure_mismatch("project config repeats a reference"));
+                }
+                let child = inputs
+                    .config_candidates
+                    .iter()
+                    .find(|child| normalize_path(&child.path) == reference)
+                    .ok_or_else(|| closure_mismatch("project reference has no captured config"))?;
+                visit(child, inputs, active, seen, output)?;
+            }
+            active.remove(&path);
+            Ok(())
+        }
+        visit(
+            root,
+            inputs,
+            &mut BTreeSet::new(),
+            &mut BTreeSet::new(),
+            &mut configs,
+        )?;
+        configs.sort_by(|a, b| a.path.cmp(&b.path));
+    }
+    let root = selected.map_or(0, |selected| {
+        configs
+            .iter()
+            .position(|config| config.path == selected.path)
+            .expect("selected root visited")
+    }) as u32;
+    let mut nodes = Vec::new();
+    let mut budget = ForestAdmissionBudget::default();
+    let host = inputs.validated_host()?;
+    for config in configs
+        .iter()
+        .map(|config| Some(*config))
+        .chain((selected.is_none()).then_some(None))
+    {
+        check_admission_control(deadline, cancelled)?;
+        let references = config.map_or_else(Vec::new, |config| {
+            config
+                .references
+                .iter()
+                .map(|reference| {
+                    configs
+                        .iter()
+                        .position(|child| normalize_path(&child.path) == normalize_path(reference))
+                        .expect("captured edge visited") as u32
+                })
+                .collect()
+        });
+        let mut resolver = inputs.resolver();
+        let native = build_native_inputs_for_config(
+            inputs,
+            &mut resolver,
+            package_sources,
+            config,
+            configured_forest,
+            &mut budget,
+            Some(&host),
+            deadline,
+            cancelled,
+        )?;
+        if configured_forest && native.sources.is_empty() && references.is_empty() {
+            return Err(closure_mismatch(
+                "an empty referenced program has no solution edges",
+            ));
+        }
+        let config = config
+            .map(|config| {
+                let path = config
+                    .path
+                    .strip_prefix(inputs.workspace_root)
+                    .ok()
+                    .and_then(Path::to_str)
+                    .ok_or_else(|| {
+                        closure_mismatch("program config has no canonical workspace path")
+                    })?;
+                Ok((path.replace('\\', "/"), config.content_id))
+            })
+            .transpose()?;
+        nodes.push(NativeTypeScriptProgramNode {
+            config,
+            references,
+            native,
+        });
+    }
+    let mut membership = package_sources
+        .iter()
+        .map(|source| {
+            (
+                Box::<str>::from(source.relative_path()),
+                TypeScriptForestSourceMembership::ExcludedFromConfiguredProgram,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut work_units = 0u64;
+    for (index, node) in nodes.iter().enumerate() {
+        work_units = work_units.saturating_add(node.native.work_units);
+        if work_units > MAX_PROJECT_WORK_UNITS {
+            return Err(bridge_error(
+                "project forest exceeds the shared checker work allowance",
+            ));
+        }
+        for (path, member) in &node.native.package_membership {
+            if let Some(program_path) = member.selected_program_path() {
+                let owner = membership.get_mut(path).ok_or_else(|| {
+                    closure_mismatch("program member has no captured package source")
+                })?;
+                if matches!(owner, TypeScriptForestSourceMembership::Selected { .. }) {
+                    return Err(closure_mismatch(
+                        "captured package source belongs to multiple actual TypeScript programs",
+                    ));
+                }
+                *owner = TypeScriptForestSourceMembership::Selected {
+                    program: index,
+                    program_path: program_path.into(),
+                };
+            }
+        }
+    }
+    Ok(NativeTypeScriptForestInputs {
+        root,
+        configured_forest,
+        nodes,
+        package_membership: membership,
+        work_units,
+    })
+}
+
 pub(crate) fn build_native_inputs(
     inputs: &TypeScriptProjectInputs<'_>,
     resolver: &mut TypeScriptResolverCapability<'_>,
@@ -882,8 +1195,31 @@ pub(crate) fn build_native_inputs(
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<NativeTypeScriptInputs, TypeScriptProjectHostError> {
+    build_native_inputs_for_config(
+        inputs,
+        resolver,
+        package_sources,
+        select_config(inputs)?,
+        false,
+        &mut ForestAdmissionBudget::default(),
+        None,
+        deadline,
+        cancelled,
+    )
+}
+
+fn build_native_inputs_for_config(
+    inputs: &TypeScriptProjectInputs<'_>,
+    resolver: &mut TypeScriptResolverCapability<'_>,
+    package_sources: &[PackageSource<'_>],
+    config: Option<&super::typescript_host::TypeScriptConfigInput>,
+    forest: bool,
+    aggregate: &mut ForestAdmissionBudget,
+    validated_host: Option<&ValidatedTypeScriptHost<'_>>,
+    deadline: Instant,
+    cancelled: &AtomicBool,
+) -> Result<NativeTypeScriptInputs, TypeScriptProjectHostError> {
     check_admission_control(deadline, cancelled)?;
-    let config = select_config(inputs)?;
     // The admitted `compiler_path` is the executable CLI shim (`bin/tsc`). It
     // is probed separately to establish the selected tool identity, but it is
     // not the Compiler API module. Resolve that module only from the exact
@@ -899,14 +1235,18 @@ pub(crate) fn build_native_inputs(
         .ok_or_else(|| {
             bridge_error("the admitted TypeScript package has no witnessed Compiler API module")
         })?;
-    let report = run_program_bridge(
+    let report = run_program_bridge_with_forest_limits(
         inputs,
         config.map(|config| config.path.as_ref()),
         package_sources,
         &compiler_api_path,
+        forest,
+        &aggregate.child_limits(),
+        &mut aggregate.report_bytes,
         deadline,
         cancelled,
     )?;
+    aggregate.retain(&report)?;
     if report.schema != 1 {
         return Err(bridge_error("unsupported compiler API report schema"));
     }
@@ -939,9 +1279,41 @@ pub(crate) fn build_native_inputs(
             "the compiler API parsed a different tsconfig than the selected project config",
         ));
     }
-    if !report.project_references.is_empty() {
+    if !forest && !report.project_references.is_empty() {
         return Err(bridge_error(
             "project references are not admitted as one TSZ project",
+        ));
+    }
+    if forest {
+        let expected = config.map_or(&[][..], |config| config.references.as_ref());
+        if report.project_references.len() != expected.len() {
+            return Err(closure_mismatch(
+                "Compiler API reference graph differs from captured config",
+            ));
+        }
+        for (reported, expected) in report.project_references.iter().zip(expected) {
+            let path = reported
+                .as_str()
+                .ok_or_else(|| closure_mismatch("Compiler API reference path is not text"))?;
+            let canonical = resolver
+                .realpath(Path::new(path))?
+                .ok_or_else(|| closure_mismatch("Compiler API reference config disappeared"))?;
+            if normalize_path(&canonical) != normalize_path(expected) {
+                return Err(closure_mismatch(
+                    "Compiler API reference selects another config",
+                ));
+            }
+        }
+    }
+    let solution = forest && report.root_names.is_empty() && !report.project_references.is_empty();
+    if forest && report.root_names.is_empty() && report.project_references.is_empty() {
+        return Err(closure_mismatch(
+            "an empty config with no references is not a solution program",
+        ));
+    }
+    if solution && !report.files.is_empty() {
+        return Err(closure_mismatch(
+            "solution container unexpectedly has Compiler API source members",
         ));
     }
     if let Some(option) = report.unsupported_options.first() {
@@ -960,8 +1332,12 @@ pub(crate) fn build_native_inputs(
         ));
     }
     let metrics = report.closure_metrics();
-    let closure_work_units =
-        replay_observations(resolver, &report.accesses, &report.directory_views, metrics)?;
+    let previous_work = aggregate.replay_work;
+    resolver.charge_closure_replay_work(
+        usize::try_from(previous_work).map_err(|_| bridge_error("forest replay work overflow"))?,
+        "previous forest programs",
+    )?;
+    replay_observations(resolver, &report.accesses, &report.directory_views, metrics)?;
 
     let checker = compiler_api_checker_options(&report.compiler_options)?;
     let mut virtual_by_canonical = BTreeMap::<PathBuf, String>::new();
@@ -982,6 +1358,14 @@ pub(crate) fn build_native_inputs(
                 file.path
             )));
         };
+        aggregate.source_bytes = aggregate.source_bytes.saturating_add(admitted.bytes.len());
+        if aggregate.source_bytes > 256 * 1024 * 1024 {
+            return Err(closure_limit(
+                "forest source text",
+                aggregate.source_bytes,
+                256 * 1024 * 1024,
+            ));
+        }
         let text = std::str::from_utf8(&admitted.bytes)
             .map_err(|_| bridge_error("a compiler program source is not UTF-8"))?;
         if compiler_api_utf8_text_sha256(&admitted.bytes)? != file.sha256 {
@@ -1013,10 +1397,20 @@ pub(crate) fn build_native_inputs(
             });
         }
         if is_library {
-            let input = TszLibraryInput::from_utf8(virtual_path, admitted.bytes.to_vec()).map_err(
-                |error| bridge_error(&format!("compiler library input was rejected: {error}")),
-            )?;
-            libraries.push(input.into_lib_file());
+            let key = (virtual_path.clone(), admitted.content_id);
+            let library = match aggregate.libraries.get(&key) {
+                Some(library) => library.clone(),
+                None => {
+                    let input = TszLibraryInput::from_utf8(virtual_path, admitted.bytes.to_vec())
+                        .map_err(|error| {
+                        bridge_error(&format!("compiler library input was rejected: {error}"))
+                    })?;
+                    let library = input.into_lib_file();
+                    aggregate.libraries.insert(key, library.clone());
+                    library
+                }
+            };
+            libraries.push(library);
         } else {
             source_by_virtual.insert(virtual_path, text.to_owned());
         }
@@ -1096,6 +1490,11 @@ pub(crate) fn build_native_inputs(
             if let Some(path) = virtual_by_canonical.get(&canonical_target) {
                 TszProjectModuleResolutionTarget::File { path: path.clone() }
             } else {
+                if forest {
+                    return Err(closure_mismatch(
+                        "resolved reference target is outside its actual owning program",
+                    ));
+                }
                 let mut identity = Sha256::new();
                 identity.update(b"typescript.external-module-target.v1\0");
                 identity.update(target_input.content_id.as_ref());
@@ -1147,7 +1546,12 @@ pub(crate) fn build_native_inputs(
     let directory_views = report.directory_views.into_boxed_slice();
     let access_digest = compiler_access_digest(&compiler_accesses, &directory_views, metrics)?;
     check_admission_control(deadline, cancelled)?;
-    let resolver_witness = resolver.seal()?;
+    aggregate.replay_work = resolver.closure_replay_work_units();
+    let closure_work_units = aggregate.replay_work.saturating_sub(previous_work);
+    let resolver_witness = match validated_host {
+        Some(host) => resolver.seal_with_host(host)?,
+        None => resolver.seal()?,
+    };
     let environment = program_environment_fingerprint(
         inputs,
         config,
@@ -1182,6 +1586,7 @@ pub(crate) fn build_native_inputs(
         },
         package_membership,
         work_units,
+        solution,
     })
 }
 
@@ -1208,13 +1613,38 @@ fn run_program_bridge(
     deadline: Instant,
     cancelled: &AtomicBool,
 ) -> Result<ProgramReport, TypeScriptProjectHostError> {
+    run_program_bridge_with_forest_limits(
+        inputs,
+        config_path,
+        package_sources,
+        compiler_api_path,
+        false,
+        &ForestAdmissionBudget::default().child_limits(),
+        &mut 0,
+        deadline,
+        cancelled,
+    )
+}
+
+fn run_program_bridge_with_forest_limits(
+    inputs: &TypeScriptProjectInputs<'_>,
+    config_path: Option<&Path>,
+    package_sources: &[PackageSource<'_>],
+    compiler_api_path: &Path,
+    forest: bool,
+    child_limits: &serde_json::Value,
+    aggregate_report_bytes: &mut usize,
+    deadline: Instant,
+    cancelled: &AtomicBool,
+) -> Result<ProgramReport, TypeScriptProjectHostError> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
         return Err(TypeScriptProjectHostError::CompilerProgramDeadline);
     }
     let limits = ToolchainProbeLimits::new(
         remaining,
-        NonZeroUsize::new(MAX_BRIDGE_STDOUT_BYTES).expect("nonzero bridge stream cap"),
+        NonZeroUsize::new(MAX_BRIDGE_STDOUT_BYTES.saturating_sub(*aggregate_report_bytes))
+            .ok_or_else(|| bridge_error("forest report stream allowance exhausted"))?,
     )
     .map_err(|error| bridge_error(&error.to_string()))?;
     // A configless package uses exactly the caller's already selected source frontier.
@@ -1235,6 +1665,11 @@ fn run_program_bridge(
             .unwrap_or_default(),
         OsString::from(inputs.workspace_root.as_os_str()),
         OsString::from(inferred_roots),
+        OsString::from(if forest { "forest" } else { "single" }),
+        OsString::from(
+            serde_json::to_string(child_limits)
+                .map_err(|_| bridge_error("forest allowance encoding"))?,
+        ),
     ];
     let output = run_typescript_program_bridge(
         inputs.node_path,
@@ -1245,6 +1680,7 @@ fn run_program_bridge(
         cancelled,
     )
     .map_err(|source| TypeScriptProjectHostError::CompilerProgramProbe { source })?;
+    *aggregate_report_bytes = aggregate_report_bytes.saturating_add(output.len());
     serde_json::from_slice(&output).map_err(|error| {
         bridge_error(&format!(
             "compiler API output was not bounded valid JSON: {error}"
@@ -2451,6 +2887,30 @@ process.stdout.write(JSON.stringify(outputs));
             "cooperative cancellation retains precedence over elapsed time"
         );
         assert!(super::check_admission_control(future, &AtomicBool::new(false)).is_ok());
+    }
+
+    #[test]
+    fn forest_child_uses_only_remaining_shared_bridge_allowance() {
+        let mut budget = super::ForestAdmissionBudget::default();
+        budget.files = super::MAX_BRIDGE_FILES - 1;
+        budget.requests = super::MAX_BRIDGE_REQUESTS;
+        budget.metrics.access_operations = super::MAX_BRIDGE_ACCESS_OPERATIONS - 3;
+        budget.metrics.matcher_pattern_bytes = super::MAX_BRIDGE_MATCHER_PATTERN_BYTES;
+        let remaining = budget.child_limits();
+        assert_eq!(remaining["files"], 1);
+        assert_eq!(remaining["requests"], 0);
+        assert_eq!(remaining["access_operations"], 3);
+        assert_eq!(remaining["matcher_pattern_bytes"], 0);
+        let report: super::ProgramReport = serde_json::from_value(json!({
+            "schema":1,"version":"5.9.3","config_path":"","compiler_options":{},
+            "root_names":[],"project_references":[],"files":[],"resolutions":[],
+            "access_operations":4
+        }))
+        .unwrap();
+        assert!(matches!(
+            budget.retain(&report),
+            Err(super::TypeScriptProjectHostError::CompilerIoClosureLimit { .. })
+        ));
     }
 
     #[test]

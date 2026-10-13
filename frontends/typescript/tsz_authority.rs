@@ -226,13 +226,19 @@ pub struct TszCompilerOptionsError {
 pub fn checker_options_from_compiler_api_json(
     source: &str,
 ) -> Result<TszCheckerOptions, TszCompilerOptionsError> {
-    let config = tsz::config::parse_tsconfig(source).map_err(|error| {
-        TszCompilerOptionsError {
-            message: error.to_string().into_boxed_str(),
-        }
+    let config = tsz::config::parse_tsconfig(source).map_err(|error| TszCompilerOptionsError {
+        message: error.to_string().into_boxed_str(),
     })?;
     tsz::config::resolve_compiler_options(config.compiler_options.as_ref())
-        .map(|resolved| resolved.checker)
+        .map(|resolved| {
+            // Resolver options also control checker TS5097 diagnostics. Keep
+            // their admitted values when constructing the project checker.
+            let mut checker = resolved.checker;
+            checker.allow_importing_ts_extensions = resolved.allow_importing_ts_extensions;
+            checker.rewrite_relative_import_extensions =
+                resolved.rewrite_relative_import_extensions;
+            checker
+        })
         .map_err(|error| TszCompilerOptionsError {
             message: error.to_string().into_boxed_str(),
         })
@@ -1323,6 +1329,54 @@ mod tests {
         assert!(checker.module_explicitly_set);
     }
 
+    #[test]
+    fn compiler_api_options_preserve_vite_flags_and_raw_isolated_modules() {
+        let parse = |raw_isolated| {
+            checker_options_from_compiler_api_json(&format!(
+            r#"{{"compilerOptions":{{"target":"ES2022","module":"ESNext","moduleResolution":"Bundler","verbatimModuleSyntax":true,"isolatedModules":{raw_isolated},"erasableSyntaxOnly":true,"allowImportingTsExtensions":true,"noEmit":true}}}}"#
+        )).expect("modeled Vite checker flags")
+        };
+        let implied = parse(false);
+        let explicit = parse(true);
+        assert!(implied.verbatim_module_syntax && implied.isolated_modules);
+        assert!(implied.isolated_modules_from_verbatim);
+        assert!(explicit.isolated_modules && !explicit.isolated_modules_from_verbatim);
+        assert!(implied.erasable_syntax_only && implied.allow_importing_ts_extensions);
+        assert_ne!(
+            checker_options_digest(&implied),
+            checker_options_digest(&explicit)
+        );
+    }
+
+    #[test]
+    fn admitted_erasable_syntax_option_changes_actual_checker_diagnostics() {
+        let run = |erasable| {
+            let mut authority = TszProjectAuthority::new();
+            let mut policy = options();
+            policy.checker = checker_options_from_compiler_api_json(&format!(
+                r#"{{"compilerOptions":{{"target":"ES2022","module":"ESNext","noLib":true,"erasableSyntaxOnly":{erasable}}}}"#
+            )).expect("checker options");
+            authority
+                .update(
+                    vec![input("src/value.ts", "export enum Value { A, B }")],
+                    policy,
+                    &[],
+                )
+                .expect("actual checker");
+            authority
+                .project()
+                .unwrap()
+                .check_result()
+                .file_results
+                .iter()
+                .flat_map(|file| &file.diagnostics)
+                .map(|d| d.code)
+                .collect::<Vec<_>>()
+        };
+        assert!(run(true).contains(&1294));
+        assert!(!run(false).contains(&1294));
+    }
+
     fn input(path: &str, source: &str) -> TszFileInput {
         TszFileInput {
             path: path.to_owned(),
@@ -1660,16 +1714,10 @@ mod tests {
             };
             let opposite_target = checker
                 .ctx
-                .resolve_import_target_from_file_for_request(
-                    main,
-                    specifier,
-                    Some(opposite),
-                    kind,
-                )
+                .resolve_import_target_from_file_for_request(main, specifier, Some(opposite), kind)
                 .unwrap();
             assert_ne!(
-                opposite_target,
-                target,
+                opposite_target, target,
                 "the other admitted mode cannot borrow this syntax target"
             );
             target
