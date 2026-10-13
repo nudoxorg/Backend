@@ -2509,6 +2509,7 @@ impl Window {
                     })
                 },
             });
+            platform_window.a11y_update_window_bounds();
 
             // A11y can be activated at any time, and so we cannot compute a
             // correct `TreeUpdate` on-demand. When this happens, we return a
@@ -3714,6 +3715,7 @@ impl Window {
         self.viewport_size = self.platform_window.content_size();
         self.display_id = self.platform_window.display().map(|display| display.id());
         self.mouse_position = self.platform_window.mouse_position();
+        self.platform_window.a11y_update_window_bounds();
 
         self.refresh();
 
