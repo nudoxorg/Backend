@@ -1246,11 +1246,12 @@ impl<'a> ParallelCheckPlan<'a> {
         }
     }
 
-    /// Sort by position then deduplicate by `(start, code)` for deterministic
-    /// output regardless of thread scheduling.
+    /// Sort by the diagnostic comparator and remove only identical records.
+    /// Distinct missing globals can share position zero and TS2318, while
+    /// different member faults can share an anchor and diagnostic code.
     fn sort_and_dedup(diagnostics: &mut Vec<Diagnostic>) {
         diagnostics.sort_by(|a, b| a.compare(b));
-        diagnostics.dedup_by(|a, b| a.start == b.start && a.code == b.code);
+        diagnostics.dedup();
     }
 
     /// Lend a project-configured checker with all shared program context.
@@ -1387,8 +1388,9 @@ impl<'a> ParallelCheckPlan<'a> {
 
         suppress_parallel_ts2339_cascade_diagnostics(file.arena.as_ref(), &mut diagnostics);
 
-        // Deduplicate within each file: same (start, code) = same diagnostic.
-        diagnostics.dedup_by(|a, b| a.start == b.start && a.code == b.code);
+        // Preserve distinct messages, locations, lengths and related evidence
+        // even when two diagnostics have the same anchor and code.
+        diagnostics.dedup();
 
         FileCheckResult {
             file_idx,

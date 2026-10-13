@@ -26,6 +26,64 @@ fn assert_same_results(actual: &CheckResult, expected: &CheckResult) {
     }
 }
 
+#[test]
+fn checker_partition_preserves_distinct_missing_global_diagnostics() {
+    let program = compile_files_with_libs(
+        vec![(
+            "src/main.ts".to_owned(),
+            "export const value = 1;".to_owned(),
+        )],
+        &[],
+    );
+    let options = CheckerOptions {
+        no_lib: true,
+        module: tsz_common::common::ModuleKind::ESNext,
+        ..CheckerOptions::default()
+    };
+    let plan = ParallelCheckPlan::build(
+        &program,
+        &options,
+        &[],
+        ProjectSemanticOptions::declaration_scoped(),
+        None,
+        None,
+    )
+    .unwrap();
+    let result = plan.check_file_partition(0, &program.files).unwrap();
+    let globals = result[0]
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.code == 2318)
+        .collect::<Vec<_>>();
+    assert_eq!(globals.len(), 10, "{:?}", result[0].diagnostics);
+    for name in [
+        "Array",
+        "Boolean",
+        "CallableFunction",
+        "Function",
+        "IArguments",
+        "NewableFunction",
+        "Number",
+        "Object",
+        "RegExp",
+        "String",
+    ] {
+        assert_eq!(
+            globals
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic.message_text == format!("Cannot find global type '{name}'.")
+                })
+                .count(),
+            1,
+            "each missing global keeps its distinct native message"
+        );
+    }
+    assert!(globals.iter().all(|diagnostic| {
+        diagnostic.file.is_empty() && diagnostic.start == 0 && diagnostic.length == 0
+    }));
+}
+
 fn in_memory_lib() -> Arc<LibFile> {
     in_memory_lib_named("lib/custom.d.ts")
 }
