@@ -342,7 +342,7 @@ fn index_start_tool() -> Value {
     job_tool(
         INDEX_START_TOOL,
         "Start Indexing",
-        "Start indexing one local package or pinned package URL. Accepted or active work includes index_poll with the exact next observation. With operation_key, poll the durable key across owner restarts; otherwise poll the exact owner-issued ticket, which becomes unknown after an owner restart. Terminal receipts do not require polling.",
+        "Start indexing one local package or pinned package URL. Accepted or active work includes index_poll with the exact next observation. Default requests share a saved durable key with backend.index and CLI add, joining matching active work. An explicit operation_key retains that exact identity across owner restarts. Active receipts also retain the owner-issued ticket for cancellation. Terminal receipts do not require polling.",
         json!({
             "type": "object",
             "properties": {

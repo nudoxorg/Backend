@@ -311,7 +311,7 @@ impl fmt::Display for ClientError {
                 cause,
             } => write!(
                 formatter,
-                "saved index operation {operation_key} has no admitted outcome; delivery/replacement observation: {cause}"
+                "delivery of saved index operation {operation_key} is unconfirmed; it may already be queued or accepted; no receipt has been observed; transport/recovery observation: {cause}"
             ),
             Self::RemoteDeadlineExceeded => {
                 formatter.write_str("remote index exceeded the bounded client request deadline")
