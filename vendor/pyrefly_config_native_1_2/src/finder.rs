@@ -1,0 +1,329 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+use std::ffi::OsString;
+use std::iter;
+use std::mem;
+use std::path::Path;
+use std::sync::Arc;
+
+use dupe::Dupe;
+use pyrefly_python::module_name::ModuleName;
+use pyrefly_python::module_name::ModuleNameWithKind;
+use pyrefly_python::module_path::ModulePath;
+use pyrefly_python::module_path::ModulePathDetails;
+use pyrefly_util::absolutize::Absolutize as _;
+use pyrefly_util::arc_id::ArcId;
+use pyrefly_util::lock::Mutex;
+use pyrefly_util::upward_search::FileGroup;
+use pyrefly_util::upward_search::UpwardSearch;
+use tracing::Level;
+use tracing::debug;
+use tracing::enabled;
+use tracing::error;
+use tracing::info;
+use tracing::warn;
+
+use crate::config::ConfigFile;
+use crate::config::ConfigSource;
+use crate::error_kind::Severity;
+
+pub struct ConfigError {
+    severity: Severity,
+    msg: anyhow::Error,
+}
+
+impl ConfigError {
+    pub fn error(msg: anyhow::Error) -> Self {
+        Self {
+            severity: Severity::Error,
+            msg,
+        }
+    }
+
+    pub fn warn(msg: anyhow::Error) -> Self {
+        Self {
+            severity: Severity::Warn,
+            msg,
+        }
+    }
+
+    pub fn print(&self) {
+        match self.severity {
+            Severity::Error => {
+                error!("{:#}", self.msg);
+            }
+            Severity::Warn => {
+                warn!("{:#}", self.msg);
+            }
+            Severity::Info => {
+                info!("{:#}", self.msg);
+            }
+            Severity::Ignore => {}
+        }
+    }
+
+    pub fn context(self, context: String) -> Self {
+        ConfigError {
+            severity: self.severity,
+            msg: self.msg.context(context),
+        }
+    }
+
+    pub fn severity(&self) -> Severity {
+        self.severity
+    }
+
+    pub fn get_message(&self) -> String {
+        self.msg.to_string()
+    }
+
+    /// Borrows the genuine native cause before loader file-path context.
+    ///
+    /// Callers can format this directly into their bounded diagnostic sink
+    /// without allocating or parsing the contextual `get_message` string.
+    pub fn cause(&self) -> &(dyn std::error::Error + 'static) {
+        self.msg.root_cause()
+    }
+
+    /// Borrows the genuine cause followed by each native context, inside-out.
+    /// No contextual message is reconstructed or parsed from rendered text.
+    pub fn cause_chain(&self) -> impl Iterator<Item = &(dyn std::error::Error + 'static)> {
+        self.msg.chain().rev()
+    }
+}
+
+#[cfg(test)]
+mod nudox_cause_tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_native_cause_and_severity_survive_nested_loader_context() {
+        let warning = ConfigError::warn(anyhow::anyhow!("genuine inner native warning"))
+            .context("first loader path".to_owned())
+            .context("second loader path".to_owned());
+        assert_eq!(warning.severity(), Severity::Warn);
+        assert_eq!(warning.get_message(), "second loader path");
+        assert_eq!(warning.cause().to_string(), "genuine inner native warning");
+        assert_eq!(
+            warning
+                .cause_chain()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            [
+                "genuine inner native warning",
+                "first loader path",
+                "second loader path"
+            ]
+        );
+    }
+}
+
+/// When debugging is enabled, log errors.
+pub fn debug_log(errors: Vec<ConfigError>) {
+    if enabled!(Level::DEBUG) {
+        for e in errors {
+            debug!("{:#}", e.msg);
+        }
+    }
+}
+
+/// Function to run before checking cached state.
+type BeforeCallback =
+    Box<dyn Fn(ModuleName, &ModulePath) -> anyhow::Result<Option<ArcId<ConfigFile>>> + Send + Sync>;
+
+/// Function to load a config file from disk.
+type LoadCallback = Box<dyn Fn(&Path) -> (ArcId<ConfigFile>, Vec<ConfigError>) + Send + Sync>;
+
+/// Fallback function when no config file exists or loading fails.
+type FallbackCallback =
+    Box<dyn Fn(ModuleNameWithKind, &ModulePath) -> ArcId<ConfigFile> + Send + Sync>;
+
+/// A way to find a config file given a directory or Python file.
+/// Uses a lot of caching.
+pub struct ConfigFinder {
+    /// The cached state, with previously found entries.
+    search: UpwardSearch<ArcId<ConfigFile>>,
+    /// The errors that have occurred when loading.
+    errors: Arc<Mutex<Vec<ConfigError>>>,
+    /// If this returns a value, it is _not_ cached.
+    /// If this returns anything other than `Ok`, the rest of the functions are used.
+    before: BeforeCallback,
+    /// If there is no config file, or loading it fails, use this fallback.
+    fallback: FallbackCallback,
+    clear_extra_caches: Box<dyn Fn() + Send + Sync>,
+}
+
+impl ConfigFinder {
+    /// Create a new ConfigFinder a way to load a config file, and a default if that errors or there is no file.
+    pub fn new(
+        load: LoadCallback,
+        fallback: FallbackCallback,
+        clear_extra_caches: Box<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        Self::new_custom(
+            Box::new(|_, _| Ok(None)),
+            load,
+            fallback,
+            clear_extra_caches,
+        )
+    }
+
+    /// Create a new ConfigFinder that always returns the same constant.
+    pub fn new_constant(constant: ArcId<ConfigFile>) -> Self {
+        let c1 = constant.dupe();
+        let c2 = constant.dupe();
+        let c3 = constant;
+
+        Self::new_custom(
+            Box::new(move |_, _| Ok(Some(c1.dupe()))),
+            Box::new(move |_| (c2.dupe(), Vec::new())),
+            Box::new(move |_, _| c3.dupe()),
+            Box::new(|| {}),
+        )
+    }
+
+    /// Create a new ConfigFinder, but with a custom way to produce a result from a Python file.
+    /// If the `before` function fails to produce a config, then the other methods will be used.
+    /// The `before` function is not cached in any way.
+    pub fn new_custom(
+        before: BeforeCallback,
+        load: LoadCallback,
+        fallback: FallbackCallback,
+        clear_extra_caches: Box<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let errors2 = errors.dupe();
+
+        Self {
+            search: UpwardSearch::new_grouped(
+                vec![
+                    // Group 1: Prefer config files with actual Pyrefly configuration.
+                    // For `pyproject.toml`, this requires a `[tool.pyrefly]` section
+                    // (even if empty). A real pyrefly config always takes highest
+                    // priority, even over Python tool markers in closer directories.
+                    FileGroup::new(
+                        ConfigFile::CONFIG_FILE_NAMES
+                            .iter()
+                            .map(OsString::from)
+                            .collect(),
+                        |c: &ArcId<ConfigFile>| {
+                            matches!(
+                                c.source,
+                                ConfigSource::File(_) | ConfigSource::FailedParse(_)
+                            )
+                        },
+                    ),
+                    // Group 2: pyproject.toml files with Python tool sections
+                    // (e.g. [tool.ruff], [tool.mypy], [tool.pyright]) are a strong
+                    // signal of a Python project root. They take priority over bare
+                    // markers but never supersede real pyrefly configuration.
+                    FileGroup::new(
+                        iter::once(&ConfigFile::PYPROJECT_FILE_NAME)
+                            .map(OsString::from)
+                            .collect(),
+                        |c: &ArcId<ConfigFile>| {
+                            matches!(c.source, ConfigSource::PythonToolMarker(_))
+                        },
+                    ),
+                    // Group 3: Fallback search, taking any marker files that we can
+                    // find. For `pyproject.toml`, no `[tool.pyrefly]` is required
+                    // (though previous search groups would have ruled that out already).
+                    FileGroup::new_simple(
+                        iter::once(&ConfigFile::PYPROJECT_FILE_NAME)
+                            .chain(ConfigFile::ADDITIONAL_ROOT_FILE_NAMES)
+                            .map(OsString::from)
+                            .collect(),
+                    ),
+                ],
+                move |x| {
+                    let (v, errors) = load(x);
+                    errors2.lock().extend(errors);
+                    v
+                },
+            ),
+            errors,
+            before,
+            fallback,
+            clear_extra_caches,
+        }
+    }
+
+    /// Invalidate all data stored in the config.
+    pub fn clear(&self) {
+        self.search.clear();
+        (self.clear_extra_caches)();
+        *self.errors.lock() = Vec::new();
+    }
+
+    /// Collect all the current errors that have been produced, and clear them.
+    pub fn errors(&self) -> Vec<ConfigError> {
+        mem::take(&mut self.errors.lock())
+    }
+
+    pub fn add_errors(&self, errors: Vec<ConfigError>) {
+        self.errors.lock().extend(errors);
+    }
+
+    /// Get the config file associated with a (non-Python) file. If no config exists
+    /// on disk, return `None`.
+    ///
+    /// When searching for a config for a Python file, prefer [`Self::python_file`],
+    /// which will construct a synthetic config.
+    pub fn file(&self, file: &Path) -> Option<ArcId<ConfigFile>> {
+        self.directory(file.parent()?)
+    }
+
+    /// Get the config file associated with a directory. If no config exists on disk,
+    /// returns `None`.
+    pub fn directory(&self, dir: &Path) -> Option<ArcId<ConfigFile>> {
+        self.search.directory(dir)
+    }
+
+    /// Get the config file given a Python file. If no config exists on disk, one will be
+    /// constructed.
+    pub fn python_file(&self, name: ModuleNameWithKind, path: &ModulePath) -> ArcId<ConfigFile> {
+        let module_name = name.name();
+        match (self.before)(module_name, path) {
+            Ok(Some(x)) => return x,
+            Ok(None) => {}
+            Err(e) => {
+                self.errors.lock().push(ConfigError::error(e));
+            }
+        }
+
+        let f = |dir: Option<&Path>| match dir {
+            Some(parent) => self
+                .search
+                .directory_absolute(parent)
+                .unwrap_or_else(|| (self.fallback)(name, path)),
+            None => (self.fallback)(name, path),
+        };
+
+        match path.details() {
+            ModulePathDetails::FileSystem(x) | ModulePathDetails::Memory(x) => {
+                let absolute = x.absolutize();
+                f(absolute.parent())
+            }
+            ModulePathDetails::Namespace(x) => f(Some(&x.absolutize())),
+            ModulePathDetails::BundledTypeshed(_) => f(None),
+            ModulePathDetails::BundledTypeshedThirdParty(_) => f(None),
+            ModulePathDetails::BundledThirdParty(_) => f(None),
+        }
+    }
+
+    /// If we have an error, print all the errors that the config finder has accumulated. This is used
+    /// to ensure that config errors are still surfaced if we exit early.
+    pub fn checkpoint<R, E>(&self, result: Result<R, E>) -> Result<R, E> {
+        if result.is_err() {
+            for error in self.errors() {
+                error.print();
+            }
+        }
+        result
+    }
+}

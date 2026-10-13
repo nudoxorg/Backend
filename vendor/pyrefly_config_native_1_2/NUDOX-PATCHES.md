@@ -1,0 +1,7 @@
+# Native configuration cause adapter
+
+Source: `facebook/pyrefly` revision `30b5ca5250db9f2d9264d5e889662cf1224a75b7`, crate `pyrefly_config` version `1.2.0-dev.1`. `NUDOX-UPSTREAM.json` records all 41 tracked crate files, the root MIT license, original Git blob IDs, SHA-256 hashes and the two changed postimages.
+
+The pinned native loader attaches the configuration path as `anyhow` context. Its public `get_message()` then returns only that context, hiding the genuine parser/warning cause. `ConfigError::cause()` borrows the original root error with the exact `dyn Error` return type exposed by pinned `anyhow::root_cause()`, without reconstructing its text or changing severity. `cause_chain()` borrows the genuine inside-out chain for configure-time field/file contexts. The frontend writes its `Display` directly into the existing bounded, cancellable diagnostic sink. Configuration refusal and exact captured-byte identity remain unchanged.
+
+The workspace patches this one native crate for every direct/transitive user, preserving a single native `ConfigFile` type. Sibling native crates retain the same upstream revision. The standalone crate is excluded from the product workspace; its upstream tests and test dependencies remain present. Product frontend controls exercise the actual native file loader, unsupported options, invalid preset values, warning severity, exact source spans, UTF-8 truncation and cancellation. Native execution must be reported separately from source review.

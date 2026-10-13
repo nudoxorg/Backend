@@ -1,0 +1,3569 @@
+/*
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */
+
+use std::borrow::Cow;
+use std::ffi::OsStr;
+use std::fmt;
+use std::fmt::Display;
+use std::mem;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::LazyLock;
+use std::time::Instant;
+
+use anyhow::Context;
+use anyhow::Result;
+use anyhow::anyhow;
+use clap::ValueEnum;
+use derivative::Derivative;
+use dupe::Dupe as _;
+use itertools::Itertools;
+use pyrefly_build::BuildSystem;
+use pyrefly_build::handle::Handle;
+use pyrefly_build::source_db::SourceDatabase;
+use pyrefly_build::source_db::Target;
+use pyrefly_python::COMPILED_FILE_SUFFIXES;
+use pyrefly_python::PYTHON_EXTENSIONS;
+use pyrefly_python::ignore::Tool;
+use pyrefly_python::module_name::ModuleName;
+use pyrefly_python::module_name::ModuleNameWithKind;
+use pyrefly_python::module_path::ModulePath;
+use pyrefly_python::sys_info::PythonPlatform;
+use pyrefly_python::sys_info::PythonVersion;
+use pyrefly_python::sys_info::SysInfo;
+use pyrefly_util::absolutize::Absolutize as _;
+use pyrefly_util::arc_id::ArcId;
+use pyrefly_util::fs_anyhow;
+use pyrefly_util::globs::FilteredGlobs;
+use pyrefly_util::globs::Glob;
+use pyrefly_util::globs::Globs;
+use pyrefly_util::globs::HiddenDirFilter;
+use pyrefly_util::interned_path::InternedPath;
+use pyrefly_util::lock::RwLock;
+use pyrefly_util::prelude::VecExt;
+use pyrefly_util::telemetry::SubTaskTelemetry;
+use pyrefly_util::telemetry::TelemetryEventKind;
+use pyrefly_util::telemetry::TelemetrySourceDbRebuildInstanceStats;
+use pyrefly_util::telemetry::TelemetrySourceDbRebuildStats;
+use pyrefly_util::watch_pattern::WatchPattern;
+use serde::Deserialize;
+use serde::Serialize;
+use starlark_map::small_map::SmallMap;
+use starlark_map::small_set::SmallSet;
+use tracing::debug;
+use tracing::error;
+
+use crate::base::ConfigBase;
+use crate::base::InferReturnTypes;
+use crate::base::Preset;
+use crate::base::RecursionLimitConfig;
+use crate::environment::environment::PythonEnvironment;
+use crate::environment::interpreters::Interpreters;
+use crate::error::ErrorConfig;
+use crate::error::ErrorDisplayConfig;
+use crate::error_kind::ErrorKind;
+use crate::error_kind::Severity;
+use crate::finder::ConfigError;
+use crate::migration::run::MigratedFromKind;
+use crate::module_wildcard::Match;
+use crate::pyproject::PyProject;
+
+pub static GENERATED_FILE_CONFIG_OVERRIDE: LazyLock<
+    RwLock<SmallMap<InternedPath, ArcId<ConfigFile>>>,
+> = LazyLock::new(|| RwLock::new(SmallMap::new()));
+
+#[derive(Debug, PartialEq, Eq, Deserialize, Serialize, Clone)]
+pub struct SubConfig {
+    pub matches: Glob,
+    #[serde(flatten)]
+    pub settings: ConfigBase,
+}
+
+impl SubConfig {
+    fn rewrite_with_path_to_config(&mut self, config_root: &Path) {
+        self.matches = self.matches.clone().from_root(config_root);
+    }
+}
+
+/// Why a `ConfigFile` was synthesized rather than loaded from a real config
+/// on disk. Set by `resolve_unconfigured_config` and read by the LSP status
+/// bar and the CLI upsell to explain to the user how Pyrefly chose its
+/// behavior in the absence of a `pyrefly.toml` / `[tool.pyrefly]` section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SynthesizedPresetReason {
+    /// Nothing migrate-able was found near the source file. Pyrefly fell
+    /// back to the basic preset.
+    NoNearbyConfig,
+    /// A mypy or pyright config was found nearby and its settings
+    /// were migrated in memory. The wrapped `MigratedFromKind`
+    /// records both which type checker (mypy → resulting preset is
+    /// `Legacy`; pyright → `Default`) and which kind of file the
+    /// settings physically lived in (a dedicated `mypy.ini` /
+    /// `pyrightconfig.json` vs. a `[tool.mypy]` / `[tool.pyright]`
+    /// section in `pyproject.toml`). Both axes affect the surfaced
+    /// upsell wording.
+    Migrated(MigratedFromKind),
+    /// The user explicitly chose a preset — either via the IDE
+    /// workspace setting `typeCheckingMode` or the `--preset` CLI
+    /// flag — overriding any auto-detection.
+    UserOverride,
+}
+
+/// Where did this config come from?
+#[derive(Debug, PartialEq, Eq, Clone, Default)]
+pub enum ConfigSource {
+    /// This config was read from a file
+    File(PathBuf),
+    /// This config was synthesized with path-specific defaults, based on the location of a
+    /// `pyproject.toml` file that lacks `[tool.pyrefly]` but has sections for other Python
+    /// tools (e.g., `[tool.ruff]`, `[tool.mypy]`, `[tool.pyright]`), making it a strong
+    /// signal that this directory is a Python project root. Treated like `Marker` for
+    /// downstream behavior, but given higher priority during config discovery to prevent
+    /// a parent directory's config from shadowing a nested Python project.
+    PythonToolMarker(PathBuf),
+    /// This config was synthesized with path-specific defaults, based on the location of a
+    /// "marker" file that contains no pyrefly configuration but marks a project root (e.g., a
+    /// `pyproject.toml` file with no `[tool.pyrefly]` section)
+    Marker(PathBuf),
+    /// We found a config file and attempted to read/parse it, but failed. The config values
+    /// are defaults, but we respect the file's location for project root detection (similar
+    /// to `Marker`).
+    FailedParse(PathBuf),
+    #[default]
+    Synthetic,
+}
+
+#[derive(
+    Debug,
+    PartialEq,
+    Eq,
+    Deserialize,
+    Serialize,
+    Clone,
+    Copy,
+    Default,
+    ValueEnum
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum OutputFormat {
+    /// Minimal text output, one line per error
+    MinText,
+    #[default]
+    /// Full, verbose text output
+    FullText,
+    /// JSON output
+    Json,
+    /// Emit GitHub Actions workflow commands
+    Github,
+    /// Emit JUnit XML
+    JunitXml,
+    /// Only show error count, omitting individual errors
+    OmitErrors,
+}
+
+impl ConfigSource {
+    pub fn root(&self) -> Option<&Path> {
+        match &self {
+            Self::File(path)
+            | Self::PythonToolMarker(path)
+            | Self::Marker(path)
+            | Self::FailedParse(path) => path.parent(),
+            Self::Synthetic => None,
+        }
+    }
+}
+
+/// Where the importable Python code in a project lives. There are two common Python project layouts, src and flat.
+/// See: https://packaging.python.org/en/latest/discussions/src-layout-vs-flat-layout/#src-layout-vs-flat-layout
+#[derive(Default)]
+pub enum ProjectLayout {
+    /// Python packages live directly in the project root
+    #[default]
+    Flat,
+    /// Python packages live in a src/ subdirectory
+    Src,
+    /// The parent directory of the project root is the import root
+    /// (this is how pandas is set up for some reason)
+    Parent,
+}
+
+impl ProjectLayout {
+    pub fn new(project_root: &Path) -> Self {
+        let error = |path: PathBuf, error| {
+            debug!(
+                "Error checking for existence of path {}: {}",
+                path.display(),
+                error
+            );
+            Self::default()
+        };
+        let src_subdir = project_root.join("src");
+        match src_subdir.try_exists() {
+            Ok(true) => return Self::Src,
+            Ok(false) => (),
+            Err(e) => return error(src_subdir, e),
+        }
+        for suffix in ["py", "pyi"] {
+            let init_file = project_root.join(format!("__init__.{suffix}"));
+            match init_file.try_exists() {
+                Ok(true) => return Self::Parent,
+                Ok(false) => (),
+                Err(e) => return error(init_file, e),
+            }
+        }
+        Self::Flat
+    }
+
+    fn get_import_root(&self, project_root: &Path) -> PathBuf {
+        match self {
+            Self::Flat => project_root.to_path_buf(),
+            Self::Src => project_root.join("src"),
+            Self::Parent => project_root.parent().unwrap_or(project_root).to_path_buf(),
+        }
+    }
+}
+
+/// A cache for managing and producing a fallback search path from
+/// some directory up to and including a root (`up_to`, which is usually a
+/// config directory or filesystem root if none is provided).
+/// The fallback search path consists of a given directory and its ancestors
+/// up to `up_to` or `/`.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DirectoryRelativeFallbackSearchPathCache {
+    /// The cache of previously found answers.
+    cache: ArcId<RwLock<SmallMap<PathBuf, Arc<Vec<PathBuf>>>>>,
+    /// When running [`Self::get_ancestors`], produce paths up to and including
+    /// this path. If it is `None`, produce paths up to `/`.
+    up_to: Option<PathBuf>,
+}
+
+impl DirectoryRelativeFallbackSearchPathCache {
+    pub fn new(up_to: Option<PathBuf>) -> Self {
+        Self {
+            cache: ArcId::new(RwLock::new(SmallMap::new())),
+            up_to,
+        }
+    }
+
+    pub fn clear(&self) {
+        self.cache.write().clear()
+    }
+
+    /// Produce a vec of path ancestors from the provided path up to and including
+    /// `up_to`. If any values were previously filled in, we return the cached value.
+    /// Generally, this should be the directory containing a Python file, not the
+    /// file itself.
+    pub fn get_ancestors(&self, path: &Path) -> Arc<Vec<PathBuf>> {
+        let read = self.cache.read();
+        if let Some(result) = read.get(path) {
+            return result.dupe();
+        }
+        drop(read);
+        let up_to = self.up_to.as_deref().filter(|u| path.starts_with(u));
+        let ancestors = Arc::new(
+            path.ancestors()
+                .take_while(|p| up_to.is_none_or(|c| p.starts_with(c)))
+                .map(|p| p.to_owned())
+                .collect::<Vec<_>>(),
+        );
+        let mut write = self.cache.write();
+        if let Some(result) = write.get(path) {
+            // someone beat us to it, so return their result
+            return result.dupe();
+        }
+        write.insert(path.to_path_buf(), ancestors.dupe());
+        ancestors
+    }
+}
+
+impl fmt::Debug for DirectoryRelativeFallbackSearchPathCache {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Search path with all ancestors of paths up to config at {}",
+            self.up_to.as_ref().map_or(Path::new("/"), |p| p).display()
+        )
+    }
+}
+
+impl fmt::Display for DirectoryRelativeFallbackSearchPathCache {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        <Self as fmt::Debug>::fmt(self, f)
+    }
+}
+
+/// A struct for getting, storing, and evaluating fallback search paths. A fallback
+/// search path is a search path consisting of ancestor paths from a start path
+/// (usually some Python file) up to and including an end directory, which is usually
+/// the filesystem root (`/`), but can also be the config.
+#[derive(Default, Clone, PartialEq, Eq)]
+pub enum FallbackSearchPath {
+    /// A constructed fallback search path that will never change. We use this in
+    /// configs where we have no idea what the project root is, and just try to
+    /// import anything. This will usually be a path consisting
+    /// of the starting path to the filesystem root, but extra paths may be added
+    /// based on heuristics, or if we can determine an import root but aren't sure
+    /// enough about it to try placing it in a higher precedence than typeshed.
+    Explicit(Arc<Vec<PathBuf>>),
+    /// A fallback search path where construct it based on the path we're getting an
+    /// import for, but is different for every directory under a config (or filesystem
+    /// root). We use this to do best-effort importing when there's an on-disk config,
+    /// especially if every file should be able to attempt an import, as long as
+    /// the import is relative to one of its parent directories. (One example of this
+    /// is attempting to perform a loose file import in a build system. We don't know
+    /// where a loose file's import root will be relative to, but we kinda just want
+    /// to try everything, since for the IDE experience, we want to just find
+    /// anything that matches.
+    ///
+    /// Example: given a project
+    /// |- pyrefly.toml
+    /// |- project_root/
+    ///    |- a/
+    ///    |  |- b/c.py
+    ///    |  |- d/e.py
+    ///    |- f.py
+    ///
+    /// If the cache's `up_to` is set to `project_root`, then:
+    /// - for project_root/a/b/c.py, we would call for_directory(project_root/a/b)
+    ///   and get [project_root/a/b, project_root/a, project_root]
+    /// - for project_root/a/d/e.py, we would call for_directory(project_root/a/d)
+    ///   and get [project_root/a/d, project_root/a, project_root]
+    /// - for project_root/f.py, we would call for_directory(project_root)
+    ///   and get [project_root]
+    ///
+    /// If the cache's `up_to` is empty, then the resulting list of paths above would
+    /// continue all the way up to `/`.
+    DirectoryRelative(DirectoryRelativeFallbackSearchPathCache),
+    /// There is no fallback search path. These aren't the droids you're looking for.
+    #[default]
+    Empty,
+}
+
+impl fmt::Debug for FallbackSearchPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.repr_for_directory(None))
+    }
+}
+
+impl fmt::Display for FallbackSearchPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        <Self as fmt::Debug>::fmt(self, f)
+    }
+}
+
+impl FallbackSearchPath {
+    /// Attempt to get a fallback search path for the given directory, if any.
+    /// When we have a Static variant, we return the stored path without doing anything.
+    /// When we have a Dynamic variant, it only has meaning in the context of
+    /// the provided path, so we can only (possibly) return a non-empty vec if the provided path
+    /// is `Some`.
+    pub fn for_directory(&self, directory: Option<&Path>) -> Arc<Vec<PathBuf>> {
+        match (self, directory) {
+            (Self::Explicit(paths), _) => paths.dupe(),
+            (Self::DirectoryRelative(s), Some(path)) => s.get_ancestors(path),
+            (Self::DirectoryRelative(_), None) | (Self::Empty, _) => Arc::new(vec![]),
+        }
+    }
+
+    pub fn repr_for_directory(&self, directory: Option<&Path>) -> String {
+        match (self, directory) {
+            (Self::Explicit(paths), _) => format!("{:?}", &**paths),
+            (Self::DirectoryRelative(c), Some(start)) => format!("{:?}", &**c.get_ancestors(start)),
+            (Self::DirectoryRelative(c), None) => format!(
+                "<paths from parent directory of all files up to {:?}>",
+                c.up_to
+                    .as_ref()
+                    .map(|p| p.to_string_lossy())
+                    .unwrap_or(Cow::Borrowed("/"))
+            ),
+            (Self::Empty, _) => "None".to_owned(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::Explicit(paths) => paths.is_empty(),
+            Self::DirectoryRelative(_) => false,
+            Self::Empty => true,
+        }
+    }
+}
+
+pub enum ImportLookupPathPart<'a> {
+    SearchPathFromArgs(&'a [PathBuf]),
+    SearchPathFromFile(&'a [PathBuf]),
+    ImportRoot(Option<&'a PathBuf>),
+    FallbackSearchPath(&'a FallbackSearchPath, Option<&'a Path>),
+    SitePackagePath(&'a [PathBuf]),
+    InterpreterSitePackagePath(&'a [PathBuf]),
+    BuildSystem(Option<Target>),
+}
+
+impl Display for ImportLookupPathPart<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SearchPathFromArgs(paths) => {
+                write!(f, "Search path override (from command line): {paths:?}")
+            }
+            Self::SearchPathFromFile(paths) => {
+                write!(f, "Search path (from config file): {paths:?}")
+            }
+            Self::ImportRoot(Some(root)) => {
+                write!(f, "Import root (inferred from project layout): {root:?}")
+            }
+            Self::ImportRoot(None) => write!(f, "Import root (inferred from project layout): None"),
+            Self::FallbackSearchPath(fallback, start) => {
+                let guessed_from = if let FallbackSearchPath::Explicit(_) = &fallback {
+                    " (guessed from importing file with heuristics)"
+                } else if let FallbackSearchPath::DirectoryRelative(_) = &fallback
+                    && start.is_some()
+                {
+                    " (expanded directory relative paths for file)"
+                } else {
+                    ""
+                };
+
+                write!(
+                    f,
+                    "Fallback search path{guessed_from}: {}",
+                    fallback.repr_for_directory(*start),
+                )
+            }
+            Self::SitePackagePath(paths) => {
+                write!(f, "Site package path from user: {paths:?}")
+            }
+            Self::InterpreterSitePackagePath(paths) => {
+                write!(f, "Site package path queried from interpreter: {paths:?}")
+            }
+            Self::BuildSystem(target) => {
+                write!(f, "Build system source database")?;
+                if let Some(target) = target {
+                    write!(f, ": target sources and dependencies for {target}")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl ImportLookupPathPart<'_> {
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::SearchPathFromArgs(paths)
+            | Self::SearchPathFromFile(paths)
+            | Self::SitePackagePath(paths)
+            | Self::InterpreterSitePackagePath(paths) => paths.is_empty(),
+            Self::ImportRoot(root) => root.is_none(),
+            Self::FallbackSearchPath(inner, _) => inner.is_empty(),
+            Self::BuildSystem(_) => false,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Derivative)]
+#[serde(rename_all = "kebab-case")]
+#[derivative(PartialEq, Eq)]
+pub struct ConfigFile {
+    #[serde(skip)]
+    pub source: ConfigSource,
+
+    /// Files that should be counted as sources (e.g. user-space code).
+    /// NOTE: unlike other args, this is never replaced with CLI arg overrides
+    /// in this config, but may be overridden by CLI args where used.
+    #[serde(
+         default = "ConfigFile::default_project_includes",
+         skip_serializing_if = "Globs::is_empty",
+         // TODO(connernilsen): DON'T COPY THIS TO NEW FIELDS. This is a temporary
+         // alias while we migrate existing fields from snake case to kebab case.
+         alias = "project_includes",
+     )]
+    pub project_includes: Globs,
+
+    /// Files that should be excluded as sources (e.g. user-space code). These take
+    /// precedence over `project_includes`.
+    /// NOTE: unlike other configs, this is never replaced with CLI arg overrides
+    /// in this config, but may be overridden by CLI args where used.
+    #[serde(
+             default,
+             skip_serializing_if = "Globs::is_empty",
+             // TODO(connernilsen): DON'T COPY THIS TO NEW FIELDS. This is a temporary
+             // alias while we migrate existing fields from snake case to kebab case.
+             alias = "project_excludes",
+         )]
+    pub project_excludes: Globs,
+
+    /// Should we filter out the required excludes or filter things in your site package path?
+    #[serde(default, skip_serializing_if = "crate::util::skip_default_false")]
+    pub disable_project_excludes_heuristics: bool,
+
+    #[serde(skip)]
+    pub search_path_from_args: Vec<PathBuf>,
+
+    /// The list of directories where imports are
+    /// imported from, including type checked files.
+    /// Does not include command-line overrides or the import root!
+    /// Use ConfigFile::search_path() to get the full search path.
+    #[serde(
+             default,
+             skip_serializing_if = "Vec::is_empty",
+             rename = "search-path",
+             // TODO(connernilsen): DON'T COPY THIS TO NEW FIELDS. This is a temporary
+             // alias while we migrate existing fields from snake case to kebab case.
+             alias = "search_path"
+         )]
+    pub search_path_from_file: Vec<PathBuf>,
+
+    /// The automatically inferred subdirectory that importable Python packages live in.
+    #[serde(skip)]
+    pub import_root: Option<PathBuf>,
+
+    /// Not exposed to the user. When we aren't able to determine the root of a
+    /// project, we guess some fallback search paths that are checked after
+    /// typeshed (so we don't clobber the stdlib) and before site_package_path.
+    #[serde(default, skip)]
+    pub fallback_search_path: FallbackSearchPath,
+
+    /// Disable Pyrefly default heuristics, specifically those around
+    /// constructing a modified search path. Setting this flag will instruct
+    /// Pyrefly to use the exact `search_path` you give it through your config
+    /// file and CLI args.
+    #[serde(default, skip_serializing_if = "crate::util::skip_default_false")]
+    pub disable_search_path_heuristics: bool,
+
+    /// Opt in to the implicit fallback search path: when set, `configure()`
+    /// populates `fallback_search_path` with a `DirectoryRelative` walk
+    /// bounded by the config root (the same mechanism build-system configs
+    /// use). Defaults to `false`.
+    #[serde(default, skip_serializing_if = "crate::util::skip_default_false")]
+    pub enable_fallback_search_path: bool,
+
+    /// Override the bundled typeshed with a custom path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typeshed_path: Option<PathBuf>,
+
+    /// Path to baseline file for comparing type errors.
+    /// Errors matching the baseline are suppressed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<PathBuf>,
+
+    /// Default error output format for CLI checks when `--output-format` is not set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_format: Option<OutputFormat>,
+
+    /// Pyrefly's configurations around interpreter querying/finding.
+    #[serde(flatten)]
+    pub interpreters: Interpreters,
+
+    /// Values representing the environment of the Python interpreter
+    /// (which platform, Python version, ...). When we parse, these values
+    /// are default to false so we know to query the `python_interpreter_path` before falling
+    /// back to Pyrefly's defaults.
+    #[serde(flatten)]
+    pub python_environment: PythonEnvironment,
+
+    /// Named preset that provides default error severities and behavior settings.
+    /// User-specified settings override the preset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<Preset>,
+
+    /// The `ConfigBase` values for the whole project.
+    #[serde(default, flatten)]
+    pub root: ConfigBase,
+
+    /// Sub-configs that can override specific `ConfigBase` settings
+    /// based on path matching.
+    #[serde(
+                 default,
+                 rename = "sub-config",
+                 skip_serializing_if = "Vec::is_empty",
+                 // TODO(connernilsen): DON'T COPY THIS TO NEW FIELDS. This is a temporary
+                 // alias while we migrate existing fields from snake case to kebab case.
+                 alias = "sub_config"
+             )]
+    pub sub_configs: Vec<SubConfig>,
+
+    /// Whether to respect ignore files (.gitignore, .ignore, .git/exclude).
+    #[serde(
+        default = "ConfigFile::default_true",
+        skip_serializing_if = "crate::util::skip_default_true"
+    )]
+    pub use_ignore_files: bool,
+
+    /// Should this config use a build system? If so, which one?
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_system: Option<BuildSystem>,
+
+    /// Database understanding the mapping between source files and import paths,
+    /// especially within the context of a build system. This is used for getting handles
+    /// for a path and doing module finding.
+    #[serde(skip, default)]
+    #[derivative(PartialEq = "ignore")]
+    pub source_db: Option<ArcId<Box<dyn SourceDatabase>>>,
+
+    /// Minimum severity level for errors to be displayed.
+    /// Errors below this severity will not be shown. Defaults to "error".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_severity: Option<Severity>,
+
+    /// Should we let Pyrefly try to index the project's files? Disabling this
+    /// may speed up LSP operations on large projects.
+    #[serde(default, skip_serializing_if = "crate::util::skip_default_false")]
+    pub skip_lsp_config_indexing: bool,
+
+    /// Additional file extensions to treat as Python source files.
+    /// Used for Python dialects that use non-standard extensions.
+    /// Unlike standard Python extensions, these extensions become part
+    /// of the module name — for example, a file `foo.cinc` has module
+    /// name `foo.cinc`, not `foo`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_file_extensions: Vec<String>,
+
+    /// Runtime-only metadata. Populated by `resolve_unconfigured_config`
+    /// when this `ConfigFile` was synthesized rather than loaded from a
+    /// `pyrefly.toml` / `[tool.pyrefly]` section, and by the `--preset`
+    /// flag when a user specifies a preset on the command line. Used by
+    /// the status bar (LSP) and the upsell message (CLI) to explain to
+    /// the user why Pyrefly is behaving the way it is. Never serialized.
+    #[serde(skip)]
+    #[derivative(PartialEq = "ignore")]
+    pub synthesized_preset_reason: Option<SynthesizedPresetReason>,
+}
+
+impl Default for ConfigFile {
+    /// An empty `ConfigFile`
+    fn default() -> Self {
+        ConfigFile {
+            source: ConfigSource::Synthetic,
+            project_includes: Default::default(),
+            project_excludes: Default::default(),
+            interpreters: Interpreters {
+                python_interpreter_path: None,
+                fallback_python_interpreter_name: None,
+                conda_environment: None,
+                skip_interpreter_query: false,
+            },
+            search_path_from_args: Vec::new(),
+            search_path_from_file: Vec::new(),
+            disable_search_path_heuristics: false,
+            enable_fallback_search_path: false,
+            disable_project_excludes_heuristics: false,
+            import_root: None,
+            fallback_search_path: Default::default(),
+            python_environment: Default::default(),
+            preset: None,
+            root: Default::default(),
+            sub_configs: Default::default(),
+            build_system: Default::default(),
+            source_db: Default::default(),
+            use_ignore_files: true,
+            typeshed_path: None,
+            baseline: None,
+            min_severity: None,
+            output_format: None,
+            skip_lsp_config_indexing: false,
+            extra_file_extensions: Vec::new(),
+            synthesized_preset_reason: None,
+        }
+    }
+}
+
+impl ConfigFile {
+    /// Gets a ConfigFile for a project directory. `fallback` indicates whether this is a guessed
+    /// project root that we're falling back to after failing to otherwise find an import.
+    pub fn init_at_root(root: &Path, layout: &ProjectLayout, fallback: bool) -> Self {
+        let mut result = Self {
+            project_includes: Self::default_project_includes(),
+            root: ConfigBase::default_for_ide_without_config(),
+            ..Default::default()
+        };
+        let import_root = layout.get_import_root(root);
+        if fallback {
+            // De-prioritize guessed import roots, so they don't shadow typeshed. In particular,
+            // we don't want the typing-extensions package to shadow the corresponding stub.
+            result.fallback_search_path = FallbackSearchPath::Explicit(Arc::new(vec![import_root]));
+        } else {
+            result.import_root = Some(import_root);
+        }
+        // ignore failures rewriting path to config, since we're trying to construct
+        // an ephemeral config for the user, and it's not fatal (but things might be
+        // a little weird)
+        result.rewrite_with_path_to_config(root);
+        result
+    }
+
+    /// Get the project excludes, properly excluding site packages and required excludes.
+    fn get_full_project_excludes(&self, mut excludes: Globs) -> Globs {
+        excludes.append(Self::required_project_excludes().globs());
+        excludes.append(
+            &self
+                .site_package_path()
+                .filter(|p| !self.search_path().any(|r| r.starts_with(p)))
+                .filter_map(|p| Glob::new(p.to_string_lossy().to_string()).ok())
+                .collect::<Vec<_>>(),
+        );
+        excludes
+    }
+
+    /// Gets a [`FilteredGlobs`] from the optional `custom_excludes` or this
+    /// [`ConfigFile`]s `project_excludes`, adding all `site_package_path` entries
+    /// as extra exclude items.
+    pub fn get_filtered_globs(&self, custom_excludes: Option<Globs>) -> FilteredGlobs {
+        let project_excludes = match custom_excludes {
+            None => self.project_excludes.clone(),
+            Some(custom_excludes) if !self.disable_project_excludes_heuristics => {
+                self.get_full_project_excludes(custom_excludes)
+            }
+            Some(custom_excludes) => custom_excludes,
+        };
+        let root = if self.use_ignore_files {
+            self.import_root.as_deref()
+        } else {
+            None
+        };
+        let hidden_dir_filter = if self.disable_project_excludes_heuristics {
+            HiddenDirFilter::Disabled
+        } else {
+            match root {
+                Some(r) => HiddenDirFilter::RelativeTo(vec![r.to_path_buf()]),
+                None => HiddenDirFilter::All,
+            }
+        };
+        FilteredGlobs::new(
+            self.project_includes.clone(),
+            project_excludes,
+            root,
+            hidden_dir_filter,
+        )
+    }
+}
+
+impl ConfigFile {
+    pub const PYREFLY_FILE_NAME: &str = "pyrefly.toml";
+    pub const PYREFLY_HIDDEN_FILE_NAME: &str = ".pyrefly.toml";
+    pub const PYPROJECT_FILE_NAME: &str = "pyproject.toml";
+    pub const CONFIG_FILE_NAMES: &[&str] = &[
+        Self::PYREFLY_FILE_NAME,
+        Self::PYREFLY_HIDDEN_FILE_NAME,
+        Self::PYPROJECT_FILE_NAME,
+    ];
+    /// Files that don't contain pyrefly-specific config information but indicate that we're at the
+    /// root of a Python project, which should be added to the search path.
+    pub const ADDITIONAL_ROOT_FILE_NAMES: &[&str] = &["mypy.ini", "pyrightconfig.json"];
+
+    /// Writes the configuration to a file in the specified directory.
+    pub fn write_to_toml_in_directory(&self, directory: &Path) -> Result<()> {
+        let config_str =
+            toml::to_string_pretty(&self).context("Failed to serialize config to TOML")?;
+
+        fs_anyhow::write(&directory.join("pyrefly.toml"), config_str)
+            .with_context(|| format!("Failed to write config to {}", directory.display()))?;
+
+        Ok(())
+    }
+
+    pub fn default_project_includes() -> Globs {
+        Globs::new(vec!["**/*.py*".to_owned(), "**/*.ipynb".to_owned()])
+            .unwrap_or_else(|_| Globs::empty())
+    }
+
+    /// Project excludes that should always be set, even if a user or config specifies
+    /// something else. These should not be absolutized, since we always want to block these
+    /// files and directories, no matter where on disk they occur (outside of the project too).
+    pub fn required_project_excludes() -> Globs {
+        Globs::new(vec![
+            // Align with https://code.visualstudio.com/docs/python/settings-reference#_pylance-language-server
+            "**/node_modules".to_owned(),
+            "**/__pycache__".to_owned(),
+            // match any `venv` directory
+            "**/venv/**".to_owned(),
+        ])
+        .unwrap_or_else(|_| Globs::empty())
+    }
+
+    pub fn default_true() -> bool {
+        true
+    }
+
+    pub fn from_real_config_file(&self) -> bool {
+        matches!(self.source, ConfigSource::File(_))
+    }
+
+    pub fn python_version(&self) -> PythonVersion {
+        // we can use unwrap here, because the value in the root config must
+        // be set in `ConfigFile::configure()`.
+        self.python_environment.python_version.unwrap()
+    }
+
+    pub fn python_platform(&self) -> &PythonPlatform {
+        // we can use unwrap here, because the value in the root config must
+        // be set in `ConfigFile::configure()`.
+        self.python_environment.python_platform.as_ref().unwrap()
+    }
+
+    /// Returns true if extra file extensions are configured.
+    pub fn has_extra_file_extensions(&self) -> bool {
+        !self.extra_file_extensions.is_empty()
+    }
+
+    pub fn search_path(&self) -> impl Iterator<Item = &PathBuf> + Clone {
+        self.search_path_from_args
+            .iter()
+            .chain(self.search_path_from_file.iter())
+            .chain(if self.disable_search_path_heuristics {
+                None.iter()
+            } else {
+                self.import_root.iter()
+            })
+    }
+
+    /// Explicit search paths from CLI args and config file, excluding the
+    /// heuristic import_root.
+    pub fn explicit_search_path(&self) -> impl Iterator<Item = &PathBuf> + Clone {
+        self.search_path_from_args
+            .iter()
+            .chain(self.search_path_from_file.iter())
+    }
+
+    /// The heuristic import_root, if search path heuristics are enabled.
+    pub fn heuristic_search_path(&self) -> impl Iterator<Item = &PathBuf> + Clone {
+        if self.disable_search_path_heuristics {
+            None.iter()
+        } else {
+            self.import_root.iter()
+        }
+    }
+
+    pub fn site_package_path(&self) -> impl Iterator<Item = &PathBuf> + Clone {
+        // we can use unwrap here, because the value in the root config must
+        // be set in `ConfigFile::configure()`.
+        self.python_environment
+            .site_package_path
+            .as_ref()
+            .unwrap()
+            .iter()
+            .chain(self.python_environment.interpreter_site_package_path.iter())
+    }
+
+    /// Gets the full, ordered path used for import lookup. Used for pretty-printing.
+    pub fn structured_import_lookup_path<'a>(
+        &'a self,
+        origin: Option<&'a Path>,
+    ) -> Vec<ImportLookupPathPart<'a>> {
+        let mut result = vec![];
+        if let Some(source_db) = &self.source_db {
+            result.push(ImportLookupPathPart::BuildSystem(
+                source_db.get_target(origin),
+            ));
+        }
+        result.push(ImportLookupPathPart::SearchPathFromArgs(
+            &self.search_path_from_args,
+        ));
+        result.push(ImportLookupPathPart::SearchPathFromFile(
+            &self.search_path_from_file,
+        ));
+        if !self.disable_search_path_heuristics {
+            result.push(ImportLookupPathPart::ImportRoot(self.import_root.as_ref()));
+            result.push(ImportLookupPathPart::FallbackSearchPath(
+                &self.fallback_search_path,
+                origin.and_then(|p| p.parent()),
+            ));
+        }
+        result.push(ImportLookupPathPart::SitePackagePath(
+            self.python_environment.site_package_path.as_ref().unwrap(),
+        ));
+        result.push(ImportLookupPathPart::InterpreterSitePackagePath(
+            &self.python_environment.interpreter_site_package_path,
+        ));
+        result
+    }
+
+    pub fn get_sys_info(&self) -> SysInfo {
+        SysInfo::new(self.python_version(), self.python_platform().clone())
+    }
+
+    pub fn errors(&self, path: &Path) -> &ErrorDisplayConfig {
+        self.get_from_sub_configs(ConfigBase::get_errors, path)
+            .unwrap_or_else(||
+                 // we can use unwrap here, because the value in the root config must
+                 // be set in `ConfigFile::configure()`.
+                 self.root.errors.as_ref().unwrap())
+    }
+
+    pub fn replace_imports_with_any(&self, path: Option<&Path>, module: ModuleName) -> bool {
+        let wildcards = path
+            .and_then(|path| {
+                self.get_from_sub_configs(ConfigBase::get_replace_imports_with_any, path)
+            })
+            .unwrap_or_else(||
+             // we can use unwrap here, because the value in the root config must
+             // be set in `ConfigFile::configure()`.
+             self.root.replace_imports_with_any.as_deref().unwrap());
+        // Need to filter out any files that would be a not case.
+        let found_match = wildcards.iter().find_map(|w| {
+            if w.matches(module) == Match::Negative {
+                Some(false)
+            } else if w.matches(module) == Match::Positive {
+                Some(true)
+            } else {
+                None
+            }
+        });
+        found_match == Some(true)
+    }
+
+    pub fn ignore_missing_imports(&self, path: Option<&Path>, module: ModuleName) -> bool {
+        let wildcards = path
+            .and_then(|path| {
+                self.get_from_sub_configs(ConfigBase::get_ignore_missing_imports, path)
+            })
+            .unwrap_or_else(||
+             // we can use unwrap here, because the value in the root config must
+             // be set in `ConfigFile::configure()`.
+             self.root.ignore_missing_imports.as_deref().unwrap());
+        let found_match = wildcards.iter().find_map(|w| {
+            if w.matches(module) == Match::Negative {
+                Some(false)
+            } else if w.matches(module) == Match::Positive {
+                Some(true)
+            } else {
+                None
+            }
+        });
+        found_match == Some(true)
+    }
+
+    pub fn check_unannotated_defs(&self, path: &Path) -> bool {
+        self.get_from_sub_configs(ConfigBase::get_check_unannotated_defs, path)
+            .unwrap_or_else(|| self.root.check_unannotated_defs.unwrap())
+    }
+
+    pub fn infer_return_types(&self, path: &Path) -> InferReturnTypes {
+        self.get_from_sub_configs(ConfigBase::get_infer_return_types, path)
+            .unwrap_or_else(|| self.root.infer_return_types.unwrap())
+    }
+
+    pub fn disable_type_errors_in_ide(&self, path: &Path) -> bool {
+        self.get_from_sub_configs(ConfigBase::get_disable_type_errors_in_ide, path)
+            .unwrap_or_else(|| self.root.disable_type_errors_in_ide.unwrap_or_default())
+    }
+
+    fn ignore_errors_in_generated_code(&self, path: &Path) -> bool {
+        self.get_from_sub_configs(ConfigBase::get_ignore_errors_in_generated_code, path)
+            .unwrap_or_else(||
+                 // we can use unwrap here, because the value in the root config must
+                 // be set in `ConfigFile::configure()`.
+                 self.root.ignore_errors_in_generated_code.unwrap())
+    }
+
+    pub fn infer_with_first_use(&self, path: &Path) -> bool {
+        self.get_from_sub_configs(ConfigBase::get_infer_with_first_use, path)
+            .unwrap_or_else(||
+                 // we can use unwrap here, because the value in the root config must
+                 // be set in `ConfigFile::configure()`.
+                 self.root.infer_with_first_use.unwrap())
+    }
+
+    pub fn strict_callable_subtyping(&self, path: &Path) -> bool {
+        self.get_from_sub_configs(ConfigBase::get_strict_callable_subtyping, path)
+            .unwrap_or_else(||
+                 // we can use unwrap here, because the value in the root config must
+                 // be set in `ConfigFile::configure()`.
+                 self.root.strict_callable_subtyping.unwrap())
+    }
+
+    pub fn spec_compliant_overloads(&self, path: &Path) -> bool {
+        self.get_from_sub_configs(ConfigBase::get_spec_compliant_overloads, path)
+            .unwrap_or_else(||
+                 // we can use unwrap here, because the value in the root config must
+                 // be set in `ConfigFile::configure()`.
+                 self.root.spec_compliant_overloads.unwrap())
+    }
+
+    pub fn enabled_ignores(&self, path: &Path) -> &SmallSet<Tool> {
+        self.get_from_sub_configs(ConfigBase::get_enabled_ignores, path)
+            .unwrap_or_else(||
+                 // we can use unwrap here, because the value in the root config must
+                 // be set in `ConfigFile::configure()`.
+                 self.root.enabled_ignores.as_ref().unwrap())
+    }
+
+    /// Get the recursion limit configuration.
+    /// Returns None if not set (disabled).
+    pub fn recursion_limit_config(&self) -> Option<RecursionLimitConfig> {
+        ConfigBase::get_recursion_limit_config(&self.root)
+    }
+
+    pub fn get_error_config(&self, path: &Path) -> ErrorConfig<'_> {
+        ErrorConfig::new(
+            self.errors(path),
+            self.ignore_errors_in_generated_code(path),
+            self.enabled_ignores(path).clone(),
+        )
+    }
+
+    /// Filter to sub configs whose matches succeed for the given `path`,
+    /// then return the first non-None value the getter returns, or None
+    /// if a non-empty value can't be found.
+    fn get_from_sub_configs<'a, T>(
+        &'a self,
+        getter: impl Fn(&'a ConfigBase) -> Option<T>,
+        path: &Path,
+    ) -> Option<T> {
+        self.sub_configs.iter().find_map(|c| {
+            if c.matches.matches(path) {
+                return getter(&c.settings);
+            }
+            None
+        })
+    }
+
+    pub fn handle_from_module_path(&self, module_path: ModulePath) -> Handle {
+        self.handle_from_module_path_with_fallback(module_path, &FallbackSearchPath::Empty)
+    }
+
+    pub fn handle_from_module_path_with_fallback(
+        &self,
+        module_path: ModulePath,
+        fallback_search_path: &FallbackSearchPath,
+    ) -> Handle {
+        match &self
+            .source_db
+            .as_ref()
+            .and_then(|db| db.handle_from_module_path(&module_path))
+        {
+            Some(handle) => handle.dupe(),
+            None => {
+                // Order: explicit search paths (user intent) > site-package
+                // paths (known third-party roots) > heuristic import_root.
+                // This ensures files in site-packages nested under the project
+                // root resolve from the site-package prefix, not from the
+                // heuristic project root, while still letting explicit search
+                // paths override when the user has configured them.
+                let all_paths: Vec<&PathBuf> = self
+                    .explicit_search_path()
+                    .chain(self.site_package_path())
+                    .chain(self.heuristic_search_path())
+                    .collect();
+                let module_kind = if fallback_search_path.is_empty() {
+                    let name = ModuleName::from_path(
+                        module_path.as_path(),
+                        all_paths.iter().copied(),
+                        &self.extra_file_extensions,
+                    )
+                    .unwrap_or_else(ModuleName::unknown);
+                    ModuleNameWithKind::guaranteed(name)
+                } else {
+                    let fallback_paths =
+                        fallback_search_path.for_directory(Some(module_path.as_path()));
+                    ModuleName::from_path_with_fallback(
+                        module_path.as_path(),
+                        all_paths.iter().copied(),
+                        fallback_paths.iter(),
+                        &self.extra_file_extensions,
+                    )
+                    .unwrap_or(ModuleNameWithKind::guaranteed(ModuleName::unknown()))
+                };
+                Handle::from_with_module_name_kind(module_kind, module_path, self.get_sys_info())
+            }
+        }
+    }
+
+    /// Get glob patterns that should be watched by a file watcher.
+    /// We return a tuple of root (non-pattern part of the path) and a pattern.
+    /// If pattern is None, then the root should contain the whole path to watch.
+    pub fn get_paths_to_watch(configs: &SmallSet<ArcId<ConfigFile>>) -> SmallSet<WatchPattern> {
+        let mut result = SmallSet::new();
+        let mut source_dbs = SmallSet::new();
+        for config in configs {
+            if let Some(source_db) = &config.source_db {
+                source_dbs.insert(source_db);
+            }
+            if let Some(config_root) = config.source.root() {
+                let config_root = InternedPath::from_path(config_root);
+                ConfigFile::CONFIG_FILE_NAMES.iter().for_each(|config| {
+                    result.insert(WatchPattern::root(config_root, format!("**/{config}")));
+                });
+            }
+            config
+                .search_path()
+                .chain(config.site_package_path())
+                .cartesian_product(
+                    PYTHON_EXTENSIONS
+                        .iter()
+                        .chain(COMPILED_FILE_SUFFIXES)
+                        .copied()
+                        .chain(config.extra_file_extensions.iter().map(|s| s.as_str())),
+                )
+                .for_each(|(s, suffix)| {
+                    result.insert(WatchPattern::root(
+                        InternedPath::from_path(s),
+                        format!("**/*.{suffix}"),
+                    ));
+                });
+        }
+
+        for source_db in source_dbs {
+            result.extend(source_db.get_paths_to_watch());
+        }
+        result
+    }
+
+    /// Requery the source database, if one is available, for any changes that may
+    /// occur with the current open set of files.
+    ///
+    /// When `force` is true, ignore any heuristics that would exit early if the open
+    /// set of files has not changed. Should be used when a build system file
+    /// or configuration file might have changed, or if we suspect the build system
+    /// may produce changes in generated files.
+    pub fn query_source_db(
+        configs_to_files: &SmallMap<ArcId<ConfigFile>, SmallSet<ModulePath>>,
+        force: bool,
+        telemetry: Option<SubTaskTelemetry>,
+    ) -> (
+        SmallSet<ArcId<Box<dyn SourceDatabase + 'static>>>,
+        TelemetrySourceDbRebuildStats,
+    ) {
+        let mut stats: TelemetrySourceDbRebuildStats = Default::default();
+        stats.common.forced = force;
+        let mut reloaded_source_dbs = SmallSet::new();
+        let mut sourcedb_configs: SmallMap<_, Vec<_>> = SmallMap::new();
+        for (config, files) in configs_to_files {
+            let Some(source_db) = &config.source_db else {
+                continue;
+            };
+            sourcedb_configs
+                .entry(source_db)
+                .or_default()
+                .push((config, files));
+            // Files can be uniquely tied to a config, so we will be counting each file at most
+            // once here.
+            stats.common.files += files.len();
+        }
+
+        stats.count = sourcedb_configs.len();
+        fn log_telemetry(
+            telemetry: &Option<SubTaskTelemetry>,
+            start: Instant,
+            instance_stats: TelemetrySourceDbRebuildInstanceStats,
+            error: Option<&anyhow::Error>,
+        ) {
+            let Some(telemetry) = telemetry else {
+                return;
+            };
+
+            let mut event_telemetry =
+                telemetry.new_task(TelemetryEventKind::SourceDbRebuildInstance, start);
+            event_telemetry.set_sourcedb_rebuild_instance_stats(instance_stats);
+            telemetry.finish_task(event_telemetry, error);
+        }
+        for (source_db, configs_and_files) in sourcedb_configs {
+            let start = Instant::now();
+            let all_files = configs_and_files
+                .iter()
+                .flat_map(|x| x.1.iter())
+                .map(|p| p.module_path_buf())
+                .collect::<SmallSet<_>>();
+            let (sourcedb_rebuild, instance_stats) = source_db.query_source_db(all_files, force);
+            let changed = match sourcedb_rebuild {
+                Err(error) => {
+                    log_telemetry(&telemetry, start, instance_stats, Some(&error));
+                    error!("Error reloading source database for config: {error:?}");
+                    stats.had_error = true;
+                    continue;
+                }
+                Ok(r) => r,
+            };
+            let generated_files = source_db.get_generated_files();
+            if !generated_files.is_empty() {
+                let mut write = GENERATED_FILE_CONFIG_OVERRIDE.write();
+                // we don't need any specific config here, any config for this sourcedb will work
+                let first_config = configs_and_files.first().unwrap().0;
+                for file in generated_files {
+                    write.insert(file, first_config.dupe());
+                }
+            }
+            if changed {
+                stats.common.changed = true;
+                debug!(
+                    "Performed grouped source db query for configs at {:?}",
+                    configs_and_files
+                        .iter()
+                        .filter_map(|x| x.0.source.root())
+                        .collect::<Vec<_>>(),
+                );
+                reloaded_source_dbs.insert(source_db.dupe());
+            }
+            log_telemetry(&telemetry, start, instance_stats, None);
+        }
+        (reloaded_source_dbs, stats)
+    }
+
+    /// Configures values that must be updated *after* overwriting with CLI flag values,
+    /// which should probably be everything except for `PathBuf` or `Globs` types.
+    pub fn configure(&mut self) -> Vec<ConfigError> {
+        let mut configure_errors = Vec::new();
+
+        // Whether the user explicitly configured `site_package_path` (via config
+        // file or CLI flag). If not, we auto-discover a `typings/` directory below.
+        let site_package_path_set = self.python_environment.site_package_path.is_some();
+
+        if self.interpreters.skip_interpreter_query {
+            self.python_environment.set_empty_to_default();
+        } else {
+            if self.interpreters.python_interpreter_path.is_some()
+                && self.interpreters.fallback_python_interpreter_name.is_some()
+            {
+                configure_errors.push(anyhow::anyhow!(
+                        "`python-interpreter-path` and `fallback-python-interpreter-name` both set, but only one can be used."
+                ));
+            }
+            match self.interpreters.find_interpreter(self.source.root()) {
+                Ok(interpreter) => {
+                    let (env, error) = PythonEnvironment::get_interpreter_env(&interpreter);
+                    self.python_environment.override_empty(env);
+                    self.interpreters.python_interpreter_path = Some(interpreter);
+                    if let Some(error) = error {
+                        configure_errors.push(error);
+                    }
+                }
+                Err(error) => {
+                    self.python_environment.set_empty_to_default();
+                    configure_errors.push(error.context("While finding Python interpreter"));
+                }
+            }
+        }
+
+        // A `typings/` directory under the config root is always a default
+        // `site_package_path` entry (in addition to any interpreter-provided
+        // site-packages, which live in `interpreter_site_package_path`), unless
+        // the user explicitly set `site_package_path`. We resolve it relative to
+        // the config root here, rather than in `set_empty_to_default`, so the CLI
+        // and IDE agree regardless of the process's working directory and so it
+        // applies even when an interpreter query succeeds. A `Synthetic` config
+        // has no on-disk root to anchor `typings/` to, so we skip discovery
+        // rather than fall back to a CWD-relative path.
+        if !site_package_path_set && let Some(root) = self.source.root() {
+            let typings = root.join("typings");
+            if typings.exists() {
+                self.python_environment
+                    .site_package_path
+                    .get_or_insert_with(Vec::new)
+                    .push(typings);
+            }
+        }
+
+        if !self.disable_project_excludes_heuristics {
+            let project_excludes = mem::take(&mut self.project_excludes);
+            // do this after overwriting CLI values so that we can preserve the required
+            // project excludes and add the site package path.
+            self.project_excludes = self.get_full_project_excludes(project_excludes);
+        }
+
+        // Resolve deprecated untyped_def_behavior BEFORE applying preset, so that
+        // the user's explicit legacy field takes precedence over the preset.
+        self.root.resolve_legacy_untyped_def_behavior();
+        for sub in &mut self.sub_configs {
+            sub.settings.resolve_legacy_untyped_def_behavior();
+        }
+
+        // Process pytorch-efficiency-lints BEFORE preset merge so the flag
+        // entries behave like user overrides (winning over preset defaults
+        // like Basic's blanket Ignore). Explicit [errors] entries still win
+        // because set_default_severity only inserts when the key is absent.
+        if self.root.pytorch_efficiency_lints == Some(true) {
+            let errors = self.root.errors.get_or_insert_default();
+            for &kind in ErrorKind::pytorch_efficiency_lints() {
+                errors.set_default_severity(kind, Severity::Warn);
+            }
+        }
+
+        // Apply preset as defaults: preset values fill in any fields the user
+        // didn't explicitly set. For errors, preset errors are the base and user
+        // errors merge on top.
+        if let Some(preset) = self.preset {
+            let preset_base = preset.apply();
+            // For errors: merge user errors on top of preset errors, dropping
+            // preset entries shadowed by a user-set parent kind or alias so
+            // broad user overrides cascade correctly.
+            match (&mut self.root.errors, preset_base.errors) {
+                (user @ None, preset_errors) => *user = preset_errors,
+                (Some(user_errors), Some(preset_errors)) => {
+                    let mut merged = preset_errors;
+                    merged.merge_user_overrides(user_errors);
+                    *user_errors = merged;
+                }
+                (Some(_), None) => {}
+            }
+            // For scalar fields: preset fills in None values. Any preset field
+            // not listed here is silently dropped, so new fields added to
+            // `Preset::apply()` must be added here as well — `test_preset_fields_propagate`
+            // guards against accidental omissions.
+            macro_rules! apply_preset_default {
+                ($field:ident) => {
+                    if self.root.$field.is_none() {
+                        self.root.$field = preset_base.$field;
+                    }
+                };
+            }
+            apply_preset_default!(check_unannotated_defs);
+            apply_preset_default!(infer_return_types);
+            apply_preset_default!(infer_with_first_use);
+            apply_preset_default!(strict_callable_subtyping);
+            apply_preset_default!(spec_compliant_overloads);
+            apply_preset_default!(ignore_errors_in_generated_code);
+            apply_preset_default!(permissive_ignores);
+        }
+
+        if self.root.errors.is_none() {
+            self.root.errors = Some(Default::default());
+        }
+
+        // Merge root errors into each sub-config's errors so sub-configs
+        // inherit root-level overrides (including any from a preset) for codes
+        // they don't set. Uses `merge_user_overrides` so that a sub-config
+        // setting a parent kind or a deprecated alias cascades through
+        // preset-derived child/canonical entries in root, matching the
+        // semantics at root.
+        if let Some(root_errors) = &self.root.errors {
+            for sub in &mut self.sub_configs {
+                if sub.settings.pytorch_efficiency_lints == Some(true) {
+                    let sub_errors = sub.settings.errors.get_or_insert_default();
+                    for &kind in ErrorKind::pytorch_efficiency_lints() {
+                        sub_errors.set_default_severity(kind, Severity::Warn);
+                    }
+                }
+                if let Some(sub_errors) = &mut sub.settings.errors {
+                    let mut merged = root_errors.clone();
+                    merged.merge_user_overrides(sub_errors);
+                    *sub_errors = merged;
+                }
+            }
+        }
+
+        if self.root.replace_imports_with_any.is_none() {
+            self.root.replace_imports_with_any = Some(Default::default());
+        }
+
+        if self.root.ignore_missing_imports.is_none() {
+            self.root.ignore_missing_imports = Some(Default::default());
+        }
+
+        if self.root.check_unannotated_defs.is_none() {
+            self.root.check_unannotated_defs = Some(true);
+        }
+
+        if self.root.infer_return_types.is_none() {
+            self.root.infer_return_types = Some(InferReturnTypes::Checked);
+        }
+
+        if self.root.ignore_errors_in_generated_code.is_none() {
+            self.root.ignore_errors_in_generated_code = Some(Default::default());
+        }
+
+        if self.root.infer_with_first_use.is_none() {
+            self.root.infer_with_first_use = Some(true);
+        }
+
+        if self.root.strict_callable_subtyping.is_none() {
+            self.root.strict_callable_subtyping = Some(false);
+        }
+
+        if self.root.spec_compliant_overloads.is_none() {
+            self.root.spec_compliant_overloads = Some(false);
+        }
+
+        let tools_from_permissive_ignores = match self.root.permissive_ignores {
+            Some(true) => Some(Tool::all()),
+            Some(false) => Some(Tool::default_enabled()),
+            None => None,
+        };
+
+        let enabled_ignores = match (
+            tools_from_permissive_ignores,
+            self.root.enabled_ignores.clone(),
+        ) {
+            (None, None) => Tool::default_enabled(),
+            (None, Some(tools)) | (Some(tools), None) => tools,
+            (Some(_), Some(tools)) => {
+                configure_errors.push(anyhow!("Cannot use both `permissive-ignores` and `enabled-ignores`: `permissive-ignores` will be ignored."));
+                tools
+            }
+        };
+        self.root.enabled_ignores = Some(enabled_ignores);
+
+        let mut configure_source_db = |build_system: &mut BuildSystem| {
+            let root = match &self.source {
+                ConfigSource::File(path) => {
+                    let mut root = path.to_path_buf();
+                    root.pop();
+                    root
+                }
+                _ => {
+                    return Some(anyhow::anyhow!(
+                        "Invalid config state: `build-system` is set on project without config."
+                    ));
+                }
+            };
+
+            match build_system.get_source_db(root.to_path_buf())? {
+                Ok(source_db) => {
+                    self.source_db = Some(source_db);
+                    None
+                }
+                Err(error) => Some(error),
+            }
+        };
+
+        if let Some(build_system) = &mut self.build_system
+            && let Some(error) = configure_source_db(build_system)
+        {
+            configure_errors.push(error)
+        }
+
+        // Honor `enable-fallback-search-path`: populate
+        // `fallback_search_path` with a `DirectoryRelative` walk bounded by
+        // the config root. The two guard conditions enforce non-clobber and
+        // skip-synthetic invariants — `matches!(_, Empty)` so we don't
+        // overwrite the build-system path's `DirectoryRelative` set above,
+        // and `source.root().is_some()` so we skip the `Synthetic` case
+        // that `init_at_root(fallback = true)` already handles with
+        // `Explicit` paths.
+        if self.enable_fallback_search_path
+            && matches!(self.fallback_search_path, FallbackSearchPath::Empty)
+            && let Some(config_root) = self.source.root()
+        {
+            self.fallback_search_path = FallbackSearchPath::DirectoryRelative(
+                DirectoryRelativeFallbackSearchPathCache::new(Some(config_root.to_path_buf())),
+            );
+        }
+
+        fn validate<'a>(
+            paths: &'a [PathBuf],
+            field: &'a str,
+        ) -> impl Iterator<Item = anyhow::Error> + 'a {
+            paths.iter().filter_map(move |p| {
+                validate_path(p)
+                    .err()
+                    .map(|err| err.context(format!("Invalid {field}")))
+            })
+        }
+        if let Some(site_package_path) = &self.python_environment.site_package_path {
+            configure_errors.extend(validate(site_package_path.as_ref(), "site-package-path"));
+        }
+        configure_errors.extend(validate(&self.search_path_from_file, "search-path"));
+
+        if self.interpreters.python_interpreter_path.is_some()
+            && self.interpreters.conda_environment.is_some()
+        {
+            configure_errors.push(anyhow::anyhow!(
+                     "Cannot use both `python-interpreter-path` and `conda-environment`. Finding environment info using `python-interpreter-path`.",
+             ));
+        }
+
+        if let ConfigSource::File(path) = &self.source {
+            configure_errors
+                .into_map(|e| ConfigError::warn(e.context(format!("{}", path.display()))))
+        } else {
+            configure_errors.into_map(ConfigError::warn)
+        }
+    }
+
+    /// Rewrites any config values that must be updated *before* applying CLI flag values, namely
+    /// rewriting any `PathBuf`s and `Globs` to be relative to `config_root`.
+    /// We do this as a step separate from `configure()` because CLI args may override some of these
+    /// values, but CLI args will always be relative to CWD, whereas config values should be relative
+    /// to the config root.
+    pub fn rewrite_with_path_to_config(&mut self, config_root: &Path) {
+        self.project_includes = self.project_includes.clone().from_root(config_root);
+        self.project_excludes = self.project_excludes.clone().from_root(config_root);
+        self.search_path_from_file
+            .iter_mut()
+            .for_each(|search_root| {
+                *search_root = search_root.absolutize_from(config_root);
+            });
+        if let Some(import_root) = &self.import_root {
+            self.import_root = Some(import_root.absolutize_from(config_root));
+        }
+        if let Some(typeshed_path) = &self.typeshed_path {
+            self.typeshed_path = Some(typeshed_path.absolutize_from(config_root));
+        }
+        if let Some(baseline) = &self.baseline {
+            self.baseline = Some(baseline.absolutize_from(config_root));
+        }
+        self.python_environment
+            .site_package_path
+            .iter_mut()
+            .for_each(|v| {
+                v.iter_mut().for_each(|site_package_path| {
+                    *site_package_path = site_package_path.absolutize_from(config_root);
+                });
+            });
+        self.interpreters.python_interpreter_path = self
+            .interpreters
+            .python_interpreter_path
+            .take()
+            .map(|s| s.map(|i| i.absolutize_from(config_root)));
+        self.sub_configs
+            .iter_mut()
+            .for_each(|c| c.rewrite_with_path_to_config(config_root));
+    }
+
+    pub fn from_file(config_path: &Path) -> (ConfigFile, Vec<ConfigError>) {
+        /// Read a config path and determine both the config content (if any)
+        /// and the appropriate `ConfigSource` classification.
+        fn read_path(config_path: &Path) -> anyhow::Result<(Option<ConfigFile>, ConfigSource)> {
+            let config_str = fs_anyhow::read_to_string(config_path)?;
+            let path = config_path.to_path_buf();
+            if config_path.file_name() == Some(OsStr::new(ConfigFile::PYPROJECT_FILE_NAME)) {
+                let (config, has_python_tools) = ConfigFile::parse_pyproject_toml(&config_str)?;
+                match config {
+                    Some(config) => Ok((Some(config), ConfigSource::File(path))),
+                    None if has_python_tools => Ok((None, ConfigSource::PythonToolMarker(path))),
+                    None => Ok((None, ConfigSource::Marker(path))),
+                }
+            } else if config_path.file_name().is_some_and(|fi| {
+                fi.to_str()
+                    .is_some_and(|fi| ConfigFile::ADDITIONAL_ROOT_FILE_NAMES.contains(&fi))
+            }) {
+                // We'll create a file with default options but treat config_root as the project root.
+                Ok((None, ConfigSource::Marker(path)))
+            } else {
+                Ok((
+                    Some(ConfigFile::parse_config(&config_str)?),
+                    ConfigSource::File(path),
+                ))
+            }
+        }
+        fn f(config_path: &Path) -> (ConfigFile, Vec<ConfigError>) {
+            let mut errors = Vec::new();
+            let (maybe_config, config_source) = match read_path(config_path) {
+                Ok(result) => result,
+                Err(e) => {
+                    errors.push(ConfigError::error(e));
+                    (None, ConfigSource::FailedParse(config_path.to_path_buf()))
+                }
+            };
+            let mut config = match config_path.parent() {
+                Some(config_root) => {
+                    let layout = ProjectLayout::new(config_root);
+                    if let Some(mut config) = maybe_config {
+                        config.rewrite_with_path_to_config(config_root);
+                        config.import_root = Some(layout.get_import_root(config_root));
+                        config
+                    } else {
+                        ConfigFile::init_at_root(config_root, &layout, false)
+                    }
+                }
+                None => {
+                    errors.push(ConfigError::error(anyhow!(
+                        "Could not find parent of path `{}`",
+                        config_path.display()
+                    )));
+                    maybe_config.unwrap_or_else(ConfigFile::default)
+                }
+            };
+            config.source = config_source;
+
+            if !config.root.extras.0.is_empty() {
+                let extra_keys = config.root.extras.0.keys().join(", ");
+                errors.push(ConfigError::warn(anyhow!(
+                    "Extra keys found in config: {extra_keys}"
+                )));
+            }
+            for sub_config in &config.sub_configs {
+                if !sub_config.settings.extras.0.is_empty() {
+                    let extra_keys = sub_config.settings.extras.0.keys().join(", ");
+                    errors.push(ConfigError::warn(anyhow!(
+                        "Extra keys found in sub config matching {}: {extra_keys}",
+                        sub_config.matches
+                    )));
+                }
+            }
+            (config, errors)
+        }
+        let config_path = config_path.absolutize();
+        let (config, errors) = f(&config_path);
+        let errors = errors.into_map(|err| err.context(format!("{}", config_path.display())));
+        (config, errors)
+    }
+
+    fn parse_config(config_str: &str) -> anyhow::Result<ConfigFile> {
+        toml::from_str::<ConfigFile>(config_str).map_err(|err| anyhow::Error::msg(err.to_string()))
+    }
+
+    /// Parse a pyproject.toml file. Returns a tuple of:
+    /// - `Option<ConfigFile>`: the pyrefly config, if `[tool.pyrefly]` was present
+    /// - `bool`: whether Python tool sections like `[tool.ruff]` were detected
+    fn parse_pyproject_toml(config_str: &str) -> anyhow::Result<(Option<ConfigFile>, bool)> {
+        let pyproject = toml::from_str::<PyProject>(config_str)
+            .map_err(|err| anyhow::Error::msg(err.to_string()))?;
+        let has_python_tools = pyproject.has_python_tools();
+        Ok((pyproject.pyrefly(), has_python_tools))
+    }
+}
+
+impl Display for ConfigFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{{source: {:?}, project_includes: {}, project_excludes: {}, search_path: [{}], python_interpreter_path: {:?}, python_environment: {}, replace_imports_with_any: [{}], ignore_missing_imports: [{}]}}",
+            self.source,
+            self.project_includes,
+            self.project_excludes,
+            self.search_path().map(|p| p.display()).join(", "),
+            self.interpreters.python_interpreter_path,
+            self.python_environment,
+            self.root
+                .replace_imports_with_any
+                .as_ref()
+                .map(|r| { r.iter().map(|p| p.as_str()).join(", ") })
+                .unwrap_or_default(),
+            self.root
+                .ignore_missing_imports
+                .as_ref()
+                .map(|r| { r.iter().map(|p| p.as_str()).join(", ") })
+                .unwrap_or_default(),
+        )
+    }
+}
+
+/// Returns an error if the path is definitely invalid.
+pub fn validate_path(path: &Path) -> anyhow::Result<()> {
+    match path.try_exists() {
+        Ok(true) => Ok(()),
+        Err(err) => {
+            debug!(
+                "Error checking for existence of path {}: {}",
+                path.display(),
+                err
+            );
+            Ok(())
+        }
+        Ok(false) => Err(anyhow!("`{}` does not exist", path.display())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::fs;
+
+    use pretty_assertions::assert_eq;
+    use pyrefly_util::test_path::TestPath;
+    use tempfile::TempDir;
+    use toml::Table;
+    use toml::Value;
+
+    use super::*;
+    use crate::base::ExtraConfigs;
+    use crate::base::UntypedDefBehavior;
+    use crate::error_kind::ErrorKind;
+    use crate::error_kind::Severity;
+    use crate::module_wildcard::ModuleWildcard;
+    use crate::util::ConfigOrigin;
+
+    #[test]
+    fn deserialize_pyrefly_config() {
+        let config_str = r#"
+             project-includes = ["tests", "./implementation"]
+             project-excludes = ["tests/untyped/**"]
+             untyped-def-behavior = "check-and-infer-return-type"
+             search-path = ["../.."]
+             python-platform = "darwin"
+             python-version = "1.2.3"
+             site-package-path = ["venv/lib/python1.2.3/site-packages"]
+             python-interpreter = "venv/my/python"
+             output-format = "min-text"
+             replace-imports-with-any = ["fibonacci"]
+             ignore-missing-imports = ["sprout"]
+             ignore-errors-in-generated-code = true
+             ignore-missing-source = true
+             use-ignore-files = true
+
+             [errors]
+             assert-type = true
+             bad-return = false
+
+             [[sub-config]]
+             matches = "sub/project/**"
+
+             untyped-def-behavior = "check-and-infer-return-any"
+             replace-imports-with-any = []
+             ignore-missing-imports = []
+             ignore-errors-in-generated-code = false
+             infer-with-first-use = false
+             strict-callable-subtyping = false
+             [sub-config.errors]
+             assert-type = false
+             invalid-yield = false
+        "#;
+        let config = ConfigFile::parse_config(config_str).unwrap();
+        assert_eq!(
+            config,
+            ConfigFile {
+                source: ConfigSource::Synthetic,
+                project_includes: Globs::new(vec![
+                    "tests".to_owned(),
+                    "./implementation".to_owned()
+                ])
+                .unwrap(),
+                project_excludes: Globs::new(vec!["tests/untyped/**".to_owned()]).unwrap(),
+                search_path_from_args: Vec::new(),
+                search_path_from_file: vec![PathBuf::from("../..")],
+                disable_search_path_heuristics: false,
+                enable_fallback_search_path: false,
+                disable_project_excludes_heuristics: false,
+                import_root: None,
+                preset: None,
+                build_system: Default::default(),
+                use_ignore_files: true,
+                output_format: Some(OutputFormat::MinText),
+                fallback_search_path: Default::default(),
+                python_environment: PythonEnvironment {
+                    python_platform: Some(PythonPlatform::mac()),
+                    python_version: Some(PythonVersion::new(1, 2, 3)),
+                    site_package_path: Some(vec![PathBuf::from(
+                        "venv/lib/python1.2.3/site-packages"
+                    )]),
+                    interpreter_stdlib_path: vec![],
+                    interpreter_site_package_path: config
+                        .python_environment
+                        .interpreter_site_package_path
+                        .clone(),
+                },
+                interpreters: Interpreters {
+                    python_interpreter_path: Some(ConfigOrigin::config(PathBuf::from(
+                        "venv/my/python"
+                    ))),
+                    fallback_python_interpreter_name: None,
+                    conda_environment: None,
+                    skip_interpreter_query: false,
+                },
+                root: ConfigBase {
+                    extras: Default::default(),
+                    errors: Some(ErrorDisplayConfig::new(HashMap::from_iter([
+                        (ErrorKind::BadReturn, Severity::Ignore),
+                        (ErrorKind::AssertType, Severity::Error),
+                    ]))),
+                    disable_type_errors_in_ide: None,
+                    ignore_errors_in_generated_code: Some(true),
+                    infer_with_first_use: None,
+                    pytorch_efficiency_lints: None,
+                    strict_callable_subtyping: None,
+                    replace_imports_with_any: Some(vec![ModuleWildcard::new("fibonacci").unwrap()]),
+                    ignore_missing_imports: Some(vec![ModuleWildcard::new("sprout").unwrap()]),
+                    untyped_def_behavior: Some(UntypedDefBehavior::CheckAndInferReturnType),
+                    check_unannotated_defs: None,
+                    infer_return_types: None,
+                    permissive_ignores: None,
+                    enabled_ignores: None,
+                    recursion_depth_limit: None,
+                    recursion_overflow_handler: None,
+                    spec_compliant_overloads: None,
+                },
+                source_db: Default::default(),
+                sub_configs: vec![SubConfig {
+                    matches: Glob::new("sub/project/**".to_owned()).unwrap(),
+                    settings: ConfigBase {
+                        extras: Default::default(),
+                        errors: Some(ErrorDisplayConfig::new(HashMap::from_iter([
+                            (ErrorKind::InvalidYield, Severity::Ignore),
+                            (ErrorKind::AssertType, Severity::Ignore),
+                        ]))),
+                        disable_type_errors_in_ide: None,
+                        ignore_errors_in_generated_code: Some(false),
+                        infer_with_first_use: Some(false),
+                        pytorch_efficiency_lints: None,
+                        strict_callable_subtyping: Some(false),
+                        replace_imports_with_any: Some(Vec::new()),
+                        ignore_missing_imports: Some(Vec::new()),
+                        untyped_def_behavior: Some(UntypedDefBehavior::CheckAndInferReturnAny),
+                        check_unannotated_defs: None,
+                        infer_return_types: None,
+                        permissive_ignores: None,
+                        enabled_ignores: None,
+                        recursion_depth_limit: None,
+                        recursion_overflow_handler: None,
+                        spec_compliant_overloads: None,
+                    }
+                }],
+                typeshed_path: None,
+                baseline: None,
+                min_severity: None,
+                skip_lsp_config_indexing: false,
+                extra_file_extensions: Vec::new(),
+                synthesized_preset_reason: None,
+            }
+        );
+    }
+
+    #[test]
+    fn deserialize_pyrefly_config_snake_case() {
+        let config_str = r#"
+             project_includes = ["tests", "./implementation"]
+             project_excludes = ["tests/untyped/**"]
+             untyped_def_behavior = "check-and-infer-return-type"
+             search_path = ["../.."]
+             python_platform = "darwin"
+             python_version = "1.2.3"
+             site_package_path = ["venv/lib/python1.2.3/site-packages"]
+             python-interpreter-path = "venv/my/python"
+             replace_imports_with_any = ["fibonacci"]
+             ignore_errors_in_generated_code = true
+
+             [errors]
+             assert-type = "error"
+             bad-return = "ignore"
+
+             [[sub_config]]
+             matches = "sub/project/**"
+
+             untyped_def_behavior = "check-and-infer-return-any"
+             replace_imports_with_any = []
+             ignore_errors_in_generated_code = false
+             [sub_config.errors]
+             assert-type = "warn"
+             invalid-yield = "ignore"
+        "#;
+        let config = ConfigFile::parse_config(config_str).unwrap();
+        assert_eq!(config.root.extras.0, ExtraConfigs::default().0);
+        assert!(
+            config
+                .sub_configs
+                .iter()
+                .all(|c| c.settings.extras.0.is_empty())
+        );
+    }
+
+    #[test]
+    fn deserialize_pyrefly_config_defaults() {
+        let config_str = "";
+        let config = ConfigFile::parse_config(config_str).unwrap();
+        assert_eq!(
+            config,
+            ConfigFile {
+                project_includes: ConfigFile::default_project_includes(),
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn deserialize_pyrefly_config_with_unknown() {
+        let config_str = r#"
+             laszewo = "good kids"
+             python_platform = "windows"
+
+             [[sub_config]]
+             matches = "abcd"
+
+                 atliens = 1
+                 "#;
+        let config = ConfigFile::parse_config(config_str).unwrap();
+        assert_eq!(
+            config.root.extras.0,
+            Table::from_iter([("laszewo".to_owned(), Value::String("good kids".to_owned())),])
+        );
+        assert_eq!(
+            config.sub_configs[0].settings.extras.0,
+            Table::from_iter([("atliens".to_owned(), Value::Integer(1))])
+        );
+    }
+
+    #[test]
+    fn deserialize_pyproject_toml() {
+        let config_str = r#"
+            [tool.pyrefly]
+             project_includes = ["./tests", "./implementation"]
+                 python_platform = "darwin"
+                 python_version = "1.2.3"
+                 output-format = "json"
+                 "#;
+        let config = ConfigFile::parse_pyproject_toml(config_str)
+            .unwrap()
+            .0
+            .unwrap();
+        assert_eq!(
+            config,
+            ConfigFile {
+                project_includes: Globs::new(vec![
+                    "./tests".to_owned(),
+                    "./implementation".to_owned()
+                ])
+                .unwrap(),
+                python_environment: PythonEnvironment {
+                    python_platform: Some(PythonPlatform::mac()),
+                    python_version: Some(PythonVersion::new(1, 2, 3)),
+                    site_package_path: None,
+                    interpreter_site_package_path: config
+                        .python_environment
+                        .interpreter_site_package_path
+                        .clone(),
+                    interpreter_stdlib_path: config
+                        .python_environment
+                        .interpreter_stdlib_path
+                        .clone(),
+                },
+                output_format: Some(OutputFormat::Json),
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn deserialize_pyproject_toml_defaults() {
+        let config_str = "";
+        let (config, has_python_tools) = ConfigFile::parse_pyproject_toml(config_str).unwrap();
+        assert!(config.is_none());
+        assert!(!has_python_tools);
+    }
+
+    #[test]
+    fn deserialize_pyproject_toml_with_unknown() {
+        let config_str = r#"
+            top_level = 1
+            [table1]
+            table1_value = 2
+            [tool.pysa]
+            pysa_value = 2
+            [tool.pyrefly]
+            python_version = "1.2.3"
+        "#;
+        let config = ConfigFile::parse_pyproject_toml(config_str)
+            .unwrap()
+            .0
+            .unwrap();
+        assert_eq!(
+            config,
+            ConfigFile {
+                project_includes: ConfigFile::default_project_includes(),
+                python_environment: PythonEnvironment {
+                    python_version: Some(PythonVersion::new(1, 2, 3)),
+                    python_platform: None,
+                    site_package_path: None,
+                    interpreter_site_package_path: config
+                        .python_environment
+                        .interpreter_site_package_path
+                        .clone(),
+                    interpreter_stdlib_path: config
+                        .python_environment
+                        .interpreter_stdlib_path
+                        .clone(),
+                },
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn deserialize_pyproject_toml_without_pyrefly() {
+        let config_str = "
+             top_level = 1
+             [table1]
+             table1_value = 2
+                 [tool.pysa]
+                 pysa_value = 2
+                     ";
+        let (config, has_python_tools) = ConfigFile::parse_pyproject_toml(config_str).unwrap();
+        assert!(config.is_none());
+        assert!(!has_python_tools);
+    }
+
+    #[test]
+    fn deserialize_pyproject_toml_with_unknown_in_pyrefly() {
+        let config_str = r#"
+             top_level = 1
+             [table1]
+             table1_value = 2
+                 [tool.pysa]
+                 pysa_value = 2
+                     [tool.pyrefly]
+                     python_version = "1.2.3"
+                         inzo = "overthinker"
+                         "#;
+        let config = ConfigFile::parse_pyproject_toml(config_str)
+            .unwrap()
+            .0
+            .unwrap();
+        assert_eq!(
+            config.root.extras.0,
+            Table::from_iter([("inzo".to_owned(), Value::String("overthinker".to_owned()))])
+        );
+    }
+
+    #[test]
+    fn test_rewrite_with_path_to_config() {
+        let typeshed = "path/to/typeshed";
+        let mut python_environment = PythonEnvironment {
+            site_package_path: Some(vec![PathBuf::from("venv/lib/python1.2.3/site-packages")]),
+            ..PythonEnvironment::default()
+        };
+        let interpreter = "venv/bin/python3".to_owned();
+        let mut config = ConfigFile {
+            source: ConfigSource::Synthetic,
+            project_includes: Globs::new(vec!["path1/**".to_owned(), "path2/path3".to_owned()])
+                .unwrap(),
+            project_excludes: Globs::new(vec!["tests/untyped/**".to_owned()]).unwrap(),
+            search_path_from_args: Vec::new(),
+            search_path_from_file: vec![PathBuf::from("../..")],
+            disable_search_path_heuristics: false,
+            enable_fallback_search_path: false,
+            disable_project_excludes_heuristics: false,
+            import_root: None,
+            preset: None,
+            use_ignore_files: true,
+            output_format: Some(OutputFormat::Json),
+            fallback_search_path: Default::default(),
+            python_environment: python_environment.clone(),
+            interpreters: Interpreters {
+                python_interpreter_path: Some(ConfigOrigin::config(PathBuf::from(
+                    interpreter.clone(),
+                ))),
+                fallback_python_interpreter_name: None,
+                conda_environment: None,
+                skip_interpreter_query: false,
+            },
+            root: Default::default(),
+            source_db: Default::default(),
+            build_system: Default::default(),
+            sub_configs: vec![SubConfig {
+                matches: Glob::new("sub/project/**".to_owned()).unwrap(),
+                settings: Default::default(),
+            }],
+            typeshed_path: Some(PathBuf::from(typeshed)),
+            baseline: Some(PathBuf::from("baseline.json")),
+            min_severity: None,
+            skip_lsp_config_indexing: false,
+            extra_file_extensions: Vec::new(),
+            synthesized_preset_reason: None,
+        };
+
+        let current_dir = std::env::current_dir().unwrap();
+        let test_path = current_dir.join("path/to/my/config");
+
+        let project_includes_vec = vec![
+            test_path.join("path1/**").to_string_lossy().into_owned(),
+            test_path.join("path2/path3").to_string_lossy().into_owned(),
+        ];
+        let project_excludes_vec = vec![
+            test_path
+                .join("tests/untyped/**")
+                .to_string_lossy()
+                .into_owned(),
+        ];
+        let search_path = vec![test_path.parent().unwrap().parent().unwrap().to_path_buf()];
+        let expected_typeshed = test_path.join(typeshed);
+        python_environment.site_package_path =
+            Some(vec![test_path.join("venv/lib/python1.2.3/site-packages")]);
+
+        let sub_config_matches = Glob::new(
+            test_path
+                .join("sub/project/**")
+                .to_string_lossy()
+                .into_owned(),
+        )
+        .unwrap();
+
+        config.rewrite_with_path_to_config(&test_path);
+
+        let expected_config = ConfigFile {
+            source: ConfigSource::Synthetic,
+            project_includes: Globs::new(project_includes_vec).unwrap(),
+            project_excludes: Globs::new(project_excludes_vec).unwrap(),
+            interpreters: Interpreters {
+                python_interpreter_path: Some(ConfigOrigin::config(test_path.join(interpreter))),
+                fallback_python_interpreter_name: None,
+                conda_environment: None,
+                skip_interpreter_query: false,
+            },
+            search_path_from_args: Vec::new(),
+            search_path_from_file: search_path,
+            disable_search_path_heuristics: false,
+            enable_fallback_search_path: false,
+            disable_project_excludes_heuristics: false,
+            use_ignore_files: true,
+            output_format: Some(OutputFormat::Json),
+            import_root: None,
+            preset: None,
+            fallback_search_path: Default::default(),
+            python_environment,
+            root: Default::default(),
+            build_system: Default::default(),
+            source_db: Default::default(),
+            sub_configs: vec![SubConfig {
+                matches: sub_config_matches,
+                settings: Default::default(),
+            }],
+            typeshed_path: Some(expected_typeshed),
+            baseline: Some(test_path.join("baseline.json")),
+            min_severity: None,
+            skip_lsp_config_indexing: false,
+            extra_file_extensions: Vec::new(),
+            synthesized_preset_reason: None,
+        };
+        assert_eq!(config, expected_config);
+    }
+
+    #[test]
+    fn test_deserializing_unknown_error_errors() {
+        let config_str = "
+             [errors]
+             subtronics = true
+                 zeds_dead = false
+                 GRiZ = true
+                 ";
+        let err = ConfigFile::parse_config(config_str).unwrap_err();
+        assert!(err.to_string().contains("unknown variant"));
+    }
+
+    #[test]
+    fn test_deserializing_sub_config_missing_matches() {
+        let config_str = r#"
+             [[sub_config]]
+             search_path = ["../../.."]
+                 "#;
+        let err = ConfigFile::parse_config(config_str).unwrap_err();
+        assert!(err.to_string().contains("missing field `matches`"));
+    }
+
+    #[test]
+    fn test_baseline_config_parsing() {
+        let config_str = r#"
+baseline = "baseline.json"
+"#;
+        let config = ConfigFile::parse_config(config_str).unwrap();
+        assert_eq!(config.baseline, Some(PathBuf::from("baseline.json")));
+    }
+
+    #[test]
+    fn test_output_format_config_parsing() {
+        let config_str = r#"
+output-format = "omit-errors"
+"#;
+        let config = ConfigFile::parse_config(config_str).unwrap();
+        assert_eq!(config.output_format, Some(OutputFormat::OmitErrors));
+    }
+
+    #[test]
+    fn test_output_format_junit_xml_config_parsing() {
+        let config_str = r#"output-format = "junit-xml""#;
+        let config = ConfigFile::parse_config(config_str).unwrap();
+        assert_eq!(config.output_format, Some(OutputFormat::JunitXml));
+    }
+
+    #[test]
+    fn test_expect_all_fields_set_in_root_config() {
+        let root = TempDir::new().unwrap();
+        let mut config = ConfigFile::init_at_root(root.path(), &ProjectLayout::default(), false);
+        config.configure();
+
+        let table: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+
+        let ignore_keys: Vec<String> = vec![
+            // top level configs, where null values (if possible), should be allowed
+            "project-includes",
+            "project-excludes",
+            "python-interpreter-path",
+            "fallback-python-interpreter-name",
+            // values we won't be getting
+            "extras",
+            // values that must be Some (if flattened, their contents will be checked)
+            "python_environment",
+        ]
+        .into_iter()
+        .map(|k| k.to_owned())
+        .collect();
+
+        table.keys().for_each(|k| {
+            if ignore_keys.contains(k) {
+                return;
+            }
+
+            assert!(
+                table.get(k).is_some_and(|v| !v.is_null()),
+                "Value for {k} is None after ConfigFile::configure()"
+            );
+        });
+    }
+
+    #[test]
+    fn test_get_from_sub_configs() {
+        let config = ConfigFile {
+            root: ConfigBase {
+                errors: Some(Default::default()),
+                replace_imports_with_any: Some(vec![ModuleWildcard::new("root").unwrap()]),
+                ignore_missing_imports: None,
+                untyped_def_behavior: Some(UntypedDefBehavior::CheckAndInferReturnType),
+                check_unannotated_defs: None,
+                infer_return_types: None,
+                disable_type_errors_in_ide: Some(true),
+                ignore_errors_in_generated_code: Some(false),
+                infer_with_first_use: Some(true),
+                pytorch_efficiency_lints: None,
+                strict_callable_subtyping: Some(false),
+                extras: Default::default(),
+                permissive_ignores: Some(false),
+                enabled_ignores: None,
+                recursion_depth_limit: None,
+                recursion_overflow_handler: None,
+                spec_compliant_overloads: None,
+            },
+            sub_configs: vec![
+                SubConfig {
+                    matches: Glob::new("**/highest/**".to_owned()).unwrap(),
+                    settings: ConfigBase {
+                        replace_imports_with_any: Some(vec![
+                            ModuleWildcard::new("highest").unwrap(),
+                        ]),
+                        ignore_errors_in_generated_code: None,
+                        ..Default::default()
+                    },
+                },
+                SubConfig {
+                    matches: Glob::new("**/priority*".to_owned()).unwrap(),
+                    settings: ConfigBase {
+                        replace_imports_with_any: Some(vec![
+                            ModuleWildcard::new("second").unwrap(),
+                        ]),
+                        ignore_errors_in_generated_code: Some(true),
+                        ..Default::default()
+                    },
+                },
+            ],
+            ..Default::default()
+        };
+
+        // test precedence (two configs match, one higher priority)
+        assert!(config.replace_imports_with_any(
+            Some(Path::new("this/is/highest/priority")),
+            ModuleName::from_str("highest")
+        ));
+
+        // test find fallback match
+        assert!(config.replace_imports_with_any(
+            Some(Path::new("this/is/second/priority")),
+            ModuleName::from_str("second")
+        ));
+
+        // test empty value falls back to next
+        assert!(config.ignore_errors_in_generated_code(Path::new("this/is/highest/priority")));
+        // test no pattern match
+        assert!(config.replace_imports_with_any(
+            Some(Path::new("this/does/not/match/any")),
+            ModuleName::from_str("root")
+        ));
+
+        // test replace_imports_with_any special case None path
+        assert!(config.replace_imports_with_any(None, ModuleName::from_str("root")));
+    }
+
+    #[test]
+    fn test_sub_config_errors_inherit_root() {
+        let mut config = ConfigFile {
+            root: ConfigBase {
+                errors: Some(ErrorDisplayConfig::new(HashMap::from([
+                    (ErrorKind::BadAssignment, Severity::Ignore),
+                    (ErrorKind::BadOverride, Severity::Ignore),
+                ]))),
+                ..Default::default()
+            },
+            sub_configs: vec![SubConfig {
+                matches: Glob::new("sub/**".to_owned()).unwrap(),
+                settings: ConfigBase {
+                    errors: Some(ErrorDisplayConfig::new(HashMap::from([(
+                        ErrorKind::BadReturn,
+                        Severity::Ignore,
+                    )]))),
+                    ..Default::default()
+                },
+            }],
+            ..Default::default()
+        };
+        config.configure();
+
+        // Sub-config inherits root errors and adds its own
+        let sub_errors = config.errors(Path::new("sub/foo.py"));
+        assert_eq!(
+            sub_errors.severity(ErrorKind::BadAssignment),
+            Severity::Ignore
+        );
+        assert_eq!(
+            sub_errors.severity(ErrorKind::BadOverride),
+            Severity::Ignore
+        );
+        assert_eq!(sub_errors.severity(ErrorKind::BadReturn), Severity::Ignore);
+
+        // Root errors unchanged for non-matching paths
+        let root_errors = config.errors(Path::new("other/foo.py"));
+        assert_eq!(
+            root_errors.severity(ErrorKind::BadAssignment),
+            Severity::Ignore
+        );
+        assert_eq!(
+            root_errors.severity(ErrorKind::BadOverride),
+            Severity::Ignore
+        );
+        assert_eq!(root_errors.severity(ErrorKind::BadReturn), Severity::Error);
+    }
+
+    #[test]
+    fn test_sub_config_errors_override_root() {
+        let mut config = ConfigFile {
+            root: ConfigBase {
+                errors: Some(ErrorDisplayConfig::new(HashMap::from([(
+                    ErrorKind::BadAssignment,
+                    Severity::Ignore,
+                )]))),
+                ..Default::default()
+            },
+            sub_configs: vec![SubConfig {
+                matches: Glob::new("strict/**".to_owned()).unwrap(),
+                settings: ConfigBase {
+                    errors: Some(ErrorDisplayConfig::new(HashMap::from([(
+                        ErrorKind::BadAssignment,
+                        Severity::Error,
+                    )]))),
+                    ..Default::default()
+                },
+            }],
+            ..Default::default()
+        };
+        config.configure();
+
+        // Sub-config overrides root for the same error code
+        let sub_errors = config.errors(Path::new("strict/foo.py"));
+        assert_eq!(
+            sub_errors.severity(ErrorKind::BadAssignment),
+            Severity::Error
+        );
+    }
+
+    #[test]
+    fn test_sub_config_without_errors_uses_root() {
+        let mut config = ConfigFile {
+            root: ConfigBase {
+                errors: Some(ErrorDisplayConfig::new(HashMap::from([(
+                    ErrorKind::BadAssignment,
+                    Severity::Ignore,
+                )]))),
+                ..Default::default()
+            },
+            sub_configs: vec![SubConfig {
+                matches: Glob::new("sub/**".to_owned()).unwrap(),
+                settings: ConfigBase {
+                    check_unannotated_defs: Some(false),
+                    ..Default::default()
+                },
+            }],
+            ..Default::default()
+        };
+        config.configure();
+
+        // Sub-config without errors falls through to root
+        let sub_errors = config.errors(Path::new("sub/foo.py"));
+        assert_eq!(
+            sub_errors.severity(ErrorKind::BadAssignment),
+            Severity::Ignore
+        );
+    }
+
+    #[test]
+    fn test_preset_legacy_applies_defaults() {
+        let mut config = ConfigFile {
+            preset: Some(Preset::Legacy),
+            ..Default::default()
+        };
+        config.configure();
+
+        assert_eq!(config.root.check_unannotated_defs, Some(false));
+        assert_eq!(
+            config.root.infer_return_types,
+            Some(InferReturnTypes::Never)
+        );
+        // Preset leaves `infer_with_first_use` unset, so the post-preset
+        // default-fill in `configure()` provides the default value of `true`.
+        assert_eq!(config.root.infer_with_first_use, Some(true));
+        let errors = config.root.errors.as_ref().unwrap();
+        assert_eq!(
+            errors.severity(ErrorKind::BadOverrideMutableAttribute),
+            Severity::Ignore
+        );
+        assert_eq!(
+            errors.severity(ErrorKind::BadOverrideParamName),
+            Severity::Ignore
+        );
+        assert_eq!(errors.severity(ErrorKind::UnboundName), Severity::Ignore);
+    }
+
+    #[test]
+    fn test_preset_user_settings_override() {
+        let mut config = ConfigFile {
+            preset: Some(Preset::Legacy),
+            root: ConfigBase {
+                check_unannotated_defs: Some(true),
+                errors: Some(ErrorDisplayConfig::new(HashMap::from([(
+                    ErrorKind::BadOverrideMutableAttribute,
+                    Severity::Error,
+                )]))),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        config.configure();
+
+        // User setting overrides preset
+        assert_eq!(config.root.check_unannotated_defs, Some(true));
+        let errors = config.root.errors.as_ref().unwrap();
+        // Explicit user error override wins
+        assert_eq!(
+            errors.severity(ErrorKind::BadOverrideMutableAttribute),
+            Severity::Error
+        );
+        // Preset error still applies for non-overridden codes
+        assert_eq!(
+            errors.severity(ErrorKind::BadOverrideParamName),
+            Severity::Ignore
+        );
+    }
+
+    #[test]
+    fn test_preset_default_is_noop() {
+        let mut with_preset = ConfigFile {
+            preset: Some(Preset::Default),
+            ..Default::default()
+        };
+        with_preset.configure();
+
+        let mut without_preset = ConfigFile::default();
+        without_preset.configure();
+
+        assert_eq!(with_preset.root, without_preset.root);
+    }
+
+    #[test]
+    fn test_preset_strict_enables_errors() {
+        let mut config = ConfigFile {
+            preset: Some(Preset::Strict),
+            ..Default::default()
+        };
+        config.configure();
+
+        let errors = config.root.errors.as_ref().unwrap();
+        assert_eq!(errors.severity(ErrorKind::ImplicitAny), Severity::Error);
+        // Setting `implicit-any` cascades to every sub-kind via parent_kind,
+        // so strict mode covers parameters, attributes, type arguments, and
+        // empty containers without listing them individually.
+        for kind in [
+            ErrorKind::ImplicitAnyParameter,
+            ErrorKind::ImplicitAnyAttribute,
+            ErrorKind::ImplicitAnyTypeArgument,
+            ErrorKind::ImplicitAnyEmptyContainer,
+        ] {
+            assert_eq!(
+                errors.severity(kind),
+                Severity::Error,
+                "strict should enable {kind:?} via the implicit-any parent"
+            );
+        }
+        assert_eq!(
+            errors.severity(ErrorKind::MissingOverrideDecorator),
+            Severity::Error
+        );
+        // Pyrefly infers concrete return types in most cases, so we don't
+        // ask users for an explicit annotation in strict mode.
+        assert_eq!(
+            errors.severity(ErrorKind::UnannotatedReturn),
+            Severity::Ignore
+        );
+        assert_eq!(config.root.strict_callable_subtyping, Some(true));
+    }
+
+    #[test]
+    fn test_preset_off_silences_all_errors() {
+        // The `off` preset silences every error kind and leaves all other
+        // settings at their defaults.
+        let mut config = ConfigFile {
+            preset: Some(Preset::Off),
+            ..Default::default()
+        };
+        config.configure();
+
+        let errors = config.root.errors.as_ref().unwrap();
+        for kind in enum_iterator::all::<ErrorKind>() {
+            assert_eq!(
+                errors.severity(kind),
+                Severity::Ignore,
+                "`off` preset should silence {kind:?}"
+            );
+        }
+
+        // Scalar fields fall back to the post-preset defaults in `configure()`.
+        let mut default_config = ConfigFile::default();
+        default_config.configure();
+        assert_eq!(
+            config.root.check_unannotated_defs,
+            default_config.root.check_unannotated_defs
+        );
+        assert_eq!(
+            config.root.infer_return_types,
+            default_config.root.infer_return_types
+        );
+        assert_eq!(
+            config.root.infer_with_first_use,
+            default_config.root.infer_with_first_use
+        );
+        assert_eq!(config.root.permissive_ignores, None);
+    }
+
+    #[test]
+    fn test_preset_basic_enables_only_high_confidence_errors() {
+        // Basic is an opt-in preset: only a small set of high-confidence
+        // diagnostics fires, everything else is silenced. The enabled kinds
+        // should have their configured severities; every other kind should
+        // be Ignore.
+        let mut config = ConfigFile {
+            preset: Some(Preset::Basic),
+            ..Default::default()
+        };
+        config.configure();
+
+        let errors = config.root.errors.as_ref().unwrap();
+
+        // All enabled kinds are errors. Keeping them at `Error` (rather than
+        // `Warn`) avoids the surprise of switching presets changing
+        // `min-severity` requirements.
+        for kind in [
+            ErrorKind::BadClassDefinition,
+            ErrorKind::BadInstantiation,
+            ErrorKind::BadKeywordArgument,
+            ErrorKind::BadRaise,
+            ErrorKind::BadUnpacking,
+            ErrorKind::DivisionByZero,
+            ErrorKind::InvalidAnnotation,
+            ErrorKind::InvalidLiteral,
+            ErrorKind::InvalidSuperCall,
+            ErrorKind::InvalidSyntax,
+            ErrorKind::MissingImport,
+            ErrorKind::NotAsync,
+            ErrorKind::ParseError,
+            ErrorKind::UnexpectedKeyword,
+            ErrorKind::UnexpectedPositionalArgument,
+            ErrorKind::UnknownName,
+            ErrorKind::UnusedCoroutine,
+        ] {
+            assert_eq!(
+                errors.severity(kind),
+                Severity::Error,
+                "Basic preset should enable {kind:?} as Error"
+            );
+        }
+        // A representative sample of kinds that should be silenced. Exhaustive
+        // enumeration is covered by `test_preset_fields_propagate`.
+        for kind in [
+            ErrorKind::BadArgumentType,
+            ErrorKind::BadAssignment,
+            ErrorKind::BadReturn,
+            ErrorKind::BadOverride,
+            ErrorKind::Deprecated,
+            ErrorKind::InvalidInheritance,
+            ErrorKind::MissingArgument,
+            ErrorKind::MissingAttribute,
+            ErrorKind::MissingModuleAttribute,
+            ErrorKind::NotCallable,
+            ErrorKind::NotIterable,
+            ErrorKind::RedundantCast,
+        ] {
+            assert_eq!(
+                errors.severity(kind),
+                Severity::Ignore,
+                "Basic preset should silence {kind:?}"
+            );
+        }
+
+        // Scalar/top-level settings
+        assert_eq!(config.root.check_unannotated_defs, Some(false));
+        assert_eq!(
+            config.root.infer_return_types,
+            Some(InferReturnTypes::Never)
+        );
+        assert_eq!(config.root.infer_with_first_use, Some(false));
+        assert_eq!(config.root.permissive_ignores, Some(true));
+    }
+
+    #[test]
+    fn test_preset_deserialization() {
+        let config_str = r#"preset = "legacy""#;
+        let config: ConfigFile = toml::from_str(config_str).unwrap();
+        assert_eq!(config.preset, Some(Preset::Legacy));
+    }
+
+    #[test]
+    fn test_preset_fields_propagate() {
+        // Applying a preset should produce the same `root` as setting each of
+        // its fields explicitly. If `configure()` forgets to handle a new
+        // field added to `Preset::apply()`, the preset value would silently
+        // be dropped — this test catches that.
+        for preset in enum_iterator::all::<Preset>() {
+            let mut via_preset = ConfigFile {
+                preset: Some(preset),
+                ..Default::default()
+            };
+            via_preset.configure();
+
+            let mut via_fields = ConfigFile {
+                root: preset.apply(),
+                ..Default::default()
+            };
+            via_fields.configure();
+
+            assert_eq!(
+                via_preset.root, via_fields.root,
+                "Preset `{preset:?}`: `configure()` produced a different `root` \
+                 when applied via `preset = ...` vs. setting the fields directly. \
+                 A preset field is probably not handled by `apply_preset_default!`."
+            );
+        }
+    }
+
+    #[test]
+    fn test_preset_user_parent_override_cascades_to_preset_child() {
+        // `bad-override = "error"` should cascade through the legacy preset's
+        // child `BadOverrideMutableAttribute` / `BadOverrideParamName`
+        // `Ignore` entries so the user's broader override actually takes
+        // effect.
+        let mut config = ConfigFile {
+            preset: Some(Preset::Legacy),
+            root: ConfigBase {
+                errors: Some(ErrorDisplayConfig::new(HashMap::from([(
+                    ErrorKind::BadOverride,
+                    Severity::Error,
+                )]))),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        config.configure();
+
+        let errors = config.root.errors.as_ref().unwrap();
+        assert_eq!(
+            errors.severity(ErrorKind::BadOverrideMutableAttribute),
+            Severity::Error
+        );
+        assert_eq!(
+            errors.severity(ErrorKind::BadOverrideParamName),
+            Severity::Error
+        );
+    }
+
+    #[test]
+    fn test_preset_sub_config_parent_override_cascades() {
+        // A sub-config setting a parent kind should cascade through the
+        // preset's child entries the same way it does at root — i.e., the
+        // preset's `BadOverrideMutableAttribute = Ignore` gets dropped when
+        // the sub-config sets `BadOverride = Error`. This gives sub-configs
+        // the same "least surprise" behavior as root overrides.
+        let mut config = ConfigFile {
+            preset: Some(Preset::Legacy),
+            sub_configs: vec![SubConfig {
+                matches: Glob::new("tests/**".to_owned()).unwrap(),
+                settings: ConfigBase {
+                    errors: Some(ErrorDisplayConfig::new(HashMap::from([(
+                        ErrorKind::BadOverride,
+                        Severity::Error,
+                    )]))),
+                    ..Default::default()
+                },
+            }],
+            ..Default::default()
+        };
+        config.configure();
+
+        let sub_errors = config.sub_configs[0].settings.errors.as_ref().unwrap();
+        assert_eq!(
+            sub_errors.severity(ErrorKind::BadOverrideMutableAttribute),
+            Severity::Error
+        );
+        assert_eq!(
+            sub_errors.severity(ErrorKind::BadOverrideParamName),
+            Severity::Error
+        );
+    }
+
+    #[test]
+    fn test_preset_user_deprecated_alias_overrides_preset_canonical() {
+        // The deprecated alias `bad-param-name-override` should override the
+        // legacy preset's canonical `BadOverrideParamName` entry.
+        let mut config = ConfigFile {
+            preset: Some(Preset::Legacy),
+            root: ConfigBase {
+                errors: Some(ErrorDisplayConfig::new(HashMap::from([(
+                    ErrorKind::BadParamNameOverride,
+                    Severity::Error,
+                )]))),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        config.configure();
+
+        let errors = config.root.errors.as_ref().unwrap();
+        assert_eq!(
+            errors.severity(ErrorKind::BadOverrideParamName),
+            Severity::Error
+        );
+    }
+
+    #[test]
+    fn test_deprecated_untyped_def_behavior_overrides_preset() {
+        // The deprecated `untyped-def-behavior` field should override the
+        // preset's `check-unannotated-defs` and `infer-return-types` values.
+        let config_str = r#"
+            preset = "legacy"
+            untyped-def-behavior = "check-and-infer-return-type"
+        "#;
+        let mut config: ConfigFile = toml::from_str(config_str).unwrap();
+        config.configure();
+
+        // The legacy preset sets `check_unannotated_defs = false`, but the
+        // deprecated field resolves to `check_unannotated_defs = true` and
+        // overrides it.
+        assert_eq!(config.root.check_unannotated_defs, Some(true));
+        assert_eq!(
+            config.root.infer_return_types,
+            Some(InferReturnTypes::Checked)
+        );
+    }
+
+    #[test]
+    fn test_default_search_path() {
+        let tempdir = TempDir::new().unwrap();
+        let config = ConfigFile::init_at_root(tempdir.path(), &ProjectLayout::default(), false);
+        assert_eq!(
+            config.search_path().cloned().collect::<Vec<_>>(),
+            vec![tempdir.path().to_path_buf()]
+        );
+    }
+
+    #[test]
+    fn test_pyproject_toml_search_path() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join(ConfigFile::PYPROJECT_FILE_NAME);
+        fs::write(&path, "[tool.pyrefly]").unwrap();
+        let config = ConfigFile::from_file(&path).0;
+        assert_eq!(
+            config.search_path().cloned().collect::<Vec<_>>(),
+            vec![root.path().to_path_buf()]
+        );
+    }
+
+    fn create_empty_file_and_parse_config(root: &TempDir, name: &str) -> ConfigFile {
+        let path = root.path().join(name);
+        fs::write(&path, "").unwrap();
+        ConfigFile::from_file(&path).0
+    }
+
+    #[test]
+    fn test_pyproject_toml_no_pyrefly_search_path() {
+        let root = TempDir::new().unwrap();
+        let config = create_empty_file_and_parse_config(&root, ConfigFile::PYPROJECT_FILE_NAME);
+        assert_eq!(
+            config.search_path().cloned().collect::<Vec<_>>(),
+            vec![root.path().to_path_buf()]
+        );
+    }
+
+    #[test]
+    fn test_mypy_config_search_path() {
+        let root = TempDir::new().unwrap();
+        let config = create_empty_file_and_parse_config(&root, "mypy.ini");
+        assert_eq!(
+            config.search_path().cloned().collect::<Vec<_>>(),
+            vec![root.path().to_path_buf()]
+        );
+    }
+
+    #[test]
+    fn test_pyright_config_search_path() {
+        let root = TempDir::new().unwrap();
+        let config = create_empty_file_and_parse_config(&root, "pyrightconfig.json");
+        assert_eq!(
+            config.search_path().cloned().collect::<Vec<_>>(),
+            vec![root.path().to_path_buf()]
+        );
+    }
+
+    #[test]
+    fn test_src_layout_default_config() {
+        // root/
+        // - pyproject.toml (empty)
+        // - src/
+        // - my_amazing_scripts/
+        //   - foo.py
+        let root = TempDir::new().unwrap();
+        let src_dir = root.path().join("src");
+        let scripts_dir = root.path().join("my_amazing_scripts");
+        let python_file = scripts_dir.join("foo.py");
+        fs::create_dir(&src_dir).unwrap();
+        fs::create_dir(&scripts_dir).unwrap();
+        fs::write(&python_file, "").unwrap();
+        let config = create_empty_file_and_parse_config(&root, ConfigFile::PYPROJECT_FILE_NAME);
+        // We should still find Python files (commonly scripts and tests) outside src/.
+        assert_eq!(
+            config
+                .project_includes
+                .files_iter()
+                .unwrap()
+                .collect::<Vec<_>>(),
+            vec![python_file]
+        );
+        assert_eq!(
+            config.search_path().cloned().collect::<Vec<_>>(),
+            vec![src_dir]
+        );
+    }
+
+    #[test]
+    fn test_src_layout_with_config() {
+        // root/
+        // - pyrefly.toml
+        // - src/
+        let root = TempDir::new().unwrap();
+        let src_dir = root.path().join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        let pyrefly_path = root.path().join(ConfigFile::PYREFLY_FILE_NAME);
+        fs::write(&pyrefly_path, "project_includes = [\"**/*\"]").unwrap();
+        let config = ConfigFile::from_file(&pyrefly_path).0;
+        // File contents should still be relative to the location of the config file, not src/.
+        assert_eq!(
+            config.project_includes,
+            Globs::new(vec![root.path().join("**/*").to_string_lossy().to_string()]).unwrap(),
+        );
+        assert_eq!(
+            config.search_path().cloned().collect::<Vec<_>>(),
+            vec![src_dir]
+        );
+    }
+
+    #[test]
+    fn test_get_filtered_globs() {
+        let mut config = ConfigFile::default();
+        let site_package_path = vec![
+            "venv/site_packages".to_owned(),
+            "system/site_packages".to_owned(),
+            "my_search_path".to_owned(),
+        ];
+        config.interpreters.skip_interpreter_query = true;
+        config.python_environment.site_package_path = Some(
+            site_package_path
+                .iter()
+                .map(PathBuf::from)
+                .collect::<Vec<_>>(),
+        );
+        config.search_path_from_file = vec![PathBuf::from("my_search_path")];
+        config.project_excludes = ConfigFile::required_project_excludes();
+
+        config.configure();
+
+        let mut expected_site_package_path = site_package_path;
+        // get rid of "my_search_path" in site package path, since it's going to be removed
+        // when we add site package path to project excludes
+        expected_site_package_path.pop();
+
+        assert_eq!(
+            config.get_filtered_globs(None),
+            FilteredGlobs::new(
+                config.project_includes.clone(),
+                Globs::new(
+                    vec![
+                        "**/node_modules".to_owned(),
+                        "**/__pycache__".to_owned(),
+                        "**/venv/**".to_owned(),
+                    ]
+                    .into_iter()
+                    .chain(vec![
+                        "**/node_modules".to_owned(),
+                        "**/__pycache__".to_owned(),
+                        "**/venv/**".to_owned(),
+                    ])
+                    .chain(expected_site_package_path.clone())
+                    .collect::<Vec<_>>(),
+                )
+                .unwrap(),
+                None,
+                HiddenDirFilter::All,
+            )
+        );
+        assert_eq!(
+            config.get_filtered_globs(Some(
+                Globs::new(vec!["custom_excludes".to_owned()]).unwrap()
+            )),
+            FilteredGlobs::new(
+                config.project_includes.clone(),
+                Globs::new(
+                    vec!["custom_excludes".to_owned()]
+                        .into_iter()
+                        .chain(vec![
+                            "**/node_modules".to_owned(),
+                            "**/__pycache__".to_owned(),
+                            "**/venv/**".to_owned(),
+                        ])
+                        .chain(expected_site_package_path)
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap(),
+                None,
+                HiddenDirFilter::All,
+            )
+        );
+    }
+
+    #[test]
+    fn test_python_interpreter_conda_environment() {
+        let mut config = ConfigFile {
+            interpreters: Interpreters {
+                python_interpreter_path: Some(ConfigOrigin::config(PathBuf::new())),
+                fallback_python_interpreter_name: None,
+                conda_environment: Some(ConfigOrigin::config("".to_owned())),
+                skip_interpreter_query: false,
+            },
+            ..Default::default()
+        };
+
+        let validation_errors = config.configure();
+
+        assert!(
+             validation_errors.iter().any(|e| {
+                 e.get_message() == "Cannot use both `python-interpreter-path` and `conda-environment`. Finding environment info using `python-interpreter-path`."
+             })
+         );
+    }
+
+    #[test]
+    fn test_interpreter_not_queried_with_skip_interpreter_query() {
+        let mut config = ConfigFile {
+            interpreters: Interpreters {
+                skip_interpreter_query: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        config.configure();
+        assert!(config.interpreters.python_interpreter_path.is_none());
+        assert!(config.interpreters.conda_environment.is_none());
+    }
+
+    #[test]
+    fn test_serializing_config_origins() {
+        let mut config = ConfigFile {
+            interpreters: Interpreters {
+                python_interpreter_path: Some(ConfigOrigin::config(PathBuf::from("abcd"))),
+                fallback_python_interpreter_name: None,
+                conda_environment: None,
+                skip_interpreter_query: false,
+            },
+            project_includes: ConfigFile::default_project_includes(),
+            ..Default::default()
+        };
+        let reparsed = ConfigFile::parse_config(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(reparsed, config);
+
+        config.interpreters.python_interpreter_path =
+            Some(ConfigOrigin::auto(PathBuf::from("abcd")));
+        let reparsed = ConfigFile::parse_config(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(reparsed.interpreters.python_interpreter_path, None);
+
+        config.interpreters.python_interpreter_path =
+            Some(ConfigOrigin::cli(PathBuf::from("abcd")));
+        let reparsed = ConfigFile::parse_config(&toml::to_string(&config).unwrap()).unwrap();
+        assert_eq!(reparsed.interpreters.python_interpreter_path, None);
+    }
+
+    #[test]
+    fn test_negation_replace_imports_with_any() {
+        let config = ConfigFile {
+            root: ConfigBase {
+                errors: Some(Default::default()),
+                replace_imports_with_any: Some(vec![
+                    ModuleWildcard::new("!example.path.specific.*").unwrap(),
+                    ModuleWildcard::new("example.path.*").unwrap(),
+                ]),
+                ignore_missing_imports: None,
+                untyped_def_behavior: Some(UntypedDefBehavior::CheckAndInferReturnType),
+                check_unannotated_defs: None,
+                infer_return_types: None,
+                disable_type_errors_in_ide: Some(true),
+                ignore_errors_in_generated_code: Some(false),
+                infer_with_first_use: Some(true),
+                pytorch_efficiency_lints: None,
+                strict_callable_subtyping: Some(false),
+                extras: Default::default(),
+                permissive_ignores: Some(false),
+                enabled_ignores: None,
+                recursion_depth_limit: None,
+                recursion_overflow_handler: None,
+                spec_compliant_overloads: None,
+            },
+            sub_configs: vec![],
+            ..Default::default()
+        };
+
+        assert!(!config.replace_imports_with_any(
+            Some(Path::new("example/path")),
+            ModuleName::from_str("example.path.specific.a")
+        ));
+        assert!(config.replace_imports_with_any(
+            Some(Path::new("example/path")),
+            ModuleName::from_str("example.path.b")
+        ));
+    }
+
+    #[test]
+    fn test_negation_replace_imports_with_any_reorder() {
+        let config = ConfigFile {
+            root: ConfigBase {
+                errors: Some(Default::default()),
+                replace_imports_with_any: Some(vec![
+                    ModuleWildcard::new("example.path.*").unwrap(),
+                    ModuleWildcard::new("!example.path.specific.*").unwrap(),
+                ]),
+                ignore_missing_imports: None,
+                untyped_def_behavior: Some(UntypedDefBehavior::CheckAndInferReturnType),
+                check_unannotated_defs: None,
+                infer_return_types: None,
+                disable_type_errors_in_ide: Some(true),
+                ignore_errors_in_generated_code: Some(false),
+                infer_with_first_use: Some(true),
+                pytorch_efficiency_lints: None,
+                strict_callable_subtyping: Some(false),
+                extras: Default::default(),
+                permissive_ignores: Some(false),
+                enabled_ignores: None,
+                recursion_depth_limit: None,
+                recursion_overflow_handler: None,
+                spec_compliant_overloads: None,
+            },
+            sub_configs: vec![],
+            ..Default::default()
+        };
+        // Based on the order this one will always be true.
+        assert!(config.replace_imports_with_any(
+            Some(Path::new("example/path")),
+            ModuleName::from_str("example.path.specific.a")
+        ));
+        assert!(config.replace_imports_with_any(
+            Some(Path::new("example/path")),
+            ModuleName::from_str("example.path.b")
+        ));
+    }
+
+    #[test]
+    fn test_dynamic_fallback_search_path() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let root = tempdir.path();
+        TestPath::setup_test_directory(
+            root,
+            vec![TestPath::dir(
+                "foo",
+                vec![
+                    TestPath::dir("bar", vec![]),
+                    TestPath::dir("baz", vec![TestPath::dir("quux", vec![])]),
+                ],
+            )],
+        );
+        let tempdir2 = tempfile::tempdir().unwrap();
+        let root2 = tempdir2.path();
+        TestPath::setup_test_directory(root2, vec![TestPath::dir("outside", vec![])]);
+
+        let bounded = DirectoryRelativeFallbackSearchPathCache::new(Some(root.to_path_buf()));
+        let unbounded = DirectoryRelativeFallbackSearchPathCache::new(None);
+
+        let compare_paths = |start: PathBuf, expected_bounded: Vec<PathBuf>| {
+            let bounded_result = bounded.get_ancestors(&start);
+            let unbounded_result = unbounded.get_ancestors(&start);
+            let expected_unbounded = expected_bounded
+                .iter()
+                .map(|p| &**p)
+                .chain(root.ancestors().skip(1))
+                .map(PathBuf::from)
+                .collect::<Vec<PathBuf>>();
+            assert_eq!(
+                *bounded_result, expected_bounded,
+                "Got different results for bounded {start:?}",
+            );
+            assert_eq!(
+                *unbounded_result, expected_unbounded,
+                "Got different results for unbounded {start:?}",
+            );
+        };
+
+        compare_paths(
+            root.join("foo/baz/quux"),
+            vec![
+                root.join("foo/baz/quux"),
+                root.join("foo/baz"),
+                root.join("foo"),
+                root.to_path_buf(),
+            ],
+        );
+        compare_paths(
+            root.join("foo/baz"),
+            vec![root.join("foo/baz"), root.join("foo"), root.to_path_buf()],
+        );
+        compare_paths(root.join("foo"), vec![root.join("foo"), root.to_path_buf()]);
+        compare_paths(root.join("bar"), vec![root.join("bar"), root.to_path_buf()]);
+        compare_paths(root.to_path_buf(), vec![root.to_path_buf()]);
+        assert_eq!(
+            *bounded.get_ancestors(&root2.join("outside")),
+            root2
+                .join("outside")
+                .ancestors()
+                .map(|p| p.to_path_buf())
+                .collect::<Vec<_>>(),
+        );
+        // test this one again to make sure caching works
+        compare_paths(
+            root.join("foo/baz/quux"),
+            vec![
+                root.join("foo/baz/quux"),
+                root.join("foo/baz"),
+                root.join("foo"),
+                root.to_path_buf(),
+            ],
+        );
+    }
+
+    /// Regression test for facebook/pyrefly#3607. With
+    /// `enable-fallback-search-path = true` in the config, `configure()` must
+    /// populate `fallback_search_path` with a `DirectoryRelative` walk bounded
+    /// by the config root, matching what build-system configs already do.
+    /// This unblocks bare imports like `from bar import func` (which Python
+    /// resolves at runtime via `sys.path[0]`) for users who legitimately need
+    /// that behavior despite having a config file present.
+    #[test]
+    fn test_fallback_search_path_enabled_via_opt_in_field() {
+        let root = TempDir::new().unwrap();
+        let pyrefly_path = root.path().join(ConfigFile::PYREFLY_FILE_NAME);
+        fs::write(&pyrefly_path, "enable-fallback-search-path = true").unwrap();
+
+        let (mut config, _errors) = ConfigFile::from_file(&pyrefly_path);
+        config.interpreters.skip_interpreter_query = true;
+        config.configure();
+
+        match &config.fallback_search_path {
+            FallbackSearchPath::DirectoryRelative(cache) => {
+                assert_eq!(
+                    cache.up_to.as_deref(),
+                    Some(root.path()),
+                    "fallback walk should be bounded by the config root"
+                );
+            }
+            other => panic!(
+                "expected DirectoryRelative fallback_search_path after configure() \
+                 with enable-fallback-search-path = true, got {other:?}"
+            ),
+        }
+    }
+
+    /// Regression test for facebook/pyrefly#3005. Mirrors the polars repro:
+    /// a src-layout project where the import root is `src/` but a test file
+    /// imports from `tests.conftest`. With `enable-fallback-search-path =
+    /// true`, the file's parent directory walks up to the config root, which
+    /// contains `tests/`, so `tests.conftest` resolves via the fallback path.
+    #[test]
+    fn test_fallback_search_path_resolves_src_layout_tests_dir_with_opt_in() {
+        // project_root/
+        // ├── pyrefly.toml         (with enable-fallback-search-path = true)
+        // ├── src/
+        // └── tests/
+        //     ├── conftest.py
+        //     └── unit/utils/test_x.py
+        //
+        // The walk is computed purely from the importing file's path (see
+        // `DirectoryRelativeFallbackSearchPathCache::get_ancestors`), so only
+        // the config file and the importing file's path matter here — we don't
+        // need to materialize the rest of the tree on disk.
+        let root = TempDir::new().unwrap();
+        let importing_file = root.path().join("tests/unit/utils/test_x.py");
+        let pyrefly_path = root.path().join(ConfigFile::PYREFLY_FILE_NAME);
+        fs::write(&pyrefly_path, "enable-fallback-search-path = true").unwrap();
+
+        let (mut config, _errors) = ConfigFile::from_file(&pyrefly_path);
+        config.interpreters.skip_interpreter_query = true;
+        config.configure();
+
+        // Walk from the importing file's parent directory; the resulting paths
+        // must include the config root so that `tests.conftest` is reachable
+        // (since `<config_root>/tests/conftest.py` exists).
+        let walk = config
+            .fallback_search_path
+            .for_directory(importing_file.parent());
+        assert!(
+            walk.iter().any(|p| p == root.path()),
+            "fallback walk must include the config root to resolve \
+             `tests.conftest`; got {walk:?}",
+        );
+    }
+
+    /// The opt-in is explicit, so it must coexist with an explicit
+    /// `search-path`: a user who sets both is affirmatively asking pyrefly to
+    /// look at their listed paths AND to walk up from the importing file. We
+    /// deliberately do not gate the opt-in on "search-path is empty" — that
+    /// would re-introduce the surprising silent-override behavior we are
+    /// trying to avoid.
+    #[test]
+    fn test_fallback_search_path_opt_in_coexists_with_explicit_search_path() {
+        let root = TempDir::new().unwrap();
+        let pyrefly_path = root.path().join(ConfigFile::PYREFLY_FILE_NAME);
+        // User opts in to BOTH an explicit search path AND the fallback walk.
+        fs::write(
+            &pyrefly_path,
+            "enable-fallback-search-path = true\nsearch-path = [\"src\"]\n",
+        )
+        .unwrap();
+
+        let (mut config, _errors) = ConfigFile::from_file(&pyrefly_path);
+        config.interpreters.skip_interpreter_query = true;
+        config.configure();
+
+        match &config.fallback_search_path {
+            FallbackSearchPath::DirectoryRelative(cache) => {
+                assert_eq!(
+                    cache.up_to.as_deref(),
+                    Some(root.path()),
+                    "fallback walk should be bounded by the config root \
+                     even when an explicit search-path is also set"
+                );
+            }
+            other => panic!(
+                "expected DirectoryRelative fallback_search_path when the user \
+                 explicitly opts in via enable-fallback-search-path, regardless \
+                 of whether search-path is also set; got {other:?}"
+            ),
+        }
+    }
+
+    /// A synthesized config (`ConfigSource::Synthetic`, e.g. an unconfigured
+    /// project or a loose file checked with no `pyrefly.toml`) must never get
+    /// a `DirectoryRelative` fallback from the opt-in, even when the field is
+    /// enabled (e.g. via `--enable-fallback-search-path`). Such configs have
+    /// no config root to bound the walk, and the unconfigured-project path
+    /// (`init_at_root(fallback = true)`) already supplies their fallback as
+    /// `Explicit` paths. The `source.root().is_some()` guard in `configure()`
+    /// enforces this; this test pins the invariant against future refactors.
+    #[test]
+    fn test_fallback_search_path_not_set_for_synthetic_config() {
+        let mut config = ConfigFile {
+            enable_fallback_search_path: true,
+            interpreters: Interpreters {
+                skip_interpreter_query: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // A default config is synthesized (no on-disk source).
+        assert!(matches!(config.source, ConfigSource::Synthetic));
+
+        config.configure();
+
+        assert!(
+            matches!(config.fallback_search_path, FallbackSearchPath::Empty),
+            "synthetic configs must not get a DirectoryRelative fallback even \
+             when enable-fallback-search-path is set; got {:?}",
+            config.fallback_search_path,
+        );
+    }
+
+    /// Helper: build a `ConfigFile` with a custom build system, pointing at
+    /// the given root directory. The `Custom(command = ["true"])` build system
+    /// is always available on PATH and the `QuerySourceDatabase` is lazy, so
+    /// `get_source_db` succeeds without actually running a query.
+    fn config_with_build_system(root: &Path, enable_fallback: bool) -> ConfigFile {
+        let build_system: BuildSystem =
+            toml::from_str("type = \"custom\"\ncommand = [\"true\"]").unwrap();
+        ConfigFile {
+            source: ConfigSource::File(root.join(ConfigFile::PYREFLY_FILE_NAME)),
+            build_system: Some(build_system),
+            enable_fallback_search_path: enable_fallback,
+            interpreters: Interpreters {
+                skip_interpreter_query: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// When `[build-system]` is present but `enable_fallback_search_path` is
+    /// false (the default), `configure()` must not populate
+    /// `fallback_search_path`. The build-system code path respects the flag
+    /// just like the non-build-system path does.
+    #[test]
+    fn test_build_system_no_fallback_without_opt_in() {
+        let root = TempDir::new().unwrap();
+        let mut config = config_with_build_system(root.path(), false);
+        assert!(!config.enable_fallback_search_path);
+        config.configure();
+
+        assert!(
+            matches!(config.fallback_search_path, FallbackSearchPath::Empty),
+            "build-system configure must not set fallback_search_path \
+             when enable_fallback_search_path is false; got {:?}",
+            config.fallback_search_path,
+        );
+    }
+
+    /// When `[build-system]` is present AND `enable_fallback_search_path` is
+    /// true, `configure()` populates `fallback_search_path` with a
+    /// `DirectoryRelative` walk bounded by the config root.
+    #[test]
+    fn test_build_system_sets_fallback_with_opt_in() {
+        let root = TempDir::new().unwrap();
+        let mut config = config_with_build_system(root.path(), true);
+        config.configure();
+
+        match &config.fallback_search_path {
+            FallbackSearchPath::DirectoryRelative(cache) => {
+                assert_eq!(
+                    cache.up_to.as_deref(),
+                    Some(root.path()),
+                    "build-system fallback walk should be bounded by the config root"
+                );
+            }
+            other => panic!(
+                "expected DirectoryRelative fallback_search_path from build-system \
+                 configure with enable_fallback_search_path = true, got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn test_disable_excludes_heuristics() {
+        let mut disabled_config = ConfigFile {
+            disable_project_excludes_heuristics: true,
+            interpreters: Interpreters {
+                skip_interpreter_query: true,
+                ..Default::default()
+            },
+            python_environment: PythonEnvironment {
+                site_package_path: Some(vec![PathBuf::from("spp")]),
+                ..Default::default()
+            },
+            project_excludes: Globs::new(vec!["my_project_excludes".to_owned()]).unwrap(),
+            ..Default::default()
+        };
+        let mut enabled_config = disabled_config.clone();
+        enabled_config.disable_project_excludes_heuristics = false;
+
+        disabled_config.configure();
+        enabled_config.configure();
+
+        assert_eq!(
+            &disabled_config.project_excludes,
+            &Globs::new(vec!["my_project_excludes".to_owned()]).unwrap(),
+        );
+        let mut full_project_excludes = Globs::new(vec!["my_project_excludes".to_owned()]).unwrap();
+
+        full_project_excludes.append(ConfigFile::required_project_excludes().globs());
+        full_project_excludes.append(&[Glob::new("spp".to_owned()).unwrap()]);
+        assert_eq!(&enabled_config.project_excludes, &full_project_excludes);
+    }
+
+    #[test]
+    fn test_failed_parse_on_invalid_toml() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join(ConfigFile::PYREFLY_FILE_NAME);
+        fs::write(&path, "not valid toml [[[").unwrap();
+        let (config, errors) = ConfigFile::from_file(&path);
+        assert!(
+            matches!(config.source, ConfigSource::FailedParse(_)),
+            "Expected FailedParse, got {:?}",
+            config.source
+        );
+        assert!(!errors.is_empty(), "Expected errors for invalid TOML");
+        // The config should still respect the file's location for project root detection.
+        assert_eq!(config.source.root(), Some(root.path()));
+    }
+
+    #[test]
+    fn test_explicit_search_path_wins_over_site_packages() {
+        // An explicit search path should take priority over a site-package
+        // path when resolving a file path back to a module name, even when
+        // the site-package path would also match.
+        let root = TempDir::new().unwrap();
+        let sp_dir = root.path().join("venv/lib/python3.13/site-packages");
+        let mylib_dir = sp_dir.join("mylib");
+        fs::create_dir_all(&mylib_dir).unwrap();
+        let submod = mylib_dir.join("submod.py");
+        fs::write(&submod, "").unwrap();
+
+        let mut config = ConfigFile {
+            search_path_from_args: vec![mylib_dir.clone()],
+            import_root: Some(root.path().to_path_buf()),
+            interpreters: Interpreters {
+                skip_interpreter_query: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        config.python_environment.site_package_path = Some(vec![sp_dir]);
+        config.python_environment.set_empty_to_default();
+
+        let handle = config.handle_from_module_path(ModulePath::filesystem(submod));
+        // The explicit search path points into mylib, so the file resolves
+        // as `submod` rather than `mylib.submod` (from site-packages) or
+        // the full venv-relative path (from import_root).
+        assert_eq!(handle.module(), ModuleName::from_str("submod"));
+    }
+
+    #[test]
+    fn test_site_packages_wins_over_heuristic_import_root() {
+        // A site-package path should take priority over the heuristic
+        // import_root when resolving files in site-packages.
+        let root = TempDir::new().unwrap();
+        let sp_dir = root.path().join("venv/lib/python3.13/site-packages");
+        let fastapi_dir = sp_dir.join("fastapi");
+        fs::create_dir_all(&fastapi_dir).unwrap();
+        let init = fastapi_dir.join("__init__.py");
+        fs::write(&init, "").unwrap();
+
+        let mut config = ConfigFile {
+            import_root: Some(root.path().to_path_buf()),
+            interpreters: Interpreters {
+                skip_interpreter_query: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        config.python_environment.site_package_path = Some(vec![sp_dir]);
+        config.python_environment.set_empty_to_default();
+
+        let handle = config.handle_from_module_path(ModulePath::filesystem(init));
+        assert_eq!(handle.module(), ModuleName::from_str("fastapi"));
+    }
+
+    #[test]
+    fn test_typings_autodiscovered_relative_to_config_root() {
+        // With no explicit `site_package_path`, a `typings/` directory under the
+        // config root is auto-discovered and resolved relative to that root (not
+        // the process CWD, which is never the temp dir). This must hold on the
+        // default CLI path that queries an interpreter, so we leave
+        // `skip_interpreter_query` at its default of `false`.
+        let root = TempDir::new().unwrap();
+        let typings = root.path().join("typings");
+        fs::create_dir_all(&typings).unwrap();
+
+        let mut config = ConfigFile {
+            source: ConfigSource::File(root.path().join(ConfigFile::PYREFLY_FILE_NAME)),
+            ..Default::default()
+        };
+        config.configure();
+
+        assert!(
+            config.site_package_path().any(|p| p == &typings),
+            "expected auto-discovered typings dir {typings:?} in site_package_path, got {:?}",
+            config.site_package_path().collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn test_typings_not_added_when_site_package_path_explicit() {
+        // An explicit `site_package_path` disables `typings/` auto-discovery,
+        // even when a `typings/` directory exists under the config root.
+        let root = TempDir::new().unwrap();
+        fs::create_dir_all(root.path().join("typings")).unwrap();
+        let explicit = root.path().join("stubs");
+
+        let mut config = ConfigFile {
+            source: ConfigSource::File(root.path().join(ConfigFile::PYREFLY_FILE_NAME)),
+            interpreters: Interpreters {
+                skip_interpreter_query: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        config.python_environment.site_package_path = Some(vec![explicit.clone()]);
+        config.configure();
+
+        let paths = config.site_package_path().collect::<Vec<_>>();
+        assert!(paths.contains(&&explicit));
+        assert!(
+            !paths.iter().any(|p| p.ends_with("typings")),
+            "typings should not be auto-added when site_package_path is explicit, got {paths:?}",
+        );
+    }
+
+    #[test]
+    fn test_pytorch_efficiency_lints_flag_enables_lints() {
+        let mut config = ConfigFile {
+            root: ConfigBase {
+                pytorch_efficiency_lints: Some(true),
+                ..Default::default()
+            },
+            interpreters: Interpreters {
+                skip_interpreter_query: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        config.configure();
+
+        let errors = config.root.errors.as_ref().unwrap();
+        assert_eq!(
+            errors.severity(ErrorKind::PytorchEfficiencyLintItemCall),
+            Severity::Warn,
+            "pytorch-efficiency-lints = true should enable item-call lint at Warn"
+        );
+    }
+
+    #[test]
+    fn test_pytorch_efficiency_lints_user_override_wins() {
+        let mut config = ConfigFile {
+            root: ConfigBase {
+                pytorch_efficiency_lints: Some(true),
+                errors: Some(ErrorDisplayConfig::new(HashMap::from([(
+                    ErrorKind::PytorchEfficiencyLintItemCall,
+                    Severity::Error,
+                )]))),
+                ..Default::default()
+            },
+            interpreters: Interpreters {
+                skip_interpreter_query: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        config.configure();
+
+        let errors = config.root.errors.as_ref().unwrap();
+        assert_eq!(
+            errors.severity(ErrorKind::PytorchEfficiencyLintItemCall),
+            Severity::Error,
+            "explicit [errors] override should win over pytorch-efficiency-lints flag"
+        );
+    }
+
+    #[test]
+    fn test_pytorch_efficiency_lints_disabled_by_default() {
+        let mut config = ConfigFile {
+            interpreters: Interpreters {
+                skip_interpreter_query: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        config.configure();
+
+        let errors = config.root.errors.as_ref().unwrap();
+        assert_eq!(
+            errors.severity(ErrorKind::PytorchEfficiencyLintItemCall),
+            Severity::Ignore,
+            "without pytorch-efficiency-lints flag, lints should default to Ignore"
+        );
+    }
+}

@@ -24,6 +24,7 @@ use ruff_text_size::TextSize;
 use starlark_map::small_map::SmallMap;
 use starlark_map::small_set::SmallSet;
 
+use crate::export::definitions::Definition;
 use crate::export::definitions::DefinitionStyle;
 use crate::export::definitions::Definitions;
 use crate::export::definitions::DunderAllEntry;
@@ -96,6 +97,22 @@ pub enum ExportLocation {
     OtherModule(ModuleName, Option<Name>),
 }
 
+/// A unique native module variable's preferred declaration and current binding.
+/// The view borrows the committed native definitions; it performs no name lookup.
+pub struct ModuleBindingView<'a> {
+    definition: &'a Definition,
+}
+
+impl ModuleBindingView<'_> {
+    pub fn definition_range(&self) -> TextRange {
+        self.definition.range
+    }
+
+    pub fn binding_range(&self) -> TextRange {
+        self.definition.last_range
+    }
+}
+
 #[derive(Debug)]
 pub struct Exports {
     module_name: ModuleName,
@@ -130,6 +147,24 @@ impl Display for Exports {
 }
 
 impl Exports {
+    /// Match only the exact preferred range already selected by native authority.
+    /// Imports, classes and functions cannot supply a module-variable binding.
+    pub fn module_binding(&self, range: TextRange) -> Option<ModuleBindingView<'_>> {
+        let mut matches = self.definitions.definitions.values().filter(|definition| {
+            definition.range == range
+                && matches!(
+                    &definition.style,
+                    DefinitionStyle::Annotated(SymbolKind::Variable | SymbolKind::Constant, _)
+                        | DefinitionStyle::Unannotated(SymbolKind::Variable | SymbolKind::Constant)
+                )
+        });
+        let definition = matches.next()?;
+        matches
+            .next()
+            .is_none()
+            .then_some(ModuleBindingView { definition })
+    }
+
     pub fn new(x: &[Stmt], module_info: &ModuleInfo, sys_info: SysInfo) -> Self {
         let mut definitions = Definitions::new(
             x,
@@ -550,6 +585,40 @@ mod tests {
     #[must_use]
     fn contains(exports: &Exports, lookup: &dyn LookupExport, name: &str) -> bool {
         exports.exports(lookup).contains_key(&Name::new(name))
+    }
+
+    #[test]
+    fn module_binding_borrows_native_last_assignment_without_name_fallback() {
+        let source = "value: int = 1\nvalue = 2\n";
+        let exports = mk_exports(source, ModuleStyle::Executable);
+        let definition = &exports.definitions.definitions[&Name::new("value")];
+        let view = exports.module_binding(definition.range).unwrap();
+        assert_eq!(view.definition_range(), definition.range);
+        assert_eq!(view.binding_range(), definition.last_range);
+        assert_ne!(view.definition_range(), view.binding_range());
+        assert_eq!(
+            &source[view.binding_range().start().to_usize()..view.binding_range().end().to_usize()],
+            "value"
+        );
+        assert!(exports.module_binding(TextRange::default()).is_none());
+    }
+
+    #[test]
+    fn module_binding_refuses_imports_functions_classes_and_ambiguous_native_ranges() {
+        let source = "from other import item\ndef function(): pass\nclass Class: pass\nvalue = 1\n";
+        let mut exports = mk_exports(source, ModuleStyle::Executable);
+        for name in ["item", "function", "Class"] {
+            let definition = &exports.definitions.definitions[&Name::new(name)];
+            assert!(exports.module_binding(definition.range).is_none());
+        }
+        let exports = Arc::get_mut(&mut exports).unwrap();
+        let definition = exports.definitions.definitions[&Name::new("value")].clone();
+        let range = definition.range;
+        exports
+            .definitions
+            .definitions
+            .insert(Name::new("duplicate"), definition);
+        assert!(exports.module_binding(range).is_none());
     }
 
     #[test]
