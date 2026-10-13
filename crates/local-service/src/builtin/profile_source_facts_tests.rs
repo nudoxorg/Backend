@@ -1653,11 +1653,13 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
             .is_empty()
     );
 
-    // Restore the exact newer source frontier while keeping the old selected
-    // generation and capture; the next capture refresh starts from this scope.
-    super::super::commands::commit_builtin_intent(&mut daemon, 47, &source_only).unwrap();
+    // Restore a newer source frontier while keeping the old selection and
+    // capture. A distinct version gives this actual mutation a new request
+    // identity rather than replaying the previously applied source-only edit.
+    let restored_source = source_only_intent(package, label, [0x47; 32], file.clone());
+    super::super::commands::commit_builtin_intent(&mut daemon, 47, &restored_source).unwrap();
 
-    let refresh_capture = SemanticSourceCapture::new(None, [5; 32], [0x73; 32], 2, 1).unwrap();
+    let refresh_capture = SemanticSourceCapture::new(None, [0x47; 32], [0x73; 32], 2, 1).unwrap();
     commit_capture(
         &mut daemon,
         6,
@@ -1697,6 +1699,8 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
     let file_key = backend_engine::product_source_file_key(package.to_bytes(), "retained.ts");
     let remove =
         BuiltinIntent::remove_project_with_semantics(package, label, &[file_key], &[], Vec::new())
+            .unwrap()
+            .with_operation_key(backend_library::IndexOperationKey::from_bytes([9; 32]).unwrap())
             .unwrap();
     super::super::commands::commit_builtin_intent(&mut daemon, 9, &remove).unwrap();
     let removed = daemon.engine().daemon().owner().snapshot();
