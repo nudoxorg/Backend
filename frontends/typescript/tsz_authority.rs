@@ -41,6 +41,7 @@ pub use tsz::parallel::{
 pub use tsz::parser::{NodeIndex as TszNodeIndex, ParseDiagnostic as TszParseDiagnostic};
 pub use tsz::tsz_solver::type_handles::TypeId as TszTypeId;
 pub use tsz_common::ProjectSemanticOptions as TszProjectSemanticOptions;
+pub use tsz_common::options::checker::DeclarationDiagnosticPolicy as TszDeclarationDiagnosticPolicy;
 pub use tsz_common::options::module_detection::ModuleDetectionKind as TszModuleDetectionKind;
 
 #[path = "tsz_query_session.rs"]
@@ -226,10 +227,8 @@ pub struct TszCompilerOptionsError {
 pub fn checker_options_from_compiler_api_json(
     source: &str,
 ) -> Result<TszCheckerOptions, TszCompilerOptionsError> {
-    let config = tsz::config::parse_tsconfig(source).map_err(|error| {
-        TszCompilerOptionsError {
-            message: error.to_string().into_boxed_str(),
-        }
+    let config = tsz::config::parse_tsconfig(source).map_err(|error| TszCompilerOptionsError {
+        message: error.to_string().into_boxed_str(),
     })?;
     tsz::config::resolve_compiler_options(config.compiler_options.as_ref())
         .map(|resolved| resolved.checker)
@@ -1340,11 +1339,17 @@ mod tests {
         assert!(!checker.no_implicit_any);
         assert!(checker.strict_null_checks);
         assert!(checker.no_unchecked_indexed_access);
-        // TSZ keeps this program-level flag outside CheckerOptions.
-        let config = tsz::config::parse_tsconfig(source).expect("valid compiler options");
-        let resolved = tsz::config::resolve_compiler_options(config.compiler_options.as_ref())
-            .expect("resolved program options");
-        assert!(resolved.skip_lib_check);
+        assert_eq!(
+            checker.declaration_diagnostics,
+            tsz_common::options::checker::DeclarationDiagnosticPolicy::SkipSemantic
+        );
+        let full =
+            checker_options_from_compiler_api_json(r#"{"compilerOptions":{"skipLibCheck":false}}"#)
+                .unwrap();
+        assert_eq!(
+            full.declaration_diagnostics,
+            tsz_common::options::checker::DeclarationDiagnosticPolicy::Check
+        );
         assert!(checker.module_explicitly_set);
     }
 
@@ -2845,5 +2850,78 @@ mod tests {
             ))
         ));
         assert!(authority.project().is_none());
+    }
+}
+
+#[cfg(test)]
+mod declaration_policy_tests {
+    use super::*;
+
+    #[test]
+    fn resolved_declaration_policy_rechecks_diagnostics_without_removing_sources_or_syntax() {
+        let declaration = "export interface Broken { missing: DoesNotExist; }";
+        let sources = vec![TszFileInput {
+            path: "types/dep.d.ts".into(),
+            source: declaration.into(),
+        }];
+        let mut options = TszProjectOptions {
+            checker: checker_options_from_compiler_api_json(
+                r#"{"compilerOptions":{"skipLibCheck":true,"noLib":true}}"#,
+            )
+            .unwrap(),
+            semantic_options: TszProjectSemanticOptions::declaration_scoped(),
+            module_resolutions: Vec::new(),
+            file_formats: Vec::new(),
+            environment: TszEnvironmentFingerprint::from_sha256([0x67; 32]),
+        };
+        let mut authority = TszProjectAuthority::new();
+        authority
+            .update(sources.clone(), options.clone(), &[])
+            .unwrap();
+        assert!(
+            authority.project().unwrap().check_result().file_results[0]
+                .diagnostics
+                .is_empty()
+        );
+        assert_eq!(
+            authority.project().unwrap().source_text("types/dep.d.ts"),
+            Some(declaration)
+        );
+        options.checker = checker_options_from_compiler_api_json(
+            r#"{"compilerOptions":{"skipLibCheck":false,"noLib":true}}"#,
+        )
+        .unwrap();
+        let report = authority.update(sources, options.clone(), &[]).unwrap();
+        assert!(
+            !report.reused_project_result,
+            "typed policy participates in checker cache identity"
+        );
+        assert_eq!(
+            authority.project().unwrap().check_result().file_results[0]
+                .diagnostics
+                .iter()
+                .map(|d| d.code)
+                .collect::<Vec<_>>(),
+            [2304]
+        );
+        options.checker = checker_options_from_compiler_api_json(
+            r#"{"compilerOptions":{"skipLibCheck":true,"noLib":true}}"#,
+        )
+        .unwrap();
+        let invalid = vec![TszFileInput {
+            path: "types/dep.d.ts".into(),
+            source: "export interface Broken { value: ; }".into(),
+        }];
+        authority.update(invalid, options, &[]).unwrap();
+        assert!(
+            !authority
+                .project()
+                .unwrap()
+                .bind_result("types/dep.d.ts")
+                .unwrap()
+                .parse_diagnostics
+                .is_empty(),
+            "skipLibCheck cannot suppress parser diagnostics or remove syntax authority"
+        );
     }
 }

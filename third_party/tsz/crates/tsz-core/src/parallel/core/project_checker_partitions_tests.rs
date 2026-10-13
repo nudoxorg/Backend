@@ -3922,3 +3922,109 @@ fn sealed_program_indexes_match_legacy_rows_and_share_across_workers_and_resets(
             .any(|exports| exports.contains_key("Later"))
     );
 }
+
+#[test]
+fn configured_declaration_diagnostics_preserve_members_types_and_application_errors() {
+    use tsz_common::options::checker::DeclarationDiagnosticPolicy;
+    let declaration = "export interface Broken { missing: DoesNotExist; } export declare const value: { value: number };";
+    for skip in [false, true] {
+        let files = vec![
+            (
+                "src/main.ts".to_owned(),
+                "import { value } from '../types/dep'; export const wrong: string = value.value;"
+                    .to_owned(),
+            ),
+            ("types/dep.d.ts".to_owned(), declaration.to_owned()),
+        ];
+        let resolutions = [ProjectModuleResolution {
+            importer_path: "src/main.ts".to_owned(),
+            specifier: "../types/dep".to_owned(),
+            request_kind: ProjectModuleRequestKind::EsmImport,
+            resolution_mode: None,
+            target: ProjectModuleResolutionTarget::File {
+                path: "types/dep.d.ts".to_owned(),
+            },
+        }];
+        let options = CheckerOptions {
+            declaration_diagnostics: if skip {
+                DeclarationDiagnosticPolicy::SkipSemantic
+            } else {
+                DeclarationDiagnosticPolicy::Check
+            },
+            ..CheckerOptions::default()
+        };
+        let cancelled = AtomicBool::new(false);
+        let fresh_program = compile_files_with_libs(files.clone(), &[]);
+        let fresh = check_files_parallel_with_project_inputs_and_execution_checkpoint(
+            &fresh_program,
+            &options,
+            &[],
+            ProjectSemanticOptions::declaration_scoped(),
+            &resolutions,
+            &execution_budget(&cancelled),
+        )
+        .unwrap();
+        let program = compile_files_with_libs(files, &[]);
+        let partitioned = check_files_with_project_inputs_and_checker_partitions(
+            &program,
+            &options,
+            &[],
+            ProjectSemanticOptions::declaration_scoped(),
+            &resolutions,
+            ProjectCheckerExecution {
+                checkpoint: &execution_budget(&cancelled),
+                workers: NonZeroUsize::new(2).unwrap(),
+            },
+        )
+        .unwrap();
+        assert_same_results(&fresh, &partitioned);
+        assert_eq!(
+            partitioned.file_results.len(),
+            2,
+            "skipping diagnostics never removes a member"
+        );
+        let app = partitioned
+            .file_results
+            .iter()
+            .find(|row| row.file_name == "src/main.ts")
+            .unwrap();
+        assert_eq!(
+            app.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+            [2322],
+            "application still consumes the declared NUMBER type: {:?}",
+            app.diagnostics
+        );
+        let decl = partitioned
+            .file_results
+            .iter()
+            .find(|row| row.file_name == "types/dep.d.ts")
+            .unwrap();
+        assert_eq!(
+            decl.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(),
+            if skip { vec![] } else { vec![2304] },
+            "skipLibCheck={skip}: {:?}",
+            decl.diagnostics
+        );
+        let source = program
+            .files
+            .iter()
+            .find(|file| file.file_name == "types/dep.d.ts")
+            .unwrap();
+        assert!(
+            source
+                .arena
+                .get_source_file_at(source.source_file)
+                .unwrap()
+                .is_declaration_file
+        );
+        assert_eq!(
+            source
+                .arena
+                .get_source_file_at(source.source_file)
+                .unwrap()
+                .text
+                .as_ref(),
+            declaration
+        );
+    }
+}

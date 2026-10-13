@@ -6,9 +6,22 @@
 use crate::common::{ModuleKind, ScriptTarget};
 use crate::options::module_detection::ModuleDetectionKind;
 
+/// Declaration diagnostic policy resolved from the owning compiler configuration.
+/// Membership, parsing, binding and lazy type queries are independent of this policy.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DeclarationDiagnosticPolicy {
+    /// Check semantic diagnostics in declarations and application files.
+    #[default]
+    Check,
+    /// Skip declaration semantic diagnostic walks; preserve their type authority.
+    SkipSemantic,
+}
+
 /// Compiler options for type checking.
 #[derive(Debug, Clone)]
 pub struct CheckerOptions {
+    /// Actual resolved `skipLibCheck` policy; never source discovery/exclusion.
+    pub declaration_diagnostics: DeclarationDiagnosticPolicy,
     pub strict: bool,
     pub no_implicit_any: bool,
     pub no_implicit_returns: bool,
@@ -258,6 +271,7 @@ mod tests;
 impl Default for CheckerOptions {
     fn default() -> Self {
         Self {
+            declaration_diagnostics: DeclarationDiagnosticPolicy::Check,
             strict: true,
             no_implicit_any: true,
             no_implicit_returns: false,

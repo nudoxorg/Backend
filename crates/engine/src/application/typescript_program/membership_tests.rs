@@ -201,7 +201,8 @@ for(const f of p.getSourceFiles()) {
   }
   visit(f);
 }
-process.stdout.write(JSON.stringify({normalized, target_value:computed('target'), target_is_esnext:computed('target') === ts.ScriptTarget.ESNext, files:p.getSourceFiles().map(f=>f.fileName), requests:Array.from(requests.values()), formats:Object.fromEntries(p.getSourceFiles().map(f=>[f.fileName, f.impliedNodeFormat === undefined ? 'unknown' : f.impliedNodeFormat === ts.ModuleKind.CommonJS ? 'common_js' : f.impliedNodeFormat === ts.ModuleKind.ESNext ? 'es_module' : 'unsupported'])), calls, errors:ts.getPreEmitDiagnostics(p).filter(d=>d.category===ts.DiagnosticCategory.Error).map(d=>d.code)}));
+const diagnostics = ts.getPreEmitDiagnostics(p).filter(d=>d.category===ts.DiagnosticCategory.Error);
+process.stdout.write(JSON.stringify({normalized, target_value:computed('target'), target_is_esnext:computed('target') === ts.ScriptTarget.ESNext, files:p.getSourceFiles().map(f=>f.fileName), requests:Array.from(requests.values()), formats:Object.fromEntries(p.getSourceFiles().map(f=>[f.fileName, f.impliedNodeFormat === undefined ? 'unknown' : f.impliedNodeFormat === ts.ModuleKind.CommonJS ? 'common_js' : f.impliedNodeFormat === ts.ModuleKind.ESNext ? 'es_module' : 'unsupported'])), calls, diagnostics:diagnostics.map(d=>({file:d.file ? d.file.fileName : null, code:d.code})), declarations:Object.fromEntries(p.getSourceFiles().map(f=>[f.fileName, f.isDeclarationFile])), errors:diagnostics.map(d=>d.code)}));
 "#;
         let args = [
             OsString::from(self.root.join("node_modules/typescript/lib/typescript.js")),
@@ -1290,5 +1291,145 @@ fn actual_compiler_normalized_defaults_match_owned_sdk_computed_options() {
                 .as_bool()
                 .unwrap()
         );
+    }
+}
+
+#[test]
+#[ignore = "requires pinned Node and TypeScript API paths in TSZ_PROGRAM_TEST_NODE and TSZ_PROGRAM_TEST_TYPESCRIPT_API"]
+fn configured_skip_lib_check_matches_sdk_diagnostics_without_losing_declaration_types() {
+    use backend_frontend_typescript::TszDeclarationDiagnosticPolicy;
+    const DECLARATION: &str = "export interface Broken { missing: DoesNotExist; } export declare const value: { value: number };\n";
+    let fixture = Fixture::new();
+    fs::write(fixture.root.join("types/diagnostic.d.ts"), DECLARATION).unwrap();
+    let mut previous = None;
+    for wrong_application in [false, true] {
+        let app = format!(
+            "import {{ value }} from '../types/diagnostic'; export const actual: {} = value.value;\n",
+            if wrong_application {
+                "string"
+            } else {
+                "number"
+            }
+        );
+        fs::write(fixture.root.join("src/main.ts"), &app).unwrap();
+        let sources = [PackageSource::new("src/main.ts", &app).unwrap()];
+        for skip in [false, true] {
+            fs::write(fixture.root.join("tsconfig.json"), serde_json::to_vec(&serde_json::json!({
+                "compilerOptions":{"strict":true,"target":"ES2020","module":"CommonJS","skipLibCheck":skip},
+                "files":["src/main.ts"]
+            })).unwrap()).unwrap();
+            let oracle = fixture.oracle();
+            let expected = if skip { vec![] } else { vec![2304] };
+            let sdk_declaration = oracle["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|d| {
+                    d["file"].as_str() == fixture.root.join("types/diagnostic.d.ts").to_str()
+                })
+                .map(|d| d["code"].as_u64().unwrap() as u32)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                sdk_declaration, expected,
+                "genuine SDK declaration oracle, skip={skip}"
+            );
+            let sdk_application = oracle["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|d| d["file"].as_str() == fixture.root.join("src/main.ts").to_str())
+                .map(|d| d["code"].as_u64().unwrap() as u32)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                sdk_application,
+                if wrong_application {
+                    vec![2322]
+                } else {
+                    vec![]
+                }
+            );
+            let native = fixture.native(&sources);
+            assert_eq!(
+                native.options.checker.declaration_diagnostics,
+                if skip {
+                    TszDeclarationDiagnosticPolicy::SkipSemantic
+                } else {
+                    TszDeclarationDiagnosticPolicy::Check
+                }
+            );
+            let source_rows = native
+                .sources
+                .iter()
+                .map(|row| (row.path.clone(), row.source.clone()))
+                .collect::<Vec<_>>();
+            let library_rows = native
+                .libraries
+                .iter()
+                .map(|lib| {
+                    (
+                        lib.file_name.clone(),
+                        lib.arena
+                            .get_source_file_at(lib.root_index)
+                            .unwrap()
+                            .text
+                            .to_string(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            if let Some((prior_environment, prior_sources, prior_libraries)) = previous.take() {
+                assert_ne!(
+                    native.options.environment, prior_environment,
+                    "resolved policy changes program environment"
+                );
+                if skip {
+                    assert_eq!(
+                        source_rows, prior_sources,
+                        "skipLibCheck does not drop declarations"
+                    );
+                    assert_eq!(
+                        library_rows, prior_libraries,
+                        "skipLibCheck does not drop SDK libraries"
+                    );
+                }
+            }
+            previous = Some((native.options.environment, source_rows, library_rows));
+            let mut authority = backend_frontend_typescript::TszProjectAuthority::new();
+            authority
+                .update(native.sources, native.options, &native.libraries)
+                .unwrap();
+            let project = authority.project().unwrap();
+            for (path, sdk) in [
+                ("src/main.ts", sdk_application),
+                ("types/diagnostic.d.ts", sdk_declaration),
+            ] {
+                let actual = project
+                    .check_result()
+                    .file_results
+                    .iter()
+                    .find(|row| row.file_name == path)
+                    .unwrap();
+                assert_eq!(
+                    actual
+                        .diagnostics
+                        .iter()
+                        .map(|d| d.code)
+                        .collect::<Vec<_>>(),
+                    sdk,
+                    "native vs genuine SDK {path}, skip={skip}, wrong_application={wrong_application}: {:?}",
+                    actual.diagnostics
+                );
+            }
+            assert_eq!(
+                project.source_text("types/diagnostic.d.ts"),
+                Some(DECLARATION)
+            );
+            assert!(project.bind_result("types/diagnostic.d.ts").is_some());
+            assert!(
+                oracle["declarations"]
+                    [fixture.root.join("types/diagnostic.d.ts").to_str().unwrap()]
+                .as_bool()
+                .unwrap()
+            );
+        }
     }
 }
