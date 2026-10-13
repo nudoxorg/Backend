@@ -189,19 +189,22 @@ mod tests {
             );
             let latched = std::sync::Barrier::new(2);
             std::thread::scope(|workers| {
-                workers.spawn(|| {
-                    assert_eq!(budget.budget.checkpoint(3), Ok(()));
-                    assert_eq!(
-                        budget.budget.checkpoint(5),
-                        Err(TszProjectExecutionStop::WorkBudgetExhausted)
-                    );
+                let charging_worker = workers.spawn(|| {
+                    let accepted = budget.budget.checkpoint(3);
+                    let rejected = budget.budget.checkpoint(5);
                     latched.wait();
+                    (accepted, rejected)
                 });
                 // Another worker has latched exhaustion before the wrapper's
                 // first observed failure. This zero-work poll did not reject 5.
                 latched.wait();
+                let observed_poll = budget.checkpoint(0);
                 assert_eq!(
-                    budget.checkpoint(0),
+                    charging_worker.join().unwrap(),
+                    (Ok(()), Err(TszProjectExecutionStop::WorkBudgetExhausted))
+                );
+                assert_eq!(
+                    observed_poll,
                     Err(TszProjectExecutionStop::WorkBudgetExhausted)
                 );
             });
