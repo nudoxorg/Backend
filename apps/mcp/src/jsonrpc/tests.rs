@@ -5033,6 +5033,53 @@ fn the_handshake_reports_the_stable_protocol_and_its_instructions() {
 }
 
 #[test]
+fn workspace_resource_projection_counts_launch_context_before_admission() {
+    for working_directory in [PROJECT, "/another/checkout", "/quoted/\"λ\\path\ncheckout"] {
+        let mut server = Server::with_invocation_context(
+            Fake::default(),
+            PROJECT.to_owned(),
+            Some(working_directory.to_owned()),
+            [9; 32],
+        );
+        request(
+            &mut server,
+            "initialize",
+            &json!({
+                "protocolVersion": "2025-06-18", "capabilities": {},
+                "clientInfo": {"name": "resource-budget", "version": "1"}
+            }),
+        );
+        assert!(
+            server
+                .handle(br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+                .is_none()
+        );
+        let response = request(
+            &mut server,
+            "resources/read",
+            &json!({"uri": "backend://workspace/current"}),
+        );
+        assert_context_bounded(&response);
+        let mut projection = response["result"].clone();
+        projection
+            .as_object_mut()
+            .expect("resource projection")
+            .remove("_meta");
+        let bytes = serde_json::to_vec(&projection).expect("exact resource bytes");
+        assert_eq!(projection["budget"]["bytes"], bytes.len());
+        assert_eq!(
+            projection["budget"]["estimatedTokens"],
+            bytes.len().div_ceil(4)
+        );
+        let text = projection["contents"][0]["text"]
+            .as_str()
+            .expect("resource text");
+        assert!(text.contains("## MCP workspace selection"));
+        assert!(text.contains(working_directory));
+    }
+}
+
+#[test]
 fn an_explicit_project_is_active_even_when_the_launch_directory_differs() {
     let mut server = Server::with_invocation_context(
         Fake::default(),
