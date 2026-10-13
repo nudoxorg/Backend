@@ -5,9 +5,9 @@
 use super::*;
 use crate::runtime::{
     owner::{OwnerGate, OwnerState},
-    reads::{PageReader, ReadContext, ReadFailure, ReadPool, ReadRequest},
+    reads::{PageReader, ReadContext, ReadPool, ReadRequest},
 };
-use crate::model::{ServiceMode, pages::PageValue};
+use crate::model::{ServiceMode, pages::{PageValue, ReadFailure}};
 use crate::shell::tests::{Fixture, Rig, RootOnly, indexed_view_route, rig_with_engine_gate};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
