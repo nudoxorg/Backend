@@ -29337,3 +29337,79 @@ class Child:
     fs::remove_dir_all(&env.work).map_err(|source| TestError::Io("remove scratch", source))?;
     Ok(())
 }
+
+/// The spelling `self` is an ordinary annotated argument outside a bound method.
+/// Both its signature and its attribute edge must retain that parameter identity.
+#[test]
+fn module_self_parameter_retains_its_annotated_field_target() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Other:
+    note = 9
+class Target:
+    note = 1
+def read(self: Target):
+    return self.note
+";
+    let (fragment_bytes, module) = run_inherited_read_fixture(SOURCE)?;
+    let (decoded, atoms, occurrences) = decode_occurrences(&fragment_bytes)?;
+    let owner = entity_ordinal_by_name(&decoded, &atoms, b"read", EntityKind::Function)?;
+    let other = field_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"note")?;
+    let target = field_ordinal_in_class(&decoded, &atoms, &module, b"Target", b"note")?;
+    if target == other {
+        return Err(TestError::Falsified(
+            "distinct classes share their field identity",
+        ));
+    }
+    let occurrence = field_access_in_owner(&occurrences, owner)?;
+    assert_local_field_access(occurrence, target)?;
+    let expected = SOURCE
+        .windows(b"note".len())
+        .rposition(|bytes| bytes == b"note")
+        .ok_or(TestError::Falsified("exact source attribute absent"))?;
+    let owner_start = module
+        .declarations
+        .iter()
+        .find(|declaration| {
+            declaration.kind == DeclarationKind::Function && declaration.name == "read"
+        })
+        .and_then(|declaration| usize::try_from(declaration.span.start).ok())
+        .ok_or(TestError::Falsified("exact read owner range absent"))?;
+    let expected_relative = expected
+        .checked_sub(owner_start)
+        .ok_or(TestError::Falsified("attribute is outside its owner"))?;
+    if usize::try_from(occurrence.occurrence.span.start).ok() != Some(expected_relative)
+        || usize::try_from(occurrence.occurrence.span.end).ok()
+            != Some(expected_relative + b"note".len())
+    {
+        return Err(TestError::Falsified(
+            "annotated self field lost its exact source range",
+        ));
+    }
+    Ok(())
+}
+
+/// Signature binding must not erase annotations used by named receiver lookup.
+#[test]
+fn arbitrary_bound_receiver_keeps_its_annotated_field_target() -> Result<(), TestError> {
+    const SOURCE: &[u8] = b"\
+class Other:
+    note = 9
+class Target:
+    note = 1
+    def read(this: 'Target'):
+        return this.note
+";
+    let (fragment_bytes, module) = run_inherited_read_fixture(SOURCE)?;
+    let (decoded, atoms, occurrences) = decode_occurrences(&fragment_bytes)?;
+    let owner = entity_ordinal_by_name(&decoded, &atoms, b"read", EntityKind::Function)?;
+    let other = field_ordinal_in_class(&decoded, &atoms, &module, b"Other", b"note")?;
+    let target = field_ordinal_in_class(&decoded, &atoms, &module, b"Target", b"note")?;
+    if target == other {
+        return Err(TestError::Falsified(
+            "distinct classes share their field identity",
+        ));
+    }
+    let occurrence = field_access_in_owner(&occurrences, owner)?;
+    assert_local_field_access(occurrence, target)?;
+    Ok(())
+}
