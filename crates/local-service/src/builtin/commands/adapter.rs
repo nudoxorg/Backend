@@ -1,4 +1,4 @@
-use super::super::product_state::{CatalogLookupIndex, OwnerLocalRead};
+use super::super::product_state::{CatalogLookupIndex, OwnerLocalRead, OwnerSubscriptionCommand};
 use super::super::registry::{
     CatalogDependencyRevision, CatalogProjection, RegistryAddError, StagedProject,
 };
@@ -311,6 +311,7 @@ fn classify_add_target(label: &str) -> Result<AddTarget, BuiltinModelError> {
 pub(in crate::builtin) struct CommandAdapter {
     sql_projection: super::super::sql_projection::ProjectionOwner,
     registry: Option<RegistryGateway>,
+    registry_configured: bool,
     forge: ForgeGateway,
     discovery: Option<crate::discovery::DiscoveryGateway>,
     product_state: super::super::ProductState,
@@ -477,8 +478,8 @@ fn prepare_publication_barrier(
 }
 
 /// What the owner loop answers while an index job compiles: reads, from the
-/// last publication. A command not named here changes state (or might) and
-/// waits for the job.
+/// last publication, plus independent subscription transactions on the same
+/// serial control owner. Other mutations wait for the compiler/publication writer.
 fn answers_while_indexing(command: &Command) -> bool {
     use backend_library::SurfaceCommand as S;
     match command {
@@ -501,7 +502,8 @@ fn answers_while_indexing(command: &Command) -> bool {
         | Command::Revision => true,
         Command::Surface(surface) => matches!(
             surface,
-            S::Read { .. }
+            S::Advisory { .. }
+                | S::Read { .. }
                 | S::References { .. }
                 | S::Diff { .. }
                 | S::Explore { .. }
@@ -516,6 +518,8 @@ fn answers_while_indexing(command: &Command) -> bool {
                 | S::SemanticShapes { .. }
                 | S::PackageSourceMembership { .. }
                 | S::PackageProfile { .. }
+                | S::Subscribe { project: None, .. }
+                | S::Unsubscribe { .. }
                 | S::Subscriptions
                 | S::Releases { .. }
                 | S::Projects
@@ -671,6 +675,39 @@ impl ResidentCatalog {
 }
 
 impl CommandAdapter {
+    fn can_answer_short_control(
+        &self,
+        command: &Command,
+        origin: &DeferredCommandOrigin,
+    ) -> bool {
+        if !answers_while_indexing(command) {
+            return false;
+        }
+        if !matches!(origin, DeferredCommandOrigin::Incoming)
+            || !matches!(
+                command,
+                Command::Surface(
+                    backend_library::SurfaceCommand::Subscribe { project: None, .. }
+                        | backend_library::SurfaceCommand::Unsubscribe { .. }
+                )
+            )
+        {
+            return true;
+        }
+        // Source work has an independent writer, but prior product writes
+        // can change follow state or project bindings. Preserve their FIFO.
+        // These bounded queue bodies already passed owner-aware admission;
+        // decode the typed grammar again rather than inspecting JSON fields.
+        !self.waiting.iter().any(|(_, body)| {
+            let Ok(request) = backend_engine::decode_command_dto(body) else {
+                return true;
+            };
+            let spec = backend_library::command_spec(request.command.id());
+            spec.domain == backend_library::CommandDomain::Home
+                && spec.mutation == backend_library::CommandMutation::Write
+        })
+    }
+
     /// This fresh read avoids starting work behind an unresolved prepared
     /// marker. Atomic keyed publication exclusion belongs to journal.prepare;
     /// workspace commits additionally retain the engine owner's fenced lease.
@@ -719,6 +756,7 @@ impl CommandAdapter {
         index_operations.observe_changes(journal_readiness.changed());
         Ok(Self {
             sql_projection: super::super::sql_projection::ProjectionOwner::new(sql_projection),
+            registry_configured: registry.is_some(),
             registry,
             forge,
             discovery,
@@ -893,7 +931,7 @@ impl CommandAdapter {
         {
             return Self::encode_index_start(daemon, request.request_id, result);
         }
-        let must_wait = if answers_while_indexing(&request.command) {
+        let must_wait = if self.can_answer_short_control(&request.command, &origin) {
             false
         } else if matches!(origin, DeferredCommandOrigin::Incoming) && !self.waiting.is_empty() {
             true
@@ -1105,7 +1143,7 @@ impl CommandAdapter {
             self.retain_live_semantic_completion();
             return Ok(Executed::Deferred);
         }
-        self.execute(daemon, body).map(Executed::Reply)
+        self.execute_from(daemon, body, &origin).map(Executed::Reply)
     }
 
     fn start_index_operation(
@@ -4002,10 +4040,26 @@ impl CommandAdapter {
         daemon: &mut ProductDaemon,
         body: &[u8],
     ) -> Result<Vec<u8>, BuiltinModelError> {
+        self.execute_from(daemon, body, &DeferredCommandOrigin::Incoming)
+    }
+
+    fn execute_from(
+        &mut self,
+        daemon: &mut ProductDaemon,
+        body: &[u8],
+        origin: &DeferredCommandOrigin,
+    ) -> Result<Vec<u8>, BuiltinModelError> {
         let owner = daemon.engine().daemon().library().cursor();
         let request = backend_engine::decode_command_dto_for_owner(body, owner)
             .map_err(|error| BuiltinModelError(format!("decode command DTO: {error}")))?;
-        if !answers_while_indexing(&request.command) {
+        let short_control = self.can_answer_short_control(&request.command, origin);
+        if answers_while_indexing(&request.command) && !short_control {
+            return Err(BuiltinModelError(
+                "prior product-state mutation is queued; use the owner deferred command lane"
+                    .to_owned(),
+            ));
+        }
+        if !short_control {
             match self.mutation_admission() {
                 MutationAdmission::Ready => {}
                 MutationAdmission::Pending => {
@@ -5278,6 +5332,68 @@ impl CommandAdapter {
         request_id: u64,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let reply = match surface {
+            backend_engine::SurfaceCommand::Advisory {
+                package,
+                override_evidence,
+            } => {
+                // The source-checked Arc is immutable for this read. Compiler
+                // publication cannot replace it, and no package graph writer
+                // or source-manifest refresh is required to answer advisory.
+                let selected = match self.registry.as_mut() {
+                    Some(registry) => registry.catalog_projection().map(Some),
+                    None if self.registry_configured => Err(
+                        "configured registry authority is reserved or unavailable; retry advisory when the authority returns".to_owned(),
+                    ),
+                    None => Ok(None),
+                };
+                let result = selected.and_then(|snapshot| match snapshot {
+                    Some(snapshot) => super::super::product_state::read_advisory(
+                        &package,
+                        override_evidence,
+                        &snapshot.records,
+                        &snapshot.index,
+                    ),
+                    None => super::super::product_state::read_advisory(
+                        &package,
+                        override_evidence,
+                        &[],
+                        &CatalogLookupIndex::from_catalog(&[]),
+                    ),
+                });
+                result.map_or_else(
+                    |error| {
+                        CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error))
+                    },
+                    CommandReply::Surface,
+                )
+            }
+            backend_engine::SurfaceCommand::Subscribe { package, project } => self
+                .product_state
+                .execute_subscription(OwnerSubscriptionCommand::Subscribe { package, project })
+                .map_or_else(
+                    |error| {
+                        CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error))
+                    },
+                    CommandReply::Surface,
+                ),
+            backend_engine::SurfaceCommand::Unsubscribe { package } => self
+                .product_state
+                .execute_subscription(OwnerSubscriptionCommand::Unsubscribe { package })
+                .map_or_else(
+                    |error| {
+                        CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error))
+                    },
+                    CommandReply::Surface,
+                ),
+            backend_engine::SurfaceCommand::Subscriptions => self
+                .product_state
+                .execute_subscription(OwnerSubscriptionCommand::List)
+                .map_or_else(
+                    |error| {
+                        CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error))
+                    },
+                    CommandReply::Surface,
+                ),
             // These closed reads consume no catalog or dependency graph. In
             // particular cold Library composition must not synchronously build
             // those unrelated projections ahead of a bootstrap control ACK.
@@ -11150,6 +11266,8 @@ mod tests {
         finish_search_lane(adapter, daemon);
         assert_eq!(adapter.search_snapshots.projection_builds(), 1);
     }
+
+    include!("owner_short_controls_tests.rs");
 }
 
 fn refresh_index_operation_source_capture_for_snapshot(
