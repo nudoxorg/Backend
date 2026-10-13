@@ -217,20 +217,47 @@ pub(super) fn list_resource_templates(params: &Value) -> Result<Value, RpcError>
 }
 
 /// Reads one resource as the same Markdown its tool returns.
-pub(super) fn read_resource(engine: &mut dyn Engine, params: &Value) -> Result<Value, RpcError> {
+pub(super) fn read_resource(
+    engine: &mut dyn Engine,
+    params: &Value,
+    workspace_context: Option<&str>,
+) -> Result<Value, RpcError> {
     let params = object(params)?;
     let uri = string(params, "uri")?;
-    let text = match uri {
+    let mut text = match uri {
         SCHEMA_URI => QUERY_SCHEMA_CARD.to_owned(),
         TOOLS_URI => catalog_markdown(),
         _ => markdown::answer(&answer_for(engine, &request_for(uri)?)?),
     };
+    if uri == WORKSPACE_URI
+        && let Some(context) = workspace_context
+    {
+        text.push_str("\n\n");
+        text.push_str(context);
+    }
     encode_result(
         "resource",
-        json!({
-            "contents": [{ "uri": uri, "mimeType": MARKDOWN, "text": text }]
-        }),
+        ResourceContents {
+            contents: [ResourceContent {
+                uri,
+                mime_type: MARKDOWN,
+                text,
+            }],
+        },
     )
+}
+
+#[derive(Serialize)]
+struct ResourceContents<'a> {
+    contents: [ResourceContent<'a>; 1],
+}
+
+#[derive(Serialize)]
+struct ResourceContent<'a> {
+    uri: &'a str,
+    #[serde(rename = "mimeType")]
+    mime_type: &'static str,
+    text: String,
 }
 
 /// Applies the same bounded typed envelope as tool projections to MCP
