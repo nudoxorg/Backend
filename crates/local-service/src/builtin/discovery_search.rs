@@ -1198,6 +1198,7 @@ pub(crate) struct LineageSearchIndex {
     aggregates: BTreeMap<LineageKey, LineageAccumulator>,
     release_to_lineage: BTreeMap<String, LineageKey>,
     coordinate_lineages: BTreeMap<String, BTreeMap<String, (LineageKey, usize)>>,
+    oversized_lineages: BTreeSet<String>,
     facet_postings: BTreeMap<LineageFacetField, BTreeMap<String, BTreeSet<String>>>,
     fingerprint_xor: [u8; 32],
     document_count: usize,
@@ -1232,6 +1233,7 @@ impl LineageSearchIndex {
             aggregates: BTreeMap::new(),
             release_to_lineage: BTreeMap::new(),
             coordinate_lineages: BTreeMap::new(),
+            oversized_lineages: BTreeSet::new(),
             facet_postings: BTreeMap::new(),
             fingerprint_xor: [0; 32],
             document_count: 0,
@@ -1442,6 +1444,35 @@ impl LineageSearchIndex {
                 .take(limit)
                 .map(|(sort_key, (key, _))| (sort_key.as_str(), key)),
         )
+    }
+
+    /// Visits only lineages whose full coordinate set is larger than the
+    /// bounded lineage document. The caller checks each candidate against the
+    /// full release projection, which already indexes every coordinate.
+    fn visit_oversized_lineages(
+        &self,
+        ecosystem: Option<RegistryEcosystem>,
+        after_sort_key: Option<&str>,
+        mut visit: impl FnMut(&str, &LineageKey) -> Result<bool, String>,
+    ) -> Result<usize, String> {
+        let lower = after_sort_key.map_or_else(
+            || Bound::Included(String::new()),
+            |after| Bound::Excluded(after.to_owned()),
+        );
+        let mut visited = 0_usize;
+        for sort_key in self.oversized_lineages.range((lower, Bound::Unbounded)) {
+            visited = visited.saturating_add(1);
+            let Some(key) = self.inner.keys.get(sort_key) else {
+                continue;
+            };
+            if ecosystem.is_some_and(|expected| key.ecosystem != expected) {
+                continue;
+            }
+            if visit(sort_key, key)? {
+                break;
+            }
+        }
+        Ok(visited)
     }
 
     fn exact_facet_lineages(
@@ -1707,8 +1738,18 @@ impl LineageSearchIndex {
     fn refresh_lineage(&mut self, key: &LineageKey) -> Result<(), String> {
         let group_sort_key = lineage_sort_key(key);
         if !self.releases.contains_key(key) {
+            self.oversized_lineages.remove(&group_sort_key);
             self.inner.remove_document(&group_sort_key);
             return Ok(());
+        }
+        if self
+            .aggregates
+            .get(key)
+            .is_some_and(|aggregate| aggregate.coordinates.len() > MAX_LINEAGE_FACET_VALUES)
+        {
+            self.oversized_lineages.insert(group_sort_key.clone());
+        } else {
+            self.oversized_lineages.remove(&group_sort_key);
         }
         let aggregate = self
             .aggregates
@@ -2866,6 +2907,79 @@ impl DiscoverySearchIndex {
                     &mut index_documents_visited,
                 );
             }
+        }
+
+        // The lineage document stores only a bounded coordinate prefix. Check
+        // the set of lineages whose coordinate variants exceed it
+        // against the existing release index to retain substring parity.
+        let substring_tier = SearchTier::Substring as u8;
+        if !normalized_query.is_empty() && tier_is_live(substring_tier) {
+            let after = after_for_tier(substring_tier);
+            let earlier_tier_count = ranked_hits
+                .values()
+                .filter(|hit| hit.evidence.rank() < substring_tier)
+                .count();
+            let needed_substring_hits = limit.saturating_add(1).saturating_sub(earlier_tier_count);
+            let mut substring_keys = ranked_hits
+                .iter()
+                .filter(|(_, hit)| hit.evidence.rank() == substring_tier)
+                .map(|(sort_key, _)| sort_key.clone())
+                .collect::<BTreeSet<_>>();
+            let mut newly_visited = 0_usize;
+            let visited = self.lineages.visit_oversized_lineages(
+                request.ecosystem,
+                after.as_deref(),
+                |sort_key, key| {
+                    if needed_substring_hits == 0 {
+                        return Ok(true);
+                    }
+                    if substring_keys
+                        .iter()
+                        .nth(needed_substring_hits.saturating_sub(1))
+                        .is_some_and(|boundary| sort_key > boundary)
+                    {
+                        return Ok(true);
+                    }
+                    if ranked_hits
+                        .get(sort_key)
+                        .is_some_and(|hit| hit.evidence.rank() <= substring_tier)
+                    {
+                        return Ok(false);
+                    }
+                    let release_page = prepared_release_query.page_in_group(
+                        1,
+                        request.ecosystem.map(RegistryEcosystem::as_str),
+                        sort_key,
+                        None,
+                    )?;
+                    if !release_page
+                        .hits
+                        .iter()
+                        .any(|hit| hit.evidence == SearchMatchEvidence::Substring)
+                    {
+                        return Ok(false);
+                    }
+                    if self
+                        .lineages
+                        .best_evidence_for_lineage(key, &normalized_query)
+                        .is_some_and(|evidence| evidence.rank() < substring_tier)
+                    {
+                        return Ok(false);
+                    }
+                    if merge_lineage_candidate(
+                        &mut ranked_hits,
+                        sort_key.to_owned(),
+                        key.clone(),
+                        SearchMatchEvidence::Substring,
+                    ) {
+                        newly_visited = newly_visited.saturating_add(1);
+                    }
+                    substring_keys.insert(sort_key.to_owned());
+                    Ok(false)
+                },
+            )?;
+            posting_candidates = posting_candidates.saturating_add(visited);
+            index_documents_visited = index_documents_visited.saturating_add(newly_visited);
         }
 
         let mut ranked_hits = ranked_hits.into_iter().collect::<Vec<_>>();
@@ -7740,6 +7854,36 @@ mod tests {
         assert_eq!(
             page.groups[0].release_match_scope,
             ReleaseMatchScope::ReleaseMatches
+        );
+    }
+
+    #[test]
+    #[ignore = "manual 16k-release substring coverage diagnostic"]
+    fn grouped_search_finds_coordinate_substring_beyond_lineage_field_bound() {
+        let cargo = source(RegistryEcosystem::Cargo, "https://index.crates.io");
+        let mut entries = (0..MAX_LINEAGE_FACET_VALUES)
+            .map(|patch| key(cargo, &format!("pkg:cargo/widget@1.0.{patch}")))
+            .collect::<Vec<_>>();
+        let tail_coordinate = "pkg:cargo/widget@9999.9.9";
+        entries.push(key(cargo, tail_coordinate));
+        let index = build_discovery_search_projection(&entries);
+        let page = index
+            .search_groups(
+                DiscoverySearchRequest {
+                    text: "9999.9.",
+                    ecosystem: Some(RegistryEcosystem::Cargo),
+                },
+                8,
+            )
+            .expect("coordinate substring beyond bounded lineage terms");
+
+        assert_eq!(page.groups.len(), 1);
+        assert_eq!(page.groups[0].lineage, "widget");
+        assert_eq!(page.groups[0].evidence, SearchMatchEvidence::Substring);
+        assert_eq!(page.groups[0].matched_releases.len(), 1);
+        assert_eq!(
+            page.groups[0].matched_releases[0].coordinate.as_str(),
+            tail_coordinate
         );
     }
 
