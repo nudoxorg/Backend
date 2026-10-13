@@ -1260,7 +1260,12 @@ impl CheckerState<'_> {
                 // alias cannot hydrate a same-id local or cached competitor.
                 let mut visited = crate::symbols_domain::alias_cycle::AliasCycleTracker::new();
                 if self.resolve_alias_symbol(sym_id, &mut visited).is_none() {
-                    return TypeId::UNKNOWN;
+                    // A refused import has TypeScript's permissive error type.
+                    // UNKNOWN belongs to an explicit source unknown and would
+                    // add false TS18046/TS2322 cascades to the import error.
+                    // A stopped resolution is still rejected by the owning
+                    // project session before this sentinel can be published.
+                    return TypeId::ERROR;
                 }
             }
         }

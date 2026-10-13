@@ -338,7 +338,7 @@ impl<'a> CheckerState<'a> {
     /// Check whether the `export =` target symbol is NOT a module or variable.
     /// Used for TS2497: modules whose `export =` targets a class/function/interface
     /// (not Module | Variable) cannot be namespace-imported or named-imported
-    /// without `esModuleInterop` / `allowSyntheticDefaultImports`.
+    /// in the admitted TS5.9.3 project policy, including with interop enabled.
     pub(crate) fn export_equals_target_is_not_module_or_variable(
         &self,
         exports_table: &tsz_binder::SymbolTable,
@@ -354,12 +354,17 @@ impl<'a> CheckerState<'a> {
             .map(|lc| std::sync::Arc::clone(&lc.binder))
             .collect();
 
+        let symbol_for_export = |symbol| {
+            if self.ctx.project_module_resolution_outcomes.is_some() {
+                self.ctx.project_source_symbol(symbol)
+            } else {
+                self.ctx.binder.get_symbol_with_libs(symbol, &lib_binders)
+            }
+        };
+
         // If the export= target is a type-only import (e.g., `import type * as X`),
         // it's erased at runtime, so TS2497 should not apply.
-        if let Some(sym) = self
-            .ctx
-            .binder
-            .get_symbol_with_libs(export_equals_sym, &lib_binders)
+        if let Some(sym) = symbol_for_export(export_equals_sym)
             && sym.is_type_only
         {
             return false;
@@ -369,10 +374,7 @@ impl<'a> CheckerState<'a> {
         // If alias resolution fails (e.g., the target doesn't exist),
         // we cannot determine the export= target's kind, so bail out
         // rather than falsely triggering TS2497 on the unresolved alias.
-        let resolved = if let Some(sym) = self
-            .ctx
-            .binder
-            .get_symbol_with_libs(export_equals_sym, &lib_binders)
+        let resolved = if let Some(sym) = symbol_for_export(export_equals_sym)
             && sym.has_any_flags(symbol_flags::ALIAS)
         {
             let mut visited = AliasCycleTracker::new();
@@ -385,7 +387,7 @@ impl<'a> CheckerState<'a> {
             export_equals_sym
         };
 
-        let Some(target) = self.ctx.binder.get_symbol_with_libs(resolved, &lib_binders) else {
+        let Some(target) = symbol_for_export(resolved) else {
             return false;
         };
 

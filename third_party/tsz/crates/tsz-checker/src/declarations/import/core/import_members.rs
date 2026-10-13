@@ -355,13 +355,15 @@ impl<'a> CheckerState<'a> {
             );
 
         // TS2497: Module with `export =` targeting a non-module/non-variable symbol
-        // can only be referenced via default import. Only fires when synthetic
-        // default imports are unavailable: tsc 7.0.2 keeps esModuleInterop /
+        // can only be referenced via default import. Admitted project requests
+        // follow the genuine TS5.9.3 SDK: interop does not make a class namespace
+        // import legal. Legacy unconfigured callers retain their existing
+        // synthetic-default policy: tsc 7.0.2 keeps esModuleInterop /
         // allowSyntheticDefaultImports permanently on (`=false` is a TS5108
         // removed-option error) and gives namespace/named imports over `export =`
         // the synthetic `{ default: T }` shape instead of erroring, so the 7.0.2
-        // corpus contains no TS2497 at all. The branch stays for explicit
-        // interop-off configs until removed-option (TS5108) modeling lands.
+        // corpus contains no TS2497 at all. Unconfigured callers therefore
+        // continue to use the explicit interop-off branch.
         if (has_namespace_import || has_non_default_named_imports)
             && !clause.is_type_only
             && let Some(ref table) = exports_table
@@ -369,12 +371,11 @@ impl<'a> CheckerState<'a> {
             && self.export_equals_target_is_not_module_or_variable(table)
             && !named_imports_resolve_via_export_equals_target
         {
-            // The module-level TS2497 stays gated on interop being off, but
-            // the per-specifier TS2616/TS2595/TS2597 below fire regardless:
-            // tsc 7.0.2 still rejects a NAMED import of an `export =`
-            // non-module/non-variable target with esModuleInterop on
-            // (`import { Foo } from "./a"` over `export = Foo` is TS2616).
-            if !self.ctx.allow_synthetic_default_imports() {
+            // Default synthesis applies to the default binding; it does not
+            // authorize this selected non-module namespace/named binding.
+            if self.ctx.project_module_resolution_outcomes.is_some()
+                || !self.ctx.allow_synthetic_default_imports()
+            {
                 let flag_name = self.ctx.synthetic_default_import_flag_name();
                 let message = format_message(
                     diagnostic_messages::THIS_MODULE_CAN_ONLY_BE_REFERENCED_WITH_ECMASCRIPT_IMPORTS_EXPORTS_BY_TURNING_ON,
