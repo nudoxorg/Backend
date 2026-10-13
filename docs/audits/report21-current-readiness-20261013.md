@@ -1,5 +1,7 @@
 # Report 21 readiness checkpoint
 
+For the later source-pinned native, real-application and GUI results, see [Report 22](report22-current-readiness-20261013.md). The historical results below retain their original source identities and limitations.
+
 Updated 2026-10-13, 20:12 UTC. Product readiness is **not established**. Exact production source `e315da1ea22958522aae8401af959f45de12e2ac` has now run 4,054 native tests on ILO: 4,027 passed and 27 failed; local-service test compilation additionally failed on four private-method errors. The matched CLI, MCP and daemon application binaries built, but default fresh-state acceptance is still pending. Reviewed repair composition [PR 219](https://dev.nudox.org/git/Nudox/Backend/pulls/219), source `fae836db8df01fd2ac4ce2f93b3c4a5f5883a61d`, is published and awaits its own native cohort. Its results must not be borrowed from either e315 or historical D58. The real GUI built and ten cold starts ran: seven initial-root failures and ten blank captures yielded zero complete passes. Focus diagnostics produced genuine nonblank pixels and Settings; a reviewed original-deadline release repair and corrected native-focus collector are staged for a new run. The separate Python capture candidate compiled but its harness rejected the valid artifact path before executing any tests.
 
 ## Integrated source and open reviews
