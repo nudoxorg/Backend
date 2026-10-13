@@ -2815,17 +2815,35 @@ pub(crate) fn select_project_config<'a>(
         .collect::<Vec<_>>();
     candidates
         .sort_unstable_by_key(|candidate| std::cmp::Reverse(candidate.path.components().count()));
-    match candidates.as_slice() {
+    let Some(nearest) = candidates
+        .first()
+        .map(|candidate| candidate.path.components().count())
+    else {
+        return Ok(None);
+    };
+    let nearest_candidates = candidates
+        .iter()
+        .copied()
+        .take_while(|candidate| candidate.path.components().count() == nearest)
+        .collect::<Vec<_>>();
+    // `tsc -p <directory>` uses that directory's conventional tsconfig.json.
+    // Keep sibling named configs as raw candidates, but do not let them make
+    // the ordinary directory choice ambiguous. Producers such as Angular may
+    // still select a different exact config above.
+    if let Some(default) = nearest_candidates.iter().find(|candidate| {
+        candidate
+            .path
+            .file_name()
+            .is_some_and(|name| name == "tsconfig.json")
+    }) {
+        return Ok(Some(*default));
+    }
+    match nearest_candidates.as_slice() {
         [only] => Ok(Some(*only)),
-        [first, second, ..]
-            if first.path.components().count() == second.path.components().count() =>
-        {
-            Err(TypeScriptProjectHostError::CompilerApiBridge {
-                message: "the nearest TypeScript project config is ambiguous".into(),
-            })
-        }
-        [first, ..] => Ok(Some(*first)),
-        [] => Ok(None),
+        [_, _, ..] => Err(TypeScriptProjectHostError::CompilerApiBridge {
+            message: "multiple equally near named TypeScript configs are present and no tsconfig.json default exists; a config selector is required".into(),
+        }),
+        [] => unreachable!("the nearest config depth came from a candidate"),
     }
 }
 
@@ -5710,22 +5728,116 @@ printf 'Version 5.9.3\n'
         let fixture = Fixture::new();
         let modules = fixture.install("5.9.3");
         let module_root = fs::canonicalize(modules).expect("canonical module root");
-        fs::write(fixture.0.join("tsconfig.json"), "{}").expect("write first candidate");
-        fs::write(fixture.0.join("tsconfig.app.json"), "{}").expect("write second candidate");
-        for selected in [
-            Vec::new(),
-            vec![
-                fixture.0.join("tsconfig.json"),
-                fixture.0.join("tsconfig.app.json"),
-            ],
-        ] {
-            assert!(matches!(
-                collect_project_configs(&fixture.0, &fixture.0, &module_root, &selected),
-                Err(TypeScriptProjectHostError::CompilerApiBridge { .. })
-            ));
+        fs::write(fixture.0.join("tsconfig.server.json"), "{}").expect("write server variant");
+        fs::write(fixture.0.join("tsconfig.react.json"), "{}").expect("write React variant");
+        let error = collect_project_configs(&fixture.0, &fixture.0, &module_root, &[])
+            .expect_err("named configs without a conventional default remain ambiguous");
+        assert!(matches!(
+            error,
+            TypeScriptProjectHostError::CompilerApiBridge { ref message }
+                if message.contains("no tsconfig.json default exists")
+        ));
+        let selected = [fixture.0.join("tsconfig.react.json")];
+        let configs = collect_project_configs(&fixture.0, &fixture.0, &module_root, &selected)
+            .expect("an exact producer-selected config remains authoritative");
+        let selected = select_project_config(&fixture.0, &configs)
+            .expect("shared selector")
+            .expect("selected config");
+        assert!(selected.path.ends_with("tsconfig.react.json"));
+    }
+
+    #[test]
+    fn calcom_trpc_uses_conventional_config_and_keeps_named_variants_unselected() {
+        let fixture = Fixture::new();
+        let modules = fixture.install("5.9.3");
+        let module_root = fs::canonicalize(modules).expect("canonical module root");
+        let package = fixture.0.join("packages/trpc");
+        let app_store = fixture.0.join("packages/app-store");
+        let config_package = module_root.join("@calcom/tsconfig");
+        fs::create_dir_all(&package).expect("create trpc package");
+        fs::create_dir_all(app_store.join("src")).expect("create app-store package");
+        fs::create_dir_all(&config_package).expect("create shared config package");
+        fs::write(
+            config_package.join("react-library.json"),
+            r#"{"compilerOptions":{"strict":true}}"#,
+        )
+        .expect("write captured shared config");
+
+        // The pinned Cal.com @calcom/trpc files have byte-identical
+        // tsconfig.json and tsconfig.server.json. Model that layout while
+        // retaining the named React and server-build alternatives.
+        const TRPC_SERVER_CONFIG: &str = r#"{
+  "extends": "@calcom/tsconfig/react-library.json",
+  "include": ["../types/@wojtekmaj__react-daterange-picker.d.ts", "../types/business-days-plugin.d.ts", "../types/next-auth.d.ts", "../types/tanstack-table.d.ts", "../types/next.d.ts", "../types/window.d.ts", "./server"],
+  "exclude": ["**/node_modules/**", "./react", "./server/**/*.test.ts", "./server/**/*.spec.ts"],
+  "compilerOptions": {"isolatedModules": false, "noEmit": false, "declaration": true, "emitDeclarationOnly": true, "experimentalDecorators": true, "declarationMap": false, "resolveJsonModule": true, "declarationDir": "types/server", "moduleResolution": "node", "paths": {"~/*": ["./*"]}}
+}"#;
+        const TRPC_REACT_CONFIG: &str = r#"{
+  "extends": "@calcom/tsconfig/react-library.json",
+  "include": ["../types/@wojtekmaj__react-daterange-picker.d.ts", "../types/business-days-plugin.d.ts", "../types/next-auth.d.ts", "../types/tanstack-table.d.ts", "../types/next.d.ts", "../types/window.d.ts", "./react"],
+  "exclude": ["**/node_modules/**", "./server", "./react/**/*.test.ts", "./react/**/*.spec.ts"],
+  "compilerOptions": {"isolatedModules": false, "noEmit": false, "declaration": true, "emitDeclarationOnly": true, "experimentalDecorators": true, "declarationMap": false, "resolveJsonModule": true, "declarationDir": "types/react", "moduleResolution": "node", "paths": {"~/*": ["./*"]}}
+}"#;
+        const TRPC_SERVER_BUILD_CONFIG: &str = r#"{
+  "extends": "./tsconfig.server.json",
+  "compilerOptions": {"disableSourceOfProjectReferenceRedirect": true},
+  "references": [{"path": "../app-store/tsconfig.build.json"}]
+}"#;
+
+        let default = package.join("tsconfig.json");
+        let server = package.join("tsconfig.server.json");
+        let react = package.join("tsconfig.react.json");
+        let server_build = package.join("tsconfig.server.build.json");
+        fs::write(&default, TRPC_SERVER_CONFIG).expect("write conventional Cal.com config");
+        fs::write(&server, TRPC_SERVER_CONFIG).expect("write explicit server config");
+        fs::write(&react, TRPC_REACT_CONFIG).expect("write explicit React config");
+        fs::write(&server_build, TRPC_SERVER_BUILD_CONFIG)
+            .expect("write referenced server build config");
+        let referenced = app_store.join("tsconfig.build.json");
+        fs::write(&referenced, r#"{"files":["src/index.ts"]}"#)
+            .expect("write referenced package config");
+
+        let configs = collect_project_configs(&package, &fixture.0, &module_root, &[])
+            .expect("capture Cal.com-style package configs");
+        let selected = select_project_config(&package, &configs)
+            .expect("shared selector")
+            .expect("conventional config");
+        assert_eq!(selected.path.as_ref(), default.as_path());
+        assert_eq!(selected.bytes.as_ref(), TRPC_SERVER_CONFIG.as_bytes());
+        assert_eq!(
+            selected.content_id,
+            ContentId::<SourceFactDomain>::from_canonical_bytes(TRPC_SERVER_CONFIG.as_bytes())
+        );
+        assert_eq!(
+            selected.dependency_authority,
+            TypeScriptConfigDependencyAuthority::Program
+        );
+        assert!(selected.references.is_empty());
+        for path in [&server, &react, &server_build] {
+            let variant = configs
+                .iter()
+                .find(|config| config.path.as_ref() == path.as_path())
+                .expect("named variant remains captured");
+            assert_eq!(
+                variant.dependency_authority,
+                TypeScriptConfigDependencyAuthority::Unselected
+            );
+            assert!(variant.references.is_empty());
         }
-        let selected = [fixture.0.join("tsconfig.app.json")];
-        assert!(collect_project_configs(&fixture.0, &fixture.0, &module_root, &selected).is_ok());
+
+        let selected_configs =
+            collect_project_configs(&package, &fixture.0, &module_root, &[server_build.clone()])
+                .expect("an explicit producer-selected build config expands its graph");
+        let selected_build = select_project_config(&package, &selected_configs)
+            .expect("shared selector")
+            .expect("selected build config");
+        assert_eq!(selected_build.path.as_ref(), server_build.as_path());
+        assert_eq!(selected_build.references.len(), 1);
+        assert!(selected_build.references[0].ends_with("packages/app-store/tsconfig.build.json"));
+        assert!(selected_configs.iter().any(|config| {
+            config.path.as_ref() == referenced.as_path()
+                && config.dependency_authority == TypeScriptConfigDependencyAuthority::Program
+        }));
     }
 
     #[test]
