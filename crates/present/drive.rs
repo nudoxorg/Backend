@@ -751,6 +751,7 @@ fn document_member_rows(
     let mut selected = std::collections::BTreeMap::new();
     let mut continuation = None;
     let mut frontier = None;
+    let mut source_basis = document.source_basis();
     loop {
         let reply = engine.probe_page(
             Probe::OutlinePage {
@@ -783,11 +784,15 @@ fn document_member_rows(
                 },
             ));
         }
-        if document.source_basis().is_some_and(|basis| basis != source) {
+        if source_basis.is_some_and(|basis| basis != source) {
             return Err(ClientError::Protocol(
-                "document member source object or stream differs from its document".to_owned(),
+                "document member source object or stream differs from its pinned source".to_owned(),
             ));
         }
+        // Legacy root-only documents cannot attest their object. Once the
+        // first outline page does, all later pages must retain that exact
+        // object as well; the stream frontier does not include object identity.
+        source_basis = Some(source);
         let observed = snapshot.root.frontier();
         if continuation.is_some_and(|previous: PageContinuation| {
             snapshot.root.recipe() != previous.cursor().recipe()
@@ -1313,6 +1318,28 @@ mod document_member_paging_controls {
                 .count(),
             5
         );
+    }
+
+    #[test]
+    fn legacy_root_only_document_pins_first_page_object_before_reading_members() {
+        for disturbance in [Disturbance::None, Disturbance::ChangedBasis] {
+            let mut reader = Reader::new(disturbance);
+            let selected = reader.document();
+            let document = Document::new(selected.symbol, selected.basis, []);
+            assert_eq!(document.source_basis(), None);
+            let mut notes = Vec::new();
+            let rows = probe_members(&mut reader, OWNER, &document, &mut notes);
+            if matches!(disturbance, Disturbance::None) {
+                assert_eq!(rows.len(), NAMES.len() + 1);
+                assert_eq!(reader.calls, 3);
+                assert!(notes.is_empty());
+            } else {
+                assert!(rows.is_empty(), "a changed object cannot install a prefix");
+                assert_eq!(reader.calls, 2);
+                assert_eq!(notes.len(), 1);
+                assert_eq!(notes[0].slug(), crate::FaultSlug::Protocol);
+            }
+        }
     }
 
     #[test]
