@@ -330,21 +330,17 @@ pub(super) fn analyze(
         .map(|source| source.relative_path)
         .chain(compiled_sources.iter().copied())
         .collect::<BTreeSet<_>>();
-    let selected_native_paths = raw_sources
+    let selected_native_sources = raw_sources
         .iter()
         .zip(&raw_handles)
-        .map(|(source, handle)| (handle.path().as_path(), source.relative_path))
-        .collect::<BTreeMap<_, _>>();
-    let selected_native_handles = raw_handles
-        .iter()
-        .map(|handle| (handle.path().as_path(), handle))
+        .map(|(source, handle)| (handle.path().as_path(), (source.relative_path, handle)))
         .collect::<BTreeMap<_, _>>();
     let mut unavailable_dependencies = BTreeMap::<Box<str>, BTreeSet<Box<str>>>::new();
     for loaded in read.handles() {
         checkpoint(control)?;
-        let Some(path) = selected_native_paths
+        let Some((path, _)) = selected_native_sources
             .get(loaded.path().as_path())
-            .filter(|path| unavailable_paths.contains(**path))
+            .filter(|(path, _)| unavailable_paths.contains(*path))
         else {
             continue;
         };
@@ -359,9 +355,9 @@ pub(super) fn analyze(
             if dependent == loaded {
                 continue;
             }
-            let Some(dependent_path) = selected_native_paths
+            let Some((dependent_path, _)) = selected_native_sources
                 .get(dependent.path().as_path())
-                .filter(|path| syntax.contains_key(**path))
+                .filter(|(path, _)| syntax.contains_key(*path))
             else {
                 continue;
             };
@@ -680,8 +676,9 @@ pub(super) fn analyze(
                 // while its committed Definitions also retain the current module
                 // binding range. Read that exact range through the selected Handle;
                 // no name matching or source-text fallback can create a target.
-                let binding_range = selected_native_handles
+                let binding_range = selected_native_sources
                     .get(definition.module.path().as_path())
+                    .map(|(_, handle)| *handle)
                     .filter(|handle| {
                         read.get_module_info(handle).is_some_and(|module| {
                             module.path() == definition.module.path()
@@ -877,7 +874,7 @@ pub(super) fn analyze(
     checkpoint(control)?;
     for error in read.get_errors(&handles).collect_display_errors() {
         checkpoint(control)?;
-        let Some(path) = selected_native_paths.get(error.path().as_path()) else {
+        let Some((path, _)) = selected_native_sources.get(error.path().as_path()) else {
             continue;
         };
         // Checker recovery/fallback diagnostics share the same tainted native
