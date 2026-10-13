@@ -525,6 +525,43 @@ mod tests {
     use std::error::Error;
 
     #[test]
+    fn syntax_parentage_keeps_each_multi_binding_initializer_with_its_own_declaration()
+    -> Result<(), Box<dyn Error>> {
+        use backend_compile::{Container, DeclarationKind};
+        use std::num::NonZeroU32;
+
+        let source = concat!(
+            "export const unrelated = 0, generateSchedule = () => {\n",
+            "  const allSections = [1];\n",
+            "  const missingSections = [2];\n",
+            "  const other = 0, chooseSections = () => {\n",
+            "    const nestedSections = [3];\n",
+            "    return nestedSections;\n",
+            "  };\n",
+            "  return { allSections, missingSections, chooseSections };\n",
+            "};\n",
+        );
+        let frontend = syntax_frontend()?;
+        for path in ["scheduler.ts", "scheduler.tsx", "scheduler.mjs"] {
+            let analysis = frontend.analyze(Path::new(path), source.as_bytes())?;
+            let find = |name: &str| {
+                analysis.declarations().iter().find(|declaration| declaration.name() == name)
+                    .expect("every captured binding is retained")
+            };
+            let schedule = Container::enclosing("generateSchedule", NonZeroU32::new(1).unwrap());
+            for name in ["allSections", "missingSections", "other", "chooseSections"] {
+                assert_eq!(find(name).container(), &schedule, "{path}/{name}");
+            }
+            let closure = Container::enclosing("chooseSections", NonZeroU32::new(4).unwrap());
+            assert_eq!(find("nestedSections").container(), &closure, "{path}/nestedSections");
+            assert_eq!(find("generateSchedule").container(), &Container::Module);
+            assert_eq!(find("unrelated").container(), &Container::Module);
+            assert_eq!(find("generateSchedule").kind(), DeclarationKind::Constant);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn semantic_adapter_rejects_unproved_edge_shape() -> Result<(), Box<dyn Error>> {
         let record = NativeRecord::new(NativeRecordKind::Edge, "source", b"reference".to_vec())?;
         let parsed = TypeScriptSemanticAdapter.parse(&record)?;
