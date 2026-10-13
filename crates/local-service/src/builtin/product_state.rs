@@ -95,6 +95,24 @@ impl Default for StoredState {
     }
 }
 
+/// Reads from retained product state and the selected view/workspace,
+/// including existing member-manifest resolution. Neither consumes the
+/// registry catalog, discovery inventory, or dependency graph.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum OwnerLocalRead {
+    Projects,
+    Tree,
+}
+
+impl OwnerLocalRead {
+    const fn command(self) -> SurfaceCommand {
+        match self {
+            Self::Projects => SurfaceCommand::Projects,
+            Self::Tree => SurfaceCommand::Tree,
+        }
+    }
+}
+
 pub(super) struct ProductState {
     path: PathBuf,
     state: StoredState,
@@ -103,6 +121,25 @@ pub(super) struct ProductState {
 }
 
 impl ProductState {
+    /// Projects exactly the dependencies of the closed local read, with the
+    /// same command/reply admission used by the general product-state path.
+    pub(super) fn read_owner_local(
+        &self,
+        read: OwnerLocalRead,
+        view: &ViewRoot,
+        workspace: Option<&Path>,
+    ) -> Result<SurfaceReply, String> {
+        read.command().admit().map_err(|error| error.to_string())?;
+        let reply = match read {
+            OwnerLocalRead::Projects => {
+                SurfaceReply::Projects(enrich_projects(&self.state.projects, view, workspace)?)
+            }
+            OwnerLocalRead::Tree => SurfaceReply::Tree(self.current_tree()),
+        };
+        reply.admit(reply.id()).map_err(|error| error.to_string())?;
+        Ok(reply)
+    }
+
     pub(super) fn workspace_path(&self) -> Result<&Path, String> {
         self.path
             .parent()
@@ -535,7 +572,7 @@ impl ProductState {
                 mark_seen,
             ),
             SurfaceCommand::Projects => (
-                SurfaceReply::Projects(enrich_projects(&self.state.projects, view, workspace)?),
+                self.read_owner_local(OwnerLocalRead::Projects, view, workspace)?,
                 false,
             ),
             SurfaceCommand::ProjectCreate { name, lockfile } => (
@@ -574,7 +611,10 @@ impl ProductState {
                 )?),
                 true,
             ),
-            SurfaceCommand::Tree => (SurfaceReply::Tree(self.current_tree()), false),
+            SurfaceCommand::Tree => (
+                self.read_owner_local(OwnerLocalRead::Tree, view, workspace)?,
+                false,
+            ),
             SurfaceCommand::TreeOpen {
                 subject,
                 parent,
@@ -3785,6 +3825,175 @@ mod tests {
             Vec::new(),
         )
         .expect("empty view")
+    }
+
+    #[test]
+    fn owner_local_reads_preserve_members_tree_active_order_and_exact_refusal() {
+        let root = fixture("owner-local-reads");
+        let member = root.join("member");
+        fs::create_dir(&member).expect("member directory");
+        fs::write(
+            member.join("Cargo.toml"),
+            "[package]\nname = \"actual-member\"\nversion = \"1.0.0\"\n",
+        )
+        .expect("actual member manifest");
+        let selected = view();
+        let catalog = vec![registry_row("pkg:cargo/unrelated@1.0.0", "unrelated")];
+        let index = CatalogLookupIndex::from_catalog(&catalog);
+        let graph = indexed_graph(Vec::new());
+        let mut state = ProductState::open(root.join("product-state.json")).expect("state");
+        let project = state
+            .create_project(ProjectName::new("Current app").expect("name"), None)
+            .expect("project");
+        state
+            .change_member(
+                &ProjectSelector::Id(project.id),
+                PackageReference::parse(member.to_str().expect("member path"))
+                    .expect("local member"),
+                true,
+            )
+            .expect("member");
+        let first = state
+            .open_tree(
+                &selected,
+                TreeSubject::Search(ProductText::from_static("one")),
+                None,
+                None,
+                TreeOpener::Desktop,
+            )
+            .expect("first tree");
+        let second = state
+            .open_tree(
+                &selected,
+                TreeSubject::Search(ProductText::from_static("two")),
+                None,
+                None,
+                TreeOpener::Cli,
+            )
+            .expect("second tree");
+        let before = serde_json::to_vec(&state.state).expect("retained state");
+        for read in [OwnerLocalRead::Projects, OwnerLocalRead::Tree] {
+            let direct = state
+                .read_owner_local(read, &selected, None)
+                .expect("exact local projection");
+            let general = state
+                .execute(read.command(), &selected, &catalog, &index, &graph, None)
+                .expect("existing full-input projection");
+            assert_eq!(direct, general);
+            assert_eq!(
+                serde_json::to_vec(&direct).expect("direct wire payload"),
+                serde_json::to_vec(&general).expect("general wire payload")
+            );
+            match direct {
+                SurfaceReply::Projects(projects) => {
+                    assert_eq!(projects.len(), 1);
+                    assert_eq!(projects[0].id, project.id);
+                    assert_eq!(
+                        projects[0].member_manifest_names[0].as_str(),
+                        "actual-member"
+                    );
+                }
+                SurfaceReply::Tree(nodes) => {
+                    assert_eq!(nodes.len(), 2);
+                    assert_eq!(nodes[0].id, first.id);
+                    assert_eq!(nodes[1].id, second.id);
+                    assert!(!nodes[0].active);
+                    assert!(nodes[1].active);
+                }
+                _ => panic!("closed local read has exact reply kind"),
+            }
+        }
+        assert_eq!(
+            serde_json::to_vec(&state.state).expect("state after reads"),
+            before
+        );
+        fs::remove_dir_all(&member).expect("remove required member");
+        let direct = state
+            .read_owner_local(OwnerLocalRead::Projects, &selected, None)
+            .expect_err("required project member must still refuse");
+        let general = state
+            .execute(
+                SurfaceCommand::Projects,
+                &selected,
+                &catalog,
+                &index,
+                &graph,
+                None,
+            )
+            .expect_err("general path refuses the same absent member");
+        assert_eq!(direct, general);
+        assert!(
+            state
+                .read_owner_local(OwnerLocalRead::Tree, &selected, None)
+                .is_ok(),
+            "tree has no project-member dependency"
+        );
+        assert_eq!(
+            serde_json::to_vec(&state.state).expect("state after refusal"),
+            before
+        );
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    #[test]
+    fn owner_local_projects_retain_exact_selected_registry_workspace_resolution() {
+        let workspace = fixture("owner-local-registry-member");
+        let stage = workspace.join("registry-staging/archive/package");
+        fs::create_dir_all(stage.join("cjs")).expect("staged directories");
+        fs::write(
+            stage.join("package.json"),
+            r#"{"name":"react","version":"19.3.0"}"#,
+        )
+        .expect("actual staged manifest");
+        let coordinate = "pkg:npm/react@19.3.0";
+        let selected = registry_source_view(coordinate, "cjs/react.development.js");
+        let catalog = vec![registry_row(coordinate, "unrelated-catalog-name")];
+        let index = CatalogLookupIndex::from_catalog(&catalog);
+        let graph = indexed_graph(Vec::new());
+        let mut state = ProductState::open(workspace.join("product-state.json")).expect("state");
+        let project = state
+            .create_project(ProjectName::new("Staged app").expect("name"), None)
+            .expect("project");
+        state
+            .change_member(
+                &ProjectSelector::Id(project.id),
+                PackageReference::parse(coordinate).expect("pinned member"),
+                true,
+            )
+            .expect("member");
+        for scope in [Some(workspace.as_path()), None] {
+            let direct = state.read_owner_local(OwnerLocalRead::Projects, &selected, scope);
+            let general = state.execute(
+                SurfaceCommand::Projects,
+                &selected,
+                &catalog,
+                &index,
+                &graph,
+                scope,
+            );
+            assert_eq!(direct, general);
+            if scope.is_some() {
+                let SurfaceReply::Projects(projects) =
+                    direct.expect("exact workspace resolves stage")
+                else {
+                    panic!("Projects reply");
+                };
+                assert_eq!(projects[0].member_manifest_names[0].as_str(), "react");
+            } else {
+                assert!(
+                    direct.is_err(),
+                    "relative selected source cannot borrow an ambient workspace"
+                );
+            }
+        }
+        let unknown = state
+            .read_owner_local(OwnerLocalRead::Projects, &view(), None)
+            .expect("unpinned source keeps package tuple name fallback");
+        let SurfaceReply::Projects(projects) = unknown else {
+            panic!("Projects reply");
+        };
+        assert_eq!(projects[0].member_manifest_names[0].as_str(), "react");
+        fs::remove_dir_all(workspace).expect("remove fixture");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use super::super::product_state::CatalogLookupIndex;
+use super::super::product_state::{CatalogLookupIndex, OwnerLocalRead};
 use super::super::registry::{
     CatalogDependencyRevision, CatalogProjection, RegistryAddError, StagedProject,
 };
@@ -5258,6 +5258,19 @@ impl CommandAdapter {
         Ok(backend_engine::SymbolAddress::selected(symbol))
     }
 
+    fn owner_local_read(&self, daemon: &ProductDaemon, read: OwnerLocalRead) -> CommandReply {
+        self.product_state
+            .read_owner_local(
+                read,
+                daemon.engine().daemon().library().view(),
+                self.registry.as_ref().map(RegistryGateway::workspace_root),
+            )
+            .map_or_else(
+                |error| CommandReply::Failed(backend_engine::CommandFailure::InvalidQuery(error)),
+                CommandReply::Surface,
+            )
+    }
+
     fn surface(
         &mut self,
         daemon: &mut ProductDaemon,
@@ -5265,6 +5278,15 @@ impl CommandAdapter {
         request_id: u64,
     ) -> Result<AdmittedReply, BuiltinModelError> {
         let reply = match surface {
+            // These closed reads consume no catalog or dependency graph. In
+            // particular cold Library composition must not synchronously build
+            // those unrelated projections ahead of a bootstrap control ACK.
+            backend_engine::SurfaceCommand::Projects => {
+                self.owner_local_read(daemon, OwnerLocalRead::Projects)
+            }
+            backend_engine::SurfaceCommand::Tree => {
+                self.owner_local_read(daemon, OwnerLocalRead::Tree)
+            }
             backend_engine::SurfaceCommand::Read { locators } => {
                 // Input has passed the same strict owner-aware command codec
                 // as every surface command. The selected view is the complete
@@ -6859,6 +6881,98 @@ mod tests {
             }
             let _ = fs::remove_dir_all(&self.root.0);
         }
+    }
+
+    #[test]
+    fn projects_and_tree_use_current_view_without_catalog_graph_or_sql_writer_work() {
+        let mut fixture = AdapterFixture::new();
+        fs::write(
+            Path::new(&fixture.label).join("Cargo.toml"),
+            "[package]\nname = \"local-read-graph-control\"\nversion = \"1.0.0\"\n",
+        )
+        .expect("real graph source manifest");
+        let (adapter, daemon) = fixture.parts();
+        assert!(adapter.dependencies.is_none());
+        let root = owner_cursor(daemon);
+        let revision = adapter
+            .sql_projection
+            .revision()
+            .expect("original SQL revision");
+        let manifest_witness = adapter.manifests.witness();
+        let parses = adapter.manifests.parses();
+        let reads = adapter.manifests.disk_reads();
+        // Hold the real affine writer away from its owner, as publication does.
+        // Read-only Projects/Tree must not acquire or synchronize that writer.
+        let writer = adapter
+            .sql_projection
+            .reserve_writer()
+            .expect("hold real writer");
+        for (offset, command) in [
+            backend_library::SurfaceCommand::Projects,
+            backend_library::SurfaceCommand::Tree,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let id = 8300 + offset as u64;
+            let reply = adapter
+                .surface(daemon, command.clone(), id)
+                .expect("local routing");
+            match &reply.0 {
+                CommandReply::Surface(backend_library::SurfaceReply::Projects(projects)) => {
+                    assert!(projects.is_empty())
+                }
+                CommandReply::Surface(backend_library::SurfaceReply::Tree(nodes)) => {
+                    assert!(nodes.is_empty())
+                }
+                other => panic!("complete retained local reply: {other:?}"),
+            }
+            let bytes = CommandAdapter::encode(daemon, id, reply, None).expect("same reply codec");
+            let decoded = backend_library::decode_reply_body(&bytes).expect("strict wire decode");
+            backend_library::admit_reply(
+                &backend_library::CommandDto::new(id, Command::Surface(command)),
+                &decoded,
+            )
+            .expect("unchanged command/reply admission");
+            assert!(
+                adapter.dependencies.is_none(),
+                "no resident catalog or graph constructed"
+            );
+            assert_eq!(adapter.manifests.witness(), manifest_witness);
+            assert_eq!(adapter.manifests.parses(), parses);
+            assert_eq!(adapter.manifests.disk_reads(), reads);
+            assert_eq!(
+                adapter
+                    .sql_projection
+                    .revision()
+                    .expect("held read revision"),
+                revision
+            );
+            assert_eq!(owner_cursor(daemon), root);
+        }
+        // A genuine graph consumer still takes the guarded projection path;
+        // unavailable writer authority must not become synthetic graph success.
+        let graph = adapter.surface(
+            daemon,
+            backend_library::SurfaceCommand::Dependencies {
+                package: backend_library::PackageReference::parse("pkg:cargo/absent@1.0.0")
+                    .expect("package"),
+            },
+            8400,
+        );
+        assert!(
+            graph.is_err(),
+            "actual graph consumer requires its real writer"
+        );
+        assert!(
+            adapter.dependencies.is_some(),
+            "graph consumer built actual guarded inputs"
+        );
+        let _retired = adapter
+            .sql_projection
+            .prepare_return(writer)
+            .unwrap_or_else(|(_, error)| panic!("return original writer: {error}"))
+            .install();
     }
 
     #[test]
