@@ -1952,31 +1952,73 @@ mod tests {
     }
 
     #[test]
-    fn certified_bootstrap_release_stall_keeps_typed_cause_and_requires_fresh_admission() {
+    fn healthy_certified_bootstrap_waits_for_delayed_release_within_original_hydration_term() {
+        let (_, target, _, target_cursor, pages) = multi_page_bootstrap_fixture();
+        let lease = LocalSubscriptionId::from_bytes([34; 16]);
+        let (mut transport, path, owner) = authenticated_pair(move |stream| {
+            let request_id = serve_bootstrap_pages(stream, lease, pages);
+            assert_eq!(
+                request_id, 4,
+                "only three pages and one exact release are sent"
+            );
+            // Healthy admission has its original fixed hydration term. The
+            // terminal50ms allowance must not replace that term after proof.
+            std::thread::sleep(Duration::from_millis(150));
+            reply(
+                stream,
+                LocalControlResponse::Subscription(LocalSubscriptionResponse::Cancelled {
+                    request_id,
+                    lease,
+                }),
+            );
+        });
+        let (root, cursor) = transport
+            .bootstrap_root_with_exchange_error()
+            .expect("delayed healthy ACK within original term");
+        assert_eq!(root.root(), target.root());
+        assert_eq!(cursor, target_cursor);
+        owner
+            .join()
+            .expect("one authenticated owner acknowledged exact release");
+        std::fs::remove_file(path).expect("remove delayed-ack socket");
+    }
+
+    #[test]
+    fn certified_bootstrap_release_clock_expiry_keeps_typed_cause_and_requires_fresh_admission() {
+        use crate::monotonic::ManualClock;
         use backend_replication::{LocalControlExchangeFailure, LocalControlExchangePhase};
         let (_, target, _, target_cursor, pages) = multi_page_bootstrap_fixture();
+        let allowance = ResetPages::new(pages.len() as u16)
+            .expect("fixture pages")
+            .allowance();
+        let clock = ManualClock::new();
+        let owner_clock = Arc::clone(&clock);
         let lease = LocalSubscriptionId::from_bytes([32; 16]);
         let (release, held) = std::sync::mpsc::channel();
         let (mut transport, path, owner) = authenticated_pair(move |stream| {
             let cancel_id = serve_bootstrap_pages(stream, lease, pages);
             assert_eq!(cancel_id, 4, "three certified pages precede exact release");
-            // Hold the actual ACK until the client observes its bounded stall;
-            // no sleep or scheduler assumption controls the failure.
+            // Exhaust the same term after the request is sent; a healthy
+            // release must not obtain a new budget from its phase transition.
+            owner_clock.advance(allowance);
             held.recv_timeout(Duration::from_secs(3))
                 .expect("release held peer");
         });
+        transport = transport.with_clock(clock);
         let error = transport
             .bootstrap_root_with_exchange_error()
             .expect_err("certified root cannot escape before its release acknowledgement");
         let crate::LocalSubscriptionExchangeError::Exchange(exchange) = error else {
             panic!("exact release must preserve its typed exchange cause");
         };
-        assert_eq!(exchange.failure, LocalControlExchangeFailure::Stalled);
+        // The injected hydration clock expires through the tick's Cancel.
+        // A real transport deadline expires through the parser's Stalled.
+        assert_eq!(exchange.failure, LocalControlExchangeFailure::Cancelled);
         assert_eq!(exchange.progress.request_id, 4);
-        assert_eq!(
+        assert!(matches!(
             exchange.progress.phase,
-            LocalControlExchangePhase::ReadingHeader
-        );
+            LocalControlExchangePhase::Flushing | LocalControlExchangePhase::ReadingHeader
+        ));
         assert!(exchange.progress.write_offset > 0);
         assert_eq!(exchange.progress.header_offset, 0);
         assert!(transport.interrupt_handle().is_none());
@@ -2358,7 +2400,9 @@ mod tests {
             let (first, _) = listener.accept().expect("accept original connection");
             // The tested closure is before reset Ack, not before the original
             // socket has supplied its same-user authentication proof.
-            may_close.recv_timeout(Duration::from_secs(3)).expect("original peer authenticated");
+            may_close
+                .recv_timeout(Duration::from_secs(3))
+                .expect("original peer authenticated");
             drop(first);
             let (mut replacement, _) = listener.accept().expect("accept replacement connection");
             replacement
@@ -2388,7 +2432,9 @@ mod tests {
             Duration::from_millis(200),
         )
         .expect("connect and authenticate local producer");
-        authenticated.send(()).expect("release original authenticated connection");
+        authenticated
+            .send(())
+            .expect("release original authenticated connection");
         let mut state = lease_on(&transport, lease, Arc::clone(&initial), previous);
         let original_connection = transport.connection();
         transport.exhaust_connection_budget_for_test();
