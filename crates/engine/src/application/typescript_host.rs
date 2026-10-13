@@ -2839,7 +2839,7 @@ pub(crate) fn select_project_config<'a>(
     match nearest_candidates {
         [only] => Ok(Some(*only)),
         [_, _, ..] => Err(TypeScriptProjectHostError::CompilerApiBridge {
-            message: "multiple equally near named TypeScript configs are present and no tsconfig.json default exists; a config selector is required".into(),
+            message: "multiple equally near named TypeScript configs are present and no tsconfig.json default exists; add a tsconfig.json that extends the intended config or select a supported build-target/project directory".into(),
         }),
         [] => unreachable!("the nearest config depth came from a candidate"),
     }
