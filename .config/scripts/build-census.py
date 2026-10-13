@@ -16,10 +16,12 @@ import argparse
 import ctypes
 import dataclasses
 import datetime as _datetime
+import errno
 import json
 import os
 import pathlib
 import re
+import select
 import selectors
 import shutil
 import struct
@@ -61,6 +63,308 @@ GLOBAL_VALUE_OPTIONS = frozenset({"--config", "--color", "--explain"})
 
 class CensusError(RuntimeError):
     """The process table could not be read within the tool's fixed bounds."""
+
+
+class _LinuxProcRace(OSError):
+    """A proc row changed without evidence that the pinned task exited."""
+
+
+class _LinuxProcessExitedDuringRead(Exception):
+    """The exact task read from proc exited while its row was being captured."""
+
+    def __init__(self, proof: "_LinuxProcExitProof") -> None:
+        super().__init__(f"pid-exited-during-read:{proof.pid}")
+        self.proof = proof
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _LinuxProcStat:
+    state: str
+    ppid: int
+    pgid: int
+    session: int
+    start_ticks: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _LinuxProcExitProof:
+    pid: int
+    first_start_ticks: str
+    last_start_ticks: str | None
+    first_state: str
+    last_state: str | None
+    pidfd_ready: bool
+    missing_path: str | None
+    missing_filename: str | None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "pid": self.pid,
+            "first_identity": {"pid": self.pid, "start_ticks": self.first_start_ticks},
+            "last_identity": (
+                {"pid": self.pid, "start_ticks": self.last_start_ticks}
+                if self.last_start_ticks is not None
+                else None
+            ),
+            "first_state": self.first_state,
+            "last_state": self.last_state,
+            "pidfd_ready": self.pidfd_ready,
+            "missing_path": self.missing_path,
+            "missing_filename": self.missing_filename,
+        }
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _LinuxProcCapture:
+    first: _LinuxProcStat
+    last: _LinuxProcStat
+    value: Any
+
+
+class _LinuxProcDirectory:
+    """Read one proc PID through a directory FD and, where available, pidfd."""
+
+    def __init__(self, pid: int, proc_root: pathlib.Path = pathlib.Path("/proc")) -> None:
+        self.pid = pid
+        self.proc_path = proc_root / str(pid)
+        self.directory_fd: int | None = None
+        self.pidfd: int | None = None
+        self._closed = False
+
+    def __enter__(self) -> "_LinuxProcDirectory":
+        # Pin the kernel task before resolving /proc/PID. If it exits and the
+        # number is reused before the directory open, pidfd readiness below
+        # makes that mismatch a refusal instead of silently adopting a new PID.
+        self.pin_pidfd()
+        try:
+            self.directory_fd = os.open(
+                self.proc_path,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
+            )
+        except BaseException:
+            self.close()
+            raise
+        return self
+
+    def __exit__(self, _kind: object, _value: object, _traceback: object) -> None:
+        self.close()
+
+    def pin_pidfd(self) -> None:
+        if self.pidfd is not None:
+            return
+        opener = getattr(os, "pidfd_open", None)
+        if opener is None:
+            return
+        try:
+            self.pidfd = opener(self.pid, 0)
+        except OSError as error:
+            # Old kernels may not implement pidfds. Ordinary stable reads can
+            # still use the pinned proc-directory identity; a later ENOENT
+            # cannot be called an exit without a ready pidfd.
+            if error.errno in {errno.ENOSYS, errno.EINVAL, getattr(errno, "EOPNOTSUPP", errno.EINVAL)}:
+                return
+            raise
+
+    def pidfd_ready(self) -> bool | None:
+        if self.pidfd is None:
+            return None
+        poller = select.poll()
+        poller.register(self.pidfd, select.POLLIN | select.POLLHUP | select.POLLERR)
+        events = poller.poll(0)
+        for descriptor, event in events:
+            if descriptor != self.pidfd:
+                raise OSError(errno.EBADF, "pidfd-poll-unexpected-descriptor")
+            if event & (select.POLLNVAL | select.POLLERR):
+                raise OSError(errno.EBADF, "pidfd-poll-error")
+        # A pidfd reports POLLIN while its task is zombie and may report only
+        # POLLHUP after the task is reaped. Both are exact terminal readiness;
+        # later proof still checks this pidfd and the captured proc identity.
+        return any(event & (select.POLLIN | select.POLLHUP) for _, event in events)
+
+    def read_bytes(self, relative_path: str, limit: int) -> bytes:
+        descriptor = os.open(
+            relative_path,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=self._directory_fd(),
+        )
+        try:
+            with os.fdopen(descriptor, "rb", closefd=False) as source:
+                return source.read(limit + 1)
+        finally:
+            os.close(descriptor)
+
+    def read_text(self, relative_path: str, limit: int = MAX_RESOURCE_OUTPUT_BYTES) -> str:
+        raw = self.read_bytes(relative_path, limit)
+        if len(raw) > limit:
+            raise CensusError("linux-proc-file-limit")
+        return raw.decode("ascii")
+
+    def readlink(self, relative_path: str) -> str:
+        return os.readlink(relative_path, dir_fd=self._directory_fd())
+
+    def stat_path(self, relative_path: str) -> os.stat_result:
+        return os.stat(relative_path, dir_fd=self._directory_fd(), follow_symlinks=True)
+
+    def read_stat(self) -> _LinuxProcStat:
+        return _parse_linux_proc_stat(self.read_text("stat", 4 * 1024))
+
+    def _directory_fd(self) -> int:
+        if self.directory_fd is None:
+            raise OSError(errno.EBADF, "proc-directory-not-open")
+        return self.directory_fd
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            if self.pidfd is not None:
+                os.close(self.pidfd)
+        finally:
+            if self.directory_fd is not None:
+                os.close(self.directory_fd)
+
+
+def _parse_linux_proc_stat(text: str) -> _LinuxProcStat:
+    close = text.rfind(")")
+    if close < 0:
+        raise ValueError("malformed-stat")
+    fields = text[close + 1 :].strip().split()
+    if len(fields) <= 19:
+        raise ValueError("malformed-stat-fields")
+    return _LinuxProcStat(
+        state=fields[0],
+        ppid=int(fields[1]),
+        pgid=int(fields[2]),
+        session=int(fields[3]),
+        start_ticks=fields[19],
+    )
+
+
+def _capture_linux_proc_pid(
+    pid: int,
+    read_payload: Any,
+    *,
+    proc_factory: Any = _LinuxProcDirectory,
+) -> _LinuxProcCapture:
+    """Capture one proc row; tolerate only exits proved by its own pidfd.
+
+    The pidfd is opened before resolving /proc/PID, then the directory identity
+    is read twice before payload access. A missing field is an exit only if
+    that pidfd is readable and a final proc read is absent or terminal;
+    permission errors, live ENOENTs, and start-time changes remain hard races.
+    """
+    try:
+        with proc_factory(pid) as proc:
+            # Custom test adapters may not pin in __enter__; the real adapter
+            # has already opened the pidfd before its /proc/PID directory.
+            proc.pin_pidfd()
+            first = proc.read_stat()
+            if proc.pidfd_ready() is True:
+                # Since pidfd_open precedes the proc path lookup, an already
+                # ready descriptor cannot be tied to this first stat row: the
+                # PID may have been recycled between those operations.
+                raise _LinuxProcRace(errno.ESTALE, "pidfd-ready-before-first-identity")
+            pinned = proc.read_stat()
+            if first.start_ticks != pinned.start_ticks:
+                raise _LinuxProcRace(errno.ESTALE, "pid-start-changed-while-pinning")
+
+            def exited(
+                missing_path: str | None,
+                last: _LinuxProcStat | None = None,
+            ) -> _LinuxProcessExitedDuringRead:
+                proof = _LinuxProcExitProof(
+                    pid=pid,
+                    first_start_ticks=first.start_ticks,
+                    last_start_ticks=last.start_ticks if last is not None else None,
+                    first_state=first.state,
+                    last_state=last.state if last is not None else None,
+                    pidfd_ready=True,
+                    missing_path=(
+                        missing_path
+                        if missing_path is None or str(missing_path).startswith("/proc/")
+                        else f"/proc/{pid}/{missing_path}"
+                    ),
+                    missing_filename=missing_path,
+                )
+                return _LinuxProcessExitedDuringRead(proof)
+
+            def prove_exit(error: OSError) -> _LinuxProcessExitedDuringRead:
+                if proc.pidfd_ready() is not True:
+                    raise _LinuxProcRace(
+                        errno.ESTALE,
+                        "proc-path-missing-without-pidfd-exit-proof",
+                        getattr(error, "filename", None),
+                    ) from error
+                try:
+                    last = proc.read_stat()
+                except (FileNotFoundError, ProcessLookupError):
+                    last = None
+                if last is not None and last.start_ticks != first.start_ticks:
+                    raise _LinuxProcRace(errno.ESTALE, "pid-start-changed-after-pidfd-exit") from error
+                if last is not None and last.state not in {"Z", "X", "x"}:
+                    raise _LinuxProcRace(errno.ESTALE, "pidfd-ready-for-active-proc-row") from error
+                return exited(getattr(error, "filename", None), last)
+
+            try:
+                value = read_payload(proc, pinned)
+                last = proc.read_stat()
+            except (FileNotFoundError, ProcessLookupError) as error:
+                raise prove_exit(error)
+            if last.start_ticks != first.start_ticks:
+                raise _LinuxProcRace(errno.ESTALE, "pid-start-changed-during-proc-read")
+            if proc.pidfd_ready() is True:
+                if last.state not in {"Z", "X", "x"}:
+                    try:
+                        observed = proc.read_stat()
+                    except (FileNotFoundError, ProcessLookupError):
+                        observed = None
+                    if observed is not None and observed.start_ticks != first.start_ticks:
+                        raise _LinuxProcRace(errno.ESTALE, "pid-start-changed-after-pidfd-exit")
+                    if observed is not None and observed.state not in {"Z", "X", "x"}:
+                        raise _LinuxProcRace(errno.ESTALE, "pidfd-ready-for-active-proc-row")
+                    last = observed
+                raise exited(None, last)
+            return _LinuxProcCapture(first=first, last=last, value=value)
+    except ProcessLookupError:
+        # ESRCH before the first proc identity is not an exit proof for the
+        # enumerated row. Leave it as an incomplete observation for the caller.
+        raise
+
+
+def _capture_gui_supervisor_process(
+    pid: int,
+    *,
+    proc_factory: Any = _LinuxProcDirectory,
+) -> tuple[dict[str, Any] | None, _LinuxProcExitProof | None]:
+    """The GUI supervisor's exact status/ns/mnt/root observation, injectable in tests."""
+
+    def read_fields(proc: Any, _stat: _LinuxProcStat) -> dict[str, Any]:
+        uids = _parse_proc_status_uids(proc.read_text("status"))
+        if len(uids) != 4:
+            raise ValueError("gui-supervisor-uid-tuple-mismatch")
+        mount_namespace = proc.stat_path("ns/mnt")
+        root = proc.stat_path("root")
+        return {
+            "uids": list(uids),
+            "ns": [mount_namespace.st_dev, mount_namespace.st_ino],
+            "root": [root.st_dev, root.st_ino],
+        }
+
+    try:
+        capture = _capture_linux_proc_pid(pid, read_fields, proc_factory=proc_factory)
+    except _LinuxProcessExitedDuringRead as stopped:
+        return None, stopped.proof
+    row = {
+        "pid": pid,
+        "state": capture.last.state,
+        "ppid": capture.last.ppid,
+        "pgid": capture.last.pgid,
+        "sid": capture.last.session,
+        "start": int(capture.last.start_ticks),
+        **capture.value,
+    }
+    return row, None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -780,63 +1084,72 @@ def _parse_proc_status_uids(status_text: str) -> tuple[int, ...]:
     return values
 
 
-def _linux_process_record(row: _PsRow, boot_id: str, argv_budget: _ArgvBudget) -> ProcessRecord | None:
-    base = pathlib.Path("/proc") / str(row.pid)
-    status_text = (base / "status").read_text(encoding="ascii")
-    process_uids = _parse_proc_status_uids(status_text)
-    if row.effective_uid is not None and process_uids[1] != row.effective_uid:
-        # PID exited/reused after ps observed it; do not trust its old ucomm row.
-        return None
-    stat_text = (base / "stat").read_text(encoding="ascii")
-    close = stat_text.rfind(")")
-    if close < 0:
-        raise ValueError("malformed-stat")
-    fields = stat_text[close + 1 :].strip().split()
-    state = fields[0]
-    ppid = int(fields[1])
-    pgid = int(fields[2])
-    start_ticks = fields[19]
-    executable = os.readlink(base / "exe")
-    if _is_cargo_executable(executable):
-        if argv_budget.exhausted:
-            argv = None
-            argv_error = "snapshot-argv-budget-exhausted"
-        else:
-            with (base / "cmdline").open("rb") as source:
-                raw_argv = source.read(MAX_ARG_BYTES + 1)
-            if len(raw_argv) > MAX_ARG_BYTES:
-                argv_budget.exhaust()
-                argv = None
-                argv_error = "argv-byte-limit"
-            elif not raw_argv:
-                argv = None
-                argv_error = "argv-empty-or-exited"
-            elif not argv_budget.admit(len(raw_argv)):
+def _linux_process_record(
+    row: _PsRow,
+    boot_id: str,
+    argv_budget: _ArgvBudget,
+    *,
+    proc_factory: Any = _LinuxProcDirectory,
+) -> ProcessRecord | None:
+    def read_process(proc: _LinuxProcDirectory, stat: _LinuxProcStat) -> dict[str, Any] | None:
+        process_uids = _parse_proc_status_uids(proc.read_text("status"))
+        if row.effective_uid is not None and process_uids[1] != row.effective_uid:
+            # PID exited/reused after ps observed it; do not trust its old ucomm row.
+            return None
+        executable = proc.readlink("exe")
+        if _is_cargo_executable(executable):
+            if argv_budget.exhausted:
                 argv = None
                 argv_error = "snapshot-argv-budget-exhausted"
             else:
-                parts = raw_argv.rstrip(b"\0").split(b"\0")
-                if len(parts) > MAX_ARG_COUNT:
+                raw_argv = proc.read_bytes("cmdline", MAX_ARG_BYTES)
+                if len(raw_argv) > MAX_ARG_BYTES:
                     argv_budget.exhaust()
                     argv = None
-                    argv_error = "argv-count-limit"
+                    argv_error = "argv-byte-limit"
+                elif not raw_argv:
+                    argv = None
+                    argv_error = "argv-empty-or-exited"
+                elif not argv_budget.admit(len(raw_argv)):
+                    argv = None
+                    argv_error = "snapshot-argv-budget-exhausted"
                 else:
-                    argv = tuple(os.fsdecode(part) for part in parts)
-                    argv_error = None
-    else:
-        if not _is_rustc_executable(executable) and not _is_runtime_owner_executable(executable):
-            executable = None
-        argv = None
-        argv_error = None
+                    parts = raw_argv.rstrip(b"\0").split(b"\0")
+                    if len(parts) > MAX_ARG_COUNT:
+                        argv_budget.exhaust()
+                        argv = None
+                        argv_error = "argv-count-limit"
+                    else:
+                        argv = tuple(os.fsdecode(part) for part in parts)
+                        argv_error = None
+        else:
+            if not _is_rustc_executable(executable) and not _is_runtime_owner_executable(executable):
+                executable = None
+            argv = None
+            argv_error = None
+        return {
+            "ppid": stat.ppid,
+            "pgid": stat.pgid,
+            "start_ticks": stat.start_ticks,
+            "state": stat.state,
+            "executable": executable,
+            "argv": argv,
+            "argv_error": argv_error,
+        }
+
+    capture = _capture_linux_proc_pid(row.pid, read_process, proc_factory=proc_factory)
+    if capture.value is None:
+        return None
+    details = capture.value
     return ProcessRecord(
         pid=row.pid,
-        ppid=ppid,
-        pgid=pgid,
-        start_token=f"linux:{boot_id}:{start_ticks}",
-        executable=executable,
-        argv=argv,
-        argv_error=argv_error,
-        state=state,
+        ppid=details["ppid"],
+        pgid=details["pgid"],
+        start_token=f"linux:{boot_id}:{details['start_ticks']}",
+        executable=details["executable"],
+        argv=details["argv"],
+        argv_error=details["argv_error"],
+        state=details["state"],
     )
 
 
@@ -902,8 +1215,10 @@ def _linux_processes(
     effective_uid: int,
     rows: list[_PsRow],
     argv_budget: _ArgvBudget,
+    *,
+    proc_root: pathlib.Path = pathlib.Path("/proc"),
+    proc_factory: Any = _LinuxProcDirectory,
 ) -> tuple[dict[int, ProcessRecord], dict[str, int], dict[str, int]]:
-    proc_root = pathlib.Path("/proc")
     try:
         boot_id = (proc_root / "sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
     except OSError as error:
@@ -924,7 +1239,7 @@ def _linux_processes(
         if not same_uid and not cargo_hint and not compiler_hint and not runtime_hint:
             continue
         try:
-            record = _linux_process_record(row, boot_id, argv_budget)
+            record = _linux_process_record(row, boot_id, argv_budget, proc_factory=proc_factory)
             if record is not None:
                 records[row.pid] = record
             elif same_uid:
@@ -941,14 +1256,17 @@ def _linux_processes(
                 records[row.pid] = _unknown_compiler_candidate(row)
             elif runtime_hint:
                 records[row.pid] = _unknown_runtime_owner_candidate(row)
-        except FileNotFoundError:
+        except _LinuxProcessExitedDuringRead:
             races["pid-exited-during-scan"] = races.get("pid-exited-during-scan", 0) + 1
+        except FileNotFoundError:
             if cargo_hint:
                 records[row.pid] = _unknown_cargo_candidate(row)
             elif compiler_hint:
                 records[row.pid] = _unknown_compiler_candidate(row)
             elif runtime_hint:
                 records[row.pid] = _unknown_runtime_owner_candidate(row)
+            elif same_uid:
+                issues["same-uid-process-snapshot-incomplete"] = issues.get("same-uid-process-snapshot-incomplete", 0) + 1
         except PermissionError:
             if same_uid and (cargo_hint or compiler_hint or runtime_hint):
                 records[row.pid] = (
