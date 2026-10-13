@@ -2644,7 +2644,7 @@ impl Region for Reader {
         self.frame.set(Some(frame));
     }
 
-    fn keys(&self, snapshot: &AppSnapshot) -> Vec<PageKey> {
+    fn keys(&self, snapshot: &AppSnapshot, _store: &DataStore) -> Vec<PageKey> {
         reader_keys(snapshot)
     }
 
