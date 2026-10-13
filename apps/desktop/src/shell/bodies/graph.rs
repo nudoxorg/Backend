@@ -11,7 +11,7 @@ use crate::core::{Activity, ProducerAuthority, Resource, ResourceTerminal, Versi
 use crate::model::pages::{PackageRef, PageKey, SearchContinuation, SearchQuery};
 use crate::navigation::{Intent, Route, View};
 use crate::runtime::indexed_world::{self, Coverage, Key as WorldKey};
-use crate::runtime::store::{Branch, RouteReadLease, StoreEvent, route_symbol};
+use crate::runtime::store::{Branch, OwnerAttachment, RouteReadLease, StoreEvent, route_symbol};
 use crate::shell::region::Links;
 #[cfg(test)]
 use facet::graph::World;
@@ -294,6 +294,7 @@ impl Map {
                     cx.notify();
                 }
                 if event.is_branch(Branch::Owner) {
+                    map.retire_open_if_owner_changed(cx);
                     // A replacement can serve the same immutable root. Its
                     // retired scene and native actions cannot borrow the new
                     // attachment merely because their resource stamps match.
@@ -326,6 +327,7 @@ impl Map {
                 window,
                 |map, owner, request: &GraphViewRequest, window, cx| {
                     let snapshot = map.links.snapshot(cx);
+                    let Some(attachment) = request.attachment.as_ref() else { return; };
                     if owner.read(cx).graph_view_generation() == request.sequence
                         && request.visit.current(&snapshot)
                         && snapshot.overlay().is_none()
@@ -342,11 +344,11 @@ impl Map {
                         match &request.selection {
                             crate::runtime::graph_focus::GraphViewEligibility::Selected { node, .. }
                                 if map.graph.as_ref().is_some_and(|graph| graph.read(cx).focused() == Some(*node)) => {
-                                map.open(*node, request.target, OpenOrigin::Graph, window, cx);
+                                map.open(*node, request.target, OpenOrigin::Graph, attachment.clone(), window, cx);
                             }
                             crate::runtime::graph_focus::GraphViewEligibility::Declaration { .. }
                                 if map.graph.as_ref().is_none_or(|graph| graph.read(cx).focused().is_none()) => {
-                                map.open_current(request.target, window, cx);
+                                map.open_current_at(request.target, attachment, window, cx);
                             }
                             _ => {}
                         }
@@ -670,6 +672,14 @@ impl Map {
         self.pending = None;
     }
 
+    fn retire_open_if_owner_changed(&mut self, cx: &App) {
+        if self.pending.as_ref().is_some_and(|request|
+            !self.links.store.read(cx).admits_owner_attachment(&request.attachment))
+        {
+            self.invalidate_open();
+        }
+    }
+
     pub(crate) fn suspend(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // A cover (Settings/Inbox) suspends native input while retaining the
         // underlying reading visit. Route changes and explicit World commands
@@ -955,6 +965,18 @@ impl Map {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(attachment) = self.links.store.read(cx).current_owner_attachment() else { return; };
+        self.open_current_at(target, &attachment, window, cx);
+    }
+
+    fn open_current_at(
+        &mut self,
+        target: OpenView,
+        attachment: &OwnerAttachment,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.links.store.read(cx).admits_owner_attachment(attachment) { return; }
         let snapshot = self.links.snapshot(cx);
         if self.graph.as_ref().is_none_or(|graph| graph.read(cx).focused().is_none()) {
             // A symbol page and its source are independent of the optional
@@ -993,7 +1015,7 @@ impl Map {
             cx.notify();
             return;
         };
-        self.open(node, target, OpenOrigin::Graph, window, cx);
+        self.open(node, target, OpenOrigin::Graph, attachment.clone(), window, cx);
     }
 
     #[cfg(test)]
@@ -1121,11 +1143,14 @@ impl Map {
         &mut self,
         node: NodeId,
         action: facet::graph::peek::Action,
+        attachment: &OwnerAttachment,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let snapshot = self.links.snapshot(cx);
-        if snapshot.overlay().is_some() || self.resource_scene_owner(cx).is_none() {
+        if snapshot.overlay().is_some() || self.resource_scene_owner(cx).is_none()
+            || !self.links.store.read(cx).admits_owner_attachment(attachment)
+        {
             return;
         }
         let Some(graph) = self.graph.clone() else {
@@ -1136,7 +1161,7 @@ impl Map {
         }
         match action {
             facet::graph::peek::Action::Open => {
-                self.open(node, OpenView::Page, OpenOrigin::Peek, window, cx)
+                self.open(node, OpenView::Page, OpenOrigin::Peek, attachment.clone(), window, cx)
             }
             facet::graph::peek::Action::Focus => {
                 self.invalidate_open();
@@ -1169,10 +1194,13 @@ impl Map {
         node: NodeId,
         target: OpenView,
         origin: OpenOrigin,
+        attachment: OwnerAttachment,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.resource_scene_owner(cx).is_none() { return; }
+        if self.resource_scene_owner(cx).is_none()
+            || !self.links.store.read(cx).admits_owner_attachment(&attachment)
+        { return; }
         let snapshot = self.links.snapshot(cx);
         let focus = self
             .graph
@@ -1198,6 +1226,7 @@ impl Map {
             self.navigate(
                 resolved,
                 target,
+                &attachment,
                 self.visible.then(|| self.anchor_for(node, cx)).flatten(),
                 window,
                 cx,
@@ -1211,6 +1240,7 @@ impl Map {
         };
         self.pending = Some(OpenRequest {
             basis: self.callback_basis(cx),
+            attachment,
             node,
             target,
             origin,
@@ -1228,6 +1258,7 @@ impl Map {
     }
 
     fn resolve_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.retire_open_if_owner_changed(cx);
         let Some(request) = self.pending.clone() else {
             return;
         };
@@ -1285,7 +1316,10 @@ impl Map {
             let issued = self
                 .links
                 .store
-                .update(cx, |store, cx| store.load_more(&request.query, cx));
+                .update(cx, |store, cx| {
+                    store.admits_owner_attachment(&request.attachment)
+                        && store.load_more(&request.query, cx)
+                });
             if !issued {
                 self.pending = None;
                 self.error = Some("The index cannot continue this graph symbol lookup.".into());
@@ -1301,6 +1335,7 @@ impl Map {
                 self.navigate(
                     resolved,
                     request.target,
+                    &request.attachment,
                     request
                         .source_at_open
                         .and_then(|_| self.anchor_for(request.node, cx)),
@@ -1357,11 +1392,16 @@ impl Map {
             line,
         }: ResolvedSymbol,
         target: OpenView,
+        attachment: &OwnerAttachment,
         anchor: Option<gpui::Bounds<gpui::Pixels>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.resource_scene_owner(cx).is_none() { return; }
+        // Keep the owner that admitted this open through the final dispatch.
+        // An exact-root search page cannot lend a later owner's attachment.
+        if self.resource_scene_owner(cx).is_none()
+            || !self.links.store.read(cx).admits_owner_attachment(attachment)
+        { return; }
         let key = crate::shell::kit::shared_id(&symbol);
         if let Some(bounds) = anchor {
             facet::motion::shared::remember(key, bounds, window, cx);
@@ -1454,6 +1494,9 @@ impl CallbackBasis {
 #[derive(Clone, Debug)]
 struct OpenRequest {
     basis: CallbackBasis,
+    /// Captured at the activated open and carried through every search page.
+    /// Reply handling never discovers a replacement owner for this request.
+    attachment: OwnerAttachment,
     node: NodeId,
     target: OpenView,
     origin: OpenOrigin,
@@ -1735,7 +1778,7 @@ impl Render for Map {
                         map.update(cx, |map, cx| {
                             if map.visible && map.callback_current(&basis, cx)
                                 && map.links.store.read(cx).admits_owner_attachment(&attachment) {
-                                map.open(node, OpenView::Page, OpenOrigin::Graph, window, cx);
+                                map.open(node, OpenView::Page, OpenOrigin::Graph, attachment, window, cx);
                             }
                         });
                     });
@@ -1750,7 +1793,7 @@ impl Render for Map {
                         map.update(cx, |map, cx| {
                             if map.visible && map.callback_current(&basis, cx)
                                 && map.links.store.read(cx).admits_owner_attachment(&attachment) {
-                                map.peek_action(node, action, window, cx);
+                                map.peek_action(node, action, &attachment, window, cx);
                             }
                         });
                     });
@@ -2103,6 +2146,8 @@ mod tests {
             basis: CallbackBasis {
                 generation: 5, visit: crate::runtime::content_visit::ContentVisit::capture(&snapshot),
             },
+            attachment: crate::runtime::store::DataStore::new(Arc::new(snapshot.clone()), None)
+                .current_owner_attachment().expect("synthetic serving attachment"),
             node: 7, target: OpenView::Page, origin: OpenOrigin::Graph,
             continuations: Vec::new(), focus_at_open: Some(7), source_at_open: None,
             query: SearchQuery::new("Value", 200).expect("query"), root,
@@ -2145,3 +2190,7 @@ mod tests {
         assert!(!scoped.accepts(5, &declaration.with_session(session), Some(7), true));
     }
 }
+
+#[cfg(test)]
+#[path = "graph/owner_open_tests.rs"]
+mod owner_open_tests;

@@ -824,6 +824,11 @@ impl Reader {
     }
 
     #[cfg(test)]
+    pub(crate) fn graph_map(&self) -> Option<Entity<bodies::graph::Map>> {
+        self.map.clone()
+    }
+
+    #[cfg(test)]
     pub(crate) fn graph_projection_evidence(&self, cx: &gpui::App)
         -> Option<(crate::runtime::indexed_world::Key, crate::runtime::indexed_world::Origin)>
     {
