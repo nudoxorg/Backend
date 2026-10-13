@@ -1064,7 +1064,7 @@ mod document_member_paging_controls {
 
     fn catalog() -> Library {
         let basis = Basis::new(
-            view_state_root(b"retained member observation"),
+            view_state_root(&[(PATH.to_owned(), "retained member observation".to_owned())]),
             object_version(b"structural source"),
         );
         let package = package_key(PATH);
