@@ -152,7 +152,7 @@ impl SourceAvailability {
     fn current_program(
         &self,
         key: &ProductSemanticPublicationKey,
-        sources: &std::sync::Arc<backend_semantic::ir::NativeProgramSourceManifest>,
+        sources: &std::sync::Arc<backend_semantic::ir::NativeProgramSources>,
     ) -> Option<()> {
         for row in sources.sources() {
             let Some(path) = row.package_path else {
@@ -229,9 +229,7 @@ impl SourceAvailability {
                     .filter_map(|row| row.package_path.map(|path| (path, row.source)))
                     .collect::<BTreeMap<_, _>>();
                 for image in activated.images() {
-                    use backend_semantic::ir::{
-                        ImageProvenance, SemanticCoreReader,
-                    };
+                    use backend_semantic::ir::{ImageProvenance, SemanticCoreReader};
                     let view = image.reopen().ok()?;
                     let ImageProvenance::Captured {
                         source,
@@ -245,6 +243,13 @@ impl SourceAvailability {
                     let path = std::str::from_utf8(view.atom(scope.path)?).ok()?;
                     if recipe.toolchain != sources.toolchain()
                         || mappings.get(path) != Some(&source)
+                        || !sources.image_matches(
+                            path,
+                            backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(
+                                image.as_ref(),
+                            )
+                            .as_ref(),
+                        )
                     {
                         return None;
                     }
@@ -292,7 +297,7 @@ impl SelectedSourceArtifacts {
 /// Full immutable program membership with every mapped current source admitted.
 /// Only SourceAvailability can construct this value; an available image alone cannot.
 pub(in crate::builtin) struct CurrentNativeProgram {
-    sources: std::sync::Arc<backend_semantic::ir::NativeProgramSourceManifest>,
+    sources: std::sync::Arc<backend_semantic::ir::NativeProgramSources>,
     // The exact immutable backing allocations must stay alive while their
     // process-local association keys are consumed. Source/path equality alone
     // cannot associate another activation's image with this program.
@@ -300,7 +305,7 @@ pub(in crate::builtin) struct CurrentNativeProgram {
     indices: Vec<usize>,
 }
 impl CurrentNativeProgram {
-    pub(super) fn sources(&self) -> &backend_semantic::ir::NativeProgramSourceManifest {
+    pub(super) fn sources(&self) -> &backend_semantic::ir::NativeProgramSources {
         &self.sources
     }
 

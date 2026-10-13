@@ -95,8 +95,7 @@ impl SelectedSemanticImageSelection {
 /// semantic cache misses do not serialize on one authority mutex.
 pub(crate) struct SelectedSemanticImages {
     pub(crate) images: Box<[SemanticImageSnapshot]>,
-    pub(crate) native_program_sources:
-        Option<Arc<backend_semantic::ir::NativeProgramSourceManifest>>,
+    pub(crate) native_program_sources: Option<Arc<backend_semantic::ir::NativeProgramSources>>,
 }
 
 pub(crate) trait SelectedSemanticImageLoader: Send + Sync {
@@ -163,7 +162,7 @@ struct ResidentImageWeight {
 #[derive(Clone)]
 struct ResidentGeneration {
     images: Arc<[SemanticImageSnapshot]>,
-    native_program_sources: Option<Arc<backend_semantic::ir::NativeProgramSourceManifest>>,
+    native_program_sources: Option<Arc<backend_semantic::ir::NativeProgramSources>>,
     weight: ResidentImageWeight,
     last_access: u64,
 }
@@ -285,7 +284,7 @@ impl SemanticGenerationResidence {
     ) -> Result<
         (
             Arc<[SemanticImageSnapshot]>,
-            Option<Arc<backend_semantic::ir::NativeProgramSourceManifest>>,
+            Option<Arc<backend_semantic::ir::NativeProgramSources>>,
         ),
         super::BuiltinModelError,
     > {
@@ -383,7 +382,7 @@ impl SemanticGenerationResidence {
         &mut self,
         key: GenerationKey,
         images: Arc<[SemanticImageSnapshot]>,
-        native_program_sources: Option<Arc<backend_semantic::ir::NativeProgramSourceManifest>>,
+        native_program_sources: Option<Arc<backend_semantic::ir::NativeProgramSources>>,
     ) -> ResidentAdmission {
         if self.images.contains_key(&key) {
             self.touch(key);
@@ -1521,7 +1520,7 @@ mod tests {
             NativeProgramSource, NativeProgramSourceManifest, SourceIdentity,
         };
         use backend_version::ContentId;
-        let manifest = Arc::new(
+        let manifest: Arc<backend_semantic::ir::NativeProgramSources> = Arc::new(
             NativeProgramSourceManifest::from_sources(
                 ContentId::from_canonical_bytes(b"selected compiler"),
                 vec![NativeProgramSource {
@@ -1530,7 +1529,8 @@ mod tests {
                     source: SourceIdentity::from_bytes(b"export {};").expect("source"),
                 }],
             )
-            .expect("program"),
+            .expect("program")
+            .into(),
         );
         let snapshots: Arc<[SemanticImageSnapshot]> = Arc::from(images(b"image"));
         let total_bytes = manifest.as_bytes().len() + snapshots[0].as_ref().len();
@@ -1582,7 +1582,7 @@ mod tests {
 
         struct ProgramLoader {
             images: Vec<SemanticImageSnapshot>,
-            programs: [Arc<NativeProgramSourceManifest>; 2],
+            programs: [Arc<backend_semantic::ir::NativeProgramSources>; 2],
             current: AtomicUsize,
             loads: AtomicUsize,
         }
@@ -1595,7 +1595,7 @@ mod tests {
             {
                 let selected = self.current.load(Ordering::Acquire);
                 Ok(super::SelectedSemanticImageSelection::Fixture(
-                    self.programs[selected].program(),
+                    self.programs[selected].membership_identity(),
                 ))
             }
 
@@ -1609,7 +1609,7 @@ mod tests {
                 let selected = self
                     .programs
                     .iter()
-                    .find(|program| program.program() == selection.closure_id())
+                    .find(|program| program.membership_identity() == selection.closure_id())
                     .expect("captured fixture selection");
                 assert!(self.images.len() <= max_images);
                 assert!(
@@ -1652,19 +1652,21 @@ mod tests {
             LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
         )
         .expect("product key");
-        let programs = [b"original SDK".as_slice(), b"changed SDK".as_slice()].map(|sdk| {
-            Arc::new(
-                NativeProgramSourceManifest::from_sources(
-                    ContentId::from_canonical_bytes(b"same compiler"),
-                    vec![NativeProgramSource {
-                        program_path: "@compiler/lib.fixture.d.ts".into(),
-                        source: SourceIdentity::from_bytes(sdk).expect("SDK source"),
-                        package_path: None,
-                    }],
+        let programs: [Arc<backend_semantic::ir::NativeProgramSources>; 2] =
+            [b"original SDK".as_slice(), b"changed SDK".as_slice()].map(|sdk| {
+                Arc::new(
+                    NativeProgramSourceManifest::from_sources(
+                        ContentId::from_canonical_bytes(b"same compiler"),
+                        vec![NativeProgramSource {
+                            program_path: "@compiler/lib.fixture.d.ts".into(),
+                            source: SourceIdentity::from_bytes(sdk).expect("SDK source"),
+                            package_path: None,
+                        }],
+                    )
+                    .expect("bounded membership")
+                    .into(),
                 )
-                .expect("bounded membership"),
-            )
-        });
+            });
         let loader = Arc::new(ProgramLoader {
             images: copies(&images(b"identical image bytes")),
             programs,
@@ -1689,8 +1691,8 @@ mod tests {
             &loader.programs[1]
         ));
         assert_ne!(
-            first.1.as_ref().expect("first").program(),
-            second.1.as_ref().expect("second").program()
+            first.1.as_ref().expect("first").membership_identity(),
+            second.1.as_ref().expect("second").membership_identity()
         );
         loader.current.store(0, Ordering::Release);
         let restored = residence

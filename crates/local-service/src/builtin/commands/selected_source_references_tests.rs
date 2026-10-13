@@ -889,7 +889,7 @@ fn partial_full_program_witness_survives_unrelated_image_omission_but_not_source
         activation.native_program_sources = if case == 7 {
             None
         } else {
-            Some(Arc::new(current_program))
+            Some(Arc::new(current_program.into()))
         };
         let selected = frontier
             .select(
@@ -1028,12 +1028,12 @@ fn partial_program_cannot_borrow_another_programs_same_source_target_image() -> 
         } else {
             activated(&[&caller])?
         };
-        first.native_program_sources = Some(Arc::clone(&first_program));
+        first.native_program_sources = Some(Arc::new(first_program.as_ref().clone().into()));
         let mut second = activated(&[&target_bytes])?;
-        second.native_program_sources = Some(Arc::clone(if case == 2 {
-            &first_program
+        second.native_program_sources = Some(Arc::new(if case == 2 {
+            first_program.as_ref().clone().into()
         } else {
-            &second_program
+            second_program.as_ref().clone().into()
         }));
         let mut residence = view_build::ImageRowResidence::default();
         let selected = [
@@ -1122,6 +1122,171 @@ fn partial_program_cannot_borrow_another_programs_same_source_target_image() -> 
             selected[1].images().len(),
             1,
             "unrelated positive target facts remain available"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn forest_selected_images_join_only_the_exact_owning_leaf() -> Result<(), String> {
+    use backend_semantic::ir::{
+        NativeProgramNode, NativeProgramSource, NativeProgramSourceManifest, NativeProgramSources,
+        TypeScriptSourceCoordinate,
+    };
+    let key = publication_key(
+        LanguageProfile::TypeScript(TypeScriptSource::TypeScript),
+        "pkg:npm/fixture@1.0.0",
+    )?;
+    let source = SourceIdentity::from_bytes(SOURCE).ok_or("source")?;
+    let toolchain =
+        ContentId::<ToolchainDomain>::from_canonical_bytes(b"program fixture toolchain");
+    let leaf = |paths: &[&str]| {
+        NativeProgramSourceManifest::from_sources(
+            toolchain,
+            paths
+                .iter()
+                .map(|path| NativeProgramSource {
+                    program_path: format!("workspace/package/{path}"),
+                    package_path: Some((*path).to_owned()),
+                    source,
+                })
+                .collect(),
+        )
+        .map_err(|e| e.to_string())
+    };
+    let app = leaf(&["caller.ts", "callee.ts"])?;
+    let config = leaf(&["vite.config.ts"])?;
+    let forest = NativeProgramSources::from_forest(
+        toolchain,
+        1,
+        vec![
+            NativeProgramNode {
+                config_path: "tsconfig.app.json".into(),
+                config: ContentId::from_canonical_bytes(b"app"),
+                environment: [1; 32],
+                references: vec![],
+                program: Some(app.clone()),
+            },
+            NativeProgramNode {
+                config_path: "tsconfig.json".into(),
+                config: ContentId::from_canonical_bytes(b"root"),
+                environment: [2; 32],
+                references: vec![0, 2],
+                program: None,
+            },
+            NativeProgramNode {
+                config_path: "tsconfig.node.json".into(),
+                config: ContentId::from_canonical_bytes(b"node"),
+                environment: [3; 32],
+                references: vec![],
+                program: Some(config.clone()),
+            },
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    let current = [
+        ("caller.ts", Some(source.identity)),
+        ("callee.ts", Some(source.identity)),
+        ("vite.config.ts", Some(source.identity)),
+        ("eslint.config.ts", Some(source.identity)),
+    ];
+    let frontier = view_build::SourceAvailability::of(&sources(
+        &key,
+        backend_engine::SourceLanguage::TypeScript,
+        &current,
+    )?)
+    .map_err(|e| e.to_string())?;
+    for (correct_owner, binding) in [(true, 0), (false, 0), (true, 1), (true, 2)] {
+        let caller = program_call_image(
+            &key,
+            "caller.ts",
+            SOURCE,
+            Some(TypeScriptSourceCoordinate {
+                program: if correct_owner {
+                    app.program()
+                } else {
+                    config.program()
+                },
+                source: *source.identity,
+                path: "workspace/package/callee.ts",
+                declaration_start: 0,
+                declaration_end: 10,
+                name_start: 0,
+            }),
+        )?;
+        let callee = program_call_image(&key, "callee.ts", SOURCE, None)?;
+        let mut active = activated(&[&caller, &callee])?;
+        let bindings = if binding == 1 {
+            vec![]
+        } else {
+            vec![
+                (
+                    "caller.ts".to_owned(),
+                    if binding == 2 {
+                        *backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(
+                            b"another context output",
+                        )
+                        .as_ref()
+                    } else {
+                        *backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(&caller)
+                            .as_ref()
+                    },
+                ),
+                (
+                    "callee.ts".to_owned(),
+                    *backend_semantic::ir::SemanticImageIdentity::from_encoded_bytes(&callee)
+                        .as_ref(),
+                ),
+            ]
+        };
+        let bound_forest = forest
+            .clone()
+            .with_image_bindings(bindings)
+            .map_err(|e| e.to_string())?;
+        active.native_program_sources = Some(Arc::new(bound_forest));
+        let selected = frontier
+            .select(
+                &key,
+                partial(2, 4)?,
+                active,
+                &mut view_build::ImageRowResidence::default(),
+            )
+            .map_err(|e| e.to_string())?;
+        assert!(selected.has_program_manifest());
+        assert_eq!(
+            selected.program().is_some(),
+            binding == 0,
+            "missing/mismatched image cannot borrow the same source under another environment"
+        );
+        if binding != 0 {
+            continue;
+        }
+        let opened = selected
+            .images()
+            .map(|image| image.reopen().map_err(|e| e.to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let package = key.package_key();
+        let target = view_build::semantic_symbol(package, version(2).identity());
+        let caller_symbol = view_build::semantic_symbol(package, version(1).identity());
+        let view = projected_view(package, &opened)?;
+        let facts = project_opened_reference_facts(
+            &opened,
+            &view,
+            package,
+            target,
+            &current.iter().map(|(path, _)| (*path).to_owned()).collect(),
+            &[],
+            None,
+            &frontier.retargeting_scopes(package, &BTreeMap::new()),
+            &[selected.program().ok_or("forest missing")?],
+            false,
+        )
+        .map_err(|e| e.to_string())?;
+        assert_eq!(
+            facts.iter().any(|fact| fact.site == caller_symbol
+                && fact.relation == backend_engine::SemanticLinkKind::Calls),
+            correct_owner,
+            "a sibling leaf or synthetic union cannot certify the coordinate"
         );
     }
     Ok(())
