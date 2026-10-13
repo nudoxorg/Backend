@@ -1,5 +1,8 @@
 //! Read-only boundary observations for the caller's existing native budget.
 //! No extra checkpoints, provider calls, cache writes, or semantic fallbacks.
+//! Detailed boundaries require subscriber target `compiler.typescript_project=debug`.
+//! Admission and the first observed stop remain INFO. Enabling phase tracing can
+//! perturb elapsed deadlines and log I/O; it is observational, not timing-neutral.
 use backend_frontend_typescript::{
     TszExecutionCheckpoint, TszProjectExecutionBudget, TszProjectExecutionEvent,
     TszProjectExecutionStop,
@@ -52,13 +55,13 @@ impl TszExecutionCheckpoint for ObservedTypeScriptBudget<'_> {
     }
 
     fn observe(&self, event: TszProjectExecutionEvent<'_>) {
-        if !tracing::enabled!(target: "compiler.typescript_project", tracing::Level::INFO) {
+        if !tracing::enabled!(target: "compiler.typescript_project", tracing::Level::DEBUG) {
             return;
         }
         let sequence = self.observed_events.fetch_add(1, Ordering::Relaxed);
         if sequence >= MAX_BOUNDARY_EVENTS {
             if sequence == MAX_BOUNDARY_EVENTS {
-                tracing::info!(target: "compiler.typescript_project", transition = "trace_truncated",
+                tracing::debug!(target: "compiler.typescript_project", transition = "trace_truncated",
                     maximum_events = MAX_BOUNDARY_EVENTS,
                     "native TypeScript project boundary trace truncated");
             }
@@ -66,7 +69,7 @@ impl TszExecutionCheckpoint for ObservedTypeScriptBudget<'_> {
         }
         let remaining = self.budget.remaining_work_units();
         let thread = std::thread::current();
-        tracing::info!(target: "compiler.typescript_project",
+        tracing::debug!(target: "compiler.typescript_project",
             sequence, phase = ?event.phase, transition = ?event.transition,
             file_index = event.file.map(|file| file.index),
             file = event.file.map(|file| file.path), worker = thread.name(),
