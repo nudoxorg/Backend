@@ -908,23 +908,19 @@ fn project_plan_checkpoint(
     checkpoint.map_or(Ok(()), |checkpoint| checkpoint.checkpoint(work_units))
 }
 
-/// Plan-local index authority. The borrow prevents changing the program's
-/// ordered views/options/graph while workers can read their sealed projection.
-/// It cannot escape into another program or survive a mutable merge/update.
-struct SealedProjectCheckerIndexes<'program> {
-    program: &'program MergedProgram,
+/// Private index authority, owned together with its exact immutable program.
+/// It is never publicly attachable to another program.
+struct SealedProjectCheckerIndexes {
     tables: crate::checker::context::SealedProgramGlobalIndexes,
 }
 
-impl<'program> SealedProjectCheckerIndexes<'program> {
+impl SealedProjectCheckerIndexes {
     fn build(
-        program: &'program MergedProgram,
         binders: Arc<Vec<Arc<BinderState>>>,
         arenas: Arc<Vec<Arc<NodeArena>>>,
         declared_modules: Option<Arc<crate::checker::context::GlobalDeclaredModules>>,
     ) -> Self {
         Self {
-            program,
             tables: crate::checker::context::SealedProgramGlobalIndexes::build(
                 binders,
                 arenas,
@@ -936,7 +932,6 @@ impl<'program> SealedProjectCheckerIndexes<'program> {
     fn install_into(&self, ctx: &mut crate::checker::context::CheckerContext<'_>) {
         // The sealed table owns its exact views; no caller-provided filename,
         // mutable program map, query result, or alternate owner can rebind them.
-        debug_assert_eq!(self.program.files.len(), self.program.file_locals.len());
         self.tables.install_into(ctx);
     }
 }
@@ -947,8 +942,17 @@ struct ParallelCheckPlan<'a> {
     project_semantic_options: ProjectSemanticOptions,
     project_module_resolution_outcomes:
         Option<Arc<crate::checker::context::ResolvedModuleRequestOutcomeMap>>,
-    execution_scope: Option<tsz_common::LatchedExecutionCheckpoint<'a>>,
-    checker_indexes: SealedProjectCheckerIndexes<'a>,
+    execution_scope: Option<ProjectCheckerExecutionScope<'a>>,
+    views: Arc<ProjectCheckerViews>,
+}
+
+impl std::ops::Deref for ParallelCheckPlan<'_> {
+    type Target = ProjectCheckerViews;
+    fn deref(&self) -> &Self::Target { &self.views }
+}
+
+struct ProjectCheckerViews {
+    checker_indexes: SealedProjectCheckerIndexes,
     resolved_module_paths: Arc<FxHashMap<(usize, String), usize>>,
     resolved_modules: Arc<FxHashSet<String>>,
     checker_lib_files: Vec<Arc<LibFile>>,
@@ -967,6 +971,154 @@ struct ParallelCheckPlan<'a> {
     affected_lib_extension_interfaces: FxHashSet<String>,
 }
 
+/// Exact, immutable native program and its reusable checker context.
+///
+/// Construction consumes the program and options. No mutable program handle or
+/// alternate options can rebind its private indexes, libraries, or query cache.
+/// A stop poisons this image: callers must rebuild it before another lease can
+/// publish queries, because a stopped solver may have cached sentinel results.
+pub struct ProjectCheckerImage {
+    program: Arc<MergedProgram>,
+    checker_options: CheckerOptions,
+    semantics: ProjectSemanticOptions,
+    views: Arc<ProjectCheckerViews>,
+    stopped: std::sync::atomic::AtomicU8,
+    checked: std::sync::atomic::AtomicBool,
+}
+
+impl std::ops::Deref for ProjectCheckerImage {
+    type Target = MergedProgram;
+    fn deref(&self) -> &Self::Target { &self.program }
+}
+
+struct ProjectCheckerExecutionScope<'a> {
+    checkpoint: tsz_common::LatchedExecutionCheckpoint<'a>,
+    image_stop: Option<&'a std::sync::atomic::AtomicU8>,
+}
+
+impl<'a> ProjectCheckerExecutionScope<'a> {
+    fn new(checkpoint: &'a dyn tsz_common::ExecutionCheckpoint, image_stop: Option<&'a std::sync::atomic::AtomicU8>) -> Self {
+        Self { checkpoint: tsz_common::LatchedExecutionCheckpoint::new(checkpoint), image_stop }
+    }
+    fn decode_stop(value: u8) -> Option<tsz_common::ProjectExecutionStop> {
+        use tsz_common::ProjectExecutionStop::*;
+        match value { 1 => Some(Cancelled), 2 => Some(Deadline), 3 => Some(WorkBudgetExhausted), _ => None }
+    }
+}
+
+impl tsz_common::ExecutionCheckpoint for ProjectCheckerExecutionScope<'_> {
+    fn checkpoint(&self, work: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+        use std::sync::atomic::Ordering;
+        if let Some(stop) = self.image_stop.and_then(|stop| Self::decode_stop(stop.load(Ordering::Acquire))) {
+            return Err(stop);
+        }
+        let result = self.checkpoint.checkpoint(work);
+        if let (Err(reason), Some(stop)) = (result, self.image_stop) {
+            use tsz_common::ProjectExecutionStop::*;
+            let value = match reason { Cancelled => 1, Deadline => 2, WorkBudgetExhausted => 3 };
+            let _ = stop.compare_exchange(0, value, Ordering::AcqRel, Ordering::Acquire);
+        }
+        // A concurrent worker can poison the image after this worker's poll.
+        self.image_stop.and_then(|stop| Self::decode_stop(stop.load(Ordering::Acquire))).map_or(result, Err)
+    }
+    fn observe(&self, event: tsz_common::ProjectExecutionEvent<'_>) { self.checkpoint.observe(event); }
+}
+
+impl ProjectCheckerImage {
+    /// Seal one exact program. Metered callers supply their existing checkpoint;
+    /// absence preserves the explicit unmetered test/legacy entry point.
+    pub fn new(
+        program: MergedProgram,
+        checker_options: CheckerOptions,
+        lib_files: &[Arc<LibFile>],
+        semantics: ProjectSemanticOptions,
+        checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>,
+    ) -> Result<Self, ProjectCheckerSessionError> {
+        let outcomes = program.project_module_resolution_outcomes.clone()
+            .ok_or(ProjectCheckerSessionError::MissingProjectModuleResolutions)?;
+        let plan_span = tsz_common::ProjectExecutionSpan::new(checkpoint, tsz_common::ProjectExecutionPhase::CheckerPlan, None);
+        let views = ParallelCheckPlan::build(&program, &checker_options, lib_files, semantics, Some(outcomes), checkpoint)
+            .map_err(ProjectCheckerSessionError::ExecutionStopped)?.views;
+        plan_span.returned();
+        Ok(Self { program: Arc::new(program), checker_options, semantics, views, stopped: std::sync::atomic::AtomicU8::new(0), checked: std::sync::atomic::AtomicBool::new(false) })
+    }
+
+    /// Build shared views inside the same caller-bounded private worker policy
+    /// used for file checking. Library cloning never enters an ambient pool.
+    pub fn new_with_checker_execution(
+        program: MergedProgram,
+        checker_options: CheckerOptions,
+        lib_files: &[Arc<LibFile>],
+        semantics: ProjectSemanticOptions,
+        execution: ProjectCheckerExecution<'_>,
+    ) -> Result<Self, ProjectPartitionCheckError> {
+        execution.checkpoint.checkpoint(0).map_err(|reason| ProjectPartitionCheckError::Program(ProjectProgramCheckError::ExecutionStopped(reason)))?;
+        let workers = execution.workers.get().min(program.files.len().max(1));
+        let build = || Self::new(program, checker_options, lib_files, semantics, Some(execution.checkpoint))
+            .map_err(|error| match error {
+                ProjectCheckerSessionError::ExecutionStopped(reason) => ProjectPartitionCheckError::Program(ProjectProgramCheckError::ExecutionStopped(reason)),
+                other => ProjectPartitionCheckError::CheckerSession(other),
+            });
+        run_on_private_checker_workers(workers, build)
+    }
+
+    /// A stopped image cannot be reused even with a fresh checkpoint.
+    pub fn is_usable(&self) -> bool {
+        self.stopped.load(std::sync::atomic::Ordering::Acquire) == 0
+    }
+
+    fn plan<'a>(&'a self, checkpoint: Option<&'a dyn tsz_common::ExecutionCheckpoint>) -> ParallelCheckPlan<'a> {
+        ParallelCheckPlan {
+            program: &self.program,
+            checker_options: &self.checker_options,
+            project_semantic_options: self.semantics,
+            project_module_resolution_outcomes: self.program.project_module_resolution_outcomes.clone(),
+            execution_scope: checkpoint.map(|checkpoint| ProjectCheckerExecutionScope::new(checkpoint, Some(&self.stopped))),
+            views: Arc::clone(&self.views),
+        }
+    }
+
+    /// Borrow this exact owner for lazy queries without rebuilding shared views
+    /// or repeating augmentation priming after a complete check. File checkers
+    /// remain stack-local. An unchecked image retains legacy query priming.
+    pub fn query_session<'a>(&'a self, checkpoint: &'a dyn tsz_common::ExecutionCheckpoint) -> Result<ProjectCheckerSession<'a>, ProjectCheckerSessionError> {
+        let plan = self.plan(Some(checkpoint));
+        plan.checkpoint(0).map_err(ProjectCheckerSessionError::ExecutionStopped)?;
+        if !self.checked.load(std::sync::atomic::Ordering::Acquire) {
+            plan.prime_module_augmentation_bodies();
+            plan.checkpoint(0).map_err(ProjectCheckerSessionError::ExecutionStopped)?;
+        }
+        Ok(ProjectCheckerSession { plan })
+    }
+
+    /// Check every admitted source under the caller's private worker bound.
+    pub fn check_with_partitions(&self, execution: ProjectCheckerExecution<'_>) -> Result<CheckResult, ProjectPartitionCheckError> {
+        let plan = self.plan(Some(execution.checkpoint));
+        let result = check_prepared_project_partitions(&plan, execution.workers, &|_| {}, &|_| {})?;
+        self.checked.store(true, std::sync::atomic::Ordering::Release);
+        Ok(result)
+    }
+
+    /// Explicit fresh-file execution retained for legacy and test callers.
+    pub fn check_fresh(&self, checkpoint: Option<&dyn tsz_common::ExecutionCheckpoint>) -> Result<CheckResult, tsz_common::ProjectExecutionStop> {
+        if let Some(stop) = ProjectCheckerExecutionScope::decode_stop(self.stopped.load(std::sync::atomic::Ordering::Acquire)) {
+            return Err(stop);
+        }
+        let plan = self.plan(checkpoint);
+        plan.checkpoint(0)?;
+        ensure_rayon_global_pool();
+        plan.prime_module_augmentation_bodies();
+        plan.checkpoint(0)?;
+        let mut results = plan.run_file_checks();
+        plan.checkpoint(0)?;
+        plan.run_lib_checks_with_execution_checkpoint(&mut results)?;
+        let result = plan.aggregate_with_poll(results, |work| plan.checkpoint(work))?;
+        plan.checkpoint(0)?;
+        self.checked.store(true, std::sync::atomic::Ordering::Release);
+        Ok(result)
+    }
+}
+
 impl<'a> ParallelCheckPlan<'a> {
     /// Compute every shared input the parallel workers need, exactly once.
     fn build(
@@ -979,7 +1131,7 @@ impl<'a> ParallelCheckPlan<'a> {
         >,
         execution_checkpoint: Option<&'a dyn tsz_common::ExecutionCheckpoint>,
     ) -> Result<Self, tsz_common::ProjectExecutionStop> {
-        let execution_scope = execution_checkpoint.map(tsz_common::LatchedExecutionCheckpoint::new);
+        let execution_scope = execution_checkpoint.map(|checkpoint| ProjectCheckerExecutionScope::new(checkpoint, None));
         let execution_checkpoint = execution_scope
             .as_ref()
             .map(|scope| scope as &dyn tsz_common::ExecutionCheckpoint);
@@ -1108,7 +1260,6 @@ impl<'a> ParallelCheckPlan<'a> {
             None,
         );
         let checker_indexes = SealedProjectCheckerIndexes::build(
-            program,
             Arc::clone(&all_binders),
             Arc::clone(&all_arenas),
             shared_declared_modules.clone(),
@@ -1158,6 +1309,7 @@ impl<'a> ParallelCheckPlan<'a> {
             project_semantic_options,
             project_module_resolution_outcomes,
             execution_scope,
+            views: Arc::new(ProjectCheckerViews {
             checker_indexes,
             resolved_module_paths,
             resolved_modules,
@@ -1171,6 +1323,7 @@ impl<'a> ParallelCheckPlan<'a> {
             shared_query_cache,
             affected_lib_interfaces,
             affected_lib_extension_interfaces,
+            }),
         })
     }
 

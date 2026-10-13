@@ -100,13 +100,7 @@ impl<'project> TszProjectQuerySession<'project> {
         project: &'project TszProject,
         checkpoint: &'project dyn ExecutionCheckpoint,
     ) -> Result<Self, TszProjectQuerySessionError> {
-        let checker_session = tsz::parallel::ProjectCheckerSession::new(
-            &project.program,
-            &project.options.checker,
-            &project.lib_files,
-            project.options.semantic_options,
-            checkpoint,
-        )?;
+        let checker_session = project.program.query_session(checkpoint)?;
         let file_indexes = project
             .program
             .files

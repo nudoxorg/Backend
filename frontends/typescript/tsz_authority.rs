@@ -307,7 +307,7 @@ pub struct TszProject {
     library_digest: [u8; 32],
     bound_sources: BTreeMap<String, Arc<tsz::parallel::BindResult>>,
     lib_files: Vec<Arc<tsz::lib_loader::LibFile>>,
-    program: tsz::parallel::MergedProgram,
+    program: tsz::parallel::ProjectCheckerImage,
     check: tsz::parallel::CheckResult,
 }
 
@@ -548,6 +548,7 @@ impl TszProjectAuthority {
                     && current.module_resolution_digest == module_resolution_digest
                     && current.file_format_digest == file_format_digest
                     && current.library_digest == library_digest
+                    && current.program.is_usable()
             })
             && report.removed_sources == 0
         {
@@ -562,6 +563,7 @@ impl TszProjectAuthority {
         }
 
         frontier.returned();
+        self.project = None;
         report.parsed_and_bound = files_to_parse.len();
         if !files_to_parse.is_empty() {
             let parse = tsz_common::ProjectExecutionSpan::new(
@@ -645,50 +647,32 @@ impl TszProjectAuthority {
         program.set_project_file_formats(&options.file_formats)?;
         program.set_project_module_resolutions(&options.module_resolutions)?;
         formats.returned();
+        let partition_failure = |error| match error {
+            tsz::parallel::ProjectPartitionCheckError::Program(error) => TszAuthorityError::ProjectCheck(error),
+            tsz::parallel::ProjectPartitionCheckError::CheckerSession(error) => TszAuthorityError::ProjectCheckerSession(error),
+            tsz::parallel::ProjectPartitionCheckError::WorkerPoolUnavailable(detail) => TszAuthorityError::CheckerWorkerPoolUnavailable(detail),
+        };
+        let program = match execution {
+            TszUpdateExecution::Partitions(execution) => tsz::parallel::ProjectCheckerImage::new_with_checker_execution(
+                program,
+                options.checker.clone(),
+                lib_files,
+                options.semantic_options,
+                TszProjectCheckerExecution { checkpoint: checkpoint.expect("partition checkpoint"), workers: execution.workers },
+            ).map_err(partition_failure)?,
+            TszUpdateExecution::Fresh(_) | TszUpdateExecution::Unmetered => tsz::parallel::ProjectCheckerImage::new(
+                program, options.checker.clone(), lib_files, options.semantic_options, checkpoint,
+            ).map_err(|cause| match cause {
+                tsz::parallel::ProjectCheckerSessionError::ExecutionStopped(reason) => TszAuthorityError::ProjectCheck(tsz::parallel::ProjectProgramCheckError::ExecutionStopped(reason)),
+                other => TszAuthorityError::ProjectCheckerSession(other),
+            })?,
+        };
         let check = match execution {
-            TszUpdateExecution::Partitions(execution) => {
-                let checkpoint = checkpoint.expect("partition execution always owns a checkpoint");
-                tsz::parallel::check_files_with_project_inputs_and_checker_partitions(
-                    &program,
-                    &options.checker,
-                    lib_files,
-                    options.semantic_options,
-                    &options.module_resolutions,
-                    TszProjectCheckerExecution {
-                        checkpoint,
-                        workers: execution.workers,
-                    },
-                )
-                .map_err(|error| match error {
-                    tsz::parallel::ProjectPartitionCheckError::Program(error) => {
-                        TszAuthorityError::ProjectCheck(error)
-                    }
-                    tsz::parallel::ProjectPartitionCheckError::WorkerPoolUnavailable(detail) => {
-                        TszAuthorityError::CheckerWorkerPoolUnavailable(detail)
-                    }
-                })?
-            }
-            TszUpdateExecution::Fresh(_) => {
-                let checkpoint =
-                    checkpoint.expect("fresh metered execution always owns a checkpoint");
-                tsz::parallel::check_files_parallel_with_project_inputs_and_execution_checkpoint(
-                    &program,
-                    &options.checker,
-                    lib_files,
-                    options.semantic_options,
-                    &options.module_resolutions,
-                    checkpoint,
-                )
-                .map_err(TszAuthorityError::ProjectCheck)?
-            }
-            TszUpdateExecution::Unmetered => {
-                tsz::parallel::check_files_parallel_with_project_semantic_options(
-                    &program,
-                    &options.checker,
-                    lib_files,
-                    options.semantic_options,
-                )
-            }
+            TszUpdateExecution::Partitions(execution) => program.check_with_partitions(
+                TszProjectCheckerExecution { checkpoint: checkpoint.expect("partition checkpoint"), workers: execution.workers },
+            ).map_err(partition_failure)?,
+            TszUpdateExecution::Fresh(_) | TszUpdateExecution::Unmetered => program.check_fresh(checkpoint)
+                .map_err(|reason| TszAuthorityError::ProjectCheck(tsz::parallel::ProjectProgramCheckError::ExecutionStopped(reason)))?,
         };
         if let Some(checkpoint) = checkpoint {
             checkpoint
@@ -713,14 +697,14 @@ impl TszProjectAuthority {
     /// Returns the most recently updated real TSZ project, if one exists.
     #[must_use]
     pub fn project(&self) -> Option<&TszProject> {
-        self.project.as_ref()
+        self.project.as_ref().filter(|project| project.program.is_usable())
     }
 }
 
 impl TszProject {
     /// TSZ's project-wide merged cross-file program.
     #[must_use]
-    pub const fn program(&self) -> &tsz::parallel::MergedProgram {
+    pub fn program(&self) -> &tsz::parallel::MergedProgram {
         &self.program
     }
 
@@ -1425,6 +1409,47 @@ mod tests {
             cancelled,
             maximum_work_units,
         )
+    }
+
+    #[test]
+    fn stopped_owned_query_image_is_hidden_and_exact_update_rebuilds_retained_binds() {
+        use std::sync::atomic::Ordering;
+        struct OneShotStop(AtomicBool);
+        impl ExecutionCheckpoint for OneShotStop {
+            fn checkpoint(&self, _work: u64) -> Result<(), tsz_common::ProjectExecutionStop> {
+                if self.0.swap(false, Ordering::AcqRel) { Err(tsz_common::ProjectExecutionStop::Cancelled) } else { Ok(()) }
+            }
+        }
+        let sources = vec![input("src/value.ts", "export const value: number = 1;")];
+        let mut authority = TszProjectAuthority::new();
+        authority.update(sources.clone(), options(), &[]).unwrap();
+        let one_shot = OneShotStop(AtomicBool::new(false));
+        {
+            let session = authority.project().unwrap().checked_query_session(&one_shot).unwrap();
+            let rejected = session.with_file_checker_and_types(0, |_, _, _, database| {
+                one_shot.0.store(true, Ordering::Release);
+                assert_eq!(database.union(vec![TszTypeId::NUMBER, TszTypeId::STRING]), TszTypeId::UNKNOWN);
+                "discard this partial query"
+            });
+            assert!(matches!(rejected, Err(TszProjectQuerySessionError::ExecutionStopped(tsz_common::ProjectExecutionStop::Cancelled))));
+        }
+        assert!(authority.project().is_none(), "stopped image is no longer a ready project");
+        let cancelled = AtomicBool::new(false);
+        let fresh_budget = execution_budget(&cancelled, 1_000_000);
+        let rebuilt = authority.update_with_execution_checkpoint(sources.clone(), options(), &[], &fresh_budget).unwrap();
+        assert_eq!(rebuilt.parsed_and_bound, 0);
+        assert_eq!(rebuilt.reused_binds, 1);
+        assert!(!rebuilt.reused_project_result);
+        let project = authority.project().unwrap();
+        let session = project.checked_query_session(&fresh_budget).unwrap();
+        let value = session.with_file_checker_and_types(0, |checker, binder, _, _| {
+            let ty = checker.get_type_of_symbol(binder.file_locals.get("value").unwrap());
+            checker.format_type(ty)
+        }).unwrap();
+        assert_eq!(value, "number");
+        drop(session);
+        let repeated = authority.update_with_execution_checkpoint(sources, options(), &[], &fresh_budget).unwrap();
+        assert!(repeated.reused_project_result);
     }
 
     #[test]

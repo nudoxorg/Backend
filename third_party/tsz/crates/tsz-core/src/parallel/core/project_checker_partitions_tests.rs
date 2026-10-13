@@ -4028,3 +4028,108 @@ fn configured_declaration_diagnostics_preserve_members_types_and_application_err
         );
     }
 }
+
+#[test]
+fn owned_image_keeps_pristine_diagnostics_and_reuses_exact_views_for_queries() {
+    use std::sync::Mutex;
+    use tsz_common::{ExecutionCheckpoint, ProjectExecutionEvent, ProjectExecutionPhase, ProjectExecutionTransition};
+    struct Observer<'a> {
+        budget: &'a ProjectExecutionBudget<'a>,
+        entries: Mutex<Vec<ProjectExecutionPhase>>,
+    }
+    impl ExecutionCheckpoint for Observer<'_> {
+        fn checkpoint(&self, work: u64) -> Result<(), ProjectExecutionStop> {
+            self.budget.checkpoint(work)
+        }
+        fn observe(&self, event: ProjectExecutionEvent<'_>) {
+            if event.transition == ProjectExecutionTransition::Entered {
+                self.entries.lock().unwrap().push(event.phase);
+            }
+        }
+    }
+    let (mut expected_program, libs, options, resolutions, semantic) = pristine_parity_fixture();
+    expected_program.set_project_module_resolutions(&resolutions).unwrap();
+    let cancelled = AtomicBool::new(false);
+    let budget = execution_budget(&cancelled);
+    let expected = check_files_parallel_with_project_inputs_and_execution_checkpoint(
+        &expected_program, &options, &libs, semantic, &resolutions, &budget,
+    ).unwrap();
+    let expected_session = ProjectCheckerSession::new(&expected_program, &options, &libs, semantic, &budget).unwrap();
+    let expected_a = expected_program.files.iter().position(|file| file.file_name == "src/a.ts").unwrap();
+    let expected_type = expected_session.with_file_checker(expected_a, |checker, binder, _| {
+        let symbol = binder.file_locals.get("a").unwrap();
+        let ty = checker.get_type_of_symbol(symbol);
+        checker.format_type(ty)
+    }).unwrap();
+    let (mut program, libs, options, resolutions, semantic) = pristine_parity_fixture();
+    program.set_project_module_resolutions(&resolutions).unwrap();
+    let observer = Observer { budget: &budget, entries: Mutex::new(Vec::new()) };
+    let image = ProjectCheckerImage::new_with_checker_execution(
+        program, options, &libs, semantic,
+        ProjectCheckerExecution { checkpoint: &observer, workers: NonZeroUsize::new(2).unwrap() },
+    ).unwrap();
+    let original_views = Arc::clone(&image.views);
+    let checked = image.check_with_partitions(ProjectCheckerExecution {
+        checkpoint: &observer, workers: NonZeroUsize::new(2).unwrap(),
+    }).unwrap();
+    assert_same_results(&checked, &expected);
+    let construction_phases = observer.entries.lock().unwrap().clone();
+    for phase in [ProjectExecutionPhase::LibraryViews, ProjectExecutionPhase::BinderViews, ProjectExecutionPhase::SharedCheckerIndexes] {
+        assert_eq!(construction_phases.iter().filter(|&&entry| entry == phase).count(), 1);
+    }
+    let a = image.files.iter().position(|file| file.file_name == "src/a.ts").unwrap();
+    let mut observed_types = Vec::new();
+    for _ in 0..3 {
+        let session = image.query_session(&observer).unwrap();
+        assert!(Arc::ptr_eq(&session.plan.views, &original_views));
+        observed_types.push(session.with_file_checker(a, |checker, binder, _| {
+            let symbol = binder.file_locals.get("a").expect("actual imported generic value");
+            let ty = checker.get_type_of_symbol(symbol);
+            checker.format_type(ty)
+        }).unwrap());
+    }
+    assert!(observed_types.iter().all(|ty| ty == &expected_type));
+    assert!(!observed_types[0].contains("unknown"), "actual imported generic type: {:?}", observed_types);
+    let after_queries = observer.entries.lock().unwrap().clone();
+    for phase in [ProjectExecutionPhase::LibraryViews, ProjectExecutionPhase::BinderViews, ProjectExecutionPhase::SharedCheckerIndexes, ProjectExecutionPhase::AugmentationPrime] {
+        assert_eq!(after_queries.iter().filter(|&&entry| entry == phase).count(),
+            construction_phases.iter().filter(|&&entry| entry == phase).count(),
+            "query-session construction must not rebuild shared views or reprime augmentations");
+    }
+    let repeated = image.check_with_partitions(ProjectCheckerExecution {
+        checkpoint: &observer, workers: NonZeroUsize::new(1).unwrap(),
+    }).unwrap();
+    assert_same_results(&repeated, &expected);
+}
+
+#[test]
+fn owned_image_rejects_fresh_budget_after_actual_solver_stop() {
+    struct OneShotStop(AtomicBool);
+    impl tsz_common::ExecutionCheckpoint for OneShotStop {
+        fn checkpoint(&self, _work: u64) -> Result<(), ProjectExecutionStop> {
+            if self.0.swap(false, Ordering::AcqRel) { Err(ProjectExecutionStop::Cancelled) } else { Ok(()) }
+        }
+    }
+    let mut program = compile_files_with_libs(
+        vec![("src/main.ts".into(), "export const value = 1;".into())], &[],
+    );
+    program.set_project_module_resolutions(&[]).unwrap();
+    let image = ProjectCheckerImage::new(program, CheckerOptions::default(), &[], ProjectSemanticOptions::structural(), None).unwrap();
+    image.check_fresh(None).unwrap();
+    let one_shot = OneShotStop(AtomicBool::new(false));
+    let session = image.query_session(&one_shot).unwrap();
+    let discarded = session.with_file_checker_and_types(0, |_, _, _, database| {
+        one_shot.0.store(true, Ordering::Release);
+        assert_eq!(database.union(vec![TypeId::NUMBER, TypeId::STRING]), TypeId::UNKNOWN);
+        "this callback output must be discarded"
+    });
+    assert!(matches!(discarded, Err(ProjectCheckerSessionError::ExecutionStopped(ProjectExecutionStop::Cancelled))));
+    assert!(!image.is_usable());
+    let cancelled = AtomicBool::new(false);
+    let fresh_budget = execution_budget(&cancelled);
+    assert!(matches!(image.query_session(&fresh_budget), Err(ProjectCheckerSessionError::ExecutionStopped(ProjectExecutionStop::Cancelled))));
+    assert!(matches!(image.check_with_partitions(ProjectCheckerExecution {
+        checkpoint: &fresh_budget, workers: NonZeroUsize::new(1).unwrap(),
+    }), Err(ProjectPartitionCheckError::Program(ProjectProgramCheckError::ExecutionStopped(ProjectExecutionStop::Cancelled)))));
+    assert_eq!(fresh_budget.stop_reason(), None, "the old image stop must not poll a new lease");
+}

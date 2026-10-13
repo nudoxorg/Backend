@@ -5,6 +5,8 @@ use tsz_common::{ProjectExecutionFile, ProjectExecutionPhase, ProjectExecutionSp
 pub enum ProjectPartitionCheckError {
     /// Exact module-resolution or execution failure from the admitted program.
     Program(ProjectProgramCheckError),
+    /// The owned image lacks its exact project-resolution witness.
+    CheckerSession(ProjectCheckerSessionError),
     /// The caller's requested private worker pool could not be started.
     WorkerPoolUnavailable(String),
 }
@@ -13,6 +15,7 @@ impl std::fmt::Display for ProjectPartitionCheckError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Program(error) => write!(formatter, "{error}"),
+            Self::CheckerSession(error) => write!(formatter, "{error}"),
             Self::WorkerPoolUnavailable(error) => {
                 write!(
                     formatter,
@@ -128,8 +131,8 @@ fn check_project_partitions_observing_file_boundaries(
     poll()?;
     resolution_span.returned();
     let worker_count = workers.get().min(program.files.len().max(1));
-    let run = || -> Result<CheckResult, ProjectPartitionCheckError> {
-        let plan_span = ProjectExecutionSpan::new(
+    run_on_private_checker_workers(worker_count, || {
+    let plan_span = ProjectExecutionSpan::new(
             Some(execution_checkpoint),
             ProjectExecutionPhase::CheckerPlan,
             None,
@@ -145,6 +148,34 @@ fn check_project_partitions_observing_file_boundaries(
         .map_err(|reason| Program(ProjectProgramCheckError::ExecutionStopped(reason)))?;
         poll()?;
         plan_span.returned();
+    check_prepared_project_partitions_in_current_pool(&plan, workers, starting, completed)
+    })
+}
+
+fn check_prepared_project_partitions(
+    plan: &ParallelCheckPlan<'_>,
+    workers: std::num::NonZeroUsize,
+    starting: &(impl Fn(usize) + Sync),
+    completed: &(impl Fn(usize) + Sync),
+) -> Result<CheckResult, ProjectPartitionCheckError> {
+    let worker_count = workers.get().min(plan.program.files.len().max(1));
+    run_on_private_checker_workers(worker_count, || {
+        check_prepared_project_partitions_in_current_pool(plan, workers, starting, completed)
+    })
+}
+
+fn check_prepared_project_partitions_in_current_pool(
+    plan: &ParallelCheckPlan<'_>,
+    workers: std::num::NonZeroUsize,
+    starting: &(impl Fn(usize) + Sync),
+    completed: &(impl Fn(usize) + Sync),
+) -> Result<CheckResult, ProjectPartitionCheckError> {
+    use ProjectPartitionCheckError::Program;
+    let execution_checkpoint = plan.execution_control().expect("partition plan has caller checkpoint");
+    let poll = || plan.checkpoint(0).map_err(|reason| Program(ProjectProgramCheckError::ExecutionStopped(reason)));
+    poll()?;
+    let worker_count = workers.get().min(plan.program.files.len().max(1));
+    let run = || -> Result<CheckResult, ProjectPartitionCheckError> {
         let prime_span = ProjectExecutionSpan::new(
             Some(execution_checkpoint),
             ProjectExecutionPhase::AugmentationPrime,
@@ -153,7 +184,7 @@ fn check_project_partitions_observing_file_boundaries(
         plan.prime_module_augmentation_bodies();
         poll()?;
         prime_span.returned();
-        let partition_size = program.files.len().div_ceil(worker_count).max(1);
+        let partition_size = plan.program.files.len().div_ceil(worker_count).max(1);
         let check_partition = |partition_idx: usize, files: &[BoundFile]| {
             plan.check_file_partition_observing_completion(
                 partition_idx * partition_size,
@@ -163,20 +194,20 @@ fn check_project_partitions_observing_file_boundaries(
             )
         };
         #[cfg(not(target_arch = "wasm32"))]
-        let partitions = program
+        let partitions = plan.program
             .files
             .par_chunks(partition_size)
             .enumerate()
             .map(|(index, files)| check_partition(index, files))
             .collect::<Vec<_>>();
         #[cfg(target_arch = "wasm32")]
-        let partitions = program
+        let partitions = plan.program
             .files
             .chunks(partition_size)
             .enumerate()
             .map(|(index, files)| check_partition(index, files))
             .collect::<Vec<_>>();
-        let mut file_results = Vec::with_capacity(program.files.len() + lib_files.len());
+        let mut file_results = Vec::with_capacity(plan.program.files.len() + plan.checker_lib_files.len());
         for partition in partitions {
             for result in partition
                 .map_err(|reason| Program(ProjectProgramCheckError::ExecutionStopped(reason)))?
@@ -203,6 +234,13 @@ fn check_project_partitions_observing_file_boundaries(
         aggregate_span.returned();
         Ok(result)
     };
+    run()
+}
+
+fn run_on_private_checker_workers<Output: Send>(
+    worker_count: usize,
+    run: impl FnOnce() -> Result<Output, ProjectPartitionCheckError> + Send,
+) -> Result<Output, ProjectPartitionCheckError> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let pool = rayon::ThreadPoolBuilder::new()
@@ -210,14 +248,12 @@ fn check_project_partitions_observing_file_boundaries(
             .stack_size(tsz_common::limits::THREAD_STACK_SIZE_BYTES)
             .thread_name(|index| format!("tsz-checker-{index}"))
             .build()
-            .map_err(|error| {
-                ProjectPartitionCheckError::WorkerPoolUnavailable(error.to_string())
-            })?;
-        poll()?;
+            .map_err(|error| ProjectPartitionCheckError::WorkerPoolUnavailable(error.to_string()))?;
         pool.install(run)
     }
     #[cfg(target_arch = "wasm32")]
     {
+        let _ = worker_count;
         run()
     }
 }
