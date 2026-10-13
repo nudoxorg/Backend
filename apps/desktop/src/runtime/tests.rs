@@ -719,3 +719,170 @@ fn visiting_a_package_never_overwrites_the_orbit_catalog() {
         );
     }
 }
+
+fn initial_root_runtime(client: impl EngineClient + 'static) -> (DesktopRuntime, super::owner::OwnerGate) {
+    let view = super::owner::publication_tests::view();
+    let cursor = backend_library::Cursor::for_view_root_at(&view, 0);
+    let initial = AppSnapshot::empty(VersionedRoot::from_revision(1, cursor, 0));
+    let gate = super::owner::OwnerGate::starting();
+    gate.publish(super::owner::OwnerState::Ready { key: initial.key(), mode: crate::model::ServiceMode::Embedded });
+    let actor = super::actor::EngineActor::start(client, 2).expect("actor thread");
+    let mut runtime = DesktopRuntime::new(initial, actor);
+    runtime.observe_initial_root(Some(gate.clone()));
+    (runtime, gate)
+}
+
+fn root_failure_receipts(runtime: &mut DesktopRuntime, request: RequestId) -> Vec<super::coordinator::InitialRootFailure> {
+    let mut failures = Vec::new();
+    wait::until("the exact actor request reached its terminal", || {
+        failures.extend(runtime.poll().into_iter().filter_map(|event| match event {
+            RuntimeEvent::InitialRootFailed(failure) => Some(failure),
+            _ => None,
+        }));
+        !runtime.is_inflight(request)
+    });
+    failures
+}
+
+#[test]
+fn current_root_actor_failure_wakes_exact_host_observation_wait_without_timeout() {
+    use super::owner::{ObservationFailure, OwnerFault, OwnerState};
+    let (mut runtime, gate) = initial_root_runtime(FailingClient);
+    let attachment = gate.ready_epoch().expect("submitted owner");
+    let scope = gate.observation_scope(attachment).expect("host observation scope");
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let waiting_gate = gate.clone();
+    let host_wait = std::thread::spawn(move || {
+        entered_tx.send(()).expect("wait entered");
+        // The same condition-variable wait used by host::observation while
+        // awaiting its first root. Its timeout must not be the wake source.
+        let continued = waiting_gate.observation_pause(attachment, Duration::from_secs(60));
+        done_tx.send(continued).expect("host wait completed");
+    });
+    entered_rx.recv_timeout(Duration::from_secs(2)).expect("host waiter started");
+    let request = runtime.allocate_request();
+    let _ = runtime.dispatch(Intent::RefreshRoot { basis: runtime.snapshot().key(), request });
+    let mut failures = root_failure_receipts(&mut runtime, request);
+    let reported: Vec<_> = failures.drain(..).map(|failure| runtime.report_initial_root_failure(failure)).collect();
+    let woke = done_rx.recv_timeout(Duration::from_secs(2));
+    let state = gate.state();
+    // Cleanup also releases the waiter if the asserted carrier regresses.
+    gate.close();
+    host_wait.join().expect("host waiter joined");
+    assert_eq!(reported, [true]);
+    assert_eq!(woke.expect("definitive failure wakes without the 60s bound"), false);
+    assert!(scope.is_cancelled());
+    assert_eq!(state, OwnerState::Failed(OwnerFault::Observation(ObservationFailure::InitialRootFailed {
+        request, error: crate::core::ErrorValue::new(crate::core::FaultCode::Transport, "owner unavailable"),
+    })));
+}
+
+#[test]
+fn cancelled_superseded_and_non_root_failures_do_not_withdraw_initial_observation() {
+    struct TerminalClient(EngineFault);
+    impl EngineClient for TerminalClient {
+        fn execute(&mut self, _: &EngineRequest) -> Result<EngineDto, EngineFault> { Err(self.0.clone()) }
+    }
+    for fault in [EngineFault::Cancelled, EngineFault::Superseded] {
+        let (mut runtime, gate) = initial_root_runtime(TerminalClient(fault));
+        let attachment = gate.ready_epoch().expect("owner");
+        let request = runtime.allocate_request();
+        let _ = runtime.dispatch(Intent::RefreshRoot { basis: runtime.snapshot().key(), request });
+        assert!(root_failure_receipts(&mut runtime, request).is_empty());
+        assert_eq!(gate.ready_epoch(), Some(attachment));
+    }
+    let (mut runtime, gate) = initial_root_runtime(FailingClient);
+    let attachment = gate.ready_epoch().expect("owner");
+    let request = runtime.allocate_request();
+    let _ = runtime.dispatch(Intent::CheckConnection { basis: runtime.snapshot().key(), request });
+    assert!(root_failure_receipts(&mut runtime, request).is_empty());
+    assert_eq!(gate.ready_epoch(), Some(attachment));
+}
+
+#[test]
+fn an_earlier_root_failure_cannot_report_for_its_current_replacement() {
+    struct GatedFailure(GatedClient);
+    impl EngineClient for GatedFailure {
+        fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+            self.0.entered.send(request.request()).map_err(|_| EngineFault::Cancelled)?;
+            self.0.release.recv().map_err(|_| EngineFault::Cancelled)?;
+            FailingClient.execute(request)
+        }
+    }
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let (mut runtime, owner) = initial_root_runtime(GatedFailure(GatedClient { entered: entered_tx, release: release_rx }));
+    let mut release = TestGate::new(release_tx, 2);
+    let basis = runtime.snapshot().key();
+    let first = runtime.allocate_request();
+    let _ = runtime.dispatch(Intent::RefreshRoot { basis, request: first });
+    assert_eq!(entered_rx.recv_timeout(Duration::from_secs(2)).expect("earlier Root entered"), first);
+    let current = runtime.allocate_request();
+    let retired = runtime.dispatch(Intent::RefreshRoot { basis, request: current });
+    assert_eq!(request_terminals(retired), [(first, RequestOutcome::Superseded)]);
+    release.release_all();
+    let mut failures = root_failure_receipts(&mut runtime, current);
+    assert_eq!(failures.len(), 1, "late earlier failure cannot carry a second receipt");
+    assert!(runtime.report_initial_root_failure(failures.remove(0)));
+    assert!(matches!(owner.state(), super::owner::OwnerState::Failed(super::owner::OwnerFault::Observation(
+        super::owner::ObservationFailure::InitialRootFailed { request, .. })) if request == current));
+}
+
+#[test]
+fn root_failure_receipt_cannot_adopt_a_new_attachment_or_withdraw_a_certified_root() {
+    use super::owner::{OwnerState, PublicationAdmission};
+    for replacement in [false, true] {
+        let (mut runtime, gate) = initial_root_runtime(FailingClient);
+        let captured = gate.ready_epoch().expect("captured owner");
+        let request = runtime.allocate_request();
+        let _ = runtime.dispatch(Intent::RefreshRoot { basis: runtime.snapshot().key(), request });
+        let mut failures = root_failure_receipts(&mut runtime, request);
+        assert_eq!(failures.len(), 1);
+        let view = super::owner::publication_tests::view();
+        let cursor = backend_library::Cursor::for_view_root_at(&view, 0);
+        if replacement {
+            gate.publish(OwnerState::Starting);
+            gate.publish(OwnerState::Ready { key: runtime.snapshot().key(), mode: crate::model::ServiceMode::Attached });
+            assert_ne!(gate.ready_epoch(), Some(captured));
+        } else {
+            // A certified publication wins even if the actor's later catalog
+            // read has already failed and its receipt is waiting in GPUI.
+            assert_eq!(gate.publish_view(captured, view, cursor), PublicationAdmission::Admitted);
+            assert_eq!(gate.ready_epoch(), Some(captured), "publication preserves the submitted attachment");
+        }
+        assert!(!runtime.report_initial_root_failure(failures.remove(0)));
+        assert!(matches!(gate.state(), OwnerState::Ready { .. }));
+        if !replacement {
+            assert!(gate.publication(captured).is_some(), "a failed catalog read cannot erase certified publication");
+            assert!(!gate.observation_scope(captured).expect("healthy observation").is_cancelled());
+        }
+    }
+}
+
+
+#[test]
+fn a_polled_root_failure_is_retired_before_delivery_by_a_new_root_or_stop() {
+    for stop in [false, true] {
+        let (mut runtime, gate) = initial_root_runtime(FailingClient);
+        let attachment = gate.ready_epoch().expect("same serving attachment");
+        let basis = runtime.snapshot().key();
+        let earlier = runtime.allocate_request();
+        let _ = runtime.dispatch(Intent::RefreshRoot { basis, request: earlier });
+        let mut failures = root_failure_receipts(&mut runtime, earlier);
+        assert_eq!(failures.len(), 1, "earlier actor failure already reached the UI mailbox");
+        let current = runtime.allocate_request();
+        if stop {
+            let _ = runtime.dispatch(Intent::Stop);
+        } else {
+            let _ = runtime.dispatch(Intent::RefreshRoot { basis, request: current });
+        }
+        assert!(!runtime.report_initial_root_failure(failures.remove(0)), "retained old receipt cannot report for a new attempt");
+        assert_eq!(gate.ready_epoch(), Some(attachment));
+        if !stop {
+            let mut fresh = root_failure_receipts(&mut runtime, current);
+            assert_eq!(fresh.len(), 1);
+            assert!(runtime.report_initial_root_failure(fresh.remove(0)), "the exact new current failure is still actionable");
+        }
+    }
+}
