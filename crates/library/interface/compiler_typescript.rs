@@ -167,6 +167,8 @@ pub enum TypeScriptAuthorityFailureKind {
     NativeSessionMissingProjectModuleResolutions,
     /// Native TypeScript checker session selected a file index outside its program.
     NativeSessionFileIndexOutOfRange,
+    /// Native TypeScript warm checker image was used under a different budget.
+    NativeSessionExecutionCheckpointMismatch,
     /// Native TypeScript module resolution contained an invalid normalized path.
     NativeModuleInvalidVirtualPath,
     /// Native TypeScript module resolution contained a duplicate program path.
@@ -355,6 +357,7 @@ impl TypeScriptAuthorityFailureKind {
             Self::NativeProjectCheckModuleDuplicateRequest => {
                 "typescript_native_project_check_module_duplicate_request"
             }
+            Self::NativeSessionExecutionCheckpointMismatch => "typescript_native_session_execution_checkpoint_mismatch",
             Self::NativeSessionCancelled => "typescript_native_session_cancelled",
             Self::NativeSessionDeadline => "typescript_native_session_deadline",
             Self::NativeSessionWorkBudgetExhausted => {
@@ -611,6 +614,7 @@ impl TypeScriptAuthorityFailureKind {
             Self::NativeProjectCheckModuleDuplicateRequest => {
                 "Native TypeScript project checking module resolution contained a duplicate request"
             }
+            Self::NativeSessionExecutionCheckpointMismatch => "Native TypeScript checker image belongs to a different admitted execution budget",
             Self::NativeSessionCancelled => "Native TypeScript checker session was cancelled",
             Self::NativeSessionDeadline => {
                 "Native TypeScript checker session exceeded its admitted deadline"
@@ -636,6 +640,19 @@ impl TypeScriptAuthorityFailureKind {
                 "Native TypeScript project update exhausted its admitted work budget"
             }
         }
+    }
+
+    /// This closed terminal covers the complete native program, so the retained
+    /// request source cannot be presented as the file that consumed the budget.
+    #[must_use]
+    pub const fn is_program_execution_failure(self) -> bool {
+        matches!(self,
+            Self::HostProgramCancelled | Self::HostProgramDeadline |
+            Self::NativeSessionCancelled | Self::NativeSessionDeadline | Self::NativeSessionWorkBudgetExhausted |
+            Self::NativeProjectCheckCancelled | Self::NativeProjectCheckDeadline | Self::NativeProjectCheckWorkBudgetExhausted |
+            Self::NativeUpdateCancelled | Self::NativeUpdateDeadline | Self::NativeUpdateWorkBudgetExhausted |
+            Self::NativeCheckerWorkerPoolUnavailable | Self::NativeSessionExecutionCheckpointMismatch
+        )
     }
 
     /// Whether this exact terminal observed cooperative caller cancellation.

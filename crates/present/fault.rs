@@ -959,6 +959,11 @@ impl Fault {
         } else {
             failure.detail().to_owned()
         };
+        let scope = if failure.is_typescript_program_execution_failure() {
+            format!("TypeScript project (requested from {})", failure.relative_path())
+        } else {
+            failure.relative_path().to_owned()
+        };
         let mut fault = Self::new(
             FaultSlug::CompilerRefused,
             operand,
@@ -966,7 +971,7 @@ impl Fault {
                 CauseSlug::Refused,
                 format!(
                     "{}: {phase}/{}; {explanation}",
-                    failure.relative_path(),
+                    scope,
                     failure.kind_tag(),
                 ),
             ),
