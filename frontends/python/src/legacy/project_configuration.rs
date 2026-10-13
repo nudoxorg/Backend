@@ -140,6 +140,7 @@ impl Evidence {
         maximum: usize,
         control: PythonProjectControl<'_>,
     ) -> Result<Box<str>, CheckerError> {
+        checkpoint(control)?;
         struct Bounded<'a> {
             text: String,
             maximum: usize,
@@ -174,6 +175,7 @@ impl Evidence {
             refusal: None,
         };
         let result = write!(&mut sink, "{value}");
+        checkpoint(control)?;
         if let Some(error) = sink.refusal {
             return Err(error);
         }
@@ -508,6 +510,29 @@ mod tests {
         assert!(matches!(
             evidence.display(
                 CancellingCause(&cancelled),
+                MAX_NATIVE_DIAGNOSTIC_BYTES,
+                control(&cancelled)
+            ),
+            Err(CheckerError::Cancelled { phase: "project" })
+        ));
+        assert!(evidence.faults.is_empty());
+    }
+
+    #[test]
+    fn borrowed_native_display_observes_cancellation_after_final_cause_write() {
+        struct FinalWriteCancellation<'a>(&'a AtomicBool);
+        impl fmt::Display for FinalWriteCancellation<'_> {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("genuine native cause")?;
+                self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+                Ok(())
+            }
+        }
+        let cancelled = AtomicBool::new(false);
+        let mut evidence = Evidence::default();
+        assert!(matches!(
+            evidence.display(
+                FinalWriteCancellation(&cancelled),
                 MAX_NATIVE_DIAGNOSTIC_BYTES,
                 control(&cancelled)
             ),
