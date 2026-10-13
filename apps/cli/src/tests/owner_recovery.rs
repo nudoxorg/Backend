@@ -4,8 +4,9 @@
 use super::*;
 use backend_client::CommandTransport;
 use backend_library::{
-    Command, CommandDto, CommandReply, CompileExecutionIntent, IndexOperationObservation,
-    IndexOperationState, IndexOperationStatus, PackageReference, ReplyDto,
+    Command, CommandDto, CommandFailure, CommandReply, CompileExecutionIntent,
+    IndexOperationObservation, IndexOperationState, IndexOperationStatus, PackageReference,
+    ReplyDto,
 };
 use std::sync::{
     Arc, Mutex,
@@ -459,21 +460,86 @@ fn journal_start_retains_admitted_command_refusal_without_delivery_uncertainty()
     let sends = Arc::new(AtomicUsize::new(0));
     let sent = sends.clone();
     let mut original = session(fixture.paths.endpoint(), move |request| {
-        assert!(matches!(request.command, Command::Surface(SurfaceCommand::IndexOperationStart { .. })));
+        assert!(matches!(
+            request.command,
+            Command::Surface(SurfaceCommand::IndexOperationStart { .. })
+        ));
         sent.fetch_add(1, Ordering::Relaxed);
-        Ok(ReplyDto::error(request.request_id, "the admitted start was refused"))
+        Ok(ReplyDto::new(
+            request.request_id,
+            CommandReply::Failed(CommandFailure::MutationRequiresOwner),
+        ))
     });
-    let mut recovery = OwnerRecovery::from_connector(
-        fixture.paths.clone(), RequestContext::new(), |_| panic!("refusal cannot reconnect"),
-    );
+    let mut recovery =
+        OwnerRecovery::from_connector(fixture.paths.clone(), RequestContext::new(), |_| {
+            panic!("refusal cannot reconnect")
+        });
     let error = backend_client::index_with_journal_recovery(
-        &fixture.paths, fixture.package.clone(), CompileExecutionIntent::Interactive,
+        &fixture.paths,
+        fixture.package.clone(),
+        CompileExecutionIntent::Interactive,
         |dispatch| recovery.journal(&mut original, dispatch, None),
-    ).expect_err("actual command rejection is retained");
-    assert!(matches!(&error, ClientError::CommandFailed(_)), "{error}");
+    )
+    .expect_err("actual command rejection is retained");
+    assert_eq!(
+        error,
+        ClientError::CommandFailed(CommandFailure::MutationRequiresOwner),
+        "the typed admitted command cause must remain exact",
+    );
     assert_eq!(sends.load(Ordering::Relaxed), 1);
     assert!(!recovery.used);
-    assert_eq!(fixture.claims().len(), 1, "no durable terminal receipt was invented");
+    assert_eq!(
+        fixture.claims().len(),
+        1,
+        "no durable terminal receipt was invented"
+    );
+}
+
+#[test]
+fn journal_start_legacy_error_keeps_delivery_uncertainty_and_original_claim() {
+    let fixture = Fixture::new();
+    let sends = Arc::new(AtomicUsize::new(0));
+    let sent = sends.clone();
+    let mut original = session(fixture.paths.endpoint(), move |request| {
+        assert!(matches!(
+            request.command,
+            Command::Surface(SurfaceCommand::IndexOperationStart { .. })
+        ));
+        sent.fetch_add(1, Ordering::Relaxed);
+        Ok(ReplyDto::error(request.request_id, "legacy failure"))
+    });
+    let mut recovery =
+        OwnerRecovery::from_connector(fixture.paths.clone(), RequestContext::new(), |_| {
+            panic!("a legacy protocol failure cannot authenticate a replacement")
+        });
+    let error = backend_client::index_with_journal_recovery(
+        &fixture.paths,
+        fixture.package.clone(),
+        CompileExecutionIntent::Interactive,
+        |dispatch| recovery.journal(&mut original, dispatch, None),
+    )
+    .expect_err("an untyped legacy error cannot attest a refused mutation");
+    let claims = fixture.claims();
+    assert_eq!(
+        claims.len(),
+        1,
+        "the original nonterminal claim is retained"
+    );
+    let ClientError::IndexOperationDeliveryUnknown {
+        operation_key,
+        cause,
+    } = error
+    else {
+        panic!("an untyped failure cannot become an admitted command refusal");
+    };
+    assert_eq!(
+        serde_json::to_value(operation_key).expect("operation key"),
+        claims[0]["operation_key"],
+        "uncertainty retains the exact saved request identity",
+    );
+    assert_eq!(*cause, ClientError::Protocol("legacy failure".to_owned()));
+    assert_eq!(sends.load(Ordering::Relaxed), 1);
+    assert!(!recovery.used);
 }
 
 #[test]
