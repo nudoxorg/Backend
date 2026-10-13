@@ -893,7 +893,8 @@ impl<P: Product> Server<P> {
         command.remove("detail");
         command.remove("limit");
         command.remove("cursor");
-        validate_registry_arguments(grammar, &command)?;
+        validate_registry_arguments(grammar, &command)
+            .map_err(|fault| RpcError::from_fault(&fault))?;
         let invocation = Invocation::from_json(grammar, &command)
             .map_err(|fault| RpcError::from_fault(&fault))?;
         let request = lower_with_opener(&invocation, &self.project, self.opener()?)
