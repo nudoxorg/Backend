@@ -101,3 +101,32 @@ limit; 12,000-token admission and its pinned vocabulary are now also visible.
 token count. No semantic IDs, page identities or ordering are normalized away;
 no performance baselines or tolerance bands are changed. A fresh exact-head
 artifact consumer must match this reviewed candidate before merge.
+
+## Public CLI contract cases (W1.3)
+
+The `cli-usage` case runs 14 selectable assertions against the exact published
+CLI: root/add help, misspelled command, unknown option, missing coordinate and
+alias coordinate, out-of-range and unsupported page bounds, invalid passive
+search/compile intent, and absent-owner passive health/status. Assertions retain
+exit codes, offending operands, actionable diagnostics and JSON/human/Markdown
+stream contracts. Passive recovery is parsed and executed only inside a shell
+function that prints its arguments, verifying hostile literal paths without
+starting a product process. A launch sentinel, workspace and endpoint checks
+reject unwanted state creation or owner startup. HOME/XDG/TMP are private and
+ambient product configuration/credentials are excluded; every call is bounded.
+
+Run all cases with T2, or just these without acquiring compiler tools:
+
+```sh
+python3 .config/ci/cli_contract.py --bin-dir /absolute/path/to/t1/bin
+python3 .config/ci/cli_contract.py --bin-dir /absolute/path/to/t1/bin --case unknown-command
+```
+
+The T2 runner also selects this group with `--case cli-usage`. These explicit
+assertions need no generated golden and report per-case wall time without
+claiming owner CPU/RSS or a calibrated performance baseline. They replace the
+public proofs recommended in the root W1.3 ledger; old Rust tests remain until a
+reviewed deletion batch is approved. Valid indexing intents, live-owner health,
+job tickets, bounded multi-match paging and the full command matrix remain
+separate pending work. Negative admission checks reject a fake successful exit,
+missing suggestion or changed operand; the product run must still pass in CI.

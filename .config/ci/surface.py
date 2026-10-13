@@ -311,6 +311,16 @@ def main() -> int:
     for case in cases:
         log(f"case {case['name']}")
         started = time.monotonic()
+        if case.get("kind") == "cli-contract":
+            from cli_contract import run_cases
+
+            try:
+                report[case["name"]] = run_cases(args.bin_dir.resolve())
+                log(f"case {case['name']} passed ({time.monotonic() - started:.1f}s)")
+            except Exception as error:
+                log(f"case {case['name']} failed: {error}")
+                failed.append(case["name"])
+            continue
         try:
             record = run_case(case, args.bin_dir.resolve())
         except Exception as error:  # noqa: BLE001 - one broken case must not hide the rest

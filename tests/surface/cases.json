@@ -2,6 +2,10 @@
   "about": "T2 surface corpus: each case is indexed once through the CLI, then queried through CLI and MCP against the same backend-locald. Reviewed answers and performance baselines live in snapshots/<name>.json; see .config/ci/surface.py.",
   "cases": [
     {
+      "name": "cli-usage",
+      "kind": "cli-contract"
+    },
+    {
       "name": "polyglot",
       "project": "tests/surface/fixtures/polyglot",
       "languages": [
