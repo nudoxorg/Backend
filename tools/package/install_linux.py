@@ -784,11 +784,14 @@ def check_checkpoint_update(current, incoming, allow_downgrade=False):
 
 
 @contextmanager
-def _install_lease(managed_root):
+def _install_lease(managed_root, *, create=True):
     """Hold one owned inode from checkpoint admission through publication."""
     _validate_install_directory(managed_root)
     path = managed_root / ".install.lock"
-    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+    if create:
+        flags |= os.O_CREAT
+    descriptor = os.open(path, flags, 0o600)
     try:
         before = os.fstat(descriptor)
         if (not stat.S_ISREG(before.st_mode) or before.st_size != 0
@@ -826,22 +829,22 @@ def install(prefix: Path, entry: dict, manifest: dict, archive: Path, *, allow_d
         _install_locked(prefix, entry, manifest, archive, allow_downgrade=allow_downgrade)
 
 
-def _install_locked(prefix, entry, manifest, archive, *, allow_downgrade=False):
-    managed_root = prefix / "lib" / "nudox"
-    version_root = _version_root(prefix)
-    version_root.mkdir(mode=0o700, exist_ok=True)
-    if version_root.is_symlink() or not version_root.is_dir():
-        raise InstallError("managed install versions path must be a real directory")
-    install_id = entry.get("tag")
-    if not isinstance(install_id, str) or not re.fullmatch(r"[A-Za-z0-9.-]{1,100}", install_id):
-        raise InstallError("release has an unsafe install identity")
-    final = version_root / install_id
+def _lstat_or_none(path):
+    try:
+        return path.lstat()
+    except FileNotFoundError:
+        return None
+
+
+def _check_command_aliases(prefix, managed_root, *, create_bin):
     bin_dir = prefix / "bin"
     if bin_dir.is_symlink():
         raise InstallError(f"command install directory must not be a symlink: {bin_dir}")
-    bin_dir.mkdir(mode=0o700, exist_ok=True)
-    if not bin_dir.is_dir():
-        raise InstallError(f"command install path is not a directory: {bin_dir}")
+    if _lstat_or_none(bin_dir) is None:
+        if not create_bin:
+            return None
+        bin_dir.mkdir(mode=0o700, exist_ok=True)
+    _validate_install_directory(bin_dir)
     links = command_links(managed_root)
     for name, target in links.items():
         link = bin_dir / name
@@ -854,6 +857,91 @@ def _install_locked(prefix, entry, manifest, archive, *, allow_downgrade=False):
         raise InstallError(f"refusing to replace non-symlink active install pointer: {current}")
     if current.is_symlink() and not _managed_link(current, managed_root):
         raise InstallError(f"refusing to replace active install pointer outside the managed NuDox install: {current}")
+    return bin_dir, links, current
+
+
+def _publish_command_aliases(bin_dir, links, current, managed_root, final):
+    for name, target in links.items():
+        link = bin_dir / name
+        if not link.is_symlink() or os.readlink(link) != target:
+            _replace_symlink(link, target)
+    current_target = os.path.relpath(final, managed_root)
+    if not current.is_symlink() or os.readlink(current) != current_target:
+        _replace_symlink(current, current_target)
+
+
+def reuse_existing_install(prefix: Path, entry: dict, manifest: dict, *, allow_downgrade: bool = False) -> bool:
+    """Reuse a selected release only after rechecking its receipt and installed files."""
+    prefix = Path(prefix)
+    prefix_stat = _lstat_or_none(prefix)
+    if prefix_stat is None:
+        return False
+    if stat.S_ISLNK(prefix_stat.st_mode):
+        raise InstallError(f"managed install prefix must not be a symlink: {prefix}")
+    _validate_install_directory(prefix)
+    lib_dir = prefix / "lib"
+    lib_stat = _lstat_or_none(lib_dir)
+    if lib_stat is None:
+        return False
+    if stat.S_ISLNK(lib_stat.st_mode):
+        raise InstallError(f"managed install parent must not be a symlink: {lib_dir}")
+    _validate_install_directory(lib_dir)
+    managed_root = lib_dir / "nudox"
+    root_stat = _lstat_or_none(managed_root)
+    if root_stat is None:
+        return False
+    if stat.S_ISLNK(root_stat.st_mode):
+        raise InstallError(f"managed install root must not be a symlink: {managed_root}")
+    _validate_install_directory(managed_root)
+    try:
+        with _install_lease(managed_root, create=False):
+            return _reuse_existing_install_locked(prefix, entry, manifest, allow_downgrade)
+    except FileNotFoundError:
+        return False
+
+
+def _reuse_existing_install_locked(prefix, entry, manifest, allow_downgrade):
+    managed_root = prefix / "lib" / "nudox"
+    version_root = _version_root(prefix)
+    version_stat = _lstat_or_none(version_root)
+    if version_stat is None:
+        return False
+    if stat.S_ISLNK(version_stat.st_mode) or not stat.S_ISDIR(version_stat.st_mode):
+        raise InstallError("managed install versions path must be a real directory")
+    _validate_install_directory(version_root)
+    install_id = entry.get("tag")
+    if not isinstance(install_id, str) or not re.fullmatch(r"[A-Za-z0-9.-]{1,100}", install_id):
+        raise InstallError("release has an unsafe install identity")
+    final = version_root / install_id
+    marker = {"version": entry["version"], "tag": entry["tag"], "source_sha": entry["source_sha"], "asset": entry["asset"], "sha256": manifest["sha256"]}
+    current = managed_root / "current"
+    if current.exists() and not current.is_symlink():
+        raise InstallError(f"refusing to replace non-symlink active install pointer: {current}")
+    if current.is_symlink() and not _managed_link(current, managed_root):
+        raise InstallError(f"refusing to replace active install pointer outside the managed NuDox install: {current}")
+    check_checkpoint_update(current, marker, allow_downgrade)
+    final_stat = _lstat_or_none(final)
+    if final_stat is None:
+        return False
+    if stat.S_ISLNK(final_stat.st_mode) or not stat.S_ISDIR(final_stat.st_mode):
+        raise InstallError(f"version path exists and is not an install directory: {final}")
+    verify_existing_install(final, marker, entry, manifest)
+    bin_dir, links, current = _check_command_aliases(prefix, managed_root, create_bin=True)
+    _publish_command_aliases(bin_dir, links, current, managed_root, final)
+    return True
+
+
+def _install_locked(prefix, entry, manifest, archive, *, allow_downgrade=False):
+    managed_root = prefix / "lib" / "nudox"
+    version_root = _version_root(prefix)
+    version_root.mkdir(mode=0o700, exist_ok=True)
+    if version_root.is_symlink() or not version_root.is_dir():
+        raise InstallError("managed install versions path must be a real directory")
+    install_id = entry.get("tag")
+    if not isinstance(install_id, str) or not re.fullmatch(r"[A-Za-z0-9.-]{1,100}", install_id):
+        raise InstallError("release has an unsafe install identity")
+    final = version_root / install_id
+    bin_dir, links, current = _check_command_aliases(prefix, managed_root, create_bin=True)
     marker = {"version": entry["version"], "tag": entry["tag"], "source_sha": entry["source_sha"], "asset": entry["asset"], "sha256": manifest["sha256"]}
     check_checkpoint_update(current, marker, allow_downgrade)
     stage = Path(tempfile.mkdtemp(prefix=".staging-", dir=version_root))
@@ -869,16 +957,11 @@ def _install_locked(prefix, entry, manifest, archive, *, allow_downgrade=False):
             shutil.rmtree(stage)
         else:
             os.replace(stage, final)
-    except Exception:
+    except BaseException:
         shutil.rmtree(stage, ignore_errors=True)
         raise
 
-    for name, target in links.items():
-        link = bin_dir / name
-        if not link.is_symlink() or os.readlink(link) != target:
-            _replace_symlink(link, target)
-
-    _replace_symlink(current, os.path.relpath(final, managed_root))
+    _publish_command_aliases(bin_dir, links, current, managed_root, final)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -899,9 +982,14 @@ def main(argv: list[str] | None = None) -> int:
             entry, manifest, archive = load_local_candidate(args.candidate_directory, Path(temp_dir))
         else:
             entry, manifest, url = load_release()
-            archive = Path(temp_dir) / entry["asset"]
-            download_archive(url, manifest["sha256"], manifest["size_bytes"], archive)
-        install(prefix, entry, manifest, archive, allow_downgrade=args.allow_downgrade)
+            if reuse_existing_install(prefix, entry, manifest, allow_downgrade=args.allow_downgrade):
+                print("Verified existing selected release; skipped its archive download.", file=sys.stderr, flush=True)
+            else:
+                archive = Path(temp_dir) / entry["asset"]
+                download_archive(url, manifest["sha256"], manifest["size_bytes"], archive)
+                install(prefix, entry, manifest, archive, allow_downgrade=args.allow_downgrade)
+        if args.candidate_directory:
+            install(prefix, entry, manifest, archive, allow_downgrade=args.allow_downgrade)
     print(f"Installed NuDox {entry['version']} CLI, MCP server and local daemon in {prefix}.")
     print("Commands: nudox, nudox-mcp, nudox-locald, backend-cli, backend-mcp, backend-locald")
     print(f"MCP executable for client configuration: {prefix / 'bin' / 'backend-mcp'}")
