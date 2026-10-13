@@ -1074,7 +1074,11 @@ def _host_process_rows() -> list[_PsRow]:
             raise CensusError("host-process-list-failed")
         if len({row.pid for row in rows}) != len(rows):
             raise CensusError("process-table-duplicate-pid")
-        return rows
+        # `ps` can include itself in its own table. This is the exact child
+        # started above, and wait() has now reaped that child successfully. Its
+        # row is therefore an expected transient observer, not an unrelated
+        # PID that vanished while the proc snapshot was being captured.
+        return [row for row in rows if row.pid != child.pid]
     except BaseException:
         # This is the exact child started above; never signal a process group.
         if child.poll() is None:
