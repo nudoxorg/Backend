@@ -1480,7 +1480,7 @@ mod tests {
             .expect("fixture read pool");
         let mut rig = rig_with_reads(cx, None, 360.0, 900.0, pool);
         rig.cx.update(|window, _| window.set_a11y_forced(true));
-        let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+        let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
         for percent in [100_u16, 150, 200] {
             rig.go(Intent::ZoomTo {
                 display: display.clone(),
@@ -1538,7 +1538,7 @@ mod tests {
                     SettingsPage::Connections,
                     format!(
                         "Desktop to local index: {}",
-                        connection_words(rig.graph.store.read_with(rig.cx, |store, _| {
+                        connection_words(rig.graph.store.read_with(&rig.cx, |store, _| {
                             store.snapshot().settings().connection
                         }))
                     ),
@@ -1547,7 +1547,7 @@ mod tests {
                     SettingsPage::Diagnostics,
                     format!(
                         "Connection check: {}",
-                        connection_words(rig.graph.store.read_with(rig.cx, |store, _| {
+                        connection_words(rig.graph.store.read_with(&rig.cx, |store, _| {
                             store.snapshot().settings().connection
                         }))
                     ),
@@ -1578,7 +1578,7 @@ mod tests {
                 );
             }
         }
-        let owner_key = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+        let owner_key = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
         for (intent, value) in [
             (Intent::OwnerUnavailable, "Local owner unavailable"),
             (Intent::OwnerReady { key: owner_key, mode: crate::model::ServiceMode::Embedded }, "Connected"),
@@ -1613,7 +1613,7 @@ mod tests {
                     labels.contains(&label.as_str()),
                     "{page:?} native AX lacks {label}: {labels:?}"
                 );
-                let status = rig.graph.store.read_with(rig.cx, |store, _| {
+                let status = rig.graph.store.read_with(&rig.cx, |store, _| {
                     store.snapshot().settings().connection
                 });
                 let detail = format!("Check details: {}", connection_explanation(status));

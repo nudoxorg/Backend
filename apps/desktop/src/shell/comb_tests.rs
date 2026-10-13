@@ -112,7 +112,7 @@ fn scrub_to_newest(rig: &mut Rig) {
 #[gpui::test]
 fn scrubbing_away_from_the_pin_opens_the_upgrade_lens_and_escape_closes_it(cx: &mut TestAppContext) {
     let mut rig = open_at(cx, from_str());
-    let upgrade = |rig: &mut Rig| rig.shell.read_with(rig.cx, |shell, cx| shell.shelf_upgrade(cx));
+    let upgrade = |rig: &mut Rig| rig.shell.read_with(&rig.cx, |shell, cx| shell.shelf_upgrade(cx));
     let heading = |rig: &mut Rig| {
         rig.repaint();
         let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
@@ -150,20 +150,20 @@ fn a_package_without_release_data_views_the_release_with_no_lens(cx: &mut TestAp
     scrub_to_newest(&mut rig);
     rig.repaint();
     assert_eq!(rig.route().at().map(|at| at.as_str().to_owned()), Some(TARGET.to_owned()), "the release is viewed");
-    let upgrade = rig.shell.read_with(rig.cx, |shell, cx| shell.shelf_upgrade(cx));
+    let upgrade = rig.shell.read_with(&rig.cx, |shell, cx| shell.shelf_upgrade(cx));
     assert_eq!(upgrade, None, "no release data, no lens");
 }
 
 #[gpui::test]
 fn scrubbing_the_comb_views_a_release_and_escape_returns_to_the_pin(cx: &mut TestAppContext) {
     let mut rig = open(cx);
-    let marks = |rig: &mut Rig| rig.shell.read_with(rig.cx, |shell, cx| shell.shelf_comb(cx)).expect("the comb drew");
+    let marks = |rig: &mut Rig| rig.shell.read_with(&rig.cx, |shell, cx| shell.shelf_comb(cx)).expect("the comb drew");
     assert_eq!(marks(&mut rig), (Some("0.8.23".into()), None), "home: the pin, nothing else viewed");
     // The newest release sits at the comb's right end.
     scrub_to_newest(&mut rig);
     rig.repaint();
     assert_eq!(rig.route().at().map(|at| at.as_str().to_owned()), Some(TARGET.to_owned()), "the route views 1.1.6");
-    let here = rig.graph.store.read_with(rig.cx, |store, _| super::jump::here(&store.snapshot(), store).path.to_string());
+    let here = rig.graph.store.read_with(&rig.cx, |store, _| super::jump::here(&store.snapshot(), store).path.to_string());
     assert_eq!(here, format!("viewing {TARGET} · you pin 0.8.23"));
     assert_eq!(marks(&mut rig), (Some("0.8.23".into()), Some(TARGET.into())), "the pin stays where you pin it");
     rig.keys("escape");

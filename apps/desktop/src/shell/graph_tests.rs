@@ -26,7 +26,7 @@ pub(super) fn world_rig(cx: &mut TestAppContext, route: Route) -> Rig {
     let mut rig = rig(cx, None, 1440.0, 900.0);
     let world = anatomy_tests::world();
     let identities = Arc::new(IdentityAdapter::synthetic(&world, PackageRef::parse(PACKAGE).expect("package")));
-    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     rig.cx.update(|_, cx| super::bodies::graph::install_test_world(root, world, identities, cx));
     anatomy_tests::install(&mut rig);
     rig.go(Intent::Navigate(route));
@@ -35,7 +35,7 @@ pub(super) fn world_rig(cx: &mut TestAppContext, route: Route) -> Rig {
 
 /// The name of the graph's current tour stop.
 pub(super) fn tour_stop(rig: &mut Rig) -> Option<String> {
-    rig.shell.read_with(rig.cx, |shell, cx| {
+    rig.shell.read_with(&rig.cx, |shell, cx| {
         let graph = shell.graph_entity(cx)?;
         let graph = graph.read(cx);
         let stop = graph.tour_stop()?;
@@ -48,7 +48,7 @@ pub(super) fn tour_stop(rig: &mut Rig) -> Option<String> {
 #[gpui::test]
 fn space_in_a_graph_tour_goes_to_the_next_stop(cx: &mut TestAppContext) {
     let mut rig = world_rig(cx, Route::World);
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL, cx));
     rig.settle();
     rig.keys("t");
     assert_eq!(tour_stop(&mut rig).as_deref(), Some("relation_label"), "T tours the focus's package from its first stop");
@@ -89,19 +89,19 @@ fn plate(rig: &mut Rig) -> (Vec<String>, Vec<String>) {
 #[gpui::test]
 fn the_jump_bar_follows_the_graph_focus(cx: &mut TestAppContext) {
     let mut rig = world_rig(cx, view_route("RelationLabel", View::Graph));
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL_FN, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL_FN, cx));
     rig.settle();
     let (words, targets) = plate(&mut rig);
     assert_eq!(words, ["present", "›", "glyph", "›", "relation_label"], "package › module › the focus");
     assert!(targets.contains(&"jump-seg-0".to_owned()), "the package is a door: {targets:?}");
-    let names: Vec<String> = rig.graph.store.read_with(rig.cx, |store, _| {
+    let names: Vec<String> = rig.graph.store.read_with(&rig.cx, |store, _| {
         let route = super::jump::bar_route(&store.snapshot(), store);
         super::jump::siblings(&route, 2, store).real.into_iter().map(|s| s.name.to_string()).collect()
     });
     assert_eq!(names, ["RelationLabel", "RelationDirection", "KindGlyph", "relation_label"], "the focus's siblings, not the route's");
     // A focus in another package (`app`'s `main`) reads its own package,
     // not the route's `present › glyph`.
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(MAIN, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(MAIN, cx));
     rig.settle();
     let (words, _) = plate(&mut rig);
     assert_eq!(words[words.len() - 3..], ["app", "›", "main"], "{words:?}");
@@ -114,7 +114,7 @@ fn the_jump_bar_follows_the_graph_focus(cx: &mut TestAppContext) {
 #[gpui::test]
 fn an_unindexed_graph_focus_is_named_not_guessed(cx: &mut TestAppContext) {
     let mut rig = world_rig(cx, Route::World);
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL, cx));
     rig.settle();
     let (words, targets) = plate(&mut rig);
     assert_eq!(words, ["present", "›", "glyph", "›", "RelationLabel"]);
@@ -131,9 +131,9 @@ fn the_graph_comes_back_as_you_left_it(cx: &mut TestAppContext) {
     rig.keys("g");
     let graph = view_route("RelationLabel", View::Graph);
     assert_eq!(rig.route(), graph);
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL_FN, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL_FN, cx));
     rig.settle();
-    let report = |rig: &mut Rig| rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx));
+    let report = |rig: &mut Rig| rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_report(cx));
     let before = report(&mut rig);
     assert!(before.contains("focus Some(3)"), "{before}");
     // G with a focus opens its page: a place.
@@ -156,10 +156,10 @@ fn the_hand_stays_in_the_foot_while_the_graph_speaks(cx: &mut TestAppContext) {
     let mut rig = world_rig(cx, page_route("RelationLabel"));
     rig.keys("secondary-d");
     rig.keys("g");
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL_FN, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL_FN, cx));
     rig.settle();
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.status_marks(cx)), 1, "the held card is still in the foot");
-    let origin = rig.graph.store.read_with(rig.cx, |store, _| {
+    assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.status_marks(cx)), 1, "the held card is still in the foot");
+    let origin = rig.graph.store.read_with(&rig.cx, |store, _| {
         store.graph_focus().map(|focus| focus.origin.fixture_identity().map(str::to_owned))
     });
     assert_eq!(origin.flatten().as_deref(), Some("single-package anatomy fixture"), "the test owner is explicit and app-scoped");
@@ -176,16 +176,16 @@ fn the_hand_stays_in_the_foot_while_the_graph_speaks(cx: &mut TestAppContext) {
 #[gpui::test]
 fn cmd_d_on_a_graph_focus_holds_the_focus_from_its_glyph(cx: &mut TestAppContext) {
     let mut rig = world_rig(cx, view_route("RelationLabel", View::Graph));
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL_FN, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL_FN, cx));
     rig.settle();
     rig.repaint();
-    let glyph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_focus_glyph(cx)).expect("the focus's glyph is on screen");
+    let glyph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_focus_glyph(cx)).expect("the focus's glyph is on screen");
     let _ = rig.cx.update(|_, cx| facet::probe::take(cx));
     rig.cx.simulate_keystrokes("secondary-d");
     for _ in 0..40 {
         rig.frame(16);
     }
-    let held: Vec<String> = rig.graph.store.read_with(rig.cx, |store, _| {
+    let held: Vec<String> = rig.graph.store.read_with(&rig.cx, |store, _| {
         store.snapshot().session().hand.held().iter().filter_map(|held| held.id.as_ref().map(|id| id.as_str().to_owned())).collect()
     });
     assert_eq!(held, [super::tests::coordinate("relation_label")], "the focus, not the route's RelationLabel");
@@ -204,25 +204,25 @@ fn cmd_d_on_a_graph_focus_holds_the_focus_from_its_glyph(cx: &mut TestAppContext
 #[gpui::test]
 fn cmd_d_on_an_unindexed_graph_focus_speaks_through_the_notice(cx: &mut TestAppContext) {
     let mut rig = world_rig(cx, Route::World);
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL, cx));
     rig.settle();
     rig.keys("secondary-d");
     rig.settle();
-    let held = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().hand.held().len());
+    let held = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().hand.held().len());
     assert_eq!(held, 0, "not indexed: nothing to hold");
-    let message = rig.graph.store.read_with(rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string()));
+    let message = rig.graph.store.read_with(&rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string()));
     assert_eq!(message.as_deref(), Some("present::glyph::RelationLabel isn't in the index"));
     let ledger = painted(&mut rig);
     let line = ledger.texts.iter().find(|text| text.key.starts_with("address:0:")).expect("the notice is drawn in the foot");
     assert!(line.content.contains("isn't in the index"), "{}", line.content);
     rig.go(Intent::Navigate(crate::navigation::Route::Orbit(crate::navigation::OrbitRoute::Home)));
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.notice().is_none()), "a notice does not survive navigation");
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.notice().is_none()), "a notice does not survive navigation");
 }
 
 #[gpui::test]
 fn graph_messages_keep_full_native_semantics_inside_their_painted_bounds(cx: &mut TestAppContext) {
     let mut rig = world_rig(cx, Route::World);
-    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
     rig.cx.update(|window, _| window.set_a11y_forced(true));
     for appearance in [crate::model::AppearancePreference::Abyss, crate::model::AppearancePreference::Glacier] {
         rig.go(Intent::SetAppearance(appearance));
@@ -245,7 +245,7 @@ fn graph_messages_keep_full_native_semantics_inside_their_painted_bounds(cx: &mu
     }
     // Advance the fixture owner's exact authority without fabricating a
     // projection for the new root. Its unavailable state must be native too.
-    let old_root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let old_root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     rig.go(Intent::RefreshRoot { basis: old_root, request: crate::navigation::RequestId::from_authority(old_root, 801) });
     rig.cx.update(|_, cx| { let _ = facet::probe::take(cx); });
     let ledger = painted(&mut rig);
@@ -323,16 +323,16 @@ fn canary_native_rig(cx: &mut TestAppContext, width: f32, scale: f32, appearance
         facet::tokens::Appearance::Glacier => crate::model::AppearancePreference::Glacier,
     };
     rig.go(Intent::SetAppearance(preference));
-    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
     rig.go(Intent::ZoomTo { display, percent: (scale * 100.0) as u16 });
     // Startup admits the owner and RootOnly can publish a newer cursor before
     // this fixture is installed. The projection must bind to the same exact
     // authority the current Reader will request, not the launch gate's key.
-    let root = rig.graph.store.read_with(rig.cx, |store, _| {
+    let root = rig.graph.store.read_with(&rig.cx, |store, _| {
         assert!(store.current_owner_attachment().is_some(), "canary needs a serving owner attachment");
         store.snapshot().key()
     });
-    let model_root = rig.graph.root.read_with(rig.cx, |model, _| model.snapshot().key());
+    let model_root = rig.graph.root.read_with(&rig.cx, |model, _| model.snapshot().key());
     assert!(root.same_authority(model_root), "canary store/model authority diverged before projection: store={root:?}, model={model_root:?}");
     assert_eq!(root.root(), launch_root.root(), "canary startup changed the certified fixture root");
     let package = PackageRef::parse("/fixture/real-rust-canary").expect("package");
@@ -359,9 +359,9 @@ fn canary_native_rig(cx: &mut TestAppContext, width: f32, scale: f32, appearance
     let identities = Arc::new(IdentityAdapter::indexed(&world, &BTreeMap::from([(package, 0)]), exact));
     rig.cx.update(|_, cx| super::bodies::graph::install_test_world(root, world, identities, cx));
     rig.go(Intent::Navigate(Route::World));
-    let at_graph = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let at_graph = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     assert!(root.same_authority(at_graph), "canary projection became stale before Graph mounted: installed={root:?}, current={at_graph:?}");
-    let mounted = rig.shell.read_with(rig.cx, |shell, cx| {
+    let mounted = rig.shell.read_with(&rig.cx, |shell, cx| {
         (shell.graph_entity(cx).is_some(), shell.graph_report(cx))
     });
     assert!(mounted.0, "current canary projection did not mount: installed={root:?}, current={at_graph:?}, graph={}", mounted.1);
@@ -389,10 +389,10 @@ fn real_canary_shape_has_native_exact_selection_at_each_text_scale(cx: &mut Test
                 rig.cx.simulate_click(definition.center(), gpui::Modifiers::none());
                 rig.settle();
                 if width == 1440.0 && scale == 1.0 {
-                    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("graph");
-                    assert_eq!(graph.read_with(rig.cx, |graph, _| graph.stats().selected_labels), 1, "the actual painter admitted a selected caption");
+                    let graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("graph");
+                    assert_eq!(graph.read_with(&rig.cx, |graph, _| graph.stats().selected_labels), 1, "the actual painter admitted a selected caption");
                 }
-                let focus = rig.graph.store.read_with(rig.cx, |store, _| store.graph_focus().cloned()).expect("selected declaration");
+                let focus = rig.graph.store.read_with(&rig.cx, |store, _| store.graph_focus().cloned()).expect("selected declaration");
                 assert_eq!(focus.node, 1);
                 assert_eq!(focus.kind, backend_library::DeclarationKind::Function);
                 assert_eq!(focus.module.as_ref(), "cadence");
@@ -407,8 +407,8 @@ fn real_canary_shape_has_native_exact_selection_at_each_text_scale(cx: &mut Test
 fn graph_native_evidence(rig: &mut Rig) -> String {
     #[cfg(debug_assertions)]
     {
-        let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
-        let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx));
+        let reader = rig.shell.read_with(&rig.cx, |shell, _| shell.reader_entity());
+        let graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx));
         return rig.cx.update(|window, cx| format!("focus={:?}; {}; graph={}", window.focused(cx),
             reader.read(cx).graph_native_diagnostic(cx), graph.as_ref().map_or_else(|| "not mounted".into(), |graph| graph.read(cx).native_focus_diagnostic(window, cx))));
     }
@@ -459,7 +459,7 @@ fn native_tab_and_enter_select_the_exact_definition(cx: &mut TestAppContext) {
     rig.keys("tab"); rig.keys("tab");
     assert_eq!(graph_native_inventory(&mut rig).0.as_deref(), Some(definition), "bounded native order preserves the distinct definition");
     rig.native_press("enter");
-    let focus = rig.graph.store.read_with(rig.cx, |store, _| store.graph_focus().cloned()).expect("native selected definition");
+    let focus = rig.graph.store.read_with(&rig.cx, |store, _| store.graph_focus().cloned()).expect("native selected definition");
     assert_eq!(focus.node, 1);
     assert_eq!(focus.kind, backend_library::DeclarationKind::Function);
 }
@@ -470,14 +470,14 @@ fn native_graph_tab_denial_preserves_focus_before_owner_repaint(cx: &mut TestApp
     tab_to_graph_control(&mut rig, "Declarations");
     rig.native_press("enter"); rig.settle();
     let before = rig.cx.update(|window, cx| window.focused(cx));
-    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     gate.publish(crate::runtime::owner::OwnerState::Starting);
     gate.publish(crate::runtime::owner::OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
     // Real native key, no watcher, draw, refresh or input between renewal and
     // dispatch. Denied is consumed rather than mistaken for a zone boundary.
     rig.cx.simulate_keystrokes("tab");
     assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), before);
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.graph_focus().is_none()));
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.graph_focus().is_none()));
 }
 
 #[gpui::test]
@@ -485,7 +485,7 @@ fn graph_find_uses_guarded_component_tab_and_stays_locally_editable(cx: &mut Tes
     let (mut rig, gate) = canary_native_rig(cx, 663.0, 1.5, facet::tokens::Appearance::Abyss);
     tab_to_graph_control(&mut rig, "Declarations");
     rig.keys("shift-tab");
-    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("graph");
+    let graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("graph");
     assert!(rig.cx.update(|window, cx| graph.read(cx).find_focused(window, cx)), "Shift-Tab reaches the real local text engine");
     let before = graph_native_evidence(&mut rig);
     let actions = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
@@ -509,7 +509,7 @@ fn graph_find_uses_guarded_component_tab_and_stays_locally_editable(cx: &mut Tes
     assert!(rig.cx.update(|window, cx| graph.read(cx).find_focused(window, cx)), "owner absence does not disable the local editor");
     rig.native_press("enter");
     assert_eq!(rig.route(), Route::World, "local editing grants no producer navigation");
-    assert!(graph.read_with(rig.cx, |graph, _| graph.focused()).is_none());
+    assert!(graph.read_with(&rig.cx, |graph, _| graph.focused()).is_none());
 }
 
 #[gpui::test]
@@ -520,7 +520,7 @@ fn freshly_painted_owner_failed_graph_has_local_find_and_real_native_boundaries(
     // This assertion concerns a genuinely new, unavailable painted frame,
     // unlike the separate revoked-before-repaint denial test.
     rig.draw(); rig.repaint(); rig.settle();
-    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("retained native scene");
+    let graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("retained native scene");
     rig.cx.update(|window, _| {
         let tree = window.a11y_tree().expect("unavailable native frame");
         for label in ["Declarations", "Graph coverage"] {
@@ -536,7 +536,7 @@ fn freshly_painted_owner_failed_graph_has_local_find_and_real_native_boundaries(
     rig.cx.simulate_input("cadence"); rig.draw();
     assert!(rig.cx.update(|window, _| window.a11y_tree().expect("local edit").nodes.iter().any(|(_, node)| node.value() == Some("cadence"))));
     rig.native_press("enter");
-    assert!(graph.read_with(rig.cx, |graph, _| graph.focused()).is_none(), "editing grants no resource selection");
+    assert!(graph.read_with(&rig.cx, |graph, _| graph.focused()).is_none(), "editing grants no resource selection");
     rig.keys("tab");
     assert!(!rig.cx.update(|window, cx| graph.read(cx).owns_native_focus(window, cx)), "a current Find-only frame has a real forward boundary");
     let mut returned = false;
@@ -553,7 +553,7 @@ fn freshly_painted_owner_failed_graph_has_local_find_and_real_native_boundaries(
     rig.keys("shift-tab");
     assert!(!rig.cx.update(|window, cx| graph.read(cx).owns_native_focus(window, cx)), "the local editor also has a real backward boundary");
     assert_eq!(rig.route(), Route::World);
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.graph_focus().is_none()));
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.graph_focus().is_none()));
 }
 
 #[gpui::test]
@@ -566,8 +566,8 @@ fn resource_control_retirement_cannot_park_a_later_native_origin(cx: &mut TestAp
         match origin {
             "shelf" => {
                 rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx| shell.take_zone(super::focus::Zone::Shelf, window, cx)));
-                let shelf = rig.shell.read_with(rig.cx, |shell, _| shell.shelf_entity());
-                let targets = shelf.read_with(rig.cx, |shelf, _| shelf.targets.clone());
+                let shelf = rig.shell.read_with(&rig.cx, |shell, _| shell.shelf_entity());
+                let targets = shelf.read_with(&rig.cx, |shelf, _| shelf.targets.clone());
                 let target = targets.native_keys().into_iter().next().expect("registered mounted Shelf control");
                 rig.cx.update(|window, cx| assert!(targets.focus_native(&target, window, cx)));
             }
@@ -580,7 +580,7 @@ fn resource_control_retirement_cannot_park_a_later_native_origin(cx: &mut TestAp
         rig.draw(); rig.repaint(); rig.settle();
         assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), later,
             "resource retirement preserves the later {origin} origin");
-        assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_some(),
+        assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).is_some(),
             "denied parking does not erase the retained local scene");
     }
 }
@@ -592,15 +592,15 @@ fn graph_native_release_cannot_adopt_a_replacement_owner(cx: &mut TestAppContext
     let toggle = super::tests::native_bounds(&mut rig, "Button", "Declarations", true).expect("chooser");
     rig.cx.simulate_click(toggle.center(), gpui::Modifiers::none());
     rig.settle();
-    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("graph");
+    let graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("graph");
     tab_to_graph_control(&mut rig, "Select real-rust-canary::cadence::advance_signal · function. src/cadence.rs:8");
     rig.cx.simulate_event(KeyDownEvent { keystroke: Keystroke::parse("enter").expect("key"), is_held: false, prefer_character_input: false });
-    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     gate.publish(crate::runtime::owner::OwnerState::Starting);
     gate.publish(crate::runtime::owner::OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
     // No repaint or UI watcher between owner renewal and the old native up.
     rig.cx.simulate_event(KeyUpEvent { keystroke: Keystroke::parse("enter").expect("key") });
-    assert!(graph.read_with(rig.cx, |graph, _| graph.focused()).is_none(), "the old native callback cannot adopt a new exact-root owner attachment");
+    assert!(graph.read_with(&rig.cx, |graph, _| graph.focused()).is_none(), "the old native callback cannot adopt a new exact-root owner attachment");
 }
 
 
@@ -630,15 +630,15 @@ fn newly_entered_world_native_page_and_code_open_exact_semantic_selection(cx: &m
 fn graph_header_requests_the_exact_selection_at_native_activation_time(cx: &mut TestAppContext) {
     for (view, id) in [(View::Page, "view-page"), (View::Code, "view-code")] {
         let mut rig = world_rig(cx, view_route("RelationLabel", View::Graph));
-        rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL_FN, cx));
+        rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL_FN, cx));
         rig.settle();
-        let action = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_action(id, cx))
+        let action = rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_target_action(id, cx))
             .expect("painted selected graph control");
-        let (activation, reading) = rig.graph.store.read_with(rig.cx, |store, _| {
+        let (activation, reading) = rig.graph.store.read_with(&rig.cx, |store, _| {
             (crate::runtime::content_visit::ContentVisit::capture(&store.snapshot()),
                 store.snapshot().session().reading.current.id)
         });
-        let before = rig.graph.root.read_with(rig.cx, |root, _| root.graph_view_generation());
+        let before = rig.graph.root.read_with(&rig.cx, |root, _| root.graph_view_generation());
         let root = rig.graph.root.clone();
         rig.cx.update(|window, cx| {
             action(window, cx);
@@ -655,9 +655,9 @@ fn graph_header_requests_the_exact_selection_at_native_activation_time(cx: &mut 
         rig.cx.simulate_click(back.center(), gpui::Modifiers::none());
         rig.settle();
         assert_eq!(rig.route(), view_route("RelationLabel", View::Graph));
-        assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)).contains("focus Some(3)"),
+        assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_report(cx)).contains("focus Some(3)"),
             "Back restores the chosen graph node and its retained scene");
-        rig.graph.store.read_with(rig.cx, |store, _| {
+        rig.graph.store.read_with(&rig.cx, |store, _| {
             assert_eq!(store.snapshot().session().reading.current.id, reading);
             assert!(!activation.current(&store.snapshot()), "Back renews action ownership");
             let focus = store.graph_focus().expect("the returned map explicitly republished selection");
@@ -671,15 +671,15 @@ fn graph_header_requests_the_exact_selection_at_native_activation_time(cx: &mut 
 fn fresh_same_route_graph_reentry_consumes_entry_instead_of_reviving_departed_selection(cx: &mut TestAppContext) {
     for route in [Route::World, view_route("RelationLabel", View::Graph)] {
         let mut rig = world_rig(cx, route.clone());
-        rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL_FN, cx));
+        rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL_FN, cx));
         rig.settle();
-        let former = rig.graph.store.read_with(rig.cx, |store, _|
+        let former = rig.graph.store.read_with(&rig.cx, |store, _|
             crate::runtime::content_visit::ContentVisit::capture(&store.snapshot()));
         rig.go(Intent::Navigate(Route::Orbit(crate::navigation::OrbitRoute::Home)));
         rig.go(Intent::Navigate(route.clone()));
         rig.settle();
         let expected = if route == Route::World { None } else { Some(RELATION_LABEL) };
-        rig.graph.store.read_with(rig.cx, |store, _| {
+        rig.graph.store.read_with(&rig.cx, |store, _| {
             assert!(!former.current(&store.snapshot()));
             assert_eq!(store.graph_focus().map(|focus| focus.node), expected,
                 "a fresh graph arrival consumes its entry; deliberate Back is covered separately");
@@ -690,9 +690,9 @@ fn fresh_same_route_graph_reentry_consumes_entry_instead_of_reviving_departed_se
 #[gpui::test]
 fn graph_header_never_substitutes_a_later_selection_for_its_activated_one(cx: &mut TestAppContext) {
     let mut rig = world_rig(cx, view_route("RelationLabel", View::Graph));
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL_FN, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(RELATION_LABEL_FN, cx));
     rig.settle();
-    let action = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_action("view-page", cx))
+    let action = rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_target_action("view-page", cx))
         .expect("B's current header action");
     let shell = rig.shell.clone();
     rig.cx.update(|window, cx| {
@@ -715,14 +715,14 @@ fn captured_graph_header_action_cannot_cross_same_root_owner_replacement(cx: &mu
     tab_to_graph_control(&mut rig, "Select real-rust-canary::cadence::advance_signal · function. src/cadence.rs:8");
     rig.native_press("enter");
     rig.settle();
-    let action = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_action("view-page", cx))
+    let action = rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_target_action("view-page", cx))
         .expect("captured current header action");
-    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     gate.publish(crate::runtime::owner::OwnerState::Starting);
     gate.publish(crate::runtime::owner::OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
-    let before = rig.graph.root.read_with(rig.cx, |root, _| root.graph_view_generation());
+    let before = rig.graph.root.read_with(&rig.cx, |root, _| root.graph_view_generation());
     rig.cx.update(|window, cx| action(window, cx));
-    assert_eq!(rig.graph.root.read_with(rig.cx, |root, _| root.graph_view_generation()), before,
+    assert_eq!(rig.graph.root.read_with(&rig.cx, |root, _| root.graph_view_generation()), before,
         "the captured target does not even emit a request under a new attachment");
     assert_eq!(rig.route(), Route::World);
 }
@@ -754,27 +754,27 @@ fn graph_painted_modes_revoke_on_owner_renewal_and_modal_cover(cx: &mut TestAppC
     rig.native_press("enter");
     tab_to_graph_control(&mut rig, "Select real-rust-canary::cadence::advance_signal · function. src/cadence.rs:8");
     rig.native_press("enter");
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.mode_input_allowed(cx)), "the actual mounted graph owns a live painted receipt");
-    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.mode_input_allowed(cx)), "the actual mounted graph owns a live painted receipt");
+    let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     gate.publish(crate::runtime::owner::OwnerState::Starting);
     gate.publish(crate::runtime::owner::OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
     // Same content root and scene, different owner attachment. Before any
     // new frame, keyboard input cannot reuse the older graph receipt.
-    assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.mode_input_allowed(cx)));
+    assert!(!rig.shell.read_with(&rig.cx, |shell, cx| shell.mode_input_allowed(cx)));
     rig.cx.simulate_keystrokes("ctrl-3");
     assert_eq!(rig.route(), Route::World, "old painted input cannot open Page");
     rig.repaint();
     rig.settle();
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.mode_input_allowed(cx)), "a real repaint restores eligibility");
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.mode_input_allowed(cx)), "a real repaint restores eligibility");
     rig.go(Intent::OpenSettings(SettingsPage::Index));
-    assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.mode_input_allowed(cx)));
+    assert!(!rig.shell.read_with(&rig.cx, |shell, cx| shell.mode_input_allowed(cx)));
     assert!(super::tests::native_bounds(&mut rig, "Button", "Show Page view", true).is_none(), "covered graph has no native mode action");
     rig.keys("ctrl-3");
     rig.keys("secondary-.");
     assert_eq!(rig.route(), Route::World);
     rig.go(Intent::DismissOverlay);
     rig.settle();
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.mode_input_allowed(cx)));
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.mode_input_allowed(cx)));
     let action = super::tests::native_bounds(&mut rig, "Button", "Show Code view", true).expect("restored native action");
     rig.cx.simulate_click(action.center(), gpui::Modifiers::none());
     rig.settle();
@@ -787,14 +787,14 @@ fn mounted_graph_recovers_from_owner_renewal_without_navigation_or_forced_redraw
     let (mut rig, gate) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);
     assert!(rig.cx.update(|window, cx| rig.shell.read(cx).graph_entity(cx)
         .expect("current graph").focus_handle(cx).is_focused(window)), "the mounted predecessor owns native focus");
-    let before = rig.shell.read_with(rig.cx, |shell, cx| {
+    let before = rig.shell.read_with(&rig.cx, |shell, cx| {
         shell.graph_entity(cx).expect("current mounted graph").entity_id()
     });
-    let key = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let key = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     gate.publish(crate::runtime::owner::OwnerState::Starting);
     rig.cx.run_until_parked();
     assert_eq!(rig.route(), Route::World);
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_attachment()).is_none(),
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.current_owner_attachment()).is_none(),
         "withdrawal must revoke serving eligibility before recovery");
 
     gate.publish(crate::runtime::owner::OwnerState::Ready {
@@ -805,8 +805,8 @@ fn mounted_graph_recovers_from_owner_renewal_without_navigation_or_forced_redraw
     // repaint, draw or synthetic input here would hide the missing wake.
     rig.cx.run_until_parked();
     assert_eq!(rig.route(), Route::World);
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_attachment()).is_some());
-    let mounted = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx));
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.current_owner_attachment()).is_some());
+    let mounted = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx));
     assert!(mounted.is_some(), "the same visible route must remount after admission without an external wake");
     let mounted = mounted.expect("remounted graph");
     assert_ne!(mounted.entity_id(), before,
@@ -818,13 +818,13 @@ fn mounted_graph_recovers_from_owner_renewal_without_navigation_or_forced_redraw
 #[gpui::test]
 fn retained_graph_replacement_cannot_steal_a_later_native_blur(cx: &mut TestAppContext) {
     let (mut rig, gate) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);
-    let key = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let key = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     gate.publish(crate::runtime::owner::OwnerState::Starting);
     rig.cx.run_until_parked();
     rig.cx.update(|window, _| window.blur());
     gate.publish(crate::runtime::owner::OwnerState::Ready { key, mode: crate::model::ServiceMode::Attached });
     rig.cx.run_until_parked();
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_some(), "the retained route still mounts its current scene");
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).is_some(), "the retained route still mounts its current scene");
     assert!(rig.cx.update(|window, cx| window.focused(cx).is_none()), "a real later blur revokes replacement focus");
 }
 
@@ -835,7 +835,7 @@ fn retained_graph_waiting_for_owner_keeps_global_settings_reachable(cx: &mut Tes
     rig.cx.run_until_parked();
     rig.native_press("secondary-,");
     rig.cx.run_until_parked();
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| matches!(store.snapshot().overlay(), Some(crate::navigation::Overlay::Settings(_)))),
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| matches!(store.snapshot().overlay(), Some(crate::navigation::Overlay::Settings(_)))),
         "a retired Graph receiver must not strand global dispatch during the read");
 }
 
@@ -844,36 +844,36 @@ fn retired_graph_native_control_parks_without_guessing_a_replacement_stop(cx: &m
     use gpui::Focusable as _;
     let (mut rig, gate) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);
     tab_to_graph_control(&mut rig, "Declarations");
-    let key = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let key = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     gate.publish(crate::runtime::owner::OwnerState::Starting);
     rig.cx.run_until_parked();
     gate.publish(crate::runtime::owner::OwnerState::Ready { key, mode: crate::model::ServiceMode::Attached });
     rig.cx.run_until_parked();
-    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("current replacement");
+    let graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("current replacement");
     assert!(!rig.cx.update(|window, cx| graph.focus_handle(cx).is_focused(window)), "an old control does not authorize guessing the scene's root focus");
     assert!(rig.cx.update(|window, cx| window.focused(cx).is_some_and(|focus| window.is_focus_handle_mounted(&focus))), "a current neutral receiver keeps dispatch alive");
     rig.native_press("secondary-,");
     rig.cx.run_until_parked();
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| matches!(store.snapshot().overlay(), Some(crate::navigation::Overlay::Settings(_)))));
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| matches!(store.snapshot().overlay(), Some(crate::navigation::Overlay::Settings(_)))));
 }
 
 #[gpui::test]
 fn package_publication_refreshes_a_retained_graph_without_changing_the_place(cx: &mut TestAppContext) {
     let mut rig = world_rig(cx, Route::World);
-    let before = rig.shell.read_with(rig.cx, |shell, cx|
+    let before = rig.shell.read_with(&rig.cx, |shell, cx|
         shell.graph_entity(cx).expect("mounted graph").entity_id());
-    let snapshot = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let snapshot = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
     let published = std::collections::BTreeSet::from([
         PackageRef::parse(PACKAGE).expect("exact package"),
     ]);
-    rig.graph.store.update(rig.cx, |store, cx| store.packages_published(&published, cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.packages_published(&published, cx));
     // Only publication/Memo/dirty-view effects may wake the graph. No
     // navigation, synthetic input, explicit draw or settle hides the boundary.
     rig.cx.run_until_parked();
     assert_eq!(rig.route(), Route::World);
-    assert!(rig.graph.store.read_with(rig.cx, |store, _|
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _|
         Arc::ptr_eq(&snapshot, &store.snapshot())), "publication preserves route/history/root");
-    let after = rig.shell.read_with(rig.cx, |shell, cx|
+    let after = rig.shell.read_with(&rig.cx, |shell, cx|
         shell.graph_entity(cx).expect("fresh graph mounts autonomously").entity_id());
     assert_ne!(after, before, "cached aggregate facts must be withdrawn at publication");
 }
@@ -884,23 +884,23 @@ fn package_publication_discards_an_older_in_flight_graph_before_rereading(cx: &m
     let mut rig = rig(cx, None, 1440.0, 900.0);
     rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
     let gate = Arc::new(TestProjectionGate::default());
-    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture_with_gate(root, Some(gate.clone()), cx));
-    rig.graph.root.update(rig.cx, |root, cx| root.dispatch(Intent::Navigate(Route::World), cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.dispatch(Intent::Navigate(Route::World), cx));
     rig.draw_frame();
     rig.cx.run_until_parked();
     assert_eq!(gate.reads_entered(), 1, "first real Memo read is blocked");
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
     let published = std::collections::BTreeSet::from([
         PackageRef::parse(PACKAGE).expect("exact package"),
     ]);
-    rig.graph.store.update(rig.cx, |store, cx| store.packages_published(&published, cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.packages_published(&published, cx));
     rig.cx.run_until_parked();
     assert_eq!(gate.reads_entered(), 1, "cancelled work retains its capacity slot until it exits");
     gate.release();
     rig.cx.run_until_parked();
     assert_eq!(gate.reads_entered(), 2, "the pre-publication success is discarded, then facts are reread");
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_some(),
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).is_some(),
         "only the fresh read may mount the same visible graph");
     assert_eq!(rig.route(), Route::World);
 }
@@ -926,7 +926,7 @@ fn continuity_rig(cx: &mut TestAppContext, route: Route) -> Rig {
     let mut rig = rig(cx, None, 1440.0, 900.0);
     rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
     let (world, identities) = continuity_world(&["RelationLabel", "RelationDirection"]);
-    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     rig.cx.update(|_, cx| super::bodies::graph::install_test_world(root, world, identities, cx));
     rig.go(Intent::Navigate(route));
     rig
@@ -934,7 +934,7 @@ fn continuity_rig(cx: &mut TestAppContext, route: Route) -> Rig {
 
 fn publish_continuity(rig: &mut Rig) {
     let packages = std::collections::BTreeSet::from([PackageRef::parse(PACKAGE).expect("exact package")]);
-    rig.graph.store.update(rig.cx, |store, cx| store.packages_published(&packages, cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.packages_published(&packages, cx));
     rig.cx.run_until_parked();
 }
 
@@ -942,32 +942,32 @@ fn publish_continuity(rig: &mut Rig) {
 fn publication_preserves_selected_b_and_exact_camera_on_consumed_route_a(cx: &mut TestAppContext) {
     let route = view_route("RelationLabel", View::Graph);
     let mut rig = continuity_rig(cx, route.clone());
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
     rig.settle();
-    let before = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx).expect("mounted graph"));
+    let before = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx).expect("mounted graph"));
     let camera = facet::motion::Camera::new(13.25, -8.75, 133.5);
-    before.update(rig.cx, |graph, cx| graph.fly_to(camera, cx));
+    before.update(&mut rig.cx, |graph, cx| graph.fly_to(camera, cx));
     rig.settle();
-    assert_eq!(before.read_with(rig.cx, |graph, _| (graph.focused(), graph.camera())), (Some(1), Some(camera)));
-    let snapshot = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    assert_eq!(before.read_with(&rig.cx, |graph, _| (graph.focused(), graph.camera())), (Some(1), Some(camera)));
+    let snapshot = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
     publish_continuity(&mut rig);
-    let after = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx).expect("publication mounts autonomously"));
+    let after = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx).expect("publication mounts autonomously"));
     assert_ne!(before.entity_id(), after.entity_id());
-    assert_eq!(after.read_with(rig.cx, |graph, _| (graph.focused(), graph.camera())), (Some(1), Some(camera)),
+    assert_eq!(after.read_with(&rig.cx, |graph, _| (graph.focused(), graph.camera())), (Some(1), Some(camera)),
         "consumed route A cannot override the user's actual selection B or placement");
     assert_eq!(rig.route(), route);
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| Arc::ptr_eq(&snapshot, &store.snapshot())), "restoration appends no history");
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| Arc::ptr_eq(&snapshot, &store.snapshot())), "restoration appends no history");
 }
 
 #[gpui::test]
 fn covered_publication_preserves_graph_geometry_without_taking_settings_focus(cx: &mut TestAppContext) {
     let route = view_route("RelationLabel", View::Graph);
     let mut rig = continuity_rig(cx, route.clone());
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
     rig.settle();
-    let before = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx).expect("mounted graph"));
+    let before = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx).expect("mounted graph"));
     let camera = facet::motion::Camera::new(18.5, -12.25, 119.75);
-    before.update(rig.cx, |graph, cx| graph.fly_to(camera, cx));
+    before.update(&mut rig.cx, |graph, cx| graph.fly_to(camera, cx));
     rig.settle();
     rig.go(Intent::OpenSettings(SettingsPage::Appearance));
     rig.native_press("tab");
@@ -983,9 +983,9 @@ fn covered_publication_preserves_graph_geometry_without_taking_settings_focus(cx
     assert_eq!(rig.route(), route);
     rig.native_press("escape");
     rig.cx.run_until_parked();
-    let after = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx).expect("graph remounts on explicit cover return"));
+    let after = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx).expect("graph remounts on explicit cover return"));
     assert_ne!(before.entity_id(), after.entity_id());
-    assert_eq!(after.read_with(rig.cx, |graph, _| (graph.focused(), graph.camera())), (Some(1), Some(camera)),
+    assert_eq!(after.read_with(&rig.cx, |graph, _| (graph.focused(), graph.camera())), (Some(1), Some(camera)),
         "the unchanged underlying reading visit retains B and exact placement across cover retirement");
     assert_eq!(rig.route(), route);
 }
@@ -994,11 +994,11 @@ fn covered_publication_preserves_graph_geometry_without_taking_settings_focus(cx
 fn publication_remaps_permuted_selection_and_anchor_on_first_ready_paint(cx: &mut TestAppContext) {
     use crate::runtime::indexed_world::{self, TestProjectionGate};
     let mut rig = continuity_rig(cx, view_route("RelationLabel", View::Graph));
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
     rig.settle();
-    let before = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx).expect("old graph"));
-    let geometry = before.read_with(rig.cx, |graph, _| graph.presentation().expect("actual selected geometry"));
-    let snapshot = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let before = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx).expect("old graph"));
+    let geometry = before.read_with(&rig.cx, |graph, _| graph.presentation().expect("actual selected geometry"));
+    let snapshot = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
     let (world, identities) = continuity_world(&["RelationDirection", "RelationLabel", "KindGlyph"]);
     let scene = facet::graph::scene::Scene::new(world.clone(), facet::graph::layout::layout_of(&world));
     let expected = geometry.restore(&scene, Some(0)).expect("uniquely remapped B anchor");
@@ -1006,38 +1006,38 @@ fn publication_remaps_permuted_selection_and_anchor_on_first_ready_paint(cx: &mu
     rig.cx.update(|_, cx| indexed_world::install_test_projection(snapshot.key(), "permuted exact graph", world, identities, Some(gate.clone()), cx));
     publish_continuity(&mut rig);
     assert!(gate.entered());
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
     let probe = super::bodies::graph::FirstReadyFrameProbe::new(snapshot.key());
     rig.cx.update(|_, cx| cx.set_global(probe.clone()));
     gate.release();
     rig.cx.run_until_parked();
-    let after = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx).expect("first ready wake mounts"));
-    assert_eq!(after.read_with(rig.cx, |graph, _| (graph.focused(), graph.camera())), (Some(0), Some(expected)),
+    let after = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx).expect("first ready wake mounts"));
+    assert_eq!(after.read_with(&rig.cx, |graph, _| (graph.focused(), graph.camera())), (Some(0), Some(expected)),
         "raw old node 1 now names A, while exact B restores at node 0");
     let observed = probe.result.borrow();
     let first = observed.as_ref().expect("passive first ready observation");
     assert!(first.mounted_at_render && first.painted, "no navigation, input, explicit draw or second wake is needed");
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| Arc::ptr_eq(&snapshot, &store.snapshot())));
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| Arc::ptr_eq(&snapshot, &store.snapshot())));
 }
 
 #[gpui::test]
 fn later_world_navigation_cancels_selection_restoration_while_projection_is_in_flight(cx: &mut TestAppContext) {
     use crate::runtime::indexed_world::{self, TestProjectionGate};
     let mut rig = continuity_rig(cx, view_route("RelationLabel", View::Graph));
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
     rig.settle();
-    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     let (world, identities) = continuity_world(&["RelationDirection", "RelationLabel"]);
     let gate = Arc::new(TestProjectionGate::default());
     rig.cx.update(|_, cx| indexed_world::install_test_projection(root, "held replacement", world, identities, Some(gate.clone()), cx));
     publish_continuity(&mut rig);
     assert!(gate.entered());
-    rig.graph.root.update(rig.cx, |root, cx| root.dispatch(Intent::Navigate(Route::World), cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.dispatch(Intent::Navigate(Route::World), cx));
     rig.cx.run_until_parked();
     gate.release();
     rig.cx.run_until_parked();
     assert_eq!(rig.route(), Route::World);
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx).expect("fresh world").read(cx).focused()), None,
+    assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx).expect("fresh world").read(cx).focused()), None,
         "later explicit World wins over retained B from route A");
 }
 
@@ -1045,21 +1045,21 @@ fn later_world_navigation_cancels_selection_restoration_while_projection_is_in_f
 fn later_declaration_route_beats_retained_selection_during_projection_read(cx: &mut TestAppContext) {
     use crate::runtime::indexed_world::{self, TestProjectionGate};
     let mut rig = continuity_rig(cx, view_route("RelationLabel", View::Graph));
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
     rig.settle();
-    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     let (world, identities) = continuity_world(&["RelationDirection", "RelationLabel", "KindGlyph"]);
     let gate = Arc::new(TestProjectionGate::default());
     rig.cx.update(|_, cx| indexed_world::install_test_projection(root, "held replacement for later route", world, identities, Some(gate.clone()), cx));
     publish_continuity(&mut rig);
     assert!(gate.entered());
     let later = view_route("KindGlyph", View::Graph);
-    rig.graph.root.update(rig.cx, |root, cx| root.dispatch(Intent::Navigate(later.clone()), cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.dispatch(Intent::Navigate(later.clone()), cx));
     rig.cx.run_until_parked();
     gate.release();
     rig.cx.run_until_parked();
     assert_eq!(rig.route(), later);
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx).expect("fresh graph for later route").read(cx).focused()), Some(2),
+    assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx).expect("fresh graph for later route").read(cx).focused()), Some(2),
         "route C is consumed against fresh identities instead of restoring B from the earlier visit");
 }
 
@@ -1075,7 +1075,7 @@ fn stale_graph_row_pointer_and_ax_cannot_take_current_focus_before_redraw(cx: &m
         .find(|(_, node)| node.role() == gpui::Role::Button && node.label() == Some(name)).map(|(id, _)| *id).expect("AX exact row"));
     tab_to_graph_control(&mut rig, "Hide declarations");
     let focused = rig.cx.update(|window, cx| window.focused(cx));
-    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     gate.publish(crate::runtime::owner::OwnerState::Starting);
     gate.publish(crate::runtime::owner::OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
     rig.cx.simulate_mouse_down(row.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
@@ -1086,14 +1086,14 @@ fn stale_graph_row_pointer_and_ax_cannot_take_current_focus_before_redraw(cx: &m
         target_node: old_node, data: None,
     }, cx));
     assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused, "stale native AX action cannot change current focus");
-    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("same graph");
-    assert!(graph.read_with(rig.cx, |graph, _| graph.focused()).is_none());
+    let graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("same graph");
+    assert!(graph.read_with(&rig.cx, |graph, _| graph.focused()).is_none());
     rig.repaint();
     rig.settle();
     let row = super::tests::native_bounds(&mut rig, "Button", name, true).expect("fresh exact row");
     rig.cx.simulate_click(row.center(), gpui::Modifiers::none());
     rig.settle();
-    assert_eq!(graph.read_with(rig.cx, |graph, _| graph.focused()), Some(1), "current owner remains operable through the shared native path");
+    assert_eq!(graph.read_with(&rig.cx, |graph, _| graph.focused()), Some(1), "current owner remains operable through the shared native path");
 }
 
 #[gpui::test]
@@ -1105,8 +1105,8 @@ fn selected_native_landmark_and_page_code_survive_caption_no_fit(cx: &mut TestAp
         tab_to_graph_control(&mut rig, "Select real-rust-canary::cadence::advance_signal · function. src/cadence.rs:8");
         rig.native_press("enter");
         rig.settle();
-        let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("painted graph");
-        assert_eq!(graph.read_with(rig.cx, |graph, _| graph.stats().selected_labels), 0,
+        let graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("painted graph");
+        assert_eq!(graph.read_with(&rig.cx, |graph, _| graph.stats().selected_labels), 0,
             "full caption does not fit beside actual measured native chrome at this scale");
         let landmark = "Selected declaration real-rust-canary::cadence::advance_signal · function. src/cadence.rs:8";
         let bounds = super::tests::native_bounds(&mut rig, "Group", landmark, false).expect("full exact selected native landmark survives caption placement failure");
@@ -1130,16 +1130,16 @@ fn indexed_projection_callback_mounts_on_its_first_announced_draw(cx: &mut TestA
     rig.cx.update(|window, _| window.set_a11y_forced(true));
     rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
     let gate = Arc::new(TestProjectionGate::default());
-    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     let probe = super::bodies::graph::FirstReadyFrameProbe::new(root);
     rig.cx.update(|_, cx| cx.set_global(probe.clone()));
     rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture_with_gate(root, Some(gate.clone()), cx));
-    rig.graph.root.update(rig.cx, |root, cx| root.dispatch(Intent::Navigate(Route::World), cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.dispatch(Intent::Navigate(Route::World), cx));
     rig.draw_frame();
     rig.cx.run_until_parked();
     assert!(gate.entered(), "real asynchronous Memo worker is held");
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)), Some(MapWorkStatus::ProjectionRead));
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
+    assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_work_status(cx)), Some(MapWorkStatus::ProjectionRead));
     let before = rig.cx.update(|window, _| window.a11y_frame_number());
     gate.release();
     rig.cx.run_until_parked();
@@ -1181,8 +1181,8 @@ fn settings_returns_only_an_admitted_native_graph_root(cx: &mut TestAppContext) 
             "descendant" => tab_to_graph_control(&mut rig, "Declarations"),
             "shelf" => {
                 rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx| shell.take_zone(super::focus::Zone::Shelf, window, cx)));
-                let shelf = rig.shell.read_with(rig.cx, |shell, _| shell.shelf_entity());
-                let targets = shelf.read_with(rig.cx, |shelf, _| shelf.targets.clone());
+                let shelf = rig.shell.read_with(&rig.cx, |shell, _| shell.shelf_entity());
+                let targets = shelf.read_with(&rig.cx, |shelf, _| shelf.targets.clone());
                 let target = targets.native_keys().into_iter().next().expect("a real registered Shelf control");
                 rig.cx.update(|window, cx| assert!(targets.focus_native(&target, window, cx)));
             }
@@ -1190,15 +1190,15 @@ fn settings_returns_only_an_admitted_native_graph_root(cx: &mut TestAppContext) 
         }
         let before = rig.cx.update(|window, cx| window.focused(cx)).expect("actual native origin");
         rig.keys("secondary-,");
-        assert!(rig.graph.store.read_with(rig.cx, |store, _| matches!(store.snapshot().overlay(), Some(crate::navigation::Overlay::Settings(_)))));
+        assert!(rig.graph.store.read_with(&rig.cx, |store, _| matches!(store.snapshot().overlay(), Some(crate::navigation::Overlay::Settings(_)))));
         assert_ne!(rig.cx.update(|window, cx| window.focused(cx)), Some(before));
         rig.keys("escape");
-        let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("current graph");
+        let graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("current graph");
         assert_eq!(rig.cx.update(|window, cx| graph.focus_handle(cx).is_focused(window)), origin == "root", "only an actual root origin admits Graph-root return from {origin}");
         assert!(rig.cx.update(|window, cx| window.focused(cx).is_some_and(|focus| window.is_focus_handle_mounted(&focus))), "the uncovered receiver remains mounted");
         if origin != "root" {
             rig.keys("secondary-,");
-            assert!(rig.graph.store.read_with(rig.cx, |store, _| matches!(store.snapshot().overlay(), Some(crate::navigation::Overlay::Settings(_)))));
+            assert!(rig.graph.store.read_with(&rig.cx, |store, _| matches!(store.snapshot().overlay(), Some(crate::navigation::Overlay::Settings(_)))));
         }
     }
 }
@@ -1211,30 +1211,30 @@ fn settings_graph_root_return_survives_scene_retirement_without_stealing_focus(c
         for return_frame_queued in [false, true] {
             for later_blur in [false, true] {
                 let (mut rig, owner) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);
-                let predecessor = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("mounted predecessor");
+                let predecessor = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("mounted predecessor");
                 assert!(rig.cx.update(|window, cx| predecessor.focus_handle(cx).is_focused(window)), "the actual Graph root owns the departure");
                 let predecessor_id = predecessor.entity_id();
                 drop(predecessor);
                 rig.native_press("secondary-,");
-                assert!(rig.graph.store.read_with(rig.cx, |store, _| matches!(store.snapshot().overlay(), Some(crate::navigation::Overlay::Settings(_)))));
+                assert!(rig.graph.store.read_with(&rig.cx, |store, _| matches!(store.snapshot().overlay(), Some(crate::navigation::Overlay::Settings(_)))));
                 if cover_painted { rig.settle(); }
                 rig.native_press("escape");
-                assert!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay().is_none()), "the complete native dismissal precedes retirement");
+                assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay().is_none()), "the complete native dismissal precedes retirement");
                 if return_frame_queued { rig.draw_frame(); }
                 if later_blur { rig.cx.update(|window, _| window.blur()); }
-                let key = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+                let key = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
                 let projection = Arc::new(TestProjectionGate::default());
                 rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture_with_gate(key, Some(projection.clone()), cx));
                 owner.publish(crate::runtime::owner::OwnerState::Starting);
                 rig.cx.run_until_parked();
-                assert!(rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_attachment()).is_none());
+                assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.current_owner_attachment()).is_none());
                 owner.publish(crate::runtime::owner::OwnerState::Ready { key, mode: crate::model::ServiceMode::Attached });
                 rig.cx.run_until_parked();
                 assert!(projection.entered(), "the replacement's real Memo worker is held");
-                assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
+                assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
                 projection.release();
                 rig.cx.run_until_parked();
-                let replacement = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("Memo completion mounts its new scene without another input or forced draw");
+                let replacement = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("Memo completion mounts its new scene without another input or forced draw");
                 assert_ne!(replacement.entity_id(), predecessor_id);
                 // Complete the ordinary next platform frame. A callback
                 // already queued for A may run too; B must schedule its own
@@ -1259,12 +1259,12 @@ fn first_graph_paint_cannot_recreate_permission_after_later_native_input(cx: &mu
             if covered {
                 rig.go(Intent::Navigate(Route::World));
                 rig.keys("secondary-,");
-                assert!(rig.graph.store.read_with(rig.cx, |store, _| matches!(store.snapshot().overlay(), Some(crate::navigation::Overlay::Settings(_)))));
-                let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
-                let links = reader.read_with(rig.cx, |reader, _| reader.navigation_links());
+                assert!(rig.graph.store.read_with(&rig.cx, |store, _| matches!(store.snapshot().overlay(), Some(crate::navigation::Overlay::Settings(_)))));
+                let reader = rig.shell.read_with(&rig.cx, |shell, _| shell.reader_entity());
+                let links = reader.read_with(&rig.cx, |reader, _| reader.navigation_links());
                 rig.cx.update(|_, cx| links.dispatch(Intent::DismissOverlay, cx));
             } else {
-                rig.graph.root.update(rig.cx, |root, cx| root.dispatch(Intent::Navigate(Route::World), cx));
+                rig.graph.root.update(&mut rig.cx, |root, cx| root.dispatch(Intent::Navigate(Route::World), cx));
             }
             // Each update above completes ordinary store subscribers. A
             // subsequent platform event can arrive before the first paint;
@@ -1277,8 +1277,8 @@ fn first_graph_paint_cannot_recreate_permission_after_later_native_input(cx: &mu
                     // receiver, rather than treating Left on that root as a
                     // new outside focus choice.
                     rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx| shell.take_zone(super::focus::Zone::Shelf, window, cx)));
-                    let shelf = rig.shell.read_with(rig.cx, |shell, _| shell.shelf_entity());
-                    let targets = shelf.read_with(rig.cx, |shelf, _| shelf.targets.clone());
+                    let shelf = rig.shell.read_with(&rig.cx, |shell, _| shell.shelf_entity());
+                    let targets = shelf.read_with(&rig.cx, |shelf, _| shelf.targets.clone());
                     let target = targets.native_keys().into_iter().next().expect("mounted Shelf origin");
                     rig.cx.update(|window, cx| assert!(targets.focus_native(&target, window, cx)));
                     rig.native_press("left");
@@ -1288,7 +1288,7 @@ fn first_graph_paint_cannot_recreate_permission_after_later_native_input(cx: &mu
             }
             let later = rig.cx.update(|window, cx| window.focused(cx));
             rig.settle();
-            let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("the requested graph still mounts");
+            let graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("the requested graph still mounts");
             assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), later, "later {change} before first paint owns covered={covered}");
             assert!(!rig.cx.update(|window, cx| graph.focus_handle(cx).is_focused(window)));
         }
@@ -1305,18 +1305,18 @@ fn ask_opened_from_the_painted_loading_frame_owns_focus_after_graph_completion(c
     let mut rig = super::tests::rig_with_engine_gate(cx, None, 1440.0, 900.0,
         crate::runtime::reads::ReadPool::start(2, |_| super::tests::Fixture).expect("fixture pool"), super::tests::RootOnly, Some(owner));
     rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
-    let key = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let key = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     let gate = Arc::new(TestProjectionGate::default());
     rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture_with_gate(key, Some(gate.clone()), cx));
-    rig.graph.root.update(rig.cx, |root, cx| root.dispatch(Intent::Navigate(Route::World), cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.dispatch(Intent::Navigate(Route::World), cx));
     // The current loading frame supplies the real Shell action context; the
     // requested Graph itself has never mounted or painted.
     rig.draw();
     assert!(gate.entered(), "the actual projection is still held after its loading frame");
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
     rig.native_press("secondary-k");
     rig.draw();
-    assert!(rig.shell.read_with(rig.cx, |shell, _| shell.transients().0), "the native shortcut opens actual Ask from the current loading frame");
+    assert!(rig.shell.read_with(&rig.cx, |shell, _| shell.transients().0), "the native shortcut opens actual Ask from the current loading frame");
     rig.cx.update(|window, cx| { window.simulate_next_frame(cx); });
     rig.cx.run_until_parked();
     let ask = rig.cx.update(|window, cx| {
@@ -1325,7 +1325,7 @@ fn ask_opened_from_the_painted_loading_frame_owns_focus_after_graph_completion(c
     });
     gate.release();
     rig.cx.run_until_parked();
-    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("the projection's ordinary completion mounts the underlying graph");
+    let graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("the projection's ordinary completion mounts the underlying graph");
     rig.cx.update(|window, cx| { window.simulate_next_frame(cx); });
     rig.cx.run_until_parked();
     assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), Some(ask.clone()));
@@ -1343,14 +1343,14 @@ fn delayed_graph_mount_respects_native_focus_intent(cx: &mut TestAppContext) {
         let mut rig = super::tests::rig_with_engine_gate(cx, None, 1440.0, 900.0,
             crate::runtime::reads::ReadPool::start(2, |_| super::tests::Fixture).expect("fixture pool"), super::tests::RootOnly, Some(owner));
         rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
-        let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+        let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
         let gate = Arc::new(TestProjectionGate::default());
         rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture_with_gate(root, Some(gate.clone()), cx));
-        rig.graph.root.update(rig.cx, |root, cx| root.dispatch(Intent::Navigate(Route::World), cx));
+        rig.graph.root.update(&mut rig.cx, |root, cx| root.dispatch(Intent::Navigate(Route::World), cx));
         rig.draw_frame();
         rig.cx.run_until_parked();
         assert!(gate.entered(), "the actual asynchronous projection is held");
-        assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
+        assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
         match change {
             "focus" => rig.cx.update(|window, cx| window.focus_next(cx)),
             "blur" => rig.cx.update(|window, _| window.blur()),
@@ -1363,7 +1363,7 @@ fn delayed_graph_mount_respects_native_focus_intent(cx: &mut TestAppContext) {
         // The Memo's ordinary notification paints its first ready frame. No
         // input, refresh or explicit draw grants it another focus opportunity.
         rig.cx.run_until_parked();
-        let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("mounted projection");
+        let graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("mounted projection");
         if change == "unchanged" {
             assert!(rig.cx.update(|window, cx| graph.focus_handle(cx).is_focused(window)), "an uninterrupted arrival owns native focus");
         } else {
@@ -1385,8 +1385,8 @@ fn native_graph_admission_does_not_reenter_its_leased_graph(cx: &mut TestAppCont
     let label = "Select real-rust-canary::cadence::advance_signal · function. src/cadence.rs:8";
     tab_to_graph_control(&mut rig, label);
     rig.native_press("enter"); rig.settle();
-    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("same scene");
-    assert_eq!(graph.read_with(rig.cx, |graph, _| graph.focused()), Some(1));
+    let graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("same scene");
+    assert_eq!(graph.read_with(&rig.cx, |graph, _| graph.focused()), Some(1));
     let page = super::tests::native_bounds(&mut rig, "Button", "Show Page view", true).expect("current selection action");
     rig.cx.simulate_click(page.center(), gpui::Modifiers::none());
     rig.settle();
@@ -1397,11 +1397,11 @@ fn native_graph_admission_does_not_reenter_its_leased_graph(cx: &mut TestAppCont
 #[gpui::test]
 fn stale_painted_graph_marker_cannot_take_focus_on_owner_replacement(cx: &mut TestAppContext) {
     let (mut rig, gate) = canary_native_rig(cx, 1440.0, 1.0, facet::tokens::Appearance::Abyss);
-    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("native graph");
-    let marker = graph.read_with(rig.cx, |graph, _| graph.node_bounds(1)).expect("painted definition glyph").center();
+    let graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("native graph");
+    let marker = graph.read_with(&rig.cx, |graph, _| graph.node_bounds(1)).expect("painted definition glyph").center();
     tab_to_graph_control(&mut rig, "Declarations");
     let focused = rig.cx.update(|window, cx| window.focused(cx));
-    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     let before = graph_native_evidence(&mut rig);
     gate.publish(crate::runtime::owner::OwnerState::Starting);
     gate.publish(crate::runtime::owner::OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
@@ -1410,11 +1410,11 @@ fn stale_painted_graph_marker_cannot_take_focus_on_owner_replacement(cx: &mut Te
     let after = graph_native_evidence(&mut rig);
     assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused, "revoked paint cannot focus Graph before semantic admission; before={before}; after={after}");
     rig.cx.simulate_mouse_up(marker, gpui::MouseButton::Left, gpui::Modifiers::none());
-    assert!(graph.read_with(rig.cx, |graph, _| graph.focused()).is_none());
+    assert!(graph.read_with(&rig.cx, |graph, _| graph.focused()).is_none());
     rig.repaint(); rig.settle();
-    let marker = graph.read_with(rig.cx, |graph, _| graph.node_bounds(1)).expect("fresh marker").center();
+    let marker = graph.read_with(&rig.cx, |graph, _| graph.node_bounds(1)).expect("fresh marker").center();
     rig.cx.simulate_click(marker, gpui::Modifiers::none());
-    assert_eq!(graph.read_with(rig.cx, |graph, _| graph.focused()), Some(1));
+    assert_eq!(graph.read_with(&rig.cx, |graph, _| graph.focused()), Some(1));
 }
 
 
@@ -1446,9 +1446,9 @@ fn coalesced_graph_return_retires_old_native_resource_controls_before_redraw(cx:
         .find(|(_, node)| node.role() == gpui::Role::Button && node.label() == Some(name))
         .map(|(id, _)| *id).expect("actual native row identity"));
     tab_to_graph_control(&mut rig, "Hide declarations");
-    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("mounted graph");
-    assert!(graph.read_with(rig.cx, |graph, _| graph.focused()).is_none());
-    let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("mounted graph");
+    assert!(graph.read_with(&rig.cx, |graph, _| graph.focused()).is_none());
+    let before = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
     rig.cx.update(|window, cx| {
         let focus = window.focused(cx);
         let frame = window.a11y_frame_number();
@@ -1486,11 +1486,11 @@ fn coalesced_graph_return_retires_old_native_resource_controls_before_redraw(cx:
         assert_eq!(window.a11y_frame_number(), frame, "no forced repaint hides the old native controls");
         assert_eq!(rig.graph.store.read(cx).snapshot().route(), &Route::World);
     });
-    assert!(graph.read_with(rig.cx, |graph, _| graph.focused()).is_none(), "deferred old actions remain retired after event dispatch returns");
+    assert!(graph.read_with(&rig.cx, |graph, _| graph.focused()).is_none(), "deferred old actions remain retired after event dispatch returns");
     rig.cx.run_until_parked();
     let current_row = super::tests::native_bounds(&mut rig, "Button", name, true).expect("fresh native row in the reopened reading");
     rig.cx.simulate_click(current_row.center(), gpui::Modifiers::none());
     rig.settle();
-    assert_eq!(graph.read_with(rig.cx, |graph, _| graph.focused()), Some(1), "freshly admitted reading remains operable");
+    assert_eq!(graph.read_with(&rig.cx, |graph, _| graph.focused()), Some(1), "freshly admitted reading remains operable");
     assert_eq!(rig.route(), Route::World);
 }

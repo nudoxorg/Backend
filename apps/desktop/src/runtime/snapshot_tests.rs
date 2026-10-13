@@ -655,8 +655,8 @@ fn private_cold_world_paints_its_exact_saved_words_through_owner_start_failure_a
     assert!(words.iter().any(|word| word == "Earlier reading"), "the real mounted Reader paints the saved World");
     assert!(words.iter().any(|word| word == "An earlier bounded answer"));
     assert!(words.iter().any(|word| word.contains("observed root") && word.contains("Read-only")));
-    assert!(!rig.graph.store.read_with(rig.cx, |store, _| store.owner_serving()), "cold words cannot establish current owner admission");
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.orbit().loaded_value().is_none()), "cold words cannot populate the Orbit Resource");
+    assert!(!rig.graph.store.read_with(&rig.cx, |store, _| store.owner_serving()), "cold words cannot establish current owner admission");
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.orbit().loaded_value().is_none()), "cold words cannot populate the Orbit Resource");
 
     gate.publish(OwnerState::Failed(OwnerFault::Host(Arc::from("owner could not start"))));
     rig.draw();
@@ -865,7 +865,7 @@ fn cold_source_repaints_share_prepared_index_and_old_pager_callback_cannot_cross
     rig.draw();
     for _ in 0..8 {
         rig.repaint();
-        rig.graph.store.read_with(rig.cx, |store, _| {
+        rig.graph.store.read_with(&rig.cx, |store, _| {
             let display = store.retained_display(&route).expect("exact mounted display");
             assert!(Arc::ptr_eq(display.source_text().expect("reused index"), &indexed));
             assert!(Arc::ptr_eq(display.source_text().expect("source").prepared_line_index().expect("offsets"), &offsets));
@@ -881,13 +881,13 @@ fn cold_source_repaints_share_prepared_index_and_old_pager_callback_cannot_cross
     let tree: serde_json::Value = serde_json::from_str(&rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("AX tree")).expect("AX JSON");
     assert!(tree["nodes"].as_object().expect("nodes").values().any(|node|
         node["aria"]["role"].as_str() == Some("Button") && node["aria"]["label"].as_str() == Some("Next saved text")));
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
     let (target, bounds) = targets.iter().find(|(target, _)| target.label == "Next saved text").expect("local pager");
     assert!(bounds.size.width > gpui::px(0.0) && bounds.size.height > gpui::px(0.0));
     rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
     rig.draw();
     assert!(rig.said().iter().any(|line| line.contains("retained line 064")), "native activation reaches the next bounded source page");
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
     let stale = targets.iter().find(|(target, _)| target.label == "Next saved text")
         .expect("second page native callback").0.action.callback();
     rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
@@ -898,7 +898,7 @@ fn cold_source_repaints_share_prepared_index_and_old_pager_callback_cannot_cross
     rig.go(Intent::Back);
     assert_eq!(rig.route(), route);
     assert!(rig.said().iter().any(|line| line.contains("retained line 064")), "Back restores only its own local pager position");
-    rig.graph.store.read_with(rig.cx, |store, _| {
+    rig.graph.store.read_with(&rig.cx, |store, _| {
         let display = store.retained_display(&route).expect("returned exact saved destination");
         assert!(Arc::ptr_eq(display.source_text().expect("returned prepared index"), &indexed));
         assert!(Arc::ptr_eq(display.source_text().expect("returned source").prepared_line_index()
@@ -933,7 +933,7 @@ fn retained_reading_mounts_only_bounded_rows_and_partitions_pager_by_visit(cx: &
     rig.draw();
     assert!(rig.said().iter().any(|line| line == "saved row 031"));
     assert!(!rig.said().iter().any(|line| line == "saved row 032"), "a paint mounts at most 32 rows");
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
     let (target, bounds) = targets.iter().find(|(target, _)| target.label == "Next saved rows").expect("native rows pager");
     let stale = target.action.callback();
     rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());

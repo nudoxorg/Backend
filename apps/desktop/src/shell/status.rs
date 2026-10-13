@@ -526,7 +526,7 @@ mod tests {
     }
 
     fn current_retry_name(rig: &mut crate::shell::tests::Rig) -> SharedString {
-        rig.graph.store.read_with(rig.cx, |store, _| {
+        rig.graph.store.read_with(&rig.cx, |store, _| {
             let key = store.notice().and_then(|notice| notice.retry.as_ref()).expect("represented recovery page");
             retry_activation_name(store.capture_page_retry(key).as_ref())
         })
@@ -535,7 +535,7 @@ mod tests {
     fn gated_rig(cx: &mut TestAppContext, width: f32) -> (crate::shell::tests::Rig, crate::runtime::owner::OwnerGate) {
         let root = crate::core::VersionedRoot::synthetic(backend_library::view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
         let gate = crate::runtime::owner::OwnerGate::ready(root, crate::model::ServiceMode::Attached);
-        let rig = crate::shell::tests::rig_with_engine_gate(cx, Some(Route::Orbit(OrbitRoute::Home)), width, 900.0,
+        let mut rig = crate::shell::tests::rig_with_engine_gate(cx, Some(Route::Orbit(OrbitRoute::Home)), width, 900.0,
             crate::runtime::reads::ReadPool::start(2, |_| crate::shell::tests::Fixture).expect("pool"), crate::shell::tests::RootOnly, Some(gate.clone()));
         (rig, gate)
     }
@@ -543,7 +543,7 @@ mod tests {
     fn long_notice(rig: &mut crate::shell::tests::Rig) -> String {
         rig.cx.update(|_, cx| facet::probe::enable(cx));
         let message = "The local index could not answer this request. The connection ended before the package read completed; try again after the connection is restored. ".repeat(12);
-        rig.graph.store.update(rig.cx, |store, cx| {
+        rig.graph.store.update(&mut rig.cx, |store, cx| {
             let snapshot = store.snapshot();
             store.set_notice(Some(crate::runtime::graph_focus::Notice {
                 visit: crate::runtime::content_visit::ContentVisit::capture(&snapshot), message: message.clone().into(), retry: Some(crate::model::pages::PageKey::Orbit),
@@ -558,7 +558,7 @@ mod tests {
     #[gpui::test]
     fn status_notice_reserves_native_recovery_room_across_width_text_and_theme(cx: &mut TestAppContext) {
         let (mut rig, _gate) = gated_rig(cx, 1440.0);
-        let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+        let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
         for appearance in [AppearancePreference::Abyss, AppearancePreference::Glacier] {
             rig.go(Intent::SetAppearance(appearance));
             for percent in [100_u16, 150, 200] {
@@ -675,7 +675,7 @@ mod tests {
             (native, window.a11y_node_bounds(native).expect("native status bounds"))
         });
         let key = crate::model::pages::PageKey::Orbit;
-        let (notice, attachment, stamp, submitted, landed) = rig.graph.store.read_with(rig.cx, |store, _| (
+        let (notice, attachment, stamp, submitted, landed) = rig.graph.store.read_with(&rig.cx, |store, _| (
             store.notice().cloned(), store.current_owner_attachment(), store.stamp(&key), store.stats().submitted, store.stats().landed,
         ));
         let renders = rig.counts().status;
@@ -718,11 +718,11 @@ mod tests {
             assert_eq!(window.a11y_frame_number(), frame);
             window.focused(cx)
         });
-        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted), submitted + 1);
+        assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.stats().submitted), submitted + 1);
         assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused);
         assert_eq!(rig.cx.update(|window, _| window.a11y_frame_number()), frame);
         rig.settle();
-        assert!(rig.graph.store.read_with(rig.cx, |store, _| store.stats().landed > landed), "the replacement must actually land from its pool worker");
+        assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.stats().landed > landed), "the replacement must actually land from its pool worker");
         assert!(rig.counts().status > renders, "the watched page stamp renews status without Back or a forced repaint");
         let (native, bounds) = rig.cx.update(|window, _| {
             let native = window.a11y_tree().expect("renewed status AX").nodes.iter()
@@ -731,9 +731,9 @@ mod tests {
             (native, window.a11y_node_bounds(native).expect("renewed status bounds"))
         });
         assert!(rig.cx.update(|window, _| window.a11y_node_bounds(native).is_some()));
-        let submitted = rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted);
+        let submitted = rig.graph.store.read_with(&rig.cx, |store, _| store.stats().submitted);
         rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
-        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted), submitted + 1, "fresh current recovery remains available");
+        assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.stats().submitted), submitted + 1, "fresh current recovery remains available");
         rig.settle();
     }
 
@@ -749,7 +749,7 @@ mod tests {
                     && node.supports_action(gpui::AccessibleAction::Click)).map(|(id, _)| *id).expect("native status Retry");
             (native, window.a11y_node_bounds(native).expect("native status bounds"))
         });
-        let original = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+        let original = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
         let frame = rig.cx.update(|window, _| window.a11y_frame_number());
         let focused = rig.cx.update(|window, cx| {
             let focused = window.focused(cx);
@@ -810,8 +810,8 @@ mod tests {
                         && node.supports_action(gpui::AccessibleAction::Click)).map(|(id, _)| *id).expect("disclosure Click"));
                 let store = rig.graph.store.clone();
                 let root = rig.graph.root.clone();
-                let original = store.read_with(rig.cx, |store, _| store.snapshot());
-                let notice = store.read_with(rig.cx, |store, _| store.notice().cloned().expect("represented notice"));
+                let original = store.read_with(&rig.cx, |store, _| store.snapshot());
+                let notice = store.read_with(&rig.cx, |store, _| store.notice().cloned().expect("represented notice"));
                 let frame = rig.cx.update(|window, _| window.a11y_frame_number());
                 let focus = rig.cx.update(|window, cx| {
                     let previous = window.focused(cx).expect("mounted focus");

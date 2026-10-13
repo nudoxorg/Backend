@@ -58,12 +58,12 @@ fn draw(cx: &mut VisualTestContext) {
     });
 }
 
-fn mounted(cx: &mut TestAppContext) -> (gpui::Entity<Mounted>, &mut VisualTestContext) {
+fn mounted(cx: &mut TestAppContext) -> (gpui::Entity<Mounted>, VisualTestContext) {
     cx.update(|cx| {
         gpui_component::init(cx);
         let _ = facet::fonts::install(cx);
     });
-    cx.add_window_view(|_, _| Mounted {
+    cx.add_window_view_owned(|_, _| Mounted {
         targets: Targets::named("native-mount-test"),
         destination: Route::World,
         source: None,
@@ -76,7 +76,8 @@ fn mounted(cx: &mut TestAppContext) -> (gpui::Entity<Mounted>, &mut VisualTestCo
 fn mount_receipt_survives_native_repaint_but_not_unmount_or_same_label_payload_change(
     cx: &mut TestAppContext,
 ) {
-    let (view, cx) = mounted(cx);
+    let (view, mut owned_cx) = mounted(cx);
+    let cx = &mut owned_cx;
     draw(cx);
     let targets = view.read_with(cx, |view, _| view.targets.clone());
     let original = targets
@@ -132,7 +133,8 @@ fn mount_receipt_survives_native_repaint_but_not_unmount_or_same_label_payload_c
 fn logical_registration_without_native_paint_cannot_upgrade_a_cached_mount_receipt(
     cx: &mut TestAppContext,
 ) {
-    let (view, cx) = mounted(cx);
+    let (view, mut owned_cx) = mounted(cx);
+    let cx = &mut owned_cx;
     draw(cx);
     let targets = view.read_with(cx, |view, _| view.targets.clone());
     let original = targets
@@ -172,7 +174,8 @@ fn logical_registration_without_native_paint_cannot_upgrade_a_cached_mount_recei
 
 #[gpui::test]
 fn same_label_changed_source_retires_the_original_native_target(cx: &mut TestAppContext) {
-    let (view, cx) = mounted(cx);
+    let (view, mut owned_cx) = mounted(cx);
+    let cx = &mut owned_cx;
     view.update(cx, |view, cx| {
         view.source =
             Some(SymbolRef::new("/fixture/app::app.rs:1::first").expect("first declaration"));

@@ -105,7 +105,7 @@ impl Render for Frame {
 
 /// A window on one hand probe.
 struct Drawn {
-    cx: &'static mut VisualTestContext,
+    cx: VisualTestContext,
     drew: Rc<RefCell<Rc<HandView>>>,
     renders: Rc<Cell<u32>>,
 }
@@ -130,7 +130,7 @@ fn window(cx: &mut TestAppContext, hand: Hand) -> Drawn {
         })
         .expect("window")
     });
-    Drawn { cx: VisualTestContext::from_window(opened.into(), cx).into_mut(), drew, renders }
+    Drawn { cx: VisualTestContext::from_window(opened.into(), cx), drew, renders }
 }
 
 fn install_test_world(cx: &mut TestAppContext) -> Arc<WorldHandle> {

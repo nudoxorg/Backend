@@ -1165,15 +1165,15 @@ mod tests {
                 ReadPool::start(2, |_| Fixture).expect("fixture pool"));
             rig.go(crate::navigation::Intent::SetMotion(crate::model::MotionPreference::Reduced));
             rig.keys("secondary-k");
-            let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
-            let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
+            let ask = rig.shell.read_with(&rig.cx, |shell, _| shell.ask_entity());
+            let input = ask.read_with(&rig.cx, |ask, _| ask.input().clone());
             rig.cx.update(|window, cx| input.update(cx, |input, cx|
                 input.replace_all("RelationLabel", window, cx)));
             rig.frame(120);
             rig.settle();
             let original = rig.route();
             let root = rig.graph.root.clone();
-            let (revision, destination, all_destination) = ask.read_with(rig.cx, |ask, cx| (
+            let (revision, destination, all_destination) = ask.read_with(&rig.cx, |ask, cx| (
                 ask.revision.get(), ask.choices(cx)[0].route.clone().expect("current result"),
                 ask.all_results(cx).expect("current all-results page"),
             ));
@@ -1203,7 +1203,7 @@ mod tests {
             assert_eq!(rig.route(), original, "the old queued Enter cannot adopt the newly painted Ask visit");
             rig.settle();
             assert_eq!(rig.route(), original);
-            assert_eq!(ask.read_with(rig.cx, |ask, _| ask.revision.get()), revision);
+            assert_eq!(ask.read_with(&rig.cx, |ask, _| ask.revision.get()), revision);
             assert!(rig.cx.update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window)));
             rig.keys(activation);
             assert_eq!(rig.route(), if activation == "enter" { destination } else { all_destination },
@@ -1217,12 +1217,12 @@ mod tests {
             ReadPool::start(2, |_| Fixture).expect("fixture pool"));
         let committed = rig.route();
         rig.keys("secondary-k");
-        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
-        let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
+        let ask = rig.shell.read_with(&rig.cx, |shell, _| shell.ask_entity());
+        let input = ask.read_with(&rig.cx, |ask, _| ask.input().clone());
         rig.cx.update(|window, cx| input.update(cx, |input, cx| input.replace_all("RelationLabel", window, cx)));
         rig.frame(120);
         rig.settle();
-        let (links, query, route, all_route, old_revision, current_revision) = ask.read_with(rig.cx, |ask, cx| {
+        let (links, query, route, all_route, old_revision, current_revision) = ask.read_with(&rig.cx, |ask, cx| {
             let choice = ask.choices(cx).into_iter().next().expect("a current routed result");
             (ask.links.clone(), ask.draft.query().cloned().expect("valid query"),
                 choice.route.expect("verified route"), ask.all_results(cx).expect("served Find route"),
@@ -1236,7 +1236,7 @@ mod tests {
         rig.cx.update(|window, cx| input.update(cx, |input, cx| input.replace_all(&oversized, window, cx)));
         rig.settle();
         assert_eq!(rig.route(), committed, "rejection ends the prior preview");
-        assert!(ask.read_with(rig.cx, |ask, cx| {
+        assert!(ask.read_with(&rig.cx, |ask, cx| {
             matches!(&ask.draft, QueryDraft::Rejected(QueryReject::TooLong))
                 && ask.pending.is_none() && ask.shows() && ask.choices(cx).is_empty()
                 && ask.all_results(cx).is_none()
@@ -1257,13 +1257,13 @@ mod tests {
             ask.update(cx, |ask, cx| ask.complete_submission(outcome, cx));
         });
         assert_eq!(rig.route(), committed, "rejected input and a retained row cannot navigate");
-        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+        assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()),
             Some(crate::navigation::Overlay::CommandPalette), "rejection stays in the editor");
 
         rig.cx.update(|window, cx| input.update(cx, |input, cx| input.replace_all("RelationLabel", window, cx)));
         rig.frame(120);
         rig.settle();
-        assert!(!ask.read_with(rig.cx, |ask, cx| ask.choices(cx).is_empty()));
+        assert!(!ask.read_with(&rig.cx, |ask, cx| ask.choices(cx).is_empty()));
         rig.cx.update(|_, cx| {
             let outcome = super::follow_row(&links, &input, &query, &route, old_revision, &current_revision, cx);
             ask.update(cx, |ask, cx| ask.complete_submission(outcome, cx));
@@ -1273,7 +1273,7 @@ mod tests {
             ask.update(cx, |ask, cx| ask.complete_submission(outcome, cx));
         });
         assert_eq!(rig.route(), committed, "a callback from the old draft stays inert after the same query returns");
-        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+        assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()),
             Some(crate::navigation::Overlay::CommandPalette));
     }
 
@@ -1282,20 +1282,20 @@ mod tests {
         let mut rig = rig_with_reads(cx, None, 1440.0, 900.0,
             ReadPool::start(2, |_| Fixture).expect("fixture pool"));
         rig.keys("secondary-k");
-        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
-        let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
+        let ask = rig.shell.read_with(&rig.cx, |shell, _| shell.ask_entity());
+        let input = ask.read_with(&rig.cx, |ask, _| ask.input().clone());
         let oversized = "🧭".repeat(257);
         for value in ["  ", "NotIssued", oversized.as_str(), "RelationLabel"] {
             rig.cx.update(|window, cx| input.update(cx, |input, cx| input.replace_all(value, window, cx)));
         }
-        assert_eq!(ask.read_with(rig.cx, |ask, _| ask.draft.query().map(|query| query.text.to_string())),
+        assert_eq!(ask.read_with(&rig.cx, |ask, _| ask.draft.query().map(|query| query.text.to_string())),
             Some("RelationLabel".to_owned()));
         rig.frame(120);
         rig.settle();
         let never_issued = crate::model::pages::SearchQuery::new("NotIssued", 50).expect("query");
-        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.search(&never_issued).activity()),
+        assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.search(&never_issued).activity()),
             crate::core::Activity::NotYet, "superseded debounce never submitted a read");
-        assert!(!ask.read_with(rig.cx, |ask, cx| ask.choices(cx).is_empty()));
+        assert!(!ask.read_with(&rig.cx, |ask, cx| ask.choices(cx).is_empty()));
     }
 
     #[test]
@@ -1365,7 +1365,8 @@ mod tests {
             }).expect("component-rooted shell window")
         });
         let shell = shell_slot.borrow_mut().take().expect("mounted shell");
-        let visual = VisualTestContext::from_window(window.into(), cx).into_mut();
+        let mut owned_visual = VisualTestContext::from_window(window.into(), cx);
+    let visual = &mut owned_visual;
         visual.update(|window, cx| {
             window.activate_window();
             window.set_a11y_forced(true);
@@ -1461,11 +1462,11 @@ mod tests {
         // first character tests native text delivery; Backspace tests that
         // the covered Hand cannot let go of the saved card instead.
         rig.keys("secondary-d");
-        let held = |rig: &mut Rig| rig.graph.store.read_with(rig.cx, |store, _|
+        let held = |rig: &mut Rig| rig.graph.store.read_with(&rig.cx, |store, _|
             store.snapshot().session().hand.held().len());
         assert_eq!(held(&mut rig), 1, "fixture page is held");
         rig.keys("h");
-        assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.chrome_words(cx))
+        assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.chrome_words(cx))
             .contains(&("hand", "open".to_owned())), "Hand is open behind Ask");
 
         let open_from_button = |rig: &mut Rig| {
@@ -1479,9 +1480,9 @@ mod tests {
             rig.draw();
             rig.cx.simulate_click(at, Modifiers::none());
             rig.settle();
-            let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
-            let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
-            assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+            let ask = rig.shell.read_with(&rig.cx, |shell, _| shell.ask_entity());
+            let input = ask.read_with(&rig.cx, |ask, _| ask.input().clone());
+            assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()),
                 Some(crate::navigation::Overlay::CommandPalette));
             assert!(rig.cx.update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window)),
                 "the mounted Ask editor owns native focus after the button click");
@@ -1502,37 +1503,37 @@ mod tests {
         };
 
         let (ask, input) = open_from_button(&mut rig);
-        assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.chrome_words(cx))
+        assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.chrome_words(cx))
             .contains(&("hand", "open".to_owned())), "Ask covers an open Hand");
         rig.keys("f");
-        assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "f",
+        assert_eq!(input.read_with(&rig.cx, |input, _| input.value().to_string()), "f",
             "one platform key reaches the editor without a second click");
-        assert!(matches!(ask.read_with(rig.cx, |ask, _| ask.draft.clone()), QueryDraft::Valid(_)));
-        assert!(!rig.shell.read_with(rig.cx, |shell, _| shell.transients()).2,
+        assert!(matches!(ask.read_with(&rig.cx, |ask, _| ask.draft.clone()), QueryDraft::Valid(_)));
+        assert!(!rig.shell.read_with(&rig.cx, |shell, _| shell.transients()).2,
             "plain f inside Ask cannot start body hints");
         rig.keys("backspace");
-        assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "",
+        assert_eq!(input.read_with(&rig.cx, |input, _| input.value().to_string()), "",
             "Backspace edits the focused Ask input while Hand is open");
         assert_eq!(held(&mut rig), 1, "Backspace cannot let go of a covered Hand card");
 
         rig.keys("escape");
-        rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(
+        rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_failed(
             &crate::runtime::owner::OwnerFault::Lost("fixture owner unavailable".into()), cx));
         rig.settle();
-        assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.chrome_words(cx))
+        assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.chrome_words(cx))
             .contains(&("hand", "open".to_owned())), "owner loss leaves the local Hand session open");
         rig.keys("f");
-        assert!(rig.shell.read_with(rig.cx, |shell, _| shell.transients()).2,
+        assert!(rig.shell.read_with(&rig.cx, |shell, _| shell.transients()).2,
             "an uncovered page first owns its hint session");
         let (ask, input) = open_from_button(&mut rig);
-        assert!(!rig.shell.read_with(rig.cx, |shell, _| shell.transients()).2,
+        assert!(!rig.shell.read_with(&rig.cx, |shell, _| shell.transients()).2,
             "opening Ask retires the previous page's hints");
         rig.keys("r");
-        assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "r",
+        assert_eq!(input.read_with(&rig.cx, |input, _| input.value().to_string()), "r",
             "owner loss cannot prevent local Ask typing or let old hints eat it");
-        assert!(matches!(ask.read_with(rig.cx, |ask, _| ask.draft.clone()), QueryDraft::Valid(_)));
+        assert!(matches!(ask.read_with(&rig.cx, |ask, _| ask.draft.clone()), QueryDraft::Valid(_)));
         rig.keys("backspace");
-        assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "",
+        assert_eq!(input.read_with(&rig.cx, |input, _| input.value().to_string()), "",
             "offline Backspace still belongs to the native editor");
         assert_eq!(held(&mut rig), 1, "owner loss cannot revive the covered Hand keyboard session");
     }
@@ -1643,8 +1644,8 @@ mod tests {
         rig.repaint();
         let empty = rig.cx.update(|_, cx| facet::probe::take(cx));
         assert_eq!(dialogs(&empty), ["ask-field"], "no query, no plate");
-        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
-        let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
+        let ask = rig.shell.read_with(&rig.cx, |shell, _| shell.ask_entity());
+        let input = ask.read_with(&rig.cx, |ask, _| ask.input().clone());
         rig.cx.update(|window, cx| input.update(cx, |input, cx| input.replace_all("mystery", window, cx)));
         rig.frame(120);
         rig.settle();
@@ -1682,13 +1683,13 @@ mod tests {
         ));
         eprintln!("ASK-DISPATCH before-enter focused/action-available/overlay/exact-query={admission:?}");
         rig.keys("enter");
-        eprintln!("ASK-DISPATCH after-enter refusal={:?}", ask.read_with(rig.cx, |ask, _| ask.refusal.as_ref().map(SubmitRefusal::words)));
+        eprintln!("ASK-DISPATCH after-enter refusal={:?}", ask.read_with(&rig.cx, |ask, _| ask.refusal.as_ref().map(SubmitRefusal::words)));
         assert_eq!(input_sequence.borrow().as_slice(), ["enter secondary=false shift=false"],
             "one Enter submits once without a second unchanged editor Change");
         assert_eq!(rig.route(), route_before, "a row with no place does not move the page");
-        let (ask_open, _, _) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());
+        let (ask_open, _, _) = rig.shell.read_with(&rig.cx, |shell, _| shell.transients());
         assert!(ask_open, "a refused destination preserves the active query");
-        assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "mystery");
+        assert_eq!(input.read_with(&rig.cx, |input, _| input.value().to_string()), "mystery");
         rig.repaint();
         let refused = rig.cx.update(|_, cx| facet::probe::take(cx));
         assert!(refused.texts.iter().any(|text| text.region.as_deref() == Some("ask")
@@ -1715,19 +1716,19 @@ mod tests {
         rig.settle();
         let route = rig.route();
         rig.keys("enter");
-        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+        assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()),
             Some(crate::navigation::Overlay::CommandPalette));
         assert_eq!(rig.route(), route);
-        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
-        let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
-        assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "RelationLabel");
+        let ask = rig.shell.read_with(&rig.cx, |shell, _| shell.ask_entity());
+        let input = ask.read_with(&rig.cx, |ask, _| ask.input().clone());
+        assert_eq!(input.read_with(&rig.cx, |input, _| input.value().to_string()), "RelationLabel");
         assert!(rig.cx.update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window)));
         rig.repaint();
         let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
         assert!(ledger.texts.iter().any(|text| text.region.as_deref() == Some("ask")
             && text.content.contains("fixture search owner disconnected")), "the refusal is painted inside Ask");
         rig.cx.simulate_input("X"); rig.settle();
-        assert!(ask.read_with(rig.cx, |ask, _| ask.refusal.is_none()), "editing retires the old submission refusal");
+        assert!(ask.read_with(&rig.cx, |ask, _| ask.refusal.is_none()), "editing retires the old submission refusal");
     }
 
 
@@ -1756,10 +1757,10 @@ mod tests {
     }
 
     fn assert_refusal(rig: &mut crate::shell::tests::Rig, draft: &str, words: &str) {
-        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), Some(crate::navigation::Overlay::CommandPalette));
-        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
-        let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
-        assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), draft);
+        assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()), Some(crate::navigation::Overlay::CommandPalette));
+        let ask = rig.shell.read_with(&rig.cx, |shell, _| shell.ask_entity());
+        let input = ask.read_with(&rig.cx, |ask, _| ask.input().clone());
+        assert_eq!(input.read_with(&rig.cx, |input, _| input.value().to_string()), draft);
         rig.repaint();
         let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("forced native Ask tree");
         let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
@@ -1778,8 +1779,8 @@ mod tests {
         let draft = "How does compilation work";
         rig.cx.simulate_input(draft);
         rig.settle();
-        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
-        assert!(ask.read_with(rig.cx, |ask, cx| {
+        let ask = rig.shell.read_with(&rig.cx, |shell, _| shell.ask_entity());
+        assert!(ask.read_with(&rig.cx, |ask, cx| {
             let (resource, root, serving) = ask.search_resource(cx).expect("actual search resource");
             crate::core::admit_resource(&resource, root, serving).current_value().is_some_and(|page| page.rows.is_empty())
         }), "the actual worker delivered an admitted empty page");
@@ -1789,10 +1790,10 @@ mod tests {
             assert_refusal(&mut rig, draft, "Try a declaration name or different words");
         }
         rig.keys("escape");
-        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), None, "intentional Escape still cancels");
+        assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()), None, "intentional Escape still cancels");
         rig.keys("secondary-k");
-        let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
-        assert!(input.read_with(rig.cx, |input, _| input.value().is_empty()), "only a new query visit clears the old draft");
+        let input = ask.read_with(&rig.cx, |ask, _| ask.input().clone());
+        assert!(input.read_with(&rig.cx, |input, _| input.value().is_empty()), "only a new query visit clears the old draft");
     }
 
     #[gpui::test]
@@ -1803,7 +1804,7 @@ mod tests {
         rig.cx.simulate_input("RelationLabel");
         rig.settle();
         let route = rig.route();
-        rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(&crate::runtime::owner::OwnerFault::Lost("index attachment retired".into()), cx));
+        rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_failed(&crate::runtime::owner::OwnerFault::Lost("index attachment retired".into()), cx));
         rig.settle();
         rig.keys("enter");
         assert_eq!(rig.route(), route);
@@ -1818,13 +1819,13 @@ mod tests {
         rig.cx.simulate_input("RelationLabel");
         rig.settle();
         let route = rig.route();
-        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
-        assert_eq!(ask.read_with(rig.cx, |ask, cx| ask.choices(cx).len()), 1, "one actual painted fixture row");
+        let ask = rig.shell.read_with(&rig.cx, |shell, _| shell.ask_entity());
+        assert_eq!(ask.read_with(&rig.cx, |ask, cx| ask.choices(cx).len()), 1, "one actual painted fixture row");
         let bounds = rig.cx.debug_bounds("ask-result-row").expect("actual painted row bounds");
         rig.cx.simulate_event(gpui::MouseDownEvent { position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1, first_mouse: false });
         // Retire producer authority between the painted press and release;
         // retain the actual old dispatch frame until its native callback fires.
-        rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(&crate::runtime::owner::OwnerFault::Lost("postpaint attachment retired".into()), cx));
+        rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_failed(&crate::runtime::owner::OwnerFault::Lost("postpaint attachment retired".into()), cx));
         rig.cx.simulate_event(gpui::MouseUpEvent { position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left, click_count: 1 });
         rig.settle();
         assert_eq!(rig.route(), route);
@@ -1843,9 +1844,9 @@ mod tests {
                 native_ask(&mut rig);
                 rig.cx.simulate_input("RelationLabel");
                 rig.settle();
-                let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
-                let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
-                assert_eq!(ask.read_with(rig.cx, |ask, cx| ask.choices(cx).len()), 1);
+                let ask = rig.shell.read_with(&rig.cx, |shell, _| shell.ask_entity());
+                let input = ask.read_with(&rig.cx, |ask, _| ask.input().clone());
+                assert_eq!(ask.read_with(&rig.cx, |ask, cx| ask.choices(cx).len()), 1);
                 let label = if all { "Open every search result as a page".to_owned() }
                     else { rig.cx.update(|window, _| window.a11y_tree().expect("mounted result tree").nodes.iter().map(|(_, node)| node)
                         .find(|node| node.role() == gpui::Role::Link && node.label().is_some_and(|label| label.starts_with("Result 1:")))
@@ -1908,7 +1909,7 @@ mod tests {
                     let fresh = crate::shell::tests::native_bounds(&mut rig, "Link", &label, true).expect("renewed result");
                     rig.cx.simulate_click(fresh.center(), gpui::Modifiers::none());
                     rig.settle();
-                    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), None,
+                    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()), None,
                         "the renewed result remains usable through the same native control");
                 }
             }
@@ -1970,8 +1971,8 @@ mod tests {
     /// scroll viewport, not from the result-to-child mapping under test.
     fn assert_native_result_visible(rig: &mut crate::shell::tests::Rig, prefix: &str) {
         rig.repaint();
-        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
-        let viewport = ask.read_with(rig.cx, |ask, _| ask.scroll.bounds());
+        let ask = rig.shell.read_with(&rig.cx, |shell, _| shell.ask_entity());
+        let viewport = ask.read_with(&rig.cx, |ask, _| ask.scroll.bounds());
         let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native result tree");
         let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
         let node = tree["nodes"].as_object().expect("nodes").values().find(|node|
@@ -1990,17 +1991,17 @@ mod tests {
         native_ask(&mut rig);
         rig.cx.simulate_input("many");
         rig.settle();
-        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
-        assert_eq!(ask.read_with(rig.cx, |ask, cx| ask.choices(cx).len()), 16);
+        let ask = rig.shell.read_with(&rig.cx, |shell, _| shell.ask_entity());
+        assert_eq!(ask.read_with(&rig.cx, |ask, cx| ask.choices(cx).len()), 16);
         for _ in 0..9 { rig.keys("down"); }
-        assert_eq!(ask.read_with(rig.cx, |ask, _| ask.selected), 8);
+        assert_eq!(ask.read_with(&rig.cx, |ask, _| ask.selected), 8);
         rig.native_press("enter");
         rig.settle();
         assert_refusal(&mut rig, "many", "UnplacedChoice has no page yet");
         for _ in 0..7 { rig.keys("down"); }
-        assert_eq!(ask.read_with(rig.cx, |ask, _| ask.selected), 15);
+        assert_eq!(ask.read_with(&rig.cx, |ask, _| ask.selected), 15);
         assert_native_result_visible(&mut rig, "Result 16:");
-        assert!(ask.read_with(rig.cx, |ask, _| ask.scroll.offset().y < gpui::px(0.0)), "actual mounted results overflow and scroll");
+        assert!(ask.read_with(&rig.cx, |ask, _| ask.scroll.offset().y < gpui::px(0.0)), "actual mounted results overflow and scroll");
         for _ in 0..15 { rig.keys("up"); }
         assert_native_result_visible(&mut rig, "Result 1:");
     }
@@ -2012,9 +2013,9 @@ mod tests {
         native_ask(&mut rig);
         rig.cx.simulate_input("many");
         rig.settle();
-        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
-        let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
-        assert_eq!(ask.read_with(rig.cx, |ask, cx| ask.choices(cx).len()), 16);
+        let ask = rig.shell.read_with(&rig.cx, |shell, _| shell.ask_entity());
+        let input = ask.read_with(&rig.cx, |ask, _| ask.input().clone());
+        assert_eq!(ask.read_with(&rig.cx, |ask, cx| ask.choices(cx).len()), 16);
         let store = rig.graph.store.clone();
         let route = rig.route();
         let frame = rig.cx.update(|window, _| window.a11y_frame_number());
@@ -2042,14 +2043,14 @@ mod tests {
         assert_eq!(rig.cx.update(|window, _| window.a11y_frame_number()), frame);
         assert_eq!(rig.route(), route, "queued preview cannot land after this input batch");
         rig.settle();
-        assert_eq!(ask.read_with(rig.cx, |ask, cx| ask.choices(cx).len()), 1);
+        assert_eq!(ask.read_with(&rig.cx, |ask, cx| ask.choices(cx).len()), 1);
         rig.native_press("tab");
         assert!(!rig.cx.update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window)),
             "ordinary Change and read landing make the new result a native focus stop");
         rig.native_press("down");
         rig.settle();
         assert_ne!(rig.route(), route, "fresh query arrows still preview the actual current row");
-        assert_eq!(ask.read_with(rig.cx, |ask, _| ask.draft.query().expect("current draft").text.to_string()), "short");
+        assert_eq!(ask.read_with(&rig.cx, |ask, _| ask.draft.query().expect("current draft").text.to_string()), "short");
     }
 
     #[gpui::test]
@@ -2059,20 +2060,20 @@ mod tests {
         native_ask(&mut rig);
         rig.cx.simulate_input("many"); rig.settle();
         for _ in 0..16 { rig.keys("down"); }
-        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
-        assert!(ask.read_with(rig.cx, |ask, _| ask.scroll.offset().y < gpui::px(0.0)));
-        let covered_offset = ask.read_with(rig.cx, |ask, _| ask.scroll.offset());
+        let ask = rig.shell.read_with(&rig.cx, |shell, _| shell.ask_entity());
+        assert!(ask.read_with(&rig.cx, |ask, _| ask.scroll.offset().y < gpui::px(0.0)));
+        let covered_offset = ask.read_with(&rig.cx, |ask, _| ask.scroll.offset());
         rig.keys("secondary-o"); rig.keys("escape");
-        assert_eq!(ask.read_with(rig.cx, |ask, _| ask.scroll.offset()), covered_offset, "covering and uncovering the same Ask visit preserves its scroll");
+        assert_eq!(ask.read_with(&rig.cx, |ask, _| ask.scroll.offset()), covered_offset, "covering and uncovering the same Ask visit preserves its scroll");
         rig.keys("secondary-a"); rig.cx.simulate_input("short"); rig.settle();
-        assert_eq!(ask.read_with(rig.cx, |ask, _| ask.scroll.offset().y), gpui::px(0.0));
+        assert_eq!(ask.read_with(&rig.cx, |ask, _| ask.scroll.offset().y), gpui::px(0.0));
         assert_native_result_visible(&mut rig, "Result 1:");
         rig.keys("secondary-a"); rig.cx.simulate_input("many"); rig.settle();
         for _ in 0..16 { rig.keys("down"); }
-        assert!(ask.read_with(rig.cx, |ask, _| ask.scroll.offset().y < gpui::px(0.0)));
+        assert!(ask.read_with(&rig.cx, |ask, _| ask.scroll.offset().y < gpui::px(0.0)));
         rig.keys("escape"); rig.keys("secondary-k");
         rig.cx.simulate_input("many"); rig.settle();
-        assert_eq!(ask.read_with(rig.cx, |ask, _| ask.scroll.offset().y), gpui::px(0.0));
+        assert_eq!(ask.read_with(&rig.cx, |ask, _| ask.scroll.offset().y), gpui::px(0.0));
         assert_native_result_visible(&mut rig, "Result 1:");
     }
 
@@ -2084,7 +2085,7 @@ mod tests {
         rig.cx.simulate_input("many"); rig.settle();
         // Fifteen addressable rows; the nonaddressable row is not a stop.
         for _ in 0..16 { rig.keys("tab"); }
-        let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
+        let ask = rig.shell.read_with(&rig.cx, |shell, _| shell.ask_entity());
         assert!(rig.cx.update(|window, cx| ask.read(cx).all_focus.is_focused(window)));
         assert_native_result_visible(&mut rig, "Open every search result as a page");
         rig.keys("shift-tab");

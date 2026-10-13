@@ -348,7 +348,8 @@ mod tests {
             facet::theme::set_facet(facet::Facet::default(), cx);
             cx.set_global(Status { settled: false });
         });
-        let (view, cx) = cx.add_window_view(|_, cx| Startup::new("test prepared page", cx));
+        let (view, mut owned_cx) = cx.add_window_view_owned(|_, cx| Startup::new("test prepared page", cx));
+        let cx = &mut owned_cx;
         cx.update(|window, cx| { window.refresh(); window.draw(cx).clear(cx); });
         assert!(cx.debug_bounds("desktop-startup").is_some(), "the native loading shell paints first");
 
@@ -416,12 +417,13 @@ mod tests {
                 })
             })
         };
-        let (view, cx) = cx.add_window_view(|_, cx| {
+        let (view, mut owned_cx) = cx.add_window_view_owned(|_, cx| {
             let mut startup = Startup::new("symbol fixture::Value", cx);
             startup.worker = worker;
             startup.prepare(cx);
             startup
         });
+        let cx = &mut owned_cx;
         cx.run_until_parked();
         assert_eq!(started_rx.recv_timeout(Duration::from_secs(3)).expect("dedicated worker starts"), 1);
         cx.update(|window, cx| {
@@ -483,7 +485,7 @@ mod tests {
     #[gpui::test]
     async fn dedicated_worker_handles_a_stack_frame_larger_than_the_gcd_stack(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
-        let (view, cx) = cx.add_window_view(|_, cx| {
+        let (view, mut owned_cx) = cx.add_window_view_owned(|_, cx| {
             let mut startup = Startup::new("worker stack fixture", cx);
             let progress = Progress::default();
             startup.loading = Some(cx.spawn(async move |startup, cx| {
@@ -499,13 +501,14 @@ mod tests {
             }));
             startup
         });
+        let cx = &mut owned_cx;
         cx.condition(&view, |startup, _| startup.loading.is_none()).await;
     }
 
     #[gpui::test]
     async fn worker_panic_and_spawn_failure_complete_with_visible_errors(cx: &mut TestAppContext) {
         cx.executor().allow_parking();
-        let (view, cx) = cx.add_window_view(|_, cx| {
+        let (view, mut owned_cx) = cx.add_window_view_owned(|_, cx| {
             let mut startup = Startup::new("worker error fixture", cx);
             startup.loading = Some(cx.spawn(async move |startup, cx| {
                 let panicked = threaded("test-panicking-worker", Progress::default(), cx.background_executor(), || -> Result<(), String> {
@@ -524,6 +527,7 @@ mod tests {
             }));
             startup
         });
+        let cx = &mut owned_cx;
         cx.condition(&view, |startup, _| startup.loading.is_none()).await;
     }
 }

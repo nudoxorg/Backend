@@ -226,7 +226,8 @@ fn a_window_before_its_owner_holds_its_reads_then_says_why_the_owner_failed(cx: 
         .expect("window")
     });
     let shell = window.root(cx).expect("shell");
-    let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+    let mut owned_cx = VisualTestContext::from_window(window.into(), cx);
+    let cx = &mut owned_cx;
     let said = |cx: &mut VisualTestContext| -> Vec<String> {
         shell
             .read_with(cx, |shell, cx| shell.reader_text(cx))
@@ -498,7 +499,7 @@ mod launch_snapshot {
         latch: Latch,
         graph: UiEntityGraph,
         shell: Entity<Shell>,
-        cx: &'static mut VisualTestContext,
+        cx: VisualTestContext,
         events: Rc<RefCell<Vec<StoreEvent>>>,
         _events: gpui::Subscription,
     }
@@ -507,7 +508,7 @@ mod launch_snapshot {
         fn said(&mut self) -> Vec<String> {
             let shell = self.shell.clone();
             shell
-                .read_with(self.cx, |shell, cx| shell.reader_text(cx))
+                .read_with(&self.cx, |shell, cx| shell.reader_text(cx))
                 .into_iter()
                 .map(|text| text.to_string())
                 .collect()
@@ -535,7 +536,7 @@ mod launch_snapshot {
         /// Whether the page the store holds says `words` in its docs (what
         /// the reader will paint once it draws it).
         fn stored_docs_say(&mut self, words: &str) -> bool {
-            self.graph.store.read_with(self.cx, |store, _| {
+            self.graph.store.read_with(&self.cx, |store, _| {
                 store.symbol(&symbol(NAME)).loaded_value().is_some_and(|page| {
                     page.docs.iter().any(|fragment| matches!(fragment, DocFragment::Text(text) if text.contains(words)))
                 })
@@ -543,11 +544,11 @@ mod launch_snapshot {
         }
 
         fn submitted(&mut self) -> u64 {
-            self.graph.store.read_with(self.cx, |store, _| store.stats().submitted)
+            self.graph.store.read_with(&self.cx, |store, _| store.stats().submitted)
         }
 
         fn stamps(&mut self) -> (crate::model::pages::Stamp, crate::model::pages::Stamp) {
-            self.graph.store.read_with(self.cx, |store, _| {
+            self.graph.store.read_with(&self.cx, |store, _| {
                 (
                     store.stamp(&PageKey::Symbol(symbol(NAME))),
                     store.stamp(&PageKey::Package(package())),
@@ -612,7 +613,7 @@ mod launch_snapshot {
             .expect("window")
         });
         let shell = window.root(cx).expect("shell");
-        let cx = VisualTestContext::from_window(window.into(), cx).into_mut();
+        let cx = VisualTestContext::from_window(window.into(), cx);
         Opened {
             latch,
             graph,
@@ -632,7 +633,7 @@ mod launch_snapshot {
     }
 
     fn inflight(opened: &mut Opened) -> bool {
-        opened.graph.store.read_with(opened.cx, |store, _| {
+        opened.graph.store.read_with(&opened.cx, |store, _| {
             store.is_loading(&PageKey::Symbol(symbol(NAME))) || store.is_loading(&PageKey::Package(package()))
         })
     }
@@ -643,21 +644,21 @@ mod launch_snapshot {
         let file = saved("first-frame", root, page(NAME));
         let gate = OwnerGate::starting();
         let mut opened = open(cx, &gate, &file, true);
-        draw(opened.cx);
+        draw(&mut opened.cx);
         assert!(opened.painted().iter().any(|text| text.contains("names one relation group")));
         assert_eq!(opened.submitted(), 0, "first paint uses retained words");
         let before = opened.stamps();
         gate.publish(OwnerState::Ready { key: root, mode: ServiceMode::Attached });
         wait::until("the identical owner root was adopted", || {
-            paint(opened.cx);
-            opened.graph.store.read_with(opened.cx, |store, _| store.snapshot().key().same_authority(root))
+            paint(&mut opened.cx);
+            opened.graph.store.read_with(&opened.cx, |store, _| store.snapshot().key().same_authority(root))
         });
         for _ in 0..20 {
-            paint(opened.cx);
+            paint(&mut opened.cx);
             opened.cx.executor().advance_clock(Duration::from_millis(50));
         }
         assert!(opened.submitted() > 0, "fresh reads were dispatched behind the latch");
-        opened.graph.store.read_with(opened.cx, |store, _| {
+        opened.graph.store.read_with(&opened.cx, |store, _| {
             assert!(store.symbol(&symbol(NAME)).value_root().is_some_and(VersionedRoot::is_unserved));
             assert!(store.package(&package()).value_root().is_some_and(VersionedRoot::is_unserved));
             let snapshot = store.snapshot();
@@ -672,19 +673,19 @@ mod launch_snapshot {
         assert!(!opened.says("on its way"), "retained words stay visible while revalidating");
         opened.latch.open();
         wait::until("equal fresh answers landed", || {
-            paint(opened.cx);
-            opened.graph.store.read_with(opened.cx, |store, _| {
+            paint(&mut opened.cx);
+            opened.graph.store.read_with(&opened.cx, |store, _| {
                 store.symbol(&symbol(NAME)).value_root().is_some_and(|at| at.same_authority(root))
                     && store.package(&package()).value_root().is_some_and(|at| at.same_authority(root))
             }) && !inflight(&mut opened)
         });
         assert_eq!(opened.stamps(), before, "equal fresh answers preserve content stamps");
-        let lease = opened.graph.store.read_with(opened.cx, |store, _| {
+        let lease = opened.graph.store.read_with(&opened.cx, |store, _| {
             crate::runtime::store::RouteReadLease::capture(store, (symbol_key(), store.stamp(&symbol_key())))
                 .expect("only a fresh landing enables this semantic action")
         });
-        opened.graph.store.update(opened.cx, |store, cx| store.owner_starting(cx));
-        assert!(!opened.graph.store.read_with(opened.cx, |store, _| lease.admits(store)),
+        opened.graph.store.update(&mut opened.cx, |store, cx| store.owner_starting(cx));
+        assert!(!opened.graph.store.read_with(&opened.cx, |store, _| lease.admits(store)),
             "an old captured action is denied immediately when its read authority is revoked");
     }
 
@@ -700,24 +701,24 @@ mod launch_snapshot {
             mode: ServiceMode::Attached,
         });
         wait::until("the owner's root was adopted", || {
-            let adopted = opened.graph.store.read_with(opened.cx, |store, _| store.snapshot().key().same_authority(now));
+            let adopted = opened.graph.store.read_with(&opened.cx, |store, _| store.snapshot().key().same_authority(now));
             if !adopted {
-                paint(opened.cx);
+                paint(&mut opened.cx);
             }
             adopted
         });
         for _ in 0..20 {
-            paint(opened.cx);
+            paint(&mut opened.cx);
             opened.cx.executor().advance_clock(Duration::from_millis(50));
         }
         assert!(!opened.says("on its way"), "a revalidation never shows a wait");
         let shell = opened.shell.clone();
-        let before = shell.read_with(opened.cx, |shell, cx| shell.render_counts(cx));
+        let before = shell.read_with(&opened.cx, |shell, cx| shell.render_counts(cx));
         opened.events.borrow_mut().clear();
         opened.latch.open();
         assert!(
             wait::poll(wait::HUNG, || {
-                paint(opened.cx);
+                paint(&mut opened.cx);
                 assert!(!opened.says("on its way"), "a revalidation never shows a wait");
                 let asked = opened.latch.asked();
                 opened.stored_docs_say(landed) && asked.contains(&symbol_key()) && asked.contains(&package_key()) && !inflight(opened)
@@ -726,11 +727,11 @@ mod launch_snapshot {
             opened.latch.asked()
         );
         for _ in 0..5 {
-            paint(opened.cx);
+            paint(&mut opened.cx);
             opened.cx.executor().advance_clock(Duration::from_millis(50));
         }
-        let after = shell.read_with(opened.cx, |shell, cx| shell.render_counts(cx));
-        let roots = opened.graph.store.read_with(opened.cx, |store, _| {
+        let after = shell.read_with(&opened.cx, |shell, cx| shell.render_counts(cx));
+        let roots = opened.graph.store.read_with(&opened.cx, |store, _| {
             (store.symbol(&symbol(NAME)).value_root(), store.package(&package()).value_root())
         });
         assert!(
@@ -745,7 +746,7 @@ mod launch_snapshot {
         let file = saved("unchanged", served("last-launch"), page(NAME));
         let gate = OwnerGate::starting();
         let mut opened = open(cx, &gate, &file, true);
-        paint(opened.cx);
+        paint(&mut opened.cx);
         assert!(opened.painted().iter().any(|text| text.contains("names one relation group")), "the snapshot's page is painted");
         let stamps = opened.stamps();
         let (before, after) = revalidate(&mut opened, &gate, served("now"), "names one relation group");
@@ -770,7 +771,7 @@ mod launch_snapshot {
         let file = saved("stale", served("last-launch"), stale_page());
         let gate = OwnerGate::starting();
         let mut opened = open(cx, &gate, &file, true);
-        paint(opened.cx);
+        paint(&mut opened.cx);
         let stale = opened.painted();
         assert!(stale.iter().any(|text| text.contains("Stale words from the last launch.")), "{stale:?}");
         let (symbol_before, package_before) = opened.stamps();
@@ -828,7 +829,7 @@ mod launch_snapshot {
         std::fs::write(file.path(), &bytes).expect("corrupt it");
         let gate = OwnerGate::starting();
         let mut opened = open(cx, &gate, &file, false);
-        draw(opened.cx);
+        draw(&mut opened.cx);
         let first = opened.painted();
         assert!(
             opened.says("on its way") && !first.iter().any(|text| text.contains("names one relation group")),
@@ -842,14 +843,14 @@ mod launch_snapshot {
         let file = saved("failed", served("failed"), page(NAME));
         let gate = OwnerGate::starting();
         let mut opened = open(cx, &gate, &file, false);
-        draw(opened.cx);
+        draw(&mut opened.cx);
         gate.publish(OwnerState::Failed("could not own /tmp/demo".into()));
         let notice = wait::until_some("the failure was said", || {
-            draw(opened.cx);
+            draw(&mut opened.cx);
             opened
                 .graph
                 .store
-                .read_with(opened.cx, |store, _| store.notice().map(|notice| notice.message.to_string()))
+                .read_with(&opened.cx, |store, _| store.notice().map(|notice| notice.message.to_string()))
         });
         assert!(
             notice.contains("as you left it") && notice.contains("could not own /tmp/demo"),

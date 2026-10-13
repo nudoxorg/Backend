@@ -181,7 +181,7 @@ fn scenes() -> Vec<(&'static str, Route, Option<SettingsPage>)> {
 /// the frame it painted, with the shell's own frame decision for the message.
 fn findings_at(rig: &mut Rig, width: f32, height: f32) -> (String, Vec<Finding>) {
     resize(rig, width, height);
-    let frame = rig.shell.read_with(rig.cx, |shell: &Shell, _| shell.frame()).expect("frame");
+    let frame = rig.shell.read_with(&rig.cx, |shell: &Shell, _| shell.frame()).expect("frame");
     let ledger = painted(rig);
     let found = findings(&ledger, width, height);
     (format!("shelf {:?}, reader {:.0} px, {} texts", frame.shelf, f32::from(frame.reader_width(px(width))), ledger.texts.len()), found)
@@ -288,7 +288,7 @@ fn the_librarys_project_tile_does_not_keep_its_own_target_list_alive(cx: &mut Te
     let said = rig.said();
     let tile = folder.file_name().and_then(|name| name.to_str()).expect("folder name").to_owned();
     assert!(said.iter().any(|line| *line == tile), "the Library draws the project's tile {tile:?}: {said:#?}");
-    let probe = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).list_probe());
+    let probe = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx).list_probe());
     assert!(probe.upgrade().is_some(), "the probe sees the live list");
     // Close the window and let go of every strong handle the rig keeps.
     let Rig { shell, graph, cx, .. } = rig;
@@ -317,7 +317,7 @@ fn the_shelf_can_be_opened_with_the_pointer_at_every_width(cx: &mut TestAppConte
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     for (width, height) in [(1440.0, 900.0), (900.0, 700.0), (700.0, 600.0), (600.0, 600.0), (520.0, 640.0), (480.0, 640.0), (360.0, 640.0)] {
         resize(&mut rig, width, height);
-        let frame = rig.shell.read_with(rig.cx, |shell: &Shell, _| shell.frame()).expect("frame");
+        let frame = rig.shell.read_with(&rig.cx, |shell: &Shell, _| shell.frame()).expect("frame");
         let ledger = painted(&mut rig);
         let toggle = ledger
             .targets

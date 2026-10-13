@@ -32,6 +32,9 @@ use gpui::{
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[path = "test_context_lifetime.rs"]
+mod test_context_lifetime;
+
 /// The fixture package root.
 pub(crate) const PACKAGE: &str = "/fixture/present";
 
@@ -405,7 +408,7 @@ pub(crate) struct Rig {
     pub _window: WindowHandle<gpui_component::Root>,
     pub shell: Entity<Shell>,
     pub graph: UiEntityGraph,
-    pub cx: &'static mut VisualTestContext,
+    pub cx: VisualTestContext,
     /// How long [`Rig::settle`] waits, in real time, for reads that are in
     /// flight (a fake engine answers at once; a real owner takes seconds).
     pub patience: Duration,
@@ -561,7 +564,7 @@ fn rig_with_engine_gate_at_root_keep(
     let shell = window.root(cx).expect("component root").read_with(cx, |root, cx| {
         root.view().clone().downcast::<crate::host::close::CloseView>().expect("close view").read(cx).shell()
     });
-    let visual = VisualTestContext::from_window(window.into(), cx).into_mut();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
     visual.update(|window, _| window.activate_window());
     let mut rig = Rig {
         _window: window,
@@ -576,7 +579,7 @@ fn rig_with_engine_gate_at_root_keep(
     } else {
         rig.settle();
         if matches!(projection, RigProjection::Fixture) {
-            let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+            let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
             rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture(root, cx));
         }
         rig.repaint();
@@ -629,12 +632,12 @@ impl Rig {
             let pool = self
                 .graph
                 .store
-                .read_with(self.cx, |store, _| store.pool_activity());
+                .read_with(&self.cx, |store, _| store.pool_activity());
             let (queued, running, undelivered) = (pool.queued, pool.running, pool.undelivered);
-            let (graph_ready, graph_work) = self.shell.read_with(self.cx, |shell, cx| {
+            let (graph_ready, graph_work) = self.shell.read_with(&self.cx, |shell, cx| {
                 (shell.graph_ready(cx), shell.graph_work_status(cx))
             });
-            let root_work = self.graph.root.read_with(self.cx, |root, _| root.has_pending_work());
+            let root_work = self.graph.root.read_with(&self.cx, |root, _| root.has_pending_work());
             let asking = settle_counts_as_asking(frames, root_work, graph_ready, graph_work);
             let reading = !pool.is_idle() || graph_work.is_some();
             if !asking && !reading {
@@ -678,26 +681,26 @@ impl Rig {
 
     /// Queues an intent on the state owner and settles.
     pub(crate) fn go(&mut self, intent: Intent) {
-        let reader = self.shell.read_with(self.cx, |shell, _| shell.reader_entity());
-        let links = reader.read_with(self.cx, |reader, _| reader.navigation_links());
+        let reader = self.shell.read_with(&self.cx, |shell, _| shell.reader_entity());
+        let links = reader.read_with(&self.cx, |reader, _| reader.navigation_links());
         self.cx.update(|_, cx| links.dispatch(intent, cx));
         self.settle();
     }
 
     pub(crate) fn counts(&mut self) -> super::RenderCounts {
-        self.shell.read_with(self.cx, |shell, cx| shell.render_counts(cx))
+        self.shell.read_with(&self.cx, |shell, cx| shell.render_counts(cx))
     }
 
     pub(crate) fn said(&mut self) -> Vec<String> {
         self.shell
-            .read_with(self.cx, |shell, cx| shell.reader_text(cx))
+            .read_with(&self.cx, |shell, cx| shell.reader_text(cx))
             .into_iter()
             .map(|text| text.to_string())
             .collect()
     }
 
     pub(crate) fn route(&mut self) -> Route {
-        self.graph.store.read_with(self.cx, |store, _| store.snapshot().route().clone())
+        self.graph.store.read_with(&self.cx, |store, _| store.snapshot().route().clone())
     }
 
     pub(crate) fn keys(&mut self, keys: &str) {
@@ -835,7 +838,7 @@ fn hidden_graph_projection_slot_does_not_hold_settle_and_reopens_into_the_scene(
     let root = rig
         .graph
         .store
-        .read_with(rig.cx, |store, _| store.snapshot().key());
+        .read_with(&rig.cx, |store, _| store.snapshot().key());
     let mut gates = Vec::new();
 
     // Each replacement gets a distinct fixture owner. The first four reads
@@ -853,7 +856,7 @@ fn hidden_graph_projection_slot_does_not_hold_settle_and_reopens_into_the_scene(
         rig.cx.run_until_parked();
         let work = rig
             .shell
-            .read_with(rig.cx, |shell, cx| shell.graph_work_status(cx));
+            .read_with(&rig.cx, |shell, cx| shell.graph_work_status(cx));
         if slot < 4 {
             assert_eq!(work, Some(MapWorkStatus::ProjectionRead));
             assert!(gate.entered(), "fixture read {slot} owns its Memo slot");
@@ -868,10 +871,10 @@ fn hidden_graph_projection_slot_does_not_hold_settle_and_reopens_into_the_scene(
     // are still gated. Hidden graph work must not keep the visible page's
     // settlement loop alive.
     rig.go(Intent::Navigate(page_route("RelationLabel")));
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)));
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_ready(cx)));
     assert_eq!(
         rig.shell
-            .read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)),
+            .read_with(&rig.cx, |shell, cx| shell.graph_work_status(cx)),
         None,
         "hidden reads and a deferred projection cannot block another page"
     );
@@ -883,14 +886,14 @@ fn hidden_graph_projection_slot_does_not_hold_settle_and_reopens_into_the_scene(
 
     // The deferred fixture key starts only after the old flights release
     // their slots and the graph becomes visible again.
-    rig.graph.root.update(rig.cx, |root, cx| {
+    rig.graph.root.update(&mut rig.cx, |root, cx| {
         root.dispatch(Intent::Navigate(Route::World), cx);
     });
     rig.draw();
     assert!(gates[4].entered(), "the visible deferred projection resumes");
     assert_eq!(
         rig.shell
-            .read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)),
+            .read_with(&rig.cx, |shell, cx| shell.graph_work_status(cx)),
         Some(MapWorkStatus::ProjectionRead)
     );
 
@@ -899,15 +902,15 @@ fn hidden_graph_projection_slot_does_not_hold_settle_and_reopens_into_the_scene(
     rig.go(Intent::Navigate(page_route("RelationLabel")));
     assert_eq!(
         rig.shell
-            .read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)),
+            .read_with(&rig.cx, |shell, cx| shell.graph_work_status(cx)),
         None
     );
     gates[4].release();
     rig.cx.run_until_parked();
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)));
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_ready(cx)));
     assert_eq!(
         rig.shell
-            .read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)),
+            .read_with(&rig.cx, |shell, cx| shell.graph_work_status(cx)),
         None,
         "a completed projection stays hidden and cached until the graph returns"
     );
@@ -915,41 +918,41 @@ fn hidden_graph_projection_slot_does_not_hold_settle_and_reopens_into_the_scene(
     // Completion while hidden remains cached. Reopening consumes the single
     // mounting wake within the native draw and starts graph discovery. Do not
     // drain the discovery executor before checking the actual mounted stage.
-    rig.graph.root.update(rig.cx, |root, cx| {
+    rig.graph.root.update(&mut rig.cx, |root, cx| {
         root.dispatch(Intent::Navigate(Route::World), cx);
     });
     rig.draw_frame();
     assert_eq!(
-        rig.shell.read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)),
+        rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_work_status(cx)),
         Some(MapWorkStatus::Discovery),
         "the cached projection mounted and began discovery"
     );
     assert!(
-        rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)).contains("fixture 3 nodes"),
+        rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_report(cx)).contains("fixture 3 nodes"),
         "the completed projection reached the real graph entity"
     );
-    assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)));
+    assert!(!rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_ready(cx)));
 
     // Hide before discovery settles. The page settles, then returning uses
     // that same projection and mounts it into GraphView.
     rig.go(Intent::Navigate(page_route("RelationLabel")));
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)));
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_ready(cx)));
     assert_eq!(
         rig.shell
-            .read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)),
+            .read_with(&rig.cx, |shell, cx| shell.graph_work_status(cx)),
         None
     );
     rig.go(Intent::Navigate(Route::World));
 
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)));
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_ready(cx)));
     assert_eq!(
         rig.shell
-            .read_with(rig.cx, |shell, cx| shell.graph_work_status(cx)),
+            .read_with(&rig.cx, |shell, cx| shell.graph_work_status(cx)),
         None
     );
     assert!(
         rig.shell
-            .read_with(rig.cx, |shell, cx| shell.graph_report(cx))
+            .read_with(&rig.cx, |shell, cx| shell.graph_report(cx))
             .contains("fixture 3 nodes"),
         "reopening mounts the completed fixture projection"
     );
@@ -1087,7 +1090,7 @@ fn mounted_tree_back_return_does_not_steal_ask_focus(cx: &mut TestAppContext) {
     rig.cx.simulate_keystrokes("secondary-k");
     rig.settle();
     assert!(
-        rig.shell.read_with(rig.cx, |shell, _| shell.transients().0),
+        rig.shell.read_with(&rig.cx, |shell, _| shell.transients().0),
         "Ask owns input over the returning Tree"
     );
     assert!(
@@ -1215,7 +1218,7 @@ fn a_page_landing_re_renders_only_the_regions_that_show_it(cx: &mut TestAppConte
     let before = rig.counts();
     // Re-read the page: a resource event for the reader's key only.
     let key = crate::model::pages::PageKey::Symbol(symbol("RelationLabel"));
-    rig.graph.store.update(rig.cx, |store, cx| store.retry(key, cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.retry(key, cx));
     rig.settle();
     let after = rig.counts();
     assert!(after.reader > before.reader, "the reader redrew its page");
@@ -1231,13 +1234,13 @@ fn j_and_k_walk_focus_inside_the_reader_only(cx: &mut TestAppContext) {
     rig.keys("x");
     let before = rig.counts();
     rig.keys("j");
-    let (_, first) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    let (_, first) = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
     rig.keys("j j");
-    let (zone, third) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    let (zone, third) = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
     assert_eq!(zone, super::focus::Zone::Reader);
     assert!(first.is_some() && third.is_some() && first != third, "{first:?} → {third:?}");
     rig.keys("k k");
-    let (_, back) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    let (_, back) = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
     assert_eq!(back, first, "K walks back the way J came");
     let after = rig.counts();
     assert_eq!(
@@ -1247,7 +1250,7 @@ fn j_and_k_walk_focus_inside_the_reader_only(cx: &mut TestAppContext) {
     );
     // Tab moves the keyboard to the next zone.
     rig.keys("tab");
-    let (zone, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    let (zone, _) = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
     assert_eq!(zone, super::focus::Zone::Titlebar);
 }
 
@@ -1257,9 +1260,9 @@ fn library_tab_owns_mounted_native_controls_and_back_restores_the_opened_chip(cx
     let mut package_id = None;
     for _ in 0..8 {
         rig.keys("tab");
-        let (zone, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        let (zone, focused) = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
         assert_eq!(zone, super::focus::Zone::Reader, "Library controls precede the next Shell zone");
-        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
         let native = rig.cx.update(|window, _| targets.focused_native_is_live(window));
         assert!(native, "Tab moved actual GPUI focus to the mounted control");
         if focused.as_deref().is_some_and(|id| id.starts_with("orbit-package-")) {
@@ -1269,23 +1272,23 @@ fn library_tab_owns_mounted_native_controls_and_back_restores_the_opened_chip(cx
     }
     let package_id = package_id.expect("Tab reaches the indexed package chip");
     rig.keys("shift-tab");
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1.as_deref(), Some("find-packages"),
+    assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx)).1.as_deref(), Some("find-packages"),
         "the new Add package door is between Add folder and indexed packages");
     rig.keys("shift-tab");
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1.as_deref(), Some("add-folder"));
+    assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx)).1.as_deref(), Some("add-folder"));
     rig.keys("tab");
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1.as_deref(), Some("find-packages"));
+    assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx)).1.as_deref(), Some("find-packages"));
     rig.keys("tab");
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1, Some(package_id.clone()));
+    assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx)).1, Some(package_id.clone()));
     rig.native_press("space");
     rig.settle();
     assert!(matches!(rig.route(), Route::Package(_)), "Space activates the focused native chip");
     rig.keys("secondary-[");
     assert!(matches!(rig.route(), Route::Orbit(crate::navigation::OrbitRoute::Home)));
-    let (zone, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    let (zone, focused) = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
     assert_eq!(zone, super::focus::Zone::Reader);
     assert_eq!(focused, Some(package_id), "Back returns to the exact chip that opened the package");
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     assert!(rig.cx.update(|window, _| targets.focused_native_is_live(window)), "native focus returns only after that chip remounts");
 }
 
@@ -1293,7 +1296,7 @@ fn library_tab_owns_mounted_native_controls_and_back_restores_the_opened_chip(cx
 fn shell_tab_uses_the_mounted_native_focus_after_gpui_moves_it_independently(cx: &mut TestAppContext) {
     let mut rig = rig(cx, None, 1440.0, 900.0);
     rig.keys("tab");
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     let order = targets.native_keys();
     assert!(order.len() >= 2, "Library mounts Add folder and its indexed package chip");
     let recalled = targets.focused();
@@ -1318,7 +1321,7 @@ fn shell_tab_uses_the_mounted_native_focus_after_gpui_moves_it_independently(cx:
         assert_eq!(targets.focused(), Some(next.clone()), "Shell Tab starts at the actually focused handle");
         assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)), Some(next.clone()));
     } else {
-        let (zone, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        let (zone, _) = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
         assert_eq!(zone, super::focus::Zone::Titlebar, "Tab leaves Reader after the actual last native handle");
         assert_eq!(targets.focused(), Some(order[at].clone()), "Recall adopts the native focus before leaving Reader");
         assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)), None);
@@ -1331,7 +1334,7 @@ fn an_interrupted_back_does_not_transfer_native_focus_late(cx: &mut TestAppConte
     let mut opened = None;
     for _ in 0..16 {
         rig.keys("tab");
-        let focused = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1;
+        let focused = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx)).1;
         if focused.as_deref().is_some_and(|id| id.starts_with("orbit-package-")) {
             opened = focused;
             break;
@@ -1348,7 +1351,7 @@ fn an_interrupted_back_does_not_transfer_native_focus_late(cx: &mut TestAppConte
     assert!(matches!(rig.route(), Route::Orbit(_)));
     rig.cx.simulate_keystrokes("tab");
     rig.settle();
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     assert_ne!(targets.focused(), Some(opened), "the cancelled Back cannot steal focus after the Shell walk");
 }
 
@@ -1357,10 +1360,10 @@ fn a_mounted_native_action_survives_only_an_observation_bump(cx: &mut TestAppCon
     let mut rig = rig(cx, None, 1440.0, 900.0);
     let action = (0..16).find_map(|_| {
         rig.keys("tab");
-        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
         targets.current().filter(|target| target.id.starts_with("orbit-package-")).map(|target| target.action.callback())
     }).expect("Tab reaches an indexed package");
-    rig.graph.store.update(rig.cx, |store, cx| {
+    rig.graph.store.update(&mut rig.cx, |store, cx| {
         let snapshot = store.snapshot();
         let old = snapshot.key();
         store.admit_snapshot(Arc::new(snapshot.with_key(old.observed_at(old.observation() + 1), None)), cx);
@@ -1381,15 +1384,15 @@ fn retained_native_callback_cannot_cross_a_same_root_owner_replacement(cx: &mut 
     );
     let action = (0..16).find_map(|_| {
         rig.keys("tab");
-        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
         targets.current().filter(|target| target.id.starts_with("orbit-package-")).map(|target| target.action.callback())
     }).expect("Tab reaches an indexed package");
     gate.publish(OwnerState::Starting);
     // Repaint retained Orbit bytes before the watcher processes Starting.
     // The predecessor remains legible, but no new package callback mounts.
     rig.repaint();
-    let retained_targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.orbit().loaded_value().is_some()));
+    let retained_targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.orbit().loaded_value().is_some()));
     assert!(!retained_targets.native_keys().iter().any(|id| id.starts_with("orbit-package-")), "retained bytes mount no native package callback");
     assert!(rig.said().iter().any(|line| line.contains("Earlier Library reading retained")));
     gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
@@ -1415,7 +1418,7 @@ fn mounted_code_copy_from_an_old_visit_cannot_cross_same_root_owner_replacement(
         Some(gate.clone()),
     );
     rig.settle();
-    let old_copy = rig.shell.read_with(rig.cx, |shell, cx| {
+    let old_copy = rig.shell.read_with(&rig.cx, |shell, cx| {
         shell.reader_targets(cx).placed().into_iter()
             .find(|(target, _)| target.id == "source-copy-excerpt")
             .map(|(target, _)| target.action.callback())
@@ -1437,7 +1440,7 @@ fn unserved_starting_library_keeps_add_folder_mounted_and_actionable(cx: &mut Te
     let mut rig = rig_with_engine_gate_at_root(
         cx, None, 1440.0, 900.0, ReadPool::start(2, |_| Fixture).expect("pool"), RootOnly, Some(gate), VersionedRoot::unserved(),
     );
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     assert!(targets.native_keys().iter().any(|id| id == "add-folder"));
     rig.cx.simulate_keystrokes("tab");
     rig.draw();
@@ -1452,7 +1455,7 @@ fn unserved_starting_library_keeps_add_folder_mounted_and_actionable(cx: &mut Te
 #[gpui::test]
 fn local_library_control_cannot_act_after_its_visit_is_replaced(cx: &mut TestAppContext) {
     let mut rig = rig(cx, None, 1440.0, 900.0);
-    let add = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+    let add = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx))
         .placed().into_iter().find(|(target, _)| target.id == "add-folder")
         .expect("Library Add is mounted").0.action.callback();
     rig.go(Intent::Navigate(Route::World));
@@ -1466,14 +1469,14 @@ fn unserved_library_control_cannot_act_after_an_overlay_takes_input(cx: &mut Tes
         cx, None, 1440.0, 900.0, ReadPool::start(2, |_| Fixture).expect("pool"),
         RootOnly, Some(OwnerGate::starting()), VersionedRoot::unserved(),
     );
-    let add = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+    let add = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx))
         .placed().into_iter().find(|(target, _)| target.id == "add-folder")
         .expect("Library Add is mounted on first launch").0.action.callback();
-    rig.graph.root.update(rig.cx, |root, cx| root.queue(
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(
         Intent::OpenSettings(crate::navigation::SettingsPage::Appearance), cx,
     ));
     rig.draw();
-    assert!(matches!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+    assert!(matches!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()),
         Some(crate::navigation::Overlay::Settings(_))));
     rig.cx.update(|window, cx| add(window, cx));
     assert!(!rig.cx.did_prompt_for_paths(), "an old local control cannot act through an overlay");
@@ -1488,23 +1491,23 @@ fn unserved_failed_library_keeps_add_and_native_retry_available(cx: &mut TestApp
     gate.publish(OwnerState::Failed(OwnerFault::Host(Arc::from("owner could not start"))));
     rig.draw();
     rig.repaint();
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     let keys = targets.native_keys();
     assert!(keys.iter().any(|id| id == "add-folder"), "recovery cannot hide local setup");
     assert!(keys.iter().any(|id| id.starts_with("retry-")), "the fault mounts a semantic Retry control");
     rig.cx.simulate_keystrokes("tab");
     rig.draw();
     assert_eq!(targets.focused().as_deref(), Some("add-folder"));
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), None);
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()), None);
     rig.native_press("enter");
     rig.draw();
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()),
         Some(crate::navigation::Overlay::AddProject), "native Add opens the local folder dialog from the failed Library");
     let field = rig.cx.update(|window, cx| super::onboard::field(window, cx)).expect("mounted local folder field");
     assert!(rig.cx.update(|window, cx| field.read(cx).focus_handle(cx).is_focused(window)),
         "the local folder dialog owns native input despite owner failure");
     rig.keys("escape");
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), None);
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()), None);
     let mut reached_retry = false;
     for _ in 0..8 {
         rig.cx.simulate_keystrokes("tab");
@@ -1572,7 +1575,7 @@ fn failed_owner_settings_first_frame_paints_the_accessible_page(cx: &mut TestApp
     rig.cx.simulate_keystrokes("secondary-,");
     rig.cx.run_until_parked();
     rig.draw_frame();
-    assert!(matches!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().page_overlay()),
+    assert!(matches!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().page_overlay()),
         Some(crate::navigation::Overlay::Settings(crate::navigation::SettingsPage::Appearance))));
     let (paint, ax) = rig.cx.update(|window, _| {
         (window.painted_texts().iter().map(|text| text.text.to_string()).collect::<Vec<_>>(),
@@ -1604,7 +1607,7 @@ fn failed_owner_inbox_first_frame_paints_the_accessible_page(cx: &mut TestAppCon
     rig.cx.simulate_click(inbox.center(), Modifiers::default());
     rig.cx.run_until_parked();
     rig.draw_frame();
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().page_overlay()),
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().page_overlay()),
         Some(crate::navigation::Overlay::Inbox));
     let (paint, ax) = rig.cx.update(|window, _| {
         (window.painted_texts().iter().map(|text| text.text.to_string()).collect::<Vec<_>>(),
@@ -1626,21 +1629,21 @@ fn failed_owner_inbox_first_frame_paints_the_accessible_page(cx: &mut TestAppCon
 fn tab_j_and_space_each_change_a_fresh_symbol_page(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     rig.keys("x");
-    let (zone_before, focus_before) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    let (zone_before, focus_before) = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
     assert_eq!(zone_before, super::focus::Zone::Reader, "a fresh page keeps the keyboard in the reader");
     rig.keys("tab");
-    let (zone_after_tab, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    let (zone_after_tab, _) = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
     assert_ne!(zone_after_tab, zone_before, "Tab moved the keyboard to another zone");
     rig.keys("shift-tab");
-    let (zone_back, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    let (zone_back, _) = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
     assert_eq!(zone_back, zone_before, "shift-Tab returns to the reader");
     rig.keys("j");
-    let (_, focus_after_j) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    let (_, focus_after_j) = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
     assert_ne!(focus_after_j, focus_before, "J walked the focus");
     let mut peeked = false;
     for _ in 0..32 {
         rig.keys("space");
-        peeked = rig.shell.read_with(rig.cx, |shell, _| shell.transients()).1;
+        peeked = rig.shell.read_with(&rig.cx, |shell, _| shell.transients()).1;
         if peeked {
             break;
         }
@@ -1659,7 +1662,7 @@ fn enter_descends_and_the_descent_plays_down_then_up(cx: &mut TestAppContext) {
         lane: crate::navigation::PackageLane::Overview,
         selected: None,
     })), 1440.0, 900.0);
-    let (before, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.descent(cx));
+    let (before, _) = rig.shell.read_with(&rig.cx, |shell, cx| shell.descent(cx));
     // Walk to the first module, open it, walk to its first name and open that.
     rig.keys("j");
     rig.keys("enter");
@@ -1667,12 +1670,12 @@ fn enter_descends_and_the_descent_plays_down_then_up(cx: &mut TestAppContext) {
     rig.keys("enter");
     let route = rig.route();
     assert!(matches!(route, Route::Symbol(_)), "enter opened a page: {route:?}");
-    let (after, way) = rig.shell.read_with(rig.cx, |shell, cx| shell.descent(cx));
+    let (after, way) = rig.shell.read_with(&rig.cx, |shell, cx| shell.descent(cx));
     assert_eq!((after, way), (before + 1, Some(super::reader::Way::Down)));
     // ⌘- surfaces one depth: the descent plays up.
     rig.keys("secondary-up");
     assert!(matches!(rig.route(), Route::Package(_)));
-    let (_, way) = rig.shell.read_with(rig.cx, |shell, cx| shell.descent(cx));
+    let (_, way) = rig.shell.read_with(&rig.cx, |shell, cx| shell.descent(cx));
     assert_eq!(way, Some(super::reader::Way::Up));
     // ⌘[ walks back along the thread.
     rig.keys("secondary-[");
@@ -1750,20 +1753,20 @@ fn back_to_a_route_a_click_left_restores_focus_there(cx: &mut TestAppContext) {
     // the same Back behaviour for free): focus the target, and remember
     // which route it left.
     let leave_id: gpui::SharedString = "left-by-test-row".into();
-    rig.shell.update(rig.cx, |shell, cx| {
+    rig.shell.update(&mut rig.cx, |shell, cx| {
         let targets = shell.reader_targets(cx);
         targets.focus(leave_id.clone());
         targets.remember_leave(left.clone(), leave_id.clone());
     });
-    let (_, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    let (_, focused) = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
     assert_eq!(focused, Some(leave_id.clone()), "the click focused its own row first");
     // Navigate away: a fresh page starts unfocused.
     rig.go(Intent::Navigate(page_route("Related")));
-    let (_, away) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    let (_, away) = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
     assert_ne!(away, Some(leave_id.clone()), "a fresh page starts unfocused");
     // Back to the route the click left: the keyboard returns to that row.
     rig.go(Intent::Navigate(left));
-    let (_, restored) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    let (_, restored) = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
     assert_eq!(restored, Some(leave_id), "Back did not restore focus to the row that led away from it");
 }
 
@@ -1817,7 +1820,7 @@ fn every_setting_applies_live(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     let before = rig.counts();
     rig.go(Intent::SetDensity(DensityPreference::Dense));
-    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
     rig.go(Intent::ZoomTo {
         display: display.clone(),
         percent: 125,
@@ -1837,17 +1840,17 @@ fn every_setting_applies_live(cx: &mut TestAppContext) {
     // Dense folds the ledger's summaries away.
     assert!(!rig.said().iter().any(|line| line == "A relation whose kind is known."));
     // At 125 % a 1440 px window is 1152 effective: still a shelf.
-    let frame = rig.shell.read_with(rig.cx, |shell, _| shell.frame()).expect("frame");
+    let frame = rig.shell.read_with(&rig.cx, |shell, _| shell.frame()).expect("frame");
     assert_eq!(frame.shelf, super::ShelfMode::Shelf);
     rig.go(Intent::ZoomTo { display, percent: 200 });
-    let frame = rig.shell.read_with(rig.cx, |shell, _| shell.frame()).expect("frame");
+    let frame = rig.shell.read_with(&rig.cx, |shell, _| shell.frame()).expect("frame");
     assert_eq!(frame.shelf, super::ShelfMode::Spine, "200 % text behaves like a 720 px window");
 }
 
 #[gpui::test]
 fn appearance_text_size_control_updates_the_current_displays_saved_zoom(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
-    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
     rig.go(Intent::OpenSettings(
         crate::navigation::SettingsPage::Appearance,
     ));
@@ -1868,9 +1871,9 @@ fn appearance_text_size_control_updates_the_current_displays_saved_zoom(cx: &mut
     let zoom = rig
         .graph
         .store
-        .read_with(rig.cx, |store, _| store.snapshot().settings().zoom.clone());
+        .read_with(&rig.cx, |store, _| store.snapshot().settings().zoom.clone());
     assert_eq!(zoom.percent(&display), 200, "the control uses the existing per-display preference");
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| matches!(
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| matches!(
         store.snapshot().overlay(),
         Some(crate::navigation::Overlay::Settings(crate::navigation::SettingsPage::Appearance))
     )), "changing text size keeps Settings open");
@@ -1883,25 +1886,25 @@ fn escape_closes_the_topmost_transient_first(cx: &mut TestAppContext) {
     let mut peek = false;
     for _ in 0..32 {
         rig.keys("space");
-        peek = rig.shell.read_with(rig.cx, |shell, _| shell.transients()).1;
+        peek = rig.shell.read_with(&rig.cx, |shell, _| shell.transients()).1;
         if peek { break; }
         rig.keys("j");
     }
     assert!(peek, "space opened a peek");
     rig.keys("f");
-    let (_, peek, hints) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());
+    let (_, peek, hints) = rig.shell.read_with(&rig.cx, |shell, _| shell.transients());
     assert!(peek && hints);
     rig.keys("escape");
-    let (_, peek, hints) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());
+    let (_, peek, hints) = rig.shell.read_with(&rig.cx, |shell, _| shell.transients());
     assert!(peek && !hints, "esc closed the hints first");
     rig.keys("escape");
-    let (_, peek, _) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());
+    let (_, peek, _) = rig.shell.read_with(&rig.cx, |shell, _| shell.transients());
     assert!(!peek, "then the peek");
     rig.keys("secondary-k");
-    let (ask, _, _) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());
+    let (ask, _, _) = rig.shell.read_with(&rig.cx, |shell, _| shell.transients());
     assert!(ask, "⌘K opened Ask");
     rig.keys("escape");
-    let (ask, _, _) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());
+    let (ask, _, _) = rig.shell.read_with(&rig.cx, |shell, _| shell.transients());
     assert!(!ask, "esc closed Ask");
     assert_eq!(rig.route(), page_route("RelationLabel"), "and nothing else moved");
 }
@@ -1961,14 +1964,14 @@ fn keyboard_reaches_and_opens_every_settings_page(cx: &mut TestAppContext) {
 
     rig.keys("secondary-,");
     for _ in 0..4 {
-        let zone = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).0);
+        let zone = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx).0);
         if zone == super::focus::Zone::Shelf {
             break;
         }
         rig.keys("tab");
     }
     assert_eq!(
-        rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).0),
+        rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx).0),
         super::focus::Zone::Shelf,
         "Tab gives the Settings page list the keyboard"
     );
@@ -1979,7 +1982,7 @@ fn keyboard_reaches_and_opens_every_settings_page(cx: &mut TestAppContext) {
         }
         rig.keys("enter");
         assert_eq!(
-            rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+            rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()),
             Some(Overlay::Settings(page)),
             "the {title} row opens its typed page"
         );
@@ -1997,7 +2000,7 @@ fn appearance_zoom_choices_stay_in_the_visible_control_when_resized_at_200_perce
     use crate::navigation::SettingsPage;
 
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
-    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
     rig.go(Intent::ZoomTo {
         display,
         percent: 200,
@@ -2017,7 +2020,7 @@ fn appearance_zoom_choices_stay_in_the_visible_control_when_resized_at_200_perce
         );
         let mut seen = std::collections::BTreeSet::new();
         for offset in [0.0, -350.0, -700.0, -1050.0, -1400.0, -1750.0, -2100.0] {
-            rig.shell.read_with(rig.cx, |shell, cx| {
+            rig.shell.read_with(&rig.cx, |shell, cx| {
                 shell.set_source_reader_scroll_offset(point(px(0.0), px(offset)), cx)
             });
             rig.repaint();
@@ -2063,7 +2066,7 @@ fn appearance_zoom_choices_stay_in_the_visible_control_when_resized_at_200_perce
 fn escape_closes_settings_from_the_page_and_from_a_control_in_it(cx: &mut TestAppContext) {
     use crate::navigation::Overlay;
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
-    let overlay = |rig: &mut Rig| rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay());
+    let overlay = |rig: &mut Rig| rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay());
     let drawn = |rig: &mut Rig, words: &str| super::fit_tests::painted(rig).texts.iter().any(|text| text.content == words);
     rig.keys("secondary-,");
     assert!(matches!(overlay(&mut rig), Some(Overlay::Settings(_))), "⌘, opened Settings");
@@ -2085,7 +2088,7 @@ fn escape_closes_settings_from_the_page_and_from_a_control_in_it(cx: &mut TestAp
     rig.cx.simulate_click(choice, Modifiers::default());
     rig.settle();
     assert_eq!(
-        rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().density),
+        rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().settings().density),
         crate::model::DensityPreference::Compact,
         "the click chose Compact"
     );
@@ -2099,15 +2102,15 @@ fn escape_closes_settings_from_the_page_and_from_a_control_in_it(cx: &mut TestAp
 fn hint_mode_labels_every_visible_target_and_a_code_activates_one(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     rig.keys("f");
-    let (_, _, hints) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());
+    let (_, _, hints) = rig.shell.read_with(&rig.cx, |shell, _| shell.transients());
     assert!(hints);
     // Type codes until one fires: every code is at most two letters.
     rig.keys("a");
-    let (_, _, still) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());
+    let (_, _, still) = rig.shell.read_with(&rig.cx, |shell, _| shell.transients());
     if still {
         rig.keys("a");
     }
-    let (_, _, hints) = rig.shell.read_with(rig.cx, |shell, _| shell.transients());
+    let (_, _, hints) = rig.shell.read_with(&rig.cx, |shell, _| shell.transients());
     assert!(!hints, "a full code ended hint mode");
 }
 
@@ -2128,14 +2131,14 @@ fn an_indexed_hint_revoked_by_same_root_owner_replacement_cannot_take_native_foc
     );
     rig.settle();
     rig.keys("f");
-    let code = rig.shell.read_with(rig.cx, |shell, _| shell.hint_code_for("source-copy-excerpt"))
+    let code = rig.shell.read_with(&rig.cx, |shell, _| shell.hint_code_for("source-copy-excerpt"))
         .expect("painted source copy has a hint");
-    let target_frame = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).hint_frame());
+    let target_frame = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx).hint_frame());
     let focused = rig.cx.update(|window, cx| window.focused(cx));
     rig.cx.write_to_clipboard(gpui::ClipboardItem::new_string("hint-lease-sentinel".into()));
     gate.publish(OwnerState::Starting);
     gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).hint_frame()), target_frame,
+    assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx).hint_frame()), target_frame,
         "the stale painted target is still mounted before its watcher rerenders");
     rig.cx.simulate_keystrokes(&code.chars().map(|letter| letter.to_string()).collect::<Vec<_>>().join(" "));
     assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused,
@@ -2158,13 +2161,13 @@ fn a_local_settings_hint_remains_live_after_an_unrelated_producer_replacement(cx
     gate.publish(OwnerState::Starting);
     gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
     rig.settle();
-    assert!(matches!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+    assert!(matches!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()),
         Some(Overlay::Settings(_))));
     rig.keys("f");
-    let code = rig.shell.read_with(rig.cx, |shell, _| shell.hint_code_for("tb-inbox"))
+    let code = rig.shell.read_with(&rig.cx, |shell, _| shell.hint_code_for("tb-inbox"))
         .expect("local Inbox target is mounted on Settings");
     rig.keys(&code.chars().map(|letter| letter.to_string()).collect::<Vec<_>>().join(" "));
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), Some(Overlay::Inbox),
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()), Some(Overlay::Inbox),
         "local UI hint remains actionable with a replaced index producer");
 }
 
@@ -2186,7 +2189,7 @@ fn the_regions_degrade_with_the_window_and_the_text(cx: &mut TestAppContext) {
     ] {
         rig.cx.simulate_resize(size(px(width), px(900.0)));
         rig.settle();
-        let frame = rig.shell.read_with(rig.cx, |shell, _| shell.frame()).expect("frame");
+        let frame = rig.shell.read_with(&rig.cx, |shell, _| shell.frame()).expect("frame");
         assert_eq!(frame.shelf, shelf, "at {width}");
         // The page is on screen at every width.
         assert!(rig.said().iter().any(|line| line == "RelationLabel"), "at {width}");
@@ -2212,7 +2215,7 @@ fn a_storm_settles_to_exactly_what_a_fresh_window_shows(cx: &mut TestAppContext)
         match next(16) {
             0 | 1 => {
                 let name = names[next(names.len() as u64) as usize];
-                rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(page_route(name)), cx));
+                rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(Intent::Navigate(page_route(name)), cx));
             }
             2 => rig.cx.simulate_keystrokes("secondary-["),
             3 => rig.cx.simulate_keystrokes("secondary-]"),
@@ -2234,7 +2237,7 @@ fn a_storm_settles_to_exactly_what_a_fresh_window_shows(cx: &mut TestAppContext)
             14 => rig.cx.simulate_keystrokes(if next(2) == 0 { "secondary-=" } else { "secondary--" }),
             15 => {
                 let release = crate::navigation::ReleaseId::new("9.9.9").expect("release");
-                rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::SetRelease(Some(release)), cx));
+                rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(Intent::SetRelease(Some(release)), cx));
             }
             _ => rig.cx.simulate_keystrokes("escape"),
         }
@@ -2252,17 +2255,17 @@ fn a_storm_settles_to_exactly_what_a_fresh_window_shows(cx: &mut TestAppContext)
     rig.settle();
     let storm = rig.said();
     let (transients, reveal) = (
-        rig.shell.read_with(rig.cx, |shell, _| shell.transients()),
+        rig.shell.read_with(&rig.cx, |shell, _| shell.transients()),
         rig.cx.update(|_, cx| facet::ActiveFacet::facet(cx).reveal),
     );
     assert_eq!(transients, (false, false, false), "nothing transient is left open");
     assert_eq!(reveal, facet::Reveal::default(), "no reveal is stuck");
     // The keyboard is live.
     rig.keys("j");
-    let (_, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    let (_, focused) = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
     assert!(focused.is_some(), "focus still walks after the storm");
 
-    let mut fresh = self::rig(rig.cx, Some(page_route("KindGlyph")), 1440.0, 900.0);
+    let mut fresh = self::rig(&mut rig.cx, Some(page_route("KindGlyph")), 1440.0, 900.0);
     assert_eq!(storm, fresh.said(), "settle equals fresh");
 }
 
@@ -2360,7 +2363,7 @@ fn the_hero_name_is_whole_at_every_width_and_text_size(cx: &mut TestAppContext) 
     let long = "RelationLabelWithAVeryLongCompoundIdentifierName";
     let mut rig = rig(cx, Some(page_route(long)), 1440.0, 900.0);
     rig.cx.update(|_, cx| facet::probe::enable(cx));
-    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
     let mut wrapped = false;
     let mut cut = false;
     for (width, percent) in MATRIX {
@@ -2419,7 +2422,7 @@ fn the_hero_name_is_whole_at_every_width_and_text_size(cx: &mut TestAppContext) 
 #[gpui::test]
 fn a_view_switch_replaces_the_entry_mounts_the_real_map_and_back_leaves(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
-    let back = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().back.len());
+    let back = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().back.len());
     let selector: &'static str = Box::leak(super::kit::shared_key(&symbol("RelationLabel")).into_boxed_str());
     rig.repaint();
     assert!(rig.cx.debug_bounds("shell-root").is_some(), "the root paints its debug selector");
@@ -2432,16 +2435,16 @@ fn a_view_switch_replaces_the_entry_mounts_the_real_map_and_back_leaves(cx: &mut
     assert_eq!(rig.route(), view_route("RelationLabel", View::Graph));
     rig.repaint();
     assert!(rig.said().iter().any(|line| line.contains("Graph fixture")), "the graph is an explicitly marked fixture");
-    let map_state = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx));
+    let map_state = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_report(cx));
     assert!(map_state.contains("fixture 3 nodes"), "the mounted map reads the synthetic v1 input");
     assert!(map_state.contains("focus Some(0)") && map_state.contains("camera Some("),
         "retention starts from an actually focused and framed synthetic A: {map_state}");
-    let after = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().back.len());
+    let after = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().back.len());
     assert_eq!(after, back, "three views, no history pushed");
     rig.keys("g");
     assert_eq!(rig.route(), page_route("RelationLabel"), "G again: back to the page");
     rig.keys("g");
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)), map_state,
+    assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_report(cx)), map_state,
         "the same map entity, focus and camera survive a page visit");
     rig.keys("g");
     rig.keys("secondary-[");
@@ -2450,7 +2453,7 @@ fn a_view_switch_replaces_the_entry_mounts_the_real_map_and_back_leaves(cx: &mut
     rig.keys("g");
     assert_eq!(rig.route(), Route::World);
     assert!(rig.said().iter().any(|line| line.contains("Graph fixture")));
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)).contains("focus None"),
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_report(cx)).contains("focus None"),
         "a new explicit world route releases the previous symbol and frames the world");
     rig.keys("g");
     assert!(matches!(rig.route(), Route::Orbit(_)), "G toggles an unfocused World back along its thread");
@@ -2459,7 +2462,7 @@ fn a_view_switch_replaces_the_entry_mounts_the_real_map_and_back_leaves(cx: &mut
 #[gpui::test]
 fn graph_toggle_opens_current_b_instead_of_the_original_route_a(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
     rig.settle();
     rig.keys("g");
     assert_eq!(rig.route(), indexed_view_route("RelationDirection", View::Page), "G uses focused B's exact indexed declaration rather than route A");
@@ -2483,39 +2486,39 @@ fn graph_failed_new_root_open_with_retained_old_results_settles_and_can_retry(cx
     let flag = fail.clone();
     let pool = ReadPool::start(1, move |_| RetainedFailureFixture { fail: flag.clone() }).expect("failure pool");
     let mut rig = rig_with_reads(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0, pool);
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
     rig.settle();
     rig.keys("g");
     assert_eq!(rig.route(), indexed_view_route("RelationDirection", View::Page), "R1 really indexed B successfully");
     let query = crate::model::pages::SearchQuery::new("RelationDirection", 200).expect("same guarded query");
-    let old_root = rig.graph.store.read_with(rig.cx, |store, _| {
+    let old_root = rig.graph.store.read_with(&rig.cx, |store, _| {
         assert!(store.search(&query).loaded_value().is_some());
         store.snapshot().key()
     });
     rig.go(Intent::Navigate(view_route("RelationLabel", View::Graph)));
     fail.store(true, std::sync::atomic::Ordering::SeqCst);
     rig.go(Intent::RefreshRoot { basis: old_root, request: crate::navigation::RequestId::from_authority(old_root, 500) });
-    let new_root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let new_root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     assert_ne!(new_root, old_root, "the test really advances producer authority");
     // The synthetic owner is exact-root scoped, just like the real owner.
     // Admit its R2 projection explicitly before opening a node in that world.
     rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture(new_root, cx));
     rig.repaint();
     rig.settle();
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
     rig.settle();
     rig.keys("g");
     assert_eq!(rig.route(), view_route("RelationLabel", View::Graph), "failed R2 cannot route retained R1 data");
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)), "stopped failure clears pending instead of hanging quiet");
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)).contains("new-root lookup failed"));
-    rig.graph.store.read_with(rig.cx, |store, _| {
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_ready(cx)), "stopped failure clears pending instead of hanging quiet");
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_report(cx)).contains("new-root lookup failed"));
+    rig.graph.store.read_with(&rig.cx, |store, _| {
         let retained = store.search(&query);
         assert!(retained.loaded_value().is_some(), "failure actually retains the old successful page");
         assert_eq!(retained.value_root(), Some(old_root));
         assert!(matches!(retained.terminal(), crate::core::ResourceTerminal::Fault(_)));
     });
     fail.store(false, std::sync::atomic::Ordering::SeqCst);
-    rig.graph.store.update(rig.cx, |store, cx| store.retry(crate::model::pages::PageKey::Search(query), cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.retry(crate::model::pages::PageKey::Search(query), cx));
     rig.keys("g");
     assert_eq!(rig.route(), indexed_view_route("RelationDirection", View::Page), "a new successful retry resolves the current root");
 }
@@ -2553,7 +2556,7 @@ fn graph_open_resolves_exact_identity_after_a_broad_search_continuation(cx: &mut
     let count = more.clone();
     let pool = ReadPool::start(1, move |_| TwoPageFixture { more: count.clone(), first_exact: false }).expect("two-page pool");
     let mut rig = rig_with_reads(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0, pool);
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
     rig.settle();
     rig.keys("g");
     assert_eq!(more.load(std::sync::atomic::Ordering::SeqCst), 1, "the route lookup consumes the real continuation");
@@ -2566,13 +2569,13 @@ fn graph_open_rejects_a_duplicate_exact_identity_on_a_later_search_page(cx: &mut
     let count = more.clone();
     let pool = ReadPool::start(1, move |_| TwoPageFixture { more: count.clone(), first_exact: true }).expect("duplicate-page pool");
     let mut rig = rig_with_reads(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0, pool);
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
     rig.settle();
     rig.keys("g");
     assert_eq!(more.load(std::sync::atomic::Ordering::SeqCst), 1, "a partial page cannot prove uniqueness");
     assert_eq!(rig.route(), view_route("RelationLabel", View::Graph));
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)).contains("several exact matches"));
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)), "ambiguity settles the native pending state");
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_report(cx)).contains("several exact matches"));
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_ready(cx)), "ambiguity settles the native pending state");
 }
 
 /// A worker barrier, not a virtual-clock delay: the old result is returned
@@ -2679,7 +2682,7 @@ fn pending_find_read_keeps_query_focus_across_ask_and_late_landing(cx: &mut Test
     let query = crate::model::pages::SearchQuery::new("RelationLabel", 200).expect("query");
     let key = crate::model::browse::BrowseKey::Find(query.clone());
     let route = Route::Orbit(crate::navigation::OrbitRoute::Browse(crate::navigation::BrowseRoute::Find(query)));
-    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(route.clone()), cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(Intent::Navigate(route.clone()), cx));
     let deadline = Instant::now() + Duration::from_secs(3);
     while !gate.entered() {
         rig.frame(16);
@@ -2696,7 +2699,7 @@ fn pending_find_read_keeps_query_focus_across_ask_and_late_landing(cx: &mut Test
     };
     assert_eq!(rig.route(), route);
     assert_eq!(gate.returned.load(Ordering::SeqCst), 0);
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.pages().browse(&key).loaded_value().is_none()),
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.pages().browse(&key).loaded_value().is_none()),
         "the Find read must still be pending in its worker");
     assert_eq!(native_focus(&mut rig).as_deref(), Some("Find query"), "pending read blocked a settled native Find field");
     rig.cx.simulate_keystrokes("secondary-k");
@@ -2706,14 +2709,14 @@ fn pending_find_read_keeps_query_focus_across_ask_and_late_landing(cx: &mut Test
     assert_ne!(native_focus(&mut rig).as_deref(), Some("Find query"), "Find focused beneath Ask's departing plate");
     for _ in 0..3 { rig.frame(700); }
     assert_eq!(native_focus(&mut rig).as_deref(), Some("Find query"), "pending Find visit lost its pre-modal focus");
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.pages().browse(&key).loaded_value().is_none()),
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.pages().browse(&key).loaded_value().is_none()),
         "the return must have happened while the read was still pending");
     rig.cx.update(|window, cx| window.focus_next(cx));
     let away = native_focus(&mut rig);
     assert_ne!(away.as_deref(), Some("Find query"));
     gate.release();
     rig.settle();
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.pages().browse(&key).loaded_value().is_some()));
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.pages().browse(&key).loaded_value().is_some()));
     assert_eq!(native_focus(&mut rig), away, "a late Find landing stole focus from the next native stop");
 }
 
@@ -2732,9 +2735,9 @@ fn late_graph_search_and_continuation_cannot_navigate_after_superseding_state(cx
             // Declared after the rig so unwinding releases the worker before
             // dropping its pool. This is a real native asynchronous request.
             let _release_on_drop = LookupRelease(gate.clone());
-            rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+            rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
             rig.settle();
-            rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::SetView(View::Page), cx));
+            rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(Intent::SetView(View::Page), cx));
             let deadline = Instant::now() + Duration::from_secs(3);
             while !gate.entered() {
                 rig.frame(16);
@@ -2743,11 +2746,11 @@ fn late_graph_search_and_continuation_cannot_navigate_after_superseding_state(cx
             }
             assert_eq!(gate.returned.load(Ordering::SeqCst), 0, "the exact B result has not returned yet");
             assert_eq!(rig.route(), view_route("RelationLabel", View::Graph));
-            assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)), "{stage:?}/{change:?}: a real open is pending before cancellation");
-            let old_root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+            assert!(!rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_ready(cx)), "{stage:?}/{change:?}: a real open is pending before cancellation");
+            let old_root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
             match change {
-                SupersedeLookup::Focus => rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(0, cx)),
-                other => rig.graph.root.update(rig.cx, |root, cx| root.queue(match other {
+                SupersedeLookup::Focus => rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(0, cx)),
+                other => rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(match other {
                     SupersedeLookup::Route => Intent::Navigate(page_route("RelationLabel")),
                     SupersedeLookup::Root => Intent::RefreshRoot { basis: old_root, request: crate::navigation::RequestId::from_authority(old_root, 502) },
                     SupersedeLookup::Release => Intent::SetRelease(Some(crate::navigation::ReleaseId::new("0.3.0").expect("release"))),
@@ -2758,29 +2761,29 @@ fn late_graph_search_and_continuation_cannot_navigate_after_superseding_state(cx
             let deadline = Instant::now() + Duration::from_secs(3);
             loop {
                 rig.frame(16);
-                let applied = rig.graph.store.read_with(rig.cx, |store, _| match change {
+                let applied = rig.graph.store.read_with(&rig.cx, |store, _| match change {
                     SupersedeLookup::Root => store.snapshot().key() != old_root,
                     SupersedeLookup::Overlay => store.snapshot().overlay().is_some(),
                     SupersedeLookup::Release => store.snapshot().route().at().is_some(),
                     SupersedeLookup::Route => store.snapshot().route() == &page_route("RelationLabel"),
                     SupersedeLookup::Focus => true,
                 });
-                if applied && rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)) { break; }
+                if applied && rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_ready(cx)) { break; }
                 assert!(Instant::now() < deadline, "{stage:?}/{change:?}: superseding state never cancelled the open");
                 std::thread::sleep(Duration::from_millis(1));
             }
             let retained_route = rig.route();
-            let retained_root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
-            let retained_overlay = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay());
+            let retained_root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
+            let retained_overlay = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay());
             gate.release();
             rig.settle();
             assert_eq!(gate.returned.load(Ordering::SeqCst), 1, "{stage:?}/{change:?}: the old worker really returned after cancellation");
             assert_eq!(rig.route(), retained_route, "{stage:?}/{change:?}: old B never navigates over the newer state");
-            rig.graph.store.read_with(rig.cx, |store, _| {
+            rig.graph.store.read_with(&rig.cx, |store, _| {
                 assert_eq!(store.snapshot().key(), retained_root);
                 assert_eq!(store.snapshot().overlay(), retained_overlay);
             });
-            assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)), "late completion cannot revive a pending lookup");
+            assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_ready(cx)), "late completion cannot revive a pending lookup");
         }
     }
 }
@@ -2790,9 +2793,9 @@ fn graph_titlebar_page_and_code_open_visible_b_instead_of_route_a(cx: &mut TestA
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
     for (id, view) in [("view-page", View::Page), ("view-code", View::Code)] {
         rig.go(Intent::Navigate(view_route("RelationLabel", View::Graph)));
-        rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+        rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
         rig.settle();
-        let bounds = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds(id, cx)).expect("mounted view button");
+        let bounds = rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_target_bounds(id, cx)).expect("mounted view button");
         rig.cx.simulate_click(bounds.center(), Modifiers::default());
         rig.settle();
         let Route::Symbol(route) = rig.route() else { panic!("must open a declaration") };
@@ -2804,16 +2807,16 @@ fn graph_titlebar_page_and_code_open_visible_b_instead_of_route_a(cx: &mut TestA
 #[gpui::test]
 fn graph_titlebar_rejects_a_captured_view_action_after_selection_changes(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
     rig.settle();
-    let captured = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_action("view-page", cx))
+    let captured = rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_target_action("view-page", cx))
         .expect("B's mounted native Page action");
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(0, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(0, cx));
     rig.settle();
     rig.cx.update(|window, cx| captured(window, cx));
     rig.settle();
     assert_eq!(rig.route(), view_route("RelationLabel", View::Graph), "B's retired action cannot open A or B after selection changes");
-    let current = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("view-page", cx))
+    let current = rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_target_bounds("view-page", cx))
         .expect("A's current Page action");
     rig.cx.simulate_click(current.center(), Modifiers::default());
     rig.settle();
@@ -2829,9 +2832,9 @@ fn held_graph_header_press_cannot_transfer_to_a_new_selected_symbol_after_repain
             let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
             rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
             rig.cx.update(|window, _| window.set_a11y_forced(true));
-            rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(0, cx));
+            rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(0, cx));
             rig.settle();
-            let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_targets(cx));
+            let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_targets(cx));
             let focus = rig.cx.update(|window, cx| {
                 rig.shell.update(cx, |shell, cx| shell.take_zone(super::focus::Zone::Titlebar, window, cx));
                 let focus = targets.native_handle(&id.into(), cx);
@@ -2839,8 +2842,8 @@ fn held_graph_header_press_cannot_transfer_to_a_new_selected_symbol_after_repain
                 focus
             });
             rig.settle();
-            let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
-            let at = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds(id, cx))
+            let before = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
+            let at = rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_target_bounds(id, cx))
                 .expect("A's mounted view receiver").center();
             let (armed, epoch) = rig.cx.update(|window, cx| {
                 assert!(focus.is_focused(window) && window.is_focus_handle_mounted(&focus));
@@ -2875,7 +2878,7 @@ fn held_graph_header_press_cannot_transfer_to_a_new_selected_symbol_after_repain
                     Some(coordinate("RelationDirection").as_str()), "the replacement is exact selected B");
                 window.a11y_frame_number()
             });
-            let release_at = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds(id, cx))
+            let release_at = rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_target_bounds(id, cx))
                 .expect("B's current receiver").center();
             assert_eq!(release_at, at, "pointer geometry cannot cancel this held press for the law");
             rig.cx.update(|window, cx| {
@@ -2891,7 +2894,7 @@ fn held_graph_header_press_cannot_transfer_to_a_new_selected_symbol_after_repain
             });
             rig.settle();
             assert_eq!(rig.route(), *before.route(), "B's listener must not inherit A's unfinished {input}");
-            rig.graph.store.read_with(rig.cx, |store, _| {
+            rig.graph.store.read_with(&rig.cx, |store, _| {
                 assert_eq!(store.snapshot().session().back, before.session().back);
                 assert_eq!(store.snapshot().session().forward, before.session().forward);
             });
@@ -2907,14 +2910,14 @@ fn held_graph_header_press_cannot_transfer_to_a_new_selected_symbol_after_repain
 #[gpui::test]
 fn graph_titlebar_unindexed_b_and_unfocused_world_stay_honest(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(2, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(2, cx));
     rig.settle();
     for id in ["view-page", "view-code"] {
-        let bounds = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds(id, cx)).expect("mounted view button");
+        let bounds = rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_target_bounds(id, cx)).expect("mounted view button");
         rig.cx.simulate_click(bounds.center(), Modifiers::default());
         rig.settle();
         assert_eq!(rig.route(), view_route("RelationLabel", View::Graph));
-        assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)).contains("no exact match"));
+        assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_report(cx)).contains("no exact match"));
     }
     rig.go(Intent::Navigate(Route::World));
     let guidance = "Choose a graph symbol to open Page or Code.";
@@ -2922,20 +2925,20 @@ fn graph_titlebar_unindexed_b_and_unfocused_world_stay_honest(cx: &mut TestAppCo
     assert!(native_bounds_id(&mut rig, "view-code", "Label", &format!("Code unavailable: {guidance}"), false).is_some());
     assert!(native_bounds_id(&mut rig, "view-page", "Button", "Show Page view", true).is_none());
     assert!(native_bounds_id(&mut rig, "view-code", "Button", "Show Code view", true).is_none());
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("view-page", cx)).is_none());
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("view-code", cx)).is_none());
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_target_bounds("view-page", cx)).is_none());
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_target_bounds("view-code", cx)).is_none());
     assert!(rig.cx.update(|window, _| window.painted_texts().iter().any(|text| text.text.to_string().contains("Choose a graph symbol"))),
         "the recovery is painted as text, not only an accessibility label");
     for key in ["ctrl-3", "ctrl-4", "secondary-."] {
         rig.keys(key);
         rig.settle();
         assert_eq!(rig.route(), Route::World, "{key} has no old symbol route to open");
-        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string())), Some(guidance.to_owned()));
+        assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string())), Some(guidance.to_owned()));
     }
     rig.go(Intent::SetView(View::Page));
     rig.settle();
     assert_eq!(rig.route(), Route::World);
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string())), Some(guidance.to_owned()));
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string())), Some(guidance.to_owned()));
 }
 
 #[gpui::test]
@@ -2945,15 +2948,15 @@ fn graph_without_a_projection_keeps_its_current_declaration_page_and_code_action
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
     for view in [View::Page, View::Code] {
         let gate = Arc::new(TestProjectionGate::default());
-        let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+        let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
         rig.cx.update(|_, cx| {
             super::bodies::graph::install_test_fixture_with_gate(root, Some(Arc::clone(&gate)), cx);
         });
         rig.repaint();
         rig.cx.run_until_parked();
         assert!(gate.entered(), "the optional graph projection is genuinely pending");
-        assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
-        rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::SetView(view), cx));
+        assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
+        rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(Intent::SetView(view), cx));
         rig.frame(16);
         gate.release();
         rig.settle();
@@ -2971,18 +2974,18 @@ fn pending_graph_titlebar_opens_the_exact_declaration_with_current_owner_admissi
     for (id, view) in [("view-page", View::Page), ("view-code", View::Code)] {
         let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
         let gate = Arc::new(TestProjectionGate::default());
-        let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+        let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
         rig.cx.update(|_, cx| {
             super::bodies::graph::install_test_fixture_with_gate(root, Some(Arc::clone(&gate)), cx);
         });
         rig.repaint();
         rig.cx.run_until_parked();
         assert!(gate.entered());
-        assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
+        assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
         rig.repaint();
-        let action = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_action(id, cx))
+        let action = rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_target_action(id, cx))
             .expect("the exact declaration's mounted mode action");
-        let bounds = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds(id, cx))
+        let bounds = rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_target_bounds(id, cx))
             .expect("the exact declaration's native mode button");
         rig.cx.simulate_click(bounds.center(), Modifiers::default());
         rig.frame(16);
@@ -2990,7 +2993,7 @@ fn pending_graph_titlebar_opens_the_exact_declaration_with_current_owner_admissi
         rig.settle();
         assert_eq!(rig.route(), view_route("RelationLabel", view));
         rig.go(Intent::Navigate(view_route("RelationLabel", View::Graph)));
-        rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
+        rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_starting(cx));
         rig.cx.update(|window, cx| action(window, cx));
         assert_eq!(rig.route(), view_route("RelationLabel", View::Graph),
             "a retired declaration action cannot borrow a replacement owner's admission");
@@ -3008,13 +3011,13 @@ fn modal_page_overlays_do_not_offer_or_run_retained_mode_controls(cx: &mut TestA
             Overlay::Inbox => rig.go(Intent::OpenInbox),
             _ => unreachable!(),
         }
-        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().page_overlay()), Some(overlay));
-        assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("view-code", cx)).is_none(),
+        assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().page_overlay()), Some(overlay));
+        assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_target_bounds("view-code", cx)).is_none(),
             "the retained declaration's mode button is inactive while the modal page owns input");
         rig.keys("secondary-.");
         rig.keys("ctrl-4");
         assert_eq!(rig.route(), page_route("RelationLabel"));
-        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().page_overlay()), Some(overlay));
+        assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().page_overlay()), Some(overlay));
         rig.go(Intent::DismissOverlay);
     }
 }
@@ -3022,7 +3025,7 @@ fn modal_page_overlays_do_not_offer_or_run_retained_mode_controls(cx: &mut TestA
 #[gpui::test]
 fn failed_owner_preserves_local_depth_navigation_but_denies_declaration_modes(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Code)), 1440.0, 900.0);
-    rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_failed(
         &OwnerFault::Lost("owner unavailable during navigation".into()), cx,
     ));
     rig.settle();
@@ -3044,17 +3047,17 @@ fn departing_settings_keeps_mode_input_with_the_painted_page_until_return_settle
 
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     rig.go(Intent::OpenSettings(SettingsPage::Index));
-    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::DismissOverlay, cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(Intent::DismissOverlay, cx));
     rig.cx.run_until_parked();
     rig.draw();
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().page_overlay()).is_none());
-    assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.mode_input_allowed(cx)),
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().page_overlay()).is_none());
+    assert!(!rig.shell.read_with(&rig.cx, |shell, cx| shell.mode_input_allowed(cx)),
         "clearing the snapshot overlay cannot activate the departing page early");
     rig.cx.simulate_keystrokes("secondary-.");
     rig.draw();
     assert_eq!(rig.route(), page_route("RelationLabel"));
     rig.settle();
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.mode_input_allowed(cx)));
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.mode_input_allowed(cx)));
     rig.keys("secondary-.");
     assert_eq!(rig.route(), view_route("RelationLabel", View::Code));
 }
@@ -3064,7 +3067,7 @@ fn direct_graph_view_intents_resolve_the_native_current_selection(cx: &mut TestA
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
     for view in [View::Page, View::Code] {
         rig.go(Intent::Navigate(view_route("RelationLabel", View::Graph)));
-        rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+        rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
         rig.settle();
         rig.go(Intent::SetView(view));
         let Route::Symbol(route) = rig.route() else { panic!("native view intent must resolve B") };
@@ -3078,26 +3081,26 @@ fn native_graph_handoff_uses_the_scaled_translated_canvas_and_rejects_absent_sou
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
     rig.cx.update(|_, cx| cx.set_global(super::bodies::graph::TestCanvasLayer { scale: 0.75, x: 35.0, y: -28.0 }));
     rig.repaint();
-    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("actual mounted graph");
-    assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.graph_gem_morphing(cx)), "this proves the resting canvas path rather than the interrupted-ghost fallback");
-    let raw = graph.read_with(rig.cx, |graph, _| graph.node_bounds(0)).expect("visible core");
-    let (anchor, painted, parent) = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_canvas_geometry(0, cx));
+    let graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("actual mounted graph");
+    assert!(!rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_gem_morphing(cx)), "this proves the resting canvas path rather than the interrupted-ghost fallback");
+    let raw = graph.read_with(&rig.cx, |graph, _| graph.node_bounds(0)).expect("visible core");
+    let (anchor, painted, parent) = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_canvas_geometry(0, cx));
     assert_eq!(parent.scale.width, 0.75, "actual GPUI parent layer was prepainted");
     assert_ne!(painted, Some(raw), "native scale/translation changes the real source rectangle");
     assert_eq!(painted, Some(parent.apply_bounds(raw)), "the shared ledger records actual composited window bounds");
     assert_eq!(anchor, painted, "the routed hero starts at actual painted source geometry");
     rig.cx.update(|_, cx| cx.set_global(super::bodies::graph::TestCanvasLayer { scale: 0.0, x: 35.0, y: -28.0 }));
     rig.repaint();
-    assert!(graph.read_with(rig.cx, |graph, _| graph.node_bounds(0)).is_some(), "the logical node exists while its native layer is collapsed");
-    let (anchor, painted, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_canvas_geometry(0, cx));
+    assert!(graph.read_with(&rig.cx, |graph, _| graph.node_bounds(0)).is_some(), "the logical node exists while its native layer is collapsed");
+    let (anchor, painted, _) = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_canvas_geometry(0, cx));
     assert!(anchor.is_none() && painted.is_none(), "a collapsed painted source cannot revive the previous nonempty seed");
     rig.cx.update(|_, cx| cx.set_global(super::bodies::graph::TestCanvasLayer { scale: 0.75, x: 35.0, y: -28.0 }));
     rig.repaint();
-    let camera = graph.read_with(rig.cx, |graph, _| graph.camera().expect("camera"));
-    graph.update(rig.cx, |graph, cx| graph.fly_to(facet::motion::Camera { x: camera.x + 1_000_000.0, ..camera }, cx));
+    let camera = graph.read_with(&rig.cx, |graph, _| graph.camera().expect("camera"));
+    graph.update(&mut rig.cx, |graph, cx| graph.fly_to(facet::motion::Camera { x: camera.x + 1_000_000.0, ..camera }, cx));
     rig.settle();
-    assert!(graph.read_with(rig.cx, |graph, _| graph.node_bounds(0)).is_none(), "the source really left the current viewport");
-    let (anchor, painted, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_canvas_geometry(0, cx));
+    assert!(graph.read_with(&rig.cx, |graph, _| graph.node_bounds(0)).is_none(), "the source really left the current viewport");
+    let (anchor, painted, _) = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_canvas_geometry(0, cx));
     assert!(anchor.is_none() && painted.is_none(), "a disappeared source never reuses the previous transformed endpoint");
 }
 
@@ -3117,36 +3120,36 @@ fn new_root_without_an_indexed_join_clears_the_previous_painted_graph_ghost(cx: 
     let flag = fail.clone();
     let pool = ReadPool::start(1, move |_| MissingSymbolFixture { fail: flag.clone() }).expect("read pool");
     let mut rig = rig_with_reads(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0, pool);
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_canvas_geometry(0, cx).1).is_some(), "there really is a previous indexed paint");
-    let old_root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_canvas_geometry(0, cx).1).is_some(), "there really is a previous indexed paint");
+    let old_root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     fail.store(true, std::sync::atomic::Ordering::SeqCst);
     rig.go(Intent::RefreshRoot { basis: old_root, request: crate::navigation::RequestId::from_authority(old_root, 501) });
     // No R2 graph projection is installed. Exercise the independent failed
     // declaration read while the graph must already have revoked R1 geometry.
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_canvas_geometry(0, cx).1).is_none(),
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_canvas_geometry(0, cx).1).is_none(),
         "an unadmitted new graph cannot retain the old root's painted endpoint");
-    rig.graph.store.update(rig.cx, |store, cx| {
+    rig.graph.store.update(&mut rig.cx, |store, cx| {
         store.ensure(crate::model::pages::PageKey::Symbol(symbol("RelationLabel")), cx);
     });
     rig.settle();
-    rig.graph.store.read_with(rig.cx, |store, _| {
+    rig.graph.store.read_with(&rig.cx, |store, _| {
         assert_ne!(store.snapshot().key(), old_root);
         let resource = store.symbol(&symbol("RelationLabel"));
         assert!(resource.loaded_value().is_some(), "new-root failure actually retains its prior page");
         assert_eq!(resource.value_root(), Some(old_root));
         assert!(matches!(resource.terminal(), crate::core::ResourceTerminal::Fault(_)));
     });
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_canvas_geometry(0, cx).1).is_none(), "retained stale page cannot keep its old painted morph endpoint alive");
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_canvas_geometry(0, cx).1).is_none(), "retained stale page cannot keep its old painted morph endpoint alive");
 }
 
 #[gpui::test]
 fn graph_focus_display_tracks_b_without_rewriting_history_or_guessing_unindexed_rows(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
     rig.cx.update(|_, cx| facet::probe::enable(cx));
-    let back = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().back.len());
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    let back = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().back.len());
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
     rig.settle();
-    rig.graph.store.read_with(rig.cx, |store, cx| {
+    rig.graph.store.read_with(&rig.cx, |store, cx| {
         let snapshot = store.snapshot();
         let focus = store.graph_focus().expect("current typed B selection");
         assert_eq!(focus.node, 1);
@@ -3169,17 +3172,17 @@ fn graph_focus_display_tracks_b_without_rewriting_history_or_guessing_unindexed_
     assert_eq!(status.content, "Graph fixture · synthetic-present-v1::glyph::RelationDirection");
     assert!(status.bounds.width > 0.0 && status.bounds.height > 0.0 && status.bounds.y > 800.0, "B's honest fixture address is in the painted status box");
     assert!(!painted.texts.iter().any(|sample| sample.key == "graph-test-here-name" && sample.content == "RelationLabel"), "old A is absent from the current painted capsule");
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.shelf_current_symbols(cx)), [symbol("RelationDirection")]);
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(2, cx));
+    assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.shelf_current_symbols(cx)), [symbol("RelationDirection")]);
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(2, cx));
     rig.settle();
-    rig.graph.store.read_with(rig.cx, |store, _| {
+    rig.graph.store.read_with(&rig.cx, |store, _| {
         let focus = store.graph_focus().expect("unindexed selection still has fixture semantics");
         assert_eq!(focus.name.as_ref(), "Unindexed");
         assert!(focus.indexed.is_none(), "a same-name or previous indexed row cannot become its identity");
     });
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.shelf_current_symbols(cx)).is_empty(), "unknown B does not leave old A selected");
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.shelf_current_symbols(cx)).is_empty(), "unknown B does not leave old A selected");
     rig.go(Intent::Navigate(page_route("RelationLabel")));
-    rig.graph.store.read_with(rig.cx, |store, _| {
+    rig.graph.store.read_with(&rig.cx, |store, _| {
         assert!(store.graph_focus().is_none(), "the hidden graph cannot rename the page capsule");
         assert_eq!(super::jump::here(&store.snapshot(), store).name.to_string(), "RelationLabel");
     });
@@ -3189,7 +3192,7 @@ fn graph_focus_display_tracks_b_without_rewriting_history_or_guessing_unindexed_
 fn graph_camera_flights_do_not_publish_semantic_selection_events(cx: &mut TestAppContext) {
     struct SelectionEvents(usize);
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
     rig.settle();
     let store = rig.graph.store.clone();
     let events = rig.cx.update(|_, cx| cx.new(|cx| {
@@ -3198,14 +3201,14 @@ fn graph_camera_flights_do_not_publish_semantic_selection_events(cx: &mut TestAp
         }).detach();
         SelectionEvents(0)
     }));
-    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("real mounted graph");
-    let before = graph.read_with(rig.cx, |graph, _| graph.camera().expect("laid out camera"));
-    graph.update(rig.cx, |graph, cx| graph.fly_to(facet::motion::Camera { x: before.x + 200.0, y: before.y + 70.0, w: before.w * 1.2 }, cx));
+    let graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("real mounted graph");
+    let before = graph.read_with(&rig.cx, |graph, _| graph.camera().expect("laid out camera"));
+    graph.update(&mut rig.cx, |graph, cx| graph.fly_to(facet::motion::Camera { x: before.x + 200.0, y: before.y + 70.0, w: before.w * 1.2 }, cx));
     rig.frame(16);
-    assert_eq!(events.read_with(rig.cx, |events, _| events.0), 0);
+    assert_eq!(events.read_with(&rig.cx, |events, _| events.0), 0);
     rig.settle();
-    assert_ne!(graph.read_with(rig.cx, |graph, _| graph.camera().expect("camera after actual flight")), before);
-    assert_eq!(events.read_with(rig.cx, |events, _| events.0), 0, "every real camera frame stays below the semantic notification boundary");
+    assert_ne!(graph.read_with(&rig.cx, |graph, _| graph.camera().expect("camera after actual flight")), before);
+    assert_eq!(events.read_with(&rig.cx, |events, _| events.0), 0, "every real camera frame stays below the semantic notification boundary");
 }
 
 #[gpui::test]
@@ -3216,7 +3219,7 @@ fn immediate_page_to_graph_acquires_its_actual_visible_hero(cx: &mut TestAppCont
     let key = super::kit::shared_id(&symbol("RelationLabel"));
     let hero = rig.cx.update(|window, cx| facet::motion::shared::last_bounds(key, window, cx)).expect("Page A paints its hero");
     rig.cx.update(|_, cx| facet::probe::enable(cx));
-    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::SetView(View::Graph), cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(Intent::SetView(View::Graph), cx));
     rig.frame(16);
     assert_eq!(rig.route(), view_route("RelationLabel", View::Graph));
     // The Fold carries the gem from the immediately visible Page A's hero
@@ -3226,20 +3229,20 @@ fn immediate_page_to_graph_acquires_its_actual_visible_hero(cx: &mut TestAppCont
     let gem = (edge("reader.gem.left"), edge("reader.gem.top"), edge("reader.gem.right"), edge("reader.gem.bottom"));
     let want = (Some(f32::from(hero.left())), Some(f32::from(hero.top())), Some(f32::from(hero.right())), Some(f32::from(hero.bottom())));
     assert_eq!(gem, want, "the travelling gem starts on Page A's painted hero");
-    assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.graph_gem_morphing(cx)), "one gem travels, not two");
+    assert!(!rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_gem_morphing(cx)), "one gem travels, not two");
     rig.settle();
-    assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.graph_gem_morphing(cx)));
+    assert!(!rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_gem_morphing(cx)));
 }
 
 #[gpui::test]
 fn retained_pinned_card_actions_reveal_or_open_the_cards_exact_node(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
-    let graph = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_entity(cx)).expect("mounted retained graph");
+    let graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("mounted retained graph");
     rig.go(Intent::SetView(View::Page));
     rig.cx.update(|window, cx| graph.update(cx, |graph, cx| graph.act_on_peek(1, facet::graph::peek::Action::Focus, window, cx)));
     rig.settle();
     assert_eq!(rig.route(), view_route("RelationLabel", View::Graph), "Focus reveals the original retained graph visit");
-    assert_eq!(graph.read_with(rig.cx, |graph, _| graph.focused()), Some(1), "the pinned card's B overrides its graph route A");
+    assert_eq!(graph.read_with(&rig.cx, |graph, _| graph.focused()), Some(1), "the pinned card's B overrides its graph route A");
     rig.go(Intent::Navigate(page_route("RelationLabel")));
     rig.cx.update(|window, cx| graph.update(cx, |graph, cx| graph.act_on_peek(1, facet::graph::peek::Action::Open, window, cx)));
     rig.settle();
@@ -3247,7 +3250,7 @@ fn retained_pinned_card_actions_reveal_or_open_the_cards_exact_node(cx: &mut Tes
     rig.cx.update(|window, cx| graph.update(cx, |graph, cx| graph.act_on_peek(2, facet::graph::peek::Action::Open, window, cx)));
     rig.settle();
     assert_eq!(rig.route(), indexed_view_route("RelationDirection", View::Page), "an unavailable pinned symbol does not route arbitrary A or B");
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)).contains("no exact match"));
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_report(cx)).contains("no exact match"));
     let store = rig.graph.store.clone();
     rig.cx.update(|window, cx| {
         let store = store.read(cx);
@@ -3256,7 +3259,7 @@ fn retained_pinned_card_actions_reveal_or_open_the_cards_exact_node(cx: &mut Tes
         assert!(lines.join("").contains("no exact match"));
     });
     rig.go(Intent::Navigate(page_route("RelationLabel")));
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.notice().is_none()), "the previous page's failed card intent does not follow another route");
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.notice().is_none()), "the previous page's failed card intent does not follow another route");
 }
 
 #[gpui::test]
@@ -3268,46 +3271,46 @@ fn code_to_graph_never_reuses_a_recent_hidden_page_hero(cx: &mut TestAppContext)
     let key = super::kit::shared_id(&symbol("RelationLabel"));
     rig.cx.update(|window, cx| facet::motion::shared::remember(key,
         gpui::Bounds::new(point(px(900.0), px(700.0)), size(px(64.0), px(64.0))), window, cx));
-    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::SetView(View::Graph), cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(Intent::SetView(View::Graph), cx));
     let deadline = Instant::now() + Duration::from_secs(3);
     rig.frame(16);
-    while !rig.shell.read_with(rig.cx, |shell, cx| shell.graph_ready(cx)) {
+    while !rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_ready(cx)) {
         rig.frame(16);
         assert!(Instant::now() < deadline, "the tiny synthetic map must mount");
         std::thread::sleep(Duration::from_millis(1));
     }
     rig.frame(16);
     assert_eq!(rig.route(), view_route("RelationLabel", View::Graph));
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)).contains("focus Some(0)"), "the graph actually focuses synthetic A before testing its painted source");
-    assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.graph_gem_morphing(cx)),
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_report(cx)).contains("focus Some(0)"), "the graph actually focuses synthetic A before testing its painted source");
+    assert!(!rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_gem_morphing(cx)),
         "the canvas never morphs from a hidden page's old measurement after Code");
 }
 
 #[gpui::test]
 fn graph_view_intents_survive_settings_but_reject_competing_content_bursts(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
     rig.settle();
-    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
-    rig.graph.root.update(rig.cx, |root, cx| {
+    let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
+    rig.graph.root.update(&mut rig.cx, |root, cx| {
         root.queue(Intent::SetView(View::Page), cx);
         root.queue(Intent::ZoomTo { display, percent: 125 }, cx);
     });
     rig.settle();
     assert_eq!(rig.route(), indexed_view_route("RelationDirection", View::Page), "unrelated settings do not cancel the user's current symbol open");
     rig.go(Intent::Navigate(view_route("RelationLabel", View::Graph)));
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
     rig.settle();
-    rig.graph.root.update(rig.cx, |root, cx| {
+    rig.graph.root.update(&mut rig.cx, |root, cx| {
         root.queue(Intent::SetView(View::Page), cx);
         root.queue(Intent::SetView(View::Code), cx);
     });
     rig.settle();
     assert_eq!(rig.route(), indexed_view_route("RelationDirection", View::Code), "only the latest competing graph destination can open");
     rig.go(Intent::Navigate(view_route("RelationLabel", View::Graph)));
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
     rig.settle();
-    rig.graph.root.update(rig.cx, |root, cx| {
+    rig.graph.root.update(&mut rig.cx, |root, cx| {
         root.queue(Intent::SetView(View::Page), cx);
         root.queue(Intent::Navigate(page_route("RelationLabel")), cx);
         root.queue(Intent::Navigate(view_route("RelationLabel", View::Graph)), cx);
@@ -3321,7 +3324,7 @@ fn every_graph_keyboard_page_or_code_command_uses_current_b(cx: &mut TestAppCont
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
     for (key, view) in [("g", View::Page), ("ctrl-3", View::Page), ("ctrl-4", View::Code), ("secondary-.", View::Code), ("s", View::Code)] {
         rig.go(Intent::Navigate(view_route("RelationLabel", View::Graph)));
-        rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+        rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
         rig.settle();
         rig.keys(key);
         let Route::Symbol(route) = rig.route() else { panic!("{key} must open focused B") };
@@ -3333,31 +3336,31 @@ fn every_graph_keyboard_page_or_code_command_uses_current_b(cx: &mut TestAppCont
 #[gpui::test]
 fn graph_toggle_reports_an_unavailable_current_b_without_opening_route_a(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(view_route("RelationLabel", View::Graph)), 1440.0, 900.0);
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(2, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(2, cx));
     rig.settle();
     rig.keys("g");
     assert_eq!(rig.route(), view_route("RelationLabel", View::Graph), "an unavailable B cannot silently open A");
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)).contains("no exact match"),
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_report(cx)).contains("no exact match"),
         "the actual focused node's indexed lookup reports its honest failure");
 }
 
 #[gpui::test]
 fn back_from_an_opened_page_restores_the_same_world_camera_and_focus(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(Route::World), 1440.0, 900.0);
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
     rig.settle();
-    let before = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx));
+    let before = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_report(cx));
     rig.keys("g");
     assert_eq!(rig.route(), indexed_view_route("RelationDirection", View::Page));
     rig.keys("secondary-[");
     assert_eq!(rig.route(), Route::World);
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)), before,
+    assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_report(cx)), before,
         "the original World visit's map entity, focus and camera survive Back from its page");
     rig.keys("secondary-[");
     assert!(matches!(rig.route(), Route::Orbit(_)));
     rig.keys("g");
     assert_eq!(rig.route(), Route::World);
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.graph_report(cx)).contains("focus None"),
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_report(cx)).contains("focus None"),
         "a new explicit World command clears focus even though the retained route value is identical");
 }
 
@@ -3377,9 +3380,9 @@ fn leaving_graph_with_find_open_restores_the_page_keyboard_owner(cx: &mut TestAp
         window.focused(cx).expect("page focus owner")
     });
     assert_ne!(find_owner, page_owner, "the hidden graph input releases the native keyboard owner");
-    let before = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    let before = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
     rig.keys("j");
-    let after = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    let after = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
     assert!(after.1.is_some() && after != before, "J changes the visible page target after find suspension");
 }
 
@@ -3389,7 +3392,7 @@ fn viewing_another_release_says_so_and_escape_returns_to_the_pin(cx: &mut TestAp
     let release = crate::navigation::ReleaseId::new("0.3.0").expect("release");
     rig.go(Intent::SetRelease(Some(release.clone())));
     assert_eq!(rig.route().at(), Some(&release));
-    let here = rig.graph.store.read_with(rig.cx, |store, _| {
+    let here = rig.graph.store.read_with(&rig.cx, |store, _| {
         super::jump::here(&store.snapshot(), store).path.to_string()
     });
     assert_eq!(here, "viewing 0.3.0 · yours is the working copy", "a workspace crate is read from its working copy");
@@ -3408,17 +3411,17 @@ fn viewing_another_release_says_so_and_escape_returns_to_the_pin(cx: &mut TestAp
 #[gpui::test]
 fn the_zoom_keys_move_this_display_only_and_persist(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
-    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
     let scale = |rig: &mut Rig| rig.cx.update(|_, cx| facet::ActiveFacet::facet(cx).text_scale);
     assert!((scale(&mut rig) - 1.0).abs() < 1e-6);
     rig.keys("secondary-=");
     rig.keys("secondary-=");
     assert!((scale(&mut rig) - 1.25).abs() < 1e-6, "{}", scale(&mut rig));
-    let zoom = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().zoom.clone());
+    let zoom = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().settings().zoom.clone());
     assert_eq!(zoom.percent(&display), 125);
     assert_eq!(zoom.percent("another-display"), 100, "other displays keep their size");
     // Persisted per display.
-    let snapshot = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let snapshot = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
     let persisted = crate::model::PersistentState::project(&snapshot);
     assert_eq!(persisted.zoom.get(display.as_ref()), Some(&2));
     rig.keys("secondary--");
@@ -3434,22 +3437,22 @@ fn a_replaced_page_leaves_instead_of_vanishing(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     rig.graph
         .root
-        .update(rig.cx, |root, cx| root.queue(Intent::Navigate(page_route("KindGlyph")), cx));
+        .update(&mut rig.cx, |root, cx| root.queue(Intent::Navigate(page_route("KindGlyph")), cx));
     rig.cx.run_until_parked();
     rig.draw();
-    let pages = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx));
+    let pages = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_pages(cx));
     assert_eq!(pages, 2, "the old page is still on screen, leaving");
     // A second change mid-flight: the page in between leaves too, nothing cuts.
     rig.cx.executor().advance_clock(Duration::from_millis(60));
     rig.graph
         .root
-        .update(rig.cx, |root, cx| root.queue(Intent::SetView(View::Code), cx));
+        .update(&mut rig.cx, |root, cx| root.queue(Intent::SetView(View::Code), cx));
     rig.cx.run_until_parked();
     rig.draw();
-    let pages = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx));
+    let pages = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_pages(cx));
     assert!(pages >= 2, "{pages} pages");
     rig.settle();
-    let pages = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx));
+    let pages = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_pages(cx));
     assert_eq!(pages, 1, "once settled only the current page is drawn");
 }
 
@@ -3466,10 +3469,10 @@ fn unavailable_library_project_opens_local_tree_without_semantic_authority(cx: &
     gate.publish(OwnerState::Failed(OwnerFault::Host(Arc::from("owner unavailable"))));
     rig.draw();
     let project = LocalProjectId::new("/fixture/local-recovery").expect("local project");
-    rig.graph.root.update(rig.cx, |root, cx| root.dispatch(Intent::AddProject { project: project.clone() }, cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.dispatch(Intent::AddProject { project: project.clone() }, cx));
     rig.draw();
     rig.repaint();
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     assert!(targets.native_keys().iter().any(|id| id.starts_with("orbit-project-")), "local project selection remains a native control");
     assert!(targets.native_keys().iter().any(|id| id.starts_with("orbit-tree-")), "local Tree address stays reachable");
     assert!(!targets.native_keys().iter().any(|id| id.starts_with("orbit-package-")), "retained semantic packages remain inert");
@@ -3477,11 +3480,11 @@ fn unavailable_library_project_opens_local_tree_without_semantic_authority(cx: &
         .expect("local project tile").0.action.callback();
     rig.cx.update(|window, cx| action(window, cx));
     rig.draw();
-    let snapshot = rig.graph.root.read_with(rig.cx, |root, _| root.snapshot());
+    let snapshot = rig.graph.root.read_with(&rig.cx, |root, _| root.snapshot());
     assert_eq!(snapshot.route(), &Route::Orbit(crate::navigation::OrbitRoute::Browse(crate::navigation::BrowseRoute::Tree(project.clone()))));
     assert_eq!(snapshot.workspace().active.as_ref(), Some(&project));
     assert_eq!(snapshot.workspace().projects[0].request, None, "an outage does not issue an index mutation");
-    assert!(!rig.graph.store.read_with(rig.cx, |store, _| store.owner_serving()));
+    assert!(!rig.graph.store.read_with(&rig.cx, |store, _| store.owner_serving()));
 }
 
 mod publication;
@@ -3504,7 +3507,7 @@ fn lifecycle_native_unsent_queue_paints_consistently_and_keeps_its_tree_address(
     gate.publish(OwnerState::Failed(OwnerFault::Host(Arc::from("owner unavailable"))));
     rig.draw();
     let project = LocalProjectId::new("/fixture/unsent-lifecycle").expect("local project");
-    rig.graph.root.update(rig.cx, |root, cx| root.dispatch(
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.dispatch(
         Intent::AddProject { project: project.clone() }, cx,
     ));
     rig.draw();
@@ -3515,14 +3518,14 @@ fn lifecycle_native_unsent_queue_paints_consistently_and_keeps_its_tree_address(
         "the native shelf and project tile agree: {paint:?}");
     assert!(paint.iter().all(|text| !text.contains("Indexing") && !text.contains("Compiling")),
         "an unsent admission has no producer work to describe: {paint:?}");
-    let before = rig.graph.root.read_with(rig.cx, |root, _| root.snapshot());
+    let before = rig.graph.root.read_with(&rig.cx, |root, _| root.snapshot());
     let row = &before.workspace().projects[0];
     assert_eq!(row.phase, crate::model::ProjectPhase::Indexing);
     assert_eq!(row.lifecycle(), crate::model::ProjectLifecycle::Queued);
     assert_eq!(row.request, None);
     assert_eq!(row.operation, None);
 
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     let tree = format!("orbit-tree-{}", project.as_str());
     assert!(rig.cx.update(|window, cx| targets.focus_native(&tree, window, cx)));
     rig.native_press("enter");
@@ -3532,7 +3535,7 @@ fn lifecycle_native_unsent_queue_paints_consistently_and_keeps_its_tree_address(
     )));
     rig.keys("secondary-[");
     assert_eq!(rig.route(), Route::Orbit(crate::navigation::OrbitRoute::Home));
-    let after = rig.graph.root.read_with(rig.cx, |root, _| root.snapshot());
+    let after = rig.graph.root.read_with(&rig.cx, |root, _| root.snapshot());
     assert_eq!(after.workspace().projects[0].request, None);
     assert_eq!(after.workspace().projects[0].operation, None);
     assert_eq!(after.workspace().projects[0].lifecycle(), crate::model::ProjectLifecycle::Queued);
@@ -3570,11 +3573,11 @@ fn lifecycle_native_refusal_discloses_raw_detail_without_changing_its_cause(
     row.files_indexed = Some(478);
     row.operation = Some(operation);
     row.error = Some(detail.into());
-    let snapshot = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let snapshot = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
     let mut workspace = snapshot.workspace().clone();
     workspace.projects = Arc::from([row.clone()]);
     workspace.active = Some(project.clone());
-    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.admit_snapshot(
         Arc::new(snapshot.with_workspace(workspace)), cx,
     ));
     rig.draw();
@@ -3582,13 +3585,13 @@ fn lifecycle_native_refusal_discloses_raw_detail_without_changing_its_cause(
     let words = rig.said();
     assert!(words.iter().any(|word| word == "typed-refusal: Index refused."), "{words:?}");
     assert!(!words.iter().any(|word| word == detail || word.contains("Compilation refused")), "{words:?}");
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     let disclosure = format!("owner-words-{}", project.as_str());
     assert!(rig.cx.update(|window, cx| targets.focus_native(&disclosure, window, cx)));
     rig.native_press("enter");
     rig.draw();
     assert!(rig.said().iter().any(|word| word == detail));
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().workspace().projects[0].clone()), row,
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().workspace().projects[0].clone()), row,
         "native disclosure changes neither retained rows nor the exact operation evidence");
 }
 
@@ -3629,8 +3632,8 @@ fn lifecycle_native_partial_receipt_discloses_profiles_and_preserves_navigation(
         "owner unavailable",
     ))));
     rig.draw();
-    let runtime_snapshot = rig.graph.root.read_with(rig.cx, |root, _| root.snapshot());
-    let store_snapshot = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let runtime_snapshot = rig.graph.root.read_with(&rig.cx, |root, _| root.snapshot());
+    let store_snapshot = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
     assert_eq!(runtime_snapshot.workspace(), store_snapshot.workspace(), "navigation and presentation share the admitted fixture");
     assert_eq!(runtime_snapshot.workspace().projects.as_ref(), &[row.clone()]);
     rig.draw();
@@ -3650,7 +3653,7 @@ fn lifecycle_native_partial_receipt_discloses_profiles_and_preserves_navigation(
     );
     let targets = rig
         .shell
-        .read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        .read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     let disclosure = format!("owner-words-{}", project.as_str());
     assert!(
         rig.cx
@@ -3666,13 +3669,13 @@ fn lifecycle_native_partial_receipt_discloses_profiles_and_preserves_navigation(
     assert_eq!(
         rig.graph
             .store
-            .read_with(rig.cx, |store, _| store.snapshot().workspace().projects[0]
+            .read_with(&rig.cx, |store, _| store.snapshot().workspace().projects[0]
                 .clone()),
         row
     );
     let targets = rig
         .shell
-        .read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        .read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     let tree = format!("orbit-tree-{}", project.as_str());
     assert!(
         rig.cx
@@ -3691,13 +3694,13 @@ fn lifecycle_native_partial_receipt_discloses_profiles_and_preserves_navigation(
         rig.route(),
         Route::Orbit(crate::navigation::OrbitRoute::Home)
     );
-    let runtime_snapshot = rig.graph.root.read_with(rig.cx, |root, _| root.snapshot());
-    let store_snapshot = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let runtime_snapshot = rig.graph.root.read_with(&rig.cx, |root, _| root.snapshot());
+    let store_snapshot = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
     assert_eq!(runtime_snapshot.workspace(), store_snapshot.workspace(), "Back preserves the same admitted runtime and presentation fixture");
     assert_eq!(
         rig.graph
             .store
-            .read_with(rig.cx, |store, _| store.snapshot().workspace().projects[0]
+            .read_with(&rig.cx, |store, _| store.snapshot().workspace().projects[0]
                 .clone()),
         row
     );

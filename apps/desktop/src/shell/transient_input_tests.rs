@@ -9,7 +9,7 @@ use gpui::{Focusable as _, Modifiers, TestAppContext, point, px};
 fn overlay(rig: &mut Rig) -> Option<Overlay> {
     rig.graph
         .store
-        .read_with(rig.cx, |store, _| store.snapshot().overlay())
+        .read_with(&rig.cx, |store, _| store.snapshot().overlay())
 }
 fn click_target(rig: &mut Rig, part: &str) {
     let ledger = painted(rig);
@@ -70,7 +70,7 @@ fn actual_tab_enter_and_space_match_pointer_shelf_activation(cx: &mut TestAppCon
         let before = rig
             .graph
             .store
-            .read_with(rig.cx, |store, _| store.snapshot().settings().shelf_open);
+            .read_with(&rig.cx, |store, _| store.snapshot().settings().shelf_open);
         let mut reached = false;
         for _ in 0..16 {
             rig.keys("tab");
@@ -88,7 +88,7 @@ fn actual_tab_enter_and_space_match_pointer_shelf_activation(cx: &mut TestAppCon
         assert_eq!(
             rig.graph
                 .store
-                .read_with(rig.cx, |store, _| store.snapshot().settings().shelf_open),
+                .read_with(&rig.cx, |store, _| store.snapshot().settings().shelf_open),
             !before,
             "one key gesture toggles exactly once"
         );
@@ -96,7 +96,7 @@ fn actual_tab_enter_and_space_match_pointer_shelf_activation(cx: &mut TestAppCon
         assert_eq!(
             rig.graph
                 .store
-                .read_with(rig.cx, |store, _| store.snapshot().settings().shelf_open),
+                .read_with(&rig.cx, |store, _| store.snapshot().settings().shelf_open),
             before,
             "pointer invokes the same action"
         );
@@ -138,7 +138,7 @@ fn inbox_is_the_painted_underlay_and_escape_returns_to_it(cx: &mut TestAppContex
     assert_eq!(
         rig.graph
             .store
-            .read_with(rig.cx, |store, _| store.snapshot().page_overlay()),
+            .read_with(&rig.cx, |store, _| store.snapshot().page_overlay()),
         Some(Overlay::Inbox)
     );
     rig.keys("escape");
@@ -157,18 +157,18 @@ fn drawer_click_handoff_and_escape_do_not_dismiss_settings(cx: &mut TestAppConte
     rig.keys("secondary-\\");
     assert!(
         rig.shell
-            .read_with(rig.cx, |shell, _| shell.shelf_input_owner(true))
+            .read_with(&rig.cx, |shell, _| shell.shelf_input_owner(true))
     );
     click_text(&mut rig, "Contents");
     assert!(
         rig.shell
-            .read_with(rig.cx, |shell, _| shell.shelf_input_owner(true)),
+            .read_with(&rig.cx, |shell, _| shell.shelf_input_owner(true)),
         "a drawer row click cannot dismiss its own layer"
     );
     rig.keys("escape");
     assert!(
         !rig.shell
-            .read_with(rig.cx, |shell, _| shell.shelf_input_owner(true))
+            .read_with(&rig.cx, |shell, _| shell.shelf_input_owner(true))
     );
     assert_eq!(overlay(&mut rig), settings);
     assert_eq!(rig.route(), route);
@@ -191,7 +191,7 @@ fn add_query_survives_ask_cover_and_returns_with_live_focus(cx: &mut TestAppCont
         .update(|window, cx| super::onboard::field(window, cx))
         .expect("retained Add field");
     assert_eq!(
-        field.read_with(rig.cx, |input, _| input.value().to_string()),
+        field.read_with(&rig.cx, |input, _| input.value().to_string()),
         "/not-a-real-project"
     );
     assert!(
@@ -214,7 +214,7 @@ fn drawer_narrowing_and_lens_clicks_keep_the_same_live_surface(cx: &mut TestAppC
         click_text(&mut rig, words);
         assert!(
             rig.shell
-                .read_with(rig.cx, |shell, _| shell.shelf_input_owner(true)),
+                .read_with(&rig.cx, |shell, _| shell.shelf_input_owner(true)),
             "{words} keeps the drawer input owner"
         );
         assert_eq!(rig.route(), route);
@@ -224,7 +224,7 @@ fn drawer_narrowing_and_lens_clicks_keep_the_same_live_surface(cx: &mut TestAppC
         assert_eq!(rig.route(), route, "{key} cannot navigate the covered page");
         assert!(
             rig.shell
-                .read_with(rig.cx, |shell, _| shell.shelf_input_owner(true))
+                .read_with(&rig.cx, |shell, _| shell.shelf_input_owner(true))
         );
     }
     click_text(&mut rig, "Type to narrow");
@@ -237,13 +237,13 @@ fn drawer_narrowing_and_lens_clicks_keep_the_same_live_surface(cx: &mut TestAppC
     );
     assert!(
         rig.shell
-            .read_with(rig.cx, |shell, _| shell.shelf_input_owner(true))
+            .read_with(&rig.cx, |shell, _| shell.shelf_input_owner(true))
     );
     rig.keys("escape");
     rig.keys("escape");
     assert!(
         !rig.shell
-            .read_with(rig.cx, |shell, _| shell.shelf_input_owner(true))
+            .read_with(&rig.cx, |shell, _| shell.shelf_input_owner(true))
     );
     assert_eq!(rig.route(), route);
 }
@@ -348,7 +348,7 @@ fn actual_conflicting_hint_letters_narrow_the_current_hint_owner(cx: &mut TestAp
         enable(&mut rig);
         let route = rig.route();
         rig.keys("f");
-        let before = rig.shell.read_with(rig.cx, |shell, _| shell.hint_codes());
+        let before = rig.shell.read_with(&rig.cx, |shell, _| shell.hint_codes());
         assert!(
             before
                 .iter()
@@ -356,14 +356,14 @@ fn actual_conflicting_hint_letters_narrow_the_current_hint_owner(cx: &mut TestAp
             "painted controls supply the two-key {letter} hint family"
         );
         rig.keys(letter);
-        let after = rig.shell.read_with(rig.cx, |shell, _| shell.hint_codes());
+        let after = rig.shell.read_with(&rig.cx, |shell, _| shell.hint_codes());
         assert!(
             !after.is_empty() && after.len() < before.len(),
             "{letter} narrows hints instead of invoking a competing page action"
         );
         assert!(after.iter().all(|code| code.starts_with(letter)));
         assert_eq!(rig.route(), route);
-        assert!(rig.shell.read_with(rig.cx, |shell, cx| {
+        assert!(rig.shell.read_with(&rig.cx, |shell, cx| {
             shell
                 .chrome_words(cx)
                 .iter()
@@ -375,7 +375,7 @@ fn actual_conflicting_hint_letters_narrow_the_current_hint_owner(cx: &mut TestAp
 
 fn native_radio_point(rig: &mut Rig, label: &str) -> gpui::Point<gpui::Pixels> {
     for offset in [0.0, -350.0, -700.0, -1050.0, -1400.0, -1750.0, -2100.0] {
-        rig.shell.read_with(rig.cx, |shell, cx| {
+        rig.shell.read_with(&rig.cx, |shell, cx| {
             shell.set_source_reader_scroll_offset(point(px(0.0), px(offset)), cx)
         });
         rig.repaint();
@@ -428,11 +428,11 @@ fn drawer_backdrop_and_interrupted_pointer_never_activate_dimmed_settings(cx: &m
             let motion = |rig: &mut Rig| {
                 rig.graph
                     .store
-                    .read_with(rig.cx, |store, _| store.snapshot().settings().motion)
+                    .read_with(&rig.cx, |store, _| store.snapshot().settings().motion)
             };
             assert_eq!(motion(&mut rig), MotionPreference::System);
             rig.keys("secondary-\\");
-            let drawer = rig.shell.read_with(rig.cx, |shell, _| {
+            let drawer = rig.shell.read_with(&rig.cx, |shell, _| {
                 shell.frame().expect("painted drawer frame").drawer
             });
             let at = if full.x > drawer {
@@ -462,7 +462,7 @@ fn drawer_backdrop_and_interrupted_pointer_never_activate_dimmed_settings(cx: &m
             );
             assert!(
                 rig.shell
-                    .read_with(rig.cx, |shell, _| shell.shelf_input_owner(true))
+                    .read_with(&rig.cx, |shell, _| shell.shelf_input_owner(true))
             );
             rig.cx
                 .simulate_mouse_up(at, gpui::MouseButton::Left, Modifiers::none());
@@ -474,7 +474,7 @@ fn drawer_backdrop_and_interrupted_pointer_never_activate_dimmed_settings(cx: &m
             );
             assert!(
                 !rig.shell
-                    .read_with(rig.cx, |shell, _| shell.shelf_input_owner(true))
+                    .read_with(&rig.cx, |shell, _| shell.shelf_input_owner(true))
             );
             assert_eq!(overlay(&mut rig), origin);
             assert_eq!(rig.route(), route);
@@ -493,7 +493,7 @@ fn drawer_backdrop_and_interrupted_pointer_never_activate_dimmed_settings(cx: &m
             rig.settle();
             assert!(
                 rig.shell
-                    .read_with(rig.cx, |shell, _| shell.shelf_input_owner(true)),
+                    .read_with(&rig.cx, |shell, _| shell.shelf_input_owner(true)),
                 "a drag off the backdrop is not a backdrop click"
             );
             assert_eq!(motion(&mut rig), MotionPreference::System);

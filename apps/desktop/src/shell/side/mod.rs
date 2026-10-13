@@ -1515,7 +1515,8 @@ mod measured_layout_tests {
     fn old_restore_cannot_overwrite_native_wheel_or_keyboard_reveal(cx: &mut gpui::TestAppContext) {
         use crate::navigation::presentation::ReadingOffset;
         use gpui::point;
-        let cx = cx.add_empty_window();
+        let mut owned_cx = cx.add_empty_window_owned();
+        let cx = &mut owned_cx;
         let mut layout = RowLayout::new();
         let rows = (0..80).map(item).collect::<Vec<_>>();
         layout.update(rows.clone(), px(264.0), 1.0, px(32.0));
@@ -1574,7 +1575,8 @@ mod measured_layout_tests {
     #[gpui::test]
     fn newer_restore_wins_even_if_the_old_prepaint_arrives_first(cx: &mut gpui::TestAppContext) {
         use crate::navigation::presentation::ReadingOffset;
-        let cx = cx.add_empty_window();
+        let mut owned_cx = cx.add_empty_window_owned();
+        let cx = &mut owned_cx;
         let mut layout = RowLayout::new();
         let rows = (0..80).map(item).collect::<Vec<_>>();
         layout.update(rows.clone(), px(264.0), 1.0, px(32.0));
@@ -1634,7 +1636,7 @@ mod measured_layout_tests {
                 if self.active.get() { root.child(self.owner.clone()) } else { root }
             }
         }
-        let (_host, cx) = cx.add_window_view({
+        let (_host, mut owned_cx) = cx.add_window_view_owned({
             let layout = Rc::clone(&layout);
             let delivered = Rc::clone(&delivered);
             let active = Rc::clone(&active);
@@ -1644,6 +1646,7 @@ mod measured_layout_tests {
                 Host { owner, active }
             }
         });
+        let cx = &mut owned_cx;
         cx.update(|window, cx| { window.refresh(); window.draw(cx).clear(cx); });
         assert!(layout.borrow().deferred_scroll().is_some(), "the pending restore has not been settled");
         active.set(false);
@@ -1689,7 +1692,8 @@ mod measured_layout_tests {
 
     #[gpui::test]
     fn first_reveal_before_a_viewport_exists_uses_its_first_prepaint(cx: &mut gpui::TestAppContext) {
-        let cx = cx.add_empty_window();
+        let mut owned_cx = cx.add_empty_window_owned();
+        let cx = &mut owned_cx;
         let mut layout = RowLayout::new();
         layout.update((0..80).map(item).collect(),
             px(264.0), 1.0, px(32.0));
@@ -1705,7 +1709,8 @@ mod measured_layout_tests {
     #[gpui::test]
     fn native_wheel_before_reveal_settlement_owns_the_mounted_list(cx: &mut gpui::TestAppContext) {
         use gpui::point;
-        let cx = cx.add_empty_window();
+        let mut owned_cx = cx.add_empty_window_owned();
+        let cx = &mut owned_cx;
         let mut layout = RowLayout::new();
         layout.update((0..80).map(item).collect(), px(264.0), 1.0, px(32.0));
         layout.reveal_item(40);
@@ -1729,7 +1734,8 @@ mod measured_layout_tests {
     #[gpui::test]
     fn loading_wait_keeps_the_same_reveal_until_ready_but_native_input_retires_it(cx: &mut gpui::TestAppContext) {
         use gpui::point;
-        let cx = cx.add_empty_window();
+        let mut owned_cx = cx.add_empty_window_owned();
+        let cx = &mut owned_cx;
         let mut layout = RowLayout::new();
         let loading = (0..12).map(|n| Row::Note(format!("Waiting {n}").into())).collect::<Vec<_>>();
         layout.update(loading.clone(), px(264.0), 1.0, px(32.0));
@@ -1788,7 +1794,8 @@ mod measured_layout_tests {
     #[gpui::test]
     fn back_restores_the_same_row_past_an_unmeasured_tall_note(cx: &mut gpui::TestAppContext) {
         use crate::navigation::presentation::ReadingOffset;
-        let cx = cx.add_empty_window();
+        let mut owned_cx = cx.add_empty_window_owned();
+        let cx = &mut owned_cx;
         let mut layout = RowLayout::new();
         let mut rows = vec![Row::Note("a wrapped guidance note five rows high".into())];
         rows.extend((1..80).map(item));
@@ -1826,7 +1833,8 @@ mod measured_layout_tests {
 
     #[gpui::test]
     fn broad_fold_and_zoom_preserve_the_measured_items_fraction(cx: &mut gpui::TestAppContext) {
-        let cx = cx.add_empty_window();
+        let mut owned_cx = cx.add_empty_window_owned();
+        let cx = &mut owned_cx;
         let mut layout = RowLayout::new();
         let mut rows = (0..90).map(|n| Row::Note(format!("note {n}").into())).collect::<Vec<_>>();
         rows[60] = item(60);
@@ -1853,7 +1861,8 @@ mod measured_layout_tests {
     fn upward_keyboard_reveal_clears_the_measured_sticky_ancestor(cx: &mut gpui::TestAppContext) {
         use gpui::{AppContext as _, Context, IntoElement as _, Render, Styled as _, Window, div, list, point, size};
 
-        let cx = cx.add_empty_window();
+        let mut owned_cx = cx.add_empty_window_owned();
+        let cx = &mut owned_cx;
         let mut layout = RowLayout::new();
         // A depth-five subtree ends directly before a depth-one target.
         // Moving up first exposes the deep sibling, whose sticky chain is
@@ -1899,7 +1908,8 @@ mod measured_layout_tests {
         use gpui::{VisualContext as _, Context, IntoElement as _, Render, Styled as _, Window, div, list, size};
         use std::cell::RefCell;
 
-        let cx = cx.add_empty_window();
+        let mut owned_cx = cx.add_empty_window_owned();
+        let cx = &mut owned_cx;
         let mut layout = RowLayout::new();
         let rows = (0..80).map(|n| Row::Item(Item::new(
             RowId::Dependency(Arc::from(format!("row-{n}"))),
@@ -1984,7 +1994,8 @@ mod measured_layout_tests {
         use std::cell::RefCell;
         use std::rc::Rc;
 
-        let cx = cx.add_empty_window();
+        let mut owned_cx = cx.add_empty_window_owned();
+        let cx = &mut owned_cx;
         let mut layout = RowLayout::new();
         layout.update((0..80).map(|n| Row::Item(Item::new(
             RowId::Dependency(Arc::from(format!("row-{n}"))),

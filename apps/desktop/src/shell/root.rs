@@ -3009,7 +3009,7 @@ mod keyboard_claim_tests {
         rig.settle();
         rig.repaint();
         let shell = rig.shell.clone();
-        let (reader, targets) = shell.read_with(rig.cx, |shell, cx| (shell.reader.clone(), shell.reader_targets(cx)));
+        let (reader, targets) = shell.read_with(&rig.cx, |shell, cx| (shell.reader.clone(), shell.reader_targets(cx)));
         let id = targets.native_keys().into_iter().find(|id| id.starts_with("orbit-package-"))
             .expect("actual mounted Library native package control");
         let called = Rc::new(std::cell::Cell::new(0));
@@ -3047,7 +3047,7 @@ mod keyboard_claim_tests {
         rig.settle();
         rig.repaint();
         let shell = rig.shell.clone();
-        let targets = shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        let targets = shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
         let package = targets.native_keys().into_iter().find(|id| id.starts_with("orbit-package-"))
             .expect("actual indexed package control");
         let ids = [gpui::SharedString::from("find-packages"), package];
@@ -3122,10 +3122,10 @@ mod keyboard_claim_tests {
 
     fn opened_before_first_paint(cx: &mut gpui::TestAppContext) -> super::super::tests::Rig {
         let mut rig = mounted_root(cx);
-        let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
-        let links = reader.read_with(rig.cx, |reader, _| reader.navigation_links());
+        let reader = rig.shell.read_with(&rig.cx, |shell, _| shell.reader_entity());
+        let links = reader.read_with(&rig.cx, |reader, _| reader.navigation_links());
         rig.cx.update(|_, cx| links.dispatch(Intent::OpenCommandPalette, cx));
-        assert!(rig.shell.read_with(rig.cx, |shell, _| shell.keyboard_claim.is_some()));
+        assert!(rig.shell.read_with(&rig.cx, |shell, _| shell.keyboard_claim.is_some()));
         rig
     }
 
@@ -3133,12 +3133,12 @@ mod keyboard_claim_tests {
         let mut rig = mounted_root(cx);
         rig.cx.deactivate_window();
         rig.cx.update(|window, _| window.blur());
-        let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
-        let links = reader.read_with(rig.cx, |reader, _| reader.navigation_links());
+        let reader = rig.shell.read_with(&rig.cx, |shell, _| shell.reader_entity());
+        let links = reader.read_with(&rig.cx, |reader, _| reader.navigation_links());
         rig.cx.update(|_, cx| links.dispatch(Intent::OpenCommandPalette, cx));
         rig.settle();
         assert!(rig.cx.update(|window, cx| !window.is_window_active() && window.focused(cx).is_none()));
-        assert!(rig.shell.read_with(rig.cx, |shell, _| shell.keyboard_claim.is_some()));
+        assert!(rig.shell.read_with(&rig.cx, |shell, _| shell.keyboard_claim.is_some()));
         rig
     }
 
@@ -3147,22 +3147,22 @@ mod keyboard_claim_tests {
         let mut rig = opened_before_first_paint(cx);
         rig.cx.update(|window, _| window.blur());
         rig.settle();
-        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+        assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()),
             Some(Overlay::CommandPalette));
         assert!(rig.cx.update(|window, cx| window.focused(cx).is_none()),
             "the current mounted Ask target cannot override a later explicit blur");
-        assert!(rig.shell.read_with(rig.cx, |shell, _| shell.keyboard_claim.is_none()));
+        assert!(rig.shell.read_with(&rig.cx, |shell, _| shell.keyboard_claim.is_none()));
     }
 
     #[gpui::test]
     fn a_later_mounted_focus_choice_cancels_ask_focus_reassertion(cx: &mut gpui::TestAppContext) {
         let mut rig = opened_before_first_paint(cx);
-        let shell_focus = rig.shell.read_with(rig.cx, |shell, _| shell.focus.clone());
+        let shell_focus = rig.shell.read_with(&rig.cx, |shell, _| shell.focus.clone());
         rig.cx.update(|window, cx| shell_focus.focus(window, cx));
         rig.settle();
         assert!(rig.cx.update(|window, _| shell_focus.is_focused(window)),
             "a newer mounted focus choice owns the next frame");
-        assert!(rig.shell.read_with(rig.cx, |shell, _| shell.keyboard_claim.is_none()));
+        assert!(rig.shell.read_with(&rig.cx, |shell, _| shell.keyboard_claim.is_none()));
     }
 
     #[gpui::test]
@@ -3176,8 +3176,8 @@ mod keyboard_claim_tests {
         assert!(keyboard.window_active && keyboard.target_mounted && keyboard.input_handler_present);
         assert!(!keyboard.pending_claim);
         rig.keys("f");
-        let input = shell.read_with(rig.cx, |shell, cx| shell.ask.read(cx).input().clone());
-        assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "f",
+        let input = shell.read_with(&rig.cx, |shell, cx| shell.ask.read(cx).input().clone());
+        assert_eq!(input.read_with(&rig.cx, |input, _| input.value().to_string()), "f",
             "the first current native text event reaches the editor");
     }
 
@@ -3191,7 +3191,7 @@ mod keyboard_claim_tests {
         rig.cx.update(|window, _| window.activate_window());
         rig.settle();
         assert!(rig.cx.update(|window, cx| window.focused(cx).is_none()));
-        assert!(rig.shell.read_with(rig.cx, |shell, _| shell.keyboard_claim.is_none()));
+        assert!(rig.shell.read_with(&rig.cx, |shell, _| shell.keyboard_claim.is_none()));
     }
 }
 
@@ -3204,16 +3204,16 @@ mod transient_return_admission_tests {
         let mut rig = super::super::tests::rig(cx, Some(super::super::tests::page_route("RelationLabel")), 1440.0, 900.0);
         let shell = rig.shell.clone();
         let saved = rig.cx.update(|window, cx| shell.read(cx).capture_transient_return(None, window, cx));
-        assert!(shell.read_with(rig.cx, |shell, cx| shell.return_identity_current(&saved, cx)));
+        assert!(shell.read_with(&rig.cx, |shell, cx| shell.return_identity_current(&saved, cx)));
         let mut absent_attachment = saved.clone();
         assert!(absent_attachment.attachment.is_some(), "the painted test owner has a serving attachment");
         absent_attachment.attachment = None;
-        assert!(!shell.read_with(rig.cx, |shell, cx| shell.return_identity_current(&absent_attachment, cx)), "a missing/revoked attachment cannot inherit a serving owner's focus claim");
+        assert!(!shell.read_with(&rig.cx, |shell, cx| shell.return_identity_current(&absent_attachment, cx)), "a missing/revoked attachment cannot inherit a serving owner's focus claim");
         let mut exhausted_generation = saved.clone();
         exhausted_generation.generation = None;
-        assert!(!shell.read_with(rig.cx, |shell, cx| shell.return_identity_current(&exhausted_generation, cx)));
-        shell.update(rig.cx, |shell, _| shell.advance_transient_generation());
-        assert!(!shell.read_with(rig.cx, |shell, cx| shell.return_identity_current(&saved, cx)), "a subsequent native input generation retires the old return");
+        assert!(!shell.read_with(&rig.cx, |shell, cx| shell.return_identity_current(&exhausted_generation, cx)));
+        shell.update(&mut rig.cx, |shell, _| shell.advance_transient_generation());
+        assert!(!shell.read_with(&rig.cx, |shell, cx| shell.return_identity_current(&saved, cx)), "a subsequent native input generation retires the old return");
     }
 }
 
@@ -3231,11 +3231,11 @@ mod deferred_target_admission_tests {
         // painted module through the physical Shell walk before looking for
         // declaration cards; no logical registration can stand in for paint.
         for _ in 0..32 {
-            if rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).focused())
+            if rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx).focused())
                 .as_deref() == Some("pkg-module-glyph") { break; }
             rig.keys("j");
         }
-        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
         assert_eq!(targets.focused().as_deref(), Some("pkg-module-glyph"));
         let mount = targets.mount_claim("pkg-module-glyph").expect("actual painted module");
         assert!(rig.cx.update(|window, _| targets.admits_mount(&mount, window)));
@@ -3255,7 +3255,7 @@ mod deferred_target_admission_tests {
         let mut rig = super::super::tests::rig(cx, Some(route.clone()), 1440.0, 900.0);
         rig.settle();
         open_mounted_fixture_module(&mut rig);
-        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader.read(cx).targets.clone());
+        let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader.read(cx).targets.clone());
         let frame = targets.hint_frame();
         let target = targets.placed().into_iter()
             .find(|(target, _)| target.peek.is_some() && target.source.is_some())
@@ -3264,7 +3264,7 @@ mod deferred_target_admission_tests {
         let mount = targets.mount_claim(&target.id).expect("actual painted declaration");
         assert!(rig.cx.update(|window, _| targets.admits_mount(&mount, window)));
         targets.focus(target.id.clone());
-        assert_eq!(rig.shell.read_with(rig.cx, |shell, _| shell.zone), Zone::Reader);
+        assert_eq!(rig.shell.read_with(&rig.cx, |shell, _| shell.zone), Zone::Reader);
         let shell = rig.shell.clone();
         rig.cx.update(|window, app| {
             let handoff_shell = shell.clone();
@@ -3284,9 +3284,9 @@ mod deferred_target_admission_tests {
             });
         });
         rig.settle();
-        assert_eq!(rig.shell.read_with(rig.cx, |shell, _| shell.zone), Zone::Titlebar);
+        assert_eq!(rig.shell.read_with(&rig.cx, |shell, _| shell.zone), Zone::Titlebar);
         assert_eq!(rig.route(), route, "the old Reader row cannot navigate after a zone handoff");
-        assert!(!rig.shell.read_with(rig.cx, |shell, _| shell.transients()).1,
+        assert!(!rig.shell.read_with(&rig.cx, |shell, _| shell.transients()).1,
             "the old Reader row cannot open a peek after a zone handoff");
     }
 
@@ -3325,7 +3325,7 @@ mod deferred_target_admission_tests {
         );
         rig.settle();
         open_mounted_fixture_module(&mut rig);
-        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader.read(cx).targets.clone());
+        let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader.read(cx).targets.clone());
         let selected = targets.placed().into_iter()
             .find(|(target, _)| target.peek.is_some() && target.source.is_some())
             .map(|(target, _)| target.id)
@@ -3342,7 +3342,7 @@ mod deferred_target_admission_tests {
             "revoked Space and S cannot move native focus");
         rig.settle();
         assert_eq!(rig.route(), route, "revoked S cannot navigate through a stale declaration");
-        assert!(!rig.shell.read_with(rig.cx, |shell, _| shell.transients()).1,
+        assert!(!rig.shell.read_with(&rig.cx, |shell, _| shell.transients()).1,
             "revoked Space cannot open a peek");
     }
 
@@ -3355,11 +3355,11 @@ mod deferred_target_admission_tests {
             super::super::tests::RootOnly, Some(gate.clone()),
         );
         rig.settle();
-        let id = rig.shell.read_with(rig.cx, |shell, cx| {
+        let id = rig.shell.read_with(&rig.cx, |shell, cx| {
             shell.shelf.read(cx).targets.placed().into_iter().next().map(|(target, _)| target.id)
         }).expect("mounted shelf row");
         rig.keys("f");
-        let code = rig.shell.read_with(rig.cx, |shell, _| shell.hint_code_for(&id))
+        let code = rig.shell.read_with(&rig.cx, |shell, _| shell.hint_code_for(&id))
             .expect("shelf row has a hint");
         let route = rig.route();
         let focused = rig.cx.update(|window, cx| window.focused(cx));
@@ -3394,9 +3394,9 @@ mod shelf_scene_admission_tests {
             px(functions.bounds.y + functions.bounds.height / 2.0));
         rig.cx.simulate_click(at, gpui::Modifiers::none());
         rig.settle();
-        let shelf = rig.shell.read_with(rig.cx, |shell, _| shell.shelf.clone());
+        let shelf = rig.shell.read_with(&rig.cx, |shell, _| shell.shelf.clone());
         let preceding: SharedString = "shelf-kind-types".into();
-        assert!(shelf.read_with(rig.cx, |shelf, _| shelf.targets.placed()
+        assert!(shelf.read_with(&rig.cx, |shelf, _| shelf.targets.placed()
             .iter().any(|(target, _)| target.id == preceding)),
             "the preceding semantic target is mounted before two Down keys");
         let shell = rig.shell.clone();
@@ -3407,7 +3407,7 @@ mod shelf_scene_admission_tests {
         }));
         rig.repaint();
         rig.keys("down down");
-        let (_, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        let (_, focused) = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
         let wanted = format!("shelf-functions:{}", super::super::tests::symbol("relation_label").as_str());
         assert_eq!(focused.as_deref(), Some(wanted.as_str()),
             "two real Down key events select the function row before Return");
@@ -3428,7 +3428,7 @@ mod shelf_scene_admission_tests {
         rig.settle();
         let shell = rig.shell.clone();
         let focused: SharedString = "shelf-kind-types".into();
-        let shelf = shell.read_with(rig.cx, |shell, _| shell.shelf.clone());
+        let shelf = shell.read_with(&rig.cx, |shell, _| shell.shelf.clone());
         let handle = rig.cx.update(|window, cx| shell.update(cx, |shell, cx| {
             shell.take_zone(Zone::Shelf, window, cx);
             let targets = shelf.read(cx).targets.clone();
@@ -3439,10 +3439,10 @@ mod shelf_scene_admission_tests {
             handle
         }));
         rig.repaint();
-        let scroll = shelf.read_with(rig.cx, |shelf, _| shelf.diagnostic_scroll_state());
+        let scroll = shelf.read_with(&rig.cx, |shelf, _| shelf.diagnostic_scroll_state());
         let viewport = scroll.viewport_bounds();
         for _ in 0..8 {
-            crate::shell::tests::wheel(rig.cx, viewport.center(), gpui::point(px(0.0), px(-120.0)));
+            crate::shell::tests::wheel(&mut rig.cx, viewport.center(), gpui::point(px(0.0), px(-120.0)));
         }
         rig.repaint();
         assert!(scroll.logical_scroll_top().item_ix > 1,
@@ -3451,10 +3451,10 @@ mod shelf_scene_admission_tests {
             "the actual GPUI focus handle remains mounted while its row is parked");
         assert_eq!(rig.cx.update(|window, cx| shelf.read(cx).targets.native_focused(window)), Some(focused));
         rig.keys("down");
-        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).0, Zone::Shelf,
+        assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx)).0, Zone::Shelf,
             "keyboard continuation stays in the Shelf after an offscreen wheel");
         rig.keys("secondary-\\");
-        assert_ne!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).0, Zone::Shelf,
+        assert_ne!(rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx)).0, Zone::Shelf,
             "closing the inline Shelf must not leave its parked focus outline active in the Reader");
         assert!(!rig.cx.update(|window, _| handle.is_focused(window)),
             "a parked native row handle loses keyboard ownership when its presentation closes");
@@ -3472,7 +3472,7 @@ mod shelf_scene_admission_tests {
         let mut rig = super::super::tests::rig(cx, Some(route.clone()), 1440.0, 400.0);
         rig.settle();
         let shell = rig.shell.clone();
-        let shelf = shell.read_with(rig.cx, |shell, _| shell.shelf.clone());
+        let shelf = shell.read_with(&rig.cx, |shell, _| shell.shelf.clone());
         let focused: SharedString = "shelf-kind-types".into();
         let handle = rig.cx.update(|window, cx| shell.update(cx, |shell, cx| {
             shell.take_zone(Zone::Shelf, window, cx);
@@ -3483,19 +3483,19 @@ mod shelf_scene_admission_tests {
             handle
         }));
         rig.repaint();
-        let scroll = shelf.read_with(rig.cx, |shelf, _| shelf.diagnostic_scroll_state());
+        let scroll = shelf.read_with(&rig.cx, |shelf, _| shelf.diagnostic_scroll_state());
         for _ in 0..8 {
-            crate::shell::tests::wheel(rig.cx, scroll.viewport_bounds().center(), gpui::point(px(0.0), px(-120.0)));
+            crate::shell::tests::wheel(&mut rig.cx, scroll.viewport_bounds().center(), gpui::point(px(0.0), px(-120.0)));
         }
         rig.repaint();
         assert!(scroll.logical_scroll_top().item_ix > 1);
         assert!(rig.cx.update(|window, _| handle.is_focused(window)), "old Types button is still natively parked");
-        let folds = |rig: &mut super::super::tests::Rig| rig.graph.store.read_with(rig.cx, |store, _|
+        let folds = |rig: &mut super::super::tests::Rig| rig.graph.store.read_with(&rig.cx, |store, _|
             store.snapshot().session().reading.current.presentation.controls().shelf.folds()
                 .map(|key| key.as_str().to_owned()).collect::<Vec<_>>());
         let before = folds(&mut rig);
         rig.keys("down");
-        assert_eq!(shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).1).as_deref(), Some("shelf-kind-functions"),
+        assert_eq!(shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx).1).as_deref(), Some("shelf-kind-functions"),
             "Down selects Functions while native focus remains on the parked Types button");
         rig.native_press("enter");
         rig.settle();
@@ -3533,16 +3533,16 @@ mod shelf_scene_admission_tests {
                 shell.notify_zone(Zone::Shelf, cx);
             }));
             rig.repaint();
-            assert_eq!(shell.read_with(rig.cx, |shell, _| shell.zone), Zone::Shelf);
+            assert_eq!(shell.read_with(&rig.cx, |shell, _| shell.zone), Zone::Shelf);
         };
         focus_shelf(&mut rig);
         let toggle = super::super::tests::native_bounds_id(&mut rig, "tb-shelf", "Button", "Toggle the shelf", true)
             .expect("the real titlebar toggle is mounted");
         rig.cx.simulate_click(toggle.center(), gpui::Modifiers::none());
         rig.settle();
-        assert_eq!(shell.read_with(rig.cx, |shell, _| shell.zone), Zone::Reader,
+        assert_eq!(shell.read_with(&rig.cx, |shell, _| shell.zone), Zone::Reader,
             "a titlebar pointer toggle retires the row hand just like the keyboard action");
-        assert!(!shell.read_with(rig.cx, |shell, cx| shell.shelf.read(cx).targets.is_active()),
+        assert!(!shell.read_with(&rig.cx, |shell, cx| shell.shelf.read(cx).targets.is_active()),
             "the hidden Shelf does not keep an active parked row outline");
         assert!(rig.cx.update(|window, cx| window.focused(cx).is_some()),
             "the visible titlebar control or Reader retains a native keyboard owner");
@@ -3551,13 +3551,13 @@ mod shelf_scene_admission_tests {
         focus_shelf(&mut rig);
         rig.cx.simulate_resize(gpui::size(px(760.0), px(900.0)));
         rig.settle();
-        assert_eq!(shell.read_with(rig.cx, |shell, _| shell.zone), Zone::Reader,
+        assert_eq!(shell.read_with(&rig.cx, |shell, _| shell.zone), Zone::Reader,
             "a Shelf row cannot own the keyboard after its column becomes a spine");
         rig.cx.simulate_resize(gpui::size(px(1440.0), px(900.0)));
         rig.settle();
         focus_shelf(&mut rig);
         rig.keys("secondary-shift-.");
-        assert_eq!(shell.read_with(rig.cx, |shell, _| shell.zone), Zone::Reader,
+        assert_eq!(shell.read_with(&rig.cx, |shell, _| shell.zone), Zone::Reader,
             "zen removes the Shelf's row targets and their keyboard zone");
     }
 
@@ -3571,7 +3571,7 @@ mod shelf_scene_admission_tests {
         let mut rig = super::super::tests::rig(cx, Some(route.clone()), 760.0, 900.0);
         rig.settle();
         let shell = rig.shell.clone();
-        assert!(shell.read_with(rig.cx, |shell, _| shell.frame.is_some_and(|frame| frame.shelf == ShelfMode::Spine)));
+        assert!(shell.read_with(&rig.cx, |shell, _| shell.frame.is_some_and(|frame| frame.shelf == ShelfMode::Spine)));
         let mark: SharedString = "spine-shelf-kind-types".into();
         let handle = rig.cx.update(|window, cx| shell.update(cx, |shell, cx| {
             let targets = shell.shelf.read(cx).targets.clone();
@@ -3583,8 +3583,8 @@ mod shelf_scene_admission_tests {
         }));
         rig.repaint();
         assert!(rig.cx.update(|window, _| handle.is_focused(window)), "structural paint retains a live Spine mark");
-        assert_eq!(shell.read_with(rig.cx, |shell, _| shell.zone), Zone::Shelf);
-        let folded = |rig: &mut super::super::tests::Rig| rig.graph.store.read_with(rig.cx, |store, _|
+        assert_eq!(shell.read_with(&rig.cx, |shell, _| shell.zone), Zone::Shelf);
+        let folded = |rig: &mut super::super::tests::Rig| rig.graph.store.read_with(&rig.cx, |store, _|
             store.snapshot().session().reading.current.presentation.controls().shelf.folds().count());
         let before = folded(&mut rig);
         rig.native_press("enter");
@@ -3593,13 +3593,13 @@ mod shelf_scene_admission_tests {
         assert_ne!(folded(&mut rig), before, "native Return clicks the mounted mark, not a hidden full row");
 
         rig.cx.update(|window, cx| shell.update(cx, |shell, cx| shell.take_zone(Zone::Reader, window, cx)));
-        let reader_stops = shell.read_with(rig.cx, |shell, cx|
+        let reader_stops = shell.read_with(&rig.cx, |shell, cx|
             shell.reader.read(cx).targets.list_probe().upgrade().map_or(0, |list| list.borrow().len()));
         for _ in 0..reader_stops + Zone::ALL.len() {
-            if shell.read_with(rig.cx, |shell, _| shell.zone) == Zone::Shelf { break; }
+            if shell.read_with(&rig.cx, |shell, _| shell.zone) == Zone::Shelf { break; }
             rig.keys("shift-tab");
         }
-        let (zone, selected) = shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        let (zone, selected) = shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
         assert_eq!(zone, Zone::Shelf, "real Shift-Tab reaches the visible Spine zone");
         assert!(selected.as_deref().is_some_and(|id| id.starts_with("spine-")),
             "the zone selects a mounted Spine target, never a hidden full row: {selected:?}");
@@ -3614,8 +3614,8 @@ mod shelf_scene_admission_tests {
         let mut rig = super::super::tests::rig(cx,
             Some(super::super::tests::page_route("RelationLabel")), 2560.0, 900.0);
         let shell = rig.shell.clone();
-        let reader = shell.read_with(rig.cx, |shell, _| shell.reader.clone());
-        let target = reader.read_with(rig.cx, |reader, _| reader.targets.placed().into_iter()
+        let reader = shell.read_with(&rig.cx, |shell, _| shell.reader.clone());
+        let target = reader.read_with(&rig.cx, |reader, _| reader.targets.placed().into_iter()
             .find(|(target, _)| target.peek.is_some()).map(|(target, _)| target.id)
             .expect("the mounted declaration offers a pin-capable peek"));
         rig.cx.update(|window, cx| shell.update(cx, |shell, cx| {
@@ -3626,19 +3626,19 @@ mod shelf_scene_admission_tests {
         rig.settle();
         rig.cx.update(|window, cx| shell.update(cx, |shell, cx| shell.peek(window, cx)));
         rig.settle();
-        assert!(shell.read_with(rig.cx, |shell, _| shell.frame.is_some_and(|frame| frame.pins)),
+        assert!(shell.read_with(&rig.cx, |shell, _| shell.frame.is_some_and(|frame| frame.pins)),
             "a real W-Float pin created the native third column");
         rig.cx.update(|window, cx| shell.update(cx, |shell, cx| shell.take_zone(Zone::Pins, window, cx)));
         rig.cx.simulate_resize(gpui::size(px(1440.0), px(900.0)));
         rig.settle();
-        assert_eq!(shell.read_with(rig.cx, |shell, _| shell.zone), Zone::Reader,
+        assert_eq!(shell.read_with(&rig.cx, |shell, _| shell.zone), Zone::Reader,
             "the pin survives, but its column and keyboard zone leave at narrower width");
         rig.cx.simulate_resize(gpui::size(px(2560.0), px(900.0)));
         rig.settle();
-        assert!(shell.read_with(rig.cx, |shell, _| shell.frame.is_some_and(|frame| frame.pins)));
+        assert!(shell.read_with(&rig.cx, |shell, _| shell.frame.is_some_and(|frame| frame.pins)));
         rig.cx.update(|window, cx| shell.update(cx, |shell, cx| shell.take_zone(Zone::Pins, window, cx)));
         rig.keys("secondary-shift-.");
-        assert_eq!(shell.read_with(rig.cx, |shell, _| shell.zone), Zone::Reader,
+        assert_eq!(shell.read_with(&rig.cx, |shell, _| shell.zone), Zone::Reader,
             "zen cannot leave a hidden Pins zone active");
     }
 
@@ -3657,7 +3657,7 @@ mod shelf_scene_admission_tests {
         }));
         rig.repaint();
         rig.go(Intent::OpenCommandPalette);
-        let editor = shell.read_with(rig.cx, |shell, cx| shell.ask.read(cx).input().clone());
+        let editor = shell.read_with(&rig.cx, |shell, cx| shell.ask.read(cx).input().clone());
         assert!(rig.cx.update(|window, cx| editor.read(cx).focus_handle(cx).is_focused(window)),
             "Ask's actual editor owns the cover before the structural change");
         rig.cx.simulate_resize(gpui::size(px(480.0), px(900.0)));
@@ -3665,7 +3665,7 @@ mod shelf_scene_admission_tests {
         assert!(rig.cx.update(|window, cx| editor.read(cx).focus_handle(cx).is_focused(window)),
             "resizing the covered Shelf must not steal focus from Ask's editor");
         rig.go(Intent::DismissOverlay);
-        assert_eq!(shell.read_with(rig.cx, |shell, _| shell.zone), Zone::Reader,
+        assert_eq!(shell.read_with(&rig.cx, |shell, _| shell.zone), Zone::Reader,
             "the deferred return resolves the saved zone against the uncovered frame");
         assert!(!rig.cx.update(|window, _| old.is_focused(window)),
             "the old native Shelf handle cannot return through a now-hidden column");
@@ -3694,7 +3694,7 @@ mod shelf_scene_admission_tests {
         rig.go(Intent::OpenCommandPalette);
         assert!(!rig.cx.update(|window, _| handle.is_focused(window)), "Ask owns the covered native editor");
         rig.go(Intent::DismissOverlay);
-        assert_eq!(shell.read_with(rig.cx, |shell, _| shell.zone), Zone::Shelf);
+        assert_eq!(shell.read_with(&rig.cx, |shell, _| shell.zone), Zone::Shelf);
         assert!(rig.cx.update(|window, _| handle.is_focused(window)),
             "the unchanged Spine mark reuses its native handle across the inert cover");
     }
@@ -3712,8 +3712,8 @@ mod shelf_scene_admission_tests {
             px(types.bounds.y + types.bounds.height / 2.0));
         rig.cx.simulate_click(at, gpui::Modifiers::none());
         rig.settle();
-        let shelf = rig.shell.read_with(rig.cx, |shell, _| shell.shelf.clone());
-        assert!(shelf.update(rig.cx, |shelf, cx| {
+        let shelf = rig.shell.read_with(&rig.cx, |shell, _| shell.shelf.clone());
+        assert!(shelf.update(&mut rig.cx, |shelf, cx| {
             let moved = shelf.diagnostic_scroll_to_nested_row();
             cx.notify();
             moved
@@ -3722,8 +3722,8 @@ mod shelf_scene_admission_tests {
         assert!(rig.cx.debug_bounds("shelf-sticky-clip").is_some(),
             "the real Shelf paints its parent chain over the list");
 
-        let scroll = shelf.read_with(rig.cx, |shelf, _| shelf.diagnostic_scroll_state());
-        let row = shelf.read_with(rig.cx, |shelf, _| shelf.diagnostic_row_height());
+        let scroll = shelf.read_with(&rig.cx, |shelf, _| shelf.diagnostic_scroll_state());
+        let row = shelf.read_with(&rig.cx, |shelf, _| shelf.diagnostic_row_height());
         for wanted in [97.0, 99.0, 127.0] {
             // Chrome now shares height pressure with the list. Find the
             // requested native viewport through measured resizing instead
@@ -3739,7 +3739,7 @@ mod shelf_scene_admission_tests {
             }
             let viewport = scroll.viewport_bounds();
             let clip = rig.cx.debug_bounds("shelf-sticky-clip").expect("real current-frame sticky clip");
-            let covered = shelf.read_with(rig.cx, |shelf, _| shelf.diagnostic_sticky_covered());
+            let covered = shelf.read_with(&rig.cx, |shelf, _| shelf.diagnostic_sticky_covered());
             assert!((f32::from(viewport.size.height) - wanted).abs() <= 1.0,
                 "this fixture must exercise the requested nonmultiple viewport: {viewport:?}, wanted {wanted}");
             assert!((f32::from(clip.size.height) - f32::from(covered)).abs() <= 0.1
@@ -3758,43 +3758,43 @@ mod shelf_scene_admission_tests {
         let mut rig = super::super::tests::rig(cx,
             Some(super::super::tests::page_route("RelationLabel")), 360.0, 360.0);
         rig.keys("secondary-\\");
-        let drawer = rig.shell.read_with(rig.cx, |shell, _| shell.shelf_over.clone());
-        let anchor = drawer.read_with(rig.cx, |shelf, _|
+        let drawer = rig.shell.read_with(&rig.cx, |shell, _| shell.shelf_over.clone());
+        let anchor = drawer.read_with(&rig.cx, |shelf, _|
             shelf.diagnostic_last_row_anchor()).expect("real mounted drawer has an item row");
         rig.keys("escape");
-        assert!(!rig.shell.read_with(rig.cx, |shell, _| shell.shelf_over_open));
-        drawer.update(rig.cx, |shelf, cx| {
+        assert!(!rig.shell.read_with(&rig.cx, |shell, _| shell.shelf_over_open));
+        drawer.update(&mut rig.cx, |shelf, cx| {
             shelf.diagnostic_queue_restore(Default::default(), Some(anchor.clone()));
             cx.notify();
         });
-        let waiting = drawer.read_with(rig.cx, |shelf, _|
+        let waiting = drawer.read_with(&rig.cx, |shelf, _|
             shelf.diagnostic_restore_ticket()).expect("checked restore queued while drawer is inert");
         rig.repaint();
-        assert_eq!(drawer.read_with(rig.cx, |shelf, _| shelf.diagnostic_restore_ticket()), Some(waiting),
+        assert_eq!(drawer.read_with(&rig.cx, |shelf, _| shelf.diagnostic_restore_ticket()), Some(waiting),
             "a closed drawer cannot consume its own pending measurement");
 
         rig.keys("secondary-\\");
-        assert!(rig.shell.read_with(rig.cx, |shell, _| shell.shelf_over_open));
-        assert_eq!(drawer.read_with(rig.cx, |shelf, _| shelf.diagnostic_restore_ticket()), None,
+        assert!(rig.shell.read_with(&rig.cx, |shell, _| shell.shelf_over_open));
+        assert_eq!(drawer.read_with(&rig.cx, |shelf, _| shelf.diagnostic_restore_ticket()), None,
             "the same mounted owner must settle after the drawer becomes active again");
 
-        let scroll = drawer.read_with(rig.cx, |shelf, _| shelf.diagnostic_scroll_state());
+        let scroll = drawer.read_with(&rig.cx, |shelf, _| shelf.diagnostic_scroll_state());
         let viewport = scroll.viewport_bounds();
         assert!(viewport.size.height > px(0.0), "the reopened native list has a real viewport");
         assert!(scroll.max_offset_for_scrollbar().y > px(0.0), "the real drawer has wheel travel");
-        drawer.update(rig.cx, |shelf, cx| {
+        drawer.update(&mut rig.cx, |shelf, cx| {
             shelf.diagnostic_queue_restore(Default::default(), Some(anchor));
             cx.notify();
         });
-        let queued = drawer.read_with(rig.cx, |shelf, _|
+        let queued = drawer.read_with(&rig.cx, |shelf, _|
             shelf.diagnostic_restore_ticket()).expect("second restore is queued before native input");
         let before_wheel = scroll.logical_scroll_top();
-        crate::shell::tests::wheel(rig.cx, viewport.center(), gpui::point(px(0.0), px(120.0)));
+        crate::shell::tests::wheel(&mut rig.cx, viewport.center(), gpui::point(px(0.0), px(120.0)));
         let wheeled = scroll.logical_scroll_top();
         assert!(wheeled.item_ix != before_wheel.item_ix || wheeled.offset_in_item != before_wheel.offset_in_item,
             "native wheel moved the real drawer before its queued restore prepaint");
         rig.repaint();
-        assert_ne!(drawer.read_with(rig.cx, |shelf, _| shelf.diagnostic_restore_ticket()), Some(queued),
+        assert_ne!(drawer.read_with(&rig.cx, |shelf, _| shelf.diagnostic_restore_ticket()), Some(queued),
             "the real list wheel handler supersedes an older restore before its callback");
         rig.settle();
         let settled = scroll.logical_scroll_top();
@@ -3808,8 +3808,8 @@ mod shelf_scene_admission_tests {
         let route = super::super::tests::page_route("RelationLabel");
         let mut rig = super::super::tests::rig(cx, Some(route.clone()), 1440.0, 900.0);
         let shell = rig.shell.clone();
-        let scope = shell.read_with(rig.cx, |shell, cx| shell.shelf_input_scope(false, cx).expect("docked shelf scene"));
-        let retired = shell.read_with(rig.cx, |shell, cx| {
+        let scope = shell.read_with(&rig.cx, |shell, cx| shell.shelf_input_scope(false, cx).expect("docked shelf scene"));
+        let retired = shell.read_with(&rig.cx, |shell, cx| {
             let list = shell.shelf.read(cx).targets.list_probe().upgrade().expect("mounted shelf targets");
             let target = list.borrow().first().cloned().expect("mounted actionable target");
             target.action.callback()
@@ -3817,29 +3817,29 @@ mod shelf_scene_admission_tests {
         let tab = super::super::tests::native_bounds(&mut rig, "Tab", "Used by", true).expect("mounted native tab");
         rig.cx.simulate_click(tab.center(), gpui::Modifiers::none());
         rig.settle();
-        assert!(shell.read_with(rig.cx, |shell, cx| shell.admits_shelf_input_scope(&scope, cx)), "ordinary mouse down/up does not retire the painted scene");
+        assert!(shell.read_with(&rig.cx, |shell, cx| shell.admits_shelf_input_scope(&scope, cx)), "ordinary mouse down/up does not retire the painted scene");
         let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native Shelf tree");
         let tree: serde_json::Value = serde_json::from_str(&json).expect("tree JSON");
         assert!(tree["nodes"].as_object().expect("nodes").values().any(|node| node["aria"]["label"] == "Used by" && node["aria"]["selected"] == true), "native click selected the actual tab: {tree}");
         rig.go(Intent::Navigate(Route::World));
         rig.keys("secondary-[");
         assert_eq!(rig.route(), route);
-        assert!(!shell.read_with(rig.cx, |shell, cx| shell.admits_shelf_input_scope(&scope, cx)), "history can restore reading intent, never a retired native scene");
+        assert!(!shell.read_with(&rig.cx, |shell, cx| shell.admits_shelf_input_scope(&scope, cx)), "history can restore reading intent, never a retired native scene");
         let focused = rig.cx.update(|window, cx| window.focused(cx));
         rig.cx.update(|window, cx| retired(window, cx));
         rig.settle();
         assert_eq!(rig.route(), route, "old painted target cannot navigate after Back");
         assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused, "denied old callback does not take focus");
-        let fresh = shell.read_with(rig.cx, |shell, cx| shell.shelf_input_scope(false, cx).expect("fresh docked shelf scene"));
-        assert!(shell.read_with(rig.cx, |shell, cx| shell.admits_shelf_input_scope(&fresh, cx)));
+        let fresh = shell.read_with(&rig.cx, |shell, cx| shell.shelf_input_scope(false, cx).expect("fresh docked shelf scene"));
+        assert!(shell.read_with(&rig.cx, |shell, cx| shell.admits_shelf_input_scope(&fresh, cx)));
         rig.cx.simulate_resize(gpui::size(px(360.0), px(900.0)));
         rig.settle();
         rig.keys("secondary-\\");
-        let drawer = shell.read_with(rig.cx, |shell, cx| shell.shelf_input_scope(true, cx).expect("current drawer"));
-        assert!(shell.read_with(rig.cx, |shell, cx| shell.admits_shelf_input_scope(&drawer, cx)));
-        assert!(!shell.read_with(rig.cx, |shell, cx| shell.admits_shelf_input_scope(&fresh, cx)), "drawer cannot borrow a docked callback");
+        let drawer = shell.read_with(&rig.cx, |shell, cx| shell.shelf_input_scope(true, cx).expect("current drawer"));
+        assert!(shell.read_with(&rig.cx, |shell, cx| shell.admits_shelf_input_scope(&drawer, cx)));
+        assert!(!shell.read_with(&rig.cx, |shell, cx| shell.admits_shelf_input_scope(&fresh, cx)), "drawer cannot borrow a docked callback");
         rig.keys("escape");
-        assert!(!shell.read_with(rig.cx, |shell, cx| shell.admits_shelf_input_scope(&drawer, cx)), "closed drawer callbacks stay retired");
+        assert!(!shell.read_with(&rig.cx, |shell, cx| shell.admits_shelf_input_scope(&drawer, cx)), "closed drawer callbacks stay retired");
         rig.cx.simulate_resize(gpui::size(px(1440.0), px(900.0)));
         rig.settle();
         let current_tab = super::super::tests::native_bounds(&mut rig, "Tab", "Rests on", true).expect("fresh docked tab after drawer dismissal");
@@ -3869,7 +3869,7 @@ mod responsive_shelf_scene_tests {
         })
     }
     fn admitted(rig: &mut super::super::tests::Rig, scope: &ShelfInputScope) -> bool {
-        rig.shell.read_with(rig.cx, |shell, cx| shell.admits_shelf_input_scope(scope, cx))
+        rig.shell.read_with(&rig.cx, |shell, cx| shell.admits_shelf_input_scope(scope, cx))
     }
     fn resize(rig: &mut super::super::tests::Rig, width: f32) {
         rig.cx.simulate_resize(gpui::size(px(width), px(1400.0)));
@@ -3887,7 +3887,7 @@ mod responsive_shelf_scene_tests {
             for zen in [false, true] {
                 let scale = f32::from(percent) / 100.0;
                 let mut rig = super::super::tests::rig(cx, Some(super::super::tests::page_route("RelationLabel")), 1440.0 * scale, 1400.0);
-                let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+                let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
                 rig.go(Intent::ZoomTo { display, percent });
                 let used = super::super::tests::native_bounds(&mut rig, "Tab", "Used by", true).expect("native current tab");
                 rig.cx.simulate_click(used.center(), gpui::Modifiers::none());
@@ -3895,7 +3895,7 @@ mod responsive_shelf_scene_tests {
                 let rests = super::super::tests::native_bounds(&mut rig, "Tab", "Rests on", true).expect("native held tab");
                 let old = scope(&mut rig, false);
                 rig.cx.simulate_mouse_down(rests.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
-                let renders = rig.shell.read_with(rig.cx, |shell, _| shell.renders);
+                let renders = rig.shell.read_with(&rig.cx, |shell, _| shell.renders);
                 // Actual action dispatch, not direct callbacks or seeded state;
                 // the two ownership transitions have no intervening draw.
                 let shell = rig.shell.clone();
@@ -3933,17 +3933,17 @@ mod responsive_shelf_scene_tests {
         for percent in [100_u16, 200] {
             let scale = f32::from(percent) / 100.0;
             let mut rig = super::super::tests::rig(cx, None, 1440.0 * scale, 1400.0 * scale);
-            let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+            let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
             rig.go(Intent::ZoomTo { display, percent });
             rig.go(Intent::OpenSettings(crate::navigation::SettingsPage::Appearance));
             let full = super::super::tests::native_bounds(&mut rig, "RadioButton", "Full", true).expect("actual local motion control");
             rig.cx.simulate_mouse_down(full.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
-            let scope = rig.shell.read_with(rig.cx, |shell, _| shell.local_activation_scope());
+            let scope = rig.shell.read_with(&rig.cx, |shell, _| shell.local_activation_scope());
             rig.go(Intent::SetAppearance(crate::model::AppearancePreference::Glacier));
-            assert_eq!(rig.shell.read_with(rig.cx, |shell, _| shell.local_activation_scope()), scope, "appearance does not change native layout ownership");
+            assert_eq!(rig.shell.read_with(&rig.cx, |shell, _| shell.local_activation_scope()), scope, "appearance does not change native layout ownership");
             rig.cx.simulate_mouse_up(full.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
             rig.settle();
-            assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().motion), crate::model::MotionPreference::Full);
+            assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().settings().motion), crate::model::MotionPreference::Full);
         }
     }
 
@@ -3953,11 +3953,11 @@ mod responsive_shelf_scene_tests {
             let scale = f32::from(percent) / 100.0;
             let route = super::super::tests::page_route("RelationLabel");
             let mut rig = super::super::tests::rig(cx, Some(route.clone()), 1440.0 * scale, 1400.0);
-            let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+            let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
             rig.go(Intent::ZoomTo { display, percent });
             let dock = scope(&mut rig, false);
             assert_eq!(dock.surface(), ShelfNativeSurface::Docked);
-            let retired = rig.shell.read_with(rig.cx, |shell, cx| {
+            let retired = rig.shell.read_with(&rig.cx, |shell, cx| {
                 let list = shell.shelf.read(cx).targets.list_probe().upgrade().expect("native shelf targets");
                 let target = list.borrow().first().cloned().expect("actionable native target");
                 target.action.callback()
@@ -3968,12 +3968,12 @@ mod responsive_shelf_scene_tests {
             assert!(!admitted(&mut rig, &dock));
             resize(&mut rig, 1440.0 * scale);
             assert!(!admitted(&mut rig, &dock), "hide/show cannot revive dock callbacks");
-            let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+            let before = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.clone());
             let focused = rig.cx.update(|window, cx| window.focused(cx));
             rig.cx.update(|window, cx| retired(window, cx));
             rig.settle();
             assert_eq!(rig.route(), route);
-            assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone()), before);
+            assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.clone()), before);
             assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused);
             let used = super::super::tests::native_bounds(&mut rig, "Tab", "Used by", true).expect("fresh native tab");
             rig.cx.simulate_click(used.center(), gpui::Modifiers::none());
@@ -4010,7 +4010,7 @@ mod responsive_shelf_scene_tests {
         for percent in [100_u16, 200] {
             let scale = f32::from(percent) / 100.0;
             let mut rig = super::super::tests::rig(cx, Some(super::super::tests::page_route("RelationLabel")), 1440.0 * scale, 1400.0);
-            let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+            let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
             rig.go(Intent::ZoomTo { display, percent });
             let dock = scope(&mut rig, false);
             resize(&mut rig, 760.0 * scale);
@@ -4028,10 +4028,10 @@ mod responsive_shelf_scene_tests {
             let id: String = serde_json::from_str(name).expect("native debug name string");
             let label = node["aria"]["label"].as_str().expect("Spine label");
             let button = super::super::tests::native_bounds_id(&mut rig, &id, "Button", label, true).expect("fresh mounted Spine target");
-            let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+            let before = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
             rig.cx.simulate_click(button.center(), gpui::Modifiers::none());
             rig.settle();
-            let after = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+            let after = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
             assert!(after.route() != before.route() || after.session().reading.current.presentation != before.session().reading.current.presentation,
                 "actual Spine click must activate its typed row, not be rejected as hidden: {id}/{label}");
             resize(&mut rig, 360.0 * scale);
@@ -4073,14 +4073,14 @@ mod responsive_shelf_scene_tests {
                 Some(super::super::tests::page_route("RelationLabel")), 1440.0 * scale, 1400.0,
                 ReadPool::start(2, |_| super::super::tests::Fixture).expect("pool"),
                 super::super::tests::RootOnly, Some(gate.clone()));
-            let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+            let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
             rig.go(Intent::ZoomTo { display, percent });
             let initial = scope(&mut rig, false);
             // Observation is local metadata, not a producer replacement. Preserve
             // an actual held press across its publication and repaint.
             let used = super::super::tests::native_bounds(&mut rig, "Tab", "Used by", true).expect("native tab");
             rig.cx.simulate_mouse_down(used.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
-            rig.graph.store.update(rig.cx, |store, cx| {
+            rig.graph.store.update(&mut rig.cx, |store, cx| {
                 let snapshot = store.snapshot();
                 let key = snapshot.key();
                 store.admit_snapshot(Arc::new(snapshot.with_key(key.observed_at(key.observation() + 1), None)), cx);
@@ -4120,7 +4120,7 @@ mod responsive_shelf_scene_tests {
             let previous_root = scope(&mut rig, false);
             let rests = super::super::tests::native_bounds(&mut rig, "Tab", "Rests on", true).expect("native tab");
             rig.cx.simulate_mouse_down(rests.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
-            rig.graph.store.update(rig.cx, |store, cx| {
+            rig.graph.store.update(&mut rig.cx, |store, cx| {
                 let snapshot = store.snapshot();
                 let key = snapshot.key();
                 store.admit_snapshot(Arc::new(snapshot.with_key(key.with_generation(key.generation() + 1), None)), cx);
@@ -4151,26 +4151,26 @@ mod responsive_shelf_scene_tests {
             let gate = OwnerGate::ready(root, crate::model::ServiceMode::Attached);
             let mut rig = super::super::tests::rig_with_engine_gate(cx, None, 1440.0 * scale, 1400.0 * scale,
                 ReadPool::start(2, |_| super::super::tests::Fixture).expect("pool"), super::super::tests::RootOnly, Some(gate.clone()));
-            let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+            let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
             rig.go(Intent::ZoomTo { display, percent });
             rig.go(Intent::OpenSettings(SettingsPage::Appearance));
             let full = super::super::tests::native_bounds(&mut rig, "RadioButton", "Full", true).expect("mounted local Settings control");
             rig.cx.simulate_mouse_down(full.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
             let focus = rig.cx.update(|window, cx| window.focused(cx));
-            let receipt = rig.shell.read_with(rig.cx, |shell, _| shell.local_activation_scope());
+            let receipt = rig.shell.read_with(&rig.cx, |shell, _| shell.local_activation_scope());
             gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
             rig.settle();
-            assert_eq!(rig.shell.read_with(rig.cx, |shell, _| shell.local_activation_scope()), receipt);
+            assert_eq!(rig.shell.read_with(&rig.cx, |shell, _| shell.local_activation_scope()), receipt);
             assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focus, "producer replacement keeps the local native focus handle");
             rig.cx.simulate_mouse_up(full.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
             rig.settle();
-            assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().motion), MotionPreference::Full);
+            assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().settings().motion), MotionPreference::Full);
             rig.go(Intent::SetMotion(MotionPreference::System));
             let full = super::super::tests::native_bounds(&mut rig, "RadioButton", "Full", true).expect("current local control");
             rig.cx.simulate_mouse_down(full.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
-            let before = rig.shell.read_with(rig.cx, |shell, _| shell.local_activation_scope());
-            let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
-            let links = reader.read_with(rig.cx, |reader, _| reader.navigation_links());
+            let before = rig.shell.read_with(&rig.cx, |shell, _| shell.local_activation_scope());
+            let reader = rig.shell.read_with(&rig.cx, |shell, _| shell.reader_entity());
+            let links = reader.read_with(&rig.cx, |reader, _| reader.navigation_links());
             // Both real store transitions occur before another explicit paint.
             // Merely sampling the final overlay would miss this ownership cycle.
             rig.cx.update(|_, cx| {
@@ -4178,29 +4178,29 @@ mod responsive_shelf_scene_tests {
                 links.dispatch(Intent::DismissOverlay, cx);
             });
             rig.cx.run_until_parked();
-            assert_ne!(rig.shell.read_with(rig.cx, |shell, _| shell.local_activation_scope()), before);
+            assert_ne!(rig.shell.read_with(&rig.cx, |shell, _| shell.local_activation_scope()), before);
             rig.settle();
             let full = super::super::tests::native_bounds(&mut rig, "RadioButton", "Full", true).expect("returned Settings control");
             rig.cx.simulate_mouse_up(full.center(), gpui::MouseButton::Left, gpui::Modifiers::none());
             rig.settle();
-            assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().motion), MotionPreference::System, "an uncovered field cannot inherit its covered down");
+            assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().settings().motion), MotionPreference::System, "an uncovered field cannot inherit its covered down");
             rig.cx.simulate_click(full.center(), gpui::Modifiers::none());
             rig.settle();
-            assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().motion), MotionPreference::Full);
+            assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().settings().motion), MotionPreference::Full);
             // Wheel input uses the existing reader scroll state, not a newly
             // namespaced ancestor. Publication cannot reset that state.
             rig.cx.simulate_resize(gpui::size(px(1440.0 * scale), px(568.0 * scale)));
             rig.settle();
             rig.repaint();
             let viewport = rig.cx.debug_bounds("reader-scroll").expect("actual Settings reader viewport");
-            let before_wheel = rig.shell.read_with(rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx));
+            let before_wheel = rig.shell.read_with(&rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx));
             rig.cx.simulate_event(gpui::ScrollWheelEvent { position: viewport.center(), delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(-320.0))), modifiers: gpui::Modifiers::none(), touch_phase: gpui::TouchPhase::Moved });
             rig.draw();
-            let offset = rig.shell.read_with(rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx));
+            let offset = rig.shell.read_with(&rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx));
             assert_ne!(offset, before_wheel, "actual native wheel moves the local Settings viewport");
             gate.publish(OwnerState::Ready { key: root, mode: crate::model::ServiceMode::Attached });
             rig.settle();
-            assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx)), offset);
+            assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx)), offset);
         }
     }
 
@@ -4214,7 +4214,7 @@ mod responsive_shelf_scene_tests {
             let scale = f32::from(percent) / 100.0;
             let mut rig = super::super::tests::rig_with_engine_gate(cx, None, 1440.0 * scale, 1400.0 * scale,
                 ReadPool::start(2, |_| super::super::tests::Fixture).expect("pool"), super::super::tests::RootOnly, Some(gate.clone()));
-            let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+            let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
             rig.go(Intent::ZoomTo { display, percent });
             rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome))));
             let example = super::super::tests::native_bounds(&mut rig, "Button", "from_str", true).expect("mounted local Find example");
@@ -4259,12 +4259,12 @@ mod native_hint_receipt_tests {
         let mut rig = super::super::tests::rig(cx,
             Some(super::super::tests::view_route("RelationLabel", View::Code)), 1440.0, 900.0);
         rig.keys("f");
-        let (choice, scope) = rig.shell.read_with(rig.cx, |shell, _| {
+        let (choice, scope) = rig.shell.read_with(&rig.cx, |shell, _| {
             let choice = shell.hinted_target_for("source-copy-excerpt").expect("original mounted source hint");
             let scope = shell.hints.as_ref().expect("actual hint session").scope.clone();
             (choice, scope)
         });
-        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
         assert!(rig.cx.update(|window, _| targets.admits_mount(&choice.mount, window)));
         assert!(rig.cx.update(|_, cx| choice.target.action.admits(cx)), "positive original resource receipt");
         (rig, choice, scope)
@@ -4274,17 +4274,17 @@ mod native_hint_receipt_tests {
     fn same_key_same_label_model_replacement_cannot_rebind_an_original_hint_action(cx: &mut gpui::TestAppContext) {
         let (mut rig, choice, scope) = source_hint(cx);
         let symbol = route_symbol(&rig.route()).expect("source route declaration");
-        rig.graph.store.update(rig.cx, |store, _| {
+        rig.graph.store.update(&mut rig.cx, |store, _| {
             let mut source = store.source(&symbol).loaded_value().cloned().expect("current immutable source fixture");
             source.text = Known::Known(SourceText::new(Arc::from(
                 "// replaced\npub enum RelationLabel {\n    Replacement,\n}\n// changed\n"),
                 137, SourceOrigin::LocalFile, true).expect("valid replacement source"));
             crate::runtime::store::cargo_context_tests::force_land(store, &PageKey::Source(symbol), PageValue::Source(source));
         });
-        let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
-        reader.update(rig.cx, |_, cx| cx.notify());
+        let reader = rig.shell.read_with(&rig.cx, |shell, _| shell.reader_entity());
+        reader.update(&mut rig.cx, |_, cx| cx.notify());
         rig.repaint();
-        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
         assert!(targets.mount_claim("source-copy-excerpt").is_some(), "same current copy control actually repainted");
         assert!(!rig.cx.update(|_, cx| choice.target.action.admits(cx)),
             "the original immutable source receipt refuses replacement even when visible key/label agree");
@@ -4314,7 +4314,7 @@ mod native_hint_receipt_tests {
             shell.update(app, |shell, cx| shell.activate_hint(choice, &scope, window, cx));
         });
         rig.settle();
-        assert_eq!(rig.shell.read_with(rig.cx, |shell, _| shell.zone), Zone::Titlebar);
+        assert_eq!(rig.shell.read_with(&rig.cx, |shell, _| shell.zone), Zone::Titlebar);
         assert_eq!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("later-input-hint-sentinel"));
     }
 
@@ -4324,8 +4324,8 @@ mod native_hint_receipt_tests {
         let route = rig.route();
         rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
         rig.go(Intent::Navigate(route.clone()));
-        assert_ne!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id), scope.reading.visit);
-        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        assert_ne!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.id), scope.reading.visit);
+        let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
         assert!(targets.mount_claim("source-copy-excerpt").is_some());
         assert!(!rig.cx.update(|window, _| targets.admits_mount(&choice.mount, window)));
         rig.cx.write_to_clipboard(gpui::ClipboardItem::new_string("new-visit-hint-sentinel".into()));
@@ -4344,7 +4344,7 @@ mod native_hint_receipt_tests {
         let route = rig.route();
         rig.go(Intent::OpenSettings(SettingsPage::Appearance));
         rig.go(Intent::DismissOverlay);
-        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
         assert!(targets.mount_claim("source-copy-excerpt").is_some(), "the destination's fresh source control painted");
         assert!(!rig.cx.update(|window, _| targets.admits_mount(&choice.mount, window)),
             "same route/key after a painted Settings cover is a new mount");

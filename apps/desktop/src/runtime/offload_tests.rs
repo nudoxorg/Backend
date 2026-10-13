@@ -58,7 +58,7 @@ impl Render for Frame {
 
 /// A window on one probe, and what it painted.
 struct Shown {
-    cx: &'static mut VisualTestContext,
+    cx: VisualTestContext,
     words: Rc<RefCell<String>>,
     renders: Rc<Cell<u32>>,
 }
@@ -100,7 +100,7 @@ fn window(cx: &mut TestAppContext, memo: &Memo<u32, String>, asks: Option<u32>) 
         .expect("window")
     });
     Shown {
-        cx: VisualTestContext::from_window(opened.into(), cx).into_mut(),
+        cx: VisualTestContext::from_window(opened.into(), cx),
         words,
         renders,
     }

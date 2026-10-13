@@ -146,7 +146,7 @@ impl crate::runtime::reads::PageReader for LongReadmeActions {
 }
 
 fn reach_readme_native(rig: &mut Rig, id: &str) {
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     for _ in 0..128 {
         if rig.cx.update(|window, _| targets.native_focused(window).as_deref() == Some(id)) { return; }
         rig.keys("tab");
@@ -245,7 +245,7 @@ fn an_old_readme_more_control_cannot_focus_or_expand_after_owner_replacement(cx:
     rig.cx.update(|window, cx| window.simulate_a11y_action(gpui::accesskit::ActionRequest {
         action: gpui::AccessibleAction::Click, target_tree: gpui::accesskit::TreeId::ROOT, target_node: old, data: None,
     }, cx));
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     let list = targets.list_probe().upgrade().expect("retained mounted target list");
     assert!(list.borrow().iter().all(|target| target.id.as_ref() != "readme-heading-link-32"), "the old producer cannot expand the retained README plan");
 }
@@ -603,7 +603,7 @@ fn j_walks_the_modules_enter_opens_one_and_j_then_enter_opens_a_name(cx: &mut Te
     rig.keys("j");
     let (_, focused) = rig
         .shell
-        .read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        .read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
     assert_eq!(
         focused.as_deref(),
         Some("pkg-module-glyph"),
@@ -624,14 +624,14 @@ fn j_walks_the_modules_enter_opens_one_and_j_then_enter_opens_a_name(cx: &mut Te
     rig.keys("j");
     let (_, focused) = rig
         .shell
-        .read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        .read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
     assert_eq!(
         focused.as_deref().map(|id| id.starts_with("pkg-card-")),
         Some(true),
         "j now walks the cards: {focused:?}"
     );
     let _ = painted(&mut rig);
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)), targets.focused(),
         "the selected card's actual native handle owns Enter");
     rig.native_press("enter");
@@ -1170,7 +1170,7 @@ fn walk_by(rig: &mut Rig, key: &str, id: &str, limit: usize) {
     for _ in 0..limit {
         let (_, focused) = rig
             .shell
-            .read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+            .read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
         if focused.as_deref() == Some(id) {
             return;
         }
@@ -1178,7 +1178,7 @@ fn walk_by(rig: &mut Rig, key: &str, id: &str, limit: usize) {
     }
     let (zone, focused) = rig
         .shell
-        .read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        .read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
     assert_eq!(
         focused.as_deref(),
         Some(id),
@@ -1198,7 +1198,7 @@ fn walk_back_to(rig: &mut Rig, id: &str, limit: usize) {
 
 fn focused(rig: &mut Rig) -> Option<String> {
     rig.shell
-        .read_with(rig.cx, |shell, cx| shell.focus_state(cx))
+        .read_with(&rig.cx, |shell, cx| shell.focus_state(cx))
         .1
         .map(|id| id.to_string())
 }
@@ -1237,7 +1237,7 @@ fn mounted_package_licence_uses_its_reader_native_focus_for_return_and_space(
     });
     rig.settle();
 
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     let mut reached = false;
     for _ in 0..64 {
         rig.keys("tab");
@@ -1298,7 +1298,7 @@ fn covered_package_licence_cannot_complete_a_native_press_from_the_old_visit(
             window.set_a11y_forced(true);
         });
         rig.settle();
-        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
         let mut reached = false;
         for _ in 0..64 {
             rig.keys("tab");
@@ -1325,7 +1325,7 @@ fn covered_package_licence_cannot_complete_a_native_press_from_the_old_visit(
         let focus_after_down = rig.cx.update(|window, _| targets.native_focused(window));
         assert_eq!(focus_after_down.as_deref(), Some("pkg-licence"));
         rig.go(Intent::OpenSettings(SettingsPage::Appearance));
-        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+        assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()),
             Some(Overlay::Settings(SettingsPage::Appearance)));
         let focus_under_settings = rig.cx.update(|window, _| targets.native_focused(window));
         assert!(focus_under_settings.is_none(), "Settings retired the old native focus");
@@ -1364,7 +1364,7 @@ fn licence_native_shell_native_uses_one_resolved_disclosure(cx: &mut TestAppCont
     // Reader target so `j` proves the forward shell path back to the stamp.
     walk_back_to(&mut rig, "pkg-module-glyph", 64);
     walk_to(&mut rig, "pkg-licence", 6);
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(),
         Some("pkg-licence"), "the walk first reached the real mounted native control");
     let shell = rig.shell.clone();
@@ -1502,8 +1502,8 @@ fn package_card_reading_names_and_native_actions_follow_the_current_owner_attach
     }, cx));
     assert_eq!(rig.route(), package_route(), "the old card cannot cross an attachment replacement");
     rig.repaint();
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.package(&dossier.package).loaded_value().is_some()), "retained producer bytes remain available for disclosure");
-    assert!(!rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).native_keys().iter().any(|id| id.starts_with("pkg-card-")), "retained bytes do not mount current card controls");
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.package(&dossier.package).loaded_value().is_some()), "retained producer bytes remain available for disclosure");
+    assert!(!rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx)).native_keys().iter().any(|id| id.starts_with("pkg-card-")), "retained bytes do not mount current card controls");
 }
 
 /// The release history's pin and newest entry are doors: Enter travels to the
@@ -1524,7 +1524,7 @@ fn the_releases_are_doors_and_enter_travels_to_one(cx: &mut TestAppContext) {
         facet::probe::enable(cx);
     });
     let ledger = painted(&mut rig);
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.package(&package)
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.package(&package)
         .loaded_value().is_some_and(|dossier| matches!(dossier.record_evidence(),
             crate::model::pages::package::PackageRecordEvidence::Bound(_)))),
         "the native walk starts from the admitted exact registry dossier");
@@ -2075,7 +2075,7 @@ fn enable_dependency_native_ax(rig: &mut Rig) {
 fn assert_dependency_native_focus(rig: &mut Rig) {
     let targets = rig
         .shell
-        .read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        .read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     let json = rig.cx.update(|window, _| {
         assert_eq!(
             targets.native_focused(window).as_deref(),
@@ -2345,7 +2345,7 @@ fn a_painted_dependency_back_return_refuses_later_focus_read_owner_or_visit(
         rig.settle();
         let targets = rig
             .shell
-            .read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+            .read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
         assert_ne!(
             rig.cx
                 .update(|window, _| targets.native_focused(window))
@@ -2362,9 +2362,9 @@ fn a_painted_dependency_back_return_refuses_later_focus_read_owner_or_visit(
         }
         let reader = rig
             .shell
-            .read_with(rig.cx, |shell, _| shell.reader_entity());
+            .read_with(&rig.cx, |shell, _| shell.reader_entity());
         assert!(
-            !reader.read_with(rig.cx, |reader, _| reader
+            !reader.read_with(&rig.cx, |reader, _| reader
                 .diagnostic_native_history_return_pending()),
             "{interruption:?}: denial retires the pending return instead of waiting to steal focus later"
         );

@@ -8,8 +8,8 @@ use gpui::{TestAppContext, px, size};
 fn scroll(rig: &mut Rig) -> (f32, f32, f32, Option<u64>) {
     let reader = rig
         .shell
-        .read_with(rig.cx, |shell, _| shell.reader_entity());
-    reader.read_with(rig.cx, |reader, _| {
+        .read_with(&rig.cx, |shell, _| shell.reader_entity());
+    reader.read_with(&rig.cx, |reader, _| {
         let (height, max, mounted) = reader.mounted_scroll_geometry();
         (
             f32::from(reader.scroll_offset().y),
@@ -73,7 +73,7 @@ fn page_home_and_end_use_the_mounted_reader_extent(cx: &mut TestAppContext) {
     near(scroll(&mut rig).0, (-max + height).min(0.0));
     assert_eq!(
         rig.shell
-            .read_with(rig.cx, |shell, cx| shell.focus_state(cx).0),
+            .read_with(&rig.cx, |shell, cx| shell.focus_state(cx).0),
         Zone::Reader
     );
 }
@@ -102,7 +102,7 @@ fn focused_native_link_keeps_focus_while_reader_scrolls(cx: &mut TestAppContext)
     rig.keys("j");
     let before_focus = rig
         .shell
-        .read_with(rig.cx, |shell, cx| shell.focus_state(cx).1);
+        .read_with(&rig.cx, |shell, cx| shell.focus_state(cx).1);
     assert!(before_focus.is_some(), "J focused a mounted Reader control");
     let native = rig
         .cx
@@ -110,7 +110,7 @@ fn focused_native_link_keeps_focus_while_reader_scrolls(cx: &mut TestAppContext)
     assert!(native.0.is_some(), "a native link owns the keyboard");
     let reader = rig
         .shell
-        .read_with(rig.cx, |shell, _| shell.reader_entity());
+        .read_with(&rig.cx, |shell, _| shell.reader_entity());
     let owns_native = rig
         .cx
         .update(|window, cx| reader.read(cx).owns_keyboard_scroll_focus(window, cx));
@@ -134,7 +134,7 @@ fn focused_native_link_keeps_focus_while_reader_scrolls(cx: &mut TestAppContext)
     near(scroll(&mut rig).0, (from - height).max(-max));
     assert_eq!(
         rig.shell
-            .read_with(rig.cx, |shell, cx| shell.focus_state(cx).1),
+            .read_with(&rig.cx, |shell, cx| shell.focus_state(cx).1),
         before_focus,
         "viewport movement must preserve the focused link"
     );
@@ -163,7 +163,7 @@ fn home_at_top_cancels_a_queued_offscreen_target_reveal(cx: &mut TestAppContext)
         .expect("mounted Reader viewport");
     let targets = rig
         .shell
-        .read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        .read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     let target = targets
         .native_keys()
         .into_iter()
@@ -176,7 +176,7 @@ fn home_at_top_cancels_a_queued_offscreen_target_reveal(cx: &mut TestAppContext)
     near(scroll(&mut rig).0, 0.0);
     let reader = rig
         .shell
-        .read_with(rig.cx, |shell, _| shell.reader_entity());
+        .read_with(&rig.cx, |shell, _| shell.reader_entity());
     rig.cx.update(|window, cx| {
         targets.focus(target.clone());
         assert!(
@@ -202,13 +202,13 @@ fn home_at_top_cancels_a_queued_offscreen_target_reveal(cx: &mut TestAppContext)
     );
     assert_eq!(
         rig.shell
-            .read_with(rig.cx, |shell, cx| shell.focus_state(cx).1),
+            .read_with(&rig.cx, |shell, cx| shell.focus_state(cx).1),
         Some(target)
     );
 
     // The same pending reveal really would move the viewport if Home had not
     // superseded it; this validates that the target is a useful oracle.
-    reader.update(rig.cx, |reader, cx| {
+    reader.update(&mut rig.cx, |reader, cx| {
         reader.reveal_focused();
         cx.notify();
     });
@@ -224,11 +224,11 @@ fn queued_page_commands_use_the_first_resized_zoomed_layout(cx: &mut TestAppCont
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 320.0, 320.0);
     rig.repaint();
     let viewport = rig.cx.debug_bounds("reader-scroll").expect("mounted Reader viewport");
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     let target = targets.native_keys().into_iter()
         .find(|id| targets.bounds_of(id).is_some_and(|bounds| bounds.top() > viewport.bottom() + px(24.0)))
         .expect("a native link is below the small viewport");
-    let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+    let reader = rig.shell.read_with(&rig.cx, |shell, _| shell.reader_entity());
     rig.cx.update(|window, cx| {
         targets.focus(target.clone());
         assert!(targets.focus_native(&target, window, cx));
@@ -267,13 +267,13 @@ fn home_during_reflow_yields_to_the_next_native_target_walk(cx: &mut TestAppCont
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 320.0, 320.0);
     rig.repaint();
     let viewport = rig.cx.debug_bounds("reader-scroll").expect("mounted Reader viewport");
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     let keys = targets.native_keys();
     let (target, next) = keys.windows(2)
         .find(|pair| targets.bounds_of(&pair[0]).is_some_and(|bounds| bounds.top() > viewport.bottom() + px(24.0)))
         .map(|pair| (pair[0].clone(), pair[1].clone()))
         .expect("two consecutive mounted native links below the viewport");
-    let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+    let reader = rig.shell.read_with(&rig.cx, |shell, _| shell.reader_entity());
     rig.cx.update(|window, cx| {
         targets.focus(target.clone());
         assert!(targets.focus_native(&target, window, cx));
@@ -309,7 +309,7 @@ fn back_restores_reading_as_a_viewport_origin_across_later_reflow(cx: &mut TestA
     let route = page_route("RelationLabel");
     let mut rig = rig(cx, Some(route.clone()), 320.0, 320.0);
     rig.keys("j");
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).1.is_some()),
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx).1.is_some()),
         "a Reader target is focused before the history return");
     rig.keys("end");
     let (saved, _, old_max, _) = scroll(&mut rig);
@@ -320,7 +320,7 @@ fn back_restores_reading_as_a_viewport_origin_across_later_reflow(cx: &mut TestA
     rig.keys("secondary-[");
     assert_eq!(rig.route(), route);
     near(scroll(&mut rig).0, saved);
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).1.is_some()),
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx).1.is_some()),
         "Back returns with a Reader target that reflow would otherwise reveal");
 
     rig.cx.simulate_resize(size(px(390.0), px(507.0)));
@@ -339,11 +339,11 @@ fn back_and_forward_keep_a_saved_home_after_abandoned_history_exceeds_its_cap(cx
     let mut rig = rig(cx, Some(page.clone()), 320.0, 320.0);
     rig.repaint();
     let viewport = rig.cx.debug_bounds("reader-scroll").expect("mounted Reader viewport");
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     let offscreen = targets.native_keys().into_iter()
         .find(|id| targets.bounds_of(id).is_some_and(|bounds| bounds.top() > viewport.bottom() + px(24.0)))
         .expect("native target below the initial viewport");
-    let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+    let reader = rig.shell.read_with(&rig.cx, |shell, _| shell.reader_entity());
     rig.cx.update(|window, cx| {
         targets.focus(offscreen.clone());
         assert!(targets.focus_native(&offscreen, window, cx));
@@ -351,8 +351,8 @@ fn back_and_forward_keep_a_saved_home_after_abandoned_history_exceeds_its_cap(cx
     });
     rig.keys("home");
     near(scroll(&mut rig).0, 0.0);
-    let original = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id);
-    let links = reader.read_with(rig.cx, |reader, _| reader.navigation_links());
+    let original = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.id);
+    let links = reader.read_with(&rig.cx, |reader, _| reader.navigation_links());
     let dispatch = |rig: &mut Rig, intent| {
         rig.cx.update(|_, cx| links.dispatch(intent, cx));
         // Reduce every distinct visit, but leave Reader layout unpainted.
@@ -363,22 +363,22 @@ fn back_and_forward_keep_a_saved_home_after_abandoned_history_exceeds_its_cap(cx
         for index in 0..crate::navigation::MAX_ROUTE_HISTORY {
             dispatch(&mut rig, Intent::Navigate(if index % 2 == 0 { home.clone() } else { page.clone() }));
         }
-        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().back.len()),
+        assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().back.len()),
             crate::navigation::MAX_ROUTE_HISTORY, "the real Back stack reached its cap");
         for _ in 0..crate::navigation::MAX_ROUTE_HISTORY {
             dispatch(&mut rig, Intent::Back);
         }
-        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id), original);
-        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().forward.len()),
+        assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.id), original);
+        assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().forward.len()),
             crate::navigation::MAX_ROUTE_HISTORY, "the forward branch still owns every issued visit");
         dispatch(&mut rig, Intent::Navigate(home.clone()));
-        assert!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().forward.is_empty()),
+        assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().forward.is_empty()),
             "the new branch abandoned a full forward history");
         dispatch(&mut rig, Intent::Back);
     }
     rig.settle();
     assert_eq!(rig.route(), page);
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id), original);
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.id), original);
     near(scroll(&mut rig).0, 0.0);
     assert_eq!(targets.focused(), Some(offscreen.clone()),
         "the saved Home also retained its far native target through the history return");
@@ -403,15 +403,15 @@ fn graph_camera_keeps_its_keys_and_settings_keys_scrolls_with_default_focus(
     rig.settle();
     let graph = rig
         .shell
-        .read_with(rig.cx, |shell, cx| shell.graph_entity(cx))
+        .read_with(&rig.cx, |shell, cx| shell.graph_entity(cx))
         .expect("mounted Graph");
-    let camera = graph.read_with(rig.cx, |graph, _| graph.camera().expect("laid out camera"));
+    let camera = graph.read_with(&rig.cx, |graph, _| graph.camera().expect("laid out camera"));
     let graph_offset = scroll(&mut rig).0;
     rig.keys("pagedown");
     rig.keys("home");
     near(scroll(&mut rig).0, graph_offset);
     assert_eq!(
-        graph.read_with(rig.cx, |graph, _| graph.camera()),
+        graph.read_with(&rig.cx, |graph, _| graph.camera()),
         Some(camera),
         "Graph retains its camera without borrowing the Reader's scroll keys"
     );
@@ -444,7 +444,7 @@ fn shelf_modal_and_next_page_cannot_scroll_the_old_reader_visit(cx: &mut TestApp
     let before = scroll(&mut rig).0;
     rig.keys("secondary-k");
     assert!(
-        rig.shell.read_with(rig.cx, |shell, _| shell.transients().0),
+        rig.shell.read_with(&rig.cx, |shell, _| shell.transients().0),
         "Ask is mounted"
     );
     rig.keys("pagedown");
@@ -459,7 +459,7 @@ fn shelf_modal_and_next_page_cannot_scroll_the_old_reader_visit(cx: &mut TestApp
     rig.draw();
     assert_eq!(
         rig.shell
-            .read_with(rig.cx, |shell, cx| shell.focus_state(cx).0),
+            .read_with(&rig.cx, |shell, cx| shell.focus_state(cx).0),
         Zone::Shelf
     );
     let before_shelf = scroll(&mut rig).0;

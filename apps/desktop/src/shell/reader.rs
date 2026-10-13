@@ -3869,16 +3869,16 @@ mod transit_tests {
         }).expect("real held destination pool");
         let mut rig = crate::shell::tests::rig_with_reads(cx,
             Some(crate::shell::tests::page_route("RelationLabel")), 1440.0, 900.0, pool);
-        let key = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+        let key = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
         let release = ReleaseDestination(gate, key);
-        let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+        let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
         rig.go(Intent::ZoomTo { display, percent: 200 });
         rig.cx.update(|window, cx| {
             facet::probe::enable(cx);
             cx.set_global(gpui::TextTrace);
             window.set_a11y_forced(true);
         });
-        rig.graph.root.update(rig.cx, |root, cx| root.queue(
+        rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(
             Intent::Navigate(crate::shell::tests::page_route("TransitHeldDestination")), cx));
         let first = shoot(&mut rig, 0, 0);
         received.recv_timeout(Duration::from_secs(1)).expect("actual destination read entered");
@@ -3886,8 +3886,8 @@ mod transit_tests {
         assert!(first.plate.is_none(), "the readable departure owns the whole Reader");
         assert!(reading(&first).any(|text| text.alpha > 0.0 && text.text.as_ref() == "RelationLabel"),
             "the departure still paints while the read is held: {first:#?}");
-        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx)), 2);
-        assert!(rig.graph.store.read_with(rig.cx, |store, _| {
+        assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_pages(cx)), 2);
+        assert!(rig.graph.store.read_with(&rig.cx, |store, _| {
             store.symbol(&crate::shell::tests::symbol("TransitHeldDestination")).loaded_value().is_none()
         }), "no synthetic loaded value stands in for the held read");
         let opened = shoot(&mut rig, 112, 112);
@@ -3910,8 +3910,8 @@ mod transit_tests {
             "Back cancels the unpainted prepared visit without a phantom reversing page: {turned:#?}");
         rig.cx.simulate_resize(size(px(1000.0), px(700.0)));
         let resized = shoot(&mut rig, 128, 0);
-        let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
-        let frame = reader.read_with(rig.cx, |reader, _| reader.frame.get().expect("current measured Reader frame"));
+        let reader = rig.shell.read_with(&rig.cx, |shell, _| shell.reader_entity());
+        let frame = reader.read_with(&rig.cx, |reader, _| reader.frame.get().expect("current measured Reader frame"));
         let viewport = rig.cx.debug_bounds("reader-scroll").expect("the actual current scroll viewport");
         assert_eq!(frame, viewport, "the measured embedding and Reveal's scroll viewport agree on the first resized frame");
         assert!(resized.plate.is_none(), "the cancelled visit cannot return a plate after resize");
@@ -3926,7 +3926,7 @@ mod transit_tests {
         rig.settle();
         assert_eq!(rig.route(), crate::shell::tests::page_route("RelationLabel"),
             "a late cancelled read cannot replace the newer Back destination");
-        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx)), 1);
+        assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_pages(cx)), 1);
         assert_eq!(rig.cx.update(|window, cx| window.simulate_next_frame(cx)), 0,
             "the settled route stops requesting motion frames");
     }
@@ -4038,7 +4038,7 @@ mod transit_tests {
         };
         Shot {
             at,
-            reader: rig.shell.read_with(rig.cx, |shell, cx| shell.reader_entity().read(cx).frame.get().expect("Reader viewport")),
+            reader: rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_entity().read(cx).frame.get().expect("Reader viewport")),
             plate,
             gem,
             p: track("reader.carry"),
@@ -4079,7 +4079,7 @@ mod transit_tests {
     }
 
     fn start(cx: &mut TestAppContext) -> Rig {
-        let rig = rig(cx, Some(package()), 1440.0, 900.0);
+        let mut rig = rig(cx, Some(package()), 1440.0, 900.0);
         rig.cx.update(|_, cx| {
             facet::probe::enable(cx);
             cx.set_global(gpui::TextTrace);
@@ -4127,7 +4127,7 @@ mod transit_tests {
         // The package page's cards paint their words themselves (they are not
         // in `said`): what the old page says includes what it painted.
         let old: Vec<String> = old.into_iter().chain(reading(&before).map(|text| text.text.to_string())).collect();
-        let (_, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        let (_, focused) = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
         let row_id = focused.expect("j focuses a row").to_string();
         let row = before.targets.iter().find(|(key, _)| *key == row_id).map(|(_, at)| *at).expect("the row is drawn");
         let shots = film(&mut rig, |rig| rig.cx.simulate_keystrokes("enter"), 400);
@@ -4196,7 +4196,7 @@ mod transit_tests {
         let mut rig = start(cx);
         open_first_module(&mut rig);
         rig.keys("j");
-        let (_, focused) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+        let (_, focused) = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
         let row_id = focused.expect("j focuses a row").to_string();
         let parent = rig.said();
         rig.keys("enter");
@@ -4351,7 +4351,7 @@ mod transit_tests {
     }
 
     fn set_view(view: crate::navigation::View) -> impl FnOnce(&mut Rig) {
-        move |rig: &mut Rig| rig.graph.root.update(rig.cx, |root, cx| root.queue(crate::navigation::Intent::SetView(view), cx))
+        move |rig: &mut Rig| rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(crate::navigation::Intent::SetView(view), cx))
     }
 
     /// The reader's texts in a frame (the shelf and titlebar are not the
@@ -4375,11 +4375,11 @@ mod transit_tests {
         use crate::navigation::View;
         let mut rig = page_over_graph(cx);
         let before = shoot(&mut rig, 0, 0);
-        let page = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_entity().read(cx).painted.expect("the page was really painted"));
+        let page = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_entity().read(cx).painted.expect("the page was really painted"));
         assert!(before.ink.iter().any(|(owner, text)| *owner == Some(page) && text.text.as_ref() == "RelationLabel"));
         let shots = film(&mut rig, set_view(View::Graph), 480);
         rig.settle();
-        let node = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_focus_glyph(cx)).expect("the graph focuses the node");
+        let node = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_focus_glyph(cx)).expect("the graph focuses the node");
         let (mut folding, mut uncovered) = (0, BTreeSet::new());
         let mut last: Option<Bounds<Pixels>> = None;
         for shot in &shots {
@@ -4430,7 +4430,7 @@ mod transit_tests {
         let graph: BTreeSet<String> = reading(&rest).map(|text| text.text.to_string()).filter(|text| !page.contains(text)).collect();
         let page_only: BTreeSet<String> = page.iter().filter(|text| !reading(&rest).any(|seen| seen.text.as_ref() == text.as_str())).cloned().collect();
         assert!(!graph.is_empty() && !page_only.is_empty(), "the views differ: {graph:?}");
-        let node = rig.shell.read_with(rig.cx, |shell, cx| shell.graph_focus_glyph(cx)).expect("a focused node");
+        let node = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_focus_glyph(cx)).expect("a focused node");
         let shots = film(&mut rig, set_view(View::Page), 480);
         rig.settle();
         let hero = rig
@@ -4668,7 +4668,7 @@ mod transit_ledger {
         let mut rig = rig(cx, None, 1440.0, 900.0);
         rig.cx.update(|_, cx| cx.set_global(gpui::TextTrace));
         type Act = Box<dyn Fn(&mut Rig)>;
-        let navigate = |route: Route| -> Act { Box::new(move |rig: &mut Rig| rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(route.clone()), cx))) };
+        let navigate = |route: Route| -> Act { Box::new(move |rig: &mut Rig| rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(Intent::Navigate(route.clone()), cx))) };
         let key = |keys: &'static str| -> Act { Box::new(move |rig: &mut Rig| rig.cx.simulate_keystrokes(keys)) };
         let acts: Vec<(&str, Act)> = vec![
             ("route-down orbit→package", navigate(package.clone())),

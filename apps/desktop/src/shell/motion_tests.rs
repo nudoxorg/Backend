@@ -15,7 +15,7 @@ fn a_page_arriving_when_motion_is_reduced_lands_and_stays_landed(cx: &mut TestAp
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     rig.cx.update(|_, cx| facet::probe::enable(cx));
     let queue = |rig: &mut super::tests::Rig, intent: Intent| {
-        rig.graph.root.update(rig.cx, |root, cx| root.queue(intent, cx));
+        rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(intent, cx));
     };
     queue(&mut rig, Intent::Navigate(page_route("KindGlyph")));
     for _ in 0..8 {
@@ -34,7 +34,7 @@ fn a_page_arriving_when_motion_is_reduced_lands_and_stays_landed(cx: &mut TestAp
         "reduced motion lands the arriving page at once: {:?}",
         last(&reduced, CARRY)
     );
-    let pages = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx));
+    let pages = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_pages(cx));
     assert_eq!(pages, 1, "only the arrived page is drawn");
     queue(&mut rig, Intent::SetMotion(MotionPreference::Full));
     for _ in 0..40 {
@@ -64,9 +64,9 @@ fn a_reflow_keeps_the_focused_target_on_screen(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     rig.cx.update(|_, cx| facet::probe::enable(cx));
     rig.keys("j j j j j j");
-    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
     rig.cx.simulate_resize(size(px(480.0), px(320.0)));
-    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::ZoomTo { display, percent: 150 }, cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(Intent::ZoomTo { display, percent: 150 }, cx));
     rig.cx.run_until_parked();
     let _ = rig.cx.update(|_, cx| facet::probe::take(cx));
     rig.frame(16);
@@ -93,7 +93,7 @@ fn a_landed_change_ends_its_tracks_at_rest_on_their_targets(cx: &mut TestAppCont
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     rig.cx.update(|_, cx| facet::probe::enable(cx));
     let _ = rig.cx.update(|_, cx| facet::probe::take(cx));
-    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(page_route("KindGlyph")), cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(Intent::Navigate(page_route("KindGlyph")), cx));
     let mut carry = Vec::new();
     let mut plate = Vec::new();
     for _ in 0..60 {
@@ -125,7 +125,7 @@ fn each_change_is_born_where_it_starts_not_stepped_to_from_the_last(cx: &mut Tes
     let mut carry = Vec::new();
     let mut plate = Vec::new();
     for next in ["KindGlyph", "RelationDirection"] {
-        rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(page_route(next)), cx));
+        rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(Intent::Navigate(page_route(next)), cx));
         for frame in 0..60 {
             rig.frame(16);
             // The shell may draw a frame twice (J1: the birth sample was
@@ -207,17 +207,17 @@ fn repeated_route_reversal_survives_large_text_resize_and_stops_requesting_frame
     let mut rig = rig(cx, Some(a.clone()), 1440.0, 900.0);
     rig.go(Intent::Navigate(b.clone()));
     rig.go(Intent::Back);
-    let leave = rig.shell.read_with(rig.cx, |shell, cx| {
+    let leave = rig.shell.read_with(&rig.cx, |shell, cx| {
         shell.reader_targets(cx).placed().first().map(|(target, _)| target.id.clone())
     }).expect("the real page has a focus target");
-    rig.shell.update(rig.cx, |shell, cx| {
+    rig.shell.update(&mut rig.cx, |shell, cx| {
         let targets = shell.reader_targets(cx);
         targets.focus(leave.clone());
         targets.remember_leave(a.clone(), leave.clone());
     });
     rig.cx.update(|_, cx| facet::probe::enable(cx));
     let queue = |rig: &mut super::tests::Rig, intent| {
-        rig.graph.root.update(rig.cx, |root, cx| root.queue(intent, cx));
+        rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(intent, cx));
     };
     queue(&mut rig, Intent::Forward);
     rig.frame(80);
@@ -225,14 +225,14 @@ fn repeated_route_reversal_survives_large_text_resize_and_stops_requesting_frame
         queue(&mut rig, intent);
         rig.frame(0);
     }
-    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
     rig.cx.simulate_resize(size(px(640.0), px(480.0)));
     queue(&mut rig, Intent::ZoomTo { display, percent: 200 });
     queue(&mut rig, Intent::SetMotion(MotionPreference::Reduced));
     rig.settle();
     assert_eq!(rig.route(), a);
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx)), 1);
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).1), Some(leave));
+    assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_pages(cx)), 1);
+    assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx).1), Some(leave));
     let requested = rig.cx.update(|_, cx| facet::motion::frames_requested(cx));
     for _ in 0..4 {
         rig.frame(250);
@@ -251,48 +251,48 @@ fn pending_destination_paints_its_own_visit_and_back_recovers_the_prior_reading(
     let a = page_route("RelationLabel");
     let b = page_route("KindGlyph");
     let mut rig = rig(cx, Some(a.clone()), 1440.0, 900.0);
-    let (leave, click) = rig.shell.read_with(rig.cx, |shell, cx| {
+    let (leave, click) = rig.shell.read_with(&rig.cx, |shell, cx| {
         shell.reader_targets(cx).placed().into_iter()
             .find(|(_, bounds)| bounds.center().x > px(300.0) && bounds.center().y > px(120.0) && bounds.center().y < px(800.0))
             .map(|(target, bounds)| (target.id, bounds.center()))
     }).expect("fixture page has a visible native target");
-    rig.shell.update(rig.cx, |shell, cx| {
+    rig.shell.update(&mut rig.cx, |shell, cx| {
         let targets = shell.reader_targets(cx);
         targets.focus(leave.clone());
         targets.remember_leave(a.clone(), leave.clone());
     });
-    rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
-    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(b.clone()), cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_starting(cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(Intent::Navigate(b.clone()), cx));
     rig.frame(0);
     assert_eq!(rig.route(), b);
     assert!(rig.said().iter().any(|line| line.contains("KindGlyph") && line.contains("on its way")));
     assert!(!rig.said().iter().any(|line| line.contains("RelationLabel")), "the old declaration cannot impersonate the destination");
-    assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).placed()).is_empty(), "pending destination has no stale keyboard targets");
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).1), None);
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx).placed()).is_empty(), "pending destination has no stale keyboard targets");
+    assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx).1), None);
     rig.cx.simulate_click(click, Modifiers::default());
     rig.frame(0);
     assert_eq!(rig.route(), b, "a visible prior link is natively inert");
-    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
     rig.cx.simulate_resize(size(px(640.0), px(480.0)));
     for intent in [Intent::ZoomTo { display, percent: 200 }, Intent::SetMotion(MotionPreference::Reduced), Intent::SetMotion(MotionPreference::Full)] {
-        rig.graph.root.update(rig.cx, |root, cx| root.queue(intent, cx));
+        rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(intent, cx));
         rig.frame(700);
     }
     for _ in 0..4 { rig.frame(700); }
     let requested = rig.cx.update(|_, cx| facet::motion::frames_requested(cx));
-    rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_starting(cx));
     rig.repaint();
     for _ in 0..4 { rig.frame(250); }
     assert_eq!(rig.cx.update(|_, cx| facet::motion::frames_requested(cx)), requested, "a pending destination stays still through owner/repaint wakes");
-    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Back, cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(Intent::Back, cx));
     rig.frame(0);
     rig.settle();
     assert_eq!(rig.route(), a);
     assert!(rig.said().iter().any(|line| line.contains("Earlier producer reading") || line.contains("Saved or earlier reading")));
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).1), None, "retained destination has no semantic target focus");
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx)), 1);
+    assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx).1), None, "retained destination has no semantic target focus");
+    assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_pages(cx)), 1);
     assert!(!rig.said().iter().any(|line| line.contains("previous page:")));
-    rig.graph.store.update(rig.cx, |store, cx| store.owner_ready(cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_ready(cx));
     rig.settle();
     assert_eq!(rig.route(), a, "the obsolete B completion cannot replace Back's page");
 }
@@ -306,20 +306,20 @@ fn superseded_pending_page_releases_on_failure_and_late_reads_cannot_replace_des
     let b = page_route("KindGlyph");
     let c = page_route("RelationDirection");
     let mut rig = rig(cx, Some(a), 1440.0, 900.0);
-    rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_starting(cx));
     for route in [b, c.clone()] {
-        rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(route), cx));
+        rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(Intent::Navigate(route), cx));
         rig.frame(0);
     }
     assert_eq!(rig.route(), c);
     assert!(rig.said().iter().any(|line| line.contains("RelationDirection") && line.contains("on its way")));
     assert!(!rig.said().iter().any(|line| line.contains("RelationLabel")), "C must never borrow A's body");
-    rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(&crate::runtime::owner::OwnerFault::Lost("retention fixture failure".into()), cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_failed(&crate::runtime::owner::OwnerFault::Lost("retention fixture failure".into()), cx));
     rig.frame(0);
     assert!(!rig.said().iter().any(|line| line.as_str() == "RelationLabel"), "terminal fault belongs to C, not A");
     assert!(rig.said().iter().any(|line| line.contains("retention fixture failure")), "the exact terminal destination is exposed");
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx)), 1);
-    rig.graph.store.update(rig.cx, |store, cx| {
+    assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_pages(cx)), 1);
+    rig.graph.store.update(&mut rig.cx, |store, cx| {
         store.owner_ready(cx);
         for key in super::reader::reader_keys(&store.snapshot()) { store.retry(key, cx); }
     });
@@ -335,11 +335,11 @@ fn superseded_pending_page_releases_on_failure_and_late_reads_cannot_replace_des
 #[gpui::test]
 fn pending_destination_stays_exact_on_root_wake_before_reads_start(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
-    rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
-    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(page_route("KindGlyph")), cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_starting(cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(Intent::Navigate(page_route("KindGlyph")), cx));
     rig.frame(0);
     assert!(rig.said().iter().any(|line| line.contains("KindGlyph") && line.contains("on its way")));
-    rig.graph.store.update(rig.cx, |store, cx| {
+    rig.graph.store.update(&mut rig.cx, |store, cx| {
         let root = crate::core::VersionedRoot::synthetic(
             backend_library::view_state_root(&[("retention".to_owned(), "new owner root".to_owned())]), 5,
         );
@@ -349,5 +349,5 @@ fn pending_destination_stays_exact_on_root_wake_before_reads_start(cx: &mut Test
     rig.frame(0);
     assert!(!rig.said().iter().any(|line| line.contains("previous page:")));
     assert!(!rig.said().iter().any(|line| line.as_str() == "RelationLabel"));
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx)), 1);
+    assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_pages(cx)), 1);
 }

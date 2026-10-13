@@ -355,12 +355,13 @@ mod tests {
             .element_id;
         assert_ne!(first_id, second_id);
         assert_ne!(second_id, return_id);
-        let (view, visual) = cx.add_window_view(|_, _| DocumentFixture {
+        let (view, mut owned_visual) = cx.add_window_view_owned(|_, _| DocumentFixture {
             document: Arc::clone(&first),
             place: 1,
             stamp,
             left: 48.0,
         });
+        let visual = &mut owned_visual;
         paint_frames(visual);
         let first_bounds = heading_bounds(visual, &first_id)
             .expect("the plugin painted the exact first heading identity");

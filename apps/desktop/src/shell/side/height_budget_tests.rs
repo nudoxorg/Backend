@@ -63,10 +63,10 @@ fn open(cx: &mut TestAppContext) -> tests::Rig {
 }
 
 fn resize(rig: &mut tests::Rig, width: f32, height: f32, percent: u16) {
-    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
     rig.go(Intent::ZoomTo { display, percent });
     fit_tests::resize(rig, width, height);
-    let (overlays, open) = rig.shell.read_with(rig.cx, |shell, cx| (
+    let (overlays, open) = rig.shell.read_with(&rig.cx, |shell, cx| (
         shell.frame().expect("responsive frame").shelf_overlays,
         shell.chrome_words(cx).iter().any(|(key, value)| *key == "drawer" && value == "open"),
     ));
@@ -81,7 +81,7 @@ fn wheel(rig: &mut tests::Rig, key: &str, delta: f32) -> Ledger {
     let ledger = fit_tests::painted(rig);
     let viewport = &scroll(&ledger, key).viewport;
     assert!(viewport.width > 0.0 && viewport.height > 0.0, "wheel needs real native bounds: {viewport:?}");
-    crate::shell::tests::wheel(rig.cx, point(px(viewport.x + viewport.width * 0.5), px(viewport.y + viewport.height * 0.5)),
+    crate::shell::tests::wheel(&mut rig.cx, point(px(viewport.x + viewport.width * 0.5), px(viewport.y + viewport.height * 0.5)),
         point(px(0.0), px(delta)));
     rig.settle();
     fit_tests::painted(rig)
@@ -140,7 +140,7 @@ fn real_shelf_keeps_declarations_and_native_wheel_at_short_heights_and_all_text_
             let mut rig = open(cx);
             resize(&mut rig, width, height, percent);
             if width == 1920.0 {
-                assert!(!rig.shell.read_with(rig.cx, |shell, _| shell.frame().expect("wide frame").shelf_overlays),
+                assert!(!rig.shell.read_with(&rig.cx, |shell, _| shell.frame().expect("wide frame").shelf_overlays),
                     "the wide case mounts the full docked Shelf, including at 200% text");
             }
             let ledger = fit_tests::painted(&mut rig);
@@ -272,23 +272,23 @@ fn resizing_the_mounted_wide_shelf_preserves_the_selected_key_native_handle_and_
     rig.cx.simulate_click(types.center(), Modifiers::none());
     rig.settle();
     rig.keys("down down down down down");
-    let shelf = rig.shell.read_with(rig.cx, |shell, _| shell.shelf_entity());
-    let selected = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
-    let focused = shelf.read_with(rig.cx, |shelf, _| shelf.layout.focused_in_list.clone()).expect("native selected row handle");
-    let top = shelf.read_with(rig.cx, |shelf, _| shelf.layout.scroll.logical_scroll_top());
+    let shelf = rig.shell.read_with(&rig.cx, |shell, _| shell.shelf_entity());
+    let selected = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
+    let focused = shelf.read_with(&rig.cx, |shelf, _| shelf.layout.focused_in_list.clone()).expect("native selected row handle");
+    let top = shelf.read_with(&rig.cx, |shelf, _| shelf.layout.scroll.logical_scroll_top());
     for height in (360..=600).rev().step_by(7) {
         rig.cx.simulate_resize(size(px(1920.0), px(height as f32)));
         rig.repaint(); // inspect the first frame, without settling an old geometry
-        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)), selected);
-        let current = shelf.read_with(rig.cx, |shelf, _| shelf.layout.focused_in_list.clone()).expect("selected native handle remains mounted");
+        assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx)), selected);
+        let current = shelf.read_with(&rig.cx, |shelf, _| shelf.layout.focused_in_list.clone()).expect("selected native handle remains mounted");
         assert_eq!(current, focused, "geometry changes cannot replace the native focus identity");
-        let current_top = shelf.read_with(rig.cx, |shelf, _| shelf.layout.scroll.logical_scroll_top());
+        let current_top = shelf.read_with(&rig.cx, |shelf, _| shelf.layout.scroll.logical_scroll_top());
         assert_eq!(current_top.item_ix, top.item_ix, "continuous height changes retain the logical row anchor");
         assert!((f32::from(current_top.offset_in_item - top.offset_in_item)).abs() < 0.5,
             "continuous height changes retain the in-row fraction");
-        let viewport = shelf.read_with(rig.cx, |shelf, _| shelf.viewport());
-        let covered = shelf.read_with(rig.cx, |shelf, _| shelf.diagnostic_sticky_covered());
-        let row_height = shelf.read_with(rig.cx, |shelf, _| shelf.diagnostic_row_height());
+        let viewport = shelf.read_with(&rig.cx, |shelf, _| shelf.viewport());
+        let covered = shelf.read_with(&rig.cx, |shelf, _| shelf.diagnostic_sticky_covered());
+        let row_height = shelf.read_with(&rig.cx, |shelf, _| shelf.diagnostic_row_height());
         assert!(covered <= viewport.size.height - row_height, "pinned ancestors leave an ordinary row usable");
     }
 }

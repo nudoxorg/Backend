@@ -147,7 +147,7 @@ mod tests {
 
         rig.cx.cx.update(|cx| cx.dispatch_action(&About));
         rig.settle();
-        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+        assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()),
             Some(Overlay::Settings(SettingsPage::About)));
         assert!(rig.cx.update(|window, cx| window.focused(cx)).is_some(),
             "the app-menu Settings page must mount a keyboard owner even after blur");
@@ -156,17 +156,17 @@ mod tests {
 
         rig.cx.cx.update(|cx| cx.dispatch_action(&crate::shell::OpenSettingsAction));
         rig.settle();
-        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+        assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()),
             Some(Overlay::Settings(SettingsPage::Appearance)));
         rig.keys("escape");
 
         rig.cx.cx.update(|cx| cx.dispatch_action(&crate::shell::AddFolderAction));
         rig.settle();
-        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+        assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()),
             Some(Overlay::AddProject));
         rig.keys("escape");
 
-        let retry_name = rig.graph.store.read_with(rig.cx, |store, _| {
+        let retry_name = rig.graph.store.read_with(&rig.cx, |store, _| {
             let key = store.notice().and_then(|notice| notice.retry.as_ref()).expect("represented menu recovery page");
             store.capture_page_retry(key).map(|receipt| receipt.activation_name("status-retry")).unwrap_or_else(|| "status-retry:unadmitted".into())
         });
@@ -175,7 +175,7 @@ mod tests {
         rig.cx.simulate_click(retry.center(), gpui::Modifiers::none());
         rig.draw();
         assert!(matches!(gate.state(), OwnerState::Starting));
-        let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+        let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
         gate.publish(OwnerState::Ready { key: root, mode: ServiceMode::Attached });
         rig.settle();
         rig.cx.update(|window, _| window.blur());

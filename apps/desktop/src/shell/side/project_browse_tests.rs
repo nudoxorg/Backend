@@ -75,7 +75,7 @@ fn already_active_saved_project_opens_its_tree_by_native_click_and_return_withou
         // not submit it.
         let initial_indexes = indexes.load(Ordering::SeqCst);
         assert_eq!(initial_indexes, 1, "fixture admission starts exactly one initial index");
-        let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().workspace().projects[0].clone());
+        let before = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().workspace().projects[0].clone());
         let library = tests::native_bounds(&mut rig, "Button", "Library", true).expect("native Shelf way out");
         rig.cx.simulate_click(library.center(), Modifiers::none());
         rig.settle();
@@ -87,13 +87,13 @@ fn already_active_saved_project_opens_its_tree_by_native_click_and_return_withou
         if keyboard {
             // Native Shelf selection, then its ordinary Return command. The
             // key walk uses the real mounted order, including Find above it.
-            let stops = rig.shell.read_with(rig.cx, |shell, _| shell.shelf_entity())
-                .read_with(rig.cx, |shelf, _| shelf.targets.native_keys().len());
+            let stops = rig.shell.read_with(&rig.cx, |shell, _| shell.shelf_entity())
+                .read_with(&rig.cx, |shelf, _| shelf.targets.native_keys().len());
             for _ in 0..stops + 1 {
-                if rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1.as_deref() == Some(row_id.as_str()) { break; }
+                if rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx)).1.as_deref() == Some(row_id.as_str()) { break; }
                 rig.keys("down");
             }
-            assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1.as_deref(), Some(row_id.as_str()),
+            assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx)).1.as_deref(), Some(row_id.as_str()),
                 "keyboard selection reaches the actual saved project row");
             rig.keys("enter");
         } else {
@@ -107,7 +107,7 @@ fn already_active_saved_project_opens_its_tree_by_native_click_and_return_withou
             "the requested project Tree must really replace the unrelated Reader");
         assert!(trees.lock().expect("observed reads").iter().any(|read| read == &project),
             "the exact typed local read scope reaches the read pool");
-        let after = rig.graph.store.read_with(rig.cx, |store, _| {
+        let after = rig.graph.store.read_with(&rig.cx, |store, _| {
             assert_eq!(store.snapshot().workspace().active.as_ref(), Some(&project));
             store.snapshot().workspace().projects[0].clone()
         });

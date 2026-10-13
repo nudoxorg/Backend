@@ -149,9 +149,9 @@ mod tests {
         let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
         let package = PackageRef::parse(PACKAGE).expect("package");
         let key = PageKey::Package(package.clone());
-        rig.graph.store.update(rig.cx, |store, cx| store.ensure(key.clone(), cx));
+        rig.graph.store.update(&mut rig.cx, |store, cx| store.ensure(key.clone(), cx));
         rig.settle();
-        let peek = rig.graph.store.read_with(rig.cx, |store, _| peek_of(&key, &"present".into(), store));
+        let peek = rig.graph.store.read_with(&rig.cx, |store, _| peek_of(&key, &"present".into(), store));
         let Peek::Package(card) = peek else { panic!("expected a package peek") };
         assert_eq!(card.name.as_ref(), "present");
         assert_eq!(card.version.as_ref(), "0.4.2");
@@ -167,7 +167,7 @@ mod tests {
         let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
         let package = PackageRef::parse(PACKAGE).expect("package");
         let key = PageKey::Package(package);
-        let peek = rig.graph.store.read_with(rig.cx, |store, _| peek_of(&key, &"present".into(), store));
+        let peek = rig.graph.store.read_with(&rig.cx, |store, _| peek_of(&key, &"present".into(), store));
         let Peek::Package(card) = peek else { panic!("expected a package peek") };
         assert_eq!(card.name.as_ref(), "present");
         assert_eq!(card.sentence, None);

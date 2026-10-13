@@ -45,13 +45,13 @@ fn retained_native_read_retry_cannot_replace_a_new_read_and_fresh_failure_recove
     let symbol = super::symbol("RelationLabel");
     let key = PageKey::Symbol(symbol.clone());
     assert_eq!(reads.load(Ordering::SeqCst), 1);
-    let (target, bounds) = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed()
+    let (target, bounds) = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx)).placed()
         .into_iter().find(|(target, _)| target.id.starts_with("retry-")).expect("actual failure recovery");
     let native = rig.cx.update(|window, _| window.a11y_tree().expect("failure AX").nodes.iter()
         .find(|(_, node)| node.role() == gpui::Role::Button && node.label() == Some("Try again")
             && node.supports_action(gpui::AccessibleAction::Click)).map(|(id, _)| *id).expect("native retry"));
     let frame = rig.cx.update(|window, _| window.a11y_frame_number());
-    let before = rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted);
+    let before = rig.graph.store.read_with(&rig.cx, |store, _| store.stats().submitted);
     let focused = rig.cx.update(|window, cx| {
         window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
             position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left,
@@ -81,7 +81,7 @@ fn retained_native_read_retry_cannot_replace_a_new_read_and_fresh_failure_recove
         assert_eq!(window.a11y_frame_number(), frame);
         focused
     });
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted), before + 1);
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.stats().submitted), before + 1);
     assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused);
     assert_eq!(rig.cx.update(|window, _| window.a11y_frame_number()), frame);
     rig.settle();
@@ -89,12 +89,12 @@ fn retained_native_read_retry_cannot_replace_a_new_read_and_fresh_failure_recove
     rig.cx.update(|window, cx| target.action.run(window, cx));
     rig.cx.run_until_parked();
     assert_eq!(reads.load(Ordering::SeqCst), 2, "a new identical failure does not revive the old callback");
-    let (_, bounds) = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed()
+    let (_, bounds) = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx)).placed()
         .into_iter().find(|(target, _)| target.id.starts_with("retry-")).expect("new failure retry");
     rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
     rig.settle();
     assert_eq!(reads.load(Ordering::SeqCst), 3, "fresh native recovery reaches the real worker without Back");
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.symbol(&symbol).is_loaded()));
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.symbol(&symbol).is_loaded()));
     rig.cx.update(|window, cx| target.action.run(window, cx));
     rig.cx.run_until_parked();
     assert_eq!(reads.load(Ordering::SeqCst), 3, "old failure cannot replace the successful current reading");
@@ -119,7 +119,7 @@ fn coalesced_read_failure_repaint_cannot_inherit_a_held_retry_key(cx: &mut TestA
         let symbol = super::symbol("RelationLabel");
         let key = PageKey::Symbol(symbol.clone());
         assert_eq!(reads.load(Ordering::SeqCst), 1);
-        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
         let (target, _) = targets.placed().into_iter().find(|(target, _)| target.id.starts_with("retry-"))
             .expect("actual first failure retry");
         let focus = rig.cx.update(|window, cx| {
@@ -128,7 +128,7 @@ fn coalesced_read_failure_repaint_cannot_inherit_a_held_retry_key(cx: &mut TestA
             focus
         });
         rig.settle();
-        let before = rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted);
+        let before = rig.graph.store.read_with(&rig.cx, |store, _| store.stats().submitted);
         let (armed_frame, focus_epoch, old_stamp) = rig.cx.update(|window, cx| {
             assert!(focus.is_focused(window) && window.is_focus_handle_mounted(&focus));
             window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
@@ -186,7 +186,7 @@ fn coalesced_read_failure_repaint_cannot_inherit_a_held_retry_key(cx: &mut TestA
         });
         rig.settle();
         assert_eq!(reads.load(Ordering::SeqCst), 3, "a fresh native retry reaches the actual worker");
-        assert!(rig.graph.store.read_with(rig.cx, |store, _| store.symbol(&symbol).is_loaded()));
+        assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.symbol(&symbol).is_loaded()));
     }
 }
 
@@ -203,14 +203,14 @@ fn identical_owner_failure_retires_generic_native_retry_before_watcher_and_fresh
     let failure = crate::runtime::owner::OwnerFault::Host("owner unavailable".into());
     gate.publish(crate::runtime::owner::OwnerState::Failed(failure.clone()));
     rig.draw(); rig.repaint();
-    let (target, bounds) = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed()
+    let (target, bounds) = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx)).placed()
         .into_iter().find(|(target, _)| target.id.starts_with("retry-")).expect("offline recovery");
     let frame = rig.cx.update(|window, _| window.a11y_frame_number());
     let native = rig.cx.update(|window, _| window.a11y_tree().expect("offline AX").nodes.iter()
         .find(|(_, node)| node.role() == gpui::Role::Button && node.label() == Some("Try again")
             && node.supports_action(gpui::AccessibleAction::Click)).map(|(id, _)| *id).expect("offline Retry Click"));
-    let stamp = rig.graph.store.read_with(rig.cx, |store, _| store.stamp(&PageKey::Orbit));
-    let retry = rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_retry().expect("rendered failure token"));
+    let stamp = rig.graph.store.read_with(&rig.cx, |store, _| store.stamp(&PageKey::Orbit));
+    let retry = rig.graph.store.read_with(&rig.cx, |store, _| store.current_owner_retry().expect("rendered failure token"));
     let focused = rig.cx.update(|window, cx| {
         window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
             position: bounds.center(), modifiers: gpui::Modifiers::none(), button: gpui::MouseButton::Left,
@@ -244,7 +244,7 @@ fn identical_owner_failure_retires_generic_native_retry_before_watcher_and_fresh
     assert_eq!(rig.cx.update(|window, _| window.a11y_frame_number()), frame);
     assert!(matches!(gate.state(), crate::runtime::owner::OwnerState::Failed(_)));
     rig.settle();
-    let (_, bounds) = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed()
+    let (_, bounds) = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx)).placed()
         .into_iter().find(|(target, _)| target.id.starts_with("retry-")).expect("renewed offline recovery");
     rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
     assert!(matches!(gate.state(), crate::runtime::owner::OwnerState::Starting), "fresh native recovery restarts the captured current failure without a Serving owner");
@@ -387,7 +387,7 @@ fn coalesced_find_and_status_failures_cannot_inherit_held_retry_keys(cx: &mut Te
             });
             rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
             if !find {
-                rig.graph.store.update(rig.cx, |store, cx| {
+                rig.graph.store.update(&mut rig.cx, |store, cx| {
                     let snapshot = store.snapshot();
                     store.set_notice(Some(crate::runtime::graph_focus::Notice {
                         visit: crate::runtime::content_visit::ContentVisit::capture(&snapshot),
@@ -419,9 +419,9 @@ fn coalesced_find_and_status_failures_cannot_inherit_held_retry_keys(cx: &mut Te
                         "native Status recovery, not the duplicate body retry, owns this key");
                 }
             });
-            let before = rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted);
-            let notice = rig.graph.store.read_with(rig.cx, |store, _| store.notice().cloned());
-            let scope = rig.shell.read_with(rig.cx, |shell, _| shell.local_activation_scope());
+            let before = rig.graph.store.read_with(&rig.cx, |store, _| store.stats().submitted);
+            let notice = rig.graph.store.read_with(&rig.cx, |store, _| store.notice().cloned());
+            let scope = rig.shell.read_with(&rig.cx, |shell, _| shell.local_activation_scope());
             let (armed, epoch, stamp) = rig.cx.update(|window, cx| {
                 assert!(focus.is_focused(window) && window.is_focus_handle_mounted(&focus));
                 window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
@@ -479,8 +479,8 @@ fn coalesced_find_and_status_failures_cannot_inherit_held_retry_keys(cx: &mut Te
             assert_eq!(reads.load(Ordering::SeqCst), 3, "fresh native recovery reaches the actual worker");
             assert_eq!(rig.route(), route);
             assert!(match &key {
-                PageKey::Browse(key) => rig.graph.store.read_with(rig.cx, |store, _| store.pages().browse(key).loaded_value().is_some()),
-                PageKey::Symbol(symbol) => rig.graph.store.read_with(rig.cx, |store, _| store.symbol(symbol).is_loaded()),
+                PageKey::Browse(key) => rig.graph.store.read_with(&rig.cx, |store, _| store.pages().browse(key).loaded_value().is_some()),
+                PageKey::Symbol(symbol) => rig.graph.store.read_with(&rig.cx, |store, _| store.symbol(symbol).is_loaded()),
                 _ => unreachable!("only the exact represented recovery pages"),
             });
         }
@@ -505,7 +505,7 @@ fn retained_native_find_retry_cannot_adopt_a_later_same_query_read_and_fresh_fai
     assert_eq!(reads.load(Ordering::SeqCst), 1);
     let (native, bounds) = find_retry_native(&mut rig);
     let frame = rig.cx.update(|window, _| window.a11y_frame_number());
-    let before = rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted);
+    let before = rig.graph.store.read_with(&rig.cx, |store, _| store.stats().submitted);
     let focused = rig.cx.update(|window, cx| {
         let before_press = window.focused(cx);
         window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
@@ -545,7 +545,7 @@ fn retained_native_find_retry_cannot_adopt_a_later_same_query_read_and_fresh_fai
         assert_eq!(window.a11y_frame_number(), frame, "the admission runs against retained native handlers before watcher redraw");
         focused
     });
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted), before + 1);
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.stats().submitted), before + 1);
     assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), focused);
     assert_eq!(rig.cx.update(|window, _| window.a11y_frame_number()), frame);
     rig.settle();
@@ -556,7 +556,7 @@ fn retained_native_find_retry_cannot_adopt_a_later_same_query_read_and_fresh_fai
     rig.settle();
     assert_eq!(reads.load(Ordering::SeqCst), 3, "fresh Find recovery reaches the real worker without Back");
     assert_eq!(rig.route(), route);
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.pages().browse(&key).loaded_value().is_some()));
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.pages().browse(&key).loaded_value().is_some()));
 }
 
 #[gpui::test]
@@ -580,9 +580,9 @@ fn identical_owner_failure_retires_native_find_retry_before_watcher_and_fresh_of
     gate.publish(crate::runtime::owner::OwnerState::Failed(failure.clone()));
     rig.settle();
     let (native, bounds) = find_retry_native(&mut rig);
-    let stamp = rig.graph.store.read_with(rig.cx, |store, _| store.stamp(&key));
-    let retry = rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_retry().expect("painted failure token"));
-    let submitted = rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted);
+    let stamp = rig.graph.store.read_with(&rig.cx, |store, _| store.stamp(&key));
+    let retry = rig.graph.store.read_with(&rig.cx, |store, _| store.current_owner_retry().expect("painted failure token"));
+    let submitted = rig.graph.store.read_with(&rig.cx, |store, _| store.stats().submitted);
     let frame = rig.cx.update(|window, _| window.a11y_frame_number());
     let focused = rig.cx.update(|window, cx| {
         let before_press = window.focused(cx);
@@ -632,7 +632,7 @@ fn identical_owner_failure_retires_native_find_retry_before_watcher_and_fresh_of
     let (_, bounds) = find_retry_native(&mut rig);
     rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
     assert!(matches!(gate.state(), crate::runtime::owner::OwnerState::Starting), "fresh exact offline recovery restarts locally without a Serving owner");
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted), submitted, "offline restart does not force a read through an unadmitted owner");
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.stats().submitted), submitted, "offline restart does not force a read through an unadmitted owner");
     assert_eq!(rig.route(), route);
 }
 
@@ -755,13 +755,13 @@ fn mounted_header_publication_renews_native_actions_at_the_same_authority(cx: &m
     let (mut rig, observed) = open(cx, go_route());
     rig.cx.update(|window, _| window.set_a11y_forced(true));
     rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
-    let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let before = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
     let titlebar_renders = rig.counts().titlebar;
     let frame = rig.cx.update(|window, _| window.a11y_frame_number());
     let key = PageKey::Symbol(SymbolRef::new(ERROR_TYPE).expect("the header's exact Go declaration"));
     let reads = observed.count(&key);
     observed.published.store(true, Ordering::Release);
-    rig.graph.store.update(rig.cx, |store, cx| {
+    rig.graph.store.update(&mut rig.cx, |store, cx| {
         store.packages_published(&BTreeSet::from([package()]), cx);
     });
     // Only drain ordinary effects while the actual fixture read worker lands.
@@ -769,7 +769,7 @@ fn mounted_header_publication_renews_native_actions_at_the_same_authority(cx: &m
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     loop {
         rig.cx.run_until_parked();
-        let current = rig.graph.store.read_with(rig.cx, |store, _| {
+        let current = rig.graph.store.read_with(&rig.cx, |store, _| {
             store.pool_activity().is_idle() && !store.observation_revoked(&key)
         });
         if current { break; }
@@ -778,7 +778,7 @@ fn mounted_header_publication_renews_native_actions_at_the_same_authority(cx: &m
     }
     assert_eq!(observed.count(&key), reads + 1, "one publication renews the header's declaration exactly once");
     assert!(rig.counts().titlebar > titlebar_renders);
-    rig.graph.store.read_with(rig.cx, |store, _| {
+    rig.graph.store.read_with(&rig.cx, |store, _| {
         assert!(before.key().same_authority(store.snapshot().key()));
         assert_eq!(before.route(), store.snapshot().route());
         assert_eq!(before.session().back, store.snapshot().session().back);
@@ -789,7 +789,7 @@ fn mounted_header_publication_renews_native_actions_at_the_same_authority(cx: &m
         assert!(tree.nodes.iter().any(|(_, node)| node.label() == Some("Show Code view")
             && node.supports_action(gpui::AccessibleAction::Click)));
     });
-    let bounds = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("view-code", cx))
+    let bounds = rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_target_bounds("view-code", cx))
         .expect("publication's freshly mounted Code action");
     rig.cx.simulate_click(bounds.center(), gpui::Modifiers::default());
     rig.settle();
@@ -802,9 +802,9 @@ fn mounted_shelf_refreshes_its_unfocused_orbit_and_leaves_hidden_packages_lazy(c
     let (mut rig, observed) = open(cx, package_route());
     let hidden = PackageRef::parse("pkg:cargo/hidden@1.0.0").expect("hidden release");
     let hidden_key = PageKey::Package(hidden.clone());
-    rig.graph.store.update(rig.cx, |store, cx| { store.ensure(hidden_key.clone(), cx); });
+    rig.graph.store.update(&mut rig.cx, |store, cx| { store.ensure(hidden_key.clone(), cx); });
     rig.settle();
-    let before = rig.graph.store.read_with(rig.cx, |store, _| {
+    let before = rig.graph.store.read_with(&rig.cx, |store, _| {
         assert!(!store.focused().contains(&PageKey::Orbit));
         assert!(!store.focused().contains(&hidden_key));
         store.snapshot()
@@ -813,14 +813,14 @@ fn mounted_shelf_refreshes_its_unfocused_orbit_and_leaves_hidden_packages_lazy(c
     let orbit_reads = observed.count(&PageKey::Orbit);
     let hidden_reads = observed.count(&hidden_key);
     observed.published.store(true, Ordering::Release);
-    rig.graph.store.update(rig.cx, |store, cx| {
+    rig.graph.store.update(&mut rig.cx, |store, cx| {
         store.packages_published(&BTreeSet::from([hidden]), cx);
     });
     rig.settle();
     assert_eq!(observed.count(&PageKey::Orbit), orbit_reads + 1, "the mounted Shelf renews its own key once");
     assert_eq!(observed.count(&hidden_key), hidden_reads, "resident hidden pages cost no eager read");
     assert!(rig.counts().shelf > shelf_renders, "the real Shelf observed the renewed data");
-    rig.graph.store.read_with(rig.cx, |store, _| {
+    rig.graph.store.read_with(&rig.cx, |store, _| {
         let now = store.snapshot();
         assert!(before.key().same_authority(now.key()));
         assert_eq!(before.route(), now.route());
@@ -831,7 +831,7 @@ fn mounted_shelf_refreshes_its_unfocused_orbit_and_leaves_hidden_packages_lazy(c
         assert_eq!(store.orbit().loaded_value().expect("fresh Orbit").indexed.known()
             .expect("indexed packages").first().expect("indexed package").name.as_ref(), "Published library");
     });
-    rig.graph.store.update(rig.cx, |store, cx| { store.ensure(PageKey::Orbit, cx); });
+    rig.graph.store.update(&mut rig.cx, |store, cx| { store.ensure(PageKey::Orbit, cx); });
     rig.settle();
     assert_eq!(observed.count(&PageKey::Orbit), orbit_reads + 1, "the repaired observation remains current");
 }
@@ -840,7 +840,7 @@ fn mounted_shelf_refreshes_its_unfocused_orbit_and_leaves_hidden_packages_lazy(c
 fn mounted_go_companion_refreshes_without_navigation_and_stays_lazy_after_leaving(cx: &mut TestAppContext) {
     let (mut rig, observed) = open(cx, go_route());
     let companion = PageKey::Symbol(SymbolRef::new(CONTINUE).expect("companion key"));
-    let before = rig.graph.store.read_with(rig.cx, |store, _| {
+    let before = rig.graph.store.read_with(&rig.cx, |store, _| {
         assert!(!store.focused().contains(&companion));
         store.snapshot()
     });
@@ -848,25 +848,25 @@ fn mounted_go_companion_refreshes_without_navigation_and_stays_lazy_after_leavin
     assert!(companion_reads > 0, "the mounted Go page requested its actual companion");
     assert!(companion_is_painted(&mut rig, "Before publication"));
     observed.published.store(true, Ordering::Release);
-    rig.graph.store.update(rig.cx, |store, cx| {
+    rig.graph.store.update(&mut rig.cx, |store, cx| {
         store.packages_published(&BTreeSet::from([package()]), cx);
     });
     rig.settle();
     assert_eq!(observed.count(&companion), companion_reads + 1, "the companion renews once at the same route and authority");
     assert!(companion_is_painted(&mut rig, "After publication"), "fresh companion words reach the mounted Reader");
-    rig.graph.store.read_with(rig.cx, |store, _| {
+    rig.graph.store.read_with(&rig.cx, |store, _| {
         assert!(before.key().same_authority(store.snapshot().key()));
         assert_eq!(before.route(), store.snapshot().route());
         assert!(!store.observation_revoked(&companion));
     });
     rig.go(Intent::Navigate(package_route()));
     let settled_reads = observed.count(&companion);
-    rig.graph.store.update(rig.cx, |store, cx| {
+    rig.graph.store.update(&mut rig.cx, |store, cx| {
         store.packages_published(&BTreeSet::from([package()]), cx);
     });
     rig.settle();
     assert_eq!(observed.count(&companion), settled_reads, "an old subscription cannot eagerly renew a hidden companion");
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.observation_revoked(&companion)));
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.observation_revoked(&companion)));
     rig.go(Intent::Navigate(go_route()));
     assert_eq!(observed.count(&companion), settled_reads + 1, "visiting the same companion list renews its revoked observations");
 }
@@ -939,16 +939,16 @@ fn mounted_graph_header_watches_the_selected_package_and_renews_without_back(cx:
             (0, ResolvedSymbol { package: package(), symbol: super::symbol("RelationLabel"), line: Some(138) }),
             (1, ResolvedSymbol { package: selected.clone(), symbol: selected_symbol.clone(), line: Some(138) }),
         ])));
-    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     rig.cx.update(|_, cx| super::super::bodies::graph::install_test_world(root, world, identities, cx));
     let route = super::view_route("RelationLabel", View::Graph);
     rig.go(Intent::Navigate(route.clone()));
     assert_eq!(observations.count(&selected_key), 0, "unselected cross-package chrome is lazy");
-    let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    let before = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
     crate::runtime::wait::until("selected chrome lands through ordinary worker effects", || {
         rig.cx.run_until_parked();
-        rig.graph.store.read_with(rig.cx, |store, _| store.pool_activity().is_idle()
+        rig.graph.store.read_with(&rig.cx, |store, _| store.pool_activity().is_idle()
             && store.package(&selected).is_loaded() && store.symbol(&selected_symbol).is_loaded())
     });
     assert_eq!(observations.count(&selected_key), 1);
@@ -966,10 +966,10 @@ fn mounted_graph_header_watches_the_selected_package_and_renews_without_back(cx:
     observations.published.store(true, Ordering::Release);
     // A Resource-only landing is important: a GraphFocus publication or a
     // forced repaint would hide an incorrect cached header subscription.
-    rig.graph.store.update(rig.cx, |store, cx| store.retry(selected_key.clone(), cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.retry(selected_key.clone(), cx));
     crate::runtime::wait::until("selected outline renewal lands", || {
         rig.cx.run_until_parked();
-        rig.graph.store.read_with(rig.cx, |store, _| store.pool_activity().is_idle()
+        rig.graph.store.read_with(&rig.cx, |store, _| store.pool_activity().is_idle()
             && store.package(&selected).loaded_value().is_some_and(|page| page.outline.known().is_some()))
     });
     assert_eq!(observations.count(&selected_key), 2);
@@ -980,7 +980,7 @@ fn mounted_graph_header_watches_the_selected_package_and_renews_without_back(cx:
         assert!(window.a11y_tree().expect("renewed selected outline AX").nodes.iter()
             .any(|(_, node)| node.label() == Some("Show glyph siblings") && node.supports_action(gpui::AccessibleAction::Click)));
     });
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_targets(cx));
     let (target, bounds) = targets.placed().into_iter().find(|(target, _)| target.label.as_ref() == "Show glyph siblings")
         .expect("fresh native selected-package breadcrumb");
     assert!(rig.cx.update(|_, cx| target.action.admits(cx)));
@@ -988,14 +988,14 @@ fn mounted_graph_header_watches_the_selected_package_and_renews_without_back(cx:
     rig.cx.run_until_parked();
     assert!(rig.cx.update(|window, cx| super::super::titlebar::menu_open(window, cx)), "fresh native input opens the real siblings menu");
     rig.keys("escape");
-    rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(0, cx));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(0, cx));
     rig.settle();
     assert!(!rig.cx.update(|_, cx| target.action.admits(cx)), "previous selected-package callbacks retire when selection returns to A");
     let hidden_reads = observations.count(&selected_key);
-    rig.graph.store.update(rig.cx, |store, cx| store.packages_published(&BTreeSet::from([selected.clone()]), cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.packages_published(&BTreeSet::from([selected.clone()]), cx));
     rig.cx.run_until_parked();
     assert_eq!(observations.count(&selected_key), hidden_reads, "publication cannot eagerly read retired selected chrome");
-    rig.graph.store.read_with(rig.cx, |store, _| {
+    rig.graph.store.read_with(&rig.cx, |store, _| {
         let now = store.snapshot();
         assert_eq!(now.route(), &route);
         assert!(before.key().same_authority(now.key()));
@@ -1016,7 +1016,7 @@ fn graph_context_event_cannot_consume_a_queued_mounted_page_landing(cx: &mut Tes
     rig.cx.update(|window, _| window.set_a11y_forced(true));
     let symbol = SymbolRef::new(CONTINUE).expect("open constant");
     let key = PageKey::Symbol(symbol.clone());
-    let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let before = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
     let count = reads.count(&key);
     let rendered = rig.counts().reader;
     let frame = rig.cx.update(|window, _| window.a11y_frame_number());
@@ -1045,7 +1045,7 @@ fn graph_context_event_cannot_consume_a_queued_mounted_page_landing(cx: &mut Tes
         assert!(window.painted_texts().iter().any(|text| text.text.to_string().contains("After publication.")),
             "ordinary page landing replaces the mounted words without refresh, Back or navigation");
     });
-    rig.graph.store.read_with(rig.cx, |store, _| {
+    rig.graph.store.read_with(&rig.cx, |store, _| {
         assert!(Arc::ptr_eq(&before, &store.snapshot()));
         assert!(!store.observation_revoked(&key));
     });

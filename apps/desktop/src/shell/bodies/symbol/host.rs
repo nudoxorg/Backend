@@ -583,7 +583,7 @@ mod doc_link_tests {
         rig.repaint();
         let targets = rig
             .shell
-            .read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+            .read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
         let action = targets
             .placed()
             .into_iter()

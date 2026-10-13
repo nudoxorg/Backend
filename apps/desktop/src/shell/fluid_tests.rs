@@ -25,14 +25,14 @@ use gpui::{Focusable as _, Modifiers, TestAppContext, point, px};
 const PHONES: [(f32, f32); 3] = [(320.0, 568.0), (360.0, 640.0), (390.0, 844.0)];
 
 fn frame(rig: &mut Rig) -> super::Frame {
-    rig.shell.read_with(rig.cx, |shell: &Shell, _| shell.frame()).expect("frame")
+    rig.shell.read_with(&rig.cx, |shell: &Shell, _| shell.frame()).expect("frame")
 }
 
 /// The current owner-certified row, rather than a name inferred from the
 /// route that was on screen before Ask opened.
 fn ask_result(rig: &mut Rig) -> SearchRow {
     let query = SearchQuery::new("relation", SearchQuery::DEFAULT_LIMIT).expect("Ask fixture query");
-    rig.graph.store.read_with(rig.cx, |store, _| {
+    rig.graph.store.read_with(&rig.cx, |store, _| {
         let resource = store.search(&query);
         let page = admit_resource(&resource, store.snapshot().key(), store.owner_serving())
             .current_value().expect("current owner-certified Ask results");
@@ -55,7 +55,7 @@ fn preview_name(rig: &mut Rig) -> String {
 }
 
 fn reader_name(rig: &mut Rig) -> String {
-    let previewing = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().preview.is_some());
+    let previewing = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().preview.is_some());
     if previewing {
         return preview_name(rig);
     }
@@ -273,7 +273,7 @@ fn a_window_resting_on_the_shelf_edge_holds_its_mode(cx: &mut TestAppContext) {
 fn a_burst_of_routes_paints_no_page_for_the_ones_it_skipped(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
     let (a, b, c) = ("RelationLabel", "RelationDirection", "KindGlyph");
-    rig.graph.root.update(rig.cx, |root, cx| {
+    rig.graph.root.update(&mut rig.cx, |root, cx| {
         root.queue(Intent::Navigate(page_route(b)), cx);
         root.queue(Intent::Navigate(page_route(c)), cx);
     });
@@ -363,7 +363,7 @@ fn ask_preview_stays_beside_its_plate_through_zoom_and_resize(cx: &mut TestAppCo
     rig.settle();
     rig.keys("down");
     rig.settle();
-    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
     for percent in [100_u16, 150, 200] {
         rig.go(Intent::ZoomTo { display: display.clone(), percent });
         resize(&mut rig, 1440.0, 900.0);
@@ -397,7 +397,7 @@ fn assert_ask_geometry(rig: &mut Rig, settled: bool) {
     let hero = ledger.texts.iter()
         .find(|text| text.key.starts_with("name:0:") && text.content == expected_name);
     if settled {
-        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_pages(cx)), 1,
+        assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_pages(cx)), 1,
             "the exact preview has not settled to one mounted Reader page");
         assert!(rig.said().iter().any(|line| line == &expected_name),
             "the mounted Reader has no words for its exact preview result {expected_name:?}");
@@ -451,7 +451,7 @@ fn find_claims_native_query_focus_only_after_ask_exit_and_its_page_settle(cx: &m
     };
 
     rig.keys("secondary-k");
-    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(destination.clone()), cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(Intent::Navigate(destination.clone()), cx));
     rig.frame(0);
     assert_eq!(rig.route(), destination);
     assert_eq!(ask_phase(&painted(&mut rig)), Some(StackPhase::Leaving), "the Ask exit must still own painted pixels");
@@ -500,7 +500,7 @@ fn find_arrival_moves_native_focus_only_between_frames(cx: &mut TestAppContext) 
     let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
     rig.cx.update(|window, _| window.set_a11y_forced(true));
     rig.repaint();
-    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(find_route()), cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(Intent::Navigate(find_route()), cx));
     let mut labels = Vec::new();
     for _ in 0..40 {
         rig.frame(16);
@@ -522,7 +522,7 @@ fn find_arrival_moves_native_focus_only_between_frames(cx: &mut TestAppContext) 
 fn first_find_query_frame_can_return_from_add(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
     rig.cx.update(|window, _| window.set_a11y_forced(true));
-    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(find_route()), cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(Intent::Navigate(find_route()), cx));
     let mut focused = false;
     for _ in 0..80 {
         rig.frame(16);
@@ -544,7 +544,7 @@ fn first_find_query_frame_can_return_from_add(cx: &mut TestAppContext) {
 fn tab_cannot_walk_the_native_folio_during_find_arrival(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
     let destination = find_route();
-    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(destination.clone()), cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(Intent::Navigate(destination.clone()), cx));
     rig.frame(0);
     assert_ne!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
     let before = rig.cx.update(|window, cx| window.focused(cx));
@@ -632,7 +632,7 @@ fn typed_find_for_ask_return(rig: &mut Rig, shelf_origin: bool) -> gpui::FocusHa
     );
     let zone = rig
         .shell
-        .read_with(rig.cx, |shell, cx| shell.focus_state(cx).0);
+        .read_with(&rig.cx, |shell, cx| shell.focus_state(cx).0);
     assert_eq!(
         zone,
         if shelf_origin {
@@ -663,8 +663,8 @@ fn typed_find_for_ask_return(rig: &mut Rig, shelf_origin: bool) -> gpui::FocusHa
 fn ask_tab_to_real_result(rig: &mut Rig) {
     let before = rig.route();
     rig.keys("secondary-k");
-    let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
-    let editor = ask.read_with(rig.cx, |ask, _| ask.input().clone());
+    let ask = rig.shell.read_with(&rig.cx, |shell, _| shell.ask_entity());
+    let editor = ask.read_with(&rig.cx, |ask, _| ask.input().clone());
     assert!(
         rig.cx
             .update(|window, cx| editor.read(cx).focus_handle(cx).is_focused(window))
@@ -731,7 +731,7 @@ fn find_query_receives_character_after_ask_result_tab_escape_without_click(
         assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
         assert!(
             !rig.shell
-                .read_with(rig.cx, |shell, cx| shell.diagnostic_find_return(cx).1),
+                .read_with(&rig.cx, |shell, cx| shell.diagnostic_find_return(cx).1),
             "the mounted return is consumed once"
         );
         rig.cx.simulate_input("z");
@@ -785,15 +785,15 @@ fn shelf_origin_ask_find_return_rejects_superseding_input_route_and_owner(cx: &m
         assert_eq!(ask_phase(&painted(&mut rig)), Some(StackPhase::Leaving));
         assert!(
             rig.shell
-                .read_with(rig.cx, |shell, cx| shell.diagnostic_find_return(cx).1),
+                .read_with(&rig.cx, |shell, cx| shell.diagnostic_find_return(cx).1),
             "a real query return must exist before {interruption:?}"
         );
         match interruption {
             InterruptedAskFindReturn::Input => rig.cx.simulate_keystrokes("left"),
-            InterruptedAskFindReturn::Route => rig.graph.root.update(rig.cx, |root, cx| {
+            InterruptedAskFindReturn::Route => rig.graph.root.update(&mut rig.cx, |root, cx| {
                 root.queue(Intent::Navigate(Route::Orbit(OrbitRoute::Home)), cx)
             }),
-            InterruptedAskFindReturn::Owner => rig.graph.store.update(rig.cx, |store, cx| {
+            InterruptedAskFindReturn::Owner => rig.graph.store.update(&mut rig.cx, |store, cx| {
                 store.owner_failed(
                     &crate::runtime::owner::OwnerFault::Lost("Ask return owner replaced".into()),
                     cx,
@@ -808,7 +808,7 @@ fn shelf_origin_ask_find_return_rejects_superseding_input_route_and_owner(cx: &m
         );
         assert!(
             !rig.shell
-                .read_with(rig.cx, |shell, cx| shell.diagnostic_find_return(cx).1),
+                .read_with(&rig.cx, |shell, cx| shell.diagnostic_find_return(cx).1),
             "{interruption:?} retires the pending component return"
         );
         if matches!(interruption, InterruptedAskFindReturn::Route) {
@@ -828,8 +828,8 @@ fn ask_modal_tab_and_editor_click_preserve_find_query_return(cx: &mut TestAppCon
     let route = rig.route();
     rig.keys("secondary-k");
     rig.keys("r e l a t i o n");
-    let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
-    let editor = ask.read_with(rig.cx, |ask, _| ask.input().clone());
+    let ask = rig.shell.read_with(&rig.cx, |shell, _| shell.ask_entity());
+    let editor = ask.read_with(&rig.cx, |ask, _| ask.input().clone());
     let editor_focused = |rig: &mut Rig| rig.cx.update(|window, cx| editor.read(cx).focus_handle(cx).is_focused(window));
     assert!(editor_focused(&mut rig), "Ask did not own its editor before Tab");
     rig.cx.simulate_keystrokes("tab");
@@ -878,10 +878,10 @@ fn find_waits_for_its_own_arrival_and_releases_focus_on_departure(cx: &mut TestA
         let id = tree["accesskit_focus"].as_str().expect("native focus id");
         tree["nodes"][id]["aria"]["label"].as_str().map(str::to_owned)
     };
-    let settled = |rig: &mut Rig| rig.shell.read_with(rig.cx, |shell, cx|
+    let settled = |rig: &mut Rig| rig.shell.read_with(&rig.cx, |shell, cx|
         shell.reader_entity().read(cx).native_motion_settled());
 
-    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(destination.clone()), cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(Intent::Navigate(destination.clone()), cx));
     rig.frame(0);
     assert_eq!(rig.route(), destination);
     assert!(!settled(&mut rig), "the immediate arrival must still have a pending or painted Reader transition");
@@ -892,7 +892,7 @@ fn find_waits_for_its_own_arrival_and_releases_focus_on_departure(cx: &mut TestA
     assert_eq!(native_focus(&mut rig).as_deref(), Some("Find query"),
         "the settled page failed to transfer native focus to its query");
 
-    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(Route::Orbit(OrbitRoute::Home)), cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(Intent::Navigate(Route::Orbit(OrbitRoute::Home)), cx));
     rig.frame(0);
     assert!(!settled(&mut rig), "the departing Find must retain a painted Reader transition");
     assert_ne!(native_focus(&mut rig).as_deref(), Some("Find query"),
@@ -908,7 +908,7 @@ fn ask_panel_and_sheet_hold_through_oscillating_resizes(cx: &mut TestAppContext)
     rig.keys("secondary-k");
     rig.keys("r e l a t i o n");
     rig.settle();
-    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
     for percent in [100_u16, 150, 200] {
         let scale = f32::from(percent) / 100.0;
         rig.go(Intent::ZoomTo { display: display.clone(), percent });
@@ -1055,8 +1055,8 @@ fn ask_exit_blocks_background_keyboard_until_its_sampled_scene_clears(cx: &mut T
     assert!(visible.targets.iter().any(|target| target.key == "source-copy-excerpt"),
         "the Code Reader must positively paint the control used in this test");
     rig.keys("j");
-    rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).focus("source-copy-excerpt"));
-    let selected = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx).focus("source-copy-excerpt"));
+    let selected = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
     assert_eq!(selected, (Zone::Reader, Some("source-copy-excerpt".into())),
         "the keyboard did not stand on the visible Code control");
     rig.cx.write_to_clipboard(gpui::ClipboardItem::new_string("ask-exit-sentinel".into()));
@@ -1069,20 +1069,20 @@ fn ask_exit_blocks_background_keyboard_until_its_sampled_scene_clears(cx: &mut T
     rig.cx.simulate_keystrokes("tab shift-tab j enter secondary-. ctrl-1");
     rig.frame(0);
     assert_eq!(rig.route(), code, "a background navigation key fired under the painted Ask exit");
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)), selected,
+    assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx)), selected,
         "Tab or J moved focus to a covered control");
     assert_eq!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("ask-exit-sentinel"),
         "Enter activated the selected Code control beneath Ask's exit");
 
     rig.cx.simulate_keystrokes("secondary-k");
     rig.frame(0);
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()),
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()),
         Some(crate::navigation::Overlay::CommandPalette), "⌘K could not interrupt Ask's exit");
     rig.cx.simulate_keystrokes("escape");
     rig.frame(0);
     rig.settle();
     assert_eq!(ask_phase(&painted(&mut rig)), None);
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)), selected,
+    assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx)), selected,
         "the Code control lost its selected focus after the exit settled");
     rig.keys("enter");
     assert_ne!(rig.cx.read_from_clipboard().and_then(|item| item.text()).as_deref(), Some("ask-exit-sentinel"),
@@ -1159,7 +1159,7 @@ fn the_shelf_swaps_for_the_spine_without_a_lingering_fade_or_a_cut_word(cx: &mut
     rig.cx.update(|_, cx| cx.set_global(gpui::TextTrace));
     for percent in [100_u16, 200] {
         let scale = f32::from(percent) / 100.0;
-        let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+        let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
         rig.go(Intent::ZoomTo { display, percent });
         resize(&mut rig, 1000.0 * scale, 900.0);
         assert_eq!(frame(&mut rig).shelf, ShelfMode::Shelf, "{percent} %: 1000 design px is a shelf");
@@ -1211,7 +1211,7 @@ fn the_shelf_swaps_for_the_spine_without_a_lingering_fade_or_a_cut_word(cx: &mut
 #[gpui::test]
 fn at_200_percent_text_the_owned_screens_never_hang_past_a_phone(cx: &mut TestAppContext) {
     let mut rig = rig(cx, Some(Route::Orbit(OrbitRoute::Home)), 1440.0, 900.0);
-    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
     rig.go(Intent::ZoomTo { display, percent: 200 });
     for (name, route, settings) in screens() {
         if !matches!(name, "library" | "find" | "settings" | "graph") {
@@ -1260,7 +1260,7 @@ fn native_find_pointer_arrival_and_failed_owner_edit_keep_one_current_query_focu
     rig.settle();
     assert_eq!(rig.route(), Route::Orbit(OrbitRoute::Browse(BrowseRoute::FindHome)));
     assert_eq!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
-    rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(&crate::runtime::owner::OwnerFault::Lost("native Find owner lost".into()), cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_failed(&crate::runtime::owner::OwnerFault::Lost("native Find owner lost".into()), cx));
     rig.settle();
     let native = native_tree(&mut rig);
     let query = native["nodes"].as_object().expect("nodes").values().find(|node|
@@ -1274,7 +1274,7 @@ fn native_find_pointer_arrival_and_failed_owner_edit_keep_one_current_query_focu
     let owner = native["gpui_focus"].as_str().expect("one final query owner after async refinement");
     assert_eq!(native["nodes"][owner]["aria"]["label"].as_str(), Some("Find query"));
     assert_eq!(native["nodes"][owner]["aria"]["value"].as_str(), Some("base16"));
-    assert!(!rig.graph.store.read_with(rig.cx, |store, _| store.owner_serving()), "focus/editing never grants resource readiness");
+    assert!(!rig.graph.store.read_with(&rig.cx, |store, _| store.owner_serving()), "focus/editing never grants resource readiness");
     rig.keys("secondary-o");
     assert_ne!(native_focus_label(&mut rig).as_deref(), Some("Find query"), "covering Add owns native input");
     rig.keys("escape");
@@ -1289,7 +1289,7 @@ fn native_find_query_return_from_add_is_canceled_by_a_new_tab(cx: &mut TestAppCo
     rig.keys("secondary-o");
     assert_ne!(native_focus_label(&mut rig).as_deref(), Some("Find query"));
     rig.cx.simulate_keystrokes("escape");
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), None);
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()), None);
     rig.cx.simulate_keystrokes("tab");
     rig.settle();
     assert_ne!(native_focus_label(&mut rig).as_deref(), Some("Find query"),
@@ -1314,9 +1314,9 @@ fn native_find_query_return_from_add_is_canceled_by_another_key(cx: &mut TestApp
             prefer_character_input: false,
         }), cx);
     });
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), None);
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()), None);
     let before_left = rig.cx.update(|window, cx| window.focused(cx));
-    let before_return = rig.shell.read_with(rig.cx, |shell, cx| shell.diagnostic_find_return(cx));
+    let before_return = rig.shell.read_with(&rig.cx, |shell, cx| shell.diagnostic_find_return(cx));
     assert_ne!(before_left.as_ref(), Some(&query_focus),
         "Escape has not yet returned focus before the intervening key");
     assert!(before_return.1, "the exact Find return must be pending after Add dismissal");
@@ -1328,7 +1328,7 @@ fn native_find_query_return_from_add_is_canceled_by_another_key(cx: &mut TestApp
             prefer_character_input: false,
         }), cx);
     });
-    let after_return = rig.shell.read_with(rig.cx, |shell, cx| shell.diagnostic_find_return(cx));
+    let after_return = rig.shell.read_with(&rig.cx, |shell, cx| shell.diagnostic_find_return(cx));
     assert!(after_return.0 != before_return.0 && !after_return.1,
         "Left must revoke the armed return generation before its callback; before={before_return:?}, after={after_return:?}");
     rig.settle();

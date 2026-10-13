@@ -175,11 +175,17 @@ impl TestAppContext {
     }
 
     /// Deliver the platform graceful-termination decision without invoking shutdown.
-    pub fn simulate_native_quit(&self) -> bool { self.test_platform.simulate_native_quit() }
+    pub fn simulate_native_quit(&self) -> bool {
+        self.test_platform.simulate_native_quit()
+    }
     /// Observe approval/cancellation of a deferred platform termination.
-    pub fn native_quit_reply(&self) -> Option<bool> { self.test_platform.native_quit_reply() }
+    pub fn native_quit_reply(&self) -> Option<bool> {
+        self.test_platform.native_quit_reply()
+    }
     /// Number of approved platform quit requests, without terminating the test.
-    pub fn platform_quit_requests(&self) -> usize { self.test_platform.quit_requests() }
+    pub fn platform_quit_requests(&self) -> usize {
+        self.test_platform.quit_requests()
+    }
 
     /// Called by the test helper to end the test.
     /// public so the macro can call it.
@@ -272,6 +278,12 @@ impl TestAppContext {
 
     /// Adds a new window with no content.
     pub fn add_empty_window(&mut self) -> &mut VisualTestContext {
+        self.add_empty_window_owned().into_mut()
+    }
+
+    /// Adds a window whose visual context is owned by the caller's scope.
+    /// Dropping it releases its app reference without a test-quit callback.
+    pub fn add_empty_window_owned(&mut self) -> VisualTestContext {
         let mut cx = self.app.borrow_mut();
         let bounds = Bounds::maximized(None, &cx);
         let window = cx
@@ -284,7 +296,7 @@ impl TestAppContext {
             )
             .unwrap();
         drop(cx);
-        let cx = VisualTestContext::from_window(*window.deref(), self).into_mut();
+        let cx = VisualTestContext::from_window(*window.deref(), self);
         cx.run_until_parked();
         cx
     }
@@ -296,6 +308,20 @@ impl TestAppContext {
         &mut self,
         build_root_view: F,
     ) -> (Entity<V>, &mut VisualTestContext)
+    where
+        F: FnOnce(&mut Window, &mut Context<V>) -> V,
+        V: 'static + Render,
+    {
+        let (view, cx) = self.add_window_view_owned(build_root_view);
+        (view, cx.into_mut())
+    }
+
+    /// Adds a root view with an owned visual context. References borrowed
+    /// from this context cannot escape into a static test task.
+    pub fn add_window_view_owned<F, V>(
+        &mut self,
+        build_root_view: F,
+    ) -> (Entity<V>, VisualTestContext)
     where
         F: FnOnce(&mut Window, &mut Context<V>) -> V,
         V: 'static + Render,
@@ -313,7 +339,7 @@ impl TestAppContext {
             .unwrap();
         drop(cx);
         let view = window.root(self).unwrap();
-        let cx = VisualTestContext::from_window(*window.deref(), self).into_mut();
+        let cx = VisualTestContext::from_window(*window.deref(), self);
         cx.run_until_parked();
 
         // it might be nice to try and cleanup these at the end of each test.

@@ -19,9 +19,9 @@ fn closing(rig: &mut Rig) -> Entity<GracefulClose> {
         window.set_a11y_forced(true);
     });
     rig._window
-        .root(rig.cx)
+        .root(&rig.cx)
         .expect("component root")
-        .read_with(rig.cx, |root, cx| {
+        .read_with(&rig.cx, |root, cx| {
             root.view()
                 .clone()
                 .downcast::<CloseView>()
@@ -74,7 +74,7 @@ fn a_composed_focus_trap_preserves_native_semantics_children_and_keyboard_cycles
     cx: &mut TestAppContext,
 ) {
     cx.update(gpui_component::init);
-    let (root, cx) = cx.add_window_view(|window, cx| {
+    let (root, mut owned_cx) = cx.add_window_view_owned(|window, cx| {
         let fixture = cx.new(|cx| NamedTrapFixture {
             trap: cx.focus_handle(),
             // A tracked external handle owns its native tab metadata; Div's
@@ -86,6 +86,7 @@ fn a_composed_focus_trap_preserves_native_semantics_children_and_keyboard_cycles
         });
         gpui_component::Root::new(fixture, window, cx).bordered(false)
     });
+        let cx = &mut owned_cx;
     let fixture = root.read_with(cx, |root, _| {
         root.view().clone().downcast::<NamedTrapFixture>().expect("native trap fixture")
     });
@@ -199,7 +200,7 @@ fn held_writer(rig: &mut Rig) -> HeldSave {
     .expect("writer");
     rig.graph
         .root
-        .update(rig.cx, |root, _| root.replace_close_writer(writer));
+        .update(&mut rig.cx, |root, _| root.replace_close_writer(writer));
     HeldSave {
         entered,
         release: Some(release),
@@ -207,7 +208,7 @@ fn held_writer(rig: &mut Rig) -> HeldSave {
     }
 }
 fn pending(close: &Entity<GracefulClose>, rig: &mut Rig) -> bool {
-    close.read_with(rig.cx, |close, _| matches!(close.phase, Phase::Saving(_)))
+    close.read_with(&rig.cx, |close, _| matches!(close.phase, Phase::Saving(_)))
 }
 fn release(held: &mut HeldSave) {
     held.release
@@ -292,7 +293,7 @@ fn held_native_path(cx: &mut TestAppContext, entry: Entry) {
             .executor()
             .advance_clock(Duration::from_millis(25));
         rig.cx.run_until_parked();
-        close.read_with(rig.cx, |close, _| close.phase == Phase::Committed)
+        close.read_with(&rig.cx, |close, _| close.phase == Phase::Committed)
     });
     assert!(
         held.persistence.load().is_ok(),
@@ -346,18 +347,18 @@ fn duplicate_close_coalesces_and_quit_escalates_the_same_attempt(cx: &mut TestAp
     held.entered
         .recv_timeout(Duration::from_secs(1))
         .expect("write entered");
-    let first = close.read_with(rig.cx, |close, _| close.phase.clone());
+    let first = close.read_with(&rig.cx, |close, _| close.phase.clone());
     deliver(Entry::MenuClose, &mut rig);
     deliver(Entry::CmdQ, &mut rig);
     assert_eq!(
-        close.read_with(rig.cx, |close, _| close.phase.clone()),
+        close.read_with(&rig.cx, |close, _| close.phase.clone()),
         first
     );
     assert_eq!(
-        close.read_with(rig.cx, |close, _| close.target),
+        close.read_with(&rig.cx, |close, _| close.target),
         CloseTarget::Application
     );
-    close.update(rig.cx, |close, cx| close.cancel(cx));
+    close.update(&mut rig.cx, |close, cx| close.cancel(cx));
     release(&mut held);
 }
 
@@ -374,10 +375,10 @@ fn cancel_reopens_editing_and_late_ack_never_closes_the_new_edit(cx: &mut TestAp
     rig.cx.simulate_keystrokes("escape");
     rig.cx.run_until_parked();
     assert_eq!(
-        close.read_with(rig.cx, |close, _| close.phase.clone()),
+        close.read_with(&rig.cx, |close, _| close.phase.clone()),
         Phase::Open
     );
-    rig.graph.root.update(rig.cx, |root, cx| {
+    rig.graph.root.update(&mut rig.cx, |root, cx| {
         root.dispatch(Intent::SetDensity(DensityPreference::Dense), cx)
     });
     release(&mut held);
@@ -389,7 +390,7 @@ fn cancel_reopens_editing_and_late_ack_never_closes_the_new_edit(cx: &mut TestAp
     });
     assert_eq!(rig.cx.cx.windows().len(), 1);
     assert_eq!(
-        close.read_with(rig.cx, |close, _| close.phase.clone()),
+        close.read_with(&rig.cx, |close, _| close.phase.clone()),
         Phase::Open
     );
     let _ = std::fs::remove_file(held.persistence.path());
@@ -406,7 +407,7 @@ fn deadline_keeps_the_window_open_and_native_cancel_replies_no(cx: &mut TestAppC
         .expect("write entered");
     rig.cx.cx.executor().advance_clock(Duration::from_secs(6));
     rig.draw();
-    assert!(close.read_with(rig.cx, |close, _| matches!(
+    assert!(close.read_with(&rig.cx, |close, _| matches!(
         close.phase,
         Phase::NeedsDecision(_, _)
     )));
@@ -441,7 +442,7 @@ fn last_window_policy_never_requests_quit_before_the_native_close_ack(cx: &mut T
             .executor()
             .advance_clock(Duration::from_millis(25));
         rig.cx.run_until_parked();
-        close.read_with(rig.cx, |close, _| close.phase == Phase::Committed)
+        close.read_with(&rig.cx, |close, _| close.phase == Phase::Committed)
     });
     assert!(rig.cx.cx.windows().is_empty());
     assert!(rig.cx.cx.platform_quit_requests() > 0);
@@ -457,26 +458,26 @@ fn an_old_close_choice_cannot_approve_or_cancel_a_later_attempt(cx: &mut TestApp
     held.entered
         .recv_timeout(Duration::from_secs(1))
         .expect("first write entered");
-    let first = close.read_with(rig.cx, |close, _| match close.phase {
+    let first = close.read_with(&rig.cx, |close, _| match close.phase {
         Phase::Saving(attempt) => attempt,
         _ => panic!("first close saving"),
     });
-    close.update(rig.cx, |close, cx| {
+    close.update(&mut rig.cx, |close, cx| {
         close.choose(first, Choice::ContinueEditing, cx)
     });
     deliver(Entry::RedClose, &mut rig);
-    let current = close.read_with(rig.cx, |close, _| close.phase.clone());
+    let current = close.read_with(&rig.cx, |close, _| close.phase.clone());
     assert_ne!(current, Phase::Saving(first));
-    close.update(rig.cx, |close, cx| {
+    close.update(&mut rig.cx, |close, cx| {
         close.choose(first, Choice::CloseWithPreviousState, cx);
         close.choose(first, Choice::ContinueEditing, cx);
     });
     assert_eq!(
-        close.read_with(rig.cx, |close, _| close.phase.clone()),
+        close.read_with(&rig.cx, |close, _| close.phase.clone()),
         current
     );
     assert_eq!(rig.cx.cx.platform_quit_requests(), 0);
-    close.update(rig.cx, |close, cx| close.cancel(cx));
+    close.update(&mut rig.cx, |close, cx| close.cancel(cx));
     release(&mut held);
 }
 
@@ -493,7 +494,7 @@ fn unfinished_workers_keep_one_responsive_finish_job_and_cannot_resume_editing(
     let worker = std::thread::spawn(move || {
         let _ = worker_released.recv_timeout(Duration::from_secs(20));
     });
-    close.update(rig.cx, |close, _| {
+    close.update(&mut rig.cx, |close, _| {
         close.extra_finish = Some(crate::runtime::worker_finish::WorkerFinish::from_workers(
             vec![worker],
         ));
@@ -505,13 +506,13 @@ fn unfinished_workers_keep_one_responsive_finish_job_and_cannot_resume_editing(
     release(&mut held);
     crate::runtime::wait::until("durable checkpoint enters worker finish", || {
         rig.cx.run_until_parked();
-        close.read_with(rig.cx, |close, _| {
+        close.read_with(&rig.cx, |close, _| {
             matches!(close.phase, Phase::Finishing(_))
         })
     });
     rig.cx.cx.executor().advance_clock(Duration::from_secs(6));
     rig.draw();
-    let attempt = close.read_with(rig.cx, |close, _| match close.phase {
+    let attempt = close.read_with(&rig.cx, |close, _| match close.phase {
         Phase::WorkerBlocked(attempt) => attempt,
         _ => panic!("worker deadline is visible"),
     });
@@ -529,7 +530,7 @@ fn unfinished_workers_keep_one_responsive_finish_job_and_cannot_resume_editing(
             .any(|text| text.text.contains("background request has not stopped"))
     }));
     rig.cx.simulate_keystrokes("escape");
-    close.update(rig.cx, |close, cx| {
+    close.update(&mut rig.cx, |close, cx| {
         assert!(close.join_task.is_some());
         close.choose(attempt, Choice::WaitAgain, cx);
         close.choose(attempt, Choice::WaitAgain, cx); // coalesced: one monitor, same join job
@@ -544,10 +545,10 @@ fn unfinished_workers_keep_one_responsive_finish_job_and_cannot_resume_editing(
             .executor()
             .advance_clock(Duration::from_millis(25));
         rig.cx.run_until_parked();
-        close.read_with(rig.cx, |close, _| close.phase == Phase::Committed)
+        close.read_with(&rig.cx, |close, _| close.phase == Phase::Committed)
     });
     assert_eq!(rig.cx.cx.native_quit_reply(), Some(true));
-    assert!(close.read_with(rig.cx, |close, _| close.join_task.is_none()
+    assert!(close.read_with(&rig.cx, |close, _| close.join_task.is_none()
         && close.joined.is_none()));
 }
 
@@ -556,7 +557,7 @@ fn long_close_failure_at_200_percent_stays_inside_viewport_and_traps_native_tab(
     cx: &mut TestAppContext,
 ) {
     let mut rig = rig(cx, None, 1440.0, 900.0);
-    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
     rig.go(Intent::ZoomTo {
         display,
         percent: 200,
@@ -567,7 +568,7 @@ fn long_close_failure_at_200_percent_stays_inside_viewport_and_traps_native_tab(
     held.entered
         .recv_timeout(Duration::from_secs(1))
         .expect("save entered");
-    close.update(rig.cx, |close, cx| {
+    close.update(&mut rig.cx, |close, cx| {
         let Phase::Saving(attempt) = close.phase else {
             panic!("saving attempt");
         };
@@ -641,7 +642,7 @@ fn long_close_failure_at_200_percent_stays_inside_viewport_and_traps_native_tab(
     rig.native_press("space");
     rig.cx.run_until_parked();
     assert_eq!(
-        close.read_with(rig.cx, |close, _| close.phase.clone()),
+        close.read_with(&rig.cx, |close, _| close.phase.clone()),
         Phase::Open,
         "the focused Keep editing button receives native Space activation"
     );
@@ -658,18 +659,18 @@ fn a_cancelled_attempt_deadline_cannot_fail_its_newer_attempt(cx: &mut TestAppCo
         .recv_timeout(Duration::from_secs(1))
         .expect("held first checkpoint");
     rig.cx.cx.executor().advance_clock(Duration::from_secs(4));
-    close.update(rig.cx, |close, cx| close.cancel(cx));
+    close.update(&mut rig.cx, |close, cx| close.cancel(cx));
     deliver(Entry::RedClose, &mut rig);
-    let second = close.read_with(rig.cx, |close, _| close.phase.clone());
+    let second = close.read_with(&rig.cx, |close, _| close.phase.clone());
     assert!(matches!(second, Phase::Saving(_)));
     rig.cx.cx.executor().advance_clock(Duration::from_secs(2));
     rig.draw();
     assert_eq!(
-        close.read_with(rig.cx, |close, _| close.phase.clone()),
+        close.read_with(&rig.cx, |close, _| close.phase.clone()),
         second,
         "only the current attempt owns the five-second save deadline"
     );
     assert_eq!(rig.cx.cx.windows().len(), 1);
-    close.update(rig.cx, |close, cx| close.cancel(cx));
+    close.update(&mut rig.cx, |close, cx| close.cancel(cx));
     release(&mut held);
 }

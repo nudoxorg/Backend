@@ -77,11 +77,11 @@ fn painted_words(rig: &mut Rig) -> Vec<String> {
 }
 
 fn overlay(rig: &mut Rig) -> Option<Overlay> {
-    rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay())
+    rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay())
 }
 
 fn snapshot(rig: &mut Rig) -> Arc<AppSnapshot> {
-    rig.graph.store.read_with(rig.cx, |store, _| store.snapshot())
+    rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot())
 }
 
 fn dialog_open(rig: &mut Rig) -> bool {
@@ -242,7 +242,7 @@ fn coalesced_overlay_events_retire_a_folder_answer_even_when_the_final_overlay_i
     let covered = Arc::new(before.with_session(session));
     // Actual store publications are emitted in one effect cycle, before the
     // mounted form can redraw or observe a different final overlay snapshot.
-    rig.graph.store.update(rig.cx, |store, cx| {
+    rig.graph.store.update(&mut rig.cx, |store, cx| {
         store.admit_snapshot(covered, cx);
         store.admit_snapshot(before, cx);
     });
@@ -280,7 +280,7 @@ fn the_first_screen_says_what_the_app_is_for_and_offers_the_way_in(cx: &mut Test
     ] {
         assert!(said.iter().any(|line| line == words), "the first screen does not say {words:?}: {said:#?}");
     }
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
     let add = targets.iter().find(|(target, _)| target.label == "Add a folder").expect("the way in is a target");
     assert!(add.1.size.width > gpui::px(40.0) && add.1.size.height > gpui::px(16.0), "and it has a body: {:?}", add.1);
     let words = drawn(&mut rig);
@@ -295,7 +295,7 @@ fn the_first_screen_says_what_the_app_is_for_and_offers_the_way_in(cx: &mut Test
 fn empty_library_opens_real_find_without_adding_a_project_or_claiming_an_index(cx: &mut TestAppContext) {
     for width in [480.0, 1440.0] {
         let mut rig = first_run(cx, width);
-        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
+        let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
         let (_, bounds) = targets.iter().find(|(target, _)| target.label == "Add package")
             .expect("a separate package door beside Add a folder").clone();
         assert!(drawn(&mut rig).iter().any(|line| line.contains("exact version")),
@@ -313,7 +313,7 @@ fn empty_library_opens_real_find_without_adding_a_project_or_claiming_an_index(c
 #[gpui::test]
 fn pressing_the_button_opens_the_dialog_with_the_cursor_in_the_field(cx: &mut TestAppContext) {
     let mut rig = first_run(cx, 1440.0);
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
     let (_, bounds) = targets.iter().find(|(target, _)| target.label == "Add a folder").expect("target").clone();
     rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
     rig.settle();
@@ -368,7 +368,7 @@ fn enter_adds_the_folder_and_lands_on_the_library_saying_what_it_is_doing(cx: &m
     let mut rig = first_run(cx, 1440.0);
     // Opened the way J0 opens it: by pressing "Add a folder", which then
     // holds the focus the dialog would give back.
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
     let (_, bounds) = targets.iter().find(|(target, _)| target.label == "Add a folder").expect("target").clone();
     rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
     rig.settle();
@@ -491,7 +491,7 @@ impl EngineClient for Refuses {
 }
 
 fn click(rig: &mut Rig, label: &str) {
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
     let (_, bounds) = targets
         .iter()
         .find(|(target, _)| target.label == label)
@@ -568,7 +568,7 @@ fn native_retry_retires_with_its_attempt_before_redraw_and_fresh_failure_remains
     rig.go(Intent::AddProject { project: project.clone() });
     assert_eq!(asked.load(Ordering::SeqCst), 1);
     assert_eq!(phases(&mut rig), [ProjectPhase::Failed]);
-    let (target, bounds) = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed()
+    let (target, bounds) = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx)).placed()
         .into_iter().find(|(target, _)| target.label == "Try again").expect("painted recovery target");
     let old_attempt = snapshot(&mut rig).workspace().projects[0].clone();
     let native = rig.cx.update(|window, _| window.a11y_tree().expect("committed native failure tree").nodes.iter()
@@ -576,7 +576,7 @@ fn native_retry_retires_with_its_attempt_before_redraw_and_fresh_failure_remains
             && node.supports_action(gpui::AccessibleAction::Click))
         .map(|(id, _)| *id).expect("actual Retry Click node"));
     let frame = rig.cx.update(|window, _| window.a11y_frame_number());
-    let before = rig.graph.root.read_with(rig.cx, |root, _| root.reduced());
+    let before = rig.graph.root.read_with(&rig.cx, |root, _| root.reduced());
     let held_focus = rig.cx.update(|window, cx| {
         window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
             position: bounds.center(), modifiers: Modifiers::none(), button: MouseButton::Left, click_count: 1, first_mouse: false,
@@ -606,7 +606,7 @@ fn native_retry_retires_with_its_attempt_before_redraw_and_fresh_failure_remains
         assert_eq!(rig.graph.root.read(cx).reduced(), before + 1, "only the independently admitted retry reduced");
         focused
     });
-    assert_eq!(rig.graph.root.read_with(rig.cx, |root, _| root.reduced()), before + 1,
+    assert_eq!(rig.graph.root.read_with(&rig.cx, |root, _| root.reduced()), before + 1,
         "old releases cannot queue another retry at the end of the effect");
     assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), held_focus,
         "deferred native effects cannot move the retired control's focus");
@@ -617,10 +617,10 @@ fn native_retry_retires_with_its_attempt_before_redraw_and_fresh_failure_remains
     assert_eq!(phases(&mut rig), [ProjectPhase::Failed]);
     let current = snapshot(&mut rig);
     assert!(!current.workspace().projects[0].same_index_attempt(&old_attempt), "the new failure owns a different durable caller key");
-    let after = rig.graph.root.read_with(rig.cx, |root, _| root.reduced());
+    let after = rig.graph.root.read_with(&rig.cx, |root, _| root.reduced());
     rig.cx.update(|window, cx| target.action.run(window, cx));
     rig.cx.run_until_parked();
-    assert_eq!(rig.graph.root.read_with(rig.cx, |root, _| root.reduced()), after,
+    assert_eq!(rig.graph.root.read_with(&rig.cx, |root, _| root.reduced()), after,
         "a later failure at the same route and phase cannot revive the original callback");
     assert_eq!(asked.load(Ordering::SeqCst), 2);
     click(&mut rig, "Try again");
@@ -702,10 +702,10 @@ fn native_second_folder_submit_has_one_accessible_focus_owner_through_pending_an
         let field = rig.cx.update(|window, cx| super::field(window, cx)).expect("mounted input");
         assert!(rig.cx.update(|window, cx| field.read(cx).focus_handle(cx).is_focused(window)),
             "the reopened dialog owns native input before typing a second folder");
-        assert!(field.read_with(rig.cx, |input, _| input.value().is_empty()), "the reopened dialog starts with an empty field");
+        assert!(field.read_with(&rig.cx, |input, _| input.value().is_empty()), "the reopened dialog starts with an empty field");
         let second_path = format!("{}/toml_pin", second_parent.display());
         type_in(&mut rig, &second_path);
-        assert_eq!(field.read_with(rig.cx, |input, _| input.value().to_string()), second_path,
+        assert_eq!(field.read_with(&rig.cx, |input, _| input.value().to_string()), second_path,
             "the second path belongs to the current mounted editor");
         let words = drawn(&mut rig);
         assert!(words.iter().any(|line| line == "toml_pin · a Rust project (Cargo.toml)"),
@@ -799,7 +799,7 @@ fn native_menu_settings_replaces_an_unmounted_focus_receiver_before_first_tab(cx
         window.set_a11y_forced(true);
     });
     rig.settle();
-    rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_failed(
         &crate::runtime::owner::OwnerFault::Lost("fixture owner unavailable".into()), cx));
     rig.settle();
     let stale = rig.cx.update(|window, cx| {
@@ -919,7 +919,7 @@ fn native_check_outcome_queries_the_saved_key_and_admits_its_publication_without
         node["aria"]["role"].as_str() == Some("Button") && node["aria"]["label"].as_str() == Some("Check outcome")),
         "recovery is a real native accessible button");
     assert!(rig.said().iter().any(|line| line.contains("No operation receipt is available")));
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
     let (_, bounds) = targets.iter().find(|(target, _)| target.label == "Check outcome").expect("native recovery bounds");
     assert!(bounds.size.width > gpui::px(0.0) && bounds.size.height > gpui::px(0.0));
     click(&mut rig, "Check outcome");
@@ -942,7 +942,7 @@ fn retained_check_outcome_callback_cannot_cross_a_same_root_owner_replacement(cx
         ReadPool::start(2, |_| NothingYet).expect("pool"),
         Reconciles { starts: starts.clone(), checks: checks.clone() }, Some(gate.clone()));
     rig.go(Intent::AddProject { project: crate::core::LocalProjectId::from_path(&folder).expect("project") });
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
     let action = targets.iter().find(|(target, _)| target.label == "Check outcome").expect("live recovery").0.action.callback();
     gate.publish(crate::runtime::owner::OwnerState::Starting);
     gate.publish(crate::runtime::owner::OwnerState::Ready { key: authority, mode: crate::model::ServiceMode::Attached });
@@ -992,7 +992,7 @@ fn native_new_index_after_archival_uses_a_distinct_key_only_on_user_activation(c
     let tree: serde_json::Value = serde_json::from_str(&native).expect("AccessKit JSON");
     assert!(tree["nodes"].as_object().expect("native nodes").values().any(|node|
         node["aria"]["role"].as_str() == Some("Button") && node["aria"]["label"].as_str() == Some("Start a new index")));
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
     let (target, bounds) = targets.iter().find(|(target, _)| target.label == "Start a new index").expect("native new attempt");
     assert!(bounds.size.width > gpui::px(0.0) && bounds.size.height > gpui::px(0.0));
     let stale = target.action.callback();
@@ -1019,7 +1019,7 @@ fn captured_new_index_control_cannot_cross_same_root_owner_replacement(cx: &mut 
     let mut rig = crate::shell::tests::rig_with_engine_gate(cx, Some(Route::Orbit(OrbitRoute::Home)), 663.0, 900.0,
         ReadPool::start(2, |_| NothingYet).expect("pool"), ArchivedOperations { starts: starts.clone() }, Some(gate.clone()));
     rig.go(Intent::AddProject { project: crate::core::LocalProjectId::from_path(&folder).expect("project") });
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx)).placed();
     let action = targets.iter().find(|(target, _)| target.label == "Start a new index").expect("live action").0.action.callback();
     gate.publish(crate::runtime::owner::OwnerState::Starting);
     gate.publish(crate::runtime::owner::OwnerState::Ready { key: authority, mode: crate::model::ServiceMode::Attached });
@@ -1051,7 +1051,7 @@ fn retained_native_add_controls_cannot_act_on_a_cover_or_same_dialog_return(cx: 
                 .map(|(id, _)| *id).expect("native dialog Click"));
             let frame = rig.cx.update(|window, _| window.a11y_frame_number());
             let root = rig.graph.root.clone();
-            let reduced = root.read_with(rig.cx, |root, _| root.reduced());
+            let reduced = root.read_with(&rig.cx, |root, _| root.reduced());
             let held = rig.cx.update(|window, cx| {
                 let form = super::form(window, cx).expect("mounted form");
                 let work = form.read(cx).work_state();
@@ -1094,7 +1094,7 @@ fn retained_native_add_controls_cannot_act_on_a_cover_or_same_dialog_return(cx: 
                 Some(input)
             });
             assert!(!rig.cx.cx.did_prompt_for_paths(), "old Choose cannot open a native picker");
-            assert_eq!(root.read_with(rig.cx, |root, _| root.reduced()), reduced + if returned { 2 } else { 1 },
+            assert_eq!(root.read_with(&rig.cx, |root, _| root.reduced()), reduced + if returned { 2 } else { 1 },
                 "no old Cancel or Choose intent survives the queued handoff");
             assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), held, "post-effect input did not focus the retired control");
             assert_eq!(rig.cx.update(|window, _| window.a11y_frame_number()), frame);
@@ -1138,7 +1138,7 @@ fn retained_add_path_enter_cannot_submit_after_an_unpainted_cover_return(cx: &mu
             if matches!(event, gpui_component::input::InputEvent::PressEnter { .. }) { heard.set(heard.get() + 1); }
         }));
         let root = rig.graph.root.clone();
-        let before = root.read_with(rig.cx, |root, _| root.reduced());
+        let before = root.read_with(&rig.cx, |root, _| root.reduced());
         let state = rig.cx.update(|window, cx| {
             let form = super::form(window, cx).expect("mounted Add");
             let input = form.read(cx).input().clone();
@@ -1174,9 +1174,9 @@ fn retained_add_path_enter_cannot_submit_after_an_unpainted_cover_return(cx: &mu
         // capture_key_down. Both orders emit one notification; submission is
         // admitted by the parent action's captured visit, not by that event.
         assert_eq!(presses.get(), 1, "the input notification carries no submission authority");
-        assert_eq!(state.0.read_with(rig.cx, |form, _| form.work_state()), state.1,
+        assert_eq!(state.0.read_with(&rig.cx, |form, _| form.work_state()), state.1,
             "deferred InputState PressEnter cannot start a retired admission");
-        assert_eq!(root.read_with(rig.cx, |root, _| root.reduced()), before + 2);
+        assert_eq!(root.read_with(&rig.cx, |root, _| root.reduced()), before + 2);
         assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), state.3);
         assert_eq!(rig.cx.update(|window, _| window.a11y_frame_number()), state.2);
         rig.settle();
@@ -1253,7 +1253,7 @@ fn queued_path_enter_keeps_its_emitting_visit_across_a_native_replacement_paint(
         assert_eq!(form.read(cx).work_state().0, started, "the old Enter subscription is still queued during paint");
         (form, started)
     });
-    assert_eq!(form.read_with(rig.cx, |form, _| form.work_state().0), started,
+    assert_eq!(form.read_with(&rig.cx, |form, _| form.work_state().0), started,
         "a queued old Enter cannot borrow the newly painted Add visit to start filesystem admission");
     rig.settle();
     assert!(snapshot(&mut rig).workspace().projects.is_empty());

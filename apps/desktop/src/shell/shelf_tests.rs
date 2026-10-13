@@ -156,8 +156,8 @@ fn row_names(rig: &mut Rig) -> Vec<String> {
 
 /// The sidebar takes the keyboard (the reader had it).
 fn into_the_sidebar(rig: &mut Rig) {
-    let zone = |rig: &mut Rig| rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).0;
-    let reader_stops = rig.shell.read_with(rig.cx, |shell, cx| {
+    let zone = |rig: &mut Rig| rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx)).0;
+    let reader_stops = rig.shell.read_with(&rig.cx, |shell, cx| {
         shell.reader_targets(cx).list_probe().upgrade().map_or(0, |list| list.borrow().len())
     });
     // Shift-Tab first walks the Reader's mounted native stops, then crosses
@@ -222,7 +222,7 @@ fn a_declarations_page_follows_in_the_outline_with_its_module_open(cx: &mut Test
         ["identity", "glyph", "RelationLabel", "RelationDirection", "KindGlyph", "relation_label", "outline", "tests"],
         "modules, the current one open, one fold for the test modules"
     );
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.shelf_current_symbols(cx)), [super::tests::symbol("RelationLabel")]);
+    assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.shelf_current_symbols(cx)), [super::tests::symbol("RelationLabel")]);
     let said = said(&mut rig);
     assert!(!said.iter().any(|text| text == "BY KIND"), "the intro's cut is only for the page that draws the modules: {said:#?}");
     assert_eq!(count_beside(&said, "Contents").as_deref(), Some("11"), "the outline's Contents counts every name it can show, groups closed or open: {said:#?}");
@@ -308,7 +308,7 @@ fn g_then_a_letter_picks_the_lens_and_the_reader_stays_where_it_is(cx: &mut Test
     assert_eq!(rig.route(), toml(), "picking a lens is browsing");
     // Outside the sidebar the letters are the shell's again: G is the graph.
     rig.keys("tab");
-    let (zone, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    let (zone, _) = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
     assert_ne!(zone, super::focus::Zone::Shelf);
 }
 
@@ -430,7 +430,7 @@ fn space_peeks_the_selection_beside_the_sidebar_and_the_peek_follows_the_arrows(
     assert!(foot(&mut rig).is_some(), "the peek followed the selection to the next row");
     // H holds the row the peek is on.
     rig.keys("h");
-    let held = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().hand.held().len());
+    let held = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().hand.held().len());
     assert_eq!(held, 1, "H holds the selection");
     rig.keys("space");
     rig.keys("escape");
@@ -649,10 +649,10 @@ fn a_lens_tab_is_a_target_and_a_click_on_it_gives_the_sidebar_the_keyboard(cx: &
     let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
     let tabs: Vec<&str> = ledger.targets.iter().map(|target| target.key.as_str()).filter(|key| key.starts_with("shelf-lens-")).collect();
     assert_eq!(tabs, ["shelf-lens-contents", "shelf-lens-versions", "shelf-lens-rests-on", "shelf-lens-used-by"]);
-    let (zone, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    let (zone, _) = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
     assert_ne!(zone, super::focus::Zone::Shelf, "the sidebar does not have the keyboard yet");
     click_text(&mut rig, "Contents");
-    let (zone, _) = rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+    let (zone, _) = rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
     assert_eq!(zone, super::focus::Zone::Shelf, "a click on a lens gives the sidebar the keyboard");
 }
 
@@ -726,7 +726,7 @@ fn shelf_native_labels(rig: &mut Rig) -> Vec<String> {
 #[gpui::test]
 fn library_relationship_uncertainty_survives_native_paint_at_all_sizes(cx: &mut TestAppContext) {
     let (mut rig, _gate) = fact_rig(cx, Route::Orbit(crate::navigation::OrbitRoute::Home));
-    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
     for appearance in [crate::model::AppearancePreference::Abyss, crate::model::AppearancePreference::Glacier] {
         rig.go(Intent::SetAppearance(appearance));
         for percent in [100_u16, 150, 200] {
@@ -734,7 +734,7 @@ fn library_relationship_uncertainty_survives_native_paint_at_all_sizes(cx: &mut 
             for width in [360.0, 480.0, 663.0, 1440.0] {
                 rig.cx.simulate_resize(gpui::size(px(width), px(900.0)));
                 rig.settle();
-                let (overlays, drawer_open) = rig.shell.read_with(rig.cx, |shell, cx| (
+                let (overlays, drawer_open) = rig.shell.read_with(&rig.cx, |shell, cx| (
                     shell.frame().expect("responsive frame").shelf_overlays,
                     shell.chrome_words(cx).iter().any(|(key, value)| *key == "drawer" && value == "open"),
                 ));
@@ -769,7 +769,7 @@ fn native_owner_loss_and_replacement_immediately_revoke_observed_empty_shelf_fac
             rig.keys(keys);
             assert!(shelf_native_labels(&mut rig).iter().any(|label| label == empty), "current completed fixture establishes actual absence");
             if replacement {
-                let current = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+                let current = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
                 gate.publish(OwnerState::Ready { key: current.with_generation(current.generation().saturating_add(1)), mode: crate::model::ServiceMode::Attached });
             } else {
                 gate.publish(OwnerState::Failed("The relationship source stopped answering.".into()));
@@ -788,7 +788,7 @@ fn native_used_by_lens_is_visit_local_and_forward_restores_the_mounted_tab(cx: &
     let mut rig = open(cx);
     rig.cx.update(|window, _| window.set_a11y_forced(true));
     click_text(&mut rig, "Used by");
-    let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    let before = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.clone());
     assert_eq!(before.presentation.controls().shelf.lens, ShelfLens::UsedBy);
     let selected = super::tests::native_bounds(&mut rig, "Tab", "Used by", true).expect("native Used by tab");
     assert!(selected.size.width > px(0.0));
@@ -798,12 +798,12 @@ fn native_used_by_lens_is_visit_local_and_forward_restores_the_mounted_tab(cx: &
     assert!(shelf_texts(&mut rig).iter().any(|text| text.0 == "toml_pin"), "Back restores actual dependent rows");
     rig.keys("secondary-]");
     rig.keys("secondary-[");
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id), before.id);
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.id), before.id);
     assert!(shelf_texts(&mut rig).iter().any(|text| text.0 == "toml_pin"), "Forward/Back preserves Used by, not Contents");
     rig.go(Intent::Navigate(Route::Orbit(crate::navigation::OrbitRoute::Home)));
     rig.go(Intent::Navigate(toml()));
-    assert_ne!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id), before.id);
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.presentation.controls().shelf.lens), ShelfLens::Contents,
+    assert_ne!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.id), before.id);
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.presentation.controls().shelf.lens), ShelfLens::Contents,
         "a fresh visit to the same package has independent intent");
 }
 
@@ -817,9 +817,9 @@ fn mounted_library_guidance_wraps_without_covering_the_next_row(cx: &mut TestApp
     const NOTE: &str = "Library usage relationships are not indexed. Open a saved project's dependency tree to inspect its packages.";
     for width in [1440.0, 390.0] {
         let mut rig = super::tests::rig(cx, Some(Route::Orbit(crate::navigation::OrbitRoute::Home)), width, 700.0);
-        let visit = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id);
+        let visit = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.id);
         rig.go(Intent::SetReading { visit, change: ReadingChange::ShelfLens(ShelfLens::UsedBy) });
-        let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+        let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
         for percent in [100, 150, 200] {
             rig.go(Intent::ZoomTo { display: display.clone(), percent });
             let first = super::fit_tests::painted(&mut rig);
@@ -875,12 +875,12 @@ fn measured_shelf_wheel_offset_survives_back_and_keyboard_reveals_a_row(cx: &mut
         "the fixture must have a scrollable shelf: {before:?}");
     let at = point(px(before.viewport.x + before.viewport.width / 2.0),
         px(before.viewport.y + before.viewport.height / 2.0));
-    crate::shell::tests::wheel(rig.cx, at, point(px(0.0), px(-120.0)));
+    crate::shell::tests::wheel(&mut rig.cx, at, point(px(0.0), px(-120.0)));
     rig.settle();
     let scrolled = read_scroll(&mut rig);
     let displacement = scrolled.offset.expect("measured list publishes displacement").y;
     assert!(displacement < -20.0, "native wheel did not move the list: {scrolled:?}");
-    let remembered = rig.graph.store.read_with(rig.cx, |store, _| {
+    let remembered = rig.graph.store.read_with(&rig.cx, |store, _| {
         store.snapshot().session().reading.current.presentation.controls().shelf.offset.pixels().1
     });
     assert!((remembered - displacement).abs() <= 1.0,
@@ -919,40 +919,40 @@ fn ask_veil_blocks_wheel_over_the_covered_shelf_but_keeps_its_editor_live(cx: &m
         "the covered Shelf must have room for a real wheel displacement: {viewport:?}");
     let at = point(px(viewport.viewport.x + viewport.viewport.width / 2.0),
         px(viewport.viewport.y + viewport.viewport.height / 2.0));
-    let shelf = rig.shell.read_with(rig.cx, |shell, _| shell.shelf_entity());
-    let offset = |rig: &mut Rig| shelf.read_with(rig.cx, |shelf, _| {
+    let shelf = rig.shell.read_with(&rig.cx, |shell, _| shell.shelf_entity());
+    let offset = |rig: &mut Rig| shelf.read_with(&rig.cx, |shelf, _| {
         f32::from(shelf.diagnostic_scroll_state().scroll_px_offset_for_scrollbar().y)
     });
-    let reading = |rig: &mut Rig| rig.graph.store.read_with(rig.cx, |store, _| {
+    let reading = |rig: &mut Rig| rig.graph.store.read_with(&rig.cx, |store, _| {
         store.snapshot().session().reading.current.presentation.controls().shelf.offset.pixels().1
     });
     let before = (offset(&mut rig), reading(&mut rig));
 
     rig.keys("secondary-k");
-    let ask = rig.shell.read_with(rig.cx, |shell, _| shell.ask_entity());
-    let input = ask.read_with(rig.cx, |ask, _| ask.input().clone());
+    let ask = rig.shell.read_with(&rig.cx, |shell, _| shell.ask_entity());
+    let input = ask.read_with(&rig.cx, |ask, _| ask.input().clone());
     assert!(rig.cx.update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window)),
         "Ask's native editor owns the covered frame");
     rig.cx.simulate_input("mystery");
     rig.settle();
-    assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "mystery");
+    assert_eq!(input.read_with(&rig.cx, |input, _| input.value().to_string()), "mystery");
     let covered = (offset(&mut rig), reading(&mut rig));
     assert!((covered.0 - before.0).abs() <= 1.0 && (covered.1 - before.1).abs() <= 1.0,
         "opening Ask does not move the underlying measured Shelf");
-    crate::shell::tests::wheel(rig.cx, at, point(px(0.0), px(-120.0)));
+    crate::shell::tests::wheel(&mut rig.cx, at, point(px(0.0), px(-120.0)));
     rig.settle();
     let wheeled = (offset(&mut rig), reading(&mut rig));
     assert!((wheeled.0 - covered.0).abs() <= 1.0 && (wheeled.1 - covered.1).abs() <= 1.0,
         "the Ask veil blocks native wheel input and saved Shelf intent: {covered:?} → {wheeled:?}");
     assert!(rig.cx.update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window)),
         "wheel input over the veil cannot take Ask editor focus");
-    assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "mystery");
+    assert_eq!(input.read_with(&rig.cx, |input, _| input.value().to_string()), "mystery");
 
     rig.keys("escape");
     let uncovered = (offset(&mut rig), reading(&mut rig));
     assert!((uncovered.0 - before.0).abs() <= 1.0 && (uncovered.1 - before.1).abs() <= 1.0,
         "dismissing Ask preserves the covered Shelf position and visit intent");
-    crate::shell::tests::wheel(rig.cx, at, point(px(0.0), px(-120.0)));
+    crate::shell::tests::wheel(&mut rig.cx, at, point(px(0.0), px(-120.0)));
     rig.settle();
     assert!(offset(&mut rig) < uncovered.0 - 20.0,
         "the same native wheel point scrolls the Shelf once the veil retires");

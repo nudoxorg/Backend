@@ -373,7 +373,8 @@ fn an_owner_that_could_not_start_is_named_on_the_first_screen_and_try_again_star
     let gate = OwnerGate::starting();
     let (_graph, shell) = window_before_its_owner(cx, &gate);
     let window = cx.windows().into_iter().next().expect("window");
-    let cx = VisualTestContext::from_window(window, cx).into_mut();
+    let mut owned_cx = VisualTestContext::from_window(window, cx);
+    let cx = &mut owned_cx;
     cx.update(|window, cx| {
         cx.set_global(gpui::TextTrace);
         window.set_a11y_forced(true);
@@ -427,7 +428,8 @@ fn a_same_authority_retained_library_cannot_hide_a_fresh_owner_failure(cx: &mut 
     let gate = OwnerGate::starting();
     let (graph, _shell) = window_before_its_owner(cx, &gate);
     let window = cx.windows().into_iter().next().expect("window");
-    let cx = VisualTestContext::from_window(window, cx).into_mut();
+    let mut owned_cx = VisualTestContext::from_window(window, cx);
+    let cx = &mut owned_cx;
     cx.update(|window, cx| {
         cx.set_global(gpui::TextTrace);
         window.set_a11y_forced(true);
@@ -512,7 +514,8 @@ fn an_owner_that_could_not_start_is_said_in_the_foot_with_try_again_wherever_the
     let gate = OwnerGate::starting();
     let (_graph, _shell) = window_before_its_owner(cx, &gate);
     let window = cx.windows().into_iter().next().expect("window");
-    let cx = VisualTestContext::from_window(window, cx).into_mut();
+    let mut owned_cx = VisualTestContext::from_window(window, cx);
+    let cx = &mut owned_cx;
     draw(cx);
     // No page painted from a launch snapshot: the foot says it all the same (R7).
     gate.publish(OwnerState::Failed("could not own /tmp/demo".into()));
@@ -530,7 +533,8 @@ fn the_foot_offers_try_again_beside_a_notice_that_the_index_could_not_start(cx: 
     let gate = OwnerGate::starting();
     let (graph, _shell) = window_before_its_owner(cx, &gate);
     let window = cx.windows().into_iter().next().expect("window");
-    let cx = VisualTestContext::from_window(window, cx).into_mut();
+    let mut owned_cx = VisualTestContext::from_window(window, cx);
+    let cx = &mut owned_cx;
     draw(cx);
     gate.publish(OwnerState::Failed("the lock is held".into()));
     draw(cx);

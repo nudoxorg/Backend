@@ -32,7 +32,7 @@ impl crate::runtime::actor::EngineClient for StableRoot {
 }
 
 fn captured_back(rig: &mut Rig) -> super::focus::Act {
-    rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_action("jump-back", cx))
+    rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_target_action("jump-back", cx))
         .expect("painted native Back action")
 }
 
@@ -48,7 +48,7 @@ fn press_passively_renewed_back(rig: &mut Rig, former_renders: u64, former_frame
         assert!(tree.nodes.iter().any(|(_, node)| node.label() == Some("Back")
             && node.supports_action(gpui::AccessibleAction::Click)), "the committed Back control has native activation");
     });
-    let bounds = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("jump-back", cx))
+    let bounds = rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_target_bounds("jump-back", cx))
         .expect("freshly painted Back bounds");
     rig.cx.simulate_click(bounds.center(), Modifiers::default());
     rig.settle();
@@ -68,7 +68,7 @@ fn world_header_renews_after_authority_changes_without_chrome_resources(cx: &mut
         ReadPool::start(2, |_| super::tests::Fixture).expect("controlled page pool"), StableRoot);
     rig.cx.update(|window, _| window.set_a11y_forced(true));
     rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
-    let former_root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let former_root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     // Make the next OwnerReady a pure authority movement; settings must not
     // accidentally renew the header through its existing Settings watch.
     rig.go(Intent::OwnerReady { key: former_root, mode: ServiceMode::Attached });
@@ -82,7 +82,7 @@ fn world_header_renews_after_authority_changes_without_chrome_resources(cx: &mut
         move |_, event: &StoreEvent, _| observed.borrow_mut().push(event.clone())));
     let next = former_root.with_generation(former_root.generation().saturating_add(1));
     rig.cx.update(|_, cx| super::bodies::graph::install_test_fixture(next, cx));
-    rig.graph.root.update(rig.cx, |root, cx| root.dispatch(Intent::OwnerReady { key: next, mode: ServiceMode::Attached }, cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.dispatch(Intent::OwnerReady { key: next, mode: ServiceMode::Attached }, cx));
     rig.cx.update(|window, cx| retired(window, cx));
     assert_eq!(rig.route(), Route::World, "a previously painted action cannot borrow the new root");
     rig.cx.run_until_parked();
@@ -111,16 +111,16 @@ fn world_header_renews_after_coalesced_same_root_owner_replacement(cx: &mut Test
         ReadPool::start(2, |_| super::tests::Fixture).expect("controlled page pool"), StableRoot, Some(gate.clone()));
     rig.cx.update(|window, _| window.set_a11y_forced(true));
     rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key()), root);
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key()), root);
     let retired = captured_back(&mut rig);
-    let former = rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_attachment())
+    let former = rig.graph.store.read_with(&rig.cx, |store, _| store.current_owner_attachment())
         .expect("first serving attachment");
-    let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let before = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
     assert_eq!(before.settings().confirmed_service_mode, Some(ServiceMode::Attached),
         "the documented pre-ready gate must have admitted its initial answer before this replacement");
     assert_eq!(before.settings().connection, crate::model::ConnectionStatus::Connected);
-    let before_focus = rig.graph.store.read_with(rig.cx, |store, _| store.graph_focus().cloned());
-    let before_notice = rig.graph.store.read_with(rig.cx, |store, _| store.notice().cloned());
+    let before_focus = rig.graph.store.read_with(&rig.cx, |store, _| store.graph_focus().cloned());
+    let before_notice = rig.graph.store.read_with(&rig.cx, |store, _| store.notice().cloned());
     let renders = rig.counts().titlebar;
     let frame = rig.cx.update(|window, _| window.a11y_frame_number());
     let events = Rc::new(RefCell::new(Vec::new()));
@@ -134,19 +134,19 @@ fn world_header_renews_after_coalesced_same_root_owner_replacement(cx: &mut Test
     rig.cx.update(|window, cx| retired(window, cx));
     assert_eq!(rig.route(), Route::World, "the retired native action cannot use a replacement owner");
     rig.cx.run_until_parked();
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key()), root);
-    assert!(!rig.graph.store.read_with(rig.cx, |store, _| store.admits_owner_attachment(&former)));
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key()), root);
+    assert!(!rig.graph.store.read_with(&rig.cx, |store, _| store.admits_owner_attachment(&former)));
     assert!(events.borrow().iter().any(|event| event.is_branch(Branch::Owner)));
     assert!(!events.borrow().iter().any(|event| [Branch::Root, Branch::Route, Branch::Overlay,
         Branch::Settings, Branch::GraphFocus].iter().any(|branch| event.is_branch(*branch))),
         "the owner branch alone renews World chrome with no incidental branch wake: events={:?}; settings {:?} -> {:?}; focus {:?} -> {:?}; notice {:?} -> {:?}",
-        events.borrow(), before.settings(), rig.graph.store.read_with(rig.cx, |store, _| store.snapshot()).settings(),
-        before_focus, rig.graph.store.read_with(rig.cx, |store, _| store.graph_focus().cloned()),
-        before_notice, rig.graph.store.read_with(rig.cx, |store, _| store.notice().cloned()));
-    let submitted = rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted);
-    rig.graph.store.update(rig.cx, |store, cx| store.owner_ready(cx));
+        events.borrow(), before.settings(), rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot()).settings(),
+        before_focus, rig.graph.store.read_with(&rig.cx, |store, _| store.graph_focus().cloned()),
+        before_notice, rig.graph.store.read_with(&rig.cx, |store, _| store.notice().cloned()));
+    let submitted = rig.graph.store.read_with(&rig.cx, |store, _| store.stats().submitted);
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_ready(cx));
     rig.cx.run_until_parked();
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted), submitted,
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.stats().submitted), submitted,
         "an unchanged owner does not submit extra reads");
     press_passively_renewed_back(&mut rig, renders, frame);
 }
@@ -156,7 +156,7 @@ fn world_header_renews_after_coalesced_same_root_owner_replacement(cx: &mut Test
 fn passive_retry_bounds(rig: &mut Rig, gate: &crate::runtime::owner::OwnerGate, enabled: bool) -> gpui::Bounds<gpui::Pixels> {
     let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("committed Retry tree");
     let tree: serde_json::Value = serde_json::from_str(&json).expect("native Retry JSON");
-    let name = rig.graph.store.read_with(rig.cx, |store, _| {
+    let name = rig.graph.store.read_with(&rig.cx, |store, _| {
         let key = store.notice().and_then(|notice| notice.retry.as_ref()).expect("represented passive recovery page");
         super::status::retry_activation_name(store.capture_page_retry(key).as_ref())
     });
@@ -166,7 +166,7 @@ fn passive_retry_bounds(rig: &mut Rig, gate: &crate::runtime::owner::OwnerGate, 
             && node["aria"]["role"].as_str() == Some("Button")
             && node["aria"]["label"].as_str() == Some("Try again")
     ).expect(&format!("mounted status Retry control requested_enabled={enabled}; owner={:?}; notice={:?}; committed_tree={json}",
-        gate.state(), rig.graph.store.read_with(rig.cx, |store, _| store.notice().cloned())));
+        gate.state(), rig.graph.store.read_with(&rig.cx, |store, _| store.notice().cloned())));
     let clickable = node["aria"]["on_action"].as_array().is_some_and(|actions|
         actions.iter().any(|action| action.as_str() == Some("Click")));
     assert_eq!(clickable, enabled, "Retry activation follows the exact owner capability");
@@ -201,11 +201,11 @@ fn world_header_recovers_after_native_retry_with_exact_same_root_proof(cx: &mut 
         ReadPool::start(2, |_| super::tests::Fixture).expect("controlled page pool"), StableRoot, Some(gate.clone()), root);
     rig.cx.update(|window, _| window.set_a11y_forced(true));
     rig.go(Intent::SetMotion(crate::model::MotionPreference::Reduced));
-    let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let before = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
     let retired_back = captured_back(&mut rig);
     gate.publish(OwnerState::Failed("same owner failure".into()));
     rig.cx.run_until_parked();
-    let old_retry = rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_retry())
+    let old_retry = rig.graph.store.read_with(&rig.cx, |store, _| store.current_owner_retry())
         .expect("first failure capability");
     let old_bounds = passive_retry_bounds(&mut rig, &gate, true);
     let renders = rig.counts().titlebar;
@@ -223,8 +223,8 @@ fn world_header_recovers_after_native_retry_with_exact_same_root_proof(cx: &mut 
         "only exact Retry-capability movement wakes the mounted controls");
     assert!(rig.counts().titlebar > renders);
     assert!(rig.cx.update(|window, _| window.a11y_frame_number()) > frame);
-    assert_ne!(rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_retry()), Some(old_retry.clone()));
-    assert!(!rig.graph.store.update(rig.cx, |store, cx| store.retry_owner_at(&old_retry, PageKey::Orbit, cx)),
+    assert_ne!(rig.graph.store.read_with(&rig.cx, |store, _| store.current_owner_retry()), Some(old_retry.clone()));
+    assert!(!rig.graph.store.update(&mut rig.cx, |store, cx| store.retry_owner_at(&old_retry, PageKey::Orbit, cx)),
         "a retired failure callback cannot consume the replacement failure");
     let retry = passive_retry_bounds(&mut rig, &gate, true);
     rig.cx.simulate_mouse_up(retry.center(), MouseButton::Left, Modifiers::default());
@@ -233,7 +233,7 @@ fn world_header_recovers_after_native_retry_with_exact_same_root_proof(cx: &mut 
     rig.cx.simulate_click(retry.center(), Modifiers::default());
     rig.cx.run_until_parked();
     assert!(matches!(gate.state(), OwnerState::Starting), "fresh native Retry consumes the current failure");
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_retry()).is_none());
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.current_owner_retry()).is_none());
     passive_retry_bounds(&mut rig, &gate, false);
     let recovering_renders = rig.counts().titlebar;
     let recovering_frame = rig.cx.update(|window, _| window.a11y_frame_number());
@@ -241,8 +241,8 @@ fn world_header_recovers_after_native_retry_with_exact_same_root_proof(cx: &mut 
     let replacement = gate.ready_epoch().expect("new responding owner");
     assert_eq!(gate.publish_view(replacement, Arc::clone(&view), cursor), PublicationAdmission::Admitted);
     rig.cx.run_until_parked();
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.owner_serving()), "exact publication admits recovery");
-    rig.graph.store.read_with(rig.cx, |store, _| {
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.owner_serving()), "exact publication admits recovery");
+    rig.graph.store.read_with(&rig.cx, |store, _| {
         assert_eq!(store.snapshot().key(), root);
         assert_eq!(store.snapshot().route(), before.route());
         assert_eq!(store.snapshot().session().back, before.session().back);
@@ -254,7 +254,7 @@ fn world_header_recovers_after_native_retry_with_exact_same_root_proof(cx: &mut 
 
 /// A shell on `name`'s page, recording what it paints.
 fn open(cx: &mut TestAppContext, name: &str) -> Rig {
-    let rig = rig(cx, Some(page_route(name)), 1440.0, 900.0);
+    let mut rig = rig(cx, Some(page_route(name)), 1440.0, 900.0);
     rig.cx.update(|_, cx| facet::probe::enable(cx));
     rig
 }
@@ -314,7 +314,7 @@ fn a_retired_held_back_press_cannot_open_the_next_routes_history(cx: &mut TestAp
     use gpui::AppContext as _;
     let mut rig = open(cx, "RelationLabel");
     rig.go(Intent::Navigate(page_route("KindGlyph")));
-    let bounds = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("jump-back", cx))
+    let bounds = rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_target_bounds("jump-back", cx))
         .expect("painted Back control");
     rig.cx.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
     // Start the real pending timer without advancing its deadline.
@@ -335,7 +335,7 @@ fn header_native_tab_opens_add_packages_ask_and_breadcrumbs(cx: &mut TestAppCont
     use gpui_component::WindowExt as _;
     use crate::navigation::{BrowseRoute, Overlay};
     fn tab_to(rig: &mut Rig, id: &str) {
-        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_targets(cx));
+        let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_targets(cx));
         rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx|
             shell.take_zone(super::focus::Zone::Titlebar, window, cx)));
         let count = targets.list_probe().upgrade().expect("mounted target list").borrow().len();
@@ -353,7 +353,7 @@ fn header_native_tab_opens_add_packages_ask_and_breadcrumbs(cx: &mut TestAppCont
     assert_eq!(rig.route(), page_route("RelationLabel"));
     tab_to(&mut rig, "here");
     rig.native_press("enter");
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay()), Some(Overlay::CommandPalette));
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay()), Some(Overlay::CommandPalette));
     assert!(rig.cx.update(|window, cx| window.has_focused_input(cx)), "native Ask transfers typing to the mounted query");
     rig.keys("escape");
     tab_to(&mut rig, "jump-seg-1");
@@ -361,10 +361,10 @@ fn header_native_tab_opens_add_packages_ask_and_breadcrumbs(cx: &mut TestAppCont
     assert!(is_open(&mut rig, "jump-siblings-1"), "the admitted breadcrumb opens its actual siblings menu on release");
     assert_eq!(rig.route(), page_route("RelationLabel"), "listing siblings does not navigate early");
     rig.keys("escape");
-    let shelf = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().shelf_open);
+    let shelf = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().settings().shelf_open);
     tab_to(&mut rig, "tb-shelf");
     rig.native_press("enter");
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().shelf_open), !shelf, "native shelf control retains its actual toggle semantics");
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().settings().shelf_open), !shelf, "native shelf control retains its actual toggle semantics");
 }
 
 #[gpui::test]
@@ -372,11 +372,11 @@ fn a_module_segment_opens_its_siblings_from_the_outline(cx: &mut TestAppContext)
     let mut rig = open(cx, "RelationLabel");
     click(&mut rig, "jump-seg-1", MouseButton::Left);
     assert!(is_open(&mut rig, "jump-siblings-1"), "glyph's menu");
-    let names: Vec<String> = rig.graph.store.read_with(rig.cx, |store, _| {
+    let names: Vec<String> = rig.graph.store.read_with(&rig.cx, |store, _| {
         super::jump::siblings(&page_route("RelationLabel"), 1, store).real.into_iter().map(|s| s.name.to_string()).collect()
     });
     assert_eq!(names, ["identity", "glyph", "outline"], "the modules beside glyph");
-    let members: Vec<String> = rig.graph.store.read_with(rig.cx, |store, _| {
+    let members: Vec<String> = rig.graph.store.read_with(&rig.cx, |store, _| {
         super::jump::siblings(&page_route("RelationLabel"), 2, store).real.into_iter().map(|s| s.name.to_string()).collect()
     });
     assert_eq!(members, ["RelationLabel", "RelationDirection", "KindGlyph", "relation_label"], "what glyph holds");
@@ -387,7 +387,7 @@ fn a_module_segment_opens_its_siblings_from_the_outline(cx: &mut TestAppContext)
 #[gpui::test]
 fn test_only_modules_fold_into_one_trailing_tests_row(cx: &mut TestAppContext) {
     let mut rig = open(cx, "RelationLabel");
-    let tests: Vec<String> = rig.graph.store.read_with(rig.cx, |store, _| {
+    let tests: Vec<String> = rig.graph.store.read_with(&rig.cx, |store, _| {
         super::jump::siblings(&page_route("RelationLabel"), 1, store).tests.into_iter().map(|s| s.name.to_string()).collect()
     });
     assert_eq!(tests, ["glyph_tests"], "the test module, apart");
@@ -484,7 +484,7 @@ fn coalesced_same_route_reading_retires_old_header_input_and_renews_native_back(
     rig.go(Intent::Navigate(Route::World));
     rig.cx.update(|window, _| window.set_a11y_forced(true));
     rig.repaint();
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_targets(cx));
     rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx| shell.take_zone(Zone::Titlebar, window, cx)));
     for _ in 0..=targets.native_keys().len() {
         if rig.cx.update(|window, _| targets.native_focused(window).as_deref() == Some("jump-back")) { break; }
@@ -492,11 +492,11 @@ fn coalesced_same_route_reading_retires_old_header_input_and_renews_native_back(
     }
     assert!(rig.cx.update(|window, _| targets.native_focused(window).as_deref() == Some("jump-back")), "native header Tab reaches Back");
     let retired = captured_back(&mut rig);
-    let bounds = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("jump-back", cx)).expect("old native Back bounds");
+    let bounds = rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_target_bounds("jump-back", cx)).expect("old native Back bounds");
     let native = rig.cx.update(|window, _| window.a11y_tree().expect("committed native tree").nodes.iter()
         .find(|(_, node)| node.role() == gpui::Role::Button && node.label() == Some("Back"))
         .map(|(id, _)| *id).expect("actual Back node"));
-    let original = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let original = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
     let renders = rig.counts().titlebar;
     let frame = rig.cx.update(|window, _| window.a11y_frame_number());
     rig.cx.update(|window, cx| {

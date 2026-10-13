@@ -26,18 +26,18 @@ impl PageReader for CalledBySource {
 }
 
 fn draft(rig: &mut crate::shell::tests::Rig) -> String {
-    rig.graph.store.read_with(rig.cx, |store, _| {
+    rig.graph.store.read_with(&rig.cx, |store, _| {
         store.snapshot().session().reading.current.presentation.controls()
             .source_line_draft.as_str().to_owned()
     })
 }
 
 fn visit(rig: &mut crate::shell::tests::Rig) -> crate::navigation::presentation::VisitId {
-    rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id)
+    rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.id)
 }
 
 fn focus_line_input(rig: &mut crate::shell::tests::Rig) -> gpui::Entity<gpui_component::input::InputState> {
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     targets.focus("source-jump-field");
     rig.cx.update(|window, cx| {
         assert!(targets.focus_native("source-jump-field", window, cx), "mounted line editor");
@@ -84,7 +84,7 @@ fn native_tab_edits_code_line_immediately_and_history_restores_its_draft(
     let pool = ReadPool::start(2, |_| CalledBySource).expect("source read pool");
     let mut rig = rig_with_reads(cx, Some(code.clone()), 1440.0, 900.0, pool);
     let original = visit(&mut rig);
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     assert!(targets.native_keys().iter().any(|id| id == "source-jump-field"),
         "the line target must register its actual editor handle");
     rig.cx.update(|window, cx| {
@@ -119,7 +119,7 @@ fn native_tab_edits_code_line_immediately_and_history_restores_its_draft(
     assert_eq!(rig.route(), code);
     assert_eq!(visit(&mut rig), original);
     assert_eq!(draft(&mut rig), "17");
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     rig.cx.update(|window, cx| assert!(targets.focus_native("source-jump-field", window, cx)));
     rig.keys("enter");
     assert!(rig.said().iter().any(|line| line.contains("Lines 17")),
@@ -155,11 +155,11 @@ fn owner_loss_keeps_the_mounted_line_draft_but_denies_source_jump(cx: &mut TestA
     assert!(native_bounds_id(&mut rig, "source-page-top-next", "Button", "Next lines", true).is_some(),
         "positive paging precondition on the current actual source page");
     let _input = focus_line_input(&mut rig);
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
-    rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_failed(
         &crate::runtime::owner::OwnerFault::Lost("source owner unavailable".into()), cx,
     ));
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_attachment().is_none()),
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.current_owner_attachment().is_none()),
         "the source producer lease is genuinely revoked");
     // The producer receipt is revoked now, before the unavailable frame
     // updates the currently mounted editor's separate resource controls.
@@ -173,7 +173,7 @@ fn owner_loss_keeps_the_mounted_line_draft_but_denies_source_jump(cx: &mut TestA
     let current = focus_line_input(&mut rig);
     rig.cx.simulate_input("8");
     rig.settle();
-    assert_eq!(current.read_with(rig.cx, |input, _| input.value().to_string()), "178",
+    assert_eq!(current.read_with(&rig.cx, |input, _| input.value().to_string()), "178",
         "typing remains native after the unavailable source frame actually paints");
     assert_eq!(draft(&mut rig), "178");
     let before = rig.said();
@@ -194,7 +194,7 @@ fn owner_loss_keeps_the_mounted_line_draft_but_denies_source_jump(cx: &mut TestA
     rig.settle();
     assert_ne!(rig.said(), before, "native paging changes the retained visible byte range");
     assert_eq!(draft(&mut rig), "1789", "local paging does not submit or rewrite the line draft");
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.current_owner_attachment().is_none()));
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.current_owner_attachment().is_none()));
     rig.go(Intent::Back);
     rig.go(Intent::Forward);
     assert_eq!(rig.route(), code);
@@ -212,19 +212,19 @@ fn latent_editor_change_under_a_settings_page_cannot_rewrite_code_visit(cx: &mut
     rig.settle();
     assert_eq!(draft(&mut rig), "17");
 
-    let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
-    let links = reader.read_with(rig.cx, |reader, _| reader.navigation_links());
+    let reader = rig.shell.read_with(&rig.cx, |shell, _| shell.reader_entity());
+    let links = reader.read_with(&rig.cx, |reader, _| reader.navigation_links());
     rig.cx.update(|_, cx| links.dispatch(
         Intent::OpenSettings(crate::navigation::SettingsPage::Help), cx,
     ));
     rig.cx.run_until_parked();
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().page_overlay().is_some()),
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().page_overlay().is_some()),
         "the local page owns input before the old editor can report a change");
     // replace_all emits InputEvent::Change, unlike set_value; the old Pager
     // subscription remains alive until its prior painted body is retired.
     rig.cx.update(|window, cx| input.update(cx, |input, cx| input.replace_all("99", window, cx)));
     rig.cx.run_until_parked();
-    assert_eq!(input.read_with(rig.cx, |input, _| input.value().to_string()), "99", "positive latent Change source");
+    assert_eq!(input.read_with(&rig.cx, |input, _| input.value().to_string()), "99", "positive latent Change source");
     assert_eq!(draft(&mut rig), "17", "a covered Code page cannot accept latent editor text");
     rig.go(Intent::DismissOverlay);
     assert_eq!(rig.route(), code);
@@ -242,7 +242,7 @@ fn settings_returns_to_the_native_line_editor_even_without_a_logical_selection(
     let _input = focus_line_input(&mut rig);
     rig.keys("1 7");
     assert_eq!(draft(&mut rig), "17");
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     targets.clear_focus();
     assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(),
         Some("source-jump-field"), "native focus, rather than Recall, owns this return");
@@ -257,7 +257,7 @@ fn settings_returns_to_the_native_line_editor_even_without_a_logical_selection(
     let current_input = rig.cx.update(|window, cx| window.focused_input(cx)
         .and_then(|input| input.as_input().cloned()).expect("actual returned input engine"));
     rig.keys("8");
-    assert_eq!(current_input.read_with(rig.cx, |input, _| input.value().to_string()), "178");
+    assert_eq!(current_input.read_with(&rig.cx, |input, _| input.value().to_string()), "178");
     assert_eq!(draft(&mut rig), "178");
     rig.keys("enter");
     assert!(rig.said().iter().any(|line| line.contains("Lines 178")),
@@ -271,11 +271,11 @@ fn settings_native_return_cannot_steal_focus_after_a_later_explicit_blur(cx: &mu
     let mut rig = rig_with_reads(cx, Some(code.clone()), 900.0, 700.0, pool);
     let _input = focus_line_input(&mut rig);
     rig.keys("secondary-,");
-    let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
-    let links = reader.read_with(rig.cx, |reader, _| reader.navigation_links());
+    let reader = rig.shell.read_with(&rig.cx, |shell, _| shell.reader_entity());
+    let links = reader.read_with(&rig.cx, |reader, _| reader.navigation_links());
     rig.cx.update(|_, cx| links.dispatch(Intent::DismissOverlay, cx));
     assert_eq!(rig.route(), code);
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay().is_none()));
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay().is_none()));
     rig.cx.update(|window, _| window.blur());
     rig.settle();
     assert!(rig.cx.update(|window, cx| window.focused(cx).is_none()),

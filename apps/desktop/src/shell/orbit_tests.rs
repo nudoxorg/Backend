@@ -40,12 +40,12 @@ fn check_two_project_tiles_offer_exact_tree_routes_and_back_returns_to_library(
         Ok(project)
     }).collect::<Result<Vec<_>, crate::core::IdentityError>>()?;
     let chosen = projects[1].id.clone();
-    let snapshot = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let snapshot = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
     let mut workspace = snapshot.workspace().clone();
     workspace.projects = projects.into();
     workspace.active = Some(chosen.clone());
     workspace.host = Some(chosen.clone());
-    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(snapshot.with_workspace(workspace)), cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.admit_snapshot(Arc::new(snapshot.with_workspace(workspace)), cx));
     rig.repaint();
     let ledger = rig.cx.update(|_, cx| facet::probe::take(cx));
     let targets: Vec<_> = ledger.targets.iter().filter(|target| target.key.starts_with("orbit-tree-")).collect();
@@ -153,7 +153,7 @@ fn the_ring_grows_as_packages_arrive_and_no_name_is_ever_painted_over_another(cx
         }
         let names: Vec<&str> = packages.lock().expect("the list").clone();
         let _ = rig.cx.update(|_, cx| facet::probe::take(cx));
-        rig.graph.store.update(rig.cx, |store, cx| store.retry(PageKey::Orbit, cx));
+        rig.graph.store.update(&mut rig.cx, |store, cx| store.retry(PageKey::Orbit, cx));
         let mut last: Option<Vec<(String, f32, bool)>> = None;
         for frame in 0..40 {
             rig.frame(16);
@@ -224,7 +224,7 @@ fn the_ring_stands_still_while_the_library_leaves_and_when_it_comes_back(cx: &mu
             flying.extend(ledger.tracks.iter().filter(|track| track.key.starts_with("orbit-ring.") && track.live).map(|track| format!("{what} frame {frame}: {} at {:.1} toward {:.1}", track.key, track.value, track.target)));
         }
     };
-    rig.graph.root.update(rig.cx, |root, cx| root.queue(crate::navigation::Intent::Navigate(super::tests::page_route("RelationLabel")), cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(crate::navigation::Intent::Navigate(super::tests::page_route("RelationLabel")), cx));
     watch(&mut rig, "leaving");
     // While the Library is away, the window narrows: the ring it comes back
     // to wraps otherwise than the one it left.

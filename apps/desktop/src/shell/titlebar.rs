@@ -1038,7 +1038,7 @@ mod auxiliary_subject_tests {
         rig.settle();
     }
     fn overlay(rig: &mut Rig) -> Option<Overlay> {
-        rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().overlay())
+        rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().overlay())
     }
     fn assert_auxiliary_capsule(rig: &mut Rig, label: &str) {
         let ledger = painted(rig);
@@ -1122,13 +1122,13 @@ mod auxiliary_subject_tests {
     fn native_back_closes_settings_without_consuming_content_history_and_keeps_keyboard_alive(cx: &mut TestAppContext) {
         let mut rig = rig(cx, Some(page_route("RelationLabel")), 1440.0, 900.0);
         native(&mut rig);
-        let history = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().back.clone());
+        let history = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().back.clone());
         let route = rig.route();
         rig.keys("secondary-,");
         click_target(&mut rig, "jump-back", false);
         assert_eq!(overlay(&mut rig), None);
         assert_eq!(rig.route(), route);
-        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().back.clone()), history,
+        assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().back.clone()), history,
             "closing Settings cannot consume content history");
         rig.keys("secondary-k");
         assert_eq!(overlay(&mut rig), Some(Overlay::CommandPalette));

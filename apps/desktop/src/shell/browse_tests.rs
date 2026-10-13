@@ -301,7 +301,7 @@ fn the_library_page_shows_a_real_tree_read_by_a_real_owner(cx: &mut TestAppConte
         bincode > formats,
         "bincode is listed under speaks formats: {said:#?}"
     );
-    let address = rig.shell.read_with(rig.cx, |_, cx| {
+    let address = rig.shell.read_with(&rig.cx, |_, cx| {
         let snapshot = rig.graph.store.read(cx).snapshot().clone();
         crate::shell::jump::address_parts(&snapshot).full()
     });
@@ -398,7 +398,7 @@ fn real_lockfile_display_only_tree_paints_without_minting_source_or_readme_contr
         facet::probe::enable(cx);
     });
     rig.go(crate::navigation::Intent::Navigate(route.clone()));
-    let model = rig.graph.store.read_with(rig.cx, |store, _| {
+    let model = rig.graph.store.read_with(&rig.cx, |store, _| {
         let plan = crate::runtime::store::RouteDependencies::new(&route, None);
         plan.current_tree(store)
             .expect("real display-only Tree is a current readable page")
@@ -488,7 +488,7 @@ fn find_fixture(query: &str, includes_answer: bool) -> BrowseValue {
 }
 
 fn find_callback(rig: &mut crate::shell::tests::Rig, route: &BrowseRoute) -> super::FindActionSource {
-    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     super::FindActionSource {
         links: crate::shell::region::Links {
             root: rig.graph.root.downgrade(), store: rig.graph.store.clone(), shell: rig.shell.downgrade(), reader: Default::default(),
@@ -508,33 +508,33 @@ fn retained_find_retry_callback_never_revives_on_an_identical_later_fault_or_sam
     rig.go(crate::navigation::Intent::SetMotion(crate::model::MotionPreference::Reduced));
     let key = crate::model::pages::PageKey::Browse(BrowseKey::from(&browse));
     let source = find_callback(&mut rig, &browse);
-    let first = rig.graph.store.read_with(rig.cx, |store, _| store.capture_page_retry(&key).expect("first fault receipt"));
+    let first = rig.graph.store.read_with(&rig.cx, |store, _| store.capture_page_retry(&key).expect("first fault receipt"));
     let callback = super::find_retry_action(source.clone(), Some(first.clone()));
-    rig.graph.store.update(rig.cx, |store, cx| store.retry(key.clone(), cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.retry(key.clone(), cx));
     rig.settle();
     assert!(rig.cx.update(|_, cx| source.failed_retry(cx).is_ok()), "the route and identical fault alone would revive the old callback");
-    let next = rig.graph.store.read_with(rig.cx, |store, _| store.capture_page_retry(&key).expect("next identical fault receipt"));
+    let next = rig.graph.store.read_with(&rig.cx, |store, _| store.capture_page_retry(&key).expect("next identical fault receipt"));
     assert_ne!(first, next, "a later fault on the same query carries a different page stamp");
-    let submitted = rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted);
+    let submitted = rig.graph.store.read_with(&rig.cx, |store, _| store.stats().submitted);
     rig.cx.update(|window, cx| callback(window, cx));
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted), submitted);
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.stats().submitted), submitted);
     let current = super::find_retry_action(source, Some(next));
     rig.cx.update(|window, cx| current(window, cx));
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted), submitted + 1, "fresh exact callback retries without Back");
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.stats().submitted), submitted + 1, "fresh exact callback retries without Back");
     rig.settle();
     let source = find_callback(&mut rig, &browse);
-    let receipt = rig.graph.store.read_with(rig.cx, |store, _| store.capture_page_retry(&key).expect("current fault"));
+    let receipt = rig.graph.store.read_with(&rig.cx, |store, _| store.capture_page_retry(&key).expect("current fault"));
     let before_return = super::find_retry_action(source, Some(receipt));
     rig.go(crate::navigation::Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
     rig.go(crate::navigation::Intent::Navigate(route.clone()));
-    let submitted = rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted);
+    let submitted = rig.graph.store.read_with(&rig.cx, |store, _| store.stats().submitted);
     rig.cx.update(|window, cx| before_return(window, cx));
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted), submitted, "equal query text cannot adopt a later reading visit");
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.stats().submitted), submitted, "equal query text cannot adopt a later reading visit");
     assert_eq!(rig.route(), route);
 }
 
 fn land_find(rig: &mut crate::shell::tests::Rig, route: &BrowseRoute, query: &str, includes_answer: bool) {
-    rig.graph.store.update(rig.cx, |store, cx| store.test_land_browse(BrowseKey::from(route), find_fixture(query, includes_answer), cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.test_land_browse(BrowseKey::from(route), find_fixture(query, includes_answer), cx));
 }
 
 fn land_find_offer(rig: &mut crate::shell::tests::Rig, route: &BrowseRoute, release: &str, library: Option<&str>, addable: bool) {
@@ -552,7 +552,7 @@ fn land_find_offer(rig: &mut crate::shell::tests::Rig, route: &BrowseRoute, rele
         }),
     });
     find.prepared = Arc::new(prepared);
-    rig.graph.store.update(rig.cx, |store, cx| store.test_land_browse(BrowseKey::from(route), BrowseValue::Find(Arc::new(find)), cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.test_land_browse(BrowseKey::from(route), BrowseValue::Find(Arc::new(find)), cx));
 }
 
 #[gpui::test]
@@ -609,8 +609,8 @@ fn find_acquisition_rechecks_current_offer_visit_and_owner_before_dispatch(cx: &
     rig.cx.update(|window, cx| (current.add)(release.clone(), window, cx));
     assert_eq!(calls.borrow().len(), 1, "fresh returned offer dispatches");
     calls.borrow_mut().clear();
-    rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
-    rig.graph.store.update(rig.cx, |store, cx| store.owner_ready(cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_starting(cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_ready(cx));
     land_find_offer(&mut rig, &browse, &release, Some(&package), true);
     rig.cx.update(|window, cx| (current.add)(release.clone(), window, cx));
     rig.cx.update(|window, cx| (current.open)(package.clone(), window, cx));
@@ -650,8 +650,8 @@ fn a_current_owned_addition_opens_before_find_catches_up_but_never_borrows_an_ol
         assert_eq!(&*opened.borrow(), &[SharedString::from(package.as_str().to_owned())], "own completed stage opens while the current Find offer still has library=None");
         opened.borrow_mut().clear();
     }
-    rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
-    rig.graph.store.update(rig.cx, |store, cx| store.owner_ready(cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_starting(cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_ready(cx));
     owner.set(Some(next));
     land_find_offer(&mut rig, &browse, &release.purl(), None, true);
     let current = super::find_acquire_actions(&find_callback(&mut rig, &browse), raw());
@@ -705,7 +705,7 @@ fn find_opens_an_observed_package_root_result_as_its_package(cx: &mut TestAppCon
     let value = BrowseValue::Find(Arc::new(FindModel {
         answers, packages: Arc::from([]), package_coverage, prepared,
     }));
-    rig.graph.store.update(rig.cx, |store, cx| store.test_land_browse(BrowseKey::from(&browse), value, cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.test_land_browse(BrowseKey::from(&browse), value, cx));
     let source = find_callback(&mut rig, &browse);
     let open = super::find_symbol_action(source, false);
     rig.cx.update(|window, cx| open(root.into(), window, cx));
@@ -750,15 +750,15 @@ fn find_source_callback_rechecks_membership_query_overlay_owner_and_root(cx: &mu
     land_find(&mut rig, &browse, "RelationLabel", true);
     let source = find_callback(&mut rig, &browse);
     assert!(rig.cx.update(|_, cx| source.current(cx, |_| Some(())).is_ok()), "fresh returned callback");
-    rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_starting(cx));
     invoke(&mut rig, &source, &current);
-    rig.graph.store.update(rig.cx, |store, cx| store.owner_ready(cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_ready(cx));
     land_find(&mut rig, &browse, "RelationLabel", true);
     let source = find_callback(&mut rig, &browse);
     assert!(rig.cx.update(|_, cx| source.current(cx, |_| Some(())).is_ok()), "fresh owner callback");
-    let original = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let original = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
     let newer = VersionedRoot::synthetic(backend_library::view_state_root(&[("find".into(), "new root".into())]), 9);
-    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(original.with_key(newer, None)), cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.admit_snapshot(Arc::new(original.with_key(newer, None)), cx));
     invoke(&mut rig, &source, &current);
 }
 
@@ -783,8 +783,8 @@ fn find_callback_never_revives_on_a_new_same_route_visit_or_owner_attachment(cx:
     let old_attachment = find_callback(&mut rig, &browse);
     let old_attachment_open = super::find_symbol_action(old_attachment.clone(), false);
     assert!(rig.cx.update(|_, cx| old_attachment.current(cx, |_| Some(())).is_ok()));
-    rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
-    rig.graph.store.update(rig.cx, |store, cx| store.owner_ready(cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_starting(cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_ready(cx));
     land_find(&mut rig, &browse, "RelationLabel", true);
     assert!(rig.cx.update(|_, cx| old_attachment.current(cx, |_| Some(())).is_err()),
         "same route/root/content under a new owner attachment revived its old row");
@@ -827,17 +827,17 @@ fn stale_first_find_focus_claim_is_denied_before_focus(cx: &mut TestAppContext) 
             }
             "key" => rig.cx.simulate_keystrokes("left"),
             "attachment" => {
-                rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
+                rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_starting(cx));
                 rig.cx.run_until_parked();
-                rig.graph.store.update(rig.cx, |store, cx| store.owner_ready(cx));
+                rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_ready(cx));
                 rig.cx.run_until_parked();
             }
             "root" => {
-                let original = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+                let original = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
                 let next = VersionedRoot::synthetic(
                     backend_library::view_state_root(&[("find".into(), "new claim root".into())]), 9,
                 );
-                rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(original.with_key(next, None)), cx));
+                rig.graph.store.update(&mut rig.cx, |store, cx| store.admit_snapshot(Arc::new(original.with_key(next, None)), cx));
             }
             _ => unreachable!(),
         }
@@ -851,11 +851,11 @@ fn failed_owner_still_admits_the_local_find_query_claim(cx: &mut TestAppContext)
     let browse = BrowseRoute::Find(SearchQuery::new("RelationLabel", SearchQuery::DEFAULT_LIMIT).expect("query"));
     let route = Route::Orbit(OrbitRoute::Browse(browse.clone()));
     let mut rig = rig(cx, Some(route), 1200.0, 800.0);
-    rig.graph.store.update(rig.cx, |store, cx| store.owner_failed(
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_failed(
         &crate::runtime::owner::OwnerFault::Lost("owner lost".into()), cx,
     ));
     rig.settle();
-    assert!(!rig.graph.store.read_with(rig.cx, |store, _| store.owner_serving()));
+    assert!(!rig.graph.store.read_with(&rig.cx, |store, _| store.owner_serving()));
     let source = find_callback(&mut rig, &browse);
     let claim = rig.cx.update(|_, cx| super::FindQueryClaim::new(&source, cx));
     let (query, epoch) = rig.cx.update(|window, cx| (window.focused(cx).expect("Find query"), window.focus_epoch()));
@@ -901,7 +901,7 @@ fn compare_fixture(selection: &CompareSet, answer: bool, source_available: bool)
 }
 
 fn compare_callback(rig: &mut crate::shell::tests::Rig, selection: &CompareSet) -> super::CompareActionSource {
-    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     super::CompareActionSource {
         links: crate::shell::region::Links {
             root: rig.graph.root.downgrade(), store: rig.graph.store.clone(), shell: rig.shell.downgrade(), reader: Default::default(),
@@ -963,9 +963,9 @@ fn compare_painted_callback_cannot_cross_same_root_owner_attachment(cx: &mut Tes
 }
 
 fn browse_visit(rig: &mut crate::shell::tests::Rig) -> super::CurrentBrowseVisit {
-    let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
-    let place = reader.read_with(rig.cx, |reader, _| reader.current_place_key().expect("mounted browse visit"));
-    let (route, root, lease) = rig.graph.store.read_with(rig.cx, |store, _| {
+    let reader = rig.shell.read_with(&rig.cx, |shell, _| shell.reader_entity());
+    let place = reader.read_with(&rig.cx, |reader, _| reader.current_place_key().expect("mounted browse visit"));
+    let (route, root, lease) = rig.graph.store.read_with(&rig.cx, |store, _| {
         let snapshot = store.snapshot();
         let route = snapshot.route().clone();
         let root = snapshot.key();
@@ -979,7 +979,7 @@ fn browse_visit(rig: &mut crate::shell::tests::Rig) -> super::CurrentBrowseVisit
 }
 
 fn land_compare(rig: &mut crate::shell::tests::Rig, selection: &CompareSet, answer: bool, source_available: bool) {
-    rig.graph.store.update(rig.cx, |store, cx| store.test_land_browse(
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.test_land_browse(
         BrowseKey::Compare(selection.clone()), compare_fixture(selection, answer, source_available), cx,
     ));
 }
@@ -1022,7 +1022,7 @@ fn compare_history_fixture(selection: &CompareSet, insert_before: bool, omit_sel
 }
 
 fn land_history_compare(rig: &mut crate::shell::tests::Rig, selection: &CompareSet, insert_before: bool, omit_selected: bool) {
-    rig.graph.store.update(rig.cx, |store, cx| store.test_land_browse(
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.test_land_browse(
         BrowseKey::Compare(selection.clone()), compare_history_fixture(selection, insert_before, omit_selected), cx,
     ));
 }
@@ -1056,7 +1056,7 @@ fn compare_boundary_fixture(selection: &CompareSet, insert_before: bool, omit_se
 }
 
 fn land_boundary_compare(rig: &mut crate::shell::tests::Rig, selection: &CompareSet, insert_before: bool, omit_selected: bool) {
-    rig.graph.store.update(rig.cx, |store, cx| store.test_land_browse(
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.test_land_browse(
         BrowseKey::Compare(selection.clone()), compare_boundary_fixture(selection, insert_before, omit_selected), cx,
     ));
 }
@@ -1084,7 +1084,7 @@ fn compare_source_callbacks_open_members_and_remove_only_from_the_current_readin
     rig.go(crate::navigation::Intent::Navigate(current));
     land_compare(&mut rig, &selection, true, true);
     let source = compare_callback(&mut rig, &selection);
-    let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+    let reader = rig.shell.read_with(&rig.cx, |shell, _| shell.reader_entity());
     let remove = super::compare_remove_action(source, reader.downgrade());
     rig.cx.update(|window, cx| remove("/fixture/third".into(), window, cx));
     rig.settle();
@@ -1101,7 +1101,7 @@ fn compare_source_callbacks_deny_replaced_membership_selection_overlay_owner_and
     let source = compare_callback(&mut rig, &selection);
     let symbol = super::compare_symbol_action(source.clone(), false);
     let code = super::compare_symbol_action(source.clone(), true);
-    let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
+    let reader = rig.shell.read_with(&rig.cx, |shell, _| shell.reader_entity());
     let member = SharedString::from("/fixture/present::glyph.rs:138::RelationLabel");
     let invoke = |rig: &mut crate::shell::tests::Rig, source: &super::CompareActionSource, expected: &Route| {
         let symbol = super::compare_symbol_action(source.clone(), false);
@@ -1128,7 +1128,7 @@ fn compare_source_callbacks_deny_replaced_membership_selection_overlay_owner_and
 
     let another = CompareSet::new(["/fixture/present", "/fixture/other", "/fixture/third"]
         .into_iter().map(|key| PackageRef::parse(key).expect("package"))).expect("other selection");
-    rig.graph.store.update(rig.cx, |store, cx| store.test_land_browse(
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.test_land_browse(
         BrowseKey::Compare(selection.clone()), compare_fixture(&another, true, true), cx,
     ));
     invoke(&mut rig, &source, &current);
@@ -1146,15 +1146,15 @@ fn compare_source_callbacks_deny_replaced_membership_selection_overlay_owner_and
     land_compare(&mut rig, &selection, true, true);
     let source = compare_callback(&mut rig, &selection);
     assert!(rig.cx.update(|_, cx| source.current(cx, |_| Some(())).is_ok()), "fresh returned callback");
-    rig.graph.store.update(rig.cx, |store, cx| store.owner_starting(cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_starting(cx));
     invoke(&mut rig, &source, &current);
-    rig.graph.store.update(rig.cx, |store, cx| store.owner_ready(cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.owner_ready(cx));
     land_compare(&mut rig, &selection, true, true);
     let source = compare_callback(&mut rig, &selection);
     assert!(rig.cx.update(|_, cx| source.current(cx, |_| Some(())).is_ok()), "fresh owner callback");
-    let original = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let original = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
     let newer = VersionedRoot::synthetic(backend_library::view_state_root(&[("compare".into(), "new root".into())]), 9);
-    rig.graph.store.update(rig.cx, |store, cx| store.admit_snapshot(Arc::new(original.with_key(newer, None)), cx));
+    rig.graph.store.update(&mut rig.cx, |store, cx| store.admit_snapshot(Arc::new(original.with_key(newer, None)), cx));
     invoke(&mut rig, &source, &current);
 }
 
@@ -1177,7 +1177,7 @@ fn mounted_compare_native_choices_survive_back_forward_without_reusing_visit_act
         rig.cx.simulate_click(at, Modifiers::none());
         rig.settle();
     }
-    let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    let before = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.clone());
     let ReadingPresentation::Compare { comparison, .. } = &before.presentation else { panic!("Compare visit") };
     assert_eq!(comparison.scope, Some(facet::browse::compare::Scope::Shared));
     assert!(comparison.facts, "actual native facts toggle changes visit intent");
@@ -1186,7 +1186,7 @@ fn mounted_compare_native_choices_survive_back_forward_without_reusing_visit_act
     rig.go(Intent::Navigate(Route::Orbit(OrbitRoute::Home)));
     rig.keys("secondary-[");
     assert_eq!(rig.route(), route);
-    let restored = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    let restored = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.clone());
     assert_eq!(restored.id, before.id);
     assert_eq!(restored.presentation, before.presentation);
     assert!(rig.said().iter().any(|words| words == "Hide package facts"), "Back remounts expanded native facts panel");
@@ -1219,7 +1219,7 @@ fn mounted_compare_distinct_selected_code_back_restores_the_exact_reading_visit(
         gpui::px(selected_row.bounds.y + selected_row.bounds.height / 2.0));
     rig.cx.simulate_click(at, Modifiers::none());
     rig.settle();
-    let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    let before = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.clone());
     let ReadingPresentation::Compare { comparison, .. } = &before.presentation else { panic!("Compare visit") };
     assert_eq!(comparison.scope, Some(facet::browse::compare::Scope::Distinct));
     assert_eq!(comparison.selected, Some(("advance_signal".into(), Kind::Function)));
@@ -1231,7 +1231,7 @@ fn mounted_compare_distinct_selected_code_back_restores_the_exact_reading_visit(
         if symbol.view == View::Code && symbol.id.as_str().ends_with("::advance_signal")));
     rig.keys("secondary-[");
     assert_eq!(rig.route(), route);
-    let returned = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    let returned = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.clone());
     assert_eq!(returned, before, "Back restores the selected alignment and filter on the original VisitId");
     rig.cx.update(|_, cx| facet::probe::enable(cx));
     rig.repaint();
@@ -1243,7 +1243,7 @@ fn mounted_compare_distinct_selected_code_back_restores_the_exact_reading_visit(
     rig.go(Intent::Navigate(route));
     land_history_compare(&mut rig, &selection, false, false);
     rig.settle();
-    let fresh = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    let fresh = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.clone());
     let ReadingPresentation::Compare { comparison, .. } = &fresh.presentation else { panic!("fresh Compare visit") };
     assert_ne!(fresh.id, before.id, "new navigation cannot reuse the returned visit's identity");
     assert_eq!(*comparison, facet::browse::compare::Presentation::default(),
@@ -1271,10 +1271,10 @@ fn compare_selected_identity_and_scroll_survive_reflow_and_back(cx: &mut TestApp
     rig.cx.simulate_click(point(px(row.bounds.x + row.bounds.width / 2.0),
         px(row.bounds.y + row.bounds.height / 2.0)), Modifiers::none());
     rig.settle();
-    let visit = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.id);
+    let visit = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.id);
     land_history_compare(&mut rig, &selection, true, false);
     rig.settle();
-    let after_insert = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    let after_insert = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.clone());
     let ReadingPresentation::Compare { comparison, .. } = &after_insert.presentation else { panic!("Compare") };
     assert_eq!(after_insert.id, visit);
     assert_eq!(comparison.selected, Some(("advance_signal".into(), Kind::Function)),
@@ -1286,16 +1286,16 @@ fn compare_selected_identity_and_scroll_survive_reflow_and_back(cx: &mut TestApp
 
     land_history_compare(&mut rig, &selection, true, true);
     rig.settle();
-    let without = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    let without = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.clone());
     let ReadingPresentation::Compare { comparison, .. } = &without.presentation else { panic!("Compare") };
     assert_eq!(comparison.selected, Some(("advance_signal".into(), Kind::Function)),
         "a temporarily absent alignment must not erase the visit's semantic choice");
     land_history_compare(&mut rig, &selection, true, false);
     rig.settle();
-    crate::shell::tests::wheel(rig.cx, point(px(1200.0), px(700.0)), point(px(0.0), px(-96.0)));
+    crate::shell::tests::wheel(&mut rig.cx, point(px(1200.0), px(700.0)), point(px(0.0), px(-96.0)));
     rig.repaint();
     rig.settle();
-    let saved = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    let saved = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.clone());
     let y = saved.presentation.controls().offset.pixels().1;
     assert!(y < -1.0, "native wheel moves the actual overflowing Reader viewport");
     let source = compare_callback(&mut rig, &selection);
@@ -1306,11 +1306,11 @@ fn compare_selected_identity_and_scroll_survive_reflow_and_back(cx: &mut TestApp
     rig.keys("secondary-[");
     rig.settle();
     assert_eq!(rig.route(), route);
-    let restored = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    let restored = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.clone());
     assert_eq!(restored.id, visit);
     assert_eq!(restored.presentation, saved.presentation,
         "Back restores filter, selected identity, and recorded scroll together");
-    let actual = rig.shell.read_with(rig.cx, |shell, cx| f32::from(shell.source_reader_scroll_offset(cx).y));
+    let actual = rig.shell.read_with(&rig.cx, |shell, cx| f32::from(shell.source_reader_scroll_offset(cx).y));
     assert!((actual - y).abs() <= 2.0, "the mounted Reader must restore its measured viewport: {y} → {actual}");
 }
 
@@ -1336,7 +1336,7 @@ fn compare_follows_a_selected_name_across_the_page_boundary_without_overriding_e
     rig.cx.simulate_click(point(px(row.bounds.x + row.bounds.width / 2.0),
         px(row.bounds.y + row.bounds.height / 2.0)), Modifiers::none());
     rig.settle();
-    let original = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    let original = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.clone());
     let ReadingPresentation::Compare { comparison, .. } = &original.presentation else { panic!("Compare") };
     assert_eq!(comparison.selected, Some(("advance_signal".into(), Kind::Function)));
     assert!(comparison.follow_selected);
@@ -1352,7 +1352,7 @@ fn compare_follows_a_selected_name_across_the_page_boundary_without_overriding_e
     assert!(shifted.texts.iter().any(|text| text.key.contains("row-") && text.content == "advance_signal"));
     assert!(shifted.texts.iter().any(|text| text.key.contains("focused-name") && text.content == "advance_signal"),
         "the detail follows the typed name and kind, never its previous numeric row");
-    let shifted_visit = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    let shifted_visit = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.clone());
     assert_eq!(shifted_visit.id, original.id, "immutable data reflow is not navigation");
     let ReadingPresentation::Compare { comparison, .. } = &shifted_visit.presentation else { panic!("Compare") };
     assert_eq!(comparison.scope, Some(facet::browse::compare::Scope::Distinct));
@@ -1360,7 +1360,7 @@ fn compare_follows_a_selected_name_across_the_page_boundary_without_overriding_e
 
     land_boundary_compare(&mut rig, &selection, true, true);
     rig.settle();
-    let absent = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    let absent = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.clone());
     let ReadingPresentation::Compare { comparison, .. } = &absent.presentation else { panic!("Compare") };
     assert_eq!(comparison.selected, Some(("advance_signal".into(), Kind::Function)),
         "temporary absence cannot silently rewrite the visit's semantic selection");
@@ -1376,7 +1376,7 @@ fn compare_follows_a_selected_name_across_the_page_boundary_without_overriding_e
         .expect("a real native paginator on the followed second page");
     rig.cx.simulate_click(previous.center(), Modifiers::none());
     rig.settle();
-    let explicit = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().reading.current.clone());
+    let explicit = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.clone());
     let ReadingPresentation::Compare { comparison, .. } = &explicit.presentation else { panic!("Compare") };
     assert_eq!(explicit.id, original.id);
     assert_eq!(comparison.page, 0);

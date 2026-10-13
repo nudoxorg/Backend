@@ -54,22 +54,22 @@ fn rig(cx: &mut gpui::TestAppContext) -> (Rig, OwnerGate, Arc<SearchBarrier>, Re
 }
 
 fn map(rig: &mut Rig) -> Entity<Map> {
-    rig.shell.read_with(rig.cx, |shell, cx|
+    rig.shell.read_with(&rig.cx, |shell, cx|
         shell.reader_entity().read(cx).graph_map()).expect("the actual mounted Map")
 }
 
 fn begin_unfocused_peek(rig: &mut Rig, barrier: &SearchBarrier) -> (Entity<Map>, OwnerAttachment, SearchQuery) {
     let map = map(rig);
-    let graph = map.read_with(rig.cx, |map, _| map.graph.clone()).expect("mounted graph scene");
-    assert!(graph.read_with(rig.cx, |graph, _| graph.focused()).is_none());
-    let owner = rig.graph.store.read_with(rig.cx, |store, _|
+    let graph = map.read_with(&rig.cx, |map, _| map.graph.clone()).expect("mounted graph scene");
+    assert!(graph.read_with(&rig.cx, |graph, _| graph.focused()).is_none());
+    let owner = rig.graph.store.read_with(&rig.cx, |store, _|
         store.current_owner_attachment()).expect("original serving attachment");
     rig.cx.update(|window, cx| graph.update(cx, |graph, cx|
         graph.act_on_peek(0, facet::graph::peek::Action::Open, window, cx)));
     rig.cx.run_until_parked();
     crate::runtime::wait::until("the activated Peek's search is blocked", ||
         barrier.started.load(Ordering::Acquire) > 0);
-    let query = map.read_with(rig.cx, |map, _| {
+    let query = map.read_with(&rig.cx, |map, _| {
         let request = map.pending.as_ref().expect("delayed Peek is pending");
         assert_eq!(request.origin, OpenOrigin::Peek);
         assert_eq!(request.focus_at_open, None);
@@ -84,25 +84,25 @@ fn begin_unfocused_peek(rig: &mut Rig, barrier: &SearchBarrier) -> (Entity<Map>,
 fn delayed_unfocused_peek_cannot_borrow_a_same_root_replacement_owner(cx: &mut gpui::TestAppContext) {
     let (mut rig, gate, barrier, _release) = rig(cx);
     let (map, former, query) = begin_unfocused_peek(&mut rig, &barrier);
-    let before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let before = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
     gate.publish(OwnerState::Starting);
     gate.publish(OwnerState::Ready { key: before.key(), mode: ServiceMode::Attached });
     // No UI watcher or new scene is required to refuse the old attachment.
     rig.cx.update(|window, cx| map.update(cx, |map, cx| map.resolve_open(window, cx)));
-    assert!(map.read_with(rig.cx, |map, _| map.pending.is_none()));
+    assert!(map.read_with(&rig.cx, |map, _| map.pending.is_none()));
     rig.cx.run_until_parked();
-    assert!(!rig.graph.store.read_with(rig.cx, |store, _| store.admits_owner_attachment(&former)));
+    assert!(!rig.graph.store.read_with(&rig.cx, |store, _| store.admits_owner_attachment(&former)));
     // Valid rows under the new same-root owner must not finish the old open.
     // This also exercises the Resource event after a replacement scene mounts.
     barrier.released.store(true, Ordering::Release);
-    rig.graph.store.update(rig.cx, |store, cx| { store.ensure(PageKey::Search(query.clone()), cx); });
+    rig.graph.store.update(&mut rig.cx, |store, cx| { store.ensure(PageKey::Search(query.clone()), cx); });
     rig.settle();
-    rig.graph.store.read_with(rig.cx, |store, _| {
+    rig.graph.store.read_with(&rig.cx, |store, _| {
         assert!(store.snapshot().key().same_authority(before.key()));
         assert_eq!(store.snapshot().session().reading.current.id, before.session().reading.current.id);
         assert!(store.search(&query).loaded_value().is_some(), "replacement search rows actually landed");
     });
-    assert!(map.read_with(rig.cx, |map, cx| map.graph.as_ref()
+    assert!(map.read_with(&rig.cx, |map, cx| map.graph.as_ref()
         .and_then(|graph| graph.read(cx).focused())).is_none());
     assert_eq!(rig.route(), Route::World, "late Peek cannot navigate through a replacement owner");
 }
@@ -111,7 +111,7 @@ fn delayed_unfocused_peek_cannot_borrow_a_same_root_replacement_owner(cx: &mut g
 fn delayed_unfocused_peek_still_opens_when_its_original_owner_serves_the_reply(cx: &mut gpui::TestAppContext) {
     let (mut rig, _gate, barrier, _release) = rig(cx);
     let (_, original, _) = begin_unfocused_peek(&mut rig, &barrier);
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.admits_owner_attachment(&original)));
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.admits_owner_attachment(&original)));
     barrier.released.store(true, Ordering::Release);
     rig.settle();
     assert_eq!(rig.route(), indexed_view_route("RelationLabel", View::Page),

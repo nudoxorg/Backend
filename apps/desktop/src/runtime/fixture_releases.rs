@@ -130,7 +130,8 @@ mod tests {
             })
             .expect("window")
         });
-        let visual = VisualTestContext::from_window(window.into(), cx).into_mut();
+        let mut owned_visual = VisualTestContext::from_window(window.into(), cx);
+    let visual = &mut owned_visual;
         assert!(!knows.get(), "the first frame does not wait for the parse");
         for _ in 0..4 {
             visual.run_until_parked();

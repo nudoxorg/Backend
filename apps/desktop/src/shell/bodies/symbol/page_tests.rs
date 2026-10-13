@@ -541,13 +541,13 @@ fn choose_hint(rig: &mut Rig, id: &str) {
     rig.cx.update(|window, _| window.set_a11y_forced(true));
     rig.repaint();
     rig.keys("f");
-    let choice = rig.shell.read_with(rig.cx, |shell, _| shell.hinted_target_for(id))
+    let choice = rig.shell.read_with(&rig.cx, |shell, _| shell.hinted_target_for(id))
         .unwrap_or_else(|| panic!("painted target {id} has an original hint receipt"));
-    let before = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx).hint_frame());
-    let reader = rig.shell.read_with(rig.cx, |shell, _| shell.reader_entity());
-    reader.update(rig.cx, |_, cx| cx.notify());
+    let before = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx).hint_frame());
+    let reader = rig.shell.read_with(&rig.cx, |shell, _| shell.reader_entity());
+    reader.update(&mut rig.cx, |_, cx| cx.notify());
     rig.repaint();
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     assert_ne!(targets.hint_frame(), before, "the actual Reader render advanced its paint frame");
     assert!(rig.cx.update(|window, _| targets.admits_mount(&choice.mount, window)),
         "the original semantic/native mount survives the new paint");
@@ -562,13 +562,13 @@ fn a_reader_hint_transfers_native_keyboard_ownership_before_the_next_return(cx: 
     let (mut rig, _) = open(cx, "de.rs", 2709, "from_str", 1440.0);
     // Reproduce a titlebar-origin keyboard session, then choose a Reader
     // filter without a pointer click or a fresh Tab into the page.
-    let toggle = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_target_bounds("tb-shelf", cx))
+    let toggle = rig.shell.read_with(&rig.cx, |shell, cx| shell.titlebar_target_bounds("tb-shelf", cx))
         .expect("mounted titlebar toggle");
     rig.cx.simulate_click(toggle.center(), gpui::Modifiers::default());
     rig.settle();
-    let shelf_before = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().shelf_open);
+    let shelf_before = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().settings().shelf_open);
     choose_hint(&mut rig, "s6-chip-0");
-    let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+    let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
     assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(), Some("s6-chip-0"));
     let selected = |rig: &mut Rig| {
         let json = rig.cx.update(|window, _| window.debug_a11y_tree_json()).expect("native tree");
@@ -579,7 +579,7 @@ fn a_reader_hint_transfers_native_keyboard_ownership_before_the_next_return(cx: 
     rig.native_press("enter");
     rig.settle();
     assert!(!selected(&mut rig), "the next native Return belongs to the filter");
-    assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().settings().shelf_open), shelf_before,
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().settings().shelf_open), shelf_before,
         "Return did not go back to the old titlebar toggle");
 }
 

@@ -122,7 +122,7 @@ pub(super) fn install(rig: &mut Rig) {
     let world = world();
     let identities = Arc::new(IdentityAdapter::synthetic(&world, PackageRef::parse(PACKAGE).expect("package")));
     let files = HashMap::from([("glyph.rs".to_owned(), Arc::<str>::from(GLYPH))]);
-    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     rig.cx.update(|_, cx| {
         crate::runtime::indexed_world::install_test_projection(
             root,
@@ -160,7 +160,7 @@ fn late_cross_package_outline_cannot_open_after_back_away_but_a_fresh_click_can(
         PackageRef::parse(PACKAGE).expect("present"),
         PackageRef::parse("/fixture/app").expect("app"),
     ]));
-    let root = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().key());
+    let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
     rig.cx.update(|_, cx| {
         crate::runtime::indexed_world::install_test_projection(
             root,
@@ -184,11 +184,11 @@ fn late_cross_package_outline_cannot_open_after_back_away_but_a_fresh_click_can(
         std::thread::sleep(Duration::from_millis(1));
     }
     assert_eq!(rig.route(), page_route("RelationLabel"), "no guessed route while the exact outline is cold");
-    let notice = rig.graph.store.read_with(rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string()));
+    let notice = rig.graph.store.read_with(&rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string()));
     assert!(notice.as_deref().is_some_and(|message| message.contains("graph is still being read")), "the cold exact projection remains provisional: {notice:?}");
 
     let away = page_route("SemanticLinkKind");
-    rig.graph.root.update(rig.cx, |root, cx| root.queue(Intent::Navigate(away.clone()), cx));
+    rig.graph.root.update(&mut rig.cx, |root, cx| root.queue(Intent::Navigate(away.clone()), cx));
     let deadline = Instant::now() + Duration::from_secs(3);
     while rig.route() != away {
         rig.frame(16);
@@ -218,7 +218,7 @@ fn an_anatomy_link_the_index_lacks_speaks_through_the_notice_instead_of_moving(c
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         rig.cx.update(|window, cx| window.dispatch_action(Box::new(open()), cx));
-        let notice = rig.graph.store.read_with(rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string()));
+        let notice = rig.graph.store.read_with(&rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string()));
         assert_eq!(rig.route(), page_route("RelationLabel"), "an unresolved anatomy link never guesses a route");
         if notice.as_deref() == Some("main isn't in the index") {
             break;
@@ -230,10 +230,10 @@ fn an_anatomy_link_the_index_lacks_speaks_through_the_notice_instead_of_moving(c
     }
     rig.settle();
     assert_eq!(rig.route(), page_route("RelationLabel"), "an unresolvable link does not move the page");
-    let message = rig.graph.store.read_with(rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string()));
+    let message = rig.graph.store.read_with(&rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string()));
     assert_eq!(message.as_deref(), Some("main isn't in the index"));
     rig.go(Intent::Navigate(page_route("SemanticLinkKind")));
-    assert!(rig.graph.store.read_with(rig.cx, |store, _| store.notice().is_none()), "a notice does not survive navigation");
+    assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.notice().is_none()), "a notice does not survive navigation");
 }
 
 /// The painted texts published under exactly `key`, in paint order.

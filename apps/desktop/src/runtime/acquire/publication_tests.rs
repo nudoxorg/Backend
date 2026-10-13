@@ -220,9 +220,9 @@ fn acquisition_publications_repair_the_mounted_dossier_at_the_same_authority(cx:
     let reads = Arc::clone(&observed);
     let pool = ReadPool::start(2, move |_| PublicationReader(Arc::clone(&reads))).expect("publication pool");
     let mut rig = rig_with_engine(cx, Some(route), 1440.0, 900.0, pool, UnchangedRoot(Arc::clone(&observed)));
-    rig.graph.store.update(rig.cx, |store, cx| { store.ensure(source_key.clone(), cx); });
+    rig.graph.store.update(&mut rig.cx, |store, cx| { store.ensure(source_key.clone(), cx); });
     rig.settle();
-    let before = rig.graph.store.read_with(rig.cx, |store, _| {
+    let before = rig.graph.store.read_with(&rig.cx, |store, _| {
         assert!(!store.focused().contains(&source_key));
         assert!(store.package(&registry).loaded_value().expect("initial dossier").record.known().is_none());
         assert!(store.package(&registry).loaded_value().expect("initial dossier").outline.known().is_none());
@@ -236,7 +236,7 @@ fn acquisition_publications_repair_the_mounted_dossier_at_the_same_authority(cx:
         let active_reads = observed.count(&registry);
         let source_reads = observed.count(&source);
         let root_reads = observed.roots.load(Ordering::Relaxed);
-        let (active_stamp, source_stamp) = rig.graph.store.read_with(rig.cx, |store, _| {
+        let (active_stamp, source_stamp) = rig.graph.store.read_with(&rig.cx, |store, _| {
             (store.stamp(&active_key), store.stamp(&source_key))
         });
         observed.publication.store(at + 1, Ordering::Release);
@@ -244,7 +244,7 @@ fn acquisition_publications_repair_the_mounted_dossier_at_the_same_authority(cx:
         assert_eq!(observed.roots.load(Ordering::Relaxed), root_reads + 1, "the actual root refresh follows publication");
         assert_eq!(observed.count(&registry), active_reads + 1, "the mounted registry dossier rereads once");
         assert_eq!(observed.count(&source), source_reads, "the separate hidden source address remains lazy");
-        rig.graph.store.read_with(rig.cx, |store, _| {
+        rig.graph.store.read_with(&rig.cx, |store, _| {
             let now = store.snapshot();
             assert_eq!(before.key(), now.key(), "publication needs no invented root generation");
             assert_eq!(before.route(), now.route());
@@ -262,25 +262,25 @@ fn acquisition_publications_repair_the_mounted_dossier_at_the_same_authority(cx:
         assert!(rig.said().iter().any(|text| text.contains(&words)), "fresh facts reach the mounted Reader without Back");
         // An explicit later ask renews the revoked source observation without
         // equating its identity with the registry discovery address.
-        rig.graph.store.update(rig.cx, |store, cx| { store.ensure(source_key.clone(), cx); });
+        rig.graph.store.update(&mut rig.cx, |store, cx| { store.ensure(source_key.clone(), cx); });
         rig.settle();
         assert_eq!(observed.count(&source), source_reads + 1);
-        assert!(!rig.graph.store.read_with(rig.cx, |store, _| store.observation_revoked(&source_key)));
-        let submitted = rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted);
+        assert!(!rig.graph.store.read_with(&rig.cx, |store, _| store.observation_revoked(&source_key)));
+        let submitted = rig.graph.store.read_with(&rig.cx, |store, _| store.stats().submitted);
         land(&mut rig, &release, stage);
-        assert_eq!(rig.graph.store.read_with(rig.cx, |store, _| store.stats().submitted), submitted,
+        assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.stats().submitted), submitted,
             "the identical terminal stage cannot invalidate or submit again");
         assert_eq!(observed.roots.load(Ordering::Relaxed), root_reads + 1);
         assert_eq!(observed.count(&registry), active_reads + 1);
         assert_eq!(observed.count(&source), source_reads + 1);
     }
-    let unchanged = rig.graph.store.read_with(rig.cx, |store, _| {
+    let unchanged = rig.graph.store.read_with(&rig.cx, |store, _| {
         (store.stats().submitted, store.stamp(&active_key), store.stamp(&source_key))
     });
     let root_reads = observed.roots.load(Ordering::Relaxed);
     for stage in [Stage::Resolving, Stage::Indexing, Stage::Failed(Arc::from("fixture rejected the source"))] {
         land(&mut rig, &release, stage);
-        rig.graph.store.read_with(rig.cx, |store, _| {
+        rig.graph.store.read_with(&rig.cx, |store, _| {
             assert_eq!((store.stats().submitted, store.stamp(&active_key), store.stamp(&source_key)), unchanged,
                 "nonpublication stages cannot refresh observations");
             assert!(!store.observation_revoked(&active_key));
@@ -294,7 +294,7 @@ fn acquisition_publications_repair_the_mounted_dossier_at_the_same_authority(cx:
     });
     rig.settle();
     assert_eq!(observed.roots.load(Ordering::Relaxed), root_reads, "a retired producer cannot refresh the live root");
-    rig.graph.store.read_with(rig.cx, |store, _| {
+    rig.graph.store.read_with(&rig.cx, |store, _| {
         assert_eq!((store.stats().submitted, store.stamp(&active_key), store.stamp(&source_key)), unchanged,
             "a retired acquisition success cannot invalidate either address's current observation");
     });

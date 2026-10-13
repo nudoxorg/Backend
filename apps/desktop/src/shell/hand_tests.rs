@@ -51,10 +51,10 @@ fn letting_go_re_routes_the_road(cx: &mut TestAppContext) {
     );
     // ← → walk the open hand; ⌫ lets go of the card it stands on.
     rig.keys("right");
-    assert_eq!(rig.shell.read_with(rig.cx, |shell, _| shell.hand_at()), 1, "on RelationLabel");
+    assert_eq!(rig.shell.read_with(&rig.cx, |shell, _| shell.hand_at()), 1, "on RelationLabel");
     rig.keys("backspace");
     assert_eq!(row(&mut rig), ["relation_label", "kind", "SemanticLinkKind", "from Link to SemanticLinkKind, in two steps"]);
-    let held = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().hand.held().len());
+    let held = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().hand.held().len());
     assert_eq!(held, 2);
 }
 
@@ -99,7 +99,7 @@ fn native_tree(rig: &mut Rig) -> serde_json::Value {
 #[gpui::test]
 fn native_hand_exposes_saved_card_controls_and_visible_road_explanations(cx: &mut TestAppContext) {
     let mut rig = two_held(cx);
-    let display = rig.shell.read_with(rig.cx, |shell, _| shell.display_key());
+    let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
     rig.keys("h");
     for appearance in [crate::model::AppearancePreference::Abyss, crate::model::AppearancePreference::Glacier] {
         rig.go(Intent::SetAppearance(appearance));
@@ -135,7 +135,7 @@ fn native_hand_card_focus_cannot_activate_its_replacement_after_release(cx: &mut
     let card = super::tests::native_bounds_id(&mut rig, "hand-card-0", "Button", "Open relation_label from hand", true).expect("first native card");
     rig.cx.simulate_event(gpui::MouseDownEvent { position: card.center(), modifiers: gpui::Modifiers::default(), button: gpui::MouseButton::Left, click_count: 1, first_mouse: false });
     let coordinate = super::tests::coordinate("relation_label");
-    let held = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot().session().hand.held().iter()
+    let held = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().hand.held().iter()
         .find(|held| held.id.as_ref().is_some_and(|id| id.as_str() == coordinate)).expect("the displayed first held card").clone());
     rig.go(Intent::LetGo(held));
     rig.cx.simulate_event(gpui::MouseUpEvent { position: card.center(), modifiers: gpui::Modifiers::default(), button: gpui::MouseButton::Left, click_count: 1 });
@@ -149,8 +149,8 @@ fn native_hand_card_focus_cannot_activate_its_replacement_after_release(cx: &mut
 
 #[gpui::test]
 fn the_hand_is_what_a_restart_restores(cx: &mut TestAppContext) {
-    let rig = two_held(cx);
-    let snapshot = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let mut rig = two_held(cx);
+    let snapshot = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
     let persisted = crate::model::PersistentState::project(&snapshot);
     assert_eq!(persisted.hand.len(), 2);
     let restored = crate::model::PersistentState::at(std::env::temp_dir().join("nudox-hand-roundtrip.json")).cold_reload(&persisted);
@@ -206,7 +206,7 @@ fn the_first_card_is_whispered_once(cx: &mut TestAppContext) {
         rig.frame(16);
     }
     assert_eq!(whisper(&mut rig), None, "gone after its 2.4 s");
-    let snapshot = rig.graph.store.read_with(rig.cx, |store, _| store.snapshot());
+    let snapshot = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot());
     let persisted = crate::model::PersistentState::project(&snapshot);
     assert!(persisted.hand_whispered);
     let restored = crate::model::PersistentState::at(std::env::temp_dir().join("nudox-whisper.json")).cold_reload(&persisted);
@@ -282,7 +282,7 @@ fn a_card_let_go_sinks_and_its_room_closes(cx: &mut TestAppContext) {
     let deepest = y.iter().map(|sample| sample.value).fold(0.0_f32, f32::max);
     assert!(deepest > 17.0, "it sank through the floor: {deepest}");
     assert!(leaving(".opacity").iter().all(|sample| (sample.value - 1.0).abs() < 1e-3), "no fade");
-    let marks = rig.shell.read_with(rig.cx, |shell, cx| shell.status_marks(cx));
+    let marks = rig.shell.read_with(&rig.cx, |shell, cx| shell.status_marks(cx));
     assert_eq!(marks, 1, "one card left in the foot");
 }
 

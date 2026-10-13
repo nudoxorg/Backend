@@ -1550,19 +1550,19 @@ mod tests {
         assert!(nodes.values().any(|node| node["aria"]["label"] == "Used by"), "incoming edge heading must be native: {json}");
         assert!(nodes.values().any(|node| node["aria"]["role"] == "Button" && node["aria"]["label"] == "Typed · reads"),
             "a recorded value read cannot be announced as a caller: {json}");
-        let editor = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+        let editor = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx))
             .bounds_of("source-open-editor").expect("mounted editor control");
-        let old_editor = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+        let old_editor = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx))
             .placed().into_iter().find(|(target, _)| target.id == "source-open-editor")
             .expect("current editor action").0.action.callback();
         rig.cx.simulate_click(editor.center(), gpui::Modifiers::none());
         rig.settle();
         assert_eq!(attempts.borrow().len(), 3, "each failed launcher is tried once");
-        let notice = rig.graph.store.read_with(rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string()));
+        let notice = rig.graph.store.read_with(&rig.cx, |store, _| store.notice().map(|notice| notice.message.to_string()));
         assert!(notice.as_deref().is_some_and(|message| message.contains("Could not start an editor") && message.contains("glyph.rs:138")),
             "a spawn failure needs bounded visit-scoped feedback: {notice:?}");
         rig.go(Intent::Back);
-        assert!(rig.graph.store.read_with(rig.cx, |store, _| store.notice().is_none()), "editor result cannot follow Back");
+        assert!(rig.graph.store.read_with(&rig.cx, |store, _| store.notice().is_none()), "editor result cannot follow Back");
         rig.cx.update(|window, cx| old_editor(window, cx));
         rig.settle();
         assert_eq!(attempts.borrow().len(), 3, "a previous Code visit cannot launch after Back");
@@ -1582,7 +1582,7 @@ mod tests {
 
         let field = rig
             .shell
-            .read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+            .read_with(&rig.cx, |shell, cx| shell.reader_targets(cx))
             .bounds_of("source-jump-field")
             .expect("mounted line input");
         rig.cx
@@ -1590,7 +1590,7 @@ mod tests {
         rig.keys("0");
         let go = rig
             .shell
-            .read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+            .read_with(&rig.cx, |shell, cx| shell.reader_targets(cx))
             .bounds_of("source-jump-go")
             .expect("mounted Go control");
         rig.cx.simulate_click(go.center(), gpui::Modifiers::none());
@@ -1618,7 +1618,7 @@ mod tests {
 
         let field = rig
             .shell
-            .read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+            .read_with(&rig.cx, |shell, cx| shell.reader_targets(cx))
             .bounds_of("source-jump-field")
             .expect("line input remains mounted");
         rig.cx
@@ -1626,7 +1626,7 @@ mod tests {
         rig.keys("backspace 1 3 8");
         let go = rig
             .shell
-            .read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+            .read_with(&rig.cx, |shell, cx| shell.reader_targets(cx))
             .bounds_of("source-jump-go")
             .expect("Go control remains mounted");
         rig.cx.simulate_click(go.center(), gpui::Modifiers::none());
@@ -1671,7 +1671,7 @@ mod tests {
             .is_some_and(|words| words.contains("pub enum RelationLabel")),
             "the fresh native control copies the visible bounded source");
 
-        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
         rig.cx.update(|window, cx| {
             assert!(targets.focus_native("source-jump-go", window, cx), "the unrelated Go control owns native focus");
         });
@@ -1983,17 +1983,17 @@ mod tests {
         route.line = Some(31);
         let pool = ReadPool::start(2, |_| CompactSource).expect("source read pool");
         let mut rig = crate::shell::tests::rig_with_reads(cx, Some(Route::Symbol(route)), 720.0, 700.0, pool);
-        let field = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+        let field = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx))
             .bounds_of("source-jump-field").expect("mounted line jump");
         rig.cx.simulate_click(field.center(), gpui::Modifiers::none());
         rig.keys("3 1 enter");
         assert!(rig.said().iter().any(|word| word.contains("Lines 31–31 of 31")));
-        let previous = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+        let previous = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx))
             .bounds_of("source-page-top-previous").expect("mounted previous");
         rig.cx.simulate_click(previous.center(), gpui::Modifiers::none());
         rig.settle();
         assert!(rig.said().iter().any(|word| word.contains("Lines 1–31 of 31")));
-        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
         assert!(targets.bounds_of("source-page-top-next").is_none(),
             "the entire file is visible after Previous, so no native Next target remains");
         assert!(!targets.native_keys().iter().any(|id| id == "source-page-top-next"));
@@ -2005,26 +2005,26 @@ mod tests {
         route.line = Some(31);
         let pool = ReadPool::start(2, |_| CompactSource).expect("source read pool");
         let mut rig = crate::shell::tests::rig_with_reads(cx, Some(Route::Symbol(route)), 720.0, 700.0, pool);
-        let field = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+        let field = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx))
             .bounds_of("source-jump-field").expect("mounted line jump");
         rig.cx.simulate_click(field.center(), gpui::Modifiers::none());
         rig.keys("3 1 enter");
-        let field = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+        let field = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx))
             .bounds_of("source-jump-field").expect("jump field remains mounted");
         rig.cx.simulate_click(field.center(), gpui::Modifiers::none());
         rig.keys("shift-tab");
-        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
         assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(),
             Some("source-page-top-previous"));
         rig.keys("enter");
         rig.settle();
         assert!(rig.said().iter().any(|word| word.contains("Lines 1–31 of 31")));
-        assert!(rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx))
+        assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx))
             .bounds_of("source-page-top-next").is_none());
     }
 
     fn activate_reader_target(rig: &mut crate::shell::tests::Rig, id: &str) {
-        let target = rig.shell.read_with(rig.cx, |shell, cx| {
+        let target = rig.shell.read_with(&rig.cx, |shell, cx| {
             let targets = shell.reader_targets(cx);
             targets.focus(id);
             targets.current().expect("visible source target")
@@ -2039,7 +2039,7 @@ mod tests {
         use crate::shell::focus::Zone;
         rig.cx.update(|window, cx| rig.shell.update(cx, |shell, cx| shell.take_zone(Zone::Shelf, window, cx)));
         rig.draw();
-        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
         let bounds = targets.bounds_of("source-page-top-next").expect("mounted next-page control");
         let before = rig.route();
         rig.cx.simulate_mouse_move(bounds.center(), None, gpui::Modifiers::none());
@@ -2047,9 +2047,9 @@ mod tests {
         rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
         rig.settle();
         assert_eq!(rig.route(), before, "the pager stays on this Source route");
-        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx).0), Zone::Reader,
+        assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx).0), Zone::Reader,
             "the mounted pager's native focus must select its Reader input zone");
-        let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+        let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
         assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(),
             Some("source-page-top-next"), "the pointer focused the mounted pager button");
         targets
@@ -2069,7 +2069,7 @@ mod tests {
         let at = order.iter().position(|id| id == "source-page-top-next").expect("pager in native order");
         let next = order.get(at + 1).expect("another mounted native control follows the pager").clone();
         rig.keys("tab");
-        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)), (Zone::Reader, Some(next.clone())));
+        assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx)), (Zone::Reader, Some(next.clone())));
         assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)), Some(next));
     }
 
@@ -2086,7 +2086,7 @@ mod tests {
         let at = order.iter().position(|id| id == "source-page-top-next").expect("pager in Reader walk order");
         let next = order.get(at + 1).expect("Reader walk continues after pager").clone();
         rig.keys("j");
-        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)), (Zone::Reader, Some(next.clone())));
+        assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx)), (Zone::Reader, Some(next.clone())));
         // The next stop is a real text input: letters edit it rather than
         // invoking the Shell's walk. Return to the pager before testing K.
         assert_eq!(next.as_ref(), "source-jump-field");
@@ -2096,7 +2096,7 @@ mod tests {
         assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(), Some("source-page-top-next"));
         let previous = order.get(at - 1).expect("previous pager stop");
         rig.keys("k");
-        assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)).1.as_ref(), Some(previous));
+        assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx)).1.as_ref(), Some(previous));
         assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_ref(), Some(previous));
     }
 
@@ -2121,13 +2121,13 @@ mod tests {
         );
         let (zone, focus) = rig
             .shell
-            .read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+            .read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
         assert_eq!(zone, crate::shell::focus::Zone::Reader);
         assert_eq!(focus.as_deref(), Some("source-line-500"));
         rig.keys("j");
         let (_, walked) = rig
             .shell
-            .read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+            .read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
         assert_eq!(walked.as_deref(), Some("source-line-501"));
     }
 
@@ -2155,7 +2155,7 @@ mod tests {
                 rig.go(Intent::ToggleShelf);
             }
             rig.repaint();
-            let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+            let targets = rig.shell.read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
             let frame = targets.hint_frame();
             if let Some(previous) = before_frame {
                 if frame != previous {
@@ -2180,7 +2180,7 @@ mod tests {
                 "the Reader bevel starts alongside its own native line, not in a prior shelf/layout: {row:?} vs {button:?}");
             assert!(row.right() >= button.right() && row.top() <= button.top() && row.bottom() >= button.bottom(),
                 "the Reader target encloses its own native line: {row:?} vs {button:?}");
-            assert_eq!(rig.shell.read_with(rig.cx, |shell, cx| shell.focus_state(cx)),
+            assert_eq!(rig.shell.read_with(&rig.cx, |shell, cx| shell.focus_state(cx)),
                 (Zone::Reader, Some("source-line-500".into())));
             assert_eq!(rig.cx.update(|window, _| targets.native_focused(window)).as_deref(), Some("source-line-500"));
             assert_eq!(rig.route(), Route::Symbol(route.clone()));
@@ -2211,13 +2211,13 @@ mod tests {
             "verified link line missing: {later:#?}"
         );
 
-        rig.shell.update(rig.cx, |shell, cx| {
+        rig.shell.update(&mut rig.cx, |shell, cx| {
             shell.set_source_reader_scroll_offset(gpui::point(px(0.0), px(-96.0)), cx)
         });
         rig.repaint();
         let before = rig
             .shell
-            .read_with(rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx));
+            .read_with(&rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx));
         activate_reader_target(&mut rig, "source-reference-0");
         assert_ne!(rig.route(), route, "the verified link must navigate");
         rig.keys("secondary-[");
@@ -2228,7 +2228,7 @@ mod tests {
         );
         let (_, focus) = rig
             .shell
-            .read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+            .read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
         assert_eq!(
             focus.as_deref(),
             Some("source-reference-0"),
@@ -2236,7 +2236,7 @@ mod tests {
         );
         let restored = rig
             .shell
-            .read_with(rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx));
+            .read_with(&rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx));
         assert_eq!(
             restored, before,
             "Back lost the source page's scroll offset"
@@ -2297,7 +2297,7 @@ mod tests {
         );
         let before_wheel = rig
             .shell
-            .read_with(rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx));
+            .read_with(&rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx));
         rig.cx.simulate_event(gpui::ScrollWheelEvent {
             position: pointer,
             delta: gpui::ScrollDelta::Pixels(gpui::point(px(0.0), px(-180.0))),
@@ -2307,7 +2307,7 @@ mod tests {
         rig.repaint();
         let after_wheel = rig
             .shell
-            .read_with(rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx));
+            .read_with(&rig.cx, |shell, cx| shell.source_reader_scroll_offset(cx));
         assert_ne!(
             after_wheel, before_wheel,
             "the native wheel must scroll the source reader"
@@ -2328,7 +2328,7 @@ mod tests {
         assert!(resized.iter().any(|word| word.contains("Line 1 in parts")));
         let (_, focus) = rig
             .shell
-            .read_with(rig.cx, |shell, cx| shell.focus_state(cx));
+            .read_with(&rig.cx, |shell, cx| shell.focus_state(cx));
         assert_eq!(focus.as_deref(), Some("source-line-1"));
     }
 }

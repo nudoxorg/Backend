@@ -1292,7 +1292,7 @@ mod tests {
         rig.repaint();
         let mut targets = rig
             .shell
-            .read_with(rig.cx, |shell, cx| shell.reader_targets(cx));
+            .read_with(&rig.cx, |shell, cx| shell.reader_targets(cx));
         let (target, painted) = targets
             .placed()
             .into_iter()
