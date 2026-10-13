@@ -94,39 +94,26 @@ impl Drop for Fixture {
 
 #[test]
 fn owner_replacement_authenticates_private_endpoint_before_repeating_health() {
-    use backend_replication::{LocalControlLimits, read_frame, write_frame};
+    use backend_local_service::{EmbeddedLocalService, ProcessConfig};
     use std::os::unix::fs::PermissionsExt as _;
     let fixture = Fixture::new();
-    let listener = std::os::unix::net::UnixListener::bind(fixture.paths.endpoint())
-        .expect("private owner endpoint");
+    let config = ProcessConfig::parse([
+        "--workspace".to_owned(),
+        fixture.paths.data().to_string_lossy().into_owned(),
+        "--endpoint".to_owned(),
+        fixture.paths.endpoint().to_string_lossy().into_owned(),
+        "--profile".to_owned(),
+        "builtin-echo".to_owned(),
+        "--idle-timeout-ms".to_owned(),
+        "0".to_owned(),
+    ])
+    .expect("parse real builtin echo owner config");
+    let owner = EmbeddedLocalService::start(config).expect("start admitted local owner");
     std::fs::set_permissions(
         fixture.paths.endpoint(),
         std::fs::Permissions::from_mode(0o600),
     )
     .expect("admitted endpoint mode");
-    let server = std::thread::spawn(move || {
-        // Recovery authenticates the existing owner directly, without a bootstrap probe.
-        let (mut stream, _) = listener
-            .accept()
-            .expect("replacement authenticated connection");
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
-            .expect("bounded owner");
-        let body = read_frame(&mut stream, LocalControlLimits::default())
-            .expect("correlated health frame");
-        let library = backend_library::Library::new();
-        let request = CommandDto::decode_for_owner(&body, library.cursor())
-            .expect("actual owner request admission");
-        assert_eq!(request.command, Command::Health);
-        let reply = library.execute_dto(request.clone());
-        write_frame(
-            &mut stream,
-            &serde_json::to_vec(&reply).expect("reply"),
-            LocalControlLimits::default(),
-        )
-        .expect("reply frame");
-        request.request_id
-    });
     let initial = Arc::new(AtomicUsize::new(0));
     let seen = initial.clone();
     let mut original = session(fixture.paths.endpoint(), move |request| {
@@ -140,11 +127,7 @@ fn owner_replacement_authenticates_private_endpoint_before_repeating_health() {
         .expect("authenticated health recovery");
     assert_eq!(initial.load(Ordering::Relaxed), 1);
     assert_eq!(report.row_count(), 0);
-    assert_eq!(
-        server.join().expect("owner drained"),
-        1,
-        "fresh Session has its own correlated request sequence"
-    );
+    assert_eq!(owner.close().expect("stop admitted owner").frames, 1);
     assert!(recovery.used);
 }
 
