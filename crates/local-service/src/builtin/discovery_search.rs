@@ -1738,7 +1738,7 @@ impl LineageSearchIndex {
             advisories,
             generic,
             substring_generic: false,
-            exclude_coordinate_substring: false,
+            coordinate_substring: CoordinateSubstringPolicy::Include,
             lineage_group: None,
             standing: SearchStandingEvidence::Unknown,
         };
@@ -3147,7 +3147,7 @@ impl LocalDeclarationSearchIndex {
             let name = row.label.rsplit("::").next().unwrap_or(&row.label);
             let sort_key = local_sort_key(row.id, row.label.as_str());
             inner.insert_document(
-                sort_key.clone(),
+                row.id.stable_key(),
                 row.id,
                 row.label.as_str(),
                 name,
@@ -3190,7 +3190,7 @@ fn local_search_text(row: &Row) -> SearchDocumentText<'_> {
     SearchDocumentText {
         generic: local_search_content(row),
         substring_generic: true,
-        exclude_coordinate_substring: true,
+        coordinate_substring: CoordinateSubstringPolicy::ExcludeInheritedPath,
         ..SearchDocumentText::default()
     }
 }
@@ -3347,6 +3347,13 @@ impl<'index, K: Clone> PreparedSearchQuery<'index, K> {
     }
 }
 
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+pub(super) enum CoordinateSubstringPolicy {
+    #[default]
+    Include,
+    ExcludeInheritedPath,
+}
+
 #[derive(Default)]
 pub(super) struct SearchDocumentText<'a> {
     /// Additional exact/prefix coordinate values on a grouped lineage doc.
@@ -3358,7 +3365,7 @@ pub(super) struct SearchDocumentText<'a> {
     pub(super) substring_generic: bool,
     /// Keep exact/prefix coordinate lookup while excluding inherited project
     /// paths from ordinary local declaration substring queries.
-    pub(super) exclude_coordinate_substring: bool,
+    pub(super) coordinate_substring: CoordinateSubstringPolicy,
     pub(super) aliases: SearchTextFacet<'a>,
     pub(super) keywords: SearchTextFacet<'a>,
     pub(super) descriptions: SearchTextFacet<'a>,
@@ -4656,7 +4663,7 @@ fn discovery_search_text(metadata: &DiscoveryMetadata) -> SearchDocumentText<'_>
         coordinate_variants: Vec::new(),
         generic,
         substring_generic: false,
-        exclude_coordinate_substring: false,
+        coordinate_substring: CoordinateSubstringPolicy::Include,
         aliases: search_text_facet(&metadata.aliases, aliases),
         keywords,
         descriptions,
@@ -5051,7 +5058,7 @@ impl<K: Clone> TextSearchIndex<K> {
         let standing = search_text.standing;
         let generic = search_text.generic;
         let mut substring_fields = Vec::new();
-        if !search_text.exclude_coordinate_substring {
+        if search_text.coordinate_substring == CoordinateSubstringPolicy::Include {
             substring_fields.push(coordinate.as_str());
             substring_fields.extend(search_text.coordinate_variants.iter().copied());
         }
@@ -9383,6 +9390,137 @@ mod tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn cold_local_projection_updates_renames_and_removes_in_one_writer() {
+        fn page_union(index: &LocalDeclarationSearchIndex, query: &str) -> Vec<RowId> {
+            let mut cursor = None;
+            let mut keys = Vec::new();
+            for _ in 0..8 {
+                let page = index
+                    .page_after(query, 1, cursor.as_ref())
+                    .expect("bounded local page");
+                keys.extend(hit_keys(page.hits));
+                cursor = page.next_cursor;
+                if cursor.is_none() {
+                    assert_eq!(
+                        keys.len(),
+                        keys.iter().copied().collect::<BTreeSet<_>>().len(),
+                        "duplicate row in complete page union: {query}"
+                    );
+                    return keys;
+                }
+            }
+            panic!("fixture page walk did not complete: {query}");
+        }
+
+        fn assert_cold_parity(local: &LocalDeclarationSearchIndex, view: &ViewRoot) {
+            let mut cold = LocalDeclarationSearchIndex::default();
+            cold.sync(view).expect("cold comparison projection");
+            for query in [
+                "before",
+                "renamed",
+                "oldneedle",
+                "newneedle",
+                "finalneedle",
+                "keeper",
+                "fixture::before",
+                "fixture::renamed",
+                "fixture::",
+                "",
+            ] {
+                assert_eq!(
+                    page_union(local, query),
+                    page_union(&cold, query),
+                    "complete incremental/cold page parity: {query}"
+                );
+            }
+        }
+
+        let (base, _) = super::super::initial_view().expect("initial view");
+        let capability = super::super::test_builtin_view_capability().expect("view capability");
+        let id = RowId::Symbol(backend_engine::symbol_key("fixture::before"));
+        let keeper_id = RowId::Symbol(backend_engine::symbol_key("fixture::keeper"));
+        let mut changes = vec![
+            RowChange::Upsert(Box::new(
+                Row::new(id, base.basis(), "fixture::before").with_signature("oldneedle"),
+            )),
+            RowChange::Upsert(Box::new(Row::new(
+                keeper_id,
+                base.basis(),
+                "fixture::keeper",
+            ))),
+        ];
+        changes.sort_by_key(RowChange::id);
+        let prepared = base
+            .prepare(
+                ViewDelta::Patch {
+                    changes: changes.into(),
+                },
+                capability.clone(),
+            )
+            .expect("prepare populated cold view");
+        let (view_one, _) = base.commit(prepared).expect("commit populated cold view");
+        let mut local = LocalDeclarationSearchIndex::default();
+        local.sync(&view_one).expect("populated cold projection");
+        let writer = local.index_identity().expect("cold writer identity");
+        assert_cold_parity(&local, &view_one);
+        assert_eq!(page_union(&local, "oldneedle"), [id]);
+        assert_eq!(page_union(&local, "").len(), 2);
+
+        let replacement =
+            Row::new(id, view_one.basis(), "fixture::before").with_signature("newneedle");
+        let prepared = view_one
+            .prepare(ViewDelta::Upsert { row: replacement }, capability.clone())
+            .expect("prepare same-label update");
+        let (view_two, same_label) = view_one.commit(prepared).expect("commit same-label update");
+        local
+            .apply_committed_deltas(&[same_label])
+            .expect("replace a cold-populated document identity");
+        local
+            .sync(&view_two)
+            .expect("updated projection is current");
+        assert_eq!(local.index_identity(), Some(writer));
+        assert!(page_union(&local, "oldneedle").is_empty());
+        assert_eq!(page_union(&local, "newneedle"), [id]);
+        assert_cold_parity(&local, &view_two);
+
+        let renamed =
+            Row::new(id, view_two.basis(), "fixture::renamed").with_signature("finalneedle");
+        let prepared = view_two
+            .prepare(ViewDelta::Upsert { row: renamed }, capability.clone())
+            .expect("prepare same-identity rename");
+        let (view_three, rename) = view_two.commit(prepared).expect("commit rename");
+        local
+            .apply_committed_deltas(&[rename])
+            .expect("rename cold-populated document");
+        local
+            .sync(&view_three)
+            .expect("renamed projection is current");
+        assert_eq!(local.index_identity(), Some(writer));
+        assert!(page_union(&local, "before").is_empty());
+        assert!(page_union(&local, "newneedle").is_empty());
+        assert_eq!(page_union(&local, "renamed"), [id]);
+        assert_eq!(page_union(&local, "finalneedle"), [id]);
+        assert_eq!(page_union(&local, "").len(), 2);
+        assert_cold_parity(&local, &view_three);
+
+        let prepared = view_three
+            .prepare(ViewDelta::Remove { id }, capability)
+            .expect("prepare renamed row removal");
+        let (view_four, remove) = view_three.commit(prepared).expect("commit removal");
+        local
+            .apply_committed_deltas(&[remove])
+            .expect("remove cold-populated document");
+        local
+            .sync(&view_four)
+            .expect("removed projection is current");
+        assert_eq!(local.index_identity(), Some(writer));
+        assert!(page_union(&local, "renamed").is_empty());
+        assert!(page_union(&local, "finalneedle").is_empty());
+        assert_eq!(page_union(&local, ""), [keeper_id]);
+        assert_cold_parity(&local, &view_four);
     }
 
     #[test]
