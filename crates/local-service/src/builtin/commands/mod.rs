@@ -22,4 +22,6 @@ pub(in crate::builtin) use adapter::{
 pub(in crate::builtin) use index::package_source_membership_page_from_snapshot;
 #[cfg(test)]
 pub(in crate::builtin) use index::prepare_source_facts_changes;
+#[cfg(test)]
+pub(in crate::builtin) use index::semantic_versions;
 pub(in crate::builtin) use index::{recover_awaiting_selection, recover_offered_reservation};

@@ -1453,6 +1453,34 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
     )
     .unwrap();
     let active = coverage::ActivatedProfiles::from_iter([(package, key.profile())]);
+    use backend_engine::application::{
+        LocalCompilerClient, LocalCompilerRuntimeConfiguration, LocalCompilerRuntimePaths,
+        LocalCompilerScratch, LocalCompilerTimeout, LocalRuntimePackageAuthority,
+        LocalRuntimeToolchain,
+    };
+    use backend_semantic::vocabulary::NativeTool;
+    use std::num::NonZeroUsize;
+    let compiler_root = workspace.0.path().join("projection-compiler");
+    let compiler = LocalCompilerClient::start(
+        LocalCompilerRuntimeConfiguration::new(
+            LocalCompilerRuntimePaths::new(
+                compiler_root.join("artifacts"),
+                compiler_root.join("journal"),
+                compiler_root.join("native-work"),
+            )
+            .unwrap(),
+            vec![LocalRuntimeToolchain::unavailable(NativeTool::Python)].into_boxed_slice(),
+            Box::new([]),
+            LocalRuntimePackageAuthority::default(),
+            LocalCompilerTimeout::new(std::time::Duration::from_secs(2)).unwrap(),
+            backend_store::journal::PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN)
+                .unwrap(),
+            LocalCompilerScratch::with_fragment_capacity(NonZeroUsize::new(1024 * 1024).unwrap())
+                .unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let (file, facts) = parsed_file(package, "retained.ts", 3);
     commit_files(
         &mut daemon,
@@ -1508,6 +1536,48 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
             .unwrap();
             super::super::commands::commit_builtin_intent(daemon, request, &intent).unwrap();
         };
+    let assert_remaining_projection = |snapshot: &WorkspaceSnapshot, sibling| {
+        let mut generations = crate::builtin::SemanticGenerationResidence::default();
+        let (view, current_activated, _) = crate::builtin::view_for_snapshot(
+            snapshot,
+            &compiler,
+            coverage::SemanticDeployment::Configured,
+            workspace.0.path(),
+            &mut view_build::ImageRowResidence::default(),
+            &mut generations,
+        )
+        .unwrap();
+        assert_eq!(
+            generations.owner_calls(),
+            0,
+            "removed historical generation was activated"
+        );
+        assert!(
+            view.row_ref(backend_engine::RowId::Package(package))
+                .is_none(),
+            "removed package was resurrected"
+        );
+        assert!(
+            view.row_refs().all(|row| row.package != Some(package)),
+            "removed declarations were resurrected"
+        );
+        assert!(
+            view.row_ref(backend_engine::RowId::Package(sibling))
+                .is_some(),
+            "remaining package disappeared"
+        );
+        assert_eq!(view.coverage(), &[ViewCoverage::Complete]);
+        assert!(current_activated.is_empty());
+        assert_eq!(
+            coverage::view_coverage(
+                snapshot,
+                &current_activated,
+                coverage::SemanticDeployment::Configured
+            )
+            .unwrap(),
+            vec![ViewCoverage::Complete]
+        );
+    };
     let assert_scope = |snapshot: &WorkspaceSnapshot, state, expected: Vec<ViewCoverage>| {
         assert_eq!(
             coverage::package_row_state(snapshot, package).unwrap(),
@@ -1543,6 +1613,16 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
     );
     let pending = daemon.engine().daemon().owner().snapshot();
     assert_scope(&pending, RowState::Loading, partial.clone());
+    assert_eq!(
+        coverage::view_coverage(
+            &pending,
+            &coverage::ActivatedProfiles::new(),
+            coverage::SemanticDeployment::Configured
+        )
+        .unwrap(),
+        partial,
+        "existing pending scope was incorrectly excluded by absent activation"
+    );
     let sibling_label = "pkg:npm/source-correlation-sibling@1.0.0";
     let sibling = PackageKey::from_value(sibling_label);
     let (sibling_file, sibling_facts) = parsed_file(sibling, "sibling.ts", 1);
@@ -1645,7 +1725,40 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
         view_publish::semantic_root(&missing_published).unwrap(),
         semantic_root
     );
-    assert_scope(&missing_published, RowState::Failed, stale.clone());
+    assert_scope(
+        &missing_published,
+        RowState::Failed,
+        vec![ViewCoverage::Complete],
+    );
+    assert_remaining_projection(&missing_published, sibling);
+    let historical_membership = backend_library::PackageSourceMembershipPageRequestV1::first(
+        backend_engine::PackageReference::Local(backend_library::ProductText::new(label).unwrap()),
+    )
+    .with_selection(view_publish::source_root(&published).unwrap(), [1; 32]);
+    assert!(
+        matches!(
+            crate::builtin::commands::package_source_membership_page_from_snapshot(
+                &missing_published,
+                &historical_membership
+            )
+            .unwrap(),
+            backend_library::PackageSourceMembershipPageResultV1::Stale {
+                current_source_version: None,
+                ..
+            }
+        ),
+        "explicit removed source scope must expose a stale old selection"
+    );
+    assert_eq!(
+        coverage::view_coverage(
+            &missing_published,
+            &coverage::ActivatedProfiles::new(),
+            coverage::SemanticDeployment::Configured
+        )
+        .unwrap(),
+        vec![ViewCoverage::Complete],
+        "removed history poisoned current remaining scope"
+    );
     assert!(
         read_package_sources(&missing_published, package)
             .unwrap()
@@ -1712,7 +1825,7 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
             .unwrap()
             .is_none()
     );
-    assert_scope(&removed, RowState::Failed, stale.clone());
+    assert_scope(&removed, RowState::Failed, vec![ViewCoverage::Complete]);
     assert!(
         read_package_sources(&removed, package)
             .unwrap()
@@ -1735,6 +1848,16 @@ fn retained_published_capture_is_correlated_with_exact_package_source_frontier()
     let cold = open_daemon(workspace.0.path());
     let snapshot = cold.engine().daemon().owner().snapshot();
     assert_eq!(snapshot.root(), final_root);
-    assert_scope(&snapshot, RowState::Failed, stale);
+    assert_scope(&snapshot, RowState::Failed, vec![ViewCoverage::Complete]);
+    assert_eq!(
+        coverage::view_coverage(
+            &snapshot,
+            &coverage::ActivatedProfiles::new(),
+            coverage::SemanticDeployment::Configured
+        )
+        .unwrap(),
+        vec![ViewCoverage::Complete]
+    );
+    assert_remaining_projection(&snapshot, sibling);
     assert_complete(&cold, sibling, "sibling.ts", 1);
 }

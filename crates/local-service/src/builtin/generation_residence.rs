@@ -2186,6 +2186,264 @@ mod tests {
     }
 
     #[test]
+    fn native_freshness_requires_current_package_source_even_with_same_input_digest() {
+        if !run_with_explicit_clang_fixture() {
+            return;
+        }
+        use super::super::profile::capture_basis_for_snapshot;
+        use super::super::semantic_authority::{SelectedSemanticPublicationKey, SemanticAuthority};
+        use super::super::{
+            BuiltinCaptureChange, BuiltinIntent, BuiltinSemanticChange, BuiltinSourceChange,
+        };
+        use backend_engine::SemanticVersionFreshness;
+        use backend_engine::builtin::{
+            ProductSemanticCaptureOutcome, SemanticPublicationVersion, SemanticSourceCapture,
+            semantic_capture_relation,
+        };
+
+        fn open_owner(path: &std::path::Path) -> super::super::ProductDaemon {
+            let profile =
+                super::super::profile_descriptor(super::super::BuiltinProfile::Product).unwrap();
+            let dispatcher = super::super::builtin_dispatcher(
+                Some(super::super::ECHO_AUTHORITY_SECRET),
+                profile,
+                60_000,
+            )
+            .unwrap();
+            crate::Locald::open_with_dispatcher_and_registry(
+                path,
+                super::super::BuiltinModel,
+                super::super::genesis().unwrap(),
+                dispatcher,
+                backend_engine::DaemonConfig::default(),
+                super::super::product_relation_registry().unwrap(),
+            )
+            .unwrap()
+        }
+        let fixture = super::open_generation_fixture().expect("actual native compiler fixture");
+        let staged = fixture
+            .stage_selected_generation(false)
+            .expect("actual staged native generation");
+        let workspace = tempfile::Builder::new()
+            .prefix("native-source-freshness-")
+            .tempdir()
+            .unwrap();
+        crate::test_support::make_private(workspace.path()).unwrap();
+        let mut daemon = open_owner(workspace.path());
+        let mut authority = SemanticAuthority::open(workspace.path()).unwrap();
+        let key = fixture.key();
+        let claim = admit_staged_candidate(&mut authority, key, &staged, 2);
+        let marker = marker_intent(
+            key,
+            claim,
+            &[
+                ("src/alpha.c", "int alpha(void) { return 1; }\n"),
+                ("src/beta.c", "int beta(void) { return 2; }\n"),
+            ],
+            &[],
+        );
+        authority
+            .commit_product_selection_changes(vec![(key.clone(), claim)], Vec::new(), || {
+                super::super::commands::commit_builtin_intent(&mut daemon, 1, &marker)
+            })
+            .unwrap();
+        let before = daemon.engine().daemon().owner().snapshot();
+        let source = before
+            .relation::<super::super::BuiltinWorkspaceRelation>()
+            .unwrap();
+        let project = source
+            .lookup(&key.package_key().to_bytes())
+            .unwrap()
+            .unwrap();
+        let source_version = project.project_fields().unwrap().source_version;
+        let files = super::super::profile::resolve_project_file_keys(
+            key.package_key().to_bytes(),
+            &project,
+            |page| {
+                source
+                    .lookup(page)
+                    .map_err(|error| super::super::BuiltinModelError(error.to_string()))
+            },
+        )
+        .unwrap();
+        let input_digest = *staged.input_witness().input_root();
+        let capture = SemanticSourceCapture::new(None, source_version, input_digest, 1, 2).unwrap();
+        let prior = SemanticPublicationVersion::new(SemanticPublicationCoverage::Complete, claim);
+        let pending = BuiltinIntent::index_with_capture(
+            key.package_key(),
+            key.package().as_str(),
+            Vec::new(),
+            Vec::new(),
+            vec![BuiltinCaptureChange {
+                key: key.clone(),
+                expected: None,
+                capture,
+                outcome: ProductSemanticCaptureOutcome::Pending { prior: Some(prior) },
+                compiler_failure: None,
+            }],
+        )
+        .unwrap()
+        .with_capture_basis(capture_basis_for_snapshot(&before).unwrap())
+        .unwrap();
+        super::super::commands::commit_builtin_intent(&mut daemon, 2, &pending).unwrap();
+        let pending_snapshot = daemon.engine().daemon().owner().snapshot();
+        let pending_record = semantic_capture_relation(&pending_snapshot)
+            .unwrap()
+            .unwrap()
+            .lookup(key)
+            .unwrap()
+            .unwrap();
+        let selected = ProductSemanticPublicationRecord::Published {
+            coverage: SemanticPublicationCoverage::Complete,
+            claim,
+        };
+        let published = BuiltinIntent::index_with_capture(
+            key.package_key(),
+            key.package().as_str(),
+            Vec::new(),
+            vec![BuiltinSemanticChange {
+                key: key.clone(),
+                after: Some(selected.clone()),
+            }],
+            vec![BuiltinCaptureChange {
+                key: key.clone(),
+                expected: Some(pending_record),
+                capture,
+                outcome: ProductSemanticCaptureOutcome::Published {
+                    coverage: SemanticPublicationCoverage::Complete,
+                    claim,
+                },
+                compiler_failure: None,
+            }],
+        )
+        .unwrap()
+        .with_capture_basis(capture_basis_for_snapshot(&pending_snapshot).unwrap())
+        .unwrap();
+        super::super::commands::commit_builtin_intent(&mut daemon, 3, &published).unwrap();
+        let current = daemon.engine().daemon().owner().snapshot();
+        assert_eq!(
+            authority
+                .freshness(
+                    &current,
+                    SelectedSemanticPublicationKey::new(key).unwrap(),
+                    claim
+                )
+                .unwrap(),
+            SemanticVersionFreshness::Current { input_digest }
+        );
+        let versions =
+            super::super::commands::semantic_versions(&daemon, key.package(), None, &mut authority)
+                .unwrap();
+        assert!(versions.iter().any(|record| record.selected
+            && record.freshness == SemanticVersionFreshness::Current { input_digest }));
+
+        let changed_project = backend_engine::ProductSourceRecord::project(
+            key.package().as_str(),
+            [0xA5; 32],
+            files.clone(),
+        )
+        .unwrap();
+        let source_only = BuiltinIntent::index_with_semantics(
+            key.package_key(),
+            key.package().as_str(),
+            vec![BuiltinSourceChange {
+                key: key.package_key().to_bytes(),
+                after: Some(changed_project),
+            }],
+            Vec::new(),
+        )
+        .unwrap();
+        super::super::commands::commit_builtin_intent(&mut daemon, 4, &source_only).unwrap();
+        let changed = daemon.engine().daemon().owner().snapshot();
+        let unchanged_capture = semantic_capture_relation(&changed)
+            .unwrap()
+            .unwrap()
+            .lookup(key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged_capture.capture().input_digest(), &input_digest);
+        assert_eq!(
+            changed
+                .relation::<super::super::BuiltinSemanticRelation>()
+                .unwrap()
+                .lookup(key)
+                .unwrap(),
+            Some(selected.clone())
+        );
+        assert_eq!(
+            authority
+                .freshness(
+                    &changed,
+                    SelectedSemanticPublicationKey::new(key).unwrap(),
+                    claim
+                )
+                .unwrap(),
+            SemanticVersionFreshness::Unverified
+        );
+        let versions =
+            super::super::commands::semantic_versions(&daemon, key.package(), None, &mut authority)
+                .unwrap();
+        assert!(
+            versions.iter().any(|record| record.selected
+                && record.freshness == SemanticVersionFreshness::Unverified)
+        );
+
+        let remove = BuiltinIntent::remove_project_with_semantics(
+            key.package_key(),
+            key.package().as_str(),
+            &files,
+            &[],
+            Vec::new(),
+        )
+        .unwrap();
+        super::super::commands::commit_builtin_intent(&mut daemon, 5, &remove).unwrap();
+        let removed = daemon.engine().daemon().owner().snapshot();
+        assert_eq!(
+            authority
+                .freshness(
+                    &removed,
+                    SelectedSemanticPublicationKey::new(key).unwrap(),
+                    claim
+                )
+                .unwrap(),
+            SemanticVersionFreshness::Unverified
+        );
+        let final_root = removed.root();
+        drop(removed);
+        drop(changed);
+        drop(current);
+        drop(pending_snapshot);
+        drop(before);
+        drop(authority);
+        drop(daemon);
+        let cold = open_owner(workspace.path());
+        let mut cold_authority = SemanticAuthority::open(workspace.path()).unwrap();
+        let snapshot = cold.engine().daemon().owner().snapshot();
+        assert_eq!(snapshot.root(), final_root);
+        assert_eq!(
+            cold_authority
+                .freshness(
+                    &snapshot,
+                    SelectedSemanticPublicationKey::new(key).unwrap(),
+                    claim
+                )
+                .unwrap(),
+            SemanticVersionFreshness::Unverified
+        );
+        let versions = super::super::commands::semantic_versions(
+            &cold,
+            key.package(),
+            None,
+            &mut cold_authority,
+        )
+        .unwrap();
+        assert!(
+            versions.iter().any(|record| record.selected
+                && record.freshness == SemanticVersionFreshness::Unverified)
+        );
+    }
+
+    #[test]
     fn native_history_cas_holds_the_committed_marker_lease_across_two_generations() {
         if !run_with_explicit_clang_fixture() {
             return;

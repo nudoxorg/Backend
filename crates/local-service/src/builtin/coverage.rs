@@ -160,6 +160,18 @@ impl SemanticTally {
         if !key.is_selected() {
             return Ok(());
         }
+        // The current authenticated inventory declares current workspace
+        // scope. Retained capture/history for a removed package belongs to
+        // explicit historical reads; it cannot poison every remaining package.
+        if source
+            .lookup(&key.package_key().to_bytes())
+            .map_err(|error| BuiltinModelError(format!("read current package scope: {error}")))?
+            .as_ref()
+            .and_then(|record| record.project_fields())
+            .is_none()
+        {
+            return Ok(());
+        }
         if let Some(capture) = capture {
             if !capture_matches_source(source, key, capture)? {
                 // Still check a Published claim against its retained selection.
@@ -286,7 +298,7 @@ pub(super) fn capture_row_state(
 
 /// Package-local source correlation, without consulting global root equality
 /// or the filesystem. A removed/missing package cannot certify its old capture.
-fn capture_matches_source(
+pub(super) fn capture_matches_source(
     source: &backend_engine::WorkspaceRelationHandle<super::BuiltinWorkspaceRelation>,
     key: &ProductSemanticPublicationKey,
     capture: &ProductSemanticCaptureRecord,
