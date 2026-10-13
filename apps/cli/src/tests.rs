@@ -549,10 +549,7 @@ fn a_missing_operand_prints_the_exact_usage_line() {
     let fault = invoke::parse(&words("show"), None).expect_err("missing coordinate");
     assert_eq!(fault.slug(), FaultSlug::Usage);
     assert!(
-        fault
-            .cause()
-            .sentence()
-            .contains("backend show <COORDINATE>"),
+        fault.cause().sentence().contains("nudox show <COORDINATE>"),
         "{}",
         fault.cause().sentence()
     );

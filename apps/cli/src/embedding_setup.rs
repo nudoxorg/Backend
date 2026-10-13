@@ -499,13 +499,21 @@ mod tests {
     }
     #[test]
     fn setup_json_observations_never_claim_activation_or_available() {
-        for state in [
-            SetupState::ObservedHelper,
-            SetupState::InstalledNotActivated(OwnerContext::new(
-                "/original/project".into(),
-                "/original/state".into(),
-                "/original/socket".into(),
-            )),
+        for (state, expected_name, expected_action) in [
+            (
+                SetupState::ObservedHelper,
+                "observed-helper",
+                "No execution or semantic attestation",
+            ),
+            (
+                SetupState::InstalledNotActivated(OwnerContext::new(
+                    "/original/project".into(),
+                    "/original/state".into(),
+                    "/original/socket".into(),
+                )),
+                "installed-not-activated",
+                "Semantic availability requires completed inference under the installed recipe",
+            ),
         ] {
             let output = render(
                 &Options::plain(Format::Json),
@@ -515,13 +523,14 @@ mod tests {
             .expect("render");
             let decoded: serde_json::Value = serde_json::from_str(&output).expect("json");
             assert_eq!(decoded["kind"], "local-embedding-setup");
+            assert_eq!(decoded["state"], expected_name);
             assert!(decoded.get("activated").is_none());
             assert!(decoded.get("available").is_none());
             assert!(
                 decoded["action"]
                     .as_str()
                     .expect("action")
-                    .contains("semantic")
+                    .contains(expected_action)
             );
         }
     }
