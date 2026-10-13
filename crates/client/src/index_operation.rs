@@ -988,7 +988,7 @@ mod tests {
                         .join()
                         .expect("contender drained")
                         .expect_err("held real lock excludes second caller");
-                    assert!(matches!(&error, ClientError::IndexOperationDeliveryUnknown { cause, .. } if matches!(cause.as_ref(), ClientError::Io(_))));
+                    assert!(matches!(&error, ClientError::Io(_)), "request-lock refusal happens before any dispatch: {error}");
                     assert!(
                         error
                             .to_string()
