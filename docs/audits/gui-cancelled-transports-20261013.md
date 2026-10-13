@@ -1,0 +1,11 @@
+# Retire interrupted GUI transports before retrying
+
+The cached desktop command or subscription transport can be permanently interrupted by a request's cancellation wake. The direct publication-revision shortcut and early subscription failures did not consistently clear both caches. A later request could therefore reuse a socket interrupted by an earlier attempt.
+
+The repair retires both cached transports after request-local wake guards have ended whenever the completed request was cancelled. It preserves the original result, including confirmed mutation receipts and uncertain-delivery classification. It does not stop the owner, change the owner epoch, replay a mutation or select a new source basis. The next request authenticates fresh sockets against the existing owner attachment.
+
+Root integrated source atom `5a4c6ab3cb` on canonical `8b27d833f71532a73a4d8b660661227023e9892b`. Its tree `67f228314efb7eb96b3b42f4b2184c3ea9559799` exactly matches author `c4f8a01877cf991e50194473d8e3e3a025ed25c9`. Root read the complete change and surrounding request/session/owner-result paths. Independent Luna cleared cancellation ownership, cache retirement and mutation-result preservation. Postimage verification, Rust syntax parsing and diff checks passed. Root receipt `/private/tmp/nudox-root-gui-cancel-source-review-20261013.json` has SHA-256 `8a0136c54c331639655ebd2476236acdccb313bbb49a3c52dd06fad7fbf9d75d`.
+
+The Unix regression uses actual socket pairs and a private listener. Cancellation interrupts a cached revision request, both cached streams close, the ready owner epoch remains unchanged, and the next same-basis request reaches a fresh physical stream. A correlated refusal proves transport reachability only; it does not fabricate a certified root or claim successful GUI admission.
+
+Native compilation, this regression, mounted GUI controls, current pixels and actual cancel/retry user flows are **UNRUN**. The separate initial-root observer can still wait after a definitive current request failure; that needs an exact current-request terminal outcome, not a generic owner-death signal. The existing 50 ms cancel-acknowledgement policy and fresh authentication also require actual busy-owner startup testing. This checkpoint does not establish GUI readiness or promote the installer.
