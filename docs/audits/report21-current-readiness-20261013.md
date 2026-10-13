@@ -1,6 +1,6 @@
 # Report 21 readiness checkpoint
 
-Recorded 2026-10-13, 06:05 UTC. Product readiness is **not established**. Canonical remains `8b27d833f71532a73a4d8b660661227023e9892b`; the repairs below are published review branches. No current native test or fresh application success is asserted by this checkpoint.
+Updated 2026-10-13, 06:46 UTC. Product readiness is **not established**. Canonical remains `8b27d833f71532a73a4d8b660661227023e9892b`; the repairs below are published review branches. A current native compile failed as recorded below. No current native test or fresh application success is asserted by this checkpoint.
 
 ## Published repairs
 
@@ -18,6 +18,7 @@ Recorded 2026-10-13, 06:05 UTC. Product readiness is **not established**. Canoni
 | TypeScript work avoidance | [PR 200](https://dev.nudox.org/git/Nudox/Backend/pulls/200) | Resolved skipLibCheck policy retained; declaration type authority and application errors preserved; one sealed global lookup projection shared per program plan. Detailed tracing is opt-in at DEBUG. One complete options initializer was corrected after a 1,062-file source audit. Native/SDK/performance gates unrun. |
 | Durable default index start | [PR 201](https://dev.nudox.org/git/Nudox/Backend/pulls/201) | Default MCP and CLI share saved claims; pre-send refusals remain refusals and uncertain delivery retains an actionable key. Socket, subprocess and scripted controls have different proof scopes; all remain unrun. |
 | Definitive initial GUI Root failure | [PR 202](https://dev.nudox.org/git/Nudox/Backend/pulls/202) | Exact owner/request carrier wakes observation without waiting for timeout; cancellation, supersession, new owner and certified publication protected. Five laws prepared; mounted startup/retry and pixels unrun. |
+| MCP outline type repairs | [PR 203](https://dev.nudox.org/git/Nudox/Backend/pulls/203) | Maps presentation faults at the JSON-RPC boundary and uses canonical relation entries for versioned fixtures. Reproduced native compile errors; corrected rerun pending. |
 
 ## Exact candidates
 
@@ -35,7 +36,13 @@ An earlier finite control failed before its intended actor body because its outp
 
 The separately guarded source transition completed with OS exit 0 at 05:47:52 and installed only the immutable `581e` candidate. The minimal trusted native launcher received final independent source clearance: packet SHA-256 `b393a244f1ca11a32c6dde7d5c56d1db54948474e605a403962caa0f4ca33560`. It keeps owned kernel-scope lifetime/drain, exact destination permit, fresh capacity samples, two Cargo jobs, declared resource caps and source/tool identities. Optional general confinement cohorts were removed as a prerequisite. File-footprint errors now refuse rather than silently undercounting; a completed primary with live owned members gets bounded cleanup and a nonzero lifecycle result.
 
-The first fixed workload is `cargo test --no-run --locked -j2` for the CLI, client, MCP and presentation libraries, followed by actual positive test listings and unfiltered library suites. At this checkpoint, no new native test binary hash, completed Cargo result, executed test count, or current fresh-project acceptance is available. Final launcher clearance and source installation are operational evidence, not native product success.
+The first current native workload ran on ILO from 06:07:13 to 06:14:09 UTC. Its exact source was `581e24f53ed32dc5b388c82b0e8638602abe39f7`. Custodian PID 3699231, Cargo PID 3699351 and recorded rustc processes were observed on ILO, not this Mac. `cargo test --no-run --locked -j2` for CLI, client, MCP and presentation libraries exited 101. It reported E0277 at `apps/mcp/src/jsonrpc.rs:896` (presentation Fault lacked conversion to RpcError) and E0308 at `apps/mcp/src/jsonrpc/tests/token_outline.rs:7` (bytes supplied to the canonical key/value root API). Zero tests were listed or run. The complete stdout/stderr logs were retained and independently transferred; their SHA-256s are `c978336ea4e72c98d46a7f7921df925924b52eed6b68299aa53092a32e06d1bb` and `8623a3c803bfe592f38589dd3b0f9c6d0ec179ca30103145c324c152cbbc379b`. The exact scope drained, adopted processes were reaped with ECHILD, its permit was released, and the loan registry is clear. The outer 124 classifies bounded live-scope cleanup; it does not replace the actual Cargo 101 failure.
+
+Root fixed both errors and found a third occurrence of the same root API mismatch in the presentation member-paging fixture. The full successor is `7bd8ffc563ff2ff2d225f802693473c161315589`, tree `65ce1539dbdcabbae878dbf4f348ce4ca47a5b0f`, published on `codex/report21-mcp-type-repairs-20261013`. Root verified all 85 changed postimages and direct Rust syntax checks; receipt SHA-256 `5eefafd8bb5deb0f2d2b2a50fd04f141253e6d3cb0ba33a388149fb3bbc517f3`. An independent Luna review confirmed the fault boundary and version-distinct canonical fixture roots. The fresh successor native run is pending, not passed.
+
+Separate Sol 6.1 workers prepared fresh HTTPie, SearXNG, Gitea and Caddy checkouts on ILO, plus pinned Excalidraw and Angular source archives. They have not run current product owners or indexed those projects. A fresh canonical v6 sample at 06:38:16 reported five occupied reachable-fleet slots and allowed remote admission, with approximately 56 GiB available ILO memory and 152 GiB disk. The managed RustPython shim failed ctypes process sampling; the validated CPython 3.12.14 runtime produced complete successful samples. No census source workaround or local heavy build was used.
+
+Additional isolated source atoms await native review: the conventional TypeScript config selector correction (`c535075e6e`), grouped-search tail parity (`298ee8c459`), warning cleanup, and Windows archive command alias assembly. None is silently added to the frozen successor. Cal.com's real `packages/trpc` layout exposed the selector problem: four peer configs including a valid `tsconfig.json` were treated as ambiguous. The proposed shared selector preserves producer-selected configs and recognizes the conventional default; its native controls remain unrun.
 
 ## Required remaining acceptance
 
