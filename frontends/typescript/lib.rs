@@ -561,6 +561,15 @@ mod tests {
             assert!(find("generateSchedule").signature().contains("export const unrelated"),
                 "ownership refinement preserves the original written statement");
         }
+        // Both sibling initializers own a local, so either query-match order
+        // must expose the old first-name-for-whole-statement mistake.
+        let siblings = b"const first = () => { const firstLocal = 1; return firstLocal; }, second = () => { const secondLocal = 2; return secondLocal; };";
+        let analysis = frontend.analyze(Path::new("siblings.ts"), siblings)?;
+        for (child, owner) in [("firstLocal", "first"), ("secondLocal", "second")] {
+            let declaration = analysis.declarations().iter().find(|decl| decl.name() == child)
+                .expect("both sibling initializer locals are captured");
+            assert_eq!(declaration.container(), &Container::enclosing(owner, NonZeroU32::new(1).unwrap()));
+        }
         Ok(())
     }
 
