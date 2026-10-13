@@ -3427,9 +3427,6 @@ impl LineageEvidenceResolver<'_, '_, '_> {
         key: &LineageKey,
         tier: u8,
     ) -> Result<bool, String> {
-        if !self.lineages.oversized_lineages.contains(sort_key) {
-            return Ok(true);
-        }
         let evidence = self.best_evidence(sort_key, key)?;
         Ok(evidence.is_some_and(|evidence| evidence.rank() == tier)
             // The lineage aggregate does not compute fuzzy evidence. Keep
@@ -8166,21 +8163,28 @@ mod tests {
     fn grouped_search_does_not_resurface_overflow_alias_at_prefix_name_tier() {
         let cargo = source(RegistryEcosystem::Cargo, "https://index.crates.io");
         const TEST_FACET_VALUE_LIMIT: usize = 2;
+        let metadata = || DiscoveryMetadata {
+            aliases: DiscoveryFacet::Known(vec![
+                "alpha".to_owned(),
+                "beta".to_owned(),
+                "widget".to_owned(),
+            ]),
+            ..DiscoveryMetadata::default()
+        };
         let mut entries = Vec::new();
         for lineage in ["widget-long", "widget-z"] {
             for version in ["1.0.0", "1.0.1", "1.0.2"] {
                 entries.push((
                     key(cargo, &format!("pkg:cargo/{lineage}@{version}")),
-                    DiscoveryMetadata {
-                        aliases: DiscoveryFacet::Known(vec![
-                            "alpha".to_owned(),
-                            "beta".to_owned(),
-                            "widget".to_owned(),
-                        ]),
-                        ..DiscoveryMetadata::default()
-                    },
+                    metadata(),
                 ));
             }
+        }
+        for lineage in ["widget-small", "widget-tiny"] {
+            entries.push((
+                key(cargo, &format!("pkg:cargo/{lineage}@1.0.0")),
+                metadata(),
+            ));
         }
         let index = build_discovery_projection_with_metadata_and_facet_limit(
             &entries,
@@ -8207,7 +8211,10 @@ mod tests {
             }
         }
         assert!(cursor.is_none(), "all alias groups should be consumed");
-        assert_eq!(seen, ["widget-long", "widget-z"]);
+        assert_eq!(
+            seen,
+            ["widget-long", "widget-small", "widget-tiny", "widget-z"]
+        );
     }
 
     #[test]
