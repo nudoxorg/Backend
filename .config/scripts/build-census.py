@@ -83,7 +83,13 @@ class _LinuxProcStat:
     ppid: int
     pgid: int
     session: int
+    flags: int
     start_ticks: str
+
+
+# Linux include/linux/sched.h: PF_KTHREAD.  This is kernel-provided stat data,
+# not a command-name or parent-process heuristic.
+_LINUX_PF_KTHREAD = 0x00200000
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -237,6 +243,7 @@ def _parse_linux_proc_stat(text: str) -> _LinuxProcStat:
         ppid=int(fields[1]),
         pgid=int(fields[2]),
         session=int(fields[3]),
+        flags=int(fields[6]),
         start_ticks=fields[19],
     )
 
@@ -388,6 +395,11 @@ class ProcessRecord:
     compiler_candidate: bool = False
     runtime_owner_candidate: bool = False
     unknown_executable_candidate: bool = False
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _LinuxKernelThreadWithoutExecutable:
+    start_ticks: str
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -1090,13 +1102,22 @@ def _linux_process_record(
     argv_budget: _ArgvBudget,
     *,
     proc_factory: Any = _LinuxProcDirectory,
-) -> ProcessRecord | None:
+) -> ProcessRecord | _LinuxKernelThreadWithoutExecutable | None:
     def read_process(proc: _LinuxProcDirectory, stat: _LinuxProcStat) -> dict[str, Any] | None:
         process_uids = _parse_proc_status_uids(proc.read_text("status"))
         if row.effective_uid is not None and process_uids[1] != row.effective_uid:
             # PID exited/reused after ps observed it; do not trust its old ucomm row.
             return None
-        executable = proc.readlink("exe")
+        try:
+            executable = proc.readlink("exe")
+        except FileNotFoundError:
+            if stat.flags & _LINUX_PF_KTHREAD:
+                return {
+                    "kernel_thread_without_executable": True,
+                    "start_ticks": stat.start_ticks,
+                    "stat_flags": stat.flags,
+                }
+            raise
         if _is_cargo_executable(executable):
             if argv_budget.exhausted:
                 argv = None
@@ -1141,6 +1162,16 @@ def _linux_process_record(
     if capture.value is None:
         return None
     details = capture.value
+    if details.get("kernel_thread_without_executable"):
+        if (
+            details["start_ticks"] != capture.first.start_ticks
+            or details["start_ticks"] != capture.last.start_ticks
+            or not (capture.first.flags & _LINUX_PF_KTHREAD)
+            or not (details["stat_flags"] & _LINUX_PF_KTHREAD)
+            or not (capture.last.flags & _LINUX_PF_KTHREAD)
+        ):
+            raise _LinuxProcRace(errno.ESTALE, "kernel-thread-identity-not-stable")
+        return _LinuxKernelThreadWithoutExecutable(details["start_ticks"])
     return ProcessRecord(
         pid=row.pid,
         ppid=details["ppid"],
@@ -1240,6 +1271,8 @@ def _linux_processes(
             continue
         try:
             record = _linux_process_record(row, boot_id, argv_budget, proc_factory=proc_factory)
+            if isinstance(record, _LinuxKernelThreadWithoutExecutable):
+                continue
             if record is not None:
                 records[row.pid] = record
             elif same_uid:
