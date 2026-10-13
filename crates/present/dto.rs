@@ -306,6 +306,9 @@ pub struct FaultDto {
     /// Exact corpus readiness; distinct from index and vector-search status.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query_preparation: Option<QueryPreparationDto>,
+    /// Saved key with unconfirmed delivery; no terminal mutation outcome is claimed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unconfirmed_index_delivery: Option<backend_library::IndexOperationKey>,
 }
 
 /// A query waiting on the single asynchronous corpus preparation worker.
@@ -344,6 +347,7 @@ impl FaultDto {
             detail: fault.cause().sentence().to_owned(),
             shell: fault.affordance().shell(),
             call: fault.affordance().tool_call(),
+            unconfirmed_index_delivery: fault.unconfirmed_index_delivery(),
             compiler_failure: fault.compiler_failure().cloned(),
             partial_publication: fault.partial_publication_receipt().cloned(),
             query_preparation: fault.query_preparation().map(|(basis, state)| {

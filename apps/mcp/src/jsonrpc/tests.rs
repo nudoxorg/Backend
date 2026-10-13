@@ -2604,54 +2604,29 @@ fn index_first_use_returns_one_admitted_durable_poll_and_copying_it_only_observe
 }
 
 #[test]
-fn index_start_keeps_the_exact_owner_ticket_and_routes_purls_to_the_owner_job_api() {
+fn default_index_start_preserves_active_ticket_and_uses_durable_purl_index_api() {
     let ticket = index_job_ticket();
-    let reply = SurfaceReply::IndexStarted(IndexStartResult::Started {
-        ticket: ticket.clone(),
-        stage: IndexJobStage::Acquiring,
-    });
-    let fake = Fake {
-        surface_reply: Some(reply.clone()),
-        ..Fake::default()
-    };
-    let mut server = ready(fake);
-    let result = call(
-        &mut server,
-        INDEX_START_TOOL,
-        &json!({
-            "package": "pkg:cargo/serde@1.0.228",
-            "execution_intent": "background"
-        }),
+    let operation_key = backend_library::IndexOperationKey::from_bytes([0x72; 32]).expect("key");
+    let status = backend_library::IndexOperationStatus::new(
+        operation_key, ticket.package().clone(), CompileExecutionIntent::Background,
+        backend_library::IndexOperationState::Active { ticket: ticket.clone(), stage: IndexJobStage::Acquiring },
     );
-
+    let reply = SurfaceReply::IndexOperationStarted(backend_library::IndexOperationObservation::Known(status.clone()));
+    let fake = Fake { surface_reply: Some(reply.clone()), durable_index_key: Some(operation_key), ..Fake::default() };
+    let mut server = ready(fake);
+    let result = call(&mut server, INDEX_START_TOOL, &json!({"package":"pkg:cargo/serde@1.0.228", "execution_intent":"background"}));
     assert_eq!(result["isError"], false);
     let wire = serde_json::to_value(&reply).expect("typed reply");
-    assert_eq!(
-        result["structuredContent"]["surface"]["result"],
-        wire["result"]
-    );
+    assert_eq!(result["structuredContent"]["surface"]["result"], wire["result"]);
     assert_eq!(result["structuredContent"]["surface"]["data"], wire["data"]);
-    assert_eq!(
-        result["structuredContent"]["surface"]["index_job"]["kind"],
-        "started"
-    );
-    assert_eq!(
-        result["structuredContent"]["surface"]["index_job"]["value"],
-        serde_json::to_value(IndexStartResult::Started {
-            ticket: ticket.clone(),
-            stage: IndexJobStage::Acquiring,
-        })
-        .expect("start projection")
-    );
-    assert!(text_of(&result).contains("stage acquiring"));
-    assert!(text_of(&result).contains(&ticket_value(&ticket).to_string()));
+    let poll = &result["structuredContent"]["index_poll"]["call"];
+    assert_eq!(poll["name"], INDEX_PROGRESS_TOOL);
+    assert_eq!(poll["arguments"]["operation_key"], serde_json::to_value(operation_key).expect("key"));
+    assert_eq!(status.state, backend_library::IndexOperationState::Active { ticket, stage: IndexJobStage::Acquiring });
     assert_context_bounded(&result);
-    assert!(matches!(
-        server.product.surface_commands.as_slice(),
-        [SurfaceCommand::IndexStart {
-            package: PackageReference::Purl(package),
-            execution_intent: CompileExecutionIntent::Background,
-        }] if package.as_str() == "pkg:cargo/serde@1.0.228"
+    assert!(matches!(server.product.surface_commands.as_slice(),
+        [SurfaceCommand::IndexOperationStart { operation_key: key, package: PackageReference::Purl(package), execution_intent: CompileExecutionIntent::Background }]
+        if *key == operation_key && package.as_str() == "pkg:cargo/serde@1.0.228"
     ));
 }
 

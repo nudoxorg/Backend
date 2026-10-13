@@ -1009,6 +1009,16 @@ fn a_fault_chooses_the_exit_code_a_script_can_branch_on() {
         backend_present::Operand::Path("/tmp/x".to_owned()),
     );
     assert_eq!(render::exit_code(&endpoint), ExitCode::from(1));
+    let key = backend_library::IndexOperationKey::from_bytes([0x76; 32]).expect("saved key");
+    let unconfirmed = Fault::from_client_error(&ClientError::IndexOperationDeliveryUnknown {
+        operation_key: key,
+        cause: Box::new(ClientError::Disconnected(std::io::ErrorKind::WouldBlock)),
+    }, backend_present::Operand::Whole);
+    assert_eq!(render::exit_code(&unconfirmed), ExitCode::from(crate::index_wait::EXIT_WAIT_INCOMPLETE));
+    let wire = backend_present::fault_value(&unconfirmed);
+    assert_eq!(wire["unconfirmed_index_delivery"], serde_json::to_value(key).expect("same key"));
+    assert_eq!(wire["call"]["arguments"]["operation_key"], serde_json::to_value(key).expect("same key"));
+    assert!(wire["detail"].as_str().expect("detail").contains("may already be queued or accepted"));
 }
 
 #[test]
