@@ -520,7 +520,7 @@ impl CheckerState<'_> {
             index: self.ctx.current_file_idx,
             path: &file_name,
         });
-        let observe = |event| types.observe_execution(event);
+        let observe = |event: tsz_common::ProjectExecutionEvent<'_>| types.observe_execution(event);
         let preparation_span = tsz_common::ProjectExecutionSpan::with_observer(
             &observe,
             tsz_common::ProjectExecutionPhase::SourcePreparation,
