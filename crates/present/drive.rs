@@ -506,7 +506,7 @@ fn page(engine: &mut dyn Engine, coordinate: &str) -> Result<Page, Fault> {
     };
     let mut notes = Vec::with_capacity(2);
     let relation_rows = probe_rows(engine, coordinate, &mut notes);
-    let members = probe_members(engine, coordinate, &mut notes);
+    let members = probe_members(engine, coordinate, &document, &mut notes);
     Ok(page_from_document_with_graph_relations(
         coordinate,
         &document,
@@ -714,11 +714,16 @@ fn probe_rows(engine: &mut dyn Engine, coordinate: &str, notes: &mut Vec<Fault>)
 }
 
 /// Fetches the owning package's flat outline so members can be named.
-fn probe_members(engine: &mut dyn Engine, coordinate: &str, notes: &mut Vec<Fault>) -> Vec<Row> {
+fn probe_members(
+    engine: &mut dyn Engine,
+    coordinate: &str,
+    document: &backend_library::Document,
+    notes: &mut Vec<Fault>,
+) -> Vec<Row> {
     let Some(project) = Identity::parse(coordinate).project().cloned() else {
         return Vec::new();
     };
-    match outline_rows(engine, project.root()) {
+    match document_member_rows(engine, project.root(), document) {
         Ok(rows) => rows,
         Err(error) => {
             notes.push(
@@ -731,6 +736,133 @@ fn probe_members(engine: &mut dyn Engine, coordinate: &str, notes: &mut Vec<Faul
             Vec::new()
         }
     }
+}
+
+/// Streams the existing owner-issued package projection without retaining its
+/// unrelated rows. A first package page cannot prove a declaration has no more
+/// members; only the terminal page closes this retained-row observation.
+/// This does not promote structural coverage to native/source completeness.
+fn document_member_rows(
+    engine: &mut dyn Engine,
+    path: &str,
+    document: &backend_library::Document,
+) -> Result<Vec<Row>, ClientError> {
+    let package = backend_library::package_key(path);
+    let mut selected = std::collections::BTreeMap::new();
+    let mut continuation = None;
+    let mut frontier = None;
+    loop {
+        let reply = engine.probe_page(
+            Probe::OutlinePage {
+                path,
+                limit: PROBE_ROWS,
+            },
+            continuation,
+        )?;
+        let (snapshot, terminal) = match reply.reply {
+            CommandReply::ProjectionPage(page) => (page.snapshot, Some(page.terminal)),
+            // Root-only in-process constructors retain their compatibility
+            // shape. A real continuation still goes through probe_page, which
+            // refuses unsupported transports instead of restarting page one.
+            CommandReply::Packages(snapshot)
+            | CommandReply::Names(snapshot)
+            | CommandReply::Search(snapshot)
+            | CommandReply::Graph(snapshot) => (snapshot, None),
+            _ => {
+                return Err(ClientError::Protocol(
+                    "document member projection changed shape".to_owned(),
+                ));
+            }
+        };
+        let source = snapshot.root.basis();
+        if source.root != document.basis {
+            return Err(ClientError::CommandFailed(
+                backend_library::CommandFailure::WrongBasis {
+                    expected: document.basis.into(),
+                    observed: source.root.into(),
+                },
+            ));
+        }
+        if document.source_basis().is_some_and(|basis| basis != source) {
+            return Err(ClientError::Protocol(
+                "document member source object or stream differs from its document".to_owned(),
+            ));
+        }
+        let observed = snapshot.root.frontier();
+        if continuation.is_some_and(|previous: PageContinuation| {
+            snapshot.root.recipe() != previous.cursor().recipe()
+        }) {
+            return Err(ClientError::Protocol(
+                "document member query changed between pages".to_owned(),
+            ));
+        }
+        if frontier.is_some_and(|expected| expected != observed) {
+            return Err(ClientError::Protocol(
+                "document member frontier changed between pages".to_owned(),
+            ));
+        }
+        frontier = Some(observed);
+        let expected_terminal = snapshot
+            .next
+            .map_or(backend_library::PageTerminal::Complete, |cursor| {
+                backend_library::PageTerminal::More(PageContinuation::from_cursor(cursor))
+            });
+        if terminal.is_some_and(|terminal| terminal != expected_terminal) {
+            return Err(ClientError::Protocol(
+                "document member page terminal does not match its cursor".to_owned(),
+            ));
+        }
+        if snapshot.root.rows().len() > usize::from(PROBE_ROWS) && terminal.is_some() {
+            return Err(ClientError::Protocol(
+                "document member page exceeds its admitted limit".to_owned(),
+            ));
+        }
+        for row in snapshot.root.rows() {
+            if row.id != backend_library::RowId::Symbol(document.symbol)
+                && row.parent != Some(document.symbol)
+            {
+                continue;
+            }
+            if row.package != Some(package) || !matches!(row.id, backend_library::RowId::Symbol(_))
+            {
+                return Err(ClientError::Protocol(
+                    "document member row belongs to another package".to_owned(),
+                ));
+            }
+            if selected.insert(row.id, row.clone()).is_some() {
+                return Err(ClientError::Protocol(
+                    "document member row repeated across pages".to_owned(),
+                ));
+            }
+        }
+        let Some(next) = snapshot.next else {
+            break;
+        };
+        // Each cursor certifies its own page image, not the previous page's
+        // content version or the source relation root. Only the query recipe
+        // and source frontier remain constant across distinct page images.
+        let page_cursor = backend_library::Cursor::for_view_root(&snapshot.root);
+        let expected_offset = continuation
+            .map_or(0, |previous| previous.cursor().query_offset())
+            .checked_add(u64::from(PROBE_ROWS));
+        if snapshot.root.rows().len() != usize::from(PROBE_ROWS)
+            || next.recipe() != page_cursor.recipe()
+            || next.version() != page_cursor.version()
+            || next.frontier() != page_cursor.frontier()
+            || Some(next.query_offset()) != expected_offset
+        {
+            return Err(ClientError::Protocol(
+                "document member continuation did not advance in its source context".to_owned(),
+            ));
+        }
+        continuation = Some(PageContinuation::from_cursor(next));
+    }
+    if !selected.contains_key(&backend_library::RowId::Symbol(document.symbol)) {
+        return Err(ClientError::Protocol(
+            "document owner is absent from its member projection".to_owned(),
+        ));
+    }
+    Ok(selected.into_values().collect())
 }
 
 fn check_outline_projection(
@@ -758,10 +890,6 @@ fn check_outline_projection(
         ));
     }
     Ok(())
-}
-
-fn outline_rows(engine: &mut dyn Engine, path: &str) -> Result<Vec<Row>, ClientError> {
-    outline_snapshot(engine, path).map(|snapshot| snapshot.root.rows().to_vec())
 }
 
 fn outline_snapshot(engine: &mut dyn Engine, path: &str) -> Result<ViewSnapshot, ClientError> {
@@ -906,6 +1034,316 @@ mod readiness_controls {
                 assert_eq!(observed, fault);
                 assert!(!matches!(observed.affordance(), Affordance::Reindex { .. }));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod document_member_paging_controls {
+    use super::*;
+    use backend_library::{
+        Basis, Coverage, Cursor, DeclarationKind, Document, DocumentQuery, Frontier, HealthReport,
+        Library, PageRequest, PageTerminal, ProjectionPage, QueryLimit, RowId, SourceLocation,
+        ViewRoot, object_version, package_key, symbol_key, view_key, view_state_root,
+    };
+
+    const PATH: &str = "/workspace/constant-members";
+    const OWNER: &str = "/workspace/constant-members::scheduler.ts:88::generateSchedule";
+    const NAMES: [&str; 5] = [
+        "allSections",
+        "missingSections",
+        "wanted",
+        "busyBlocks",
+        "sectionsByClass",
+    ];
+
+    fn catalog() -> Library {
+        let basis = Basis::new(
+            view_state_root(b"retained member observation"),
+            object_version(b"structural source"),
+        );
+        let package = package_key(PATH);
+        let owner = symbol_key(OWNER);
+        let mut rows = vec![
+            Row::in_package(RowId::Package(package), basis, package, PATH),
+            Row::in_package(RowId::Symbol(owner), basis, package, OWNER)
+                .with_kind(DeclarationKind::Function)
+                .with_source(SourceLocation::new("scheduler.ts", 88).expect("source location")),
+        ];
+        for (index, name) in NAMES.iter().enumerate() {
+            let coordinate = format!("{OWNER}::{name}");
+            rows.push(
+                Row::in_package(
+                    RowId::Symbol(symbol_key(&coordinate)),
+                    basis,
+                    package,
+                    coordinate,
+                )
+                .with_parent(owner)
+                .with_kind(DeclarationKind::Constant)
+                .with_source(
+                    SourceLocation::new(
+                        "scheduler.ts",
+                        91 + u32::try_from(index).expect("small fixture"),
+                    )
+                    .expect("source location"),
+                ),
+            );
+        }
+        rows.extend((0..532).map(|index| {
+            let coordinate = format!("{PATH}::unrelated.ts:{}::function_{index}", index + 1);
+            Row::in_package(
+                RowId::Symbol(symbol_key(&coordinate)),
+                basis,
+                package,
+                coordinate,
+            )
+            .with_kind(DeclarationKind::Function)
+            .with_source(SourceLocation::new("unrelated.ts", 1).expect("source location"))
+        }));
+        let root = ViewRoot::new_incomplete(
+            view_key(b"member pagination control"),
+            basis,
+            Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 17),
+            rows,
+            vec![Coverage::Unavailable {
+                lane: backend_library::Lane::Exact,
+                reason: backend_library::Reason::NoIndex,
+            }],
+        )
+        .expect("retained rows never claim native/source completeness");
+        Library::from_view(root.clone(), Cursor::for_view_root(&root))
+            .expect("actual immutable catalog")
+    }
+
+    #[derive(Clone, Copy, Default)]
+    enum Disturbance {
+        #[default]
+        None,
+        Cancel,
+        ChangedBasis,
+        ChangedFrontier,
+        RepeatedCursor,
+        WrongTerminal,
+        ForeignMember,
+    }
+
+    struct Reader {
+        catalog: Library,
+        disturbance: Disturbance,
+        calls: usize,
+        cursors: Vec<Option<PageContinuation>>,
+    }
+    impl Reader {
+        fn new(disturbance: Disturbance) -> Self {
+            Self {
+                catalog: catalog(),
+                disturbance,
+                calls: 0,
+                cursors: Vec::new(),
+            }
+        }
+        fn document(&self) -> Document {
+            self.catalog
+                .document(DocumentQuery::selected(
+                    symbol_key(OWNER),
+                    self.catalog.revision_root(),
+                ))
+                .expect("real selected document")
+        }
+    }
+    impl Engine for Reader {
+        fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
+            Ok(self.catalog.revision_root())
+        }
+        fn health(&mut self) -> Result<HealthReport, ClientError> {
+            Ok(HealthReport::from_root(
+                self.catalog.view(),
+                self.catalog.cursor(),
+            ))
+        }
+        fn surface(&mut self, _: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
+            Err(ClientError::Protocol("not a mutation fixture".to_owned()))
+        }
+        fn probe(&mut self, probe: Probe<'_>) -> Result<ReplyDto, ClientError> {
+            match probe {
+                Probe::Document(OWNER) => {
+                    Ok(ReplyDto::new(1, CommandReply::Document(self.document())))
+                }
+                Probe::Related(_) => Err(ClientError::Protocol(
+                    "this fixture proves members, not graph authority".to_owned(),
+                )),
+                _ => self.probe_page(probe, None),
+            }
+        }
+        fn probe_page(
+            &mut self,
+            probe: Probe<'_>,
+            continuation: Option<PageContinuation>,
+        ) -> Result<ReplyDto, ClientError> {
+            let Probe::OutlinePage { path, limit } = probe else {
+                return Err(ClientError::Protocol("wrong probe".to_owned()));
+            };
+            assert_eq!(path, PATH);
+            assert_eq!(limit, PROBE_ROWS);
+            self.calls += 1;
+            self.cursors.push(continuation);
+            if self.calls == 2 && matches!(self.disturbance, Disturbance::Cancel) {
+                return Err(ClientError::RequestCancelled(
+                    backend_client::RequestCancellationReason::Explicit,
+                ));
+            }
+            let request = PageRequest::new(
+                self.catalog.revision_root(),
+                QueryLimit::new(limit).expect("exact credit"),
+            );
+            let request = continuation.map_or(request, |cursor| request.with_continuation(cursor));
+            let mut page: ProjectionPage = self
+                .catalog
+                .outline_page(package_key(path), request)
+                .expect("actual native-style page selector");
+            if self.calls == 2 {
+                match self.disturbance {
+                    Disturbance::ChangedBasis
+                    | Disturbance::ChangedFrontier
+                    | Disturbance::ForeignMember => {
+                        let mut basis = page.snapshot.root.basis();
+                        let mut rows = page.snapshot.root.rows().to_vec();
+                        let mut frontier = page.snapshot.root.frontier();
+                        if matches!(self.disturbance, Disturbance::ChangedBasis) {
+                            basis.object =
+                                object_version(b"another source object with the same root");
+                            for row in &mut rows {
+                                row.basis = basis;
+                            }
+                        }
+                        if matches!(self.disturbance, Disturbance::ChangedFrontier) {
+                            frontier = Frontier::new(
+                                basis.branch,
+                                basis.log,
+                                basis.schema,
+                                basis.root,
+                                frontier.sequence + 1,
+                            );
+                        }
+                        if matches!(self.disturbance, Disturbance::ForeignMember) {
+                            let foreign = package_key("/foreign");
+                            rows[0] = Row::in_package(
+                                RowId::Symbol(symbol_key("/foreign::child")),
+                                basis,
+                                foreign,
+                                "/foreign::child",
+                            )
+                            .with_parent(symbol_key(OWNER));
+                        }
+                        page.snapshot.root = ViewRoot::new_incomplete(
+                            page.snapshot.root.recipe(),
+                            basis,
+                            frontier,
+                            rows,
+                            page.snapshot.root.coverage().to_vec(),
+                        )
+                        .expect("distinct fixture observation");
+                    }
+                    Disturbance::RepeatedCursor => {
+                        page.snapshot.next = continuation.map(PageContinuation::cursor);
+                        page.terminal =
+                            PageTerminal::More(continuation.expect("real preceding owner cursor"));
+                    }
+                    Disturbance::WrongTerminal => page.terminal = PageTerminal::Complete,
+                    Disturbance::None | Disturbance::Cancel => {}
+                }
+            }
+            Ok(ReplyDto::new(1, CommandReply::ProjectionPage(page)))
+        }
+    }
+
+    #[test]
+    fn document_members_after_package_prefix_are_complete_without_unrelated_rows() {
+        let mut reader = Reader::new(Disturbance::None);
+        let document = reader.document();
+        let first = reader
+            .catalog
+            .outline_page(
+                package_key(PATH),
+                PageRequest::new(
+                    reader.catalog.revision_root(),
+                    QueryLimit::new(200).expect("credit"),
+                ),
+            )
+            .expect("original first-page witness");
+        assert!(first.snapshot.next.is_some());
+        assert!(
+            first
+                .snapshot
+                .root
+                .rows()
+                .iter()
+                .filter(|row| row.parent == Some(document.symbol))
+                .count()
+                < NAMES.len()
+        );
+        let rows =
+            document_member_rows(&mut reader, PATH, &document).expect("all retained member pages");
+        assert_eq!(reader.calls, 3);
+        assert_eq!(
+            rows.len(),
+            NAMES.len() + 1,
+            "only owner and direct members are retained"
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.parent == Some(document.symbol))
+                .map(|row| Identity::parse(&row.label).name().to_owned())
+                .collect::<std::collections::BTreeSet<_>>(),
+            NAMES.map(str::to_owned).into_iter().collect()
+        );
+        assert_eq!(reader.cursors[0], None);
+        assert!(reader.cursors[1..].iter().all(Option::is_some));
+        assert_eq!(
+            reader.catalog.view().coverage().len(),
+            1,
+            "incomplete source coverage was not promoted"
+        );
+        let page = page_from_document(OWNER, &document, &rows, &[], Vec::new());
+        assert_eq!(
+            page.members()
+                .iter()
+                .flat_map(|group| group.members())
+                .count(),
+            5
+        );
+    }
+
+    #[test]
+    fn incomplete_member_walk_never_installs_a_partial_count_or_rebinds_source() {
+        for disturbance in [
+            Disturbance::Cancel,
+            Disturbance::ChangedBasis,
+            Disturbance::ChangedFrontier,
+            Disturbance::RepeatedCursor,
+            Disturbance::WrongTerminal,
+            Disturbance::ForeignMember,
+        ] {
+            let mut reader = Reader::new(disturbance);
+            let document = reader.document();
+            let mut notes = Vec::new();
+            let rows = probe_members(&mut reader, OWNER, &document, &mut notes);
+            assert!(rows.is_empty(), "failed walk cannot publish a prefix");
+            assert_eq!(
+                notes.len(),
+                1,
+                "the omitted section has an actual typed reason"
+            );
+            assert_eq!(
+                reader.calls, 2,
+                "no status retry, restart or next source selection"
+            );
+            assert_eq!(reader.cursors[0], None);
+            assert!(
+                reader.cursors[1].is_some(),
+                "exact original owner cursor was forwarded"
+            );
         }
     }
 }
