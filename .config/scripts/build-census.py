@@ -283,6 +283,11 @@ def _capture_linux_proc_pid(
             pinned = proc.read_stat()
             if first.start_ticks != pinned.start_ticks:
                 raise _LinuxProcRace(errno.ESTALE, "pid-start-changed-while-pinning")
+            if first.state in _LINUX_TERMINAL_STATES and pinned.state not in _LINUX_TERMINAL_STATES:
+                # A terminal proc task cannot become active again through this
+                # held directory; don't reinterpret that identity as a new
+                # live process even if its pidfd isn't readable yet.
+                raise _LinuxProcRace(errno.ESTALE, "terminal-state-changed-while-pinning")
             if first.state in _LINUX_TERMINAL_STATES and pinned.state in _LINUX_TERMINAL_STATES:
                 # The held proc directory and matching start ticks identify a
                 # stable terminal row. Do not call this an exit of the task

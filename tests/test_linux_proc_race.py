@@ -298,14 +298,22 @@ class LinuxProcRaceTests(unittest.TestCase):
         self.assertEqual(issues, {})
         self.assertEqual(races, {})
 
-    def test_terminal_to_active_identity_is_not_accepted_as_terminal(self) -> None:
-        factory, _rows = self.factory(
-            starts=[("Z", 101), ("R", 101)],
-            ready=[True],
-        )
+    def test_terminal_to_active_identity_is_refused_independent_of_pidfd_readiness(self) -> None:
+        for ready in (False, True):
+            with self.subTest(pidfd_ready=ready):
+                factory, rows = self.factory(
+                    starts=[("Z", 101), ("R", 101)],
+                    ready=[ready],
+                )
 
-        with self.assertRaisesRegex(census._LinuxProcRace, "pidfd-ready-before-first-identity"):
-            census._capture_gui_supervisor_process(41, proc_factory=factory)
+                with self.assertRaisesRegex(census._LinuxProcRace, "terminal-state-changed-while-pinning"):
+                    census._capture_gui_supervisor_process(41, proc_factory=factory)
+                # The contradictory proc observation is sufficient to refuse;
+                # polling cannot turn a terminal task into a live identity.
+                self.assertEqual(rows[0].events, [
+                    "pidfd-open", "open-pid-directory", "stat", "stat",
+                    "close-pid-directory-and-pidfd",
+                ])
 
     def test_pid_reuse_after_payload_fails_closed(self) -> None:
         factory, _rows = self.factory(starts=[("R", 101), ("R", 101), ("R", 102)])
