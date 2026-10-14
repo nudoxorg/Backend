@@ -7928,6 +7928,7 @@ fn cancelled_endpoint_admission_preserves_previous_and_parked_continuation_proof
                 paths: fixture.paths.clone(),
                 pending_continuation_state: None,
                 request_context: Some(context),
+                cli_context: None,
             };
             let previous = SessionProduct::new(previous, fixture.paths.clone());
             let previous = if already_parked {

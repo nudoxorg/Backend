@@ -540,7 +540,11 @@ fn current_paged_mcp_command_rejects_matching_and_foreign_legacy_arrays() {
         let mut record = captured();
         let package = record.package.clone();
         if foreign {
-            record.package = PackageReference::local("/abs/foreign").expect("foreign package");
+            record.package = PackageReference::from_kind(
+                backend_library::PackageReferenceKind::Local,
+                "/abs/foreign",
+            )
+            .expect("foreign package");
         }
         let mut server = ready(Fake {
             surface_reply: Some(SurfaceReply::SemanticVersions(Box::new([record]))),
