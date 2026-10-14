@@ -130,3 +130,29 @@ reviewed deletion batch is approved. Valid indexing intents, live-owner health,
 job tickets, bounded multi-match paging and the full command matrix remain
 separate pending work. Negative admission checks reject a fake successful exit,
 missing suggestion or changed operand; the product run must still pass in CI.
+
+## Live owner and bounded-search assertions (W1.3)
+
+The polyglot case additionally reads passive health in summary and full detail
+from the exact published locald. Both must be available/populated and carry exact revision/source identities
+matching an independent full MCP `backend.status` read of the same whole owner.
+Readiness, coverage and visible row counts must agree. Setup requires a published
+operation with all seven native profiles complete; health must then certify that
+exact receipt root as ready. Failed/partial terminal receipts cannot pass on exit
+zero. Coverage transitions must survive publication alongside changed rows. Summary omits full-only source fields and all short tags must
+match their exact identities. This uses public cross-interface evidence instead
+of an embedded echo owner or internal request/frame counters.
+
+Search for the fixture's authored Java/C++ `language` methods at bound 200, then
+at global bounds 1 and 3. The reference must be complete and multi-result;
+bounded results must be its ordered prefix with a truthful `more` flag. These
+checks catch ignored bounds, lost/reordered results and false completeness.
+They do not yet follow a continuation cursor through every page.
+
+The checks run after existing CLI/MCP snapshots and add operation wall times to
+the report. Volatile health statistics are not snapshotted; exact identities are
+asserted against independently obtained public reads. Existing goldens, timing
+baselines and tolerance bands stay unchanged. Admission mutations reject wrong
+revision/source, ignored bounds, reordered rows and false completeness. Old
+Rust tests and their Windows fixtures remain until reviewed replacement and
+platform coverage supports an approved deletion batch.

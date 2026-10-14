@@ -217,6 +217,111 @@ def require_cli_success(name: str, answer: dict) -> None:
         raise RuntimeError(f"{name} failed: {answer}")
 
 
+def require_completed_index(answer: dict, profile_count: int) -> str:
+    """Exit zero alone admits failed terminal operations; require native completion."""
+    require_cli_success("cli add", answer)
+    observation = answer["json"].get("index_operation", {})
+    detail = observation.get("detail", {})
+    terminal = detail.get("state", {})
+    profiles = detail.get("source_capture", {}).get("profiles", [])
+    if observation.get("state") != "known" or terminal.get("state") != "published":
+        raise RuntimeError("index setup: expected a published operation receipt")
+    if len(profiles) != profile_count or any(
+        p.get("state", {}).get("state") != "published"
+        or p.get("state", {}).get("detail", {}).get("coverage") != {"coverage": "complete"}
+        for p in profiles
+    ):
+        raise RuntimeError("index setup: every fixture profile must publish complete native coverage")
+    root = terminal.get("detail", {}).get("view_root")
+    if not isinstance(root, str) or not re.fullmatch(r"[0-9a-f]{64}", root):
+        raise RuntimeError("index setup: missing exact published view root")
+    return root
+
+
+def require_live_health(summary: dict, full: dict, witness: dict, published_root: str | None = None) -> None:
+    """Whole-owner CLI and MCP status must agree on public identity and coverage."""
+    if published_root is not None and (summary.get("readiness") != "ready" or summary.get("revision") != published_root):
+        raise RuntimeError("completed index: health must certify the published receipt as ready")
+    for name, detail, value in (("summary", "summary", summary), ("full", "full", full), ("MCP", "full", witness)):
+        if value.get("answer") != "status" or value.get("detail") != detail:
+            raise RuntimeError(f"health {name}: wrong answer/detail: {value}")
+        if value.get("availability") != "available" or value.get("publication") != "populated":
+            raise RuntimeError(f"health {name}: indexed owner is not available/populated: {value}")
+        if not isinstance(value.get("readiness"), str) or not value["readiness"]:
+            raise RuntimeError(f"health {name}: missing truthful readiness")
+        if not isinstance(value.get("coverage"), list) or not isinstance(value.get("capabilities"), dict):
+            raise RuntimeError(f"health {name}: missing public coverage/capabilities")
+        if not isinstance(value.get("rows"), int) or value["rows"] <= 0:
+            raise RuntimeError(f"health {name}: indexed owner has no visible rows")
+        revision = value.get("revision", "")
+        if not isinstance(revision, str) or not re.fullmatch(r"[a-f0-9]{64}", revision):
+            raise RuntimeError(f"health {name}: revision is not an exact identity")
+        if value.get("revision_tag") != revision[:8] or revision != witness.get("revision"):
+            raise RuntimeError(f"health {name}: revision {revision} disagrees with MCP status {witness.get('revision')}")
+        for field in ("readiness", "coverage", "rows", "publication"):
+            if value.get(field) != witness.get(field):
+                raise RuntimeError(f"health {name}: {field} disagrees with the same-scope MCP status")
+    if "source" in summary or "source_tag" in summary:
+        raise RuntimeError("health summary exposed full-only source fields")
+    for name, value in (("full", full), ("MCP", witness)):
+        source = value.get("source", "")
+        if not isinstance(source, str) or not re.fullmatch(r"[a-f0-9]{64}", source):
+            raise RuntimeError(f"health {name}: source is not an exact identity")
+        if value.get("source_tag") != source[:8] or source != witness.get("source"):
+            raise RuntimeError(f"health {name}: source {source} disagrees with MCP status {witness.get('source')}")
+
+
+def require_bounded_search(reference: dict, bounded: dict, limit: int) -> None:
+    if reference.get("answer") != "records" or bounded.get("answer") != "records":
+        raise RuntimeError("bounded search: expected records answers")
+    rows = reference.get("records")
+    if not isinstance(rows, list) or len(rows) < 2 or reference.get("more") is not False:
+        raise RuntimeError("bounded search: reference must contain multiple complete results")
+    if bounded.get("query") != reference.get("query"):
+        raise RuntimeError("bounded search: changed query")
+    if bounded.get("records") != rows[:limit]:
+        raise RuntimeError(f"bounded search: limit {limit} lost rank order or returned the wrong rows")
+    if bounded.get("more") is not (len(rows) > limit):
+        raise RuntimeError(f"bounded search: limit {limit} has an untruthful completeness flag")
+
+
+def run_live_contracts(owner: Owner, project: Path, config: dict, published_root: str) -> dict:
+    times = {}
+
+    def query(name: str, arguments: list[str]) -> dict:
+        answer, seconds = run_cli(owner, project, arguments, 10)
+        require_cli_success(name, answer)
+        times[name] = round(seconds, 3)
+        return answer["json"]
+
+    summary = query("live health summary", ["--passive", "health"])
+    full = query("live health full", ["--passive", "--detail", "full", "health"])
+    mcp, seconds = run_mcp(owner, project, [{"tool": "backend.status", "arguments": {"detail": "full"}}], 10)
+    times["live health MCP status"] = round(seconds, 3)
+    if mcp["exit"] != 0 or len(mcp["calls"]) != 1:
+        raise RuntimeError(f"MCP live status failed: {mcp}")
+    reply = mcp["calls"][0]["reply"]
+    if not isinstance(reply, dict) or reply.get("isError", False) or "structuredContent" not in reply:
+        raise RuntimeError(f"MCP live status failed: {reply}")
+    require_live_health(summary, full, reply["structuredContent"], published_root)
+    print("surface-contract: live health summary/full agree with MCP status identity and coverage", flush=True)
+    text = config["bounded_search_query"]
+    reference = query("bounded search reference", ["search", text, "--limit", "200"])
+    # The fixture authors two lowercase language methods at these public paths.
+    methods = {
+        (row.get("identity", {}).get("path"), row.get("language"))
+        for row in reference.get("records", [])
+        if row.get("identity", {}).get("name") == "language" and row.get("kind") == "function"
+    }
+    if not {("src/Duke.java", "java"), ("src/main.cpp", "cpp")}.issubset(methods):
+        raise RuntimeError(f"bounded search: reference lost authored Java/C++ language methods: {methods}")
+    for limit in (1, 3):
+        bounded = query(f"bounded search limit {limit}", ["--limit", str(limit), "search", text])
+        require_bounded_search(reference, bounded, limit)
+        print(f"surface-contract: search limit {limit} preserves rank/completeness", flush=True)
+    return times
+
+
 def run_case(case: dict, bin_dir: Path) -> dict:
     case_root = SCRATCH / case["name"]
     if case_root.exists():
@@ -230,6 +335,8 @@ def run_case(case: dict, bin_dir: Path) -> dict:
     try:
         answer, seconds = run_cli(owner, project, ["add", str(project), "--wait"], timeout)
         require_cli_success("cli add", answer)
+        published_root = require_completed_index(answer, len(case["languages"]))
+        log(f"index terminal receipt: published {len(case['languages'])} complete native profiles; view {published_root}")
         # Indexing is setup: require success above, then snapshot the verdict.
         # The caller journal embeds fresh random operation/receipt identities;
         # search/outline/packages below snapshot the published product state.
@@ -255,6 +362,10 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                     raise RuntimeError(f"MCP search returned no fixture symbols: {result}")
             record["answers"]["mcp"] = answer
             record["performance"]["seconds"]["mcp"] = round(seconds, 2)
+        if case.get("live_contracts"):
+            record["performance"]["seconds"].update(
+                run_live_contracts(owner, project, case["live_contracts"], published_root)
+            )
         record["performance"].update(owner.usage())
     finally:
         owner.stop()

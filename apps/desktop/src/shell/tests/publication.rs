@@ -983,14 +983,14 @@ fn mounted_graph_header_watches_the_selected_package_and_renews_without_back(cx:
     let targets = rig.shell.read_with(rig.cx, |shell, cx| shell.titlebar_targets(cx));
     let (target, bounds) = targets.placed().into_iter().find(|(target, _)| target.label.as_ref() == "Show glyph siblings")
         .expect("fresh native selected-package breadcrumb");
-    assert!(target.action.admits(rig.cx));
+    assert!(rig.cx.update(|_, cx| target.action.admits(cx)));
     rig.cx.simulate_click(bounds.center(), gpui::Modifiers::none());
     rig.cx.run_until_parked();
     assert!(rig.cx.update(|window, cx| super::super::titlebar::menu_open(window, cx)), "fresh native input opens the real siblings menu");
     rig.keys("escape");
     rig.shell.update(rig.cx, |shell, cx| shell.focus_graph_node(0, cx));
     rig.settle();
-    assert!(!target.action.admits(rig.cx), "previous selected-package callbacks retire when selection returns to A");
+    assert!(!rig.cx.update(|_, cx| target.action.admits(cx)), "previous selected-package callbacks retire when selection returns to A");
     let hidden_reads = observations.count(&selected_key);
     rig.graph.store.update(rig.cx, |store, cx| store.packages_published(&BTreeSet::from([selected.clone()]), cx));
     rig.cx.run_until_parked();

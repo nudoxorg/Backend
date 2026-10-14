@@ -591,7 +591,7 @@ mod tests {
     fn module_binding_borrows_native_last_assignment_without_name_fallback() {
         let source = "value: int = 1\nvalue = 2\n";
         let exports = mk_exports(source, ModuleStyle::Executable);
-        let definition = &exports.definitions.definitions[&Name::new("value")];
+        let definition = exports.definitions.definitions.get(&Name::new("value")).unwrap();
         let view = exports.module_binding(definition.range).unwrap();
         assert_eq!(view.definition_range(), definition.range);
         assert_eq!(view.binding_range(), definition.last_range);
@@ -608,11 +608,11 @@ mod tests {
         let source = "from other import item\ndef function(): pass\nclass Class: pass\nvalue = 1\n";
         let mut exports = mk_exports(source, ModuleStyle::Executable);
         for name in ["item", "function", "Class"] {
-            let definition = &exports.definitions.definitions[&Name::new(name)];
+            let definition = exports.definitions.definitions.get(&Name::new(name)).unwrap();
             assert!(exports.module_binding(definition.range).is_none());
         }
         let exports = Arc::get_mut(&mut exports).unwrap();
-        let definition = exports.definitions.definitions[&Name::new("value")].clone();
+        let definition = exports.definitions.definitions.get(&Name::new("value")).unwrap().clone();
         let range = definition.range;
         exports
             .definitions
