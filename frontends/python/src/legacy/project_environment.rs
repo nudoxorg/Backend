@@ -25,7 +25,7 @@ const MAX_PROBE_BYTES: usize = 16 * 1024;
 const MAX_METADATA_BYTES: usize = 32 * 1024 * 1024;
 /// Hard preallocation bound for an encoded environment input object.
 pub const PYTHON_ENVIRONMENT_MAX_WIRE_BYTES: usize = MAX_PAYLOAD_BYTES + MAX_METADATA_BYTES;
-const MAGIC: &[u8] = b"nudox.python.installed-environment.v1\0";
+const MAGIC: &[u8] = b"nudox.python.installed-environment.v2\0";
 /// Reserved compiler input member; its typed role, not its name, grants admission.
 pub const PYTHON_ENVIRONMENT_INPUT_PATH: &str = ".nudox-python-environment.capture";
 
@@ -88,6 +88,59 @@ fn dependency_file_kind(path: &Path, windows: bool) -> Option<DependencyFileKind
         return Some(DependencyFileKind::Source);
     }
     None
+}
+
+fn validate_extension_suffixes(suffixes: &[String]) -> Result<(), CheckerError> {
+    if suffixes.is_empty() || suffixes.len() > 32 {
+        return Err(project_error(
+            "",
+            "trusted extension suffix set exceeds bounds",
+        ));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for suffix in suffixes {
+        if suffix.len() > 256
+            || !suffix.starts_with('.')
+            || suffix.len() < 2
+            || suffix[1..].split('.').any(str::is_empty)
+            || !suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+            || !matches!(suffix.rsplit('.').next(), Some("so" | "pyd" | "dll"))
+            || !seen.insert(suffix.as_str())
+        {
+            return Err(project_error(
+                "",
+                "invalid or conflicting trusted extension suffix",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn extension_import_candidate(path: &Path, suffixes: &[String], windows: bool) -> Option<PathBuf> {
+    let name = path.file_name()?.to_str()?;
+    let suffix = suffixes
+        .iter()
+        .filter(|suffix| {
+            let start = name.len().checked_sub(suffix.len());
+            start
+                .and_then(|start| name.get(start..))
+                .is_some_and(|tail| {
+                    if windows {
+                        tail.eq_ignore_ascii_case(suffix)
+                    } else {
+                        tail == suffix.as_str()
+                    }
+                })
+        })
+        .max_by_key(|suffix| suffix.len())?;
+    let stem = &name[..name.len() - suffix.len()];
+    if stem.is_empty() {
+        return None;
+    }
+    let extension = suffix.rsplit('.').next()?;
+    Some(path.with_file_name(format!("{stem}.{extension}")))
 }
 
 pub(super) fn is_python_source_member(path: &Path) -> bool {
@@ -168,6 +221,7 @@ struct Interpreter {
     base_image: PathBuf,
     base_digest: [u8; 32],
     abi: String,
+    extension_suffixes: Vec<String>,
     implementation: String,
     version: [u32; 3],
     platform: String,
@@ -597,6 +651,7 @@ impl PythonEnvironmentCapture {
                 ));
             }
             Some(interpreter) => {
+                validate_extension_suffixes(&interpreter.extension_suffixes)?;
                 normal_absolute(&interpreter.trusted_selected)?;
                 normal_absolute(&interpreter.image)?;
                 normal_absolute(&interpreter.venv_image)?;
@@ -1050,15 +1105,36 @@ impl PythonEnvironmentCapture {
                     // A compiled-only import remains unavailable to the genuine
                     // checker. Never manufacture an empty extension or stub.
                     MemberPayload::Compiled { .. } => {
-                        let key = compiled_candidate_key(&mirror.join(&member.path), cfg!(windows));
-                        if compiled
-                            .insert(key, root.original.join(&member.path))
-                            .is_some()
-                        {
-                            return Err(project_error(
-                                "",
-                                "compiled dependency candidate has conflicting retained spellings",
-                            ));
+                        let private_path = mirror.join(&member.path);
+                        let original = root.original.join(&member.path);
+                        let suffixes = &self
+                            .environment
+                            .interpreter
+                            .as_ref()
+                            .ok_or_else(|| {
+                                project_error(
+                                    "",
+                                    "compiled resource lacks interpreter suffix authority",
+                                )
+                            })?
+                            .extension_suffixes;
+                        let alias =
+                            extension_import_candidate(&private_path, suffixes, cfg!(windows));
+                        for candidate in std::iter::once(private_path).chain(alias) {
+                            let key = compiled_candidate_key(&candidate, cfg!(windows));
+                            match compiled.entry(key) {
+                                std::collections::btree_map::Entry::Vacant(entry) => {
+                                    entry.insert(original.clone());
+                                }
+                                std::collections::btree_map::Entry::Occupied(entry)
+                                    if entry.get() == &original => {}
+                                std::collections::btree_map::Entry::Occupied(_) => {
+                                    return Err(project_error(
+                                        "",
+                                        "compiled dependency candidate has conflicting retained spellings",
+                                    ));
+                                }
+                            }
                         }
                         continue;
                     }
@@ -1496,7 +1572,7 @@ fn probe_interpreter(
     }
     // `-I -S` excludes user/global site startup and executable .pth hooks. The
     // selected image supplies its genuine implementation/platform/stdlib data.
-    let mut child = Command::new(&image).args(["-I", "-S", "-B", "-c", "import sys,sysconfig,json,platform; print(json.dumps({'implementation':sys.implementation.name,'version':list(sys.version_info[:3]),'platform':sys.platform,'machine':platform.machine(),'stdlib':sysconfig.get_path('stdlib'),'installation':sys.base_prefix,'bindir':sysconfig.get_config_var('BINDIR') or sys.base_prefix,'base_image':sys._base_executable,'abi':sysconfig.get_config_var('SOABI') or sys.implementation.cache_tag}))"])
+    let mut child = Command::new(&image).args(["-I", "-S", "-B", "-c", "import sys,sysconfig,json,platform,importlib.machinery; print(json.dumps({'implementation':sys.implementation.name,'version':list(sys.version_info[:3]),'platform':sys.platform,'machine':platform.machine(),'stdlib':sysconfig.get_path('stdlib'),'installation':sys.base_prefix,'bindir':sysconfig.get_config_var('BINDIR') or sys.base_prefix,'base_image':sys._base_executable,'abi':sysconfig.get_config_var('SOABI') or sys.implementation.cache_tag,'extension_suffixes':importlib.machinery.EXTENSION_SUFFIXES}))"])
         .env_clear().stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(io_error)?;
     let stdout = child.stdout.take().expect("piped metadata stdout");
     let stderr = child.stderr.take().expect("piped metadata stderr");
@@ -1549,12 +1625,14 @@ fn probe_interpreter(
         installation: PathBuf,
         bindir: PathBuf,
         abi: String,
+        extension_suffixes: Vec<String>,
     }
     let probe: Probe = serde_json::from_slice(&output)
         .map_err(|_| project_error("", "invalid selected interpreter metadata"))?;
     if probe.implementation != "cpython" || probe.version[0] != 3 {
         return Err(project_error("", "selected environment is not CPython 3"));
     }
+    validate_extension_suffixes(&probe.extension_suffixes)?;
     normal_absolute(&probe.stdlib)?;
     let base_image = probe.base_image.canonicalize().map_err(io_error)?;
     let base_digest = hash_image(&base_image, control)?;
@@ -1623,6 +1701,7 @@ fn probe_interpreter(
         base_image,
         base_digest,
         abi: probe.abi,
+        extension_suffixes: probe.extension_suffixes,
         implementation: probe.implementation,
         version: probe.version,
         platform: probe.platform,
@@ -2062,6 +2141,15 @@ mod tests {
             base_image: image,
             base_digest: [0x31; 32],
             abi: "cpython-314-transport-control".into(),
+            extension_suffixes: if cfg!(windows) {
+                vec![".cp314-win_amd64.pyd".into(), ".pyd".into()]
+            } else {
+                vec![
+                    ".cpython-314-x86_64-linux-gnu.so".into(),
+                    ".abi3.so".into(),
+                    ".so".into(),
+                ]
+            },
             implementation: "cpython".into(),
             version: [3, 14, 0],
             platform: std::env::consts::OS.into(),
@@ -2638,6 +2726,124 @@ mod tests {
     }
 
     #[test]
+    fn extension_aliases_require_exact_trusted_suffix_and_refuse_ambiguity()
+    -> Result<(), CheckerError> {
+        let linux = vec![
+            ".cpython-314-x86_64-linux-gnu.so".into(),
+            ".abi3.so".into(),
+            ".so".into(),
+        ];
+        let windows = vec![".cp314-win_amd64.pyd".into(), ".pyd".into()];
+        validate_extension_suffixes(&linux)?;
+        validate_extension_suffixes(&windows)?;
+        assert_eq!(
+            extension_import_candidate(
+                Path::new("parent/package.cpython-314-x86_64-linux-gnu.so"),
+                &linux,
+                false
+            ),
+            Some(PathBuf::from("parent/package.so"))
+        );
+        assert_eq!(
+            extension_import_candidate(
+                Path::new("Parent/package.cp314-win_amd64.PYD"),
+                &windows,
+                true
+            ),
+            Some(PathBuf::from("Parent/package.pyd"))
+        );
+        assert_ne!(
+            extension_import_candidate(
+                Path::new("parent/package.cpython-313-x86_64-linux-gnu.so"),
+                &linux,
+                false
+            ),
+            Some(PathBuf::from("parent/package.so"))
+        );
+        assert_ne!(
+            extension_import_candidate(
+                Path::new("Parent/package.cp313-win_amd64.PYD"),
+                &windows,
+                true
+            ),
+            Some(PathBuf::from("Parent/package.pyd"))
+        );
+        for suffixes in [
+            vec![],
+            vec![".so".into(), ".so".into()],
+            vec!["../outside.so".into()],
+            vec![".so/other".into()],
+            vec![".so".repeat(100)],
+            vec![".x..so".into()],
+            vec![".cpython-314.exe".into()],
+        ] {
+            assert!(validate_extension_suffixes(&suffixes).is_err());
+        }
+        let root = fixture()?;
+        let cancelled = AtomicBool::new(false);
+        let mut environment = transport_environment();
+        let suffix = environment.interpreter.as_ref().unwrap().extension_suffixes[0].clone();
+        std::fs::write(root.path.join("package.py"), "answer: int = 42\n").map_err(io_error)?;
+        let tagged = format!("package{suffix}");
+        std::fs::write(root.path.join(&tagged), b"actual retained compiled content")
+            .map_err(io_error)?;
+        let captured = capture_root(
+            &root.path,
+            PythonDependencyRootKind::SitePackages,
+            control(&cancelled),
+        )?;
+        environment.roots[0] = Root {
+            original: environment.roots[0].original.clone(),
+            ..captured
+        };
+        let admitted = PythonEnvironmentCapture::admit(environment, control(&cancelled))?;
+        let bytes = admitted.encode(control(&cancelled))?;
+        let received =
+            PythonEnvironmentCapture::decode(&bytes, admitted.identity(), control(&cancelled))?;
+        let parent = fixture()?;
+        let materialized = received.materialize(&parent.path, control(&cancelled))?;
+        let mirror = &materialized.roots[0].2;
+        let extension = Path::new(&tagged).extension().unwrap().to_str().unwrap();
+        assert_eq!(
+            materialized.compiled_candidate(&mirror.join(format!("package.{extension}"))),
+            Some(&materialized.roots[0].1.join(&tagged))
+        );
+        assert_eq!(
+            std::fs::read(mirror.join("package.py")).map_err(io_error)?,
+            b"answer: int = 42\n"
+        );
+        assert!(!mirror.join(&tagged).exists());
+        let mut changed = received.environment.as_ref().clone();
+        changed
+            .interpreter
+            .as_mut()
+            .unwrap()
+            .extension_suffixes
+            .remove(0);
+        let changed = PythonEnvironmentCapture::admit(changed, control(&cancelled))?;
+        assert_ne!(changed.identity(), received.identity());
+        let mut ambiguous = received.environment.as_ref().clone();
+        ambiguous.roots[0].members.push(Member {
+            path: format!("package.{extension}"),
+            payload: MemberPayload::Compiled {
+                length: 10,
+                digest: [6; 32],
+            },
+        });
+        ambiguous.roots[0]
+            .members
+            .sort_by(|left, right| left.path.cmp(&right.path));
+        let ambiguous = PythonEnvironmentCapture::admit(ambiguous, control(&cancelled))?;
+        let parent2 = fixture()?;
+        assert!(
+            ambiguous
+                .materialize(&parent2.path, control(&cancelled))
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn dependency_payload_and_transitive_membership_changes_are_distinct()
     -> Result<(), CheckerError> {
         let root = fixture()?;
@@ -3170,6 +3376,131 @@ for name, source, requirement in [('second_pkg', 'answer: int = 42\n', ''), ('fi
                 std::fs::remove_file(compiled_path)?;
             }
         }
+        // An ordinary offline wheel installs exact copies of a genuine CPython
+        // extension image under its actual ABI suffix. The first_pkg name is a
+        // deliberate unavailable shadow: no binary is executed or given facts.
+        // math keeps its genuine name to control bundled native stub precedence.
+        let output = Command::new(&cpython).args(["-I", "-S", "-B", "-c", r#"
+import csv, hashlib, importlib.machinery, importlib.util, io, json, pathlib, sysconfig, zipfile
+root = pathlib.Path(__import__('sys').argv[1])
+origin = pathlib.Path(importlib.util.find_spec('math').origin)
+assert origin.is_absolute() and origin.is_file()
+suffix = next(s for s in sorted(importlib.machinery.EXTENSION_SUFFIXES, key=len, reverse=True) if origin.name.endswith(s))
+image = origin.read_bytes()
+platform_tag = sysconfig.get_platform().replace('-', '_').replace('.', '_')
+abi = 'cp314t' if sysconfig.get_config_var('Py_GIL_DISABLED') else 'cp314'
+tag = f'cp314-{abi}-{platform_tag}'
+metadata = 'first_pkg_native_shadow-1.0.0.dist-info'
+files = {f'first_pkg{suffix}': image, f'math{suffix}': image,
+ f'{metadata}/METADATA': 'Metadata-Version: 2.1\nName: first-pkg-native-shadow\nVersion: 1.0.0\n',
+ f'{metadata}/WHEEL': f'Wheel-Version: 1.0\nGenerator: genuine-image-shadow-control\nRoot-Is-Purelib: false\nTag: {tag}\n'}
+record = io.StringIO(); csv.writer(record).writerows([(name, '', '') for name in files] + [(f'{metadata}/RECORD', '', '')])
+files[f'{metadata}/RECORD'] = record.getvalue()
+wheel = root / f'first_pkg_native_shadow-1.0.0-{tag}.whl'
+with zipfile.ZipFile(wheel, 'w') as archive:
+ for path, contents in files.items(): archive.writestr(path, contents)
+print(json.dumps({'wheel': str(wheel), 'suffix': suffix, 'image_sha256': hashlib.sha256(image).hexdigest()}))
+"#]).arg(&wheels).output()?;
+        assert!(
+            output.status.success(),
+            "genuine ABI-tagged wheel preparation: {:?}",
+            output
+        );
+        let wheel_metadata: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+        let suffix = wheel_metadata["suffix"]
+            .as_str()
+            .ok_or("missing genuine suffix")?;
+        assert!(
+            capture
+                .environment
+                .interpreter
+                .as_ref()
+                .ok_or("missing interpreter witness")?
+                .extension_suffixes
+                .iter()
+                .any(|admitted| admitted == suffix)
+        );
+        let wheel = wheel_metadata["wheel"]
+            .as_str()
+            .ok_or("missing actual wheel")?;
+        let current_python = if cfg!(windows) {
+            project.join("local/py3/Scripts/python.exe")
+        } else {
+            project.join("local/py3/bin/python")
+        };
+        let output = Command::new(&uv)
+            .args(["pip", "install", "--no-index", "--python"])
+            .arg(&current_python)
+            .arg("--cache-dir")
+            .arg(root.path.join("uv-cache"))
+            .arg(wheel)
+            .output()?;
+        assert!(
+            output.status.success(),
+            "ordinary ABI-tagged wheel install: {:?}",
+            output
+        );
+        assert_eq!(
+            std::fs::read(site.join(format!("first_pkg{suffix}")))?,
+            std::fs::read(site.join(format!("math{suffix}")))?
+        );
+        let tagged = PythonEnvironmentCapture::capture_with_interpreter(
+            &project,
+            Some(&trusted),
+            control(&cancelled),
+        )?;
+        let tagged_report = authority.analyze_project_bytes_with_environment(
+            &project,
+            "ordinary-installed",
+            &sources,
+            Some(&tagged),
+            profile,
+            control(&cancelled),
+        )?;
+        assert!(matches!(
+            tagged_report.source_status("main.py"),
+            Some(super::super::PythonProjectSourceStatus::UnavailableCompiledImport { .. })
+        ));
+        let math_source = b"import math\nvalue = math.sqrt(4)\n";
+        std::fs::write(project.join("math_use.py"), math_source)?;
+        let math_sources = [super::super::PythonProjectBytesSource {
+            relative_path: "math_use.py",
+            source: math_source,
+        }];
+        let math_report = authority.analyze_project_bytes_with_environment(
+            &project,
+            "ordinary-installed-math",
+            &math_sources,
+            Some(&tagged),
+            profile,
+            control(&cancelled),
+        )?;
+        assert!(matches!(
+            math_report.source_status("math_use.py"),
+            Some(super::super::PythonProjectSourceStatus::Analyzed)
+        ));
+        assert!(
+            math_report
+                .module("math_use.py")
+                .ok_or("missing genuine math report")?
+                .inferences
+                .iter()
+                .any(|inference| inference.observed == super::super::InferredType::Float)
+        );
+        let output = Command::new(&uv)
+            .args(["pip", "uninstall", "--python"])
+            .arg(&current_python)
+            .arg("--cache-dir")
+            .arg(root.path.join("uv-cache"))
+            .arg("first-pkg-native-shadow")
+            .output()?;
+        assert!(
+            output.status.success(),
+            "ordinary ABI-tagged wheel uninstall: {:?}",
+            output
+        );
+        assert!(!site.join(format!("first_pkg{suffix}")).exists());
+        assert!(tagged.validate_current(control(&cancelled)).is_err());
         let dependency_as_project = [super::super::PythonProjectBytesSource {
             relative_path: "local/py3/lib/python3.14/site-packages/first_pkg/__init__.py",
             source: b"from second_pkg import answer\n",
