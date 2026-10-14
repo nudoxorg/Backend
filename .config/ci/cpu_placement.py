@@ -49,14 +49,27 @@ def measurement_placement(root: Path = Path('/sys/devices/system/cpu')):
     record = highest_capacity(original, root)
     selected = set(record['selected'])
     changed = selected != original
-    if changed:
-        os.sched_setaffinity(0, selected)
-        actual = set(os.sched_getaffinity(0))
-        if actual != selected:
-            os.sched_setaffinity(0, original)
-            raise RuntimeError('integration measurement CPU placement was not applied')
     try:
+        if changed:
+            os.sched_setaffinity(0, selected)
+            actual = set(os.sched_getaffinity(0))
+            if actual != selected:
+                raise RuntimeError('integration measurement CPU placement was not applied')
         yield record
-    finally:
+    except BaseException as primary:
+        if changed:
+            try:
+                os.sched_setaffinity(0, original)
+            except BaseException as restore_error:
+                error_type = type(restore_error).__name__
+                error_number = getattr(restore_error, 'errno', None)
+                detail = error_type
+                if error_number is not None:
+                    detail = f'{detail} (errno {error_number})'
+                primary.add_note(f'failed to restore original CPU affinity: {detail}')
+        raise
+    else:
+        # The exceptional path above has already attempted restoration. Keep
+        # the success path separate so a cleanup failure remains visible.
         if changed:
             os.sched_setaffinity(0, original)
