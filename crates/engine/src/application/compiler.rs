@@ -3627,12 +3627,17 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                 match backend_frontend_typescript::TszExecutionCheckpoint::checkpoint(budget, 1) {
                     // True program-wide exhaustion, or the package deadline: keep what is
                     // already complete.
-                    Err(stop)
-                        if SourceStop::from_typescript_stop(Some(stop), false, !artifacts.is_empty()).is_some() =>
-                    {
-                        degraded.stop(SourceStop::from_typescript_stop(Some(stop), false, true));
-                        Ok(())
-                    }
+                    Err(stop) => match SourceStop::from_typescript_stop(
+                        Some(stop),
+                        false,
+                        !artifacts.is_empty(),
+                    ) {
+                        Some(stopped) => {
+                            degraded.stop(stopped);
+                            Ok(())
+                        }
+                        None => Err(stop),
+                    },
                     result => result,
                 }
                     .map_err(|cause| PackageSemanticError::Compile {
