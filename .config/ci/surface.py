@@ -238,6 +238,82 @@ def require_completed_index(answer: dict, profile_count: int) -> str:
     return root
 
 
+def require_index_identity(answer: dict, project: Path, expected: dict | None = None) -> dict:
+    """Bind fresh-client observations to the exact admitted request, never just exit zero."""
+    observation = (answer.get("json") or {}).get("index_operation", {})
+    detail = observation.get("detail", {})
+    if observation.get("state") != "known" or not isinstance(detail, dict):
+        raise RuntimeError("index resumption: operation must be known")
+    for field in ("operation_key", "request_digest"):
+        value = detail.get(field)
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value) or value == "0" * 64:
+            raise RuntimeError(f"index resumption: missing exact {field}")
+    if detail.get("package") != {"kind": "local", "value": str(project)} or detail.get("execution_intent") != "background":
+        raise RuntimeError("index resumption: wrong package or execution intent")
+    if detail.get("state", {}).get("state") not in ("accepted", "active", "published"):
+        raise RuntimeError("index resumption: missing, failed or uncertain operation is not success")
+    if expected is not None:
+        for field in ("operation_key", "request_digest", "package", "execution_intent"):
+            if detail.get(field) != expected.get(field):
+                raise RuntimeError(f"index resumption: changed {field}")
+    return detail
+
+
+def require_index_wait_stop(answer: dict, project: Path) -> dict:
+    if answer.get("exit") != 75:
+        raise RuntimeError(f"zero-wait index: expected incomplete-wait exit 75, got {answer}")
+    detail = require_index_identity(answer, project)
+    if detail["state"]["state"] not in ("accepted", "active"):
+        raise RuntimeError("zero-wait index: fixture must still be pending when the first caller leaves")
+    return detail
+
+
+def require_same_index_receipt(answer: dict, project: Path, expected: dict, profile_count: int) -> None:
+    require_completed_index(answer, profile_count)
+    detail = require_index_identity(answer, project, expected)
+    if detail != expected:
+        raise RuntimeError("index resumption: terminal receipt or source capture changed")
+
+
+def run_resumable_index(owner: Owner, project: Path, profile_count: int, timeout: float) -> tuple[dict, dict]:
+    started = time.monotonic()
+    # Exercise the installed alias and a caller deadline without terminating the owner.
+    first, seconds = run_cli(owner, project,
+        ["index", str(project), "--execution-intent", "background", "--wait", "--wait-timeout", "0"], timeout)
+    initial = require_index_wait_stop(first, project)
+    times = {"background index zero-wait": round(seconds, 3)}
+    key = initial["operation_key"]
+    progress, seconds = run_cli(owner, project, ["index_progress", "--operation-key", key], 10)
+    require_cli_success("index progress after caller deadline", progress)
+    require_index_identity(progress, project, initial)
+    times["index progress after caller deadline"] = round(seconds, 3)
+    completed, seconds = run_cli(owner, project,
+        ["add", str(project), "--execution-intent", "background", "--wait"], timeout)
+    require_completed_index(completed, profile_count)
+    terminal = require_index_identity(completed, project, initial)
+    times["resumed index wait"] = round(seconds, 3)
+    # Preserve the existing setup budget, now covering start + observation + resumed wait.
+    times["cli add"] = round(time.monotonic() - started, 2)
+    for name, args in (
+        ("completed CLI operation lookup", ["index_progress", "--operation-key", key]),
+        ("completed CLI request replay", ["add", str(project), "--execution-intent", "background", "--wait"]),
+    ):
+        answer, seconds = run_cli(owner, project, args, 10)
+        require_same_index_receipt(answer, project, terminal, profile_count)
+        times[name] = round(seconds, 3)
+    session, seconds = run_mcp(owner, project,
+        [{"tool": "backend.index_progress", "arguments": {"operation_key": key}}], 10)
+    if session["exit"] != 0 or len(session["calls"]) != 1:
+        raise RuntimeError("completed MCP operation lookup: session failed")
+    reply = session["calls"][0]["reply"]
+    if not isinstance(reply, dict) or reply.get("isError", False) or not isinstance(reply.get("structuredContent"), dict):
+        raise RuntimeError(f"completed MCP operation lookup failed: {reply}")
+    require_same_index_receipt({"exit": 0, "json": reply["structuredContent"]}, project, terminal, profile_count)
+    times["completed MCP operation lookup"] = round(seconds, 3)
+    log("background index: zero-wait caller left; fresh alias/add clients retained one key; CLI/MCP terminal receipts agree")
+    return completed, times
+
+
 def require_live_health(summary: dict, full: dict, witness: dict, published_root: str | None = None) -> None:
     """Whole-owner CLI and MCP status must agree on public identity and coverage."""
     if published_root is not None and (summary.get("readiness") != "ready" or summary.get("revision") != published_root):
@@ -427,15 +503,14 @@ def run_case(case: dict, bin_dir: Path) -> dict:
     owner = Owner(bin_dir, case_root)
     record = {"answers": {}, "performance": {"seconds": {}}}
     try:
-        answer, seconds = run_cli(owner, project, ["add", str(project), "--wait"], timeout)
-        require_cli_success("cli add", answer)
+        answer, index_times = run_resumable_index(owner, project, len(case["languages"]), timeout)
         published_root = require_completed_index(answer, len(case["languages"]))
         log(f"index terminal receipt: published {len(case['languages'])} complete native profiles; view {published_root}")
         # Indexing is setup: require success above, then snapshot the verdict.
         # The caller journal embeds fresh random operation/receipt identities;
         # search/outline/packages below snapshot the published product state.
         record["answers"]["cli add"] = {"exit": answer["exit"]}
-        record["performance"]["seconds"]["cli add"] = round(seconds, 2)
+        record["performance"]["seconds"].update(index_times)
         for args in case.get("cli", []):
             key = "cli " + " ".join(args)
             answer, seconds = run_cli(owner, project, args, timeout)
