@@ -333,3 +333,20 @@ python3 .config/ci/test.py integration --bin-dir DIR --case python-blinker
 Initial native source/result review and an independent exact-head comparison are
 required before accepting the new golden. This is a second real-project slice;
 it does not complete the representative per-language corpus or GUI coverage.
+
+Initial source/result review (483413 / pr-t1/663, `9db7f5e91`): full native Python
+publication root `9cf9af16cf6c39eb75f46e066b1b78d6c0ca7d3d202dc5c7db782df9606dbadd`.
+CLI/MCP both find ready Python `NamedSignal` as a struct at
+`src/blinker/base.py:464` and `make_id` as a function at
+`src/blinker/_utilities.py:42`, verified against the pinned source. MCP search
+records equal the first three CLI records. Packages names the ready project
+`blinker`. Source-less context/import rows remain in the golden; embedding-based
+search remains explicitly unconfigured. CLI/MCP outlines are honestly truncated
+at200/100 declarations; this case does not claim exhaustive outline traversal.
+Both offered MCP continuations (NamedSignal search and same-session outline)
+passed real native consumption before normalization, with full wire accounting
+and readable previews retained.
+
+Initial indexing was3.30s, owner CPU1.82s and owner peak279,160KiB. This first
+performance sample is provisional. The independent exact-head comparison must
+match the reviewed answers and the existing performance guards before merge.
