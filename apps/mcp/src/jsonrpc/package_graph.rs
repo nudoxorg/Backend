@@ -124,7 +124,7 @@ impl<P: Product> Server<P> {
             // fixed-point metadata and newline before choosing the page. The
             // final codec repeats exactly this admission for both transports.
             let budget = wire_admission::ResponseBudget::new(response_id);
-            let measured = budget.measure(result);
+            let measured = budget.prepare(result);
             // Native work and tokenization can finish after the caller stops.
             // Preserve that stop before success, resize, or fallback advice.
             lifetime

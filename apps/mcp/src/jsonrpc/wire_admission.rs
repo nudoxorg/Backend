@@ -24,8 +24,17 @@ impl<'a> ResponseBudget<'a> {
             ResponseTransport::StdioLine,
         )
     }
-    pub(super) fn admit(self, result: Value) -> Result<Value, super::RpcError> {
+    pub(super) fn prepare(self, result: Value) -> MeasuredEnvelope {
         let measured = self.measure(result);
+        if measured.fits() {
+            return measured;
+        }
+        // Use the same preview-only fitting as final emission before shrinking
+        // an owner page. Its complete structured rows and cursor stay intact.
+        super::fit_measured_preview(measured, ResponseTransport::StdioLine)
+    }
+    pub(super) fn admit(self, result: Value) -> Result<Value, super::RpcError> {
+        let measured = self.prepare(result);
         if !measured.fits() {
             return Err(super::RpcError::from_fault(&Self::fault(&measured)));
         }
