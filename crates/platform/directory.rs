@@ -298,10 +298,7 @@ impl CreatedDirectory {
     /// Renames this receipt's direct child to an unused direct name, preserving
     /// the rename's commit status. The identity check and rename are separate
     /// calls; callers must hold their cooperative namespace guard throughout.
-    pub fn rename_noreplace(
-        &self,
-        destination: &str,
-    ) -> Result<(), CreatedDirectoryRenameError> {
+    pub fn rename_noreplace(&self, destination: &str) -> Result<(), CreatedDirectoryRenameError> {
         self.verify_named()
             .map_err(CreatedDirectoryRenameError::NameChanged)?;
         self.parent
@@ -329,9 +326,7 @@ impl CreatedDirectory {
         }
         let path_child = DirectoryCapability::open(path)?;
         if !path_child.same_object_as(&self.child)? {
-            return Err(invalid(
-                "created directory path resolves to another object",
-            ));
+            return Err(invalid("created directory path resolves to another object"));
         }
         Ok(())
     }
@@ -428,6 +423,12 @@ impl DirectoryCapability {
             let _ = other;
             Err(unsupported())
         }
+    }
+
+    /// Compares two already held source directory objects without folding names
+    /// or reopening either pathname.
+    pub fn is_same_source_directory(&self, other: &Self) -> io::Result<bool> {
+        self.same_object_as(other)
     }
 
     /// Verifies that a raw path still resolves to this held directory object.
@@ -720,11 +721,9 @@ impl DirectoryCapability {
         ) {
             Ok(created) => Ok(created.into_capability()),
             Err(DirectoryCreateFailure::NotCreated(source)) => Err(source),
-            Err(DirectoryCreateFailure::CreatedButUnpinned(source)) => {
-                Err(io::Error::other(DirectoryCreateFailure::CreatedButUnpinned(
-                    source,
-                )))
-            }
+            Err(DirectoryCreateFailure::CreatedButUnpinned(source)) => Err(io::Error::other(
+                DirectoryCreateFailure::CreatedButUnpinned(source),
+            )),
             Err(DirectoryCreateFailure::CreatedButUnready { directory, source }) => {
                 match directory.remove_all(MAX_DIRECTORY_CLEANUP_ENTRIES) {
                     Ok(()) => Err(source),
@@ -1142,6 +1141,75 @@ impl DirectoryCapability {
         }
     }
 
+    /// Returns the enumerated spelling of one selected child directory,
+    /// matching its pinned object identity rather than folding names. Unrelated
+    /// links remain opaque and are never opened as part of this lookup.
+    pub fn actual_source_child_directory(&self, name: &str, maximum: usize) -> io::Result<String> {
+        validate_component(name)?;
+        #[cfg(unix)]
+        {
+            use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags, fstat, openat, statat};
+            use std::os::unix::ffi::OsStrExt;
+            let selected = self.open_dir(name)?;
+            let selected_id = fstat(selected.handle.as_ref())?;
+            let enumeration = openat(
+                self.handle.as_ref(),
+                ".",
+                OFlags::RDONLY
+                    | OFlags::DIRECTORY
+                    | OFlags::NOFOLLOW
+                    | OFlags::NONBLOCK
+                    | OFlags::CLOEXEC,
+                Mode::empty(),
+            )?;
+            let mut entries = Dir::read_from(&enumeration)?;
+            let mut matched = None;
+            let mut count = 0usize;
+            for entry in &mut entries {
+                let entry = entry?;
+                let actual = entry.file_name();
+                if matches!(actual.to_bytes(), b"." | b"..") {
+                    continue;
+                }
+                count += 1;
+                if count > maximum {
+                    return Err(invalid("selected-directory enumeration exceeds bound"));
+                }
+                let metadata = statat(self.handle.as_ref(), actual, AtFlags::SYMLINK_NOFOLLOW)?;
+                if FileType::from_raw_mode(metadata.st_mode) != FileType::Directory
+                    || metadata.st_dev != selected_id.st_dev
+                    || metadata.st_ino != selected_id.st_ino
+                {
+                    continue;
+                }
+                let actual = std::ffi::OsStr::from_bytes(actual.to_bytes())
+                    .to_str()
+                    .ok_or_else(|| invalid("selected directory spelling is not Unicode"))?;
+                let candidate = self.open_dir(actual)?;
+                if !candidate.same_object_as(&selected)? {
+                    return Err(invalid("selected directory changed during identity lookup"));
+                }
+                if actual == name {
+                    return Ok(actual.to_owned());
+                }
+                if matched.replace(actual.to_owned()).is_some() {
+                    return Err(invalid("selected directory identity has ambiguous names"));
+                }
+            }
+            return matched
+                .ok_or_else(|| invalid("selected directory disappeared during identity lookup"));
+        }
+        #[cfg(windows)]
+        {
+            return self.handle.actual_source_child_directory(name, maximum);
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = maximum;
+            Err(unsupported())
+        }
+    }
+
     /// Lists direct children with an explicit cardinality ceiling.
     pub fn entries(&self, maximum: usize) -> io::Result<Vec<DirectoryEntry>> {
         #[cfg(unix)]
@@ -1375,13 +1443,14 @@ impl OwnedWorkspaceDirectory {
             parent.verify_path(&path)?;
             if repair_application {
                 let application_path = path.join(application);
-                crate::durable::ensure_private_application_directory(&application_path)
-                    .map_err(|error| {
+                crate::durable::ensure_private_application_directory(&application_path).map_err(
+                    |error| {
                         io::Error::new(
                             error.kind(),
                             format!("{}: {error}", application_path.display()),
                         )
-                    })?;
+                    },
+                )?;
                 parent.verify_path(&path)?;
             }
             parent.open_or_create_private_dir(application)?
@@ -1433,8 +1502,9 @@ impl OwnedWorkspaceDirectory {
             .unwrap_or(Path::new("."));
         let parent = DirectoryCapability::open(parent_path)?;
         validate_workspace_parent(&parent)?;
-        let directory = parent.open_or_create_private_dir(name)
-            .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", path.display())))?;
+        let directory = parent.open_or_create_private_dir(name).map_err(|error| {
+            io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+        })?;
         let workspace = Self { path, directory };
         workspace.verify_path()?;
         Ok(workspace)
@@ -1444,12 +1514,13 @@ impl OwnedWorkspaceDirectory {
     /// workspace directory.
     pub fn child(&self, name: &str) -> io::Result<Self> {
         let path = self.path.join(name);
-        let directory = self.directory.open_or_create_private_dir(name)
-            .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", path.display())))?;
-        let workspace = Self {
-            path,
-            directory,
-        };
+        let directory = self
+            .directory
+            .open_or_create_private_dir(name)
+            .map_err(|error| {
+                io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+            })?;
+        let workspace = Self { path, directory };
         workspace.verify_path()?;
         Ok(workspace)
     }
@@ -1466,7 +1537,9 @@ impl OwnedWorkspaceDirectory {
         let mut directory = self.clone();
         for component in relative.components() {
             let std::path::Component::Normal(name) = component else {
-                return Err(invalid("owned workspace descendant has an unsafe component"));
+                return Err(invalid(
+                    "owned workspace descendant has an unsafe component",
+                ));
             };
             let name = name
                 .to_str()
@@ -1762,14 +1835,21 @@ mod tests {
         let home = root.join("home");
         fs::create_dir(&home).unwrap();
         fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).unwrap();
-        let app = OwnedWorkspaceDirectory::under_user_data(&home, &["Library", "Application Support"], "Nudox")
-            .expect("empty public home bootstrap");
+        let app = OwnedWorkspaceDirectory::under_user_data(
+            &home,
+            &["Library", "Application Support"],
+            "Nudox",
+        )
+        .expect("empty public home bootstrap");
         assert_private_mode(app.path());
         app.verify_path().expect("pinned original path");
         let moved = root.join("moved-home");
         fs::rename(&home, &moved).unwrap();
         fs::create_dir(&home).unwrap();
-        assert!(app.verify_path().is_err(), "a replacement pathname cannot inherit the pinned identity");
+        assert!(
+            app.verify_path().is_err(),
+            "a replacement pathname cannot inherit the pinned identity"
+        );
         drop(app);
         let public_app = home.join("Nudox");
         fs::create_dir(&public_app).unwrap();

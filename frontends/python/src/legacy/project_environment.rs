@@ -400,6 +400,43 @@ impl PythonEnvironmentCapture {
             roots: Vec::new(),
         };
         if let Some(venv) = selected {
+            let requested = venv;
+            let venv = actual_project_directory(project, &requested, control)?;
+            let actual_configuration = venv
+                .strip_prefix(project)
+                .map_err(|_| CheckerError::UncapturedDependency { path: venv.clone() })?
+                .join("pyvenv.cfg");
+            if !environment
+                .probes
+                .iter()
+                .any(|probe| probe.relative == actual_configuration)
+            {
+                let bytes = super::project::read_configuration_input(
+                    project,
+                    &actual_configuration,
+                    control,
+                )?
+                .ok_or_else(|| {
+                    project_error("", "selected actual venv configuration disappeared")
+                })?;
+                let requested_configuration = requested.join("pyvenv.cfg");
+                let expected = environment
+                    .probes
+                    .iter()
+                    .find(|probe| project.join(&probe.relative) == requested_configuration)
+                    .and_then(|probe| probe.bytes.as_deref());
+                if expected != Some(bytes.as_slice()) {
+                    return Err(project_error(
+                        "",
+                        "selected venv alias and actual directory configuration disagree",
+                    ));
+                }
+                environment.probes.push(SelectionProbe {
+                    relative: actual_configuration,
+                    bytes: Some(bytes),
+                });
+            }
+
             let cfg = environment
                 .probes
                 .iter()
@@ -700,6 +737,63 @@ impl PythonEnvironmentCapture {
             .is_some_and(|venv| project_relative.starts_with(venv))
     }
 
+    /// Checks a caller's admitted project path by directory object identity,
+    /// catching case aliases without imposing a global case-folding policy.
+    /// A receiver supplies its own admitted snapshot root, never capsule-origin
+    /// paths, so this grants no original-host filesystem capability.
+    pub fn is_dependency_member_controlled(
+        &self,
+        project: &Path,
+        relative: &Path,
+        control: PythonProjectControl<'_>,
+    ) -> Result<bool, CheckerError> {
+        checkpoint(control)?;
+        let Some(venv) = self.selected_venv_relative() else {
+            return Ok(false);
+        };
+        if relative.starts_with(venv) {
+            return Ok(true);
+        }
+        let depth = venv.components().count();
+        if relative.components().count() <= depth {
+            return Ok(false);
+        }
+        let candidate = relative.components().take(depth).collect::<PathBuf>();
+        let expected =
+            match backend_platform::DirectoryCapability::open_read_only_source(&project.join(venv))
+            {
+                Ok(expected) => expected,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                    ) =>
+                {
+                    return Ok(false);
+                }
+                Err(error) => return Err(io_error(error)),
+            };
+        let candidate = match backend_platform::DirectoryCapability::open_read_only_source(
+            &project.join(candidate),
+        ) {
+            Ok(candidate) => candidate,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                return Ok(false);
+            }
+            Err(error) => return Err(io_error(error)),
+        };
+        let matched = expected
+            .is_same_source_directory(&candidate)
+            .map_err(io_error)?;
+        checkpoint(control)?;
+        Ok(matched)
+    }
+
     /// Exact canonical wire length, computed during content-address admission.
     pub fn encoded_length(&self) -> u64 {
         self.encoded_length
@@ -902,6 +996,41 @@ impl PythonEnvironmentCapture {
             compiled,
         })
     }
+}
+
+fn actual_project_directory(
+    project: &Path,
+    requested: &Path,
+    control: PythonProjectControl<'_>,
+) -> Result<PathBuf, CheckerError> {
+    let relative =
+        requested
+            .strip_prefix(project)
+            .map_err(|_| CheckerError::UncapturedDependency {
+                path: requested.into(),
+            })?;
+    let mut directory =
+        backend_platform::DirectoryCapability::open_read_only_source(project).map_err(io_error)?;
+    let mut actual = project.to_path_buf();
+    for component in relative.components() {
+        checkpoint(control)?;
+        let Component::Normal(name) = component else {
+            return Err(CheckerError::UncapturedDependency {
+                path: requested.into(),
+            });
+        };
+        let name = name
+            .to_str()
+            .ok_or_else(|| project_error("", "venv component is not Unicode"))?;
+        let actual_name = directory
+            .actual_source_child_directory(name, MAX_FILES)
+            .map_err(io_error)?;
+        directory = directory.open_dir(&actual_name).map_err(io_error)?;
+        actual.push(actual_name);
+    }
+    directory.verify_path(&actual).map_err(io_error)?;
+    checkpoint(control)?;
+    Ok(actual)
 }
 
 fn site_packages_path(venv: &Path, version: [u32; 3]) -> PathBuf {
@@ -1911,6 +2040,84 @@ mod tests {
             canonical_path_spelling(&decoded.environment.probes[0].relative)?,
             "local/py3/pyvenv.cfg"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn selected_venv_names_and_case_alias_membership_come_from_directory_identity()
+    -> Result<(), CheckerError> {
+        let root = fixture()?;
+        let cancelled = AtomicBool::new(false);
+        std::fs::create_dir_all(root.path.join("Local/Py3")).map_err(io_error)?;
+        let actual = actual_project_directory(
+            &root.path,
+            &root.path.join("Local/Py3"),
+            control(&cancelled),
+        )?;
+        assert_eq!(
+            actual.strip_prefix(&root.path).unwrap(),
+            Path::new("Local/Py3")
+        );
+        let alias = actual_project_directory(
+            &root.path,
+            &root.path.join("LOCAL/PY3"),
+            control(&cancelled),
+        );
+        let insensitive = alias.is_ok();
+        if let Ok(alias) = alias {
+            assert_eq!(alias, actual);
+        }
+        let mut environment = transport_environment();
+        environment.project = root.path.clone();
+        environment.probes[0].relative = PathBuf::from("Local/Py3/pyvenv.cfg");
+        let interpreter = environment.interpreter.as_mut().unwrap();
+        interpreter.selected = if cfg!(windows) {
+            actual.join("Scripts/python.exe")
+        } else {
+            actual.join("bin/python")
+        };
+        environment.roots[0].original = site_packages_path(&actual, interpreter.version);
+        let admitted = PythonEnvironmentCapture::admit(environment, control(&cancelled))?;
+        assert_eq!(
+            admitted.selected_venv_relative(),
+            Some(Path::new("Local/Py3"))
+        );
+        assert!(admitted.is_dependency_member_controlled(
+            &root.path,
+            Path::new("Local/Py3/package.py"),
+            control(&cancelled)
+        )?);
+        assert_eq!(
+            admitted.is_dependency_member_controlled(
+                &root.path,
+                Path::new("LOCAL/PY3/package.py"),
+                control(&cancelled)
+            )?,
+            insensitive
+        );
+        std::fs::create_dir_all(root.path.join("Other/Py3")).map_err(io_error)?;
+        assert!(!admitted.is_dependency_member_controlled(
+            &root.path,
+            Path::new("Other/Py3/project.py"),
+            control(&cancelled)
+        )?);
+        // A symlink is never an alternative spelling of the selected directory.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&actual, root.path.join("alias")).map_err(io_error)?;
+            assert!(
+                actual_project_directory(&root.path, &root.path.join("alias"), control(&cancelled))
+                    .is_err()
+            );
+            assert_eq!(
+                actual_project_directory(
+                    &root.path,
+                    &root.path.join("Local/Py3"),
+                    control(&cancelled)
+                )?,
+                actual
+            );
+        }
         Ok(())
     }
 

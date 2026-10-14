@@ -1508,14 +1508,20 @@ impl NativePythonProjectAuthority {
             source_context
                 .add_captured_environment_root(venv)
                 .map_err(|error| project_error("", &error.to_string()))?;
-            if raw_sources
-                .iter()
-                .any(|source| source_context.is_environment_member(Path::new(source.relative_path)))
-            {
-                return Err(project_error(
-                    "",
-                    "installed dependency member cannot be selected as project program coverage",
-                ));
+            for source in raw_sources {
+                if environment
+                    .expect("selected environment")
+                    .is_dependency_member_controlled(
+                        package_root,
+                        Path::new(source.relative_path),
+                        control,
+                    )?
+                {
+                    return Err(project_error(
+                        "",
+                        "installed dependency member cannot be selected as project program coverage",
+                    ));
+                }
             }
         }
         let native = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
