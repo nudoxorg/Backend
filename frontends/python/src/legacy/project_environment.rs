@@ -1023,8 +1023,15 @@ fn actual_project_directory(
             .to_str()
             .ok_or_else(|| project_error("", "venv component is not Unicode"))?;
         let (actual_name, child) = directory
-            .actual_source_child_directory(name, MAX_FILES)
-            .map_err(io_error)?;
+            .actual_source_child_directory(name, MAX_FILES, &mut || {
+                checkpoint(control).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "Python directory selection stopped",
+                    )
+                })
+            })
+            .map_err(|error| checkpoint(control).err().unwrap_or_else(|| io_error(error)))?;
         directory = child;
         actual.push(actual_name);
     }
@@ -2058,7 +2065,7 @@ mod tests {
         let parent = backend_platform::DirectoryCapability::open_read_only_source(&root.path)
             .map_err(io_error)?;
         let (name, held) = parent
-            .actual_source_child_directory("venv", MAX_FILES)
+            .actual_source_child_directory("venv", MAX_FILES, &mut || Ok(()))
             .map_err(io_error)?;
         assert_eq!(name, "venv");
         std::fs::rename(root.path.join("venv"), root.path.join("original-held"))
@@ -2070,6 +2077,34 @@ mod tests {
         let entries = held.entries(MAX_FILES).map_err(io_error)?;
         assert!(entries.iter().any(|entry| entry.name == "owned.py"));
         assert!(entries.iter().all(|entry| entry.name != "foreign.py"));
+        Ok(())
+    }
+
+    #[test]
+    fn selected_directory_enumeration_checks_control_between_entries() -> Result<(), CheckerError> {
+        let root = fixture()?;
+        std::fs::create_dir(root.path.join("venv")).map_err(io_error)?;
+        for index in 0..32 {
+            std::fs::write(root.path.join(format!("sibling-{index}")), "opaque")
+                .map_err(io_error)?;
+        }
+        let parent = backend_platform::DirectoryCapability::open_read_only_source(&root.path)
+            .map_err(io_error)?;
+        let mut checkpoints = 0usize;
+        let result = parent.actual_source_child_directory("venv", MAX_FILES, &mut || {
+            checkpoints += 1;
+            if checkpoints == 2 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Interrupted,
+                    "deterministic cancellation",
+                ));
+            }
+            Ok(())
+        });
+        assert!(
+            matches!(result, Err(ref error) if error.kind() == std::io::ErrorKind::Interrupted)
+        );
+        assert_eq!(checkpoints, 2);
         Ok(())
     }
 
@@ -2125,6 +2160,25 @@ mod tests {
             )?,
             insensitive
         );
+        if !insensitive {
+            // Simultaneously present case-only siblings are different objects,
+            // and retain project membership on a case-sensitive filesystem.
+            std::fs::create_dir_all(root.path.join("LOCAL/PY3")).map_err(io_error)?;
+            assert_eq!(
+                actual_project_directory(
+                    &root.path,
+                    &root.path.join("LOCAL/PY3"),
+                    control(&cancelled)
+                )?,
+                root.path.join("LOCAL/PY3")
+            );
+            assert!(!admitted.is_dependency_member_controlled(
+                &root.path,
+                Path::new("LOCAL/PY3/project.py"),
+                control(&cancelled)
+            )?);
+            assert!(!admitted.is_dependency_member(Path::new("LOCAL/PY3/project.py")));
+        }
         std::fs::create_dir_all(root.path.join("Other/Py3")).map_err(io_error)?;
         assert!(!admitted.is_dependency_member_controlled(
             &root.path,
