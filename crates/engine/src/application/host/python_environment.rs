@@ -40,9 +40,13 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
     pub fn capture_python_interpreter_admission(
         &self,
     ) -> Result<PythonInterpreterHostAdmission, LocalCompilerHostError> {
-        let home = self.optional_absolute_path(LocalHostVariable::Home)?;
+        let frozen = LocalCompilerHost::new(
+            super::CapturedLocalHostEnvironment::capture(&self.environment),
+            self.discovery,
+        );
+        let home = frozen.optional_absolute_path(LocalHostVariable::Home)?;
         Ok(PythonInterpreterHostAdmission::capture(
-            self,
+            &frozen,
             home.as_deref(),
         ))
     }
@@ -53,15 +57,15 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
     ) -> Result<ArrayVec<PathBuf, PLATFORM_PATH_CAPACITY>, LocalCompilerHostError> {
         let mut selected = ArrayVec::new();
         if let Some(path) = self.optional_absolute_path(LocalHostVariable::NudoxPython)? {
-            selected.push(
-                self.canonical_configured_selection_path(LocalHostVariable::NudoxPython, path)?,
-            );
+            // A configured spelling is a frozen constraint, not an executed image.
+            // Negative/source-only projects must not inspect an unused explicit path.
+            selected.push(path);
             return Ok(selected);
         }
         if self.discovery == LocalHostDiscovery::ClosedSnapshot {
             for role in INSTALLED_PYTHON_ROLES {
                 if let Some(path) = self.optional_absolute_path(role)? {
-                    selected.push(self.canonical_configured_selection_path(role, path)?);
+                    selected.push(path);
                 }
             }
             return Ok(selected);
@@ -131,7 +135,10 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         let selected = self.frozen_python_paths(home)?;
         if explicit {
             if let Some(path) = selected.into_iter().next() {
-                paths.push((LocalHostVariable::NudoxPython, path));
+                paths.push((
+                    LocalHostVariable::NudoxPython,
+                    self.canonical_configured_selection_path(LocalHostVariable::NudoxPython, path)?,
+                ));
             }
         } else {
             paths.extend(INSTALLED_PYTHON_ROLES.into_iter().zip(selected));
@@ -179,12 +186,23 @@ impl PythonInterpreterHostAdmission {
         host: &LocalCompilerHost<Environment>,
         home: Option<&Path>,
     ) -> Self {
+        // Interpreter SDK discovery is independent of native-checker selection.
+        // Preserve the existing ordinary installed-environment policy for native
+        // ExplicitOnly callers; closed snapshots never rediscover ambient paths.
+        let discovery = match host.discovery {
+            LocalHostDiscovery::ExplicitOnly => LocalHostDiscovery::InstalledTools,
+            other => other,
+        };
+        let frozen = LocalCompilerHost::new(
+            super::CapturedLocalHostEnvironment::capture(&host.environment),
+            discovery,
+        );
         Self {
-            paths: host.frozen_python_paths(home),
-            strict: host
+            strict: frozen
                 .environment
                 .value(LocalHostVariable::NudoxPython)
                 .is_some(),
+            paths: frozen.frozen_python_paths(home),
         }
     }
     fn resolve(
@@ -243,5 +261,42 @@ impl PythonInterpreterHostAdmission {
             |requirement| self.resolve(requirement, control),
             control,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+    struct Configured {
+        selected: PathBuf,
+    }
+    impl LocalHostEnvironment for Configured {
+        fn value(&self, role: LocalHostVariable) -> Option<OsString> {
+            (role == LocalHostVariable::NudoxPython)
+                .then(|| self.selected.as_os_str().to_os_string())
+        }
+    }
+    #[test]
+    fn unused_configured_path_is_frozen_without_filesystem_admission() {
+        let path = if cfg!(windows) {
+            PathBuf::from("C:/absent-host/python.exe")
+        } else {
+            PathBuf::from("/absent-host/python3")
+        };
+        for discovery in [
+            LocalHostDiscovery::ExplicitOnly,
+            LocalHostDiscovery::ClosedSnapshot,
+        ] {
+            let host = LocalCompilerHost::new(
+                Configured {
+                    selected: path.clone(),
+                },
+                discovery,
+            );
+            let admission = host.capture_python_interpreter_admission().unwrap();
+            assert!(admission.strict);
+            assert_eq!(admission.paths.unwrap().as_slice(), &[path.clone()]);
+        }
     }
 }
