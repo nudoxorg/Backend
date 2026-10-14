@@ -73,7 +73,7 @@ pub use self::embedding_provision::{
     remove_embedding_runtime,
 };
 pub use self::host::{
-    CapturedLocalHostEnvironment,
+    CapturedLocalHostEnvironment, PythonInterpreterHostAdmission,
     InstalledRustInputs, InstalledRustSelectionSource, InstalledRustToolchain, InstalledToolPlace, find_installed_rust, installed_rust_system_locations,
     ClosedLocalHostEnvironmentSnapshot, ClosedLocalHostEnvironmentSnapshotError, LocalCompilerHost,
     LocalCompilerHostError, LocalCompilerHostSelection, LocalCompilerHostSelectionIssue,

@@ -9,6 +9,7 @@ mod authority;
 mod capture;
 mod error;
 mod paths;
+mod python_environment;
 mod rust_selection;
 mod snapshot;
 
@@ -44,13 +45,15 @@ pub(crate) use paths::{
     BundleTypeScriptResourceProof, bundled_typescript_runtime, bundled_typescript_sdk,
 };
 pub use paths::{LocalHostDirectory, LocalHostPathKind, LocalHostPathRole};
-pub use rust_selection::{InstalledRustInputs, InstalledRustSelectionSource, InstalledRustToolchain, InstalledToolPlace, find_installed_rust, installed_rust_system_locations,
+pub use python_environment::PythonInterpreterHostAdmission;
+pub use rust_selection::{
+    InstalledRustInputs, InstalledRustSelectionSource, InstalledRustToolchain, InstalledToolPlace,
+    find_installed_rust, installed_rust_system_locations,
 };
 pub use snapshot::{
     ClosedLocalHostEnvironmentSnapshot, ClosedLocalHostEnvironmentSnapshotError,
     LocalCompilerHostSelection, LocalCompilerHostSelectionIssue, LocalCompilerHostSelectionSource,
-    LocalHostCargoHomeSelection,
-    MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES,
+    LocalHostCargoHomeSelection, MAX_CLOSED_LOCAL_HOST_ENVIRONMENT_BYTES,
 };
 
 const PLATFORM_PATH_CAPACITY: usize = 12;
@@ -303,7 +306,8 @@ impl LocalHostEnvironment for WorkspaceCompilerEnvironment {
 pub enum LocalHostDiscovery {
     /// Only explicitly supplied typed paths participate for native compilers other than the
     /// TypeScript host. TypeScript can use bounded PATH and platform discovery for its paired
-    /// Node/compiler fallback.
+    /// Node/compiler fallback. Installed Python dependency capture independently freezes
+    /// installed-interpreter locations and resolves them only for a selected venv.
     ExplicitOnly,
     /// No host discovery is permitted. Every compiler and auxiliary path must come from
     /// the supplied closed snapshot; this mode never consults PATH, a bundle, or platform paths.
@@ -961,14 +965,24 @@ mod tests {
         if std::env::var_os(CHILD).is_some() {
             use std::os::unix::fs::MetadataExt;
             rustix::process::umask(rustix::fs::Mode::from_bits_truncate(0o002));
-            let fixture = PrivateTestDirectory::create("compiler-private-creation").expect("fixture");
+            let fixture =
+                PrivateTestDirectory::create("compiler-private-creation").expect("fixture");
             let root = fixture.path().join("compiler");
             create_directory(LocalHostDirectory::DataRoot, &root).expect("compiler root");
-            for (role, name) in [(LocalHostDirectory::Artifacts, "artifacts"), (LocalHostDirectory::Journal, "journal")] {
+            for (role, name) in [
+                (LocalHostDirectory::Artifacts, "artifacts"),
+                (LocalHostDirectory::Journal, "journal"),
+            ] {
                 create_directory(role, &root.join(name)).expect("private compiler directory");
-                assert_eq!(fs::metadata(root.join(name)).expect("mode").mode() & 0o777, 0o700);
+                assert_eq!(
+                    fs::metadata(root.join(name)).expect("mode").mode() & 0o777,
+                    0o700
+                );
             }
-            let host = LocalCompilerHost::new(InspectionEnvironment(root.clone()), LocalHostDiscovery::ExplicitOnly);
+            let host = LocalCompilerHost::new(
+                InspectionEnvironment(root.clone()),
+                LocalHostDiscovery::ExplicitOnly,
+            );
             let native = host.create_native_work(&root).expect("private native work");
             for path in [&root, &root.join("native-work"), &native] {
                 assert_eq!(fs::metadata(path).expect("mode").mode() & 0o777, 0o700);
@@ -1144,33 +1158,143 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    #[ignore = "requires managed genuine CPython; exercises real native-default closed owner and ordinary venv"]
+    fn native_default_checker_captures_closed_host_cpython_only_for_installed_venv()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use backend_frontend_python::legacy::checker::{CheckerError, PythonProjectControl};
+        use std::sync::atomic::AtomicBool;
+        let cpython =
+            std::env::var_os("NUDOX_TEST_ENV_CPYTHON").ok_or("genuine managed CPython required")?;
+        let state = PrivateTestDirectory::create("native-default-installed-python")?;
+        let project = state.path().join("project");
+        fs::create_dir(&project)?;
+        let selected = state.path().join("host-tools/python3");
+        let environment = StartupEnvironment(vec![
+            (
+                LocalHostVariable::NudoxDataRoot,
+                state.path().join("owner").into_os_string(),
+            ),
+            (
+                LocalHostVariable::NudoxPython,
+                selected.clone().into_os_string(),
+            ),
+        ]);
+        let client =
+            LocalCompilerHost::new(environment, LocalHostDiscovery::ClosedSnapshot).open()?;
+        assert_eq!(
+            client
+                .capabilities()
+                .for_profile(LanguageProfile::Python(PythonVersion::Python314))
+                .state(),
+            crate::application::LocalCompilerCapabilityState::Deferred
+        );
+        let cancelled = AtomicBool::new(false);
+        let control = || PythonProjectControl {
+            cancelled: &cancelled,
+            deadline: std::time::Instant::now() + Duration::from_secs(180),
+        };
+        let admission = client
+            .python_interpreter_admission()
+            .ok_or("independent host policy missing")?;
+        // The selected host path is still absent: source-only capture must not
+        // inspect it or fail native checker startup because it is unused.
+        let absence = admission.capture_project(&project, control())?;
+        assert!(absence.selected_venv_relative().is_none());
+        assert!(!selected.exists());
+        fs::create_dir(selected.parent().ok_or("host tools parent")?)?;
+        std::os::unix::fs::symlink(&cpython, &selected)?;
+        let output = std::process::Command::new(&cpython)
+            .args(["-I", "-B", "-m", "venv", "--without-pip"])
+            .arg(project.join(".venv"))
+            .output()?;
+        assert!(output.status.success(), "genuine ordinary venv: {output:?}");
+        let installed = admission.capture_project(&project, control())?;
+        assert_eq!(installed.selected_venv_relative(), Some(Path::new(".venv")));
+        assert_ne!(absence.identity(), installed.identity());
+        // Checker selection remains compiled-native; no external Pyrefly was
+        // enabled to obtain this independent interpreter capability.
+        assert_eq!(
+            client
+                .capabilities()
+                .for_profile(LanguageProfile::Python(PythonVersion::Python314))
+                .state(),
+            crate::application::LocalCompilerCapabilityState::Deferred
+        );
+        let absent = LocalCompilerHost::new(
+            StartupEnvironment(vec![(
+                LocalHostVariable::NudoxDataRoot,
+                state.path().join("absent-owner").into_os_string(),
+            )]),
+            LocalHostDiscovery::ClosedSnapshot,
+        )
+        .open()?;
+        let absent_admission = absent
+            .python_interpreter_admission()
+            .ok_or("closed negative host policy missing")?;
+        assert!(matches!(
+            absent_admission.capture_project(&project, control()),
+            Err(CheckerError::ProjectReport { .. })
+        ));
+        drop(absent);
+        drop(client);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn closed_go_refusal_keeps_the_actual_native_python_owner_usable() {
         use backend_library::interface::{CompilerCapability, CompilerRequest};
         use std::os::unix::fs::PermissionsExt as _;
-        let root = std::env::temp_dir().join(format!("nudox-go-python-{}-{}", std::process::id(),
-            NEXT_NATIVE_WORK.fetch_add(1, Ordering::Relaxed)));
+        let root = std::env::temp_dir().join(format!(
+            "nudox-go-python-{}-{}",
+            std::process::id(),
+            NEXT_NATIVE_WORK.fetch_add(1, Ordering::Relaxed)
+        ));
         fs::create_dir_all(&root).unwrap();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
-        let snapshot = ClosedLocalHostEnvironmentSnapshot::from_paths([]).unwrap()
-            .with_go_failure(Some(LocalRuntimeGoAuthorityFailure::OracleUnavailable)).unwrap();
-        let decoded = ClosedLocalHostEnvironmentSnapshot::parse(&snapshot.encode().unwrap()).unwrap();
+        let snapshot = ClosedLocalHostEnvironmentSnapshot::from_paths([])
+            .unwrap()
+            .with_go_failure(Some(LocalRuntimeGoAuthorityFailure::OracleUnavailable))
+            .unwrap();
+        let decoded =
+            ClosedLocalHostEnvironmentSnapshot::parse(&snapshot.encode().unwrap()).unwrap();
         let selection = LocalCompilerHostSelection::from_closed_snapshot(decoded).unwrap();
-        let environment = StartupEnvironment(vec![(LocalHostVariable::NudoxDataRoot,
+        let environment = StartupEnvironment(vec![(
+            LocalHostVariable::NudoxDataRoot,
             root.join("owner").into_os_string(),
         )]);
         let mut client = LocalCompilerHost::new(environment, LocalHostDiscovery::ClosedSnapshot)
-            .with_go_authority_failure(selection.go_authority_failure()).open()
+            .with_go_authority_failure(selection.go_authority_failure())
+            .open()
             .expect("closed Go refusal cannot block native Python startup");
-        assert_eq!(client.capabilities().for_profile(LanguageProfile::Go(GoVersion::Go125)).state(),
-            crate::application::LocalCompilerCapabilityState::ProbeFailed);
-        client.generate(CompilerRequest {
-            profile: LanguageProfile::Python(PythonVersion::Python314), stage: Stage::LowerIr,
-            source: "answer = 42\n",
-        }).expect("actual compiled Python producer remains usable");
-        assert_eq!(client.capabilities().for_profile(LanguageProfile::Python(PythonVersion::Python314)).state(),
-            crate::application::LocalCompilerCapabilityState::Ready);
-        assert_eq!(client.capabilities().for_profile(LanguageProfile::TypeScript(TypeScriptSource::TypeScript)).state(),
-            crate::application::LocalCompilerCapabilityState::Unavailable);
+        assert_eq!(
+            client
+                .capabilities()
+                .for_profile(LanguageProfile::Go(GoVersion::Go125))
+                .state(),
+            crate::application::LocalCompilerCapabilityState::ProbeFailed
+        );
+        client
+            .generate(CompilerRequest {
+                profile: LanguageProfile::Python(PythonVersion::Python314),
+                stage: Stage::LowerIr,
+                source: "answer = 42\n",
+            })
+            .expect("actual compiled Python producer remains usable");
+        assert_eq!(
+            client
+                .capabilities()
+                .for_profile(LanguageProfile::Python(PythonVersion::Python314))
+                .state(),
+            crate::application::LocalCompilerCapabilityState::Ready
+        );
+        assert_eq!(
+            client
+                .capabilities()
+                .for_profile(LanguageProfile::TypeScript(TypeScriptSource::TypeScript))
+                .state(),
+            crate::application::LocalCompilerCapabilityState::Unavailable
+        );
         drop(client);
         fs::remove_dir_all(root).unwrap();
     }

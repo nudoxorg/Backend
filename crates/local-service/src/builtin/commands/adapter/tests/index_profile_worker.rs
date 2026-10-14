@@ -41,7 +41,7 @@ fn actual_work_with_queue(fixture: &mut AdapterFixture, queued: bool) -> Profile
         CompileExecutionIntent::Interactive,
         false,
         Arc::clone(&cancel),
-        adapter.compiler.python_interpreter_selection().cloned(),
+        adapter.compiler.python_interpreter_admission(),
     )
     .expect("actual scan capture");
     let scan = index::run_index_scan(scan).unwrap_or_else(|_| panic!("actual source scan"));
