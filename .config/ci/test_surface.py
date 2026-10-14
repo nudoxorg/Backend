@@ -53,6 +53,13 @@ class LiveContractAdmissionTests(unittest.TestCase):
         full = dict(summary, detail="full", source=source, source_tag=source[:8])
         page = dict(full)
         surface.require_live_health(summary, full, page)
+        with self.assertRaises(RuntimeError):
+            surface.require_live_health(summary, full, page, root)
+        ready = dict(summary, readiness="ready")
+        ready_full = dict(full, readiness="ready")
+        surface.require_live_health(ready, ready_full, ready_full, root)
+        with self.assertRaises(RuntimeError):
+            surface.require_live_health(ready, ready_full, ready_full, "c" * 64)
         for field in ("revision", "source"):
             changed = copy.deepcopy(full)
             changed[field] = "c" * 64

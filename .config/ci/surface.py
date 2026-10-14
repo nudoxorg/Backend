@@ -238,8 +238,10 @@ def require_completed_index(answer: dict, profile_count: int) -> str:
     return root
 
 
-def require_live_health(summary: dict, full: dict, witness: dict) -> None:
+def require_live_health(summary: dict, full: dict, witness: dict, published_root: str | None = None) -> None:
     """Whole-owner CLI and MCP status must agree on public identity and coverage."""
+    if published_root is not None and (summary.get("readiness") != "ready" or summary.get("revision") != published_root):
+        raise RuntimeError("completed index: health must certify the published receipt as ready")
     for name, detail, value in (("summary", "summary", summary), ("full", "full", full), ("MCP", "full", witness)):
         if value.get("answer") != "status" or value.get("detail") != detail:
             raise RuntimeError(f"health {name}: wrong answer/detail: {value}")
@@ -301,7 +303,7 @@ def run_live_contracts(owner: Owner, project: Path, config: dict, published_root
     reply = mcp["calls"][0]["reply"]
     if not isinstance(reply, dict) or reply.get("isError", False) or "structuredContent" not in reply:
         raise RuntimeError(f"MCP live status failed: {reply}")
-    require_live_health(summary, full, reply["structuredContent"])
+    require_live_health(summary, full, reply["structuredContent"], published_root)
     print("surface-contract: live health summary/full agree with MCP status identity and coverage", flush=True)
     text = config["bounded_search_query"]
     reference = query("bounded search reference", ["search", text, "--limit", "200"])
