@@ -234,7 +234,11 @@ The existing resumable seven-language case remains unchanged; this smaller real
 project uses a direct blocking wait because a zero-deadline call could legitimately
 finish such a small project before the first observation.
 
-Run only this case with `python3 .config/ci/test.py integration --bin-dir DIR
---case go-xxhash` (on one line). The first golden requires explicit source/result
-review and a second exact-head comparison. This is the first real-project slice,
+Run only this case with:
+
+```sh
+python3 .config/ci/test.py integration --bin-dir DIR --case go-xxhash
+```
+
+The first golden requires explicit source/result review and a second exact-head comparison. This is the first real-project slice,
 not the planned full per-language representative corpus.
