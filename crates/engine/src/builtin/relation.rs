@@ -21,7 +21,7 @@ use backend_library::{
     MAX_RUST_CARGO_METADATA_TEXT_BYTES,
 };
 use backend_replication::ImmutableObjectSchema;
-use backend_semantic::vocabulary::LanguageProfile;
+use backend_semantic::vocabulary::{LanguageProfile, PythonVersion};
 use backend_version::{
     CanonicalRelation, ContentId, CoverageWitness, CutPolicy, DEFAULT_CUT_POLICY, Relation,
     RelationState, SourceFactDomain, StateRoot, WorkspaceRoot, anchored_cut_points,
@@ -59,7 +59,10 @@ const SOURCE_RECORD_FORMAT_MEMBERSHIP: &[u8; 4] = b"PSRD";
 const SOURCE_RECORD_FORMAT_MEMBERSHIP_OFFSETS: &[u8; 4] = b"PSRE";
 
 /// Newest source-record format version, as the tags above name it.
-const SOURCE_RECORD_VERSION: u8 = 14;
+const SOURCE_RECORD_VERSION: u8 = 15;
+
+/// File format with a literal supported Python minor, full facts, and optional identity.
+const SOURCE_RECORD_FORMAT_PYTHON_PROFILE: &[u8; 4] = b"PSRF";
 
 /// Minimum file keys in every non-final membership page. The shared
 /// content-defined cut policy also cuts on encoded-byte anchors; 256 remains
@@ -121,10 +124,13 @@ fn source_record_format(value: &ProductSourceRecord) -> &'static [u8; 4] {
         ProductSourceRecord::Project { .. } => SOURCE_RECORD_FORMAT_PLAIN,
         ProductSourceRecord::File {
             declarations,
+            python_version,
             source_identity,
             ..
         } => {
-            if states_facts(declarations) {
+            if python_version.is_some() {
+                SOURCE_RECORD_FORMAT_PYTHON_PROFILE
+            } else if states_facts(declarations) {
                 SOURCE_RECORD_FORMAT_FACTS
             } else if source_identity.is_some() {
                 SOURCE_RECORD_FORMAT_IDENTIFIED
@@ -165,6 +171,7 @@ fn format_version(format: &[u8]) -> Option<u8> {
         b'C' => 12,
         b'D' => 13,
         b'E' => 14,
+        b'F' => 15,
         digit if digit.is_ascii_digit() => digit.checked_sub(b'0')?,
         _ => return None,
     };
@@ -212,6 +219,9 @@ pub enum ProductSourceRecord {
         content_version: [u8; 32],
         /// Identity of the parser, grammar, and extraction contract.
         analysis_version: [u8; 32],
+        /// Actual admitted Python minor. None means a historical legacy record,
+        /// whose Python producer used 3.14; it does not infer a current environment.
+        python_version: Option<PythonVersion>,
         /// The `SourceFactDomain` content identity the semantic compiler
         /// derives from the same bytes, when it is known to the producer.
         ///
@@ -684,6 +694,8 @@ pub struct ProductFileRef<'a> {
     pub content_version: [u8; 32],
     /// Parser, grammar, and extraction contract identity.
     pub analysis_version: [u8; 32],
+    /// Explicit admitted Python minor; None preserves historical 3.14 records.
+    pub python_version: Option<PythonVersion>,
     /// The semantic source content identity, when the producer stated it.
     pub source_identity: Option<ContentId<SourceFactDomain>>,
     /// Shared declaration storage.
@@ -1069,6 +1081,7 @@ impl ProductSourceRecord {
             declarations,
             retention,
             None,
+            None,
         )
     }
 
@@ -1081,9 +1094,13 @@ impl ProductSourceRecord {
         declarations: impl Into<Arc<[SourceDeclaration]>>,
         retention: DeclarationRetention,
         source_identity: Option<ContentId<SourceFactDomain>>,
+        python_version: Option<PythonVersion>,
     ) -> Result<Self, String> {
         let path = path.into();
         let declarations = declarations.into();
+        if python_version.is_some() && language != SourceLanguage::Python {
+            return Err("Python profile is invalid on a different language row".to_owned());
+        }
         if path.is_empty() || path.len() > Self::MAX_LABEL_BYTES {
             return Err("source file path is empty or oversized".to_owned());
         }
@@ -1096,6 +1113,7 @@ impl ProductSourceRecord {
             language,
             content_version,
             analysis_version,
+            python_version,
             source_identity,
             declarations,
             retention,
@@ -1168,6 +1186,7 @@ impl ProductSourceRecord {
             analysis_version,
             declarations,
             None,
+            None,
         )
     }
 
@@ -1197,6 +1216,62 @@ impl ProductSourceRecord {
             analysis_version,
             declarations,
             Some(source_identity),
+            None,
+        )
+    }
+
+    /// Constructs a source row using its final admitted Python profile. The profile
+    /// participates in every compaction probe, together with semantic identity.
+    ///
+    /// # Errors
+    /// Rejects non-Python profile claims or a bare identity exceeding the row bound.
+    pub fn profiled_file_within_row_capacity(
+        project: [u8; 32],
+        path: impl Into<String>,
+        language: SourceLanguage,
+        content_version: [u8; 32],
+        analysis_version: [u8; 32],
+        declarations: impl Into<Arc<[SourceDeclaration]>>,
+        source_identity: ContentId<SourceFactDomain>,
+        python_version: Option<PythonVersion>,
+    ) -> Result<Self, String> {
+        if python_version.is_some() && language != SourceLanguage::Python {
+            return Err("Python profile is invalid on a different language row".to_owned());
+        }
+        Self::file_within_row_capacity_and_identity(
+            project,
+            path,
+            language,
+            content_version,
+            analysis_version,
+            declarations,
+            Some(source_identity),
+            python_version,
+        )
+    }
+
+    /// Constructs an unavailable source row with the same explicit project profile.
+    ///
+    /// # Errors
+    /// Rejects an invalid path/profile claim or a row exceeding the canonical bound.
+    pub fn profiled_file_unavailable(
+        project: [u8; 32],
+        path: impl Into<String>,
+        language: SourceLanguage,
+        analysis_version: [u8; 32],
+        reason: SourceUnavailableReason,
+        python_version: Option<PythonVersion>,
+    ) -> Result<Self, String> {
+        Self::file_with_retention_and_identity(
+            project,
+            path,
+            language,
+            [0; 32],
+            analysis_version,
+            Vec::new(),
+            DeclarationRetention::Unavailable(reason),
+            None,
+            python_version,
         )
     }
 
@@ -1208,6 +1283,7 @@ impl ProductSourceRecord {
         analysis_version: [u8; 32],
         declarations: impl Into<Arc<[SourceDeclaration]>>,
         source_identity: Option<ContentId<SourceFactDomain>>,
+        python_version: Option<PythonVersion>,
     ) -> Result<Self, String> {
         let path = path.into();
         let extracted = declarations.into();
@@ -1221,6 +1297,7 @@ impl ProductSourceRecord {
                 declarations,
                 retention,
                 source_identity,
+                python_version,
             )
         };
         if let Ok(record) = build(Arc::clone(&extracted), DeclarationRetention::Complete) {
@@ -1322,6 +1399,7 @@ impl ProductSourceRecord {
                 language,
                 content_version,
                 analysis_version,
+                python_version,
                 source_identity,
                 declarations,
                 retention,
@@ -1331,6 +1409,7 @@ impl ProductSourceRecord {
                 language: *language,
                 content_version: *content_version,
                 analysis_version: *analysis_version,
+                python_version: *python_version,
                 source_identity: *source_identity,
                 declarations,
                 retention: *retention,
@@ -1680,6 +1759,7 @@ fn encode_file_record(value: &ProductSourceRecord, output: &mut Vec<u8>) {
         language,
         content_version,
         analysis_version,
+        python_version,
         source_identity,
         declarations,
         retention,
@@ -1688,7 +1768,8 @@ fn encode_file_record(value: &ProductSourceRecord, output: &mut Vec<u8>) {
         return;
     };
     let format = source_record_format(value);
-    let factual = format == SOURCE_RECORD_FORMAT_FACTS;
+    let factual =
+        format == SOURCE_RECORD_FORMAT_FACTS || format == SOURCE_RECORD_FORMAT_PYTHON_PROFILE;
     let identified = !factual && source_identity.is_some();
     debug_assert_eq!(
         identified,
@@ -1702,6 +1783,15 @@ fn encode_file_record(value: &ProductSourceRecord, output: &mut Vec<u8>) {
     output.push(language.wire_tag());
     output.extend_from_slice(content_version);
     output.extend_from_slice(analysis_version);
+    if let Some(version) = python_version {
+        output.push(match version {
+            PythonVersion::Python310 => 10,
+            PythonVersion::Python311 => 11,
+            PythonVersion::Python312 => 12,
+            PythonVersion::Python313 => 13,
+            PythonVersion::Python314 => 14,
+        });
+    }
     if factual {
         match source_identity {
             Some(identity) => {
@@ -2057,7 +2147,7 @@ fn decode_source_record(bytes: &[u8]) -> Result<ProductSourceRecord, ()> {
     let mut reader = SourceReader::new(bytes);
     let version = format_version(reader.take(4)?).ok_or(())?;
     let record = match reader.byte()? {
-        1 => {
+        1 if version != 15 => {
             let label = reader.text(ProductSourceRecord::MAX_LABEL_BYTES)?;
             let source_version = reader.array()?;
             if version >= 13 {
@@ -2108,8 +2198,8 @@ fn decode_source_record(bytes: &[u8]) -> Result<ProductSourceRecord, ()> {
                 }
             }
         }
-        2 if version < 12 => decode_file_record(&mut reader, version)?,
-        3 if version >= 13 => {
+        2 if version < 12 || version == 15 => decode_file_record(&mut reader, version)?,
+        3 if version >= 13 && version != 15 => {
             let project = reader.array()?;
             let count = reader.count(MAX_PROJECT_MEMBERSHIP_PAGE_FILES)?;
             let mut files = Vec::with_capacity(count);
@@ -2137,6 +2227,21 @@ fn decode_file_record(
         reader.array()?
     } else {
         [0; 32]
+    };
+    let python_version = if version == 15 {
+        if language != SourceLanguage::Python {
+            return Err(());
+        }
+        Some(match reader.byte()? {
+            10 => PythonVersion::Python310,
+            11 => PythonVersion::Python311,
+            12 => PythonVersion::Python312,
+            13 => PythonVersion::Python313,
+            14 => PythonVersion::Python314,
+            _ => return Err(()),
+        })
+    } else {
+        None
     };
     let source_identity = if version >= 11 {
         match reader.byte()? {
@@ -2174,6 +2279,7 @@ fn decode_file_record(
         declarations,
         retention,
         source_identity,
+        python_version,
     )
     .map_err(|_| ())
 }
@@ -3562,6 +3668,90 @@ mod tests {
     }
 
     #[test]
+    fn python_profile_roundtrip_is_literal_bounded_and_preserves_legacy_bytes() {
+        use backend_semantic::vocabulary::PythonVersion;
+        let identity = fixture_source_identity();
+        for profile in [
+            PythonVersion::Python310,
+            PythonVersion::Python311,
+            PythonVersion::Python312,
+            PythonVersion::Python313,
+            PythonVersion::Python314,
+        ] {
+            let record = ProductSourceRecord::profiled_file_within_row_capacity(
+                [3; 32],
+                "main.py",
+                super::SourceLanguage::Python,
+                [4; 32],
+                [5; 32],
+                Vec::new(),
+                identity,
+                Some(profile),
+            )
+            .unwrap();
+            let mut bytes = Vec::new();
+            ProductSourceRelation::encode_value(&record, &mut bytes);
+            assert_eq!(&bytes[..4], b"PSRF");
+            let decoded = ProductSourceRelation::decode_value(&bytes).unwrap();
+            assert_eq!(decoded.file_fields().unwrap().python_version, Some(profile));
+            assert_eq!(decoded, record);
+            let mut again = Vec::new();
+            ProductSourceRelation::encode_value(&decoded, &mut again);
+            assert_eq!(again, bytes);
+            // The literal minor follows tag/kind/project/path/language/content/analysis.
+            let version_offset = 4 + 1 + 32 + 4 + "main.py".len() + 1 + 32 + 32;
+            bytes[version_offset] = 15;
+            assert!(ProductSourceRelation::decode_value(&bytes).is_err());
+        }
+        let legacy = legacy_file_record();
+        let mut bytes = Vec::new();
+        ProductSourceRelation::encode_value(&legacy, &mut bytes);
+        let decoded = ProductSourceRelation::decode_value(&bytes).unwrap();
+        assert_eq!(decoded.file_fields().unwrap().python_version, None);
+        let mut again = Vec::new();
+        ProductSourceRelation::encode_value(&decoded, &mut again);
+        assert_eq!(again, bytes);
+        assert!(
+            ProductSourceRecord::profiled_file_within_row_capacity(
+                [3; 32],
+                "lib.rs",
+                super::SourceLanguage::Rust,
+                [4; 32],
+                [5; 32],
+                Vec::new(),
+                identity,
+                Some(PythonVersion::Python312)
+            )
+            .is_err()
+        );
+        let declarations = (0..2048)
+            .map(|index| wide_declaration_at_path(index, "main.py"))
+            .collect::<Vec<_>>();
+        let compact = ProductSourceRecord::profiled_file_within_row_capacity(
+            [3; 32],
+            "main.py",
+            super::SourceLanguage::Python,
+            [4; 32],
+            [5; 32],
+            Arc::from(declarations),
+            identity,
+            Some(PythonVersion::Python312),
+        )
+        .unwrap();
+        assert!(compact.encoded_value_bytes() <= ProductSourceRecord::ROW_VALUE_CAPACITY);
+        assert_eq!(
+            compact.file_fields().unwrap().python_version,
+            Some(PythonVersion::Python312)
+        );
+        let mut bytes = Vec::new();
+        ProductSourceRelation::encode_value(&compact, &mut bytes);
+        assert_eq!(
+            ProductSourceRelation::decode_value(&bytes).unwrap(),
+            compact
+        );
+    }
+
+    #[test]
     fn a_stated_source_identity_round_trips_and_earns_its_tag() {
         let record = legacy_file_record()
             .with_source_identity(fixture_source_identity())
@@ -3785,8 +3975,12 @@ mod tests {
     }
 
     fn wide_declaration(index: usize) -> SourceDeclaration {
+        wide_declaration_at_path(index, "src/lib.rs")
+    }
+
+    fn wide_declaration_at_path(index: usize, path: &str) -> SourceDeclaration {
         SourceDeclaration::at_path(
-            "src/lib.rs",
+            path,
             format!("declaration_{index}"),
             "function",
             u32::try_from(index).unwrap_or(0).saturating_add(1),
