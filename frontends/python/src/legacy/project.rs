@@ -3,7 +3,8 @@
 //! Definitions and inferred types come from the pinned native Pyrefly 1.2
 //! solved State (`Require::Everything`). Byte spans are native UTF-8 coordinates.
 //! Exact native module contents gate every join to the selected source.
-//! No transaction or compiler read-set is reused across requests.
+//! Reuse requires the exact compact original input/producer fence; no native
+//! transaction or ambient compiler read-set is retained across requests.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
@@ -35,6 +36,30 @@ pub(super) fn read_configuration_input(
     control: PythonProjectControl<'_>,
 ) -> Result<Option<Vec<u8>>, CheckerError> {
     baseline::read_captured_input(root, relative, Some(control))
+}
+
+pub(super) fn read_environment_input(
+    root: &Path,
+    relative: &Path,
+    control: PythonProjectControl<'_>,
+    maximum: u64,
+) -> Result<Option<Vec<u8>>, CheckerError> {
+    baseline::read_captured_input_bounded(
+        root,
+        relative,
+        Some(control),
+        maximum,
+        baseline::CapturedRootPolicy::CanonicalEnvironment,
+    )
+}
+
+pub(super) fn digest_environment_input(
+    root: &Path,
+    relative: &Path,
+    control: PythonProjectControl<'_>,
+    maximum: u64,
+) -> Result<Option<(u64, [u8; 32])>, CheckerError> {
+    baseline::digest_environment_input(root, relative, control, maximum)
 }
 
 /// The compiled native solver is a distinct producer from an external Pyrefly command.
@@ -241,7 +266,7 @@ fn native_producer_identity(digest: blake3::Hash, size: u64) -> NativePythonProd
         ))
         .as_bytes(),
     );
-    identity.update(b"root-isolated;named-single-package-import-root.v1;declared-captured-python-source-roots.v1;captured-diagnostic-baseline.v1;root-pinned-config-inputs.v1;fresh-state;per-file-raw-intake.v1;native-syntax-diagnostics;unavailable-exact-rdeps;classdef-declaration+constructor-callee;captured-candidates;opaque-link-frontier;native-current-module-binding;class-valued-module-read.v3;depth64;work262144\0");
+    identity.update(b"root-isolated;named-single-package-import-root.v1;declared-captured-python-source-roots.v1;captured-diagnostic-baseline.v1;root-pinned-config-inputs.v1;fresh-state;per-file-raw-intake.v1;native-syntax-diagnostics;unavailable-exact-rdeps;classdef-declaration+constructor-callee;captured-candidates;opaque-link-frontier;native-current-module-binding;class-valued-module-read.v3;immutable-installed-environment-cohort.v1;depth64;work262144\0");
     identity.update(digest.as_bytes());
     identity.update(&size.to_be_bytes());
     NativePythonProducerIdentity(*identity.finalize().as_bytes())
@@ -453,6 +478,7 @@ impl PythonProjectReport {
 pub(super) struct CapturedProjectLayout {
     source_root: PathBuf,
     package_import_root: Option<PathBuf>,
+    environment: Option<super::project_environment::MaterializedPythonEnvironment>,
 }
 
 impl CapturedProjectLayout {
@@ -468,6 +494,7 @@ impl CapturedProjectLayout {
             return Ok(Self {
                 source_root: workspace.join("project"),
                 package_import_root: None,
+                environment: None,
             });
         }
         let leaf = original
@@ -497,6 +524,7 @@ impl CapturedProjectLayout {
         Ok(Self {
             source_root: import_root.join(leaf),
             package_import_root: Some(import_root),
+            environment: None,
         })
     }
 
@@ -520,6 +548,17 @@ impl CapturedProjectLayout {
         }
         if path.starts_with(&self.source_root) {
             return Ok(());
+        }
+        if let Some(environment) = &self.environment {
+            for (_, dependency, mirror) in &environment.roots {
+                if path.starts_with(mirror) {
+                    return Ok(());
+                }
+                if let Ok(relative) = path.strip_prefix(dependency) {
+                    *path = mirror.join(relative);
+                    return Ok(());
+                }
+            }
         }
         if let Ok(relative) = path.strip_prefix(original) {
             *path = self.source_root.join(relative);
@@ -550,6 +589,27 @@ impl CapturedProjectLayout {
             .map(|relative| original.join(relative))
     }
 
+    /// Dependency candidates are checked in the immutable transaction mirror;
+    /// their original filesystem is revalidated by the coordinator's cohort fence.
+    pub(super) fn dependency_root(&self, path: &Path) -> bool {
+        self.environment.as_ref().is_some_and(|environment| {
+            environment
+                .roots
+                .iter()
+                .any(|(_, _, mirror)| path.starts_with(mirror))
+        })
+    }
+
+    pub(super) fn compiled_dependency_candidate(&self, path: &Path) -> Option<&PathBuf> {
+        self.environment.as_ref()?.compiled_candidate(path)
+    }
+
+    pub(super) fn dependency_search_paths(&self) -> impl Iterator<Item = &PathBuf> {
+        self.environment
+            .iter()
+            .flat_map(|environment| environment.roots.iter().map(|(_, _, mirror)| mirror))
+    }
+
     /// The synthetic import root inspects the selected package frontier only.
     pub(super) fn original_search_root(&self, path: &Path, original: &Path) -> Option<PathBuf> {
         if self.package_import_root.as_deref() == Some(path) {
@@ -560,6 +620,10 @@ impl CapturedProjectLayout {
     }
 
     fn fingerprint(&self, identity: &mut blake3::Hasher) {
+        if let Some(environment) = &self.environment {
+            identity.update(b"installed-environment-cohort.v1\0");
+            identity.update(&environment.identity);
+        }
         match &self.package_import_root {
             Some(_) => {
                 identity.update(b"named-single-package-import-root.v1\0");
@@ -587,6 +651,7 @@ pub struct PythonProjectWitness {
     candidates: Vec<CandidateWitness>,
     frontier: Vec<SourceDirectoryWitness>,
     baselines: CapturedBaselines,
+    environment: Option<super::project_environment::PythonEnvironmentWitness>,
 }
 
 /// Exact host-local transaction identity for source/configuration/producer facts.
@@ -837,9 +902,10 @@ pub fn is_ignored_python_source_path(
 ) -> bool {
     path.strip_prefix(root).is_err()
         || path.strip_prefix(root).is_ok_and(|relative| {
-            relative
-                .components()
-                .any(|component| component.as_os_str() == ".local")
+            context.is_environment_member(relative)
+                || relative
+                    .components()
+                    .any(|component| component.as_os_str() == ".local")
         })
         || backend_discovery::is_ignored_source_directory(
             root,
@@ -872,6 +938,24 @@ pub(super) struct SourceDirectoryWitness {
 }
 
 impl SourceDirectoryWitness {
+    fn retained_bytes(&self) -> usize {
+        self.path.as_os_str().len()
+            + self.source_root.as_os_str().len()
+            + 256
+            + self.children.as_ref().map_or(0, |children| {
+                children
+                    .iter()
+                    .map(|(name, kind)| {
+                        name.len()
+                            + 128
+                            + match kind {
+                                SourceDirectoryChild::OpaqueSymlink(path) => path.as_os_str().len(),
+                                _ => 0,
+                            }
+                    })
+                    .sum::<usize>()
+            })
+    }
     fn capture(
         source_root: &Path,
         context: std::sync::Arc<backend_discovery::PythonSourceContext>,
@@ -1072,6 +1156,30 @@ impl SourceDirectoryWitness {
 }
 
 impl PythonProjectWitness {
+    /// Conservative retained footprint for bounded local snapshot reuse storage.
+    pub fn retained_bytes(&self) -> usize {
+        self.environment
+            .as_ref()
+            .map_or(0, |environment| environment.retained_bytes())
+            .saturating_add(
+                self.files
+                    .iter()
+                    .map(|file| file.path.as_os_str().len() + 256)
+                    .sum::<usize>(),
+            )
+            .saturating_add(
+                self.candidates
+                    .iter()
+                    .map(|candidate| candidate.path.as_os_str().len() + 256)
+                    .sum::<usize>(),
+            )
+            .saturating_add(
+                self.frontier
+                    .iter()
+                    .map(|directory| directory.retained_bytes())
+                    .sum::<usize>(),
+            )
+    }
     /// Binds exact source/configuration probes, effective scope, and producer bytes.
     #[must_use]
     pub const fn fingerprint(&self) -> PythonProjectFingerprint {
@@ -1085,6 +1193,9 @@ impl PythonProjectWitness {
     pub fn validate_current(&self, control: PythonProjectControl<'_>) -> Result<(), CheckerError> {
         checkpoint(control)?;
         self.baselines.validate_current(control)?;
+        if let Some(environment) = &self.environment {
+            environment.validate_current(control)?;
+        }
         for candidate in &self.candidates {
             checkpoint(control)?;
             candidate.validate_current()?;
@@ -1153,6 +1264,27 @@ impl NativePythonProjectAuthority {
         profile: PythonVersion,
         control: PythonProjectControl<'_>,
     ) -> Result<PythonProjectReport, CheckerError> {
+        self.analyze_project_bytes_with_environment(
+            package_root,
+            package_name,
+            raw_sources,
+            None,
+            profile,
+            control,
+        )
+    }
+
+    /// Analyze the selected project using a separately admitted installed cohort.
+    /// The native checker receives private dependency copies, never original roots.
+    pub fn analyze_project_bytes_with_environment(
+        &self,
+        package_root: &Path,
+        package_name: &str,
+        raw_sources: &[PythonProjectBytesSource<'_>],
+        environment: Option<&super::PythonEnvironmentCapture>,
+        profile: PythonVersion,
+        control: PythonProjectControl<'_>,
+    ) -> Result<PythonProjectReport, CheckerError> {
         let control = PythonProjectControl {
             deadline: control.deadline.min(
                 Instant::now()
@@ -1177,7 +1309,12 @@ impl NativePythonProjectAuthority {
             });
         }
         let workspace = Workspace::create()?;
-        let layout = CapturedProjectLayout::new(&workspace.path, package_root, raw_sources)?;
+        let mut layout = CapturedProjectLayout::new(&workspace.path, package_root, raw_sources)?;
+        if let Some(environment) = environment {
+            environment.validate_profile(profile)?;
+            environment.validate_current(control)?;
+            layout.environment = Some(environment.materialize(&workspace.path, control)?);
+        }
         let mirror = layout.source_root();
         std::fs::create_dir_all(&mirror).map_err(workspace_error)?;
         let mut paths = BTreeSet::new();
@@ -1199,6 +1336,7 @@ impl NativePythonProjectAuthority {
             candidates: Vec::new(),
             frontier: Vec::new(),
             baselines: CapturedBaselines::default(),
+            environment: environment.map(|environment| environment.witness()),
         };
         let mut mirror_witness = Vec::new();
         for source in raw_sources {
@@ -1358,13 +1496,28 @@ impl NativePythonProjectAuthority {
             }
             source_documents.push((relative.to_owned(), bytes));
         }
-        let source_context = backend_discovery::PythonSourceContext::from_documents(
+        let mut source_context = backend_discovery::PythonSourceContext::from_documents(
             source_documents
                 .iter()
                 .map(|(path, bytes)| (path.as_path(), bytes.as_slice())),
             cfg!(windows),
         )
         .map_err(|error| project_error("", &error.to_string()))?;
+        if let Some(venv) = environment.and_then(|environment| environment.selected_venv_relative())
+        {
+            source_context
+                .add_captured_environment_root(venv)
+                .map_err(|error| project_error("", &error.to_string()))?;
+            if raw_sources
+                .iter()
+                .any(|source| source_context.is_environment_member(Path::new(source.relative_path)))
+            {
+                return Err(project_error(
+                    "",
+                    "installed dependency member cannot be selected as project program coverage",
+                ));
+            }
+        }
         let native = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             super::project_native::analyze(
                 &layout,
@@ -1424,6 +1577,9 @@ impl NativePythonProjectAuthority {
         }
         witness.fingerprint = PythonProjectFingerprint(*identity.finalize().as_bytes());
         witness.validate_current(control)?;
+        if let Some(environment) = &layout.environment {
+            environment.validate_current(control)?;
+        }
         for directory in native.mirror_tree {
             checkpoint(control)?;
             directory.validate_current()?;

@@ -38,19 +38,24 @@ pub use source_intake::{PythonSourceDecodeFault, decode_python_source};
 
 #[path = "project.rs"]
 mod project;
-#[path = "project_native.rs"]
-mod project_native;
 #[path = "project_configuration.rs"]
 mod project_configuration;
-pub use project_configuration::PythonProjectConfigurationFault;
+#[path = "project_environment.rs"]
+mod project_environment;
+#[path = "project_native.rs"]
+mod project_native;
 pub use project::{
     DefinitionTarget, NativePythonProducerIdentity, NativePythonProducerImage,
-    NativePythonProjectAuthority,
-    PythonCompiledImportUnavailable, PythonProjectBytesSource, PythonProjectControl,
-    PythonProjectCoverageGap, PythonProjectCoverageGapKind, PythonProjectDiagnostic,
-    PythonProjectFingerprint, PythonProjectReport, PythonProjectSource, PythonProjectSourceStatus,
-    PythonProjectWitness, PythonTypeProjectionFault, is_ignored_python_source_directory,
-    is_ignored_python_source_path,
+    NativePythonProjectAuthority, PythonCompiledImportUnavailable, PythonProjectBytesSource,
+    PythonProjectControl, PythonProjectCoverageGap, PythonProjectCoverageGapKind,
+    PythonProjectDiagnostic, PythonProjectFingerprint, PythonProjectReport, PythonProjectSource,
+    PythonProjectSourceStatus, PythonProjectWitness, PythonTypeProjectionFault,
+    is_ignored_python_source_directory, is_ignored_python_source_path,
+};
+pub use project_configuration::PythonProjectConfigurationFault;
+pub use project_environment::{
+    PYTHON_ENVIRONMENT_INPUT_PATH, PYTHON_ENVIRONMENT_MAX_WIRE_BYTES, PythonDependencyRootKind,
+    PythonEnvironmentCapture, PythonEnvironmentInput,
 };
 
 use std::path::{Path, PathBuf};
@@ -92,6 +97,14 @@ pub const PYTHON_NATIVE_PROJECT_SOURCE_REVISION: &str = "30b5ca5250db9f2d9264d5e
 /// Typed failure of one pyrefly authority transaction, preserving operands.
 #[derive(Debug, Error)]
 pub enum CheckerError {
+    /// A selected-program caller omitted the required environment disposition.
+    #[error("Python selected-program request has no admitted installed-environment cohort")]
+    EnvironmentCaptureMissing,
+    /// The selected installed environment could not be admitted as immutable input.
+    #[error("Python installed environment capture failed: {source}")]
+    EnvironmentCapture {
+        source: std::sync::Arc<CheckerError>,
+    },
     /// The pinned native project State unwound before admission.
     #[error("native Python project State panicked before admission")]
     ProjectPanic,

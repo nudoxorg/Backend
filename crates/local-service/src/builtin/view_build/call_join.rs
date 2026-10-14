@@ -2347,10 +2347,21 @@ mod python_native_call_tests {
             .map(|(path, source)| OwnedPackageSource::new(path, source).expect("captured source"))
             .collect::<Vec<_>>()
             .into_boxed_slice();
+        let environment =
+            backend_frontend_python::legacy::checker::PythonEnvironmentCapture::capture(
+                &package_root,
+                backend_frontend_python::legacy::checker::PythonProjectControl {
+                    cancelled: &std::sync::atomic::AtomicBool::new(false),
+                    deadline: std::time::Instant::now() + std::time::Duration::from_secs(180),
+                },
+            )
+            .expect("explicit absent installed environment witness");
         let staged = client
             .compile_package_sources_staged(
                 OwnedPackageSourceSet::new(request, package_root, sources)
-                    .expect("complete actual source frontier"),
+                    .expect("complete actual source frontier")
+                    .with_python_environment(environment)
+                    .expect("Python environment input"),
             )
             .expect("native Python authority and canonical lowering");
         let images = (0..staged.artifacts().len())
@@ -2479,11 +2490,18 @@ mod python_native_call_tests {
             .map(|(path, source)| OwnedPackageSource::new(path, source))
             .collect::<Result<Vec<_>, _>>()?
             .into_boxed_slice();
-        let staged = client.compile_package_sources_staged(OwnedPackageSourceSet::new(
-            request,
-            package_root,
-            sources,
-        )?)?;
+        let environment =
+            backend_frontend_python::legacy::checker::PythonEnvironmentCapture::capture(
+                &package_root,
+                backend_frontend_python::legacy::checker::PythonProjectControl {
+                    cancelled: &std::sync::atomic::AtomicBool::new(false),
+                    deadline: std::time::Instant::now() + std::time::Duration::from_secs(180),
+                },
+            )?;
+        let staged = client.compile_package_sources_staged(
+            OwnedPackageSourceSet::new(request, package_root, sources)?
+                .with_python_environment(environment)?,
+        )?;
         let images = (0..staged.artifacts().len())
             .map(|ordinal| {
                 let bytes = staged

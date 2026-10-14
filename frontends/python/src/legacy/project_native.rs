@@ -125,6 +125,9 @@ pub(super) fn analyze(
     for handle in &raw_handles {
         let config = finder.python_file(handle.module_kind(), handle.path());
         for root in config.search_path().chain(config.site_package_path()) {
+            if layout.dependency_root(root) {
+                continue;
+            }
             let original = layout
                 .original_search_root(root, original_root)
                 .ok_or_else(|| CheckerError::UncapturedDependency { path: root.clone() })?;
@@ -186,6 +189,33 @@ pub(super) fn analyze(
         let config = finder.python_file(handle.module_kind(), handle.path());
         for import in &collector.imports {
             for root in config.search_path().chain(config.site_package_path()) {
+                if layout.dependency_root(root) {
+                    // Preserve the existing native compiled-candidate contract
+                    // using admitted metadata, never original path probes or
+                    // fabricated empty compiled files in the mirror.
+                    for module in &import.candidates {
+                        let mut prefix = root.clone();
+                        for component in module.as_str().split('.').filter(|part| !part.is_empty())
+                        {
+                            prefix.push(component);
+                            for suffix in pyrefly_python::COMPILED_FILE_SUFFIXES {
+                                if let Some(original) = layout
+                                    .compiled_dependency_candidate(&prefix.with_extension(suffix))
+                                {
+                                    compiled_imports
+                                        .entry((
+                                            source.relative_path,
+                                            import.binding_span.start,
+                                            import.binding_span.end,
+                                        ))
+                                        .or_default()
+                                        .insert(original.clone());
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
                 layout
                     .original_search_root(root, original_root)
                     .ok_or_else(|| CheckerError::UncapturedDependency { path: root.clone() })?;
@@ -195,19 +225,29 @@ pub(super) fn analyze(
                         prefix.push(component);
                         let mut paths = vec![
                             (prefix.clone(), ImportCandidateKind::NamespaceDirectory),
-                            (prefix.join("__init__.pyi"), ImportCandidateKind::PythonSource),
-                            (prefix.join("__init__.py"), ImportCandidateKind::PythonSource),
-                            (prefix.with_extension("pyi"), ImportCandidateKind::PythonSource),
-                            (prefix.with_extension("py"), ImportCandidateKind::PythonSource),
+                            (
+                                prefix.join("__init__.pyi"),
+                                ImportCandidateKind::PythonSource,
+                            ),
+                            (
+                                prefix.join("__init__.py"),
+                                ImportCandidateKind::PythonSource,
+                            ),
+                            (
+                                prefix.with_extension("pyi"),
+                                ImportCandidateKind::PythonSource,
+                            ),
+                            (
+                                prefix.with_extension("py"),
+                                ImportCandidateKind::PythonSource,
+                            ),
                         ];
-                        paths.extend(
-                            pyrefly_python::COMPILED_FILE_SUFFIXES.iter().map(|suffix| {
-                                (
-                                    prefix.with_extension(suffix),
-                                    ImportCandidateKind::CompiledExtension,
-                                )
-                            }),
-                        );
+                        paths.extend(pyrefly_python::COMPILED_FILE_SUFFIXES.iter().map(|suffix| {
+                            (
+                                prefix.with_extension(suffix),
+                                ImportCandidateKind::CompiledExtension,
+                            )
+                        }));
                         for (captured_path, kind) in paths {
                             checkpoint(control)?;
                             let Some(path) = layout.original_source(&captured_path, original_root)
@@ -270,7 +310,10 @@ pub(super) fn analyze(
     for directory in &frontier {
         directory.validate_current(control)?;
     }
-    let mirror_tree = DirectoryWitness::capture_tree(layout.capture_root(), control)?;
+    let mut mirror_tree = DirectoryWitness::capture_tree(layout.capture_root(), control)?;
+    for root in layout.dependency_search_paths() {
+        mirror_tree.extend(DirectoryWitness::capture_tree(root, control)?);
+    }
     let state = State::new(finder, ThreadCount::NumThreads(std::num::NonZeroUsize::MIN));
     let mut transaction = state.new_committable_transaction(Require::Everything, None);
     let cancellation = transaction.as_mut().get_cancellation_handle();
@@ -330,15 +373,71 @@ pub(super) fn analyze(
         .map(|(source, handle)| (handle.path().as_path(), (source.relative_path, handle)))
         .collect::<BTreeMap<_, _>>();
     let mut unavailable_dependencies = BTreeMap::<Box<str>, BTreeSet<Box<str>>>::new();
+    // Installed Python sources participate in the same committed native graph.
+    // A transitive dependency's genuine parse/missing-import failure must not
+    // become precise recovery facts in an importing selected project member.
+    let dependency_handles = read
+        .handles()
+        .into_iter()
+        .filter(|handle| layout.dependency_root(handle.path().as_path()))
+        .collect::<Vec<_>>();
+    let mut unavailable_dependency_paths = BTreeSet::new();
+    for handle in &dependency_handles {
+        checkpoint(control)?;
+        let path = handle.path().as_path();
+        if matches!(
+            path.extension().and_then(|extension| extension.to_str()),
+            Some("py" | "pyi")
+        ) && pyrefly_python::COMPILED_FILE_SUFFIXES.iter().any(|suffix| {
+            layout
+                .compiled_dependency_candidate(&path.with_extension(suffix))
+                .is_some()
+        }) {
+            unavailable_dependency_paths.insert(path.to_path_buf());
+        }
+    }
+    for error in read
+        .get_errors(&dependency_handles)
+        .collect_display_errors()
+    {
+        checkpoint(control)?;
+        if matches!(
+            error.error_kind(),
+            ErrorKind::ParseError | ErrorKind::MissingImport
+        ) {
+            unavailable_dependency_paths.insert(error.path().as_path().to_path_buf());
+        }
+    }
     for loaded in read.handles() {
         checkpoint(control)?;
-        let Some((path, _)) = selected_native_sources
+        let unavailable_path: Box<str> = if unavailable_dependency_paths
+            .contains(loaded.path().as_path())
+        {
+            // This cause denotes a dependency input, never a selected project
+            // source coordinate or an ambient original filesystem capability.
+            let index = layout
+                .dependency_search_paths()
+                .enumerate()
+                .find_map(|(index, root)| {
+                    loaded
+                        .path()
+                        .as_path()
+                        .strip_prefix(root)
+                        .ok()
+                        .map(|path| (index, path))
+                });
+            let Some((index, path)) = index else {
+                continue;
+            };
+            format!("dependency:{index}/{}", path.to_string_lossy()).into_boxed_str()
+        } else if let Some((path, _)) = selected_native_sources
             .get(loaded.path().as_path())
             .filter(|(path, _)| unavailable_paths.contains(*path))
-        else {
+        {
+            (*path).into()
+        } else {
             continue;
         };
-        let unavailable_path: Box<str> = (*path).into();
         // The committed Handle graph is the only authority for the reverse
         // dependency closure of unavailable syntax and compiled-shadow sources.
         for dependent in read.get_transitive_rdeps(loaded.clone()) {
@@ -1215,14 +1314,24 @@ fn captured_finder(
         if let Some(path) = &mut config.import_root {
             layout.rebase_import_root(path, original)?;
         }
-        // Explicit site paths may only refer to captured mirror members. An
-        // empty explicit list prevents native typings/ interpreter discovery.
+        // Explicit site paths must rebase to captured project or dependency
+        // members. Append only the typed immutable environment's finite roots.
         if let Some(paths) = &mut config.python_environment.site_package_path {
             for path in paths {
                 layout.rebase(path, original)?;
             }
         } else {
             config.python_environment.site_package_path = Some(Vec::new());
+        }
+        let paths = config
+            .python_environment
+            .site_package_path
+            .as_mut()
+            .expect("explicit captured paths");
+        for path in layout.dependency_search_paths() {
+            if !paths.contains(path) {
+                paths.push(path.clone());
+            }
         }
         if !config
             .python_environment
@@ -1356,7 +1465,9 @@ fn captured_finder(
         }
         effective.insert(directory, config);
     }
-    let before_root = layout.capture_root().to_path_buf();
+    let before_roots = std::iter::once(layout.capture_root().to_path_buf())
+        .chain(layout.dependency_search_paths().cloned())
+        .collect::<Vec<_>>();
     let before_fallback = fallback.clone();
     let load_fallback = fallback.clone();
     Ok((
@@ -1367,8 +1478,8 @@ fn captured_finder(
                     // This cannot be reached by the validated resolver roots. A
                     // producer violation terminates before opening ambient bytes.
                     assert!(
-                        path.starts_with(&before_root),
-                        "native resolver escaped captured mirror"
+                        before_roots.iter().any(|root| path.starts_with(root)),
+                        "native resolver escaped admitted project/dependency mirrors"
                     );
                     let config = path
                         .ancestors()

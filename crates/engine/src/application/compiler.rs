@@ -499,6 +499,8 @@ pub struct PackageSourceSet<'source> {
     input_claim: Option<SemanticInputWitness>,
     embedding_provisioning_failure: Option<EmbeddingProvisioningFailure>,
     go_authority_witness: Option<&'source GoPackageAuthorityWitness>,
+    python_environment:
+        Option<&'source backend_frontend_python::legacy::checker::PythonEnvironmentInput>,
 }
 
 impl<'source> PackageSourceSet<'source> {
@@ -569,6 +571,7 @@ impl<'source> PackageSourceSet<'source> {
             input_claim: None,
             embedding_provisioning_failure: None,
             go_authority_witness: None,
+            python_environment: None,
         })
     }
 
@@ -609,6 +612,16 @@ impl<'source> PackageSourceSet<'source> {
         }
         self.python_raw_sources = Some(raw_sources);
         Ok(self)
+    }
+
+    pub(super) fn with_python_environment(
+        mut self,
+        environment: Option<
+            &'source backend_frontend_python::legacy::checker::PythonEnvironmentInput,
+        >,
+    ) -> Self {
+        self.python_environment = environment;
+        self
     }
 
     /// Attaches an opaque input-manifest claim to the exact admitted source frontier.
@@ -670,6 +683,10 @@ fn unit_source_matches(unit: &CompilationUnitKeyV2, relative_path: &str) -> bool
 fn package_source_input_witness(package: &PackageSourceSet<'_>) -> SemanticInputWitness {
     let mut input = blake3::Hasher::new();
     input.update(b"backend.compiler.package-source-frontier.v1\0");
+    if let Some(environment) = package.python_environment {
+        input.update(b"installed-environment-cohort.v1\0");
+        input.update(&environment.identity());
+    }
     if let Some(raw_sources) = package.python_raw_sources {
         for source in raw_sources {
             let path = source.relative_path.as_bytes();
@@ -1145,6 +1162,17 @@ pub enum StagedSemanticReaderError<CallbackError: std::error::Error + 'static> {
 }
 
 impl StagedSemanticPackage {
+    /// Retains the local captured-program fence for bounded snapshot reuse.
+    /// This grants no ambient read completeness or complete semantic coverage.
+    pub(crate) fn python_snapshot_witness(
+        &self,
+    ) -> Option<std::sync::Arc<backend_frontend_python::legacy::checker::PythonProjectWitness>>
+    {
+        self.staged
+            .python_witness
+            .as_ref()
+            .map(|witness| std::sync::Arc::clone(&witness.witness))
+    }
     /// Opaque owner identity retained for the exact compilation transaction that created this
     /// staged package. It correlates in-memory traces only; it does not prove read completeness.
     pub(crate) const fn compilation_attempt_id(&self) -> CompilationAttemptId {
@@ -2288,11 +2316,13 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
             forest_root = forest.root;
             configured_forest = forest.configured_forest;
             tsz_package_membership = forest.package_membership;
-            tsz_budget = Some(super::compiler_typescript_observation::ObservedTypeScriptBudget::new(
-                control.deadline,
-                cancelled,
-                forest.work_units,
-            ));
+            tsz_budget = Some(
+                super::compiler_typescript_observation::ObservedTypeScriptBudget::new(
+                    control.deadline,
+                    cancelled,
+                    forest.work_units,
+                ),
+            );
             let budget = tsz_budget.as_ref().expect("shared forest budget");
             let mut witnesses = Vec::with_capacity(forest.nodes.len());
             for node in forest.nodes {
@@ -2475,6 +2505,7 @@ impl<'path, 'cancel> LocalCompilerExecution<'path, 'cancel> {
                     },
                     request.lineage_name(),
                     &sources,
+                    package.python_environment,
                 )
                 .map_err(|cause| PackageSemanticError::Compile {
                     path: first_source.relative_path.into(),
@@ -4731,6 +4762,12 @@ pub(crate) fn python_authority_failure_kind(
 ) -> PythonAuthorityFailureKind {
     use PythonCheckerError as E;
     match error {
+        E::EnvironmentCaptureMissing => PythonAuthorityFailureKind::EnvironmentInputMissing,
+        E::EnvironmentCapture { source } => match source.as_ref() {
+            E::Cancelled { .. } => PythonAuthorityFailureKind::Cancelled,
+            E::Deadline { .. } => PythonAuthorityFailureKind::Deadline,
+            _ => PythonAuthorityFailureKind::EnvironmentCaptureRefused,
+        },
         E::ProjectPanic => PythonAuthorityFailureKind::ProjectPanic,
         E::Cancelled { .. } => PythonAuthorityFailureKind::Cancelled,
         E::Deadline { .. } => PythonAuthorityFailureKind::Deadline,
