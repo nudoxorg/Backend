@@ -33,8 +33,8 @@ exclude compiler subprocesses and CLI/MCP resource use. Linux `/proc` is require
 The initial ratios and noise floors in `surface.py` are provisional and need
 repeated measurements before this becomes a required performance gate. Compiler
 shell acquisition is infrastructure setup, outside those operation measurements.
-CI_T2_EXTERNAL=1 delegates T2 to an isolated parallel consumer. Local T1
-commands retain the advisory integration step by default. Consumers verify and
+T2 runs as an isolated parallel consumer in CI and as the explicit integration
+command locally. Smoke and integration have separate verdicts. Consumers verify and
 import the exact artifact runtime before entering the pinned surface shell;
 their checkout provides harness/configuration only, with no product build.
 
@@ -309,3 +309,27 @@ preview. All three offered continuations passed their live checks and wire
 accounting passed. Indexing was 189.84s, owner CPU 187.16s and owner peak RSS
 381,068KiB. The independent comparison against this reviewed candidate is the
 merge gate; no tolerance was changed.
+
+## Whole Python project: Blinker 1.9.0 (W2.3)
+
+The second upstream project is the complete MIT-licensed PyPI source distribution
+of Blinker 1.9.0, pinned by the existing fleet archive URL and SHA-256 in
+`.config/nix/corpus-pins.json`. The selected Nix fetcher extracts the full archive,
+including tests, docs and packaging metadata; it does not install the package,
+execute upstream scripts, vendor sources or fetch the rest of the legacy corpus.
+
+Blinker exercises a Python `src/` package, classes and inheritance, type-annotated
+functions, weak references, async methods and test/documentation sources.
+CLI and MCP must find ready Python `NamedSignal` in `src/blinker/base.py` and
+`make_id` in `src/blinker/_utilities.py` before snapshot admission. Full native
+profile completion is required; structural-only or missing-source results fail.
+The shared harness records search/outline/packages answers, validates offered
+continuations, and captures indexing/query wall time plus owner CPU and peak RSS.
+
+```sh
+python3 .config/ci/test.py integration --bin-dir DIR --case python-blinker
+```
+
+Initial native source/result review and an independent exact-head comparison are
+required before accepting the new golden. This is a second real-project slice;
+it does not complete the representative per-language corpus or GUI coverage.

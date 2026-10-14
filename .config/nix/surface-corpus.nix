@@ -12,8 +12,27 @@ let
   archive = pkgs.fetchurl {
     inherit (pin) url hash;
   };
+  blinkerPin = builtins.filter (candidate: candidate.coordinate == "pypi:blinker@1.9.0") pins;
+  blinkerArchive =
+    assert builtins.length blinkerPin == 1;
+    pkgs.fetchurl { inherit (builtins.head blinkerPin) url hash; };
 in
 {
+  python-blinker =
+    pkgs.runCommand "nudox-surface-python-blinker-1.9.0"
+      {
+        nativeBuildInputs = [
+          pkgs.gnutar
+          pkgs.gzip
+        ];
+      }
+      ''
+        mkdir "$out"
+        tar -xzf ${blinkerArchive} --strip-components=1 -C "$out"
+        test -f "$out/pyproject.toml"
+        test -f "$out/src/blinker/base.py"
+        test -f "$out/src/blinker/_utilities.py"
+      '';
   go-xxhash =
     pkgs.runCommand "nudox-surface-go-xxhash-2.3.0" { nativeBuildInputs = [ pkgs.unzip ]; }
       ''
