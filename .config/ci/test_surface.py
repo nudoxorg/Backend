@@ -345,5 +345,68 @@ for line in sys.stdin:
             self.assertEqual(answer["calls"][0]["reply"]["structuredContent"]["nextCursor"], "mcp2-issued")
 
 
+class ParallelCaseTests(unittest.TestCase):
+    def invoke(self, failure=None, duplicate=False):
+        import contextlib
+        import io
+        import json
+        import sys
+        import tempfile
+        import threading
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            snapshots = root / "snapshots"
+            snapshots.mkdir()
+            names = ["alpha", "alpha" if duplicate else "beta"]
+            (root / "cases.json").write_text(json.dumps({"cases": [{"name": name} for name in names]}))
+            for name in names:
+                (snapshots / (name + ".json")).write_text(json.dumps({"answers": {"case": name}, "performance": {"seconds": {}}}))
+            report = root / "report.json"
+            rendezvous = threading.Barrier(2)
+            reached = []
+
+            def run(case, binaries):
+                reached.append(case["name"])
+                self.assertEqual(surface.CURRENT_CASE.get(), case["name"])
+                rendezvous.wait(timeout=3)  # A serial executor cannot satisfy this.
+                if case["name"] == failure:
+                    raise RuntimeError("intentional setup failure")
+                return {"answers": {"case": case["name"]}, "performance": {"seconds": {"query": 0.01}}}
+
+            stdout, stderr = io.StringIO(), io.StringIO()
+            argv = ["surface.py", "--bin-dir", str(root), "--jobs", "2", "--report", str(report)]
+            with patch.object(surface, "SURFACE", root), patch.object(surface, "SCRATCH", root / "scratch"), patch.object(surface, "run_case", side_effect=run), patch.object(sys, "argv", argv), contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                try:
+                    result = surface.main()
+                except SystemExit as error:
+                    result = error.code
+            return result, reached, json.loads(report.read_text()) if report.exists() else {}, stdout.getvalue(), stderr.getvalue()
+
+    def test_distinct_cases_overlap_and_preserve_both_results(self):
+        import json
+        result, reached, report, output, error = self.invoke()
+        self.assertEqual(result, 0, error + output)
+        self.assertEqual(set(reached), {"alpha", "beta"})
+        self.assertEqual(set(report), {"alpha", "beta"})
+        metrics = [json.loads(line.split(" ", 1)[1]) for line in output.splitlines() if line.startswith("SURFACE-PERFORMANCE ")]
+        self.assertEqual({row["case"] for row in metrics}, {"alpha", "beta"})
+
+    def test_failed_case_cannot_be_hidden_by_successful_peer(self):
+        result, reached, report, output, error = self.invoke(failure="beta")
+        self.assertEqual(result, 1, error + output)
+        self.assertEqual(set(reached), {"alpha", "beta"})
+        self.assertEqual(set(report), {"alpha"})
+        self.assertIn("intentional setup failure", output)
+        self.assertIn("failed: beta", output)
+
+    def test_duplicate_scratch_names_fail_before_launch(self):
+        result, reached, report, output, error = self.invoke(duplicate=True)
+        self.assertEqual(result, 2, error + output)
+        self.assertEqual(reached, [])
+        self.assertIn("unique scratch", error)
+
+
 if __name__ == "__main__":
     unittest.main()

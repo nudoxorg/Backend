@@ -21,16 +21,17 @@ class TierCommandTests(unittest.TestCase):
                            "sys.exit(23)\n")
             nix.chmod(0o700)
             env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ.get("PATH", ""), TIER_MARKER=str(marker))
-            result = subprocess.run([sys.executable, str(RUNNER), "integration", "--bin-dir", str(root / "binaries"), "--case", "cli-usage"], env=env, capture_output=True)
+            result = subprocess.run([sys.executable, str(RUNNER), "integration", "--bin-dir", str(root / "binaries"), "--case", "cli-usage", "--jobs", "2"], env=env, capture_output=True)
             self.assertEqual(result.returncode, 23, result.stderr)
             arguments, isolated = json.loads(marker.read_text())
             self.assertIn("cli-usage", arguments)
             self.assertIn(str((root / "binaries").resolve()), arguments)
             self.assertNotIn("cargo", arguments)
+            self.assertEqual(arguments[arguments.index("--jobs") + 1], "2")
             self.assertEqual(isolated, "1")
 
     def test_missing_binaries_and_cross_tier_options_fail_before_nix(self):
-        for arguments in (["integration"], ["smoke", "--update"], ["deep", "--case", "polyglot"]):
+        for arguments in (["integration"], ["smoke", "--update"], ["deep", "--case", "polyglot"], ["smoke", "--jobs", "2"], ["integration", "--bin-dir", "/unused", "--jobs", "0"]):
             result = subprocess.run([sys.executable, str(RUNNER), *arguments], env=dict(os.environ, PATH=""), capture_output=True)
             self.assertEqual(result.returncode, 2, result.stderr)
 

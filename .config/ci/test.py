@@ -23,6 +23,8 @@ def plan(args: argparse.Namespace) -> list[str]:
         command = ["python3", str(CI / "surface.py"), "--bin-dir", str(args.bin_dir.resolve())]
         for case in args.case or []:
             command += ["--case", case]
+        if args.jobs is not None:
+            command += ["--jobs", str(args.jobs)]
         if args.update:
             command.append("--update")
         if args.report:
@@ -32,8 +34,8 @@ def plan(args: argparse.Namespace) -> list[str]:
     else:
         command = ["nu", "--no-config-file", str(CI / "t3.nu")]
         shell = "smoke"
-    if args.tier != "integration" and (args.bin_dir or args.case or args.update or args.report):
-        raise ValueError("--bin-dir, --case, --update and --report apply only to integration")
+    if args.tier != "integration" and (args.bin_dir or args.case or args.update or args.report or args.jobs is not None):
+        raise ValueError("--bin-dir, --case, --update, --report and --jobs apply only to integration")
     return command if args.in_shell else ["nix", "develop", "path:.#" + shell, "--command", *command]
 
 
@@ -42,6 +44,7 @@ def main() -> int:
     parser.add_argument("tier", choices=["smoke", "integration", "deep", "list"])
     parser.add_argument("--bin-dir", type=Path)
     parser.add_argument("--case", action="append")
+    parser.add_argument("--jobs", type=int, choices=range(1, 5), help="concurrent isolated integration cases (default: 1)")
     parser.add_argument("--update", action="store_true", help="explicitly rewrite selected integration snapshots for review")
     parser.add_argument("--report", type=Path)
     parser.add_argument("--in-shell", action="store_true", help="CI: already inside the tier's declared Nix shell")

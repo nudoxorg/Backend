@@ -38,6 +38,29 @@ command locally. Smoke and integration have separate verdicts. Consumers verify 
 import the exact artifact runtime before entering the pinned surface shell;
 their checkout provides harness/configuration only, with no product build.
 
+## Bounded case parallelism (W3.3)
+
+One invocation runs serially by default to preserve performance isolation.
+Opt into up to four concurrent isolated cases, reusing the same published binaries:
+
+```sh
+python3 .config/ci/test.py integration --bin-dir DIR --jobs 2
+```
+
+Each indexed case keeps its own project, owner, workspace and credentials.
+Duplicate scratch names fail before any case launches. The CLI-contract runner
+uses shared scratch paths, so its small group is serialized. A failed case does
+not cancel or hide successful peers; the tier passes only if every selected
+case passes. Snapshots and reports are compared/emitted in catalog order.
+Reported case wall time measures execution, excluding time waiting for a worker.
+
+`SURFACE-PERFORMANCE` lines in the retained CI event log carry schema1 JSON with
+the case name and full measured timing/CPU/memory data. The report file remains
+available while the task container exists. Answer snapshots and performance
+limits are unchanged by selecting a worker count; the native rollout must prove
+that existing comparisons pass before enabling concurrency in CI. Cross-host noise
+calibration and durable independent Concourse artifact jobs remain separate work.
+
 ## Initial snapshot review
 
 Codex reviewed the first successful output from Concourse **457894**, source
@@ -375,3 +398,14 @@ CPU 3.14s (versus normal 663 sample 3.30s/1.82s). Use 4.56s/3.14s as the initial
 Python index/CPU baseline; keep its original memory and query baselines. No
 ratio, floor, source witness or public answer was changed. Final ordinary
 exact-head CI must still pass both real projects and the unchanged polyglot case.
+
+Two-worker experiment (484083 / pr-t1/679, `5ea548357`) reduced T2 consumer
+wall time from128s (serial676) to85s. All public answers, memory and owner CPU
+matched, but the Go cold query exceeded its existing wall limit. A second run
+(484136 / pr-t1/681, `afe2be041`) also exceeded polyglot/Python indexing wall
+limits (45.42s/10.18s), despite CPU21.41s/2.11s remaining within limits.
+The experimental Go query baseline increase was reverted. Default scheduling
+remains serial; explicit parallel runs keep the same performance gates and can
+fail from contention. Dedicated capacity and repeatable operating-mode calibration
+are needed before making parallelism the default. These trials are not a CI
+speed guarantee or completion of durable artifact fan-out.
