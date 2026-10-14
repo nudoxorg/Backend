@@ -2169,21 +2169,14 @@ impl PackageCompilerFailure {
             return Err(ProductAdmissionError::PackageCompilerFailureShape);
         }
         if let PackageCompilerFailureCause::Authority {
-            diagnostic:
-                Some(CompilerAuthorityDiagnosticFacts {
-                    typescript_admission: Some(_),
-                    ..
-                }),
+            diagnostic: Some(facts),
             ..
         }
         | PackageCompilerFailureCause::AuthorityAdmission {
-            diagnostic:
-                Some(CompilerAuthorityDiagnosticFacts {
-                    typescript_admission: Some(_),
-                    ..
-                }),
+            diagnostic: Some(facts),
             ..
         } = &self.cause
+            && (facts.typescript_admission.is_some() || facts.typescript_cause.is_some())
         {
             let expected = detail_for_package_cause(&self.cause);
             if (self.detail.as_str(), self.detail_truncated) != (expected.0.as_str(), expected.1) {
@@ -2569,6 +2562,7 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
             Some(CompilerAuthorityDiagnosticFacts {
                 typescript_failure: Some(failure),
                 typescript_admission,
+                typescript_cause,
                 ..
             }),
         ..
@@ -2578,14 +2572,18 @@ fn detail_for_package_cause(cause: &PackageCompilerFailureCause) -> (String, boo
             Some(CompilerAuthorityDiagnosticFacts {
                 typescript_failure: Some(failure),
                 typescript_admission,
+                typescript_cause,
                 ..
             }),
         ..
     } = cause
     {
-        return match typescript_admission {
-            Some(detail) => sanitize_package_compiler_detail(&detail.detail(), false),
-            None => sanitize_package_compiler_detail(failure.detail(), false),
+        return match (typescript_admission, typescript_cause) {
+            (Some(detail), _) => sanitize_package_compiler_detail(&detail.detail(), false),
+            (None, Some(cause)) => {
+                sanitize_package_compiler_detail(&cause.detail_for(*failure), false)
+            }
+            (None, None) => sanitize_package_compiler_detail(failure.detail(), false),
         };
     }
     let prefix = match cause {
@@ -2722,11 +2720,17 @@ fn authority_diagnostic_facts_are_valid(facts: &CompilerAuthorityDiagnosticFacts
         && facts.typescript_admission.as_ref().is_none_or(|detail| {
             facts.typescript_failure == Some(detail.failure_kind())
         })
+        && (facts.typescript_cause.is_none()
+            || (facts.typescript_failure.is_some() && facts.typescript_admission.is_none()))
 }
 
 #[cfg(test)]
 #[path = "surface/typescript_admission_tests.rs"]
 mod typescript_admission_tests;
+
+#[cfg(test)]
+#[path = "surface/typescript_cause_tests.rs"]
+mod typescript_cause_tests;
 
 fn is_canonical_package_relative_source_path(value: &str) -> bool {
     !value.is_empty()

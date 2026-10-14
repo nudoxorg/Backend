@@ -24,6 +24,7 @@ fn typescript_admission_dto29_refuses_old28_before_populated_fact_shape() {
         python_configuration: None,
         typescript_failure: Some(detail.failure_kind()),
         typescript_admission: Some(detail),
+        typescript_cause: None,
         go_failure: None,
     };
     let populated = serde_json::to_value(&facts).unwrap();
@@ -79,4 +80,48 @@ fn typescript_admission_dto29_refuses_old28_before_populated_fact_shape() {
         crate::wire::decode_reply_body(&serde_json::to_vec(&old_envelope).unwrap()).unwrap_err();
     assert!(error.contains("reply DTO version 28"));
     assert!(!error.contains("unknown field"));
+}
+
+#[test]
+fn typescript_cause_is_an_additive_optional_fact_inside_the_same_dto29_cutover() {
+    use crate::interface::{TypeScriptAuthorityFailureKind, TypeScriptFailureCause};
+    assert_eq!(
+        super::DTO_VERSION,
+        29,
+        "the cause rides the undeployed combined cutover"
+    );
+    let mut facts = plain_facts();
+    // Absent: byte-for-byte the previous shape, readable by a reader without the field.
+    let absent = serde_json::to_value(&facts).unwrap();
+    assert!(absent.get("typescript_cause").is_none());
+    assert_eq!(
+        serde_json::from_value::<CompilerAuthorityDiagnosticFacts>(absent).unwrap(),
+        facts
+    );
+    facts.typescript_cause = TypeScriptFailureCause::new("tsconfig.json does not exist");
+    let present = serde_json::to_value(&facts).unwrap();
+    assert_eq!(
+        serde_json::from_value::<CompilerAuthorityDiagnosticFacts>(present).unwrap(),
+        facts
+    );
+    assert_eq!(
+        facts.typescript_failure,
+        Some(TypeScriptAuthorityFailureKind::HostConfigMissing)
+    );
+}
+
+fn plain_facts() -> CompilerAuthorityDiagnosticFacts {
+    CompilerAuthorityDiagnosticFacts {
+        retained_bytes: 0,
+        observed_bytes: 0,
+        truncated: false,
+        python_failure: None,
+        python_configuration: None,
+        typescript_failure: Some(
+            crate::interface::TypeScriptAuthorityFailureKind::HostConfigMissing,
+        ),
+        typescript_admission: None,
+        typescript_cause: None,
+        go_failure: None,
+    }
 }
