@@ -69,6 +69,8 @@ fn absolute_path_spelling(path: &Path) -> Result<PathBuf, String> {
 /// One complete, deterministic project scan before comparison with the
 /// selected versioned relation.
 pub(super) struct IndexSnapshot {
+    pub(super) python_environment:
+        Option<backend_frontend_python::legacy::checker::PythonEnvironmentInput>,
     pub(super) source_version: [u8; 32],
     pub(super) files: Vec<([u8; 32], ProductSourceRecord)>,
     /// Complete file-facts updates produced before compact source-row retention.
@@ -1894,6 +1896,7 @@ fn scan_project_with_configuration_policy_attempt(
         CompilerConfigurationSnapshot::default()
     };
     let snapshot = IndexSnapshot {
+        python_environment: None,
         source_version: *source.finalize().as_bytes(),
         files,
         source_facts,

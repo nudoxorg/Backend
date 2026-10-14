@@ -9,9 +9,8 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     path::{Path, PathBuf},
     sync::{
-        Arc, Condvar, Mutex, RwLock,
+        Arc, Condvar, Mutex, OnceLock, RwLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        OnceLock,
         mpsc::{
             Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError, channel, sync_channel,
         },
@@ -20,7 +19,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::driver::{CompileControl, ResolvedToolchain, ToolchainResolutionError, ToolchainSelection};
+use crate::driver::{
+    CompileControl, ResolvedToolchain, ToolchainResolutionError, ToolchainSelection,
+};
 use crate::publication::{binding::CompilationBindingFacts, manifest::CompilationManifestFacts};
 use arrayvec::ArrayVec;
 use backend_compile::{EmbeddingCacheSession, EmbeddingExecutable};
@@ -52,6 +53,7 @@ const COMPILER_LANE_COUNT: usize = 2;
 const MAX_ADMITTED_COMPILER_REQUESTS: usize = 16;
 const COMMAND_QUEUE_CAPACITY: usize = 8;
 const COMPILER_LANE_QUEUE_CAPACITY: usize = 1;
+const MAX_PYTHON_SNAPSHOT_WITNESS_BYTES: usize = 64 * 1024 * 1024;
 
 fn compiler_lane_count() -> usize {
     #[cfg(feature = "cluster-process-journey-hooks")]
@@ -170,6 +172,7 @@ pub struct OwnedPackageSourceSet {
     package_root: Box<Path>,
     sources: Box<[OwnedPackageSource]>,
     input_claim: Option<SemanticInputWitness>,
+    python_environment: Option<backend_frontend_python::legacy::checker::PythonEnvironmentInput>,
 }
 
 impl OwnedPackageSourceSet {
@@ -211,6 +214,7 @@ impl OwnedPackageSourceSet {
             package_root: package_root.into_boxed_path(),
             sources,
             input_claim: None,
+            python_environment: None,
         })
     }
 
@@ -222,6 +226,35 @@ impl OwnedPackageSourceSet {
     pub fn with_input_claim(mut self, input: SemanticInputWitness) -> Self {
         self.input_claim = Some(input);
         self
+    }
+
+    /// Attach immutable installed dependencies separately from selected sources.
+    /// Their content identity binds this request's input claim and native witness;
+    /// dependency members do not contribute package artifact cardinality.
+    pub fn with_python_environment(
+        mut self,
+        environment: backend_frontend_python::legacy::checker::PythonEnvironmentCapture,
+    ) -> Result<Self, PackageSourceSetError> {
+        if !matches!(self.request.target.profile, LanguageProfile::Python(_)) {
+            return Err(PackageSourceSetError::RawSourceProfileMismatch);
+        }
+        self.python_environment = Some(
+            backend_frontend_python::legacy::checker::PythonEnvironmentInput::Captured(environment),
+        );
+        Ok(self)
+    }
+
+    /// Carries a genuine environment refusal to the normal per-profile compiler
+    /// terminal, after structural source capture has been retained.
+    pub fn with_python_environment_input(
+        mut self,
+        environment: backend_frontend_python::legacy::checker::PythonEnvironmentInput,
+    ) -> Result<Self, PackageSourceSetError> {
+        if !matches!(self.request.target.profile, LanguageProfile::Python(_)) {
+            return Err(PackageSourceSetError::RawSourceProfileMismatch);
+        }
+        self.python_environment = Some(environment);
+        Ok(self)
     }
 
     fn facts(&self) -> RequestFacts {
@@ -2273,10 +2306,16 @@ mod global_typescript_probe_tests {
             .expect("create compiler script directory");
         std::fs::create_dir_all(package_root.join("lib")).expect("create TypeScript lib dir");
         std::fs::write(&script, contents).expect("write fake TypeScript entry");
-        std::fs::write(package_root.join("lib/tsc.js"), "module.exports=require('./_tsc.js');\n")
-            .expect("write fake compiler launcher");
-        std::fs::write(package_root.join("lib/_tsc.js"), "module.exports={version:'5.9.3'};\n")
-            .expect("write fake compiler body");
+        std::fs::write(
+            package_root.join("lib/tsc.js"),
+            "module.exports=require('./_tsc.js');\n",
+        )
+        .expect("write fake compiler launcher");
+        std::fs::write(
+            package_root.join("lib/_tsc.js"),
+            "module.exports={version:'5.9.3'};\n",
+        )
+        .expect("write fake compiler body");
         (
             std::fs::canonicalize(module_root).expect("canonical TypeScript module root"),
             std::fs::canonicalize(script).expect("canonical TypeScript script"),
@@ -3087,6 +3126,99 @@ impl Clone for LocalCompilerClient {
 }
 
 impl LocalCompilerClient {
+    /// Checks the exact retained local Python program, producer, selected binding,
+    /// and all original source/config/environment fences. Public coverage stays
+    /// unchanged; this is not a complete ambient host read-set certificate.
+    pub fn python_snapshot_is_current(
+        &self,
+        root: &Path,
+        profile: LanguageProfile,
+        input: [u8; 32],
+        selected_binding: [u8; 32],
+        cancelled: &AtomicBool,
+    ) -> bool {
+        if !self.is_ready() {
+            return false;
+        }
+        let toolchain = self
+            .capabilities()
+            .for_profile(profile)
+            .toolchain_identity();
+        let witness = self.shared.python_snapshots.lock().ok().and_then(|cache| {
+            cache
+                .entries
+                .get(&(root.to_path_buf(), profile))
+                .filter(|entry| {
+                    entry.input == input
+                        && entry.binding == selected_binding
+                        && Some(entry.toolchain) == toolchain
+                })
+                .map(|entry| Arc::clone(&entry.witness))
+        });
+        witness.is_some_and(|witness| {
+            witness
+                .validate_current(
+                    backend_frontend_python::legacy::checker::PythonProjectControl {
+                        cancelled,
+                        deadline: std::time::Instant::now() + Duration::from_secs(15 * 60),
+                    },
+                )
+                .is_ok()
+        })
+    }
+
+    /// Records only a compiler-produced fence for the binding actually selected
+    /// by the publication recorder. Eviction is a cache miss, never lost coverage.
+    pub fn remember_python_snapshot(
+        &self,
+        root: &Path,
+        input: [u8; 32],
+        selected_binding: [u8; 32],
+        staged: &StagedSemanticPackage,
+    ) {
+        let profile = staged.profile();
+        let Some(witness) = staged.python_snapshot_witness() else {
+            return;
+        };
+        let Some(toolchain) = self
+            .capabilities()
+            .for_profile(profile)
+            .toolchain_identity()
+        else {
+            return;
+        };
+        let bytes = witness.retained_bytes();
+        if bytes > MAX_PYTHON_SNAPSHOT_WITNESS_BYTES {
+            return;
+        }
+        if let Ok(mut cache) = self.shared.python_snapshots.lock() {
+            // Bound total retained metadata. Whole installed payloads are absent
+            // from these witnesses; replacing a project releases its prior fence.
+            let key = (root.to_path_buf(), profile);
+            if let Some(previous) = cache.entries.remove(&key) {
+                cache.bytes = cache.bytes.saturating_sub(previous.bytes);
+            }
+            while cache.bytes.saturating_add(bytes) > MAX_PYTHON_SNAPSHOT_WITNESS_BYTES {
+                let Some(key) = cache.entries.keys().next().cloned() else {
+                    break;
+                };
+                if let Some(previous) = cache.entries.remove(&key) {
+                    cache.bytes = cache.bytes.saturating_sub(previous.bytes);
+                }
+            }
+            cache.bytes += bytes;
+            cache.entries.insert(
+                key,
+                PythonSnapshotEntry {
+                    input,
+                    binding: selected_binding,
+                    toolchain,
+                    witness,
+                    bytes,
+                },
+            );
+        }
+    }
     /// Starts one compiler owner and waits until all borrowed configuration is valid.
     ///
     /// # Errors
@@ -3157,6 +3289,7 @@ impl LocalCompilerClient {
                         capabilities,
                         capability_signal,
                         input_witnesses,
+                        python_snapshots: Mutex::new(PythonSnapshotCache::default()),
                         go_authority,
                         native_python,
                         native_python_timeout,
@@ -3603,17 +3736,24 @@ impl LocalCompilerClient {
         cancelled: &AtomicBool,
     ) -> Result<Option<GoPackageAuthorityWitness>, PackageSemanticRuntimeError> {
         let facts = request.facts();
-        if facts.language != Language::Go { return Ok(None); }
-        let Some(oracle) = &self.shared.go_authority else { return Ok(None); };
+        if facts.language != Language::Go {
+            return Ok(None);
+        }
+        let Some(oracle) = &self.shared.go_authority else {
+            return Ok(None);
+        };
         if cancelled.load(Ordering::Acquire) {
             return Err(PackageSemanticRuntimeError::Runtime(
                 facts.terminal(CompilerRuntimeCause::RequestCancelled),
             ));
         }
-        let witness = oracle.package_authority_witness_cancellable(&request.package_root, Some(cancelled))
-            .map_err(|error| PackageSemanticRuntimeError::Package(
-                PackageSemanticError::GoAuthorityWitness(error),
-            ))?;
+        let witness = oracle
+            .package_authority_witness_cancellable(&request.package_root, Some(cancelled))
+            .map_err(|error| {
+                PackageSemanticRuntimeError::Package(PackageSemanticError::GoAuthorityWitness(
+                    error,
+                ))
+            })?;
         if cancelled.load(Ordering::Acquire) {
             return Err(PackageSemanticRuntimeError::Runtime(
                 facts.terminal(CompilerRuntimeCause::RequestCancelled),
@@ -3746,10 +3886,24 @@ struct RuntimeShared {
     capabilities: Arc<RwLock<LocalCompilerCapabilities>>,
     capability_signal: Arc<CapabilitySignal>,
     input_witnesses: Arc<CompilerInputWitnessStore>,
+    python_snapshots: Mutex<PythonSnapshotCache>,
     go_authority: Option<ConfiguredGoOracle>,
     native_python: Option<Arc<DeferredNativePython>>,
     native_python_timeout: LocalCompilerTimeout,
     native_python_observations: Sender<ToolchainProbeObservation>,
+}
+
+#[derive(Default)]
+struct PythonSnapshotCache {
+    entries: HashMap<(PathBuf, LanguageProfile), PythonSnapshotEntry>,
+    bytes: usize,
+}
+struct PythonSnapshotEntry {
+    input: [u8; 32],
+    binding: [u8; 32],
+    toolchain: [u8; 32],
+    witness: Arc<backend_frontend_python::legacy::checker::PythonProjectWitness>,
+    bytes: usize,
 }
 
 struct CapabilitySignal {
@@ -4686,11 +4840,20 @@ fn queue_package_sources(
 ) {
     let facts = request.facts();
     let capability = capabilities.for_profile(facts.profile);
-    let package_authority_fingerprint = go_authority_witness.as_ref().and_then(|witness| {
+    let mut package_authority_fingerprint = go_authority_witness.as_ref().and_then(|witness| {
         capability
             .local_authority_fingerprint()
             .map(|base| package_go_authority_fingerprint(base, witness))
     });
+    if let Some(environment) = &request.python_environment {
+        package_authority_fingerprint = capability.local_authority_fingerprint().map(|base| {
+            let mut identity = blake3::Hasher::new();
+            identity.update(b"compiler-application.python-installed-environment.v1\0");
+            identity.update(&base);
+            identity.update(&environment.identity());
+            *identity.finalize().as_bytes()
+        });
+    }
     let reusable_go_authority =
         go_authority_witness_allows_semantic_reuse(facts.language, go_authority_witness.as_ref());
     let reservation_bytes = staged_output_reservation(
@@ -5101,9 +5264,13 @@ fn run_lane(
                                 &sources,
                             )?;
                             let package = match raw_sources.as_ref() {
-                                Some(raw_sources) => package.with_python_raw_sources(raw_sources)?,
+                                Some(raw_sources) => {
+                                    package.with_python_raw_sources(raw_sources)?
+                                }
                                 None => package,
                             };
+                            let package = package
+                                .with_python_environment(request.python_environment.as_ref());
                             let package = match go_authority_witness.as_ref() {
                                 Some(witness) => package.with_go_authority_witness(witness),
                                 None => package,
@@ -6003,6 +6170,7 @@ mod request_lease_tests {
             ))),
             capability_signal: Arc::new(CapabilitySignal::new()),
             input_witnesses: Arc::new(CompilerInputWitnessStore::new(root.join("witnesses"))),
+            python_snapshots: Mutex::new(PythonSnapshotCache::default()),
             go_authority: None,
             native_python: None,
             native_python_timeout: configuration.timeout,
@@ -6867,6 +7035,17 @@ mod deferred_native_python_tests {
                 vec![OwnedPackageSource::new("source.py", source).unwrap()].into_boxed_slice(),
             )
             .unwrap()
+            .with_python_environment(
+                backend_frontend_python::legacy::checker::PythonEnvironmentCapture::capture(
+                    &project,
+                    backend_frontend_python::legacy::checker::PythonProjectControl {
+                        cancelled: &AtomicBool::new(false),
+                        deadline: std::time::Instant::now() + Duration::from_secs(180),
+                    },
+                )
+                .unwrap(),
+            )
+            .unwrap()
         };
         let deferred = Arc::new(DeferredNativePython::new().unwrap());
         let client =
@@ -6920,6 +7099,53 @@ mod deferred_native_python_tests {
             .compile_package_sources_staged(package())
             .expect("same owner second actual State");
         assert_eq!(repeat.artifacts().len(), 1);
+        let input = [0x51; 32];
+        let selected_binding = [0x52; 32];
+        client.remember_python_snapshot(&project, input, selected_binding, &repeat);
+        let reuse_cancelled = AtomicBool::new(false);
+        assert!(client.python_snapshot_is_current(
+            &project,
+            profile,
+            input,
+            selected_binding,
+            &reuse_cancelled
+        ));
+        assert!(!client.python_snapshot_is_current(
+            &project,
+            profile,
+            [0x53; 32],
+            selected_binding,
+            &reuse_cancelled
+        ));
+        assert!(!client.python_snapshot_is_current(
+            &project,
+            profile,
+            input,
+            [0x54; 32],
+            &reuse_cancelled
+        ));
+        reuse_cancelled.store(true, Ordering::Release);
+        assert!(!client.python_snapshot_is_current(
+            &project,
+            profile,
+            input,
+            selected_binding,
+            &reuse_cancelled
+        ));
+        reuse_cancelled.store(false, Ordering::Release);
+        std::fs::write(
+            project.join("source.py"),
+            "def changed():\n    return 'changed'\n",
+        )
+        .unwrap();
+        assert!(!client.python_snapshot_is_current(
+            &project,
+            profile,
+            input,
+            selected_binding,
+            &reuse_cancelled
+        ));
+        std::fs::write(project.join("source.py"), source).unwrap();
         assert_eq!(deferred.admission_attempts.load(Ordering::Relaxed), 1);
         drop(repeat);
         drop(staged);

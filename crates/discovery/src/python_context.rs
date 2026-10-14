@@ -17,6 +17,7 @@ const MAX_DOCUMENT_TOTAL_BYTES: usize = 32 * 1024 * 1024;
 pub struct PythonSourceContext {
     source_roots: BTreeSet<PathBuf>,
     package_roots: BTreeSet<PathBuf>,
+    environment_roots: BTreeSet<PathBuf>,
 }
 
 impl PythonSourceContext {
@@ -174,11 +175,38 @@ impl PythonSourceContext {
         self.check_root_bound(root)
     }
 
+    /// Distinguishes an owner-admitted installed venv from project program
+    /// membership. This requires captured environment selection evidence; it
+    /// does not infer an environment from a directory name or package import.
+    pub fn add_captured_environment_root(&mut self, root: &Path) -> Result<(), DiscoveryError> {
+        if root.as_os_str().is_empty()
+            || root.is_absolute()
+            || root
+                .components()
+                .any(|part| !matches!(part, Component::Normal(_)))
+        {
+            return Err(context_error(
+                root,
+                "unconfined captured Python environment root",
+            ));
+        }
+        self.environment_roots.insert(root.to_owned());
+        self.check_root_bound(root)
+    }
+
+    /// Tests selected installed-environment membership without filesystem reads.
+    pub fn is_environment_member(&self, relative: &Path) -> bool {
+        self.environment_roots
+            .iter()
+            .any(|root| relative.starts_with(root))
+    }
+
     fn check_root_bound(&self, path: &Path) -> Result<(), DiscoveryError> {
         if self
             .source_roots
             .len()
             .saturating_add(self.package_roots.len())
+            .saturating_add(self.environment_roots.len())
             > 4096
         {
             return Err(context_error(
@@ -337,6 +365,25 @@ fn context_error(path: &Path, detail: &str) -> DiscoveryError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admitted_environment_membership_is_exact_and_cannot_reopen_program_roots() {
+        let mut context = PythonSourceContext::default();
+        context
+            .add_captured_environment_root(Path::new("local/py3"))
+            .unwrap();
+        assert!(context.is_environment_member(Path::new("local/py3/package/source.py")));
+        assert!(!context.is_environment_member(Path::new("local/py30/source.py")));
+        assert!(!context.is_environment_member(Path::new("local/project.py")));
+        for invalid in ["", "../venv", "/outside/venv"] {
+            assert!(
+                context
+                    .add_captured_environment_root(Path::new(invalid))
+                    .is_err()
+            );
+        }
+        assert!(!context.permits(Path::new("build"), false, |_| true));
+    }
 
     #[test]
     fn capture_validation_is_order_independent_and_retains_exact_document_fences() {

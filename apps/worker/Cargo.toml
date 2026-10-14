@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 backend-compile = { path = "../../crates/compile" }
 backend-engine = { path = "../../crates/engine" }
+backend-frontend-python = { path = "../../frontends/python" }
 backend-platform = { path = "../../crates/platform" }
 backend-semantic = { path = "../../crates/semantic" }
 backend-store = { path = "../../crates/store" }

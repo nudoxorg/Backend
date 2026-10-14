@@ -48,7 +48,9 @@ impl CapturedBaselines {
             if !errors.is_empty() {
                 let relative = configuration
                     .strip_prefix(layout.source_root())
-                    .map_err(|_| project_error("", "native config is outside the captured mirror"))?;
+                    .map_err(|_| {
+                        project_error("", "native config is outside the captured mirror")
+                    })?;
                 return Err(super::super::project_configuration::configuration_error(
                     configuration,
                     &original.join(relative),
@@ -227,6 +229,96 @@ pub(super) fn read_captured_input(
     relative: &Path,
     control: Option<PythonProjectControl<'_>>,
 ) -> Result<Option<Vec<u8>>, CheckerError> {
+    read_captured_input_bounded(
+        root,
+        relative,
+        control,
+        CONFIG_BYTES,
+        CapturedRootPolicy::PinnedProject,
+    )
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum CapturedRootPolicy {
+    PinnedProject,
+    CanonicalEnvironment,
+}
+
+pub(super) fn read_captured_input_bounded(
+    root: &Path,
+    relative: &Path,
+    control: Option<PythonProjectControl<'_>>,
+    maximum: u64,
+    root_policy: CapturedRootPolicy,
+) -> Result<Option<Vec<u8>>, CheckerError> {
+    captured_input_with(root, relative, control, root_policy, |file| {
+        read_bounded_file_with_limit(file, control, maximum, std::io::Read::read)
+    })
+}
+
+/// Large compiled resources are provenance, not parser payloads. Hash through
+/// the same confined descriptor reader without retaining their contents.
+pub(super) fn digest_environment_input(
+    root: &Path,
+    relative: &Path,
+    control: PythonProjectControl<'_>,
+    maximum: u64,
+) -> Result<Option<(u64, [u8; 32])>, CheckerError> {
+    captured_input_with(
+        root,
+        relative,
+        Some(control),
+        CapturedRootPolicy::CanonicalEnvironment,
+        |mut file| {
+            use std::io::Read;
+            let before = file.metadata().map_err(workspace_error)?;
+            if !before.is_file() || before.len() > maximum {
+                return Err(project_error(
+                    "",
+                    "compiled resource exceeds capture scan budget",
+                ));
+            }
+            let mut digest = blake3::Hasher::new();
+            let mut length = 0u64;
+            let mut buffer = [0; 65536];
+            loop {
+                checkpoint(control)?;
+                let count = file.read(&mut buffer).map_err(workspace_error)?;
+                if count == 0 {
+                    break;
+                }
+                length = length
+                    .checked_add(count as u64)
+                    .ok_or_else(|| project_error("", "compiled resource length overflow"))?;
+                if length > maximum {
+                    return Err(project_error(
+                        "",
+                        "compiled resource grew beyond capture scan budget",
+                    ));
+                }
+                digest.update(&buffer[..count]);
+            }
+            checkpoint(control)?;
+            let after = file.metadata().map_err(workspace_error)?;
+            if !after.is_file()
+                || before.len() != length
+                || after.len() != length
+                || !same_open_file_revision(&before, &after)
+            {
+                return Err(project_error("", "compiled resource changed while reading"));
+            }
+            Ok((length, *digest.finalize().as_bytes()))
+        },
+    )
+}
+
+fn captured_input_with<T>(
+    root: &Path,
+    relative: &Path,
+    control: Option<PythonProjectControl<'_>>,
+    root_policy: CapturedRootPolicy,
+    consume: impl FnOnce(std::fs::File) -> Result<T, CheckerError>,
+) -> Result<Option<T>, CheckerError> {
     // Each component is admitted when its handle is opened. These handles pin
     // the selected objects, not their continuously changing namespace position.
     // Publication separately reopens the original root-relative paths and
@@ -251,7 +343,7 @@ pub(super) fn read_captured_input(
             path: root.join(relative),
         });
     }
-    read_regular_no_follow(&root_entry, relative, control)
+    read_regular_no_follow(&root_entry, relative, control, root_policy, consume)
 }
 
 fn input_checkpoint(control: Option<PythonProjectControl<'_>>) -> Result<(), CheckerError> {
@@ -259,17 +351,37 @@ fn input_checkpoint(control: Option<PythonProjectControl<'_>>) -> Result<(), Che
 }
 
 #[cfg(unix)]
-fn read_regular_no_follow(
+fn read_regular_no_follow<T>(
     root: &Path,
     relative: &Path,
     control: Option<PythonProjectControl<'_>>,
-) -> Result<Option<Vec<u8>>, CheckerError> {
+    root_policy: CapturedRootPolicy,
+    consume: impl FnOnce(std::fs::File) -> Result<T, CheckerError>,
+) -> Result<Option<T>, CheckerError> {
     use rustix::fs::{Mode, OFlags, open, openat};
 
     let directory_flags =
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK;
-    let mut directory = open(root, directory_flags, Mode::empty())
-        .map_err(|error| workspace_error(error.into()))?;
+    let mut directory = if matches!(root_policy, CapturedRootPolicy::PinnedProject) {
+        open(root, directory_flags, Mode::empty()).map_err(|error| workspace_error(error.into()))?
+    } else {
+        // Environment roots are not the coordinator's already-pinned project
+        // descriptor. Admit every absolute ancestor without following aliases.
+        let mut directory = open("/", directory_flags, Mode::empty())
+            .map_err(|error| workspace_error(error.into()))?;
+        for component in root.components() {
+            input_checkpoint(control)?;
+            match component {
+                Component::RootDir => {}
+                Component::Normal(name) => {
+                    directory = openat(&directory, name, directory_flags, Mode::empty())
+                        .map_err(|error| workspace_error(error.into()))?
+                }
+                _ => return Err(CheckerError::UncapturedDependency { path: root.into() }),
+            }
+        }
+        directory
+    };
     let mut components = relative.components().peekable();
     let file = loop {
         input_checkpoint(control)?;
@@ -293,15 +405,17 @@ fn read_regular_no_follow(
         }
         directory = opened;
     };
-    read_bounded_file(std::fs::File::from(file), control).map(Some)
+    consume(std::fs::File::from(file)).map(Some)
 }
 
 #[cfg(windows)]
-fn read_regular_no_follow(
+fn read_regular_no_follow<T>(
     root: &Path,
     relative: &Path,
     control: Option<PythonProjectControl<'_>>,
-) -> Result<Option<Vec<u8>>, CheckerError> {
+    _root_policy: CapturedRootPolicy,
+    consume: impl FnOnce(std::fs::File) -> Result<T, CheckerError>,
+) -> Result<Option<T>, CheckerError> {
     use backend_platform::win32::project_fs::{ProjectRoot, revision_for_file};
 
     // Reuse the platform's handle-relative reader. It pins every local-drive
@@ -325,15 +439,15 @@ fn read_regular_no_follow(
         Err(error) => return Err(workspace_error(error)),
     };
     let before = revision_for_file(&file).map_err(workspace_error)?;
-    let bytes = read_bounded_file(file.try_clone().map_err(workspace_error)?, control)?;
+    let value = consume(file.try_clone().map_err(workspace_error)?)?;
     let after = revision_for_file(&file).map_err(workspace_error)?;
-    if before != after || before.length != bytes.len() as u64 {
+    if before != after {
         return Err(project_error(
             "",
             "captured compiler input changed while reading",
         ));
     }
-    Ok(Some(bytes))
+    Ok(Some(value))
 }
 
 fn read_bounded_file(
@@ -344,12 +458,21 @@ fn read_bounded_file(
 }
 
 fn read_bounded_file_with(
+    file: std::fs::File,
+    control: Option<PythonProjectControl<'_>>,
+    read: impl FnMut(&mut std::fs::File, &mut [u8]) -> std::io::Result<usize>,
+) -> Result<Vec<u8>, CheckerError> {
+    read_bounded_file_with_limit(file, control, CONFIG_BYTES, read)
+}
+
+fn read_bounded_file_with_limit(
     mut file: std::fs::File,
     control: Option<PythonProjectControl<'_>>,
+    maximum: u64,
     mut read: impl FnMut(&mut std::fs::File, &mut [u8]) -> std::io::Result<usize>,
 ) -> Result<Vec<u8>, CheckerError> {
     let before = file.metadata().map_err(workspace_error)?;
-    if !before.is_file() || before.len() > CONFIG_BYTES {
+    if !before.is_file() || before.len() > maximum {
         return Err(project_error(
             "",
             "compiler input is not a bounded regular captured file",
@@ -363,7 +486,7 @@ fn read_bounded_file_with(
         if count == 0 {
             break;
         }
-        if output.len() as u64 + count as u64 > CONFIG_BYTES {
+        if output.len() as u64 + count as u64 > maximum {
             return Err(project_error(
                 "",
                 "compiler input changed beyond capture bound",
@@ -410,11 +533,13 @@ fn same_open_file_revision(_before: &std::fs::Metadata, _after: &std::fs::Metada
 }
 
 #[cfg(not(any(unix, windows)))]
-fn read_regular_no_follow(
+fn read_regular_no_follow<T>(
     root: &Path,
     relative: &Path,
     _control: Option<PythonProjectControl<'_>>,
-) -> Result<Option<Vec<u8>>, CheckerError> {
+    _root_policy: CapturedRootPolicy,
+    _consume: impl FnOnce(std::fs::File) -> Result<T, CheckerError>,
+) -> Result<Option<T>, CheckerError> {
     // Neither supported handle-relative platform reader exists on this target.
     Err(CheckerError::UncapturedDependency {
         path: root.join(relative),

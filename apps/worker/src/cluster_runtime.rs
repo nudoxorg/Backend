@@ -1722,6 +1722,12 @@ impl ClusterWorker {
                 return Err(operation(error));
             }
         };
+        let source_set = match workspace.python_environment {
+            Some(environment) => source_set
+                .with_python_environment(environment)
+                .map_err(operation)?,
+            None => source_set,
+        };
         let Some(execution_identity) = compiler.execution_identity_for_unit(
             input.manifest.package_target(),
             input.manifest.profile(),
