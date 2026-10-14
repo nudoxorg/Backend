@@ -4,6 +4,12 @@ use lib.nu *
 
 def main []: nothing -> nothing {
     let cargo = $env.BACKEND_PARALLEL_CARGO? | default "cargo"
+    let cache = $env.CI_T3_CACHE_ROOT? | default ""
+    if ($cache | is-not-empty) {
+        let clean = (^git diff --quiet HEAD | complete)
+        if $clean.exit_code != 0 { error make {msg: "cached deep checks need a clean tracked checkout"} }
+        run-bounded 10sec "python3" ($env.FILE_PWD | path join "restore-mtimes.py") ($cache | path join "source-mtimes.json")
+    }
     let target = $env.CARGO_TARGET_DIR? | default ($env.PWD | path join ".local/target")
     let capacity = ci-step "t3" "disk and memory preflight" {||
         run-bounded 10sec "python3" ($env.FILE_PWD | path join "t1_capacity.py") $target
