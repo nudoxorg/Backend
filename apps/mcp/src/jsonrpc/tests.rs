@@ -2295,13 +2295,19 @@ fn result_budget_shortening_preserves_complete_summary_coordinate_rows() {
     let (text, coordinates) = summary_rows_fixture(100);
     let structured = json!({
         "records": " ".repeat(41_000),
-        "nextCursor": "owner-cursor-remains-structured"
+        "nextCursor": "owner-cursor-remains-structured",
+        "continuation_call":{"name":"backend.call","arguments":{"name":"backend.search","arguments":{
+            "query":"owner scope \" literal", "limit":3, "cursor":"owner-cursor-remains-structured"}}}
     });
     let result = tool_result(&text, structured.clone(), false);
     assert_eq!(result["structuredContent"], structured);
     assert_eq!(result["isError"], false);
     let preview = text_of(&result);
     assert!(preview.ends_with(PREVIEW_MARKER));
+    assert!(
+        preview.contains("when present, copy structuredContent.continuation_call unchanged"),
+        "budget shortening retains executable next-page discovery: {preview}"
+    );
     let shown = summary_coordinates(&preview);
     assert!(!shown.is_empty());
     assert!(shown.len() < coordinates.len());
@@ -2320,7 +2326,9 @@ fn final_rpc_budget_shortening_preserves_complete_summary_coordinate_rows() {
     let (text, coordinates) = summary_rows_fixture(100);
     let structured = json!({
         "records": " ".repeat(34_000),
-        "nextCursor": "owner-cursor-remains-structured"
+        "nextCursor": "owner-cursor-remains-structured",
+        "continuation_call":{"name":"backend.call","arguments":{"name":"backend.search","arguments":{
+            "query":"owner scope \" literal", "limit":3, "cursor":"owner-cursor-remains-structured"}}}
     });
     let result = tool_result(&text, structured.clone(), false);
     assert_eq!(
@@ -2337,6 +2345,10 @@ fn final_rpc_budget_shortening_preserves_complete_summary_coordinate_rows() {
     assert_eq!(response["result"]["structuredContent"], structured);
     let preview = text_of(&response["result"]);
     assert!(preview.ends_with(PREVIEW_MARKER));
+    assert!(
+        preview.contains("when present, copy structuredContent.continuation_call unchanged"),
+        "budget shortening retains executable next-page discovery: {preview}"
+    );
     let shown = summary_coordinates(&preview);
     assert!(!shown.is_empty());
     assert!(shown.len() < coordinates.len());
@@ -6280,7 +6292,7 @@ fn wire_budget_metadata_counts_the_complete_escaped_jsonrpc_line() {
     assert!(preview.starts_with("λ אב🙂\n"));
     assert!(preview.len() < source_text.len());
     assert!(preview.ends_with(
-        "… readable preview shortened to fit this response; structuredContent contains the complete page and any nextCursor."
+        "… readable preview shortened to fit this response; structuredContent contains the complete page and any nextCursor; when present, copy structuredContent.continuation_call unchanged."
     ));
 
     let wire_budget = &response["result"]["_meta"]["backend/wireBudget"];
@@ -6316,7 +6328,7 @@ fn wire_budget_metadata_counts_the_complete_escaped_jsonrpc_line() {
         large_structured
     );
     assert!(text_of(&large_response["result"]).ends_with(
-        "… readable preview shortened to fit this response; structuredContent contains the complete page and any nextCursor."
+        "… readable preview shortened to fit this response; structuredContent contains the complete page and any nextCursor; when present, copy structuredContent.continuation_call unchanged."
     ));
     assert_context_bounded(&large_response);
     let large_wire_bytes = serde_json::to_vec(&large_response)

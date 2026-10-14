@@ -2217,7 +2217,7 @@ fn refused(fault: &Fault) -> Value {
 /// Context-sized ceiling for one complete encoded JSON-RPC response, including
 /// its ID, text block, typed projection, metadata, and transport framing.
 const MCP_RESULT_BUDGET_BYTES: usize = DEFAULT_RESPONSE_BUDGET_BYTES;
-const PREVIEW_MARKER: &str = "\n\n… readable preview shortened to fit this response; structuredContent contains the complete page and any nextCursor.";
+const PREVIEW_MARKER: &str = "\n\n… readable preview shortened to fit this response; structuredContent contains the complete page and any nextCursor; when present, copy structuredContent.continuation_call unchanged.";
 
 fn serialized_bytes(value: &Value) -> usize {
     let mut count = codec::ResponseByteCounter::default();
