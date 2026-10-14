@@ -45,6 +45,72 @@ class AdmissionTests(unittest.TestCase):
         surface.require_cli_success("cli add", {"exit": 0, "json": {"answer": "indexed"}})
 
 
+class IndexResumptionAdmissionTests(unittest.TestCase):
+    def fixture(self):
+        return {"exit": 0, "json": {"index_operation": {"state": "known", "detail": {
+            "operation_key": "a" * 64, "request_digest": "b" * 64,
+            "package": {"kind": "local", "value": "/project"}, "execution_intent": "background",
+            "state": {"state": "active", "detail": {}},
+        }}}}
+
+    def test_wrong_request_unknown_operation_and_false_wait_success_are_rejected(self):
+        import copy
+        initial = self.fixture()
+        initial["exit"] = 75
+        expected = surface.require_index_wait_stop(initial, Path("/project"))
+        for exit_code in (0, 1, 64, 70):
+            with self.subTest(exit=exit_code), self.assertRaises(RuntimeError):
+                surface.require_index_wait_stop(dict(initial, exit=exit_code), Path("/project"))
+        for field, value in (
+            ("operation_key", "c" * 64), ("operation_key", "0" * 64),
+            ("request_digest", "c" * 64), ("request_digest", None),
+            ("package", {"kind": "local", "value": "/other"}),
+            ("execution_intent", "interactive"),
+            ("state", {"state": "failed"}), ("state", {"state": "unresolved"}),
+        ):
+            changed = copy.deepcopy(initial)
+            changed["json"]["index_operation"]["detail"][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(RuntimeError):
+                surface.require_index_identity(changed, Path("/project"), expected)
+        changed = copy.deepcopy(initial)
+        changed["json"]["index_operation"]["state"] = "unknown"
+        with self.assertRaises(RuntimeError):
+            surface.require_index_identity(changed, Path("/project"), expected)
+
+    def test_replay_must_preserve_complete_terminal_receipt(self):
+        import copy
+        answer = self.fixture()
+        terminal = answer["json"]["index_operation"]["detail"]
+        terminal["state"] = {"state": "published", "detail": {"view_root": "c" * 64}}
+        terminal["source_capture"] = {"profiles": [
+            {"state": {"state": "published", "detail": {"coverage": {"coverage": "complete"}}}}
+        ]}
+        surface.require_same_index_receipt(answer, Path("/project"), terminal, 1)
+        mcp = {"isError": False, "structuredContent": {"surface": {
+            "result": "index-operation-status", "data": answer["json"]["index_operation"]}}}
+        surface.require_mcp_index_receipt(mcp, Path("/project"), terminal, 1)
+        for wrong in (
+            dict(mcp, isError=True),
+            {"structuredContent": answer["json"]},
+            {"structuredContent": {"surface": {"result": "index-operation-started", "data": answer["json"]["index_operation"]}}},
+            {"structuredContent": {"surface": {"result": "index-operation-status", "data": {"state": "unknown"}}}},
+            {"structuredContent": dict(mcp["structuredContent"], fault={"slug": "refused"})},
+        ):
+            with self.subTest(mcp=wrong), self.assertRaises(RuntimeError):
+                surface.require_mcp_index_receipt(wrong, Path("/project"), terminal, 1)
+        for field, value in (
+            ("state", {"state": "published", "detail": {"view_root": "d" * 64}}),
+            ("source_capture", {"profiles": []}),
+            ("state", {"state": "active"}),
+        ):
+            changed = copy.deepcopy(answer)
+            changed["json"]["index_operation"]["detail"][field] = value
+            with self.subTest(field=field), self.assertRaises(RuntimeError):
+                surface.require_same_index_receipt(changed, Path("/project"), terminal, 1)
+        with self.assertRaises(RuntimeError):
+            surface.require_index_wait_stop(dict(answer, exit=75), Path("/project"))
+
+
 class LiveContractAdmissionTests(unittest.TestCase):
     def test_wrong_revision_or_source_cannot_pass_live_health(self):
         import copy

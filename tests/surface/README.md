@@ -171,3 +171,23 @@ baselines and tolerance bands stay unchanged. Admission mutations reject wrong
 revision/source, ignored bounds, reordered rows and false completeness. Old
 Rust tests and their Windows fixtures remain until reviewed replacement and
 platform coverage supports an approved deletion batch.
+
+### Real background operation resumption (W1.3)
+
+Polyglot setup runs the installed `index` alias with background execution intent
+and `--wait --wait-timeout 0`. The first caller must return exit 75 with a known
+pending operation. A fresh `index_progress --operation-key` process observes that
+same request, then a fresh `add --execution-intent background --wait` resumes it.
+The key, request digest, exact package and execution intent must remain unchanged;
+all seven native profiles must publish complete coverage. Fresh CLI lookup,
+explicit same-key `index_start` replay and MCP `backend.index_progress` must preserve the full terminal
+receipt and source capture. A completed Add acknowledges its journal claim, so a
+new unkeyed Add is a new request; idempotent replay uses the explicit key.
+Existing health checks bind the visible product to
+that receipt, and existing search/outline snapshots remain the correctness oracle.
+
+The `cli add` setup timer includes the initial start, progress and resumed wait;
+individual phases and terminal lookups are also reported. Golden answers and
+performance limits are unchanged. This proves caller deadline/resumption with a
+real owner, not owner crash recovery, ticket cancellation, or process-local ticket
+awaiting. The targeted scripted transport-retirement test remains valuable.
