@@ -433,7 +433,9 @@ impl MaterializedPythonEnvironment {
         }) else {
             return Ok(false);
         };
-        let Some(file) = open_materialized_source_file(mirror, relative, control)? else {
+        let Some((selected_spelling, file)) =
+            open_materialized_source_file(mirror, relative, control)?
+        else {
             return Ok(false);
         };
         let identity =
@@ -442,13 +444,13 @@ impl MaterializedPythonEnvironment {
             return Ok(false);
         };
         let (admitted_root, admitted_relative, _, _) = &self.files[*index];
-        if admitted_root != mirror {
+        if admitted_root != mirror || selected_spelling != *admitted_relative {
             return Ok(false);
         }
-        // The stored member name must still reach this held object. This permits
-        // genuine filesystem case aliases, but not renamed/hard-linked foreign
-        // names after the admitted source was removed or replaced.
-        let Some(admitted) =
+        // Exact captured spelling and object identity are both required. Unix
+        // names stay literal; Windows spelling came from each held component's
+        // kernel enumeration, not from case folding or a hard-link identity.
+        let Some((_, admitted)) =
             open_materialized_source_file(mirror, Path::new(admitted_relative), control)?
         else {
             return Ok(false);
@@ -1235,8 +1237,9 @@ fn open_materialized_source_file(
     root: &Path,
     relative: &Path,
     control: PythonProjectControl<'_>,
-) -> Result<Option<std::fs::File>, CheckerError> {
+) -> Result<Option<(String, std::fs::File)>, CheckerError> {
     let relative = normal_relative(&canonical_path_spelling(relative)?)?;
+    let mut actual_relative = PathBuf::new();
     let mut directory =
         backend_platform::DirectoryCapability::open_read_only_source(root).map_err(io_error)?;
     let mut parts = relative.components().peekable();
@@ -1249,19 +1252,52 @@ fn open_materialized_source_file(
             .to_str()
             .ok_or_else(|| project_error("", "native dependency selection is not Unicode"))?;
         if parts.peek().is_some() {
-            directory = match directory.open_dir(name) {
+            #[cfg(windows)]
+            let child = directory.actual_source_child_directory(name, MAX_FILES, &mut || {
+                checkpoint(control).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "native source directory selection stopped",
+                    )
+                })
+            });
+            #[cfg(not(windows))]
+            let child = directory
+                .open_dir(name)
+                .map(|child| (name.to_owned(), child));
+            let (spelling, child) = match child {
                 Ok(child) => child,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-                Err(error) => return Err(io_error(error)),
+                Err(error) => {
+                    return Err(checkpoint(control).err().unwrap_or_else(|| io_error(error)));
+                }
             };
+            actual_relative.push(spelling);
+            directory = child;
         } else {
-            let file = match directory.open_file_read(name) {
+            #[cfg(windows)]
+            let selected = directory.actual_source_child_file(name, MAX_FILES, &mut || {
+                checkpoint(control).map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "native source file selection stopped",
+                    )
+                })
+            });
+            #[cfg(not(windows))]
+            let selected = directory
+                .open_file_read(name)
+                .map(|file| (name.to_owned(), file));
+            let (spelling, file) = match selected {
                 Ok(file) => file,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-                Err(error) => return Err(io_error(error)),
+                Err(error) => {
+                    return Err(checkpoint(control).err().unwrap_or_else(|| io_error(error)));
+                }
             };
+            actual_relative.push(spelling);
             checkpoint(control)?;
-            return Ok(Some(file));
+            return Ok(Some((canonical_path_spelling(&actual_relative)?, file)));
         }
     }
     Ok(None)
@@ -3099,6 +3135,72 @@ mod tests {
                     .is_err()
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn hard_link_alias_does_not_acquire_captured_stub_membership() -> Result<(), CheckerError> {
+        let cancelled = AtomicBool::new(false);
+        let mut environment = transport_environment();
+        environment.roots[0].members[0].path = "pkg/nested/source.pyi".into();
+        let admitted = PythonEnvironmentCapture::admit(environment, control(&cancelled))?;
+        let parent = fixture()?;
+        let mirror = admitted.materialize(&parent.path, control(&cancelled))?;
+        let original = mirror.roots[0].2.join("pkg/nested/source.pyi");
+        let alias = mirror.roots[0].2.join("pkg/nested/foreign.pyi");
+        assert!(mirror.admitted_source_member(&original, control(&cancelled))?);
+        std::fs::hard_link(&original, &alias).map_err(io_error)?;
+        assert!(original.exists());
+        assert_eq!(
+            backend_platform::file_identity::FileIdentity::of_path_nofollow(&original)
+                .map_err(io_error)?,
+            backend_platform::file_identity::FileIdentity::of_path_nofollow(&alias)
+                .map_err(io_error)?
+        );
+        // Windows retains the stronger single-link source-file refusal; Unix
+        // permits the original member while refusing the new relative spelling.
+        #[cfg(windows)]
+        assert!(!matches!(
+            mirror.admitted_source_member(&alias, control(&cancelled)),
+            Ok(true)
+        ));
+        #[cfg(not(windows))]
+        {
+            assert!(!mirror.admitted_source_member(&alias, control(&cancelled))?);
+            assert!(mirror.admitted_source_member(&original, control(&cancelled))?);
+        }
+        std::fs::remove_file(alias).map_err(io_error)?;
+        assert!(mirror.admitted_source_member(&original, control(&cancelled))?);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn admitted_uppercase_stub_uses_actual_names_of_held_windows_components()
+    -> Result<(), CheckerError> {
+        let cancelled = AtomicBool::new(false);
+        let mut environment = transport_environment();
+        environment.roots[0].directories = vec!["".into(), "Pkg".into(), "Pkg/Nested".into()];
+        environment.roots[0].members[0].path = "Pkg/Nested/Source.PYI".into();
+        let admitted = PythonEnvironmentCapture::admit(environment, control(&cancelled))?;
+        let parent = fixture()?;
+        let mirror = admitted.materialize(&parent.path, control(&cancelled))?;
+        let alias = mirror.roots[0].2.join("pkg/nested/source.pyi");
+        assert!(mirror.admitted_source_member(&alias, control(&cancelled))?);
+        let (spelling, file) = open_materialized_source_file(
+            &mirror.roots[0].2,
+            Path::new("pkg/nested/source.pyi"),
+            control(&cancelled),
+        )?
+        .ok_or_else(|| project_error("", "missing genuine case alias"))?;
+        assert_eq!(spelling, "Pkg/Nested/Source.PYI");
+        assert_eq!(
+            backend_platform::file_identity::FileIdentity::of_file(&file).map_err(io_error)?,
+            backend_platform::file_identity::FileIdentity::of_path_nofollow(
+                &mirror.roots[0].2.join("Pkg/Nested/Source.PYI")
+            )
+            .map_err(io_error)?
+        );
         Ok(())
     }
 
