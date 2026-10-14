@@ -7,6 +7,35 @@ use gpui::{AppContext as _, InteractiveElement as _, ParentElement as _, Statefu
 use gpui_component::WindowExt as _;
 
 #[gpui::test]
+fn repeated_global_zoom_keeps_every_native_key_during_drawer_reflow(cx: &mut TestAppContext) {
+    use std::time::Duration;
+    let mut rig = rig(cx, None, 1280.0, 800.0);
+    let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
+    for _ in 0..5 {
+        rig.native_press("secondary-=");
+        rig.cx.run_until_parked();
+        rig.repaint();
+        rig.cx.executor().advance_clock(Duration::from_millis(150));
+        rig.cx.run_until_parked();
+        rig.draw();
+    }
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _|
+        store.snapshot().settings().zoom.percent(&display)), 200,
+        "five actual native chords reach 200% without waiting for each drawer animation to finish");
+    rig.native_press("secondary-0");
+    rig.cx.run_until_parked();
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _|
+        store.snapshot().settings().zoom.percent(&display)), 100,
+        "Reset is also a global preference while layout is still moving");
+    rig.go(Intent::OpenAddProject);
+    rig.native_press("secondary-=");
+    rig.cx.run_until_parked();
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _|
+        store.snapshot().settings().zoom.percent(&display)), 100,
+        "the explicitly mounted Add editor retains its keyboard admission");
+}
+
+#[gpui::test]
 fn escape_from_settings_returns_to_the_exact_reader_target(cx: &mut TestAppContext) {
     let route = page_route("RelationLabel");
     let mut rig = rig(cx, Some(route.clone()), 320.0, 900.0);

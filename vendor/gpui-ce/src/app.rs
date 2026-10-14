@@ -1339,6 +1339,11 @@ impl App {
                     // on windows we quite frequently lose the race and return a window that has never rendered, which leads to a crash
                     // where DispatchTree::root_node_id asserts on empty nodes
                     let clear = window.draw(cx);
+                    // Drawing establishes the dispatch tree but does not
+                    // submit pixels. The initial scene has the same native
+                    // presentation obligation as every later frame, even
+                    // when the window never receives focus or input.
+                    window.present();
                     clear.clear(cx);
 
                     cx.window_handles.insert(id, window.handle);

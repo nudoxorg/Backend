@@ -188,6 +188,7 @@ gpui_ce_macos = { path = "vendor/gpui_ce_macos" }
 # offscreen target with readback, and the platform crate hands it out from
 # `current_headless_renderer` (vendor/gpui-ce/NUDOX-PATCHES.md).
 gpui_ce_platform = { path = "vendor/gpui_ce_platform" }
+gpui_ce_linux = { path = "vendor/gpui_ce_linux" }
 gpui_ce_wgpu = { path = "vendor/gpui_ce_wgpu" }
 # The headless test scheduler took its two locks in opposite orders in
 # `block` and `schedule_local`: a journey hung for good when an engine

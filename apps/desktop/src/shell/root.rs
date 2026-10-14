@@ -1774,6 +1774,11 @@ impl Shell {
 
     /// ⌘+ / ⌘− / ⌘0 on the display the window is on.
     fn zoom(&mut self, step: ZoomStep, cx: &mut Context<Self>) {
+        // Text size belongs to the window, independent of a departing drawer
+        // or page. An open editor dialog still owns its keyboard gestures.
+        if self.ask_open || self.links.snapshot(cx).overlay() == Some(Overlay::AddProject) {
+            return;
+        }
         if crate::runtime::trace::enabled() {
             crate::runtime::trace::mark("native.zoom", format_args!(
                 "step={step:?} display={} before={}", self.around.display,
@@ -2782,9 +2787,9 @@ impl Render for Shell {
             .on_action(cx.listener(|shell, _: &keys::Graph, window, cx| shell.with_background_input(|shell| shell.toggle_graph(window, cx))))
             .on_action(cx.listener(|shell, _: &keys::CodePage, window, cx| shell.with_background_input(|shell| shell.code_page(window, cx))))
             .on_action(cx.listener(|shell, open: &facet::anatomy::Open, _, cx| shell.with_background_input(|shell| shell.open_anatomy(open, cx))))
-            .on_action(cx.listener(|shell, _: &keys::ZoomIn, _, cx| shell.with_background_input(|shell| shell.zoom(ZoomStep::In, cx))))
-            .on_action(cx.listener(|shell, _: &keys::ZoomOut, _, cx| shell.with_background_input(|shell| shell.zoom(ZoomStep::Out, cx))))
-            .on_action(cx.listener(|shell, _: &keys::ZoomReset, _, cx| shell.with_background_input(|shell| shell.zoom(ZoomStep::Reset, cx))))
+            .on_action(cx.listener(|shell, _: &keys::ZoomIn, _, cx| shell.zoom(ZoomStep::In, cx)))
+            .on_action(cx.listener(|shell, _: &keys::ZoomOut, _, cx| shell.zoom(ZoomStep::Out, cx)))
+            .on_action(cx.listener(|shell, _: &keys::ZoomReset, _, cx| shell.zoom(ZoomStep::Reset, cx)))
             .on_action(cx.listener(|shell, _: &keys::Hold, window, cx| { if shell.page_input_allowed(cx) { shell.hold(window, cx); } }))
             .on_action(cx.listener(|shell, _: &keys::OpenHand, _, cx| shell.with_background_input(|shell| shell.toggle_hand(cx))))
             .on_action(cx.listener(|shell, _: &keys::HandCard1, _, cx| { if shell.page_input_allowed(cx) { shell.hand_card(0, cx); } }))

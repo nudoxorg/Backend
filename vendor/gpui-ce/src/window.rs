@@ -9645,6 +9645,28 @@ mod tests {
         }
     }
 
+    #[gpui::test]
+    fn initial_scene_is_submitted_before_input_or_a_platform_frame(cx: &mut TestAppContext) {
+        use crate::PlatformWindow as _;
+        let first = cx.add_window(|_, _| EmptyView);
+        cx.test_window(first.into()).activate();
+        let renders = Rc::new(Cell::new(0));
+        cx.update(|app| {
+            let handle: AnyWindowHandle = app.open_window(
+                WindowOptions { focus: false, ..WindowOptions::default() },
+                |_, app| app.new(|_| CountedView(renders.clone())),
+            ).expect("native window opens without taking focus").into();
+            let window = app.windows.get(handle.window_id())
+                .and_then(Option::as_deref).expect("registered native window");
+            assert!(!window.platform_window.is_active(), "the earlier window retains native activation");
+            assert_eq!(renders.get(), 1, "the initial dispatch tree and scene are drawn once");
+            let platform = window.platform_window.as_test().expect("actual test platform window");
+            assert_eq!(platform.presentation_attempts(), 1,
+                "the drawn scene is submitted inside open_window, before effect flushing or any input/vsync");
+            assert!(!window.needs_present.get(), "successful native presentation completes the obligation");
+        });
+    }
+
     struct PacedView {
         renders: Rc<Cell<usize>>,
         frames_remaining: Rc<Cell<usize>>,
