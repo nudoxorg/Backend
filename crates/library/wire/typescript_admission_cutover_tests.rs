@@ -23,6 +23,7 @@ fn typescript_admission_dto29_refuses_old28_before_populated_fact_shape() {
         python_failure: None,
         python_configuration: None,
         typescript_failure: Some(detail.failure_kind()),
+        typescript_stop_site: None,
         typescript_admission: Some(detail),
         go_failure: None,
     };

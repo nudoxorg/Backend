@@ -50,7 +50,7 @@ pub use compiler::{
     UnavailableCompiler, ValidateFaultKind, ValidationFaultFacts, WriteFaultKind,
 };
 pub use compiler_go::GoAuthorityFailureKind;
-pub use compiler_typescript::TypeScriptAuthorityFailureKind;
+pub use compiler_typescript::{TypeScriptAuthorityFailureKind, TypeScriptStopPhase, TypeScriptStopSite};
 pub use compiler_typescript_admission::{
     TypeScriptCompilerAdmissionCause, TypeScriptCompilerAdmissionDetail,
     TypeScriptCompilerApiExport, TypeScriptCompilerPackageRole, TypeScriptCompilerVersion,
