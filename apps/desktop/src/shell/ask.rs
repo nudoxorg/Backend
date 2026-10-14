@@ -208,6 +208,8 @@ pub(crate) struct Ask {
     walked: bool,
     renders: u64,
     pending: Option<Task<()>>,
+    /// The bounded rows and exact read last drawn by this cached Ask entity.
+    painted_search: Option<PaintedSearchBasis>,
     scroll: ScrollHandle,
     /// One pending keyboard request; resolved only by the current painted list.
     scroll_request: Option<ResultScrollRequest>,
@@ -255,6 +257,7 @@ impl Ask {
             walked: false,
             renders: 0,
             pending: None,
+            painted_search: None,
             scroll: ScrollHandle::new(),
             scroll_request: None,
             row_focus: Vec::new(),
@@ -364,6 +367,7 @@ impl Ask {
         let revision = self.revision.get();
         let text = self.input.read(cx).value().to_string();
         let authority = ReadAuthorityLease::capture(self.links.store.read(cx));
+        let submission = self.capture_native_submission(secondary && !shift, cx);
         let ask = cx.weak_entity();
         window.defer(cx, move |window, cx| {
             let _ = ask.update(cx, |ask, cx| {
@@ -391,13 +395,58 @@ impl Ask {
                     ask.complete_submission(outcome, cx);
                     return;
                 }
-                if secondary && !shift {
-                    ask.choose_all(cx);
-                } else {
-                    ask.choose(window, cx);
-                }
+                let outcome = match submission {
+                    Some(submission) => submission.admit(&ask.links, cx),
+                    None if ask.draft.query().is_some_and(|query| current_search(&ask.links, query, cx, |_| true)) => stale_submission(),
+                    None => ask.empty_submission(cx),
+                };
+                ask.complete_submission(outcome, cx);
             });
         });
+    }
+
+    fn capture_native_submission(&self, all: bool, cx: &App) -> Option<NativeSearchSubmission> {
+        let painted = self.painted_search.as_ref()?;
+        if self.draft.query() != Some(&painted.read.query) {
+            return None;
+        }
+        let empty = || {
+            NativeSearchAction::Refused(
+                self.read_status(cx)
+                    .0
+                    .map_or(SubmitRefusal::NoMatch, SubmitRefusal::Unavailable),
+            )
+        };
+        let action = if all {
+            painted
+                .all
+                .clone()
+                .map_or_else(empty, NativeSearchAction::Navigate)
+        } else {
+            match painted.rows.get(self.selected) {
+                None => empty(),
+                Some(choice) => match choice.route.clone() {
+                    Some(route)
+                        if self.walked
+                            && self.links.snapshot(cx).session().preview.is_some()
+                            && self.links.snapshot(cx).route() == &route =>
+                    {
+                        NativeSearchAction::CommitPreview(route)
+                    }
+                    Some(route) => NativeSearchAction::Navigate(route),
+                    None => NativeSearchAction::Refused(SubmitRefusal::NoDestination(
+                        choice
+                            .unavailable
+                            .clone()
+                            .unwrap_or_else(|| format!("{} has no page yet", choice.name).into()),
+                    )),
+                },
+            }
+        };
+        Some(NativeSearchSubmission {
+            read: painted.read.clone(),
+            action,
+        })
     }
 
     fn editor_visit_current(&self, visit: u64, cx: &App) -> bool {
@@ -582,17 +631,6 @@ impl Ask {
             SubmissionOutcome::Refused(reason) => { self.refusal = Some(reason); cx.notify(); }
             SubmissionOutcome::Superseded => {}
         }
-    }
-
-    /// ⌘↵ opens Find only while this exact query has a current served page.
-    fn choose_all(&mut self, cx: &mut Context<Self>) {
-        if !self.current_editor(cx) { return; }
-        let outcome = match (self.draft.query(), self.all_results(cx)) {
-            (Some(query), Some(route)) if !self.choices(cx).is_empty() =>
-                follow_all(&self.links, &self.input, query, &route, self.revision.get(), &self.revision, SearchReadLease::capture(&self.links, query, cx).as_ref(), cx),
-            _ => self.empty_submission(cx),
-        };
-        self.complete_submission(outcome, cx);
     }
 
     /// The route for "every result, as a page" (⌘↵).
@@ -839,6 +877,47 @@ impl SearchReadLease {
     }
 }
 
+/// This list is bounded by PER_GROUP for each of the two displayed groups.
+/// It records render evidence, independently of a later resource completion.
+struct PaintedSearchBasis {
+    read: SearchReadLease,
+    rows: Vec<Choice>,
+    all: Option<Route>,
+}
+
+/// Native Enter chooses its exact painted destination at KeyDown. Deferred
+/// delivery validates that read, rather than recomputing a new selected row.
+struct NativeSearchSubmission {
+    read: SearchReadLease,
+    action: NativeSearchAction,
+}
+
+enum NativeSearchAction {
+    Navigate(Route),
+    CommitPreview(Route),
+    Refused(SubmitRefusal),
+}
+
+impl NativeSearchSubmission {
+    fn admit(self, links: &Links, cx: &App) -> SubmissionOutcome {
+        if !self.read.admits(links, &self.read.query, cx) {
+            return stale_submission();
+        }
+        match self.action {
+            NativeSearchAction::Navigate(route) => SubmissionOutcome::Navigate(route),
+            NativeSearchAction::CommitPreview(route) => {
+                let snapshot = links.snapshot(cx);
+                if snapshot.session().preview.is_some() && snapshot.route() == &route {
+                    SubmissionOutcome::CommitPreview
+                } else {
+                    SubmissionOutcome::Superseded
+                }
+            }
+            NativeSearchAction::Refused(reason) => SubmissionOutcome::Refused(reason),
+        }
+    }
+}
+
 /// A painted Link cannot outlive the editor query that produced it.
 fn current_input_query(input: &Entity<InputState>, query: &SearchQuery, cx: &App) -> bool {
     SearchQuery::new(&input.read(cx).value().to_string(), SearchQuery::DEFAULT_LIMIT)
@@ -1007,6 +1086,8 @@ impl Ask {
         let choices = self.choices(cx);
         let all_results = self.all_results(cx).filter(|_| !choices.is_empty());
         self.sync_row_focus(&choices, all_results.is_some(), window, cx);
+        self.painted_search = self.draft.query().and_then(|query| SearchReadLease::capture(&self.links, query, cx))
+            .map(|read| PaintedSearchBasis { read, rows: choices.clone(), all: all_results.clone() });
         let (read_status, semantic_status) = self.read_status(cx);
         let read_status = self.refusal.as_ref().map(SubmitRefusal::words).or(read_status);
         let scroll_map = ResultScrollMap::new(&choices, semantic_status.is_some(), all_results.is_some());
@@ -1861,7 +1942,7 @@ mod tests {
         }
     }
 
-    fn native_ask(rig: &mut crate::shell::tests::Rig) {
+    pub(super) fn native_ask(rig: &mut crate::shell::tests::Rig) {
         let shell = rig.shell.clone();
         rig.cx.update(|window, cx| {
             window.replace_root(cx, |window, cx| gpui_component::Root::new(shell, window, cx).bordered(false));
@@ -2632,3 +2713,7 @@ mod tests {
         assert_native_result_visible(&mut rig, "Result 16:");
     }
 }
+
+#[cfg(test)]
+#[path = "ask_submission_tests.rs"]
+mod submission_tests;
