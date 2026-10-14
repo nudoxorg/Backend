@@ -301,3 +301,11 @@ and estimates with their own counters omitted; all limits/policy fields remain.
 The `estimatedTokens` field is a bytes-per-token estimate, distinct from the
 product's cl100k token-policy admission. Changed-candidate logging uses the
 existing `--print-missing` flag for review and still fails the comparison.
+
+Revised review (pr-t1/609, `6b05a3c81`): all CLI answers and the other MCP
+payloads match the initial reviewed result. MCP Digest is exactly the CLI's
+first three records, with all three coordinates in its complete readable
+preview. All three offered continuations passed their live checks and wire
+accounting passed. Indexing was 189.84s, owner CPU 187.16s and owner peak RSS
+381,068KiB. The independent comparison against this reviewed candidate is the
+merge gate; no tolerance was changed.
