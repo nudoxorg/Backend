@@ -224,6 +224,16 @@ func main() {
 		}
 		return
 	}
+	// The batch form of the mode above: `--authority-image-package-batch
+	// <module> <source>...` loads the package that owns the (same-directory)
+	// sources once and frames one image or refusal per source.
+	if len(os.Args) >= 4 && os.Args[1] == "--authority-image-package-batch" {
+		if err := writeAuthorityImageBatch(os.Stdout, os.Args[2], os.Args[3:]); err != nil {
+			fmt.Fprintf(os.Stderr, "oracle: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	dir := "."
 	if len(os.Args) > 1 {
 		dir = os.Args[1]

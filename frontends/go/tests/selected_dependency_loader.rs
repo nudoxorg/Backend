@@ -546,3 +546,81 @@ fn assert_selected_call_and_type(
     );
     Ok(())
 }
+
+#[test]
+fn real_package_session_matches_per_source_images_and_proves_the_closure_twice()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::borrow::Cow;
+
+    let root = tempfile::tempdir()?;
+    let project = root.path().join("project");
+    let nested = project.join("nested");
+    std::fs::create_dir_all(&nested)?;
+    let project = project.canonicalize()?;
+    let nested = project.join("nested");
+    std::fs::write(
+        project.join("go.mod"),
+        "module example.com/session\n\ngo 1.23\n",
+    )?;
+    let sources = [
+        (project.join("a.go"), "package session\nfunc A() int { return B() }\n"),
+        (project.join("b.go"), "package session\nfunc B() int { return 1 }\n"),
+        (project.join("b_test.go"), "package session\nfunc TestB() { _ = A() }\n"),
+        (nested.join("ok.go"), "package nested\nfunc Ok() {}\n"),
+    ];
+    for (path, text) in &sources {
+        std::fs::write(path, text)?;
+    }
+    let (go, goroot) = installed_go()?;
+    let module_cache = root.path().join("modules");
+    std::fs::create_dir(&module_cache)?;
+    let environment = GoOracleChildEnvironment::new(
+        go.clone(),
+        goroot,
+        module_cache,
+        root.path().join("build-cache"),
+    )?;
+    let owner = GoOracle::default()
+        .with_configuration(GoOracleConfiguration::go_toolchain(go)?)
+        .with_child_environment(environment)?;
+    let cancelled = AtomicBool::new(false);
+    let witness = owner.package_authority_witness_cancellable(&project, Some(&cancelled))?;
+    assert!(witness.is_complete());
+
+    let capture_events = CaptureEvents::default();
+    let capture_scope = tracing::subscriber::set_default(capture_events.clone());
+    let paths = sources.iter().map(|(path, _)| path.clone()).collect::<Vec<_>>();
+    let mut session = owner.begin_package_authority(
+        &project,
+        Cow::Borrowed(&witness),
+        &paths,
+        Some(&cancelled),
+    )?;
+    let mut images = Vec::new();
+    for (path, _) in &sources {
+        images.push(session.image(path));
+    }
+    session.finish()?;
+    assert_eq!(
+        capture_events.0.load(std::sync::atomic::Ordering::Relaxed),
+        2,
+        "four sources in two directories re-prove the closure once before and once after, not per source"
+    );
+    drop(capture_scope);
+
+    for ((path, _), image) in sources.iter().zip(&images) {
+        let expected = owner.authority_image_for_package_with_authority_witness_cancellable(
+            path,
+            &project,
+            &witness,
+            Some(&cancelled),
+        )?;
+        assert_eq!(
+            image.as_ref().map_err(|error| error.to_string())?,
+            &expected,
+            "{} differs from its per-source image",
+            path.display()
+        );
+    }
+    Ok(())
+}

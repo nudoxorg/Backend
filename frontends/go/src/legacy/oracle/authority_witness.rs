@@ -496,6 +496,12 @@ impl GoPackageAuthorityWitness {
         roots.into_iter().filter_map(|root| root.canonicalize().ok()).collect()
     }
 
+    /// Whether re-capturing this witness also re-proves the toolchain identity: the
+    /// dependency-closure capture revalidates it before listing packages.
+    pub(super) fn recapture_proves_toolchain(&self) -> bool {
+        self.dependency_closure.is_some()
+    }
+
     pub(super) fn dependency_closure_failure(&self) -> Option<GoDependencyClosureFailure> {
         self.dependency_closure.as_ref().and_then(|closure| closure.failure())
     }

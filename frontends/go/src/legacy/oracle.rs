@@ -26,6 +26,7 @@ use backend_semantic::vocabulary::{NativeWorker, NativeWorkerPanic};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+mod authority_session;
 mod authority_witness;
 mod capture_digest;
 mod dependency_witness;
@@ -36,6 +37,7 @@ fn check_go_cancellation(cancelled: Option<&std::sync::atomic::AtomicBool>) -> R
         Ok(())
     }
 }
+pub use self::authority_session::GoPackageAuthoritySession;
 pub use self::dependency_witness::GoDependencyClosureFailure;
 pub use self::authority_witness::{
     GoFilesystemTargetKind, GoLocalOnlyReason, GoPackageAuthorityWitness,

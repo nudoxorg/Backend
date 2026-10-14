@@ -1754,6 +1754,66 @@ func writeAuthorityImage(destination io.Writer, sourcePath string, output *Outpu
 	return nil
 }
 
+// Status byte of one frame in the batch authority-image transcript. A frame is
+// `status || big-endian u64 payload length || payload`; an image frame carries
+// the exact bytes [writeAuthorityImage] would have written for that source and
+// an error frame carries the UTF-8 refusal it would have reported.
+const (
+	batchFrameImage byte = 0
+	batchFrameError byte = 1
+	// batchErrorBytes bounds one refusal message so a verbose loader
+	// diagnostic cannot make the transcript unbounded.
+	batchErrorBytes = 64 * 1024
+)
+
+// writeAuthorityImageBatch loads the Go package that owns `sources` exactly
+// once and emits one frame per source, in the order given. Every source must
+// live in the same directory, because that directory selects the package the
+// loader builds. Loading and type-checking dominate the cost of one image, so
+// producing a directory's images from a single load is what keeps a package's
+// indexing time proportional to its directories rather than to its files.
+//
+// A per-source refusal (or a load failure, which refuses every source of the
+// directory) becomes that source's error frame instead of failing the batch:
+// one unusable file must not hide the images of its siblings.
+func writeAuthorityImageBatch(destination io.Writer, moduleDir string, sources []string) error {
+	if len(sources) == 0 {
+		return fmt.Errorf("authority image batch names no source")
+	}
+	directory := filepath.Dir(sources[0])
+	for _, source := range sources[1:] {
+		if filepath.Dir(source) != directory {
+			return fmt.Errorf("authority image batch spans directories: %s and %s", sources[0], source)
+		}
+	}
+	output, loadErr := extractSelectedPackage(moduleDir, sources[0])
+	for _, source := range sources {
+		var frame bytes.Buffer
+		err := loadErr
+		if err == nil {
+			err = writeAuthorityImage(&frame, source, output)
+		}
+		status, payload := batchFrameImage, frame.Bytes()
+		if err != nil {
+			message := err.Error()
+			if len(message) > batchErrorBytes {
+				message = message[:batchErrorBytes]
+			}
+			status, payload = batchFrameError, []byte(message)
+		}
+		var header [9]byte
+		header[0] = status
+		binary.BigEndian.PutUint64(header[1:], uint64(len(payload)))
+		if _, err := destination.Write(header[:]); err != nil {
+			return fmt.Errorf("write Go authority image frame: %w", err)
+		}
+		if _, err := destination.Write(payload); err != nil {
+			return fmt.Errorf("write Go authority image frame: %w", err)
+		}
+	}
+	return nil
+}
+
 // authorityOutputForSource keeps active package context for an active source.
 // An ignored source has no active declarations or calls: attaching its bytes to
 // the active package would give those calls an unrelated source extent. Its
