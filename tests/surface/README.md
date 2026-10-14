@@ -180,8 +180,10 @@ pending operation. A fresh `index_progress --operation-key` process observes tha
 same request, then a fresh `add --execution-intent background --wait` resumes it.
 The key, request digest, exact package and execution intent must remain unchanged;
 all seven native profiles must publish complete coverage. Fresh CLI lookup,
-repeated Add and MCP `backend.index_progress` must preserve the full terminal
-receipt and source capture. Existing health checks bind the visible product to
+explicit same-key `index_start` replay and MCP `backend.index_progress` must preserve the full terminal
+receipt and source capture. A completed Add acknowledges its journal claim, so a
+new unkeyed Add is a new request; idempotent replay uses the explicit key.
+Existing health checks bind the visible product to
 that receipt, and existing search/outline snapshots remain the correctness oracle.
 
 The `cli add` setup timer includes the initial start, progress and resumed wait;

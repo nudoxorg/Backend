@@ -296,7 +296,7 @@ def run_resumable_index(owner: Owner, project: Path, profile_count: int, timeout
     times["cli add"] = round(time.monotonic() - started, 2)
     for name, args in (
         ("completed CLI operation lookup", ["index_progress", "--operation-key", key]),
-        ("completed CLI request replay", ["add", str(project), "--execution-intent", "background", "--wait"]),
+        ("completed CLI keyed replay", ["index_start", str(project), "--execution-intent", "background", "--operation-key", key]),
     ):
         answer, seconds = run_cli(owner, project, args, 10)
         require_same_index_receipt(answer, project, terminal, profile_count)
@@ -310,7 +310,7 @@ def run_resumable_index(owner: Owner, project: Path, profile_count: int, timeout
         raise RuntimeError(f"completed MCP operation lookup failed: {reply}")
     require_same_index_receipt({"exit": 0, "json": reply["structuredContent"]}, project, terminal, profile_count)
     times["completed MCP operation lookup"] = round(seconds, 3)
-    log("background index: zero-wait caller left; fresh alias/add clients retained one key; CLI/MCP terminal receipts agree")
+    log("background index: zero-wait caller left; fresh alias/add clients retained one key; explicit keyed replay; CLI/MCP terminal receipts agree")
     return completed, times
 
 
