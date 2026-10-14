@@ -924,14 +924,8 @@ def bounded_text(value: str, limit: int) -> str:
 def evidence_artifact(bin_dir: Path, source_sha: str) -> str:
     """Admit the actual artifact bytes and checkout before attaching source identity."""
     from t1_artifacts import TARGET, digest, verify
-    if not re.fullmatch(r"[a-f0-9]{40}", source_sha):
-        raise ValueError("CI evidence requires a full lower-case source SHA")
-    head = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True, timeout=10).strip()
-    if head != source_sha:
-        raise ValueError("CI evidence source differs from the harness checkout")
-    dirty = subprocess.check_output(["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=no"], text=True, timeout=10)
-    if dirty.strip():
-        raise ValueError("CI evidence requires a clean tracked harness checkout")
+    from source_identity import verify_checkout
+    verify_checkout(ROOT, source_sha)
     directory = bin_dir.absolute()
     if directory.name != "bin":
         raise ValueError("CI evidence requires the verified artifact's bin directory")

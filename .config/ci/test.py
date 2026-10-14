@@ -57,7 +57,7 @@ def main() -> int:
     parser.add_argument("--update", action="store_true", help="explicitly rewrite selected integration snapshots for review")
     parser.add_argument("--report", type=Path)
     parser.add_argument("--ci-report", type=Path, help="exact-artifact case evidence; requires --source-sha")
-    parser.add_argument("--source-sha", help="full source identity for --ci-report")
+    parser.add_argument("--source-sha", help="full source identity for --ci-report or source-bound list")
     parser.add_argument("--in-shell", action="store_true", help="CI: already inside the tier's declared Nix shell")
     parser.add_argument("--plan", action="store_true", help="print the command as JSON without building or running")
     args = parser.parse_args()
@@ -72,12 +72,14 @@ def main() -> int:
     if args.base or args.head != "HEAD" or args.worktree:
         parser.error("--base, --head and --worktree apply only to select")
     if args.tier == "list":
-        if args.bin_dir or args.case or args.update or args.report or args.ci_report or args.source_sha or args.jobs is not None or args.in_shell or args.plan:
+        if args.bin_dir or args.case or args.update or args.report or args.ci_report or args.jobs is not None or args.in_shell or args.plan:
             parser.error("list does not execute or accept integration options")
-        cases = json.loads((ROOT / "tests/surface/cases.json").read_text())["cases"]
-        print(json.dumps({"smoke": ["cli", "mcp", "gui"],
-                          "integration": [case["name"] for case in cases],
-                          "deep": ["cli-index-wait-laws"]}, indent=2))
+        from catalog import read_catalog
+        try:
+            listed = read_catalog(ROOT, args.source_sha)
+        except (ValueError, OSError, subprocess.SubprocessError) as error:
+            parser.error(str(error))
+        print(json.dumps(listed, indent=2))
         return 0
     try:
         command = plan(args)
