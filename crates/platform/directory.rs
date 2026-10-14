@@ -1147,7 +1147,9 @@ impl DirectoryCapability {
         &self,
         name: &str,
         maximum: usize,
+        checkpoint: &mut impl FnMut() -> io::Result<()>,
     ) -> io::Result<(String, Self)> {
+        checkpoint()?;
         validate_component(name)?;
         #[cfg(unix)]
         {
@@ -1169,6 +1171,7 @@ impl DirectoryCapability {
             let mut matched = None;
             let mut count = 0usize;
             for entry in &mut entries {
+                checkpoint()?;
                 let entry = entry?;
                 let actual = entry.file_name();
                 if matches!(actual.to_bytes(), b"." | b"..") {
@@ -1204,7 +1207,9 @@ impl DirectoryCapability {
         }
         #[cfg(windows)]
         {
-            let (name, child) = self.handle.actual_source_child_directory(name, maximum)?;
+            let (name, child) = self
+                .handle
+                .actual_source_child_directory(name, maximum, checkpoint)?;
             return Ok((
                 name,
                 Self {

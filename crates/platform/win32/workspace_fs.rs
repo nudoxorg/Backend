@@ -978,12 +978,15 @@ impl WorkspaceRoot {
         &self,
         name: &str,
         maximum: usize,
+        checkpoint: &mut impl FnMut() -> io::Result<()>,
     ) -> io::Result<(String, Self)> {
+        checkpoint()?;
         let selected = self.open_dir_source_checked(&[name])?;
         let selected_id = FileId128::of_handle(selected.handle())?;
         let parent = self.reopen_current_directory(WorkspacePurpose::ReadOnlySource)?;
         let mut matched = None;
-        for entry in enumerate_names(parent.handle(), maximum)? {
+        for entry in enumerate_names_controlled(parent.handle(), maximum, checkpoint)? {
+            checkpoint()?;
             if entry.id != selected_id {
                 continue;
             }
@@ -2398,10 +2401,19 @@ struct EnumeratedEntry {
 }
 
 fn enumerate_names(handle: HANDLE, maximum: usize) -> io::Result<Vec<EnumeratedEntry>> {
+    enumerate_names_controlled(handle, maximum, &mut || Ok(()))
+}
+
+fn enumerate_names_controlled(
+    handle: HANDLE,
+    maximum: usize,
+    checkpoint: &mut impl FnMut() -> io::Result<()>,
+) -> io::Result<Vec<EnumeratedEntry>> {
     let mut buffer = vec![0_u64; 8192];
     let mut restart = true;
     let mut names = Vec::new();
     loop {
+        checkpoint()?;
         let class: FILE_INFO_BY_HANDLE_CLASS = if restart {
             FileIdExtdDirectoryRestartInfo
         } else {
@@ -2425,7 +2437,7 @@ fn enumerate_names(handle: HANDLE, maximum: usize) -> io::Result<Vec<EnumeratedE
             return Err(error);
         }
         restart = false;
-        decode_directory_records(&buffer, &mut names, maximum)?;
+        decode_directory_records(&buffer, &mut names, maximum, checkpoint)?;
     }
     Ok(names)
 }
@@ -2437,11 +2449,13 @@ fn decode_directory_records(
     buffer: &[u64],
     names: &mut Vec<EnumeratedEntry>,
     maximum: usize,
+    checkpoint: &mut impl FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
     let bytes = std::mem::size_of_val(buffer);
     let name_offset = offset_of!(FILE_ID_EXTD_DIR_INFO, FileName);
     let mut offset = 0usize;
     loop {
+        checkpoint()?;
         if offset % align_of::<FILE_ID_EXTD_DIR_INFO>() != 0
             || offset
                 .checked_add(size_of::<FILE_ID_EXTD_DIR_INFO>())
