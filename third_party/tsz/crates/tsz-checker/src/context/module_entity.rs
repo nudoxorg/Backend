@@ -161,9 +161,8 @@ impl<'a> CheckerContext<'a> {
     pub fn module_resolves_to_non_module_entity(&self, module_specifier: &str) -> bool {
         let candidates = module_specifier_candidates(module_specifier);
 
-        let lookup_cached = |binder: &BinderState, key: &str| {
-            binder.module_export_equals_non_module.get(key).copied()
-        };
+        let lookup_cached =
+            |binder: &BinderState, key: &str| binder.module_export_equals_non_module_for(key);
 
         if let Some(target_idx) = self.resolve_import_target(module_specifier)
             && let Some(target_binder) = self.get_binder_for_file(target_idx)
