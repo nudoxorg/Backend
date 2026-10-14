@@ -1094,6 +1094,9 @@ struct ProjectCheckerViews {
     global_symbol_file_index: Arc<FxHashMap<tsz_binder::SymbolId, usize>>,
     shared_declared_modules: Option<Arc<crate::checker::context::GlobalDeclaredModules>>,
     shared_query_cache: Option<tsz_solver::construction::SharedQueryCache>,
+    /// Program-wide memo of cross-file type-parameter extraction, shared by every
+    /// file checker and delegation child instead of each recomputing it.
+    cross_file_type_params: crate::checker::context::CrossFileTypeParamsCache,
     affected_lib_interfaces: FxHashSet<String>,
     affected_lib_extension_interfaces: FxHashSet<String>,
 }
@@ -1255,6 +1258,56 @@ impl PreparedProjectCheckerImage {
             ProjectCheckerImage { contents: self.contents },
             result,
         ))
+    }
+
+    /// Seal the image for lazy file queries without running any file's semantic
+    /// check or any library check.
+    ///
+    /// A caller that publishes semantic facts and never reads checker diagnostics
+    /// has no use for the whole-program check: every fact it needs is a typed
+    /// query against one file, answered on demand from the same shared views and
+    /// query cache. Only the module-augmentation bodies are primed, exactly as the
+    /// checked path primes them before its first file, because every query reads
+    /// them. A stop observed while priming consumes and discards the image.
+    ///
+    /// # Errors
+    /// Returns the same typed refusals as [`Self::check_with_partitions`] for a
+    /// checkpoint outside this image's admission, a stopped budget, or a worker
+    /// pool that could not start.
+    pub fn seal_for_queries(
+        self,
+        execution: ProjectCheckerExecution<'_>,
+    ) -> Result<ProjectCheckerImage, ProjectPartitionCheckError> {
+        use ProjectPartitionCheckError::Program;
+        if !self.accepts_checkpoint(Some(execution.checkpoint)) {
+            return Err(ProjectPartitionCheckError::CheckerSession(
+                ProjectCheckerSessionError::ExecutionCheckpointMismatch,
+            ));
+        }
+        {
+            let plan = self.contents.plan(Some(execution.checkpoint));
+            let poll = || {
+                plan.checkpoint(0)
+                    .map_err(|reason| Program(ProjectProgramCheckError::ExecutionStopped(reason)))
+            };
+            poll()?;
+            // Priming resolves interface bodies and can recurse deeply: it runs on
+            // a private checker worker, which carries the checker stack size.
+            run_on_private_checker_workers(1, || {
+                let prime_span = ProjectExecutionSpan::new(
+                    Some(execution.checkpoint),
+                    ProjectExecutionPhase::AugmentationPrime,
+                    None,
+                );
+                plan.prime_module_augmentation_bodies();
+                poll()?;
+                prime_span.returned();
+                Ok(())
+            })?;
+        }
+        Ok(ProjectCheckerImage {
+            contents: self.contents,
+        })
     }
 
     /// Explicit fresh-file execution for legacy and test callers. A failed
@@ -1534,6 +1587,7 @@ impl<'a> ParallelCheckPlan<'a> {
             global_symbol_file_index,
             shared_declared_modules,
             shared_query_cache,
+            cross_file_type_params: Default::default(),
             affected_lib_interfaces,
             affected_lib_extension_interfaces,
             }),
@@ -1722,6 +1776,13 @@ impl<'a> ParallelCheckPlan<'a> {
         checker
             .ctx
             .set_global_symbol_file_index(Arc::clone(&self.global_symbol_file_index));
+        // Project checking, unlike an interactive session, mirrors each symbol's resolved
+        // type into the program's shared definition store and reads it back, so a class
+        // imported by every file is resolved once for the program instead of once per
+        // file and per delegation child. The cross-file type-parameter memo is shared the
+        // same way.
+        checker.ctx.share_owner_symbol_type_results = true;
+        checker.ctx.cross_file_type_params_cache = Some(Arc::clone(&self.cross_file_type_params));
 
         if !self.lib_contexts.is_empty() {
             checker

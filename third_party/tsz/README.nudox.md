@@ -26,3 +26,13 @@ reported (never published), and the partially written image is discarded and reb
 without it by the caller. The checker's module-export lookups no longer repeat one
 program-wide answer once per binder, and the request consensus for a source/specifier
 pair is memoized; both made one named import cost work proportional to the file count.
+
+Program-wide facts and lazy sealing: `tsz-checker` derives the answers that depend only on
+the sealed binders and the compiler-owned module-resolution outcomes once per program
+(`SharedProgramFacts`: whether any file augments a module, which names are ambient modules,
+and a concurrent memo of the request consensus for each importer/specifier pair) and shares
+them by `Arc` with every file checker and every cross-file delegation child, instead of each
+call rescanning every binder or each child context recomputing its parent's memo.
+`PreparedProjectCheckerImage::seal_for_queries` seals the same views without running any file
+or library check, for a caller that reads semantic facts through lazy per-file queries and
+never reads checker diagnostics.

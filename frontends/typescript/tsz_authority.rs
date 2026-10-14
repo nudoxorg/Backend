@@ -321,6 +321,8 @@ pub struct TszProject {
     /// of this update spent their per-file work allowance (or the caller
     /// already knew they would).
     file_work_skipped: BTreeSet<String>,
+    /// Whether the update checked every file up front. When `false`, `check` is empty.
+    eagerly_checked: bool,
     check: tsz::parallel::CheckResult,
 }
 
@@ -364,6 +366,16 @@ pub struct TszFileWorkPolicy {
     /// compiler options, source membership, or any query result. Lazy queries
     /// still resolve declaration types on demand.
     pub check_declaration_files: bool,
+    /// Whether the update semantically checks every application file up front.
+    ///
+    /// A caller that publishes semantic facts and never reads checker diagnostics
+    /// sets this to `false`: the update then parses, binds, merges, plans and primes
+    /// the program but runs no file check, and every fact is answered by a lazy
+    /// per-file query against the same shared views. The project's
+    /// [`TszProject::check_result`] is then empty (`TszProject::eagerly_checked`
+    /// is `false`) and `allowance` / `max_retries` have no round to isolate: a file
+    /// that spends its slice is found by the query session instead.
+    pub eager_file_checks: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -770,6 +782,24 @@ impl TszProjectAuthority {
                         options.semantic_options,
                         TszProjectCheckerExecution { checkpoint: checkpoint.expect("partition checkpoint"), workers: execution.workers },
                     ).map_err(partition_failure)?;
+                    if work.is_some_and(|work| !work.eager_file_checks) {
+                        // Nothing up front: the session's lazy file queries answer every
+                        // fact, so the image only needs its views sealed and primed.
+                        let image = prepared
+                            .seal_for_queries(TszProjectCheckerExecution {
+                                checkpoint: checkpoint.expect("partition checkpoint"),
+                                workers: execution.workers,
+                            })
+                            .map_err(partition_failure)?;
+                        break (
+                            image,
+                            tsz::parallel::CheckResult {
+                                file_results: Vec::new(),
+                                function_count: 0,
+                                diagnostic_count: 0,
+                            },
+                        );
+                    }
                     let prepared = match work {
                         Some(work) => prepared.with_file_work(tsz::parallel::ProjectFileWork {
                             allowance: work.allowance,
@@ -825,6 +855,7 @@ impl TszProjectAuthority {
             program,
             query_budget: checkpoint.and_then(|checkpoint| checkpoint.execution_identity()),
             file_work_skipped,
+            eagerly_checked: execution.file_work().is_none_or(|work| work.eager_file_checks),
             check,
         });
         Ok(report)
@@ -845,9 +876,20 @@ impl TszProject {
     }
 
     /// TSZ's typed checker result and every checker diagnostic it retained.
+    ///
+    /// Empty when the update ran no up-front check ([`Self::eagerly_checked`] is
+    /// `false`): such a project answers semantic queries only, and an empty result
+    /// there means "never checked", not "no diagnostics".
     #[must_use]
     pub const fn check_result(&self) -> &tsz::parallel::CheckResult {
         &self.check
+    }
+
+    /// Whether the update semantically checked every file up front, so that
+    /// [`Self::check_result`] carries real diagnostics.
+    #[must_use]
+    pub const fn eagerly_checked(&self) -> bool {
+        self.eagerly_checked
     }
 
     /// Exact program paths whose semantic check was not run because they spent
@@ -3150,6 +3192,7 @@ mod tests {
                     skipped: BTreeSet::new(),
                     max_retries: 2,
                     check_declaration_files: true,
+                    eager_file_checks: true,
                 },
             )
             .unwrap();
@@ -3224,6 +3267,7 @@ mod tests {
                         skipped: BTreeSet::new(),
                         max_retries: 0,
                         check_declaration_files,
+                        eager_file_checks: true,
                     },
                 )
                 .unwrap();
@@ -3253,6 +3297,94 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    fn deferred_update_answers_the_same_queries_without_checking_any_file() {
+        use std::num::NonZeroUsize;
+        let observe = |eager_file_checks: bool| {
+            let cancelled = AtomicBool::new(false);
+            let budget = execution_budget(&cancelled, 50_000_000);
+            let mut authority = TszProjectAuthority::new();
+            let mut opts = options();
+            opts.module_resolutions.push(TszProjectModuleResolution {
+                importer_path: "src/main.ts".into(),
+                specifier: "./types".into(),
+                request_kind: TszProjectModuleRequestKind::EsmImport,
+                resolution_mode: None,
+                target: TszProjectModuleResolutionTarget::File {
+                    path: "src/types.ts".into(),
+                },
+            });
+            authority
+                .update_with_checker_execution_and_file_work(
+                    vec![
+                        input(
+                            "src/types.ts",
+                            "export interface Shape { side: number; } export const unit: Shape = { side: 1 };",
+                        ),
+                        input(
+                            "src/main.ts",
+                            "import { unit, type Shape } from './types'; export const area = unit.side * unit.side; export const bad: number = 'x'; export type Alias = Shape;",
+                        ),
+                    ],
+                    opts,
+                    &[],
+                    TszProjectCheckerExecution {
+                        checkpoint: &budget,
+                        workers: NonZeroUsize::new(2).unwrap(),
+                    },
+                    &TszFileWorkPolicy {
+                        allowance: 10_000_000,
+                        skipped: BTreeSet::new(),
+                        max_retries: 0,
+                        check_declaration_files: false,
+                        eager_file_checks,
+                    },
+                )
+                .unwrap();
+            let project = authority.project().unwrap();
+            let session = project.checked_query_session(&budget).unwrap();
+            let mut facts = BTreeMap::new();
+            for (index, file) in project.program().files.iter().enumerate() {
+                let path = file.file_name.clone();
+                let shown = session
+                    .with_file_checker_and_types(index, |checker, binder, _, _| {
+                        ["area", "unit", "bad"]
+                            .into_iter()
+                            .filter_map(|name| {
+                                let symbol = binder.file_locals.get(name)?;
+                                let ty = checker.get_type_of_symbol(symbol);
+                                Some(format!("{name}: {}", checker.format_type(ty)))
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap();
+                facts.insert(path, shown);
+            }
+            (
+                project.eagerly_checked(),
+                project.check_result().diagnostic_count,
+                project.check_result().file_results.len(),
+                project.file_work_skipped().clone(),
+                facts,
+            )
+        };
+        let (eager, eager_diagnostics, eager_files, _, eager_facts) = observe(true);
+        let (deferred, deferred_diagnostics, deferred_files, deferred_skipped, deferred_facts) =
+            observe(false);
+        assert!(eager && eager_diagnostics > 0 && eager_files == 2, "the eager path keeps real diagnostics");
+        assert!(
+            !deferred && deferred_diagnostics == 0 && deferred_files == 0,
+            "a deferred project checked nothing and says so"
+        );
+        assert!(deferred_skipped.is_empty());
+        assert_eq!(
+            deferred_facts.get("src/main.ts").map(Vec::as_slice),
+            Some(["area: number".to_owned(), "unit: Shape".to_owned(), "bad: number".to_owned()].as_slice()),
+        );
+        assert_eq!(deferred_facts, eager_facts, "lazy queries answer exactly what the checked image answers");
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
     fn file_work_policy_without_retries_names_the_hot_file_and_publishes_nothing() {
         use std::num::NonZeroUsize;
         let (sources, opts) = hot_file_fixture();
@@ -3272,6 +3404,7 @@ mod tests {
                 skipped: BTreeSet::new(),
                 max_retries: 0,
                 check_declaration_files: true,
+                eager_file_checks: true,
             },
         );
         let Err(TszAuthorityError::FileWorkExhausted(files)) = refused else {
