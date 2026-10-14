@@ -199,6 +199,10 @@ in
     name = "nudox-luna-tools-closure";
     packages = [ lunaTools ];
     build = ''
+      # The managed Cargo shim prepares its cache even for --version. Nix's
+      # default /homeless-shelter is intentionally not writable in a sandbox.
+      $env.HOME = ($env.TMPDIR | path join "luna-tools-home")
+      mkdir $env.HOME
       let closure = (open ${lunaToolsClosure}/store-paths | lines)
       let forbidden = ["backend-control" "nudox-gui-runtime" "nudox-gui-tools" "bmake"]
       let violations = ($closure | where {|path|
@@ -400,7 +404,9 @@ in
     environment = {
       BACKEND_CONFIG_MODE = "immutable";
       BACKEND_CONFIG_SNAPSHOT = "${../.}";
-      BACKEND_WORKSPACE_SNAPSHOT = toString workspaceRoot;
+      # Retain source context so remote/sandboxed builds receive the tree.
+      # toString loses the input dependency even when it prints a store path.
+      BACKEND_WORKSPACE_SNAPSHOT = "${workspaceRoot}";
       BACKEND_CONTROL_PLANE = "${controlFile}/share/backend/control-plane.json";
       BACKEND_LUNA_TOOLS = commands.roleBundles."luna-pair";
       BACKEND_TERRA_TOOLS = commands.roleBundles."terra-academic";
