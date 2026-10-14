@@ -28,6 +28,7 @@ mod process;
 mod profile;
 mod session;
 mod session_cache;
+mod source_binding;
 mod supervisor;
 mod syntax;
 mod syntax_facts;
@@ -127,6 +128,7 @@ pub use session_cache::{
     PersistentRequest, PersistentSessionCache, SessionCacheConfig, SessionCacheError,
     SessionCacheStats,
 };
+pub use source_binding::{SourceBinding, SourceBindingCapture, SourceBindingIdentity};
 pub use supervisor::{ProcessSupervisor, RunningProcess};
 pub use syntax::{
     Container, DeclarationKind, GrammarVariant, SourceAnalysis, SourceDeclaration, SourceExcerpt,

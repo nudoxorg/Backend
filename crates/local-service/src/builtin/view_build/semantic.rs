@@ -435,6 +435,14 @@ fn structural_declaration_row(
         Some(preimage) => row.with_identity_preimage(preimage),
         None => row,
     };
+    if let Some(binding) = prepared.parent_binding {
+        let RowId::Symbol(parent) = plan.binding_parent_id(file_key, binding)? else {
+            return Err(BuiltinModelError(
+                "exact structural parent is not a symbol".to_owned(),
+            ));
+        };
+        return Ok(row.with_parent(parent));
+    }
     Ok(match prepared.parent.as_deref() {
         Some(parent) => {
             match structural_parent_symbol(plan, file_key, project, parent, resident_labels)? {
