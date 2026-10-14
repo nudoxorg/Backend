@@ -662,6 +662,26 @@ fn graph_json_alternative_keeps_resumed_frontier_cancel_authority_and_catalog() 
     page.rows = Box::new([]);
     page.knowledge = PackageGraphKnowledge::Unknown { reason: None };
     page.terminal = PackageGraphPageTerminal::Cancelled;
+    page.admit_for(&resumed)
+        .expect("cancelled native frontier remains admitted");
+    assert!(
+        backend_present::grammar_for(backend_present::SURFACE_VERB).is_none(),
+        "the dedicated CLI JSON route must not become a registered named target"
+    );
+    let json = backend_present::encode_package_graph_json(
+        &page,
+        Detail::Full,
+        DEFAULT_RESPONSE_BUDGET_BYTES,
+    )
+    .expect("exact cancellation JSON projection");
+    let mut wire = json.bytes.into_vec();
+    wire.push(b'\n');
+    assert!(wire.len() <= DEFAULT_RESPONSE_BUDGET_BYTES);
+    assert!(
+        backend_present::cl100k_tokens(std::str::from_utf8(&wire).expect("JSON UTF-8"))
+            .expect("in-repo canonical tokenizer")
+            <= backend_present::DEFAULT_RESPONSE_TOKEN_BUDGET
+    );
     let advice = backend_present::package_graph_json_alternative(
         &page,
         &resumed,

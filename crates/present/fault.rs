@@ -429,12 +429,7 @@ impl Affordance {
                 context,
                 request,
                 detail,
-            } => {
-                let command =
-                    crate::mcp_invocation::BorrowedGraphCommand::PackageGraphPage { request };
-                let argument = serde_json::to_string(&command).ok()?;
-                context.registered_json_shell(crate::SURFACE_VERB, &[argument], Some(*detail))
-            }
+            } => context.package_graph_json_shell(request, *detail),
             Self::RecoverStartup { context } => Some(context.shell()),
             Self::RetrySearch { text, limit } => Some(format!(
                 "nudox search {} --limit {limit}",

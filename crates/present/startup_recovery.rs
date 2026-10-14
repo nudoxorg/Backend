@@ -106,6 +106,20 @@ impl StartupRecoveryContext {
         Some(self.selected_shell(grammar.name(), operands, detail, true))
     }
 
+    /// Replays the existing dedicated CLI Surface JSON route for this exact
+    /// admitted graph request. Surface is intentionally outside the named
+    /// registry, so it cannot use registered_json_shell's grammar lookup.
+    pub(crate) fn package_graph_json_shell(
+        &self,
+        request: &backend_library::PackageGraphPageRequest,
+        detail: crate::Detail,
+    ) -> Option<String> {
+        request.admit().ok()?;
+        let command = crate::mcp_invocation::BorrowedGraphCommand::PackageGraphPage { request };
+        let argument = serde_json::to_string(&command).ok()?;
+        Some(self.selected_shell(crate::SURFACE_VERB, &[argument], Some(detail), true))
+    }
+
     fn selected_shell(
         &self,
         name: &str,
