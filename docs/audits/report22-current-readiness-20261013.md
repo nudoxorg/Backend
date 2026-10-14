@@ -1,5 +1,47 @@
 # Report 22: current execution and repair checkpoint
 
+## Follow-up: 2026-10-14, 19:18 UTC
+
+**Product readiness remains unproved.** The retained MCP library suite now has a complete result: **257 executed, 252 passed, five failed, zero ignored and zero filtered, in 48.06 seconds**. This replaces the earlier incomplete run for exact source `3081b508198e8651ccce45e0cb529e43555cd0a5`, tree `8757fef18dd5930d4d0c35778aa79ae36ff62ad3`, using the same immutable 168,583,376-byte ELF SHA-256 `76763331f7b754d2b40f68a42d982d32c15f811f7902baa9dba3a48088baa7b1`. No Cargo command, new application build or fresh-project acceptance ran in this phase. Later source `12ee1e56` cannot inherit this result.
+
+Root independently verified all phase-output hashes, the complete 257-name inventory against 257 unique terminal statuses, unchanged clean source/tree before and after, the actual sixteen-GiB/zero-swap/1,024-task scope, ECHILD, deleted cgroup and released slot3 permit. The five targeted reruns also failed; they are repeat observations, not five additional unique tests. Actual native footprint growth was 5,566,464 bytes under a measured 128-MiB test-only ceiling. The sixteen-GiB destination floor, eighty-GiB measured CI reserve and all fleet/memory/footprint limits were retained.
+
+### Five failures have exact bodies
+
+The failures are the four `package_graph_budget` controls named in the 16:53 checkpoint and `record_budget_pages::whole_response_budget_keeps_every_native_catalog_coordinate_through_copyable_continuations`. The actual bodies distinguish their causes:
+
+- Default graph paging loses the executable `structuredContent.continuation_call` hint after preview shortening. The reviewed `88187314` repair retains that hint.
+- Both graph JSON alternative controls fail because the proven CLI shell is absent: the named command registry does not contain the dedicated `surface` CLI route. The reviewed `12ee1e56` repair uses that existing route directly. The minimum-row test already reached its intended oversized refusal; its pressure fixture was not changed to hide the missing-shell defect.
+- The actual-ID and record-union controls expect success from envelopes measured at **13,054** and **15,539** ordinary cl100k tokens, respectively, above the unchanged 12,000-token bound. The isolated record rerun measured a distinct **15,543**-token envelope. Sol separated valid one-row-fit pagination geometry from explicit irreducible-envelope refusal, using the production encoder and retaining the original severe pressure, complete summaries, coordinate unions and fixed-resume-limit checks. Luna's full source review found a missing resumed-refusal assertion; the follow-up now verifies the exact caller ID, every issued native cursor field, the unchanged limit and absence of leaked page/continuation fields. Source review is clear; native execution of these changes remains unrun.
+
+The two existing production atoms explain three failing controls by exact assertion/body review; they have not yet been run. Root composed the two test files into separate atomic commits, preserving all fifteen original test names and every other source postimage. [PR 227](https://dev.nudox.org/git/Nudox/Backend/pulls/227) is updated at `b52f638f79ac63466d66d1fc9613f96bdfef5245`, tree `7bed335b9ac286a55f5f34960be63a3761b9db16`, and remains open. No successful 257-test rerun, current matched CLI/MCP/locald trio or real application indexing result is claimed.
+
+### Disk recovery preserves executable and source evidence
+
+Root reviewed and independently verified retirement of 2,224 old GUI81 `.rlib`/`.rmeta` files, reclaiming 6,674,219,008 allocated bytes. All 1,331 other old dependency entries and all then-live current GUI318 artifacts were verified unchanged. The historical incomplete GUI81 custody receipt remains explicitly incomplete; later process/lock checks do not rewrite it.
+
+Unrelated CI consumed that headroom. Root then authorized a separate recoverable retirement of the current GUI318 build-library cache: exactly 2,172 `.rlib`/`.rmeta` files, 5,641,182,311 logical and 5,645,729,792 allocated bytes. Before unlink, every member was archived off-host and independently verified against its frozen size, ownership and content hash. The archive is 1,190,179,022 bytes, SHA-256 `f5814d5965412cacf5701d9fc52fa567ca91f6877fa260fad90741bc874885cb`. This trades immediate GUI rebuild speed for test headroom while retaining recoverable bytes. The normal `af7d79ab…` desktop executable, all nonmember target entries, selected old ELFs, sources, captures, receipts and SDK/model assets remain intact. The prior statement that current build caches were preserved applies to the earlier transaction, not this later archive retirement.
+
+The native guard publisher twice refused small clock-order races before any permit. A bounded 250-ms settle after official census capture allowed the existing nonnegative-age, freshness and post-awaiting chronology checks to pass without relaxing them. The retained phase then acquired a real permit and completed on ILO. The user laptop did no compiler build; its archive verification used bounded streaming buffers.
+
+### GUI and remaining gates
+
+The prepared GUI25 no-index journey still targets exact normal source `3183000a`, tree `5f07dbec…`, and the preserved `af7d79ab…` executable. Its first admission attempt refused **before any permit, scope or GUI process**, with 103,190,011,904 bytes free and an explicit prospective-accounting refusal. Luna also caught an input-contract inconsistency: the numeric minimum described 96.125 GiB, whereas the declared 256-MiB forecast plus the sixteen/eighty-GiB reserves sums to 96.25 GiB. Both exceeded the observed disk value; the actual refusal does not prove which numeric threshold was enforced. Sol is correcting and resealing the prospective contract without rewriting the original no-start receipt. Current pixels, keyboard/zoom/motion behavior, real Add/publication, search/graph/history and restart remain **UNRUN**. Recorded input plans and historical screenshots are not acceptance. The two existing realized FFmpeg builds lack `x11grab`; sparse PNG timings will not be described as smooth-animation proof.
+
+Root merged the two-line public coverage documentation fix through [PR 263](https://dev.nudox.org/git/Nudox/Backend/pulls/263), whose historical merge checkpoint is `28f798e8449d00f0fd1d86f309393ed07c3a7dbc`. The warning spans matched both retained build sources and that canonical snapshot; no new Clippy or post-change warning count is claimed. Coworker PRs 264–266 subsequently advanced canonical to `b3d3790ca191d715cb4310a1099bf4bff2920109`; this documentation checkpoint preserves their source-ignore ownership, Linux build inputs and platform-law changes. Root ran all eight source-ignore Python harness controls on exact source `4d37c1657dd267e0686cd34303d5712636d6f113` under CPython 3.12.14: eight passed, zero failed, raw-log SHA-256 `9af5502f7838116c5bda14d1bfee1ba5568daf321667b850482428bda3d40468`. Those three Python source files are unchanged in `b3d3790c`. This proves the harness controls, not native Rust/Nix checks or project acceptance. The user's local `.config/nix/tools.nix` edit remains unchanged.
+
+Luna also retired exactly 246 obsolete Candle-helper `.rlib`/`.rmeta` files, reclaiming 365,154,304 allocated bytes while retaining the helper ELF and all 1,125 noncandidate files. The append-only charged retirement carry is now 12,556,727,304 bytes. An obsolete D58 target archive proposal is separate and has not yet reclaimed bytes at this checkpoint. No unrelated CI process was stopped or altered to force admission.
+
+Python/TypeScript composition execution, genuine CPython 3.12 authority, large fresh-project CLI/MCP acceptance, useful configured embedding search, current GUI captures, installer activation and Mac/Homebrew delivery remain separate open gates. Public diagnostic assets were not promoted.
+
+| Retained evidence under `current-canonical-lock-repair-20261014` | SHA-256 |
+| --- | --- |
+| `run-3081/test-only02-128mib/results02/11-backend-mcp-backend_mcp-run-stdout.log` | `77cd171bd1c782c6e1025e36ae9a8c44ccb0324d069a05ccac60775e946897c1` |
+| Same directory, `outer-receipt.json` | `da95091a23c69db0237b91133532f789bac951b73df1132e6a1c6257b4cd7455` |
+| Same directory, `driver-control-receipt.json` | `87d3ab2ddde76cc247459cff06c9d7878f6c0dfd9be96592557a3e5ef24842b7` |
+| Same directory, `test-results-summary.json` | `1052370bacd0d16bdfc77dc378ef6ea9630831a4e3f90c8f21bde5dff6c42409` |
+| `gui24-actual/gui81-retirement-completion-03.jsonl` | `48185bb593e87ef6f021fa2959dac971ed0288dad96b9a93dd786d66e28adf49` |
+
 ## Follow-up: 2026-10-14, 16:53 UTC
 
 **Product readiness remains unproved.** Root merged [PR 258](https://dev.nudox.org/git/Nudox/Backend/pulls/258), documenting borrowed forest/leaf ownership and bounded compiler diagnostic facts, and [PR 260](https://dev.nudox.org/git/Nudox/Backend/pulls/260), fixing installer umask leakage and both candidate library pins. Canonical before this documentation checkpoint is `81546bc1ae797e628cf3188bde33a294ebf7bd8e`. Coworker PRs 249–255 and 257 were fetched and preserved, including whole Python/Rust corpus cases, namespace-independent tied search ordering, bounded surface parallelism and exact-artifact CI evidence. Their snapshots are not Root's new native project acceptance.
