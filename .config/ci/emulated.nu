@@ -46,19 +46,13 @@ def lanes []: nothing -> record {
             # `unclassified` where only a real Windows run can say whether
             # Wine or the code is wrong (those are handed to the Windows
             # owner). Delete an entry as soon as it is settled.
-            excluded: (
-                [{filter: "binary(/compile_fail/)", category: "harness", reason: "trybuild drives the host Cargo; there is no Cargo inside the Wine prefix"}]
-                | append (open ($env.FILE_PWD | path join "emulated-windows-exclusions.toml") | get exclude)
-            )
+            excluded: (open ($env.FILE_PWD | path join "emulated-windows-exclusions.toml") | get exclude)
         }
         arm64: {
             target: "aarch64-unknown-linux-gnu"
             # As for Windows: `qemu-limit` where user-mode emulation cannot do
             # what an aarch64 machine does, `unclassified` otherwise.
-            excluded: (
-                [{filter: "binary(/compile_fail/)", category: "harness", reason: "trybuild drives the host Cargo against an aarch64 target; it checks compile errors, not the platform"}]
-                | append (open ($env.FILE_PWD | path join "emulated-arm64-exclusions.toml") | get exclude)
-            )
+            excluded: (open ($env.FILE_PWD | path join "emulated-arm64-exclusions.toml") | get exclude)
         }
     }
 }
@@ -162,6 +156,10 @@ def main [
     if $lane == null {
         error make {msg: $"unknown platform ($platform); expected one of: (lanes | columns | str join ', ')"}
     }
+    ^python3 ($env.FILE_PWD | path join "quarantine.py") $platform
+    if $env.LAST_EXIT_CODE != 0 {
+        error make {msg: "emulation exclusion review is invalid or expired; see docs/testing/quarantine.md"}
+    }
     let filter = if ($lane.excluded | is-empty) {
         "all()"
     } else {
@@ -186,7 +184,7 @@ def main [
         | str join ", "
     )
     print $"   excluded ($lane.excluded | length) tests \(($counts)\); each with its reason:"
-    for entry in $lane.excluded { print $"   - [($entry.category)] ($entry.filter): ($entry.reason)" }
+    for entry in $lane.excluded { print $"   - [($entry.category)] ($entry.filter): ($entry.reason); owner=($entry.owner), expires=($entry.expires), review=($entry.review)" }
     let started = (date now)
     if $platform == "windows" { start-wine }
     # What this run sees, so a failure before the first test is explainable
