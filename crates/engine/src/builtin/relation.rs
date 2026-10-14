@@ -4665,8 +4665,8 @@ mod tests {
         use backend_semantic::vocabulary::PythonVersion;
         let path = "src/π.py";
         let parent = SourceBinding::new(1, 6).unwrap();
-        // A compact prefix need not retain the parent declaration. Every child
-        // still keeps its exact anchor and independently admitted parent target.
+        // This is an absent-parent compact-row fixture: no input declaration
+        // names the parent. Every child keeps its exact anchor and admitted target.
         let declarations: Arc<[SourceDeclaration]> = (0..2048)
             .map(|index| {
                 let declaration = wide_declaration_at_path(index, path);
