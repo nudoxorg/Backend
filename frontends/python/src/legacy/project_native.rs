@@ -14,7 +14,7 @@ use pyrefly_config::finder::ConfigFinder;
 use pyrefly_python::ast::Ast;
 use pyrefly_python::module::TextRangeWithModule;
 use pyrefly_python::module_name::{ModuleName, ModuleNameWithKind};
-use pyrefly_python::module_path::ModulePath;
+use pyrefly_python::module_path::{ModulePath, ModulePathDetails, ModuleStyle};
 use pyrefly_python::sys_info::PythonVersion as NativeVersion;
 use pyrefly_types::callable::{Callable, Param, Params};
 use pyrefly_types::literal::Lit;
@@ -51,6 +51,27 @@ pub(super) struct NativeProjectResult {
     pub(super) coverage_gaps: Vec<PythonProjectCoverageGap>,
     pub(super) frontier: Vec<SourceDirectoryWitness>,
     pub(super) mirror_tree: Vec<DirectoryWitness>,
+}
+
+/// Call only with a ModulePath returned by the committed native import Handle
+/// selection (or the equal committed dependency Handle). Bundled stubs carry
+/// producer authority; filesystem interfaces additionally require the exact
+/// admitted mirror source object. A `.pyi` spelling alone is not authority.
+fn admitted_native_stub_selection(
+    layout: &CapturedProjectLayout,
+    selected: &ModulePath,
+    control: PythonProjectControl<'_>,
+) -> Result<bool, CheckerError> {
+    checkpoint(control)?;
+    if selected.is_bundled() {
+        return Ok(true);
+    }
+    if !matches!(selected.details(), ModulePathDetails::FileSystem(_))
+        || selected.style() != ModuleStyle::Interface
+    {
+        return Ok(false);
+    }
+    layout.admitted_dependency_source(selected.as_path(), control)
 }
 
 pub(super) fn analyze(
@@ -203,9 +224,11 @@ pub(super) fn analyze(
                             prefix.push(component);
                             module_parts.push(component);
                             let native_module = ModuleName::from_str(&module_parts.join("."));
-                            for suffix in super::project_environment::compiled_resource_suffixes() {
-                                if let Some(original) = layout
-                                    .compiled_dependency_candidate(&prefix.with_extension(suffix))
+                            for candidate in
+                                super::project_environment::compiled_import_probe_paths(&prefix)
+                            {
+                                if let Some(original) =
+                                    layout.compiled_dependency_candidate(&candidate)
                                 {
                                     dependency_compiled_candidates
                                         .entry((
@@ -363,10 +386,8 @@ pub(super) fn analyze(
     for ((source, start, end, module), originals) in dependency_compiled_candidates {
         checkpoint(control)?;
         let handle = handles_by_path[source];
-        if read
-            .import_handle(handle, module, None)
-            .finding()
-            .is_some_and(|selected| selected.path().is_bundled())
+        if let Some(selected) = read.import_handle(handle, module, None).finding()
+            && admitted_native_stub_selection(layout, selected.path(), control)?
         {
             continue;
         }
@@ -410,7 +431,14 @@ pub(super) fn analyze(
     for handle in &dependency_handles {
         checkpoint(control)?;
         let path = handle.path().as_path();
-        if super::project_environment::is_python_source_member(path)
+        let selected_stub = match read.import_handle(handle, handle.module(), None).finding() {
+            Some(selected) if &selected == handle => {
+                admitted_native_stub_selection(layout, selected.path(), control)?
+            }
+            _ => false,
+        };
+        if !selected_stub
+            && super::project_environment::is_python_source_member(path)
             && super::project_environment::compiled_resource_suffixes().any(|suffix| {
                 layout
                     .compiled_dependency_candidate(&path.with_extension(suffix))
