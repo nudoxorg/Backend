@@ -434,7 +434,7 @@ fn measured_catalog_page(
     limit: u16,
     id: &Value,
     successor: bool,
-) -> Option<wire_admission::MeasuredEnvelope> {
+) -> Option<MeasuredEnvelope> {
     let mut server = ready(Fake {
         page_catalog: Some(catalog),
         ..Fake::default()
@@ -450,7 +450,17 @@ fn measured_catalog_page(
             } else {
                 Request::Resolve { text, limit }
             };
-            answer_paged(&mut server.product, &request, None).expect("actual native catalog page")
+            let first = answer_paged(&mut server.product, &request, None)
+                .expect("actual native catalog page");
+            if successor {
+                let continuation = first
+                    .continuation()
+                    .expect("actual issued catalog frontier");
+                answer_paged(&mut server.product, &request, Some(continuation))
+                    .expect("same-limit native catalog successor")
+            } else {
+                first
+            }
         }
         "backend.graph" => {
             let coordinate = arguments["coordinate"].as_str().expect("native coordinate");
@@ -536,6 +546,7 @@ fn measured_catalog_page(
 #[test]
 fn whole_response_budget_keeps_every_native_catalog_coordinate_through_copyable_continuations() {
     let mut irreducible_cases = 0;
+    let mut original_graph_child_refusals = 0;
     for tool in ["backend.search", "backend.resolve", "backend.graph"] {
         for exposure in [McpExposure::Direct, McpExposure::RegisteredCall] {
             let count = 12;
@@ -560,6 +571,13 @@ fn whole_response_budget_keeps_every_native_catalog_coordinate_through_copyable_
                 &id,
                 tool == "backend.graph",
             );
+            if tool == "backend.graph" {
+                assert!(
+                    minimum.as_ref().is_none_or(|page| !page.fits()),
+                    "the original thin-centre/450-repeat graph child minimum must refuse independently of the positive fixture"
+                );
+                original_graph_child_refusals += 1;
+            }
             if minimum.as_ref().is_none_or(|page| !page.fits()) {
                 irreducible_cases += 1;
                 let mut severe = ready(Fake {
@@ -633,7 +651,7 @@ fn whole_response_budget_keeps_every_native_catalog_coordinate_through_copyable_
                         exposure,
                         1,
                         &id,
-                        tool == "backend.graph",
+                        false,
                     );
                     if !one.is_some_and(|page| {
                         page.fits()
@@ -643,33 +661,26 @@ fn whole_response_budget_keeps_every_native_catalog_coordinate_through_copyable_
                     }) {
                         return false;
                     }
-                    // The positive fixture also separates one and two whole
-                    // rows, so it does not sit on a marginal issued-page size.
-                    let two = measured_catalog_page(
+                    // Native projections have different row and cursor costs.
+                    // Prove the actual minimum successor too; the twelve-row
+                    // request below must overflow, while every real selected
+                    // page and fixed-limit continuation is checked by replay.
+                    let successor = measured_catalog_page(
                         wide_catalog(count, *repetitions, true),
                         tool,
                         arguments,
                         exposure,
-                        2,
+                        1,
                         &id,
-                        false,
+                        true,
                     );
-                    if two.is_some_and(|page| page.fits()) {
+                    if !successor.is_some_and(|page| {
+                        page.fits()
+                            && page
+                                .tokens()
+                                .is_ok_and(|tokens| tokens <= MCP_CL100K_TOKEN_LIMIT * 3 / 4)
+                    }) {
                         return false;
-                    }
-                    if tool == "backend.graph" {
-                        let successor = measured_catalog_page(
-                            wide_catalog(count, *repetitions, true),
-                            tool,
-                            arguments,
-                            exposure,
-                            2,
-                            &id,
-                            true,
-                        );
-                        if successor.is_some_and(|page| page.fits()) {
-                            return false;
-                        }
                     }
                     let all = measured_catalog_page(
                         wide_catalog(count, *repetitions, true),
@@ -695,6 +706,7 @@ fn whole_response_budget_keeps_every_native_catalog_coordinate_through_copyable_
             let mut pages = 0;
             let mut previous_limit = None;
             loop {
+                let prior_reads = server.product.page_limits.len();
                 let response = encoded_stdio_reply(
                     server
                         .handle_value(
@@ -703,8 +715,32 @@ fn whole_response_budget_keeps_every_native_catalog_coordinate_through_copyable_
                         )
                         .expect("actual ID"),
                 );
+                assert_eq!(
+                    response["id"], id,
+                    "every complete page retains the actual caller ID"
+                );
                 assert_context_bounded(&response);
                 assert_eq!(response["result"]["isError"], false, "{response}");
+                if let Some(limit) = previous_limit {
+                    assert_eq!(
+                        &server.product.page_limits[prior_reads..],
+                        &[u16::try_from(limit).expect("issued native bound")],
+                        "a resumed frontier is read once at its unchanged issued limit"
+                    );
+                } else {
+                    assert_eq!(server.product.page_limits.first(), Some(&12));
+                    assert!(
+                        server.product.page_limits.len() > 1,
+                        "the unchanged initial twelve-row request must actually be resized"
+                    );
+                    assert!(
+                        server
+                            .product
+                            .page_limits
+                            .last()
+                            .is_some_and(|limit| *limit < 12)
+                    );
+                }
                 let structured = &response["result"]["structuredContent"];
                 let rows = structured["records"].as_array().expect("whole native page");
                 assert!(!rows.is_empty(), "native page makes progress");
@@ -741,6 +777,15 @@ fn whole_response_budget_keeps_every_native_catalog_coordinate_through_copyable_
                 let effective = call["arguments"]["limit"]
                     .as_u64()
                     .expect("effective native bound");
+                assert_eq!(
+                    u16::try_from(effective).expect("issued native bound"),
+                    *server
+                        .product
+                        .page_limits
+                        .last()
+                        .expect("successful native page read"),
+                    "the emitted continuation copies the exact successful native read limit"
+                );
                 assert!(
                     effective < 12,
                     "initial page must actually be resized by the full response budget"
@@ -787,6 +832,10 @@ fn whole_response_budget_keeps_every_native_catalog_coordinate_through_copyable_
     assert!(
         irreducible_cases > 0,
         "original native minimum pressure remains covered"
+    );
+    assert_eq!(
+        original_graph_child_refusals, 2,
+        "both original graph exposures retain the explicit child refusal"
     );
 }
 
