@@ -65,8 +65,14 @@ struct SelectionProbe {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 struct Interpreter {
     selected: PathBuf,
+    trusted_selected: PathBuf,
     image: PathBuf,
     digest: [u8; 32],
+    venv_image: PathBuf,
+    venv_digest: [u8; 32],
+    installation: PathBuf,
+    home_selected: PathBuf,
+    home_directory: PathBuf,
     base_selected: PathBuf,
     base_image: PathBuf,
     base_digest: [u8; 32],
@@ -84,6 +90,20 @@ struct Environment {
     probes: Vec<SelectionProbe>,
     interpreter: Option<Interpreter>,
     roots: Vec<Root>,
+}
+
+/// Executable selected by the independent host tool policy, never by project
+/// configuration. This is an execution capability; venv selection is only data.
+#[derive(Clone, Debug)]
+pub struct PythonInterpreterSelection {
+    executable: PathBuf,
+}
+impl PythonInterpreterSelection {
+    /// Bind an already admitted host-policy selection. No execution occurs here.
+    pub fn from_host_policy(executable: PathBuf) -> Result<Self, CheckerError> {
+        normal_absolute(&executable)?;
+        Ok(Self { executable })
+    }
 }
 
 /// Immutable, content-addressed installed dependency cohort. Clones share bytes.
@@ -267,6 +287,16 @@ impl PythonEnvironmentCapture {
         project: &Path,
         control: PythonProjectControl<'_>,
     ) -> Result<Self, CheckerError> {
+        Self::capture_with_interpreter(project, None, control)
+    }
+
+    /// Capture dependencies using only the independent host interpreter
+    /// capability. Project-local executables are inspected, never executed.
+    pub fn capture_with_interpreter(
+        project: &Path,
+        interpreter: Option<&PythonInterpreterSelection>,
+        control: PythonProjectControl<'_>,
+    ) -> Result<Self, CheckerError> {
         checkpoint(control)?;
         normal_absolute(project)?;
         let mut probes = Vec::new();
@@ -366,7 +396,13 @@ impl PythonEnvironmentCapture {
                     "system-site-packages venv is not an isolated declared dependency cohort",
                 ));
             }
-            let interpreter = probe_interpreter(&venv, control)?;
+            let selection = interpreter.ok_or_else(|| {
+                project_error(
+                    "",
+                    "selected venv requires a host-policy-admitted CPython installation",
+                )
+            })?;
+            let interpreter = probe_interpreter(project, &venv, text, selection, control)?;
             let site = site_packages_path(&venv, interpreter.version);
             let mut budget = EnvironmentScanBudget::default();
             environment.roots.push(capture_root_with_budget(
@@ -426,7 +462,12 @@ impl PythonEnvironmentCapture {
                 ));
             }
             Some(interpreter) => {
+                normal_absolute(&interpreter.trusted_selected)?;
                 normal_absolute(&interpreter.image)?;
+                normal_absolute(&interpreter.venv_image)?;
+                normal_absolute(&interpreter.installation)?;
+                normal_absolute(&interpreter.home_selected)?;
+                normal_absolute(&interpreter.home_directory)?;
                 normal_absolute(&interpreter.base_selected)?;
                 normal_absolute(&interpreter.base_image)?;
                 normal_absolute(&interpreter.selected)?;
@@ -438,6 +479,14 @@ impl PythonEnvironmentCapture {
                     || environment.roots[0].kind != PythonDependencyRootKind::SitePackages
                     || environment.roots[1].kind != PythonDependencyRootKind::StandardLibrary
                     || environment.roots[1].original != interpreter.stdlib
+                    || !interpreter.image.starts_with(&interpreter.installation)
+                    || !interpreter
+                        .base_image
+                        .starts_with(&interpreter.installation)
+                    || !interpreter.stdlib.starts_with(&interpreter.installation)
+                    || !interpreter
+                        .home_directory
+                        .starts_with(&interpreter.installation)
                 {
                     return Err(project_error(
                         "",
@@ -723,11 +772,19 @@ impl PythonEnvironmentCapture {
             }
         }
         if let Some(interpreter) = &self.environment.interpreter {
-            if interpreter.selected.canonicalize().map_err(io_error)? != interpreter.image
+            if interpreter.selected.canonicalize().map_err(io_error)? != interpreter.venv_image
+                || hash_image(&interpreter.venv_image, control)? != interpreter.venv_digest
+                || interpreter
+                    .trusted_selected
+                    .canonicalize()
+                    .map_err(io_error)?
+                    != interpreter.image
                 || hash_image(&interpreter.image, control)? != interpreter.digest
                 || interpreter.base_selected.canonicalize().map_err(io_error)?
                     != interpreter.base_image
                 || hash_image(&interpreter.base_image, control)? != interpreter.base_digest
+                || interpreter.home_selected.canonicalize().map_err(io_error)?
+                    != interpreter.home_directory
             {
                 return Err(project_error(
                     "",
@@ -849,10 +906,18 @@ fn validate_selection(
         }
     }
     if let Some(interpreter) = interpreter {
-        if interpreter.selected.canonicalize().map_err(io_error)? != interpreter.image
+        if interpreter.selected.canonicalize().map_err(io_error)? != interpreter.venv_image
+            || hash_image(&interpreter.venv_image, control)? != interpreter.venv_digest
+            || interpreter
+                .trusted_selected
+                .canonicalize()
+                .map_err(io_error)?
+                != interpreter.image
             || hash_image(&interpreter.image, control)? != interpreter.digest
             || interpreter.base_selected.canonicalize().map_err(io_error)? != interpreter.base_image
             || hash_image(&interpreter.base_image, control)? != interpreter.base_digest
+            || interpreter.home_selected.canonicalize().map_err(io_error)?
+                != interpreter.home_directory
         {
             return Err(project_error(
                 "",
@@ -1144,7 +1209,10 @@ fn hash_image(path: &Path, control: PythonProjectControl<'_>) -> Result<[u8; 32]
 }
 
 fn probe_interpreter(
+    project: &Path,
     venv: &Path,
+    venv_configuration: &str,
+    selection: &PythonInterpreterSelection,
     control: PythonProjectControl<'_>,
 ) -> Result<Interpreter, CheckerError> {
     let control = PythonProjectControl {
@@ -1158,12 +1226,29 @@ fn probe_interpreter(
     } else {
         venv.join("bin/python")
     };
-    let image = selected.canonicalize().map_err(io_error)?;
+    let image = selection.executable.canonicalize().map_err(io_error)?;
     normal_absolute(&image)?;
+    if image.starts_with(project) || selection.executable.starts_with(project) {
+        return Err(project_error(
+            "",
+            "project-local executable cannot supply trusted Python installation metadata",
+        ));
+    }
     let digest = hash_image(&image, control)?;
+    let venv_image = selected.canonicalize().map_err(io_error)?;
+    normal_absolute(&venv_image)?;
+    let venv_digest = hash_image(&venv_image, control)?;
+    // The ordinary venv may copy the admitted CPython image; Windows may use
+    // its installation's genuine venv launcher, checked below without execution.
+    if !cfg!(windows) && venv_digest != digest {
+        return Err(project_error(
+            "",
+            "selected venv executable does not match the trusted CPython image",
+        ));
+    }
     // `-I -S` excludes user/global site startup and executable .pth hooks. The
     // selected image supplies its genuine implementation/platform/stdlib data.
-    let mut child = Command::new(&selected).args(["-I", "-S", "-B", "-c", "import sys,sysconfig,json,platform; print(json.dumps({'implementation':sys.implementation.name,'version':list(sys.version_info[:3]),'platform':sys.platform,'machine':platform.machine(),'stdlib':sysconfig.get_path('stdlib'),'base_image':sys._base_executable,'abi':sysconfig.get_config_var('SOABI') or sys.implementation.cache_tag}))"])
+    let mut child = Command::new(&image).args(["-I", "-S", "-B", "-c", "import sys,sysconfig,json,platform; print(json.dumps({'implementation':sys.implementation.name,'version':list(sys.version_info[:3]),'platform':sys.platform,'machine':platform.machine(),'stdlib':sysconfig.get_path('stdlib'),'installation':sys.base_prefix,'bindir':sysconfig.get_config_var('BINDIR') or sys.base_prefix,'base_image':sys._base_executable,'abi':sysconfig.get_config_var('SOABI') or sys.implementation.cache_tag}))"])
         .env_clear().stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(io_error)?;
     let stdout = child.stdout.take().expect("piped metadata stdout");
     let stderr = child.stderr.take().expect("piped metadata stderr");
@@ -1213,6 +1298,8 @@ fn probe_interpreter(
         machine: String,
         stdlib: PathBuf,
         base_image: PathBuf,
+        installation: PathBuf,
+        bindir: PathBuf,
         abi: String,
     }
     let probe: Probe = serde_json::from_slice(&output)
@@ -1223,6 +1310,51 @@ fn probe_interpreter(
     normal_absolute(&probe.stdlib)?;
     let base_image = probe.base_image.canonicalize().map_err(io_error)?;
     let base_digest = hash_image(&base_image, control)?;
+    let installation = probe.installation.canonicalize().map_err(io_error)?;
+    normal_absolute(&installation)?;
+    if installation.parent().is_none()
+        || !image.starts_with(&installation)
+        || !base_image.starts_with(&installation)
+        || !probe.stdlib.starts_with(&installation)
+        || !probe.bindir.starts_with(&installation)
+        || installation.starts_with(project)
+    {
+        return Err(project_error(
+            "",
+            "trusted interpreter metadata escapes its independently selected installation",
+        ));
+    }
+    let home = venv_configuration
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .filter(|(name, _)| name.trim() == "home")
+        .map(|(_, value)| value.trim())
+        .collect::<Vec<_>>();
+    if home.len() != 1 {
+        return Err(project_error(
+            "",
+            "selected venv must declare exactly one installation home",
+        ));
+    }
+    let home_selected = PathBuf::from(home[0]);
+    normal_absolute(&home_selected)?;
+    let home_directory = probe.bindir.canonicalize().map_err(io_error)?;
+    if home_selected.canonicalize().map_err(io_error)? != home_directory {
+        return Err(project_error(
+            "",
+            "selected venv home does not match the independently admitted CPython installation",
+        ));
+    }
+    if cfg!(windows) && venv_digest != digest {
+        let template = probe.stdlib.join("venv/scripts/nt/python.exe");
+        if hash_image(&template, control)? != venv_digest {
+            return Err(project_error(
+                "",
+                "selected venv launcher does not match the trusted installation",
+            ));
+        }
+    }
+
     if hash_image(&image, control)? != digest {
         return Err(project_error(
             "",
@@ -1231,8 +1363,14 @@ fn probe_interpreter(
     }
     Ok(Interpreter {
         selected,
+        trusted_selected: selection.executable.clone(),
         image,
         digest,
+        venv_image,
+        venv_digest,
+        installation,
+        home_selected,
+        home_directory,
         base_selected: probe.base_image,
         base_image,
         base_digest,
@@ -1692,6 +1830,43 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn repository_executable_cannot_create_metadata_or_run_without_host_authority()
+    -> Result<(), CheckerError> {
+        use std::os::unix::fs::PermissionsExt;
+        let root = fixture()?;
+        let cancelled = AtomicBool::new(false);
+        let marker = root.path.join("executed");
+        std::fs::create_dir_all(root.path.join("venv/bin")).map_err(io_error)?;
+        std::fs::write(
+            root.path.join("venv/pyvenv.cfg"),
+            "include-system-site-packages = false\n",
+        )
+        .map_err(io_error)?;
+        let executable = root.path.join("venv/bin/python");
+        std::fs::write(
+            &executable,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .map_err(io_error)?;
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
+            .map_err(io_error)?;
+        assert!(PythonEnvironmentCapture::capture(&root.path, control(&cancelled)).is_err());
+        assert!(!marker.exists());
+        let hostile_selection = PythonInterpreterSelection::from_host_policy(executable)?;
+        assert!(
+            PythonEnvironmentCapture::capture_with_interpreter(
+                &root.path,
+                Some(&hostile_selection),
+                control(&cancelled)
+            )
+            .is_err()
+        );
+        assert!(!marker.exists());
+        Ok(())
+    }
+
     #[test]
     fn compiled_resources_stream_past_parser_limit_and_changes_invalidate()
     -> Result<(), CheckerError> {
@@ -1831,7 +2006,55 @@ for name, source, requirement in [('second_pkg', 'answer: int = 42\n', ''), ('fi
         let authority =
             super::super::NativePythonProjectAuthority::admit_controlled(control(&cancelled))?
                 .with_timeout(Duration::from_secs(180));
-        let default_capture = PythonEnvironmentCapture::capture(&project, control(&cancelled))?;
+        let trusted = PythonInterpreterSelection::from_host_policy(PathBuf::from(&cpython))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let previous = std::fs::read_link(&python).ok();
+            let original_bytes = if previous.is_none() {
+                Some(std::fs::read(&python)?)
+            } else {
+                None
+            };
+            let original_permissions = std::fs::metadata(&python)?.permissions();
+            std::fs::remove_file(&python)?;
+            let marker = project.join("hostile-venv-executed");
+            std::fs::write(
+                &python,
+                format!(
+                    "#!/bin/sh\ntouch '{}'\nprintf '%s' '{{\"implementation\":\"cpython\",\"stdlib\":\"/outside\"}}'\n",
+                    marker.display()
+                ),
+            )?;
+            std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o700))?;
+            assert!(
+                PythonEnvironmentCapture::capture_with_interpreter(
+                    &project,
+                    Some(&trusted),
+                    control(&cancelled)
+                )
+                .is_err()
+            );
+            assert!(
+                !marker.exists(),
+                "project executable must never supply metadata"
+            );
+            std::fs::remove_file(&python)?;
+            if let Some(previous) = previous {
+                std::os::unix::fs::symlink(previous, &python)?;
+            } else {
+                std::fs::write(
+                    &python,
+                    original_bytes.ok_or("missing original CPython bytes")?,
+                )?;
+                std::fs::set_permissions(&python, original_permissions)?;
+            }
+        }
+        let default_capture = PythonEnvironmentCapture::capture_with_interpreter(
+            &project,
+            Some(&trusted),
+            control(&cancelled),
+        )?;
         assert_eq!(
             default_capture.selected_venv_relative(),
             Some(Path::new("venv"))
@@ -1842,7 +2065,11 @@ for name, source, requirement in [('second_pkg', 'answer: int = 42\n', ''), ('fi
             project.join("pyrightconfig.json"),
             br#"{"venvPath":"local","venv":"py3"}"#,
         )?;
-        let capture = PythonEnvironmentCapture::capture(&project, control(&cancelled))?;
+        let capture = PythonEnvironmentCapture::capture_with_interpreter(
+            &project,
+            Some(&trusted),
+            control(&cancelled),
+        )?;
         assert!(
             default_capture
                 .validate_current(control(&cancelled))
@@ -1882,7 +2109,11 @@ for name, source, requirement in [('second_pkg', 'answer: int = 42\n', ''), ('fi
             report.module("first_pkg/__init__.py").is_none(),
             "dependencies never become selected project artifacts"
         );
-        let repeat = PythonEnvironmentCapture::capture(&project, control(&cancelled))?;
+        let repeat = PythonEnvironmentCapture::capture_with_interpreter(
+            &project,
+            Some(&trusted),
+            control(&cancelled),
+        )?;
         assert_eq!(capture.identity(), repeat.identity());
         let site = &capture.environment.roots[0].original;
         std::fs::write(
@@ -1896,7 +2127,11 @@ for name, source, requirement in [('second_pkg', 'answer: int = 42\n', ''), ('fi
                 .validate_current(control(&cancelled))
                 .is_err()
         );
-        let changed = PythonEnvironmentCapture::capture(&project, control(&cancelled))?;
+        let changed = PythonEnvironmentCapture::capture_with_interpreter(
+            &project,
+            Some(&trusted),
+            control(&cancelled),
+        )?;
         assert_ne!(capture.identity(), changed.identity());
         let changed_report = authority.analyze_project_bytes_with_environment(
             &project,
@@ -1936,7 +2171,11 @@ for name, source, requirement in [('second_pkg', 'answer: int = 42\n', ''), ('fi
                 .iter()
                 .any(|inference| inference.observed == super::super::InferredType::Str)
         );
-        let missing = PythonEnvironmentCapture::capture(&project, control(&cancelled))?;
+        let missing = PythonEnvironmentCapture::capture_with_interpreter(
+            &project,
+            Some(&trusted),
+            control(&cancelled),
+        )?;
         let missing_report = authority.analyze_project_bytes_with_environment(
             &project,
             "ordinary-installed",
@@ -1953,7 +2192,11 @@ for name, source, requirement in [('second_pkg', 'answer: int = 42\n', ''), ('fi
         // compiled-shadow refusal without materializing fake empty binaries.
         std::fs::write(site.join("second_pkg/__init__.py"), "answer: int = 42\n")?;
         std::fs::write(site.join("first_pkg.so"), b"unavailable compiled resource")?;
-        let shadow = PythonEnvironmentCapture::capture(&project, control(&cancelled))?;
+        let shadow = PythonEnvironmentCapture::capture_with_interpreter(
+            &project,
+            Some(&trusted),
+            control(&cancelled),
+        )?;
         let mirror_parent = root.path.join("materialization-control");
         std::fs::create_dir(&mirror_parent)?;
         let materialized = shadow.materialize(&mirror_parent, control(&cancelled))?;
@@ -1980,7 +2223,11 @@ for name, source, requirement in [('second_pkg', 'answer: int = 42\n', ''), ('fi
             relative_path: "local/py3/lib/python3.14/site-packages/first_pkg/__init__.py",
             source: b"from second_pkg import answer\n",
         }];
-        let restored = PythonEnvironmentCapture::capture(&project, control(&cancelled))?;
+        let restored = PythonEnvironmentCapture::capture_with_interpreter(
+            &project,
+            Some(&trusted),
+            control(&cancelled),
+        )?;
         assert!(
             authority
                 .analyze_project_bytes_with_environment(

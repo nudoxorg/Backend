@@ -261,6 +261,7 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 clang,
                 typescript,
                 python_checker,
+                python_interpreter: executables.python.clone().map(backend_frontend_python::legacy::checker::PythonInterpreterSelection::from_host_policy).transpose()?,
                 deferred_native_python,
                 rust,
                 go,

@@ -41,6 +41,7 @@ fn actual_work_with_queue(fixture: &mut AdapterFixture, queued: bool) -> Profile
         CompileExecutionIntent::Interactive,
         false,
         Arc::clone(&cancel),
+        adapter.compiler.python_interpreter_selection().cloned(),
     )
     .expect("actual scan capture");
     let scan = index::run_index_scan(scan).unwrap_or_else(|_| panic!("actual source scan"));
@@ -214,7 +215,9 @@ fn existing_index_worker_shutdown_preserves_selected_current_and_retires_queue()
         matches!(&completion.outcome, ProfileOutcome::Admitted(Ok(()))),
         "actual compiled Python profile must be admitted"
     );
-    assert_mixed_native_compiler_admitted(&fixture.adapter.as_ref().expect("actual adapter").compiler);
+    assert_mixed_native_compiler_admitted(
+        &fixture.adapter.as_ref().expect("actual adapter").compiler,
+    );
     let before = attempt_dispositions(&fixture, &attempts);
     assert!(matches!(&before[0], AttemptDisposition::Published(_)));
     assert_eq!(before[1], AttemptDisposition::Pending);
