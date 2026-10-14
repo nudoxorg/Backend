@@ -34,7 +34,7 @@ pub fn syntax_frontend() -> Result<SyntaxFrontend, SyntaxError> {
     );
     SyntaxFrontend::new(
         SourceLanguage::Python,
-        b"tree-sitter-python-0.25.0/tags-v4-python-header-ranges",
+        b"tree-sitter-python-0.25.0/tags-v5-python-header-ranges-binding-kinds",
         vec![GrammarVariant::new(
             &["py", "pyi", "pyw"],
             tree_sitter_python::LANGUAGE.into(),

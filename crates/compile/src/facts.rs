@@ -300,6 +300,17 @@ pub fn is_abstract_method_decorator(text: &str) -> bool {
     matches!(path, "abstractmethod" | "abc.abstractmethod")
 }
 
+/// Returns whether one Python decorator, as written, makes a method a property
+/// (`property`, `builtins.property`, with or without `@`).
+///
+/// The structural lane selects exactly the bare `@property` spelling, so the
+/// compiler-backed lane names a method a property under the same rule.
+#[must_use]
+pub fn is_property_decorator(text: &str) -> bool {
+    let text = text.trim().trim_start_matches('@').trim();
+    matches!(text, "property" | "builtins.property")
+}
+
 fn bounded(text: &str) -> Option<Box<str>> {
     let text = text.trim();
     if text.is_empty() {

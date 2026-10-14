@@ -165,11 +165,13 @@ fn source_declaration_ranking_native_python_import_types_keep_real_function_firs
             let name = semantic_display_name(entity.name)
                 .expect("native name")
                 .to_owned();
+            // The corpus names a declaration with the word its view row has,
+            // exactly as the product corpus does.
             let mut presentation = display(
                 row,
                 name,
-                identity::declaration_kind(entity.entity.kind)
-                    .name()
+                row.kind
+                    .map_or("unknown", backend_engine::DeclarationKind::name)
                     .to_owned(),
                 Some(package_id.clone()),
             );
@@ -254,12 +256,12 @@ fn source_declaration_ranking_native_python_import_types_keep_real_function_firs
         .facts()
         .iter()
         .filter(|fact| {
-            fact.presentation().name == "get_app_settings" && fact.presentation().kind == "type"
+            fact.presentation().name == "get_app_settings" && fact.presentation().kind == "import"
         })
         .count();
     assert!(
         inferred >= 25,
-        "fixture must reproduce the first-page inferred-type crowding, got {inferred}"
+        "fixture must reproduce the first-page crowding by import bindings, got {inferred}"
     );
     let function = corpus
         .facts()

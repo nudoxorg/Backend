@@ -5,10 +5,11 @@ use super::super::{
 };
 use super::call_join::foreign_display_name;
 use super::identity::{
-    declaration_family, declaration_kind, external_semantic_coordinate, external_semantic_symbol,
-    semantic_coordinate, semantic_identity, semantic_symbol,
+    declaration_kind, external_semantic_coordinate, external_semantic_symbol, semantic_coordinate,
+    semantic_identity, semantic_symbol,
 };
 use super::image_rows::{Charge, DuplicatePolicy, ProjectedImage, ProjectedRow};
+use super::kinds;
 use super::structural::{
     ProfileSourceIdentities, ProfileSourcePaths, StructuralDeclaration, StructuralParent,
     StructuralProjectionPlan, complete_declarations_for_file, profile_source_identities,
@@ -1027,7 +1028,7 @@ pub(crate) struct StructuralSites<'a> {
 }
 
 impl<'a> StructuralSites<'a> {
-    fn of(sources: &'a IndexedSources) -> Result<Self, BuiltinModelError> {
+    pub(super) fn of(sources: &'a IndexedSources) -> Result<Self, BuiltinModelError> {
         let mut files = BTreeMap::new();
         for (_, record) in &sources.files {
             let file = record
@@ -1055,47 +1056,88 @@ impl<'a> StructuralSites<'a> {
         };
         complete_declarations_for_file(self.sources, record)
     }
+
+    /// Returns the declarations of a file that provably hold the same bytes a
+    /// compiled image was built from, and none when they might not.
+    ///
+    /// A file whose persisted identity is absent or differs cannot be paired
+    /// without guessing, which is exactly when `project_image_rows` is given
+    /// no sites for a stale image.
+    pub(super) fn declarations_of_source(
+        &self,
+        project: &[u8; 32],
+        path: &str,
+        source: backend_version::ContentId<backend_version::SourceFactDomain>,
+    ) -> Result<Vec<backend_compile::SourceDeclaration>, BuiltinModelError> {
+        let current = self
+            .files
+            .get(&(*project, path.to_owned()))
+            .and_then(|record| record.file_fields())
+            .and_then(|file| file.source_identity);
+        if current != Some(source) {
+            return Ok(Vec::new());
+        }
+        self.declarations(project, path)
+    }
 }
-/// Pairs each semantic declaration with the structural declaration of the
-/// same name and declaration family in the same file bytes.
+/// The kind of every entity of one image, and the written declaration each
+/// is paired with.
 ///
-/// Same-keyed declarations are paired by source order: the k-th semantic
-/// entity by span start with the k-th structural declaration by line. A key
-/// whose two extractions disagree on the count, or whose semantic spans are
-/// not all captured, is ambiguous and keeps no site rather than a guess.
-/// Implementation blocks and parameters are not counted: they have no
-/// structural twin. A key with exactly one entity on each side pairs without
-/// a span.
-fn semantic_sites<'a, Reader: backend_semantic::ir::SemanticReader + ?Sized>(
+/// The kind is derived from the image alone (`kinds::image_entity_kind`), so
+/// the compiler-backed rows and the structural rows of the same file speak one
+/// vocabulary; a paired declaration then settles the spelling the grammar
+/// itself decided (`kinds::kind_with_site`).
+pub(super) struct EntityKinds<'site> {
+    /// The product kind each entity is shown as before its twin is known.
+    derived: BTreeMap<DeclarationIdentity, backend_compile::DeclarationKind>,
+    /// Each entity's written declaration, when one is known.
+    sites: BTreeMap<DeclarationIdentity, &'site backend_compile::SourceDeclaration>,
+}
+
+impl EntityKinds<'_> {
+    /// Returns the kind one entity is shown as.
+    pub(super) fn kind_of(
+        &self,
+        identity: DeclarationIdentity,
+        item: backend_semantic::ir::ItemKind,
+    ) -> backend_compile::DeclarationKind {
+        let derived = self
+            .derived
+            .get(&identity)
+            .copied()
+            .unwrap_or_else(|| declaration_kind(item));
+        match self.sites.get(&identity) {
+            Some(site) => kinds::kind_with_site(derived, item, site.kind()),
+            None => derived,
+        }
+    }
+}
+
+/// Derives every entity's kind and pairs each with the written declaration of
+/// the same file it is (see `kinds::pair_sites`).
+///
+/// Implementation blocks and parameters are not paired: they have no
+/// structural twin. The tag query emits declarations, and only references for
+/// implementations, and it does not see parameters at all. Counting them made
+/// every type with an `impl` (and every field named like a parameter) count
+/// more semantic entities than structural declarations, and the count rule
+/// then dropped the type's own site along with theirs.
+pub(super) fn entity_kinds<'site, Reader: backend_semantic::ir::SemanticReader + ?Sized>(
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    reader: &Reader,
     session: &DocumentationSession<'_, Reader>,
-    declarations: &[&'a backend_compile::SourceDeclaration],
-) -> Result<BTreeMap<DeclarationIdentity, &'a backend_compile::SourceDeclaration>, BuiltinModelError>
-{
-    let mut sites = BTreeMap::new();
-    if declarations.is_empty() {
-        return Ok(sites);
-    }
-    let mut structural = BTreeMap::<(&str, u8), Vec<&'a backend_compile::SourceDeclaration>>::new();
-    for declaration in declarations {
-        structural
-            .entry((declaration.name(), declaration_family(declaration.kind())))
-            .or_default()
-            .push(declaration);
-    }
-    for same_name in structural.values_mut() {
-        same_name.sort_by_key(|declaration| declaration.line());
-    }
-    let mut semantic = BTreeMap::<(Vec<u8>, u8), Vec<(Option<u32>, DeclarationIdentity)>>::new();
+    declarations: &[&'site backend_compile::SourceDeclaration],
+) -> Result<EntityKinds<'site>, BuiltinModelError> {
+    let language = backend_semantic::vocabulary::Language::from(profile);
+    let mut derived = BTreeMap::new();
+    let mut pairing = Vec::new();
     for entity in session.canonical_entities() {
         let entity = entity
             .map_err(|error| BuiltinModelError(format!("project semantic declaration: {error}")))?;
-        // An implementation block and a parameter have no structural twin: the
-        // tag query emits declarations, and only references for
-        // implementations, and it does not see parameters at all. Counting
-        // them in their name's family made every type with an `impl` (and
-        // every field named like a parameter) count more semantic entities
-        // than structural declarations, and the count rule below then dropped
-        // the type's own site along with theirs.
+        let identity = entity.entity.version.identity();
+        let kind = kinds::image_entity_kind(profile, reader, session, &entity)
+            .map_err(BuiltinModelError)?;
+        derived.insert(identity, kind);
         if matches!(
             entity.entity.kind,
             backend_semantic::ir::ItemKind::Implementation
@@ -1103,37 +1145,31 @@ fn semantic_sites<'a, Reader: backend_semantic::ir::SemanticReader + ?Sized>(
         ) {
             continue;
         }
-        let family = declaration_family(declaration_kind(entity.entity.kind));
         let Some(name) = entity.name.named_bytes() else {
             // Structural declarations have no anonymous callable identifier.
             continue;
         };
-        semantic.entry((name.to_vec(), family)).or_default().push((
-            entity.entity.source.map(|span| span.start()),
-            entity.entity.version.identity(),
-        ));
-    }
-    for ((name, family), mut entities) in semantic {
-        let Ok(name) = std::str::from_utf8(&name) else {
-            continue;
+        let holder = match entity.entity.parent {
+            Some(parent) => session
+                .entity(parent)
+                .map_err(|error| BuiltinModelError(format!("project semantic parent: {error}")))?
+                .name
+                .named_bytes()
+                .unwrap_or_default()
+                .to_vec(),
+            None => Vec::new(),
         };
-        let Some(candidates) = structural.get(&(name, family)) else {
-            continue;
-        };
-        // The only entity of its name and family in the file needs no order to
-        // find its twin. Two or more are paired by span order, which needs
-        // every span.
-        if candidates.len() != entities.len()
-            || (entities.len() > 1 && entities.iter().any(|(start, _)| start.is_none()))
-        {
-            continue;
-        }
-        entities.sort_by_key(|(start, _)| *start);
-        for ((_, identity), declaration) in entities.into_iter().zip(candidates) {
-            sites.insert(identity, *declaration);
-        }
+        pairing.push(kinds::PairingEntity {
+            identity,
+            name: name.to_vec(),
+            holder,
+            item: entity.entity.kind,
+            kind,
+            start: entity.entity.source.map(|span| span.start()),
+        });
     }
-    Ok(sites)
+    let sites = kinds::pair_sites(language, &pairing, declarations);
+    Ok(EntityKinds { derived, sites })
 }
 
 pub(super) struct SemanticRowContent {
@@ -1158,7 +1194,8 @@ pub(super) fn project_image_rows(
     site_declarations: &[&backend_compile::SourceDeclaration],
 ) -> Result<ProjectedImage, BuiltinModelError> {
     let session = DocumentationSession::new(image);
-    let sites = semantic_sites(&session, site_declarations)?;
+    let kinds = entity_kinds(profile, image, &session, site_declarations)?;
+    let sites = &kinds.sites;
     let canonical_identities = session
         .canonical_entities()
         .map(|entity| {
@@ -1220,7 +1257,7 @@ pub(super) fn project_image_rows(
         let mut row = Row::in_package(RowId::Symbol(symbol), basis, project.package, coordinate)
             .try_with_identity_preimage(&semantic_identity(project.package, identity))
             .map_err(|error| BuiltinModelError(format!("semantic row identity preimage: {error}")))?
-            .with_kind(declaration_kind(entity.entity.kind))
+            .with_kind(kinds.kind_of(identity, entity.entity.kind))
             .with_document(document)
             .with_facts(facts);
         if let Some(site) = sites.get(&identity) {

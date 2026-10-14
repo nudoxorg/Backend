@@ -1980,6 +1980,11 @@ impl RustWorkspace {
             features: features.cargo_features(),
             extra_env,
             isolate_env: true,
+            // Code under `#[cfg(test)]` and `#[test]` functions are real
+            // declarations a reader navigates to and that production code is
+            // exercised by; with `test` unset the analyzer drops them (and the
+            // out-of-line `mod tests;` files behind them) from the module tree.
+            set_test: true,
             ..CargoConfig::default()
         };
         let load = ra_ap_load_cargo::LoadCargoConfig {
@@ -4190,14 +4195,18 @@ impl<'analysis> RustAuthority<'analysis> {
     /// Streams only the top path of every path chain, skipping qualifier
     /// children (`a::b` yields one `a::b`, never an extra `a`), so consumers
     /// emit exactly one reference fact per written path chain.
+    ///
+    /// The path inside a visibility modifier (`pub(crate)`, `pub(super)`,
+    /// `pub(in a::b)`) restricts where a declaration is visible; it is not a
+    /// mention of any type or item, and resolving it used to hang a "uses type
+    /// `crate`" relation on every `pub(crate)` declaration.
     pub fn top_level_paths(&self) -> impl Iterator<Item = ast::Path> + '_ {
         self.root.syntax().descendants().filter_map(|syntax| {
             let path = ast::Path::cast(syntax)?;
-            let nested = path
-                .syntax()
-                .parent()
-                .is_some_and(|parent| parent.kind() == ra_ap_syntax::SyntaxKind::PATH);
-            (!nested).then_some(path)
+            let enclosing = path.syntax().parent().map(|parent| parent.kind());
+            let nested = enclosing == Some(ra_ap_syntax::SyntaxKind::PATH);
+            let visibility = enclosing == Some(ra_ap_syntax::SyntaxKind::VISIBILITY_INNER);
+            (!nested && !visibility).then_some(path)
         })
     }
 

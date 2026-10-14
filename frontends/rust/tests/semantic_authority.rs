@@ -367,6 +367,73 @@ fn generic_parameters_expose_ordered_bounds_through_hir() -> Result<(), TestFail
     outcome
 }
 
+/// Writes a one-file Cargo fixture whose crate root is exactly `source`.
+fn project_with_source(source: &str) -> Result<PathBuf, TestFailure> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(TestFailure::Clock)?
+        .as_nanos();
+    let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!("nudox-rust-visibility-{nonce}-{sequence}"));
+    fs::create_dir_all(root.join("src")).map_err(|source| TestFailure::Io {
+        operation: "create fixture",
+        source,
+    })?;
+    write_fixture(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"visibility_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        "write manifest",
+    )?;
+    write_fixture(root.join("src/lib.rs"), source, "write crate root")?;
+    Ok(root)
+}
+
+/// Proves the path inside a visibility modifier is not a mention of anything.
+///
+/// `pub(crate)` and `pub(in a::b)` restrict where a declaration is visible.
+/// Their path used to resolve to the crate root module and hang a "uses type
+/// `crate`" relation on every restricted declaration.
+#[test]
+fn visibility_modifier_paths_are_not_written_mentions() -> Result<(), TestFailure> {
+    let root = project_with_source(
+        "use std::net::Ipv4Addr;\n\npub(crate) enum Host {\n    None,\n    Ipv4(Ipv4Addr),\n}\n\npub(crate) struct Holder {\n    pub(crate) value: u8,\n}\n\nmod inner {\n    pub(in crate::inner) fn scoped() {}\n    pub(super) fn parent() {}\n}\n",
+    )?;
+    let outcome = (|| {
+        let toolchain = RustToolchain::discover(rustc_path()).map_err(RustAuthorityError::from)?;
+        let project = RustProject::open(&root, &toolchain, RustEdition::Rust2024)?;
+        let running = AtomicBool::new(false);
+        let control = RustAnalysisControl {
+            cancelled: &running,
+            maximum_source_bytes: SourceByteLimit::from(8_192),
+            deadline: Instant::now() + std::time::Duration::from_secs(180),
+        };
+        project.analyze(control, |authority| {
+            let written = authority
+                .top_level_paths()
+                .map(|path| path.syntax().text().to_string())
+                .collect::<Vec<_>>();
+            // The only written paths are the type a variant holds and the
+            // import that brings it in; no visibility path is among them.
+            if written
+                .iter()
+                .any(|path| matches!(path.as_str(), "crate" | "super" | "self" | "crate::inner"))
+                || !written.iter().any(|path| path == "Ipv4Addr")
+            {
+                return Err(RustAuthorityError::MissingSemanticFact {
+                    fact: SemanticKind::Module,
+                });
+            }
+            Ok(())
+        })?;
+        Ok(())
+    })();
+    fs::remove_dir_all(&root).map_err(|source| TestFailure::Io {
+        operation: "remove fixture",
+        source,
+    })?;
+    outcome
+}
+
 /// Proves oversized input is rejected before Cargo workspace loading allocates project state.
 #[test]
 fn source_budget_rejects_before_workspace_loading() -> Result<(), TestFailure> {

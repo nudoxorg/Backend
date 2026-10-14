@@ -18,6 +18,7 @@ mod image_reopen;
 mod image_rows;
 #[cfg(test)]
 mod java_enum_value_join;
+mod kinds;
 #[cfg(test)]
 mod py_function_field_join;
 #[cfg(test)]

@@ -607,7 +607,7 @@ fn name_key(row: &Row) -> NameKey {
 /// sharing alone is not a safe signal; those must stay searchable. What is
 /// unique to the synthetic slot is its *kind*: it is the only
 /// `DeclarationKind::Variable` row whose immediate parent is itself callable
-/// (a function or method). A real field, constructor, or nested function
+/// (a function, method, constructor or property). A real field, constructor, or nested function
 /// never presents as `Variable`, so requiring that kind and a callable
 /// parent, on top of the name match, narrows this to exactly the synthetic
 /// result slot.
@@ -624,7 +624,12 @@ fn is_synthetic_result_slot(row: &Row, row_at: impl Fn(RowId) -> Option<Row>) ->
                 name_key(&parent_row).normalized == name_key(row).normalized
                     && matches!(
                         parent_row.kind,
-                        Some(DeclarationKind::Function | DeclarationKind::Method)
+                        Some(
+                            DeclarationKind::Function
+                                | DeclarationKind::Method
+                                | DeclarationKind::Constructor
+                                | DeclarationKind::Property
+                        )
                     )
             })
 }
