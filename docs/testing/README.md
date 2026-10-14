@@ -100,7 +100,7 @@ python3 .config/ci/test.py deep
 ```
 
 This bounded T3 bootstrap compiles the CLI test binary and runs the four retained
-`index_wait::` laws with nextest: public grammar, later failure, saved identity
+`process::index_wait_tests::` laws with nextest: public grammar, later failure, saved identity
 and disconnect/immediate failure. Cargo and nextest concurrency are both two;
 the step has a 30-minute cold-build bound and the same memory/disk admission
 floors as T1. It does not run native compilation of fixture projects.
