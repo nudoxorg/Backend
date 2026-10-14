@@ -41,7 +41,10 @@ def plan(args: argparse.Namespace) -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("tier", choices=["smoke", "integration", "deep", "list"])
+    parser.add_argument("tier", choices=["smoke", "integration", "deep", "list", "select"])
+    parser.add_argument("--base", help="selection preview: compare from the merge base of this ref")
+    parser.add_argument("--head", default="HEAD", help="selection preview: source commit (default HEAD)")
+    parser.add_argument("--worktree", action="store_true", help="selection preview: include local tracked/untracked changes")
     parser.add_argument("--bin-dir", type=Path)
     parser.add_argument("--case", action="append")
     parser.add_argument("--jobs", type=int, choices=range(1, 5), help="concurrent isolated integration cases (default: 1)")
@@ -50,6 +53,16 @@ def main() -> int:
     parser.add_argument("--in-shell", action="store_true", help="CI: already inside the tier's declared Nix shell")
     parser.add_argument("--plan", action="store_true", help="print the command as JSON without building or running")
     args = parser.parse_args()
+    if args.tier == "select":
+        if not args.base:
+            parser.error("select requires --base")
+        if args.bin_dir or args.case or args.update or args.report or args.jobs is not None or args.in_shell or args.plan:
+            parser.error("select only accepts --base, --head and --worktree")
+        from selection import preview
+        print(json.dumps(preview(ROOT, args.base, args.head, args.worktree), indent=2))
+        return 0
+    if args.base or args.head != "HEAD" or args.worktree:
+        parser.error("--base, --head and --worktree apply only to select")
     if args.tier == "list":
         cases = json.loads((ROOT / "tests/surface/cases.json").read_text())["cases"]
         print(json.dumps({"smoke": ["cli", "mcp", "gui"],

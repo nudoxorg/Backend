@@ -64,6 +64,28 @@ are excluded. The artifact budget is 8 GiB. Publication refuses an existing
 destination, a dirty tracked checkout or unresolved libraries. Build-once producer/consumer wiring is deployed; required-check cutover remains
 pending (W3.2).
 
+## Preview selection for a diff
+
+```sh
+python3 .config/ci/test.py select --base origin/canonical
+python3 .config/ci/test.py select --base origin/canonical --worktree
+```
+
+This read-only JSON preview resolves exact base/head commits and uses their
+merge base. It keeps deleted paths and both sides of renames; `--worktree` also
+includes staged, unstaged and untracked files. It never enters Nix, builds,
+executes tests, fetches refs or accepts snapshots. Fetch the intended base first.
+
+The current canonical-PR policy only skips explicit `docs/`, `README.md` and
+`LICENSE` changes. Empty, unavailable or incomplete diffs run full checks. All
+product/configuration/unknown paths retain full T1/T2 and the current optional
+legacy platform lanes; the JSON lists the actual local integration catalog.
+Required fast and advisory T1/T2 contexts remain as deployed under D11. Scheduled
+T3 is independent. This previews policy rather than queue state, host health or
+a CI verdict. It does not yet narrow product tests by symbols/reverse dependencies
+or replace the dispatcher's API completeness and exact-head checks. The reusable
+selector is the starting point for W6; later CI wiring must keep those checks.
+
 ## Integration: reuse the smoke binaries
 
 ```sh
