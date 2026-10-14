@@ -161,6 +161,33 @@ fn semantic_versions_jsonrpc_preserves_captured_semver_and_matches_the_cli_proje
     assert_eq!(cli["semantic_data"]["value"], json!([original]));
 }
 
+fn assert_compact_raw_surface_refused(server: &mut Server<Fake>, command: &SurfaceCommand) {
+    let before = server.product.surface_commands.len();
+    let response = request(
+        server,
+        "tools/call",
+        &McpExposure::RegisteredCall.expose_call(json!({
+            "name":"backend.surface", "arguments":{"command":command, "detail":"full"}
+        })),
+    );
+    assert_context_bounded(&response);
+    assert!(response.get("error").is_none(), "{response}");
+    assert_eq!(response["result"]["isError"], true, "{response}");
+    let fault = &response["result"]["structuredContent"];
+    assert_eq!(fault["slug"], "usage");
+    assert_eq!(fault["operand"], "name");
+    assert_eq!(fault["cause"], "malformed");
+    assert!(fault.get("semantic_data").is_none());
+    assert!(fault.get("surface").is_none());
+    assert!(fault.get("continuation_call").is_none());
+    assert!(fault.get("shell").is_none());
+    assert_eq!(
+        server.product.surface_commands.len(),
+        before,
+        "unregistered route never reaches native source"
+    );
+}
+
 #[test]
 fn discovery_complete_coordinate_union_is_monotonic_through_direct_compact_and_raw_calls() {
     for raw in [false, true] {
@@ -169,7 +196,20 @@ fn discovery_complete_coordinate_union_is_monotonic_through_direct_compact_and_r
                 semantic_versions_total: Some(40),
                 ..Fake::default()
             });
-            let mut next = if raw {
+            if raw && exposure == McpExposure::RegisteredCall {
+                assert_compact_raw_surface_refused(
+                    &mut server,
+                    &SurfaceCommand::SemanticVersions {
+                        package: captured().package,
+                        limit: 20,
+                        cursor: None,
+                    },
+                );
+            }
+            // Raw surface is direct-only. The compact exposure reconstructs
+            // the identical discovery via its registered semantic route.
+            let raw_surface = raw && exposure == McpExposure::Direct;
+            let mut next = if raw_surface {
                 exposure.expose_call(json!({"name":"backend.surface","arguments":{"command":SurfaceCommand::SemanticVersions { package:captured().package, limit:20, cursor:None },"detail":"full"}}))
             } else {
                 exposure.expose_call(json!({"name":"backend.semantic_versions","arguments":{"package":captured().package.as_str(),"limit":20,"detail":"full"}}))
@@ -183,7 +223,7 @@ fn discovery_complete_coordinate_union_is_monotonic_through_direct_compact_and_r
                 assert_context_bounded(&response);
                 assert_eq!(response["result"]["isError"], false, "{response}");
                 let structured = &response["result"]["structuredContent"];
-                let page: SemanticVersionsPage = serde_json::from_value(if raw {
+                let page: SemanticVersionsPage = serde_json::from_value(if raw_surface {
                     structured["surface"]["data"].clone()
                 } else {
                     structured["semantic_data"]["value"].clone()
@@ -217,7 +257,7 @@ fn discovery_complete_coordinate_union_is_monotonic_through_direct_compact_and_r
                 } else {
                     &next
                 };
-                if raw {
+                if raw_surface {
                     let command: SurfaceCommand =
                         serde_json::from_value(selected["arguments"]["command"].clone())
                             .expect("closed nested command");
@@ -259,7 +299,19 @@ fn raw_source_and_uri_resources_reconstruct_the_entire_capture_with_exact_select
                 range: SemanticSourceRange::default(),
             };
             let mut uri = native.resource_uri().expect("canonical original URI");
-            let mut next = exposure.expose_call(json!({"name":"backend.surface","arguments":{"command":SurfaceCommand::SemanticSource { request:native },"detail":"full"}}));
+            if !resource && exposure == McpExposure::RegisteredCall {
+                assert_compact_raw_surface_refused(
+                    &mut server,
+                    &SurfaceCommand::SemanticSource {
+                        request: native.clone(),
+                    },
+                );
+            }
+            let mut next = if exposure == McpExposure::Direct {
+                json!({"name":"backend.surface","arguments":{"command":SurfaceCommand::SemanticSource { request:native },"detail":"full"}})
+            } else {
+                exposure.expose_call(json!({"name":"backend.semantic_source","arguments":{"request":native,"detail":"full"}}))
+            };
             loop {
                 let response = if resource {
                     request(&mut server, "resources/read", &json!({"uri":uri}))
@@ -278,9 +330,11 @@ fn raw_source_and_uri_resources_reconstruct_the_entire_capture_with_exact_select
                     .expect("source chunk")
                 } else {
                     assert_eq!(response["result"]["isError"], false, "{response}");
-                    serde_json::from_value(
-                        response["result"]["structuredContent"]["surface"]["data"].clone(),
-                    )
+                    serde_json::from_value(if exposure == McpExposure::Direct {
+                        response["result"]["structuredContent"]["surface"]["data"].clone()
+                    } else {
+                        response["result"]["structuredContent"]["semantic_data"]["value"].clone()
+                    })
                     .expect("raw source chunk")
                 };
                 assert_eq!(chunk.offset, union.offset().expect("exact byte offset"));
@@ -315,13 +369,24 @@ fn raw_source_and_uri_resources_reconstruct_the_entire_capture_with_exact_select
                     } else {
                         &next
                     };
-                    assert!(call["arguments"].get("request").is_none());
-                    let SurfaceCommand::SemanticSource { request: resumed } =
-                        serde_json::from_value(call["arguments"]["command"].clone())
-                            .expect("closed raw continuation")
-                    else {
-                        unreachable!()
-                    };
+                    let resumed: backend_library::SemanticSourceRequest =
+                        if exposure == McpExposure::Direct {
+                            assert_eq!(call["name"], "backend.surface");
+                            assert!(call["arguments"].get("request").is_none());
+                            let SurfaceCommand::SemanticSource { request } =
+                                serde_json::from_value(call["arguments"]["command"].clone())
+                                    .expect("closed raw continuation")
+                            else {
+                                unreachable!()
+                            };
+                            request
+                        } else {
+                            assert_eq!(next["name"], "backend.call");
+                            assert_eq!(call["name"], "backend.semantic_source");
+                            assert!(call["arguments"].get("command").is_none());
+                            serde_json::from_value(call["arguments"]["request"].clone())
+                                .expect("closed registered source continuation")
+                        };
                     assert_eq!(resumed.reference, reference);
                     assert_eq!(resumed.range.offset, chunk.next.expect("forward"));
                     assert_eq!(resumed.range.max_bytes, selected.range.max_bytes);

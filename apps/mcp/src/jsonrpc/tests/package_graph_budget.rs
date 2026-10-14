@@ -203,29 +203,42 @@ fn cancellation_after_native_graph_reply_precedes_success_and_oversized_fallback
                         )
                         .expect("original cancellation response"),
                 );
+                if raw && exposure == McpExposure::RegisteredCall {
+                    // The compact route never admits the private raw surface.
+                    // This refusal cannot be mistaken for native cancellation.
+                    assert_eq!(context.cancellation_reason(), None);
+                    assert!(response.get("error").is_none(), "{response}");
+                    assert_eq!(response["result"]["isError"], true, "{response}");
+                    let fault = &response["result"]["structuredContent"];
+                    assert_eq!(fault["slug"], "usage");
+                    assert_eq!(fault["operand"], "name");
+                    assert_eq!(fault["cause"], "malformed");
+                    assert!(fault.get("package_graph_page").is_none());
+                    assert!(fault.get("continuation_call").is_none());
+                    assert!(fault.get("shell").is_none());
+                    assert!(server.product.surface_commands.is_empty());
+                    assert_context_bounded(&response);
+                    continue;
+                }
                 assert_eq!(
                     context.cancellation_reason(),
                     Some(RequestCancellationReason::Explicit)
                 );
-                let fault = if response.get("result").is_some() {
-                    assert_eq!(response["result"]["isError"], true, "{response}");
-                    &response["result"]["structuredContent"]
-                } else {
-                    &response["error"]["data"]["structuredContent"]
-                };
+                assert_eq!(response["id"], 9);
+                assert!(response.get("result").is_none(), "{response}");
+                assert_eq!(response["error"]["code"], -32800, "{response}");
+                assert_eq!(response["error"]["message"], "Request cancelled");
+                let stopped = &response["error"]["data"];
                 assert_eq!(
-                    fault["cause"], "unreachable",
+                    stopped["reason"], "request explicitly cancelled by client",
                     "original stop wins over successful or oversized reply: {response}"
                 );
-                assert!(
-                    fault["detail"]
-                        .as_str()
-                        .expect("original cancellation detail")
-                        .contains("request explicitly cancelled by client")
-                );
-                assert!(fault.get("package_graph_page").is_none());
-                assert!(fault.get("continuation_call").is_none());
-                assert!(fault.get("shell").is_none());
+                // The transport finalizes cancellation instead of publishing
+                // either a graph page or an oversized fallback affordance.
+                assert!(stopped.get("structuredContent").is_none());
+                assert!(stopped.get("package_graph_page").is_none());
+                assert!(stopped.get("continuation_call").is_none());
+                assert!(stopped.get("shell").is_none());
                 assert_eq!(
                     server.product.surface_commands.len(),
                     1,
