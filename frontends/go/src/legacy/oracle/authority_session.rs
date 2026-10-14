@@ -26,6 +26,10 @@ use super::{
 const MAX_BATCH_SOURCES: usize = 16;
 /// Largest transcript one batch child may write.
 const BATCH_OUTPUT_LIMIT: usize = 64 * 1024 * 1024;
+/// Longest one batch child may run. It loads and type-checks a package once for up
+/// to [`MAX_BATCH_SOURCES`] sources, which takes far longer than one image on a
+/// contended host.
+const BATCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 /// Batch child mode: `<mode> <module> <source>...`, one frame per source.
 const BATCH_MODE: &str = "--authority-image-package-batch";
 const FRAME_HEADER_BYTES: usize = 9;
@@ -209,6 +213,7 @@ impl GoPackageAuthoritySession<'_> {
         let started = std::time::Instant::now();
         let transcript = GoOracle {
             output_limit: BATCH_OUTPUT_LIMIT.max(image_limit),
+            timeout: BATCH_TIMEOUT.max(self.oracle.oracle.timeout),
             ..self.oracle.oracle
         }
         .execute_with_origin(&mut command, true, self.cancelled)?;

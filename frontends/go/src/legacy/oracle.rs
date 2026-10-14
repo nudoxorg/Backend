@@ -56,6 +56,8 @@ const MAX_GO_TOOLCHAIN_DEPTH: usize = 64;
 const MAX_GO_TOOLCHAIN_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_GO_TOOLCHAIN_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_GO_TOOLCHAIN_PATH_BYTES: usize = 4096;
+/// Longest a cold build of the embedded helper may take.
+const HELPER_BUILD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// Versioned identity of the explicit Go package-authority child environment.
 pub const GO_PACKAGE_CHILD_ENVIRONMENT_POLICY_ID_V1: &str = "go-package-child-environment.v1";
@@ -1798,7 +1800,14 @@ impl ConfiguredGoOracle {
             .arg(".")
             .current_dir(source.path());
         environment.apply_to(&mut build, &GoWorkWitness::Disabled, true);
-        self.oracle.execute_with_origin(&mut build, true, cancelled)?;
+        // A cold build compiles the standard library and the loader's dependencies:
+        // seconds on an idle host, minutes on a contended one, and a build that was
+        // stopped midway only makes the next attempt start from scratch again.
+        GoOracle {
+            timeout: HELPER_BUILD_TIMEOUT.max(self.oracle.timeout),
+            ..self.oracle
+        }
+        .execute_with_origin(&mut build, true, cancelled)?;
         check_go_cancellation(cancelled)?;
         // Reject toolchain drift caused by the helper build before publishing
         // a manifest that would bind its output to the old identity.
@@ -3624,6 +3633,7 @@ mod read_tests {
     #[test]
     fn toolchain_memo_skips_unchanged_files_and_still_sees_a_forged_timestamp_edit()
     -> Result<(), Box<dyn std::error::Error>> {
+        use super::{TOOLCHAIN_STAMP_SETTLE_SECONDS, ToolchainMemo};
         use std::os::unix::fs::PermissionsExt;
 
         let root = tempfile::tempdir()?;

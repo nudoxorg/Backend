@@ -705,12 +705,28 @@ pub(super) fn finish_index_scan(
                 profile.language().name()
             );
         }
-        let (fresh, reused) = ingest::select_compiler_inputs(
+        let (mut fresh, mut reused) = ingest::select_compiler_inputs(
             source_root,
             scan.compiler_sources,
             scan.reused_compiler_files,
             &dirty,
         );
+        // A fresh file always makes its profile compile; the structural-only ones
+        // must not reach the compiler at all.
+        fresh.retain(|source| {
+            !structural_only.contains(&ingest::compilation_profile(
+                source_root,
+                &source.relative_path,
+                source.profile,
+            ))
+        });
+        reused.retain(|source| {
+            !structural_only.contains(&ingest::compilation_profile(
+                source_root,
+                &source.relative_path,
+                source.profile,
+            ))
+        });
         if dirty.is_empty() {
             (
                 Vec::new(),

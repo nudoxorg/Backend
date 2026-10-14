@@ -2292,7 +2292,7 @@ mod source_degradation_tests {
             CompilerTerminal::Toolchain {
                 source: source(),
                 language: backend_semantic::vocabulary::Language::Go,
-                stage: Stage::LowerIr,
+                stage: backend_semantic::vocabulary::Stage::LowerIr,
                 selected: NativeTool::GoCompiler,
                 configured: None,
             },
