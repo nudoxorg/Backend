@@ -97,7 +97,7 @@ pub use self::runtime::{
     LocalCompilerRuntimeOpenError, LocalCompilerRuntimePaths, LocalRuntimeCSharpAuthority,
     LocalRuntimeGoAuthorityFailure, LocalRuntimeJavaAuthority, LocalRuntimePackageAuthority,
     LocalRuntimePackageRoot, LocalRuntimePackageRootFacts, LocalRuntimePythonCheckerAdmission,
-    LocalRuntimePythonCheckerProbeFailure, DeferredNativePython, DeferredRustToolchain,
+    LocalRuntimePythonCheckerProbeFailure, DeferredGoOracle, DeferredNativePython, DeferredRustToolchain,
     LocalRuntimeRustAuthority,
     LocalRuntimeRustAuthorityFailure, LocalRuntimeRustToolchainSelection, LocalRuntimeToolchain,
     LocalRuntimeToolchainFacts, LocalRuntimeToolchainState, OwnedPackageSource,

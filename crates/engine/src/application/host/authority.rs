@@ -10,7 +10,7 @@ use arrayvec::ArrayVec;
 use backend_frontend_clang::ClangAuthorityEnvironment;
 use backend_frontend_csharp::legacy::{CSharpOracle, DEFAULT_SOURCE_LIMIT};
 use backend_frontend_go::legacy::oracle::{GoOracleChildEnvironment, GoOracleConfigurationError};
-use backend_frontend_go::legacy::{GoOracle, GoOracleConfiguration};
+use backend_frontend_go::legacy::{ConfiguredGoOracle, GoOracle, GoOracleConfiguration};
 use backend_frontend_java::legacy::harness::JdkToolchain;
 use backend_frontend_python::legacy::Pyrefly;
 use backend_frontend_rust::legacy::{RustToolchain, SourceByteLimit};
@@ -18,7 +18,7 @@ use backend_frontend_typescript::legacy::Checker as TypeScriptChecker;
 use backend_library::interface::PackageEcosystem;
 use backend_semantic::vocabulary::NativeTool;
 
-use super::paths::{TypeScriptHostSelection, create_directory};
+use super::paths::{TypeScriptHostSelection, create_directory, validate_directory_path};
 use super::{
     AUTHORITY_IMAGE_BYTES, LocalCompilerHost, LocalCompilerHostError, LocalHostDirectory,
     LocalHostEnvironment, LocalHostPathRole, LocalHostVariable, PACKAGE_SOURCE_BYTES, nonzero,
@@ -28,7 +28,7 @@ use crate::application::toolchain_probe::{
 };
 use crate::application::typescript_host::{TypeScriptProjectHost, is_module_tsc_script};
 use crate::application::{
-    DeferredRustToolchain, LocalRuntimeCSharpAuthority, LocalRuntimeGoAuthorityFailure, LocalRuntimeJavaAuthority,
+    DeferredGoOracle, DeferredRustToolchain, LocalRuntimeCSharpAuthority, LocalRuntimeGoAuthorityFailure, LocalRuntimeJavaAuthority,
     LocalRuntimePackageAuthority, LocalRuntimePackageRoot, LocalRuntimePythonCheckerAdmission,
     LocalRuntimePythonCheckerProbeFailure, LocalRuntimeRustAuthority,
     LocalRuntimeRustToolchainSelection, LocalRuntimeToolchain,
@@ -197,37 +197,35 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
             }
             _ => None,
         };
-        let (go, go_unavailable) = match (executables.go.as_deref(), go_discovery_failure) {
-            (Some(go), None) => {
-                let admitted = (|| {
-                    let go_oracle = self.executable(
-                        LocalHostVariable::NudoxGoOracle,
-                        LocalHostPathRole::GoOracle,
-                        ArrayVec::new(),
-                    )?;
-                    let module_cache =
-                        selected_go_module_cache(go_module_cache, native_work_directory)?;
-                    let goroot = self.go_root(go, probe_limits)?;
-                    let child_environment = GoOracleChildEnvironment::new(
-                        go.to_path_buf(),
-                        goroot,
-                        module_cache,
-                        native_work_directory.join("go-oracle-cache"),
-                    )?;
-                    let configuration = match go_oracle {
-                        Some(oracle) => GoOracleConfiguration::oracle_binary(oracle)?,
-                        None => GoOracleConfiguration::go_toolchain(go.to_path_buf())?,
-                    };
-                    GoOracle::default()
-                        .with_configuration(configuration)
-                        .with_child_environment(child_environment)
-                        .map_err(LocalCompilerHostError::from)
-                })();
-                match admitted {
-                    Ok(go) => (Some(go), None),
-                    Err(error) => (None, Some(go_authority_failure(&error))),
+        // Admitting Go reads the identity of the whole installation, so it never runs on the owner's
+        // startup path: the explicit oracle selection is checked now (a path check) and the rest
+        // is admitted beside the Go compiler's version probe, or by the first Go request.
+        let (deferred_go, go_unavailable) = match (executables.go.as_deref(), go_discovery_failure)
+        {
+            (Some(go), None) => match self.executable(
+                LocalHostVariable::NudoxGoOracle,
+                LocalHostPathRole::GoOracle,
+                ArrayVec::new(),
+            ) {
+                Ok(go_oracle) => {
+                    let go = go.to_path_buf();
+                    let go_module_cache = go_module_cache.map(Path::to_path_buf);
+                    let native_work_directory = native_work_directory.to_path_buf();
+                    (
+                        Some(Arc::new(DeferredGoOracle::new(move || {
+                            admit_go_oracle(
+                                &go,
+                                go_oracle.as_deref(),
+                                go_module_cache.as_deref(),
+                                &native_work_directory,
+                                probe_limits,
+                            )
+                        }))),
+                        None,
+                    )
                 }
-            }
+                Err(error) => (None, Some(go_authority_failure(&error))),
+            },
             (Some(_), Some(failure)) => (None, Some(failure)),
             (None, failure) => (None, failure),
         };
@@ -263,7 +261,8 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
                 python_checker,
                 deferred_native_python,
                 rust,
-                go,
+                go: None,
+                deferred_go,
                 go_unavailable,
                 csharp,
                 java,
@@ -342,32 +341,62 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         })
     }
 
-    fn go_root(
-        &self,
-        go: &Path,
-        probe_limits: ToolchainProbeLimits,
-    ) -> Result<PathBuf, LocalCompilerHostError> {
-        let output = probe_command(NativeTool::GoCompiler, go, &["env", "GOROOT"], probe_limits)
-            .map_err(LocalCompilerHostError::GoRootProbe)?;
-        let path = match str::from_utf8(&output) {
-            Ok(text) => PathBuf::from(text.trim()),
-            Err(source) => {
-                return Err(LocalCompilerHostError::GoRootEncoding { output, source });
-            }
+}
+
+/// Admits the Go package oracle for the selected compiler: its GOROOT, module cache, and the
+/// identity of the executable and complete installation. Runs at most once per owner.
+fn admit_go_oracle(
+    go: &Path,
+    go_oracle: Option<&Path>,
+    go_module_cache: Option<&Path>,
+    native_work_directory: &Path,
+    probe_limits: ToolchainProbeLimits,
+) -> Result<ConfiguredGoOracle, LocalRuntimeGoAuthorityFailure> {
+    let admitted = (|| {
+        let module_cache = selected_go_module_cache(go_module_cache, native_work_directory)?;
+        let goroot = go_root(go, probe_limits)?;
+        let child_environment = GoOracleChildEnvironment::new(
+            go.to_path_buf(),
+            goroot,
+            module_cache,
+            native_work_directory.join("go-oracle-cache"),
+        )?;
+        let configuration = match go_oracle {
+            Some(oracle) => GoOracleConfiguration::oracle_binary(oracle.to_path_buf())?,
+            None => GoOracleConfiguration::go_toolchain(go.to_path_buf())?,
         };
-        if path.as_os_str().is_empty() {
-            return Err(LocalCompilerHostError::GoRootEmpty {
-                compiler: go.to_path_buf().into_boxed_path(),
-            });
+        GoOracle::default()
+            .with_configuration(configuration)
+            .with_child_environment(child_environment)
+            .map_err(LocalCompilerHostError::from)
+    })();
+    admitted.map_err(|error| go_authority_failure(&error))
+}
+
+fn go_root(
+    go: &Path,
+    probe_limits: ToolchainProbeLimits,
+) -> Result<PathBuf, LocalCompilerHostError> {
+    let output = probe_command(NativeTool::GoCompiler, go, &["env", "GOROOT"], probe_limits)
+        .map_err(LocalCompilerHostError::GoRootProbe)?;
+    let path = match str::from_utf8(&output) {
+        Ok(text) => PathBuf::from(text.trim()),
+        Err(source) => {
+            return Err(LocalCompilerHostError::GoRootEncoding { output, source });
         }
-        if !path.is_absolute() {
-            return Err(LocalCompilerHostError::GoRootRelative {
-                compiler: go.to_path_buf().into_boxed_path(),
-                goroot: path.into_boxed_path(),
-            });
-        }
-        self.validate_directory(LocalHostPathRole::GoRoot, LocalHostVariable::NudoxGo, path)
+    };
+    if path.as_os_str().is_empty() {
+        return Err(LocalCompilerHostError::GoRootEmpty {
+            compiler: go.to_path_buf().into_boxed_path(),
+        });
     }
+    if !path.is_absolute() {
+        return Err(LocalCompilerHostError::GoRootRelative {
+            compiler: go.to_path_buf().into_boxed_path(),
+            goroot: path.into_boxed_path(),
+        });
+    }
+    validate_directory_path(LocalHostPathRole::GoRoot, LocalHostVariable::NudoxGo, path)
 }
 
 pub(super) fn go_authority_failure(

@@ -822,6 +822,18 @@ impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
         {
             *row = crate::application::LocalRuntimeToolchain::deferred_native_python(deferred);
         }
+        if let Some(deferred) = &package_authority.deferred_go {
+            if admit_toolchains_now {
+                // Inspection answers with exactly what an owner would admit, so it pays for the
+                // whole-installation admission an owner leaves to its Go version probe.
+                let _ = deferred.resolve();
+            } else if let Some(row) = toolchains
+                .iter_mut()
+                .find(|row| row.tool == NativeTool::GoCompiler)
+            {
+                row.attach_deferred_go(deferred);
+            }
+        }
         let configuration = LocalCompilerRuntimeConfiguration::new(
             paths,
             toolchains,

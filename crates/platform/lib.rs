@@ -30,6 +30,7 @@ pub mod monotonic;
 pub mod macos_process;
 mod native_path;
 mod retry;
+pub mod user_cache;
 #[cfg(windows)]
 pub mod win32;
 #[cfg(windows)]

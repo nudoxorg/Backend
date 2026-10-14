@@ -321,8 +321,9 @@ impl ProjectionNamespace {
         };
         let built = (|| {
             let generations = if fresh {
+                // The scaffold flush below covers this entry together with the gate's.
                 directory
-                    .create_private_dir(GENERATIONS_NAME)
+                    .create_private_dir_unflushed(GENERATIONS_NAME)
                     .map_err(filesystem)?
             } else {
                 directory

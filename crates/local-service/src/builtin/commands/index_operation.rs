@@ -346,8 +346,12 @@ impl IndexOperationJournal {
                 .await
                 .map_err(database_error)?;
             set_and_verify_database_page_limit(&connection, MAX_DATABASE_PAGES).await?;
+            // One transaction, so creating the journal costs one commit rather than one per
+            // statement. Reopening an existing journal writes nothing. A deferred transaction:
+            // an immediate one also opens a write transaction on the connection's temporary
+            // database, which creates and flushes a scratch database file for no purpose.
             connection
-                .execute_batch(SCHEMA)
+                .execute_batch(format!("BEGIN;{SCHEMA}COMMIT;"))
                 .await
                 .map_err(database_error)?;
             database_directory

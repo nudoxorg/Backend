@@ -1174,6 +1174,16 @@ impl LocalCompilerCapabilities {
                 {
                     LocalCompilerCapabilityState::Deferred
                 }
+                None if profile.language() == Language::Go
+                    && configuration.package_authority.go_admission_pending() =>
+                {
+                    match runtime.map(|candidate| candidate.state) {
+                        Some(LocalRuntimeToolchainState::Unavailable) | None => {
+                            LocalCompilerCapabilityState::Unavailable
+                        }
+                        Some(_) => LocalCompilerCapabilityState::Probing,
+                    }
+                }
                 None if local_authority_fingerprint.is_none() => {
                     LocalCompilerCapabilityState::Unavailable
                 }
@@ -1342,7 +1352,7 @@ fn package_authority_fingerprint(
             _ => return None,
         },
         Language::Go => {
-            identity.update(&authority.go.as_ref()?.local_configuration_fingerprint());
+            identity.update(&authority.go_oracle()?.local_configuration_fingerprint());
         }
         Language::Java => {
             let java = authority.java.as_ref()?;
@@ -1512,7 +1522,7 @@ fn capability_setup_issue(
     runtime: Option<&LocalRuntimeToolchain>,
     authority: &LocalRuntimePackageAuthority,
 ) -> Option<CompilerToolIssue> {
-    if profile.language() == Language::Go && authority.go_unavailable.is_some() {
+    if profile.language() == Language::Go && authority.go_authority_failure().is_some() {
         return Some(CompilerToolIssue {
             requirement: CompilerToolRequirement::Native(NativeTool::GoCompiler),
             failure: CompilerToolFailure::ProbeFailed,
@@ -1633,7 +1643,7 @@ fn portable_invocation_options_digest(
             );
         }
         Language::Go => {
-            let oracle = authority.go.as_ref()?;
+            let oracle = authority.go_oracle()?;
             if oracle.portable_invocation_options().mode() != GoOracleInvocationModeV1::GoToolchain
                 || !oracle.uses_toolchain_executable(runtime?.executable_path()?)
             {
@@ -1867,6 +1877,8 @@ pub struct LocalRuntimeToolchain {
 enum ToolchainProbeInvocation {
     #[default]
     Native,
+    /// The Go compiler's version probe also settles the owner-shared deferred oracle admission.
+    GoWithDeferredAuthority(Arc<DeferredGoOracle>),
     DeferredNativePython,
     TypeScriptScript {
         node: Box<Path>,
@@ -1884,6 +1896,10 @@ enum PendingToolchainProbe {
         tool: NativeTool,
         executable: PathBuf,
     },
+    GoWithDeferredAuthority {
+        executable: PathBuf,
+        authority: Arc<DeferredGoOracle>,
+    },
     TypeScriptScript {
         compiler: PathBuf,
         node: Box<Path>,
@@ -1895,6 +1911,7 @@ impl PendingToolchainProbe {
     fn tool(&self) -> NativeTool {
         match self {
             Self::Native { tool, .. } => *tool,
+            Self::GoWithDeferredAuthority { .. } => NativeTool::GoCompiler,
             Self::TypeScriptScript { .. } => NativeTool::TypeScriptCompiler,
         }
     }
@@ -1907,6 +1924,18 @@ impl PendingToolchainProbe {
             Self::Native { tool, executable } => {
                 let version = probe_version(tool, &executable, limits)?;
                 LocalRuntimeToolchain::resolved(tool, executable, &version)
+                    .map_err(|source| ToolchainProbeError::Resolution { tool, source })
+            }
+            Self::GoWithDeferredAuthority {
+                executable,
+                authority,
+            } => {
+                let tool = NativeTool::GoCompiler;
+                let version = probe_version(tool, &executable, limits);
+                // The authority's outcome, including a typed refusal, is retained on the shared
+                // admission and read by the capability table; it never fails the version row.
+                let _ = authority.resolve();
+                LocalRuntimeToolchain::resolved(tool, executable, &version?)
                     .map_err(|source| ToolchainProbeError::Resolution { tool, source })
             }
             Self::TypeScriptScript {
@@ -2022,6 +2051,18 @@ impl LocalRuntimeToolchain {
         let mut row = Self::probing(NativeTool::Python, deferred.image.clone());
         row.probe_invocation = ToolchainProbeInvocation::DeferredNativePython;
         row
+    }
+
+    /// Binds the owner-shared deferred Go admission to the Go compiler's pending probe so the
+    /// capability row and the oracle become ready together.
+    pub(crate) fn attach_deferred_go(&mut self, authority: &Arc<DeferredGoOracle>) {
+        if self.facts.tool == NativeTool::GoCompiler
+            && self.facts.state == LocalRuntimeToolchainState::Probing
+            && matches!(self.probe_invocation, ToolchainProbeInvocation::Native)
+        {
+            self.probe_invocation =
+                ToolchainProbeInvocation::GoWithDeferredAuthority(Arc::clone(authority));
+        }
     }
 
     pub(crate) fn probing(tool: NativeTool, executable: PathBuf) -> Self {
@@ -2170,6 +2211,12 @@ impl LocalRuntimeToolchain {
                     tool: self.facts.tool,
                     executable,
                 },
+                ToolchainProbeInvocation::GoWithDeferredAuthority(authority) => {
+                    PendingToolchainProbe::GoWithDeferredAuthority {
+                        executable,
+                        authority: Arc::clone(authority),
+                    }
+                },
                 ToolchainProbeInvocation::TypeScriptScript {
                     node, module_root, ..
                 } => PendingToolchainProbe::TypeScriptScript {
@@ -2192,7 +2239,8 @@ impl LocalRuntimeToolchain {
                     ToolchainProbeInvocation::DeferredNativePython => {
                         unreachable!("deferred row has no ready identity")
                     }
-                    ToolchainProbeInvocation::Native => {
+                    ToolchainProbeInvocation::Native
+                    | ToolchainProbeInvocation::GoWithDeferredAuthority(_) => {
                         ResolvedToolchain::from_identity(self.facts.tool, executable, identity)?
                     }
                     ToolchainProbeInvocation::TypeScriptScript {
@@ -2723,6 +2771,9 @@ pub struct LocalRuntimePackageAuthority {
     pub rust: Option<LocalRuntimeRustAuthority>,
     /// Go package oracle authority.
     pub go: Option<ConfiguredGoOracle>,
+    /// Go package oracle authority whose admission reads the whole installation and is therefore
+    /// kept off the owner's startup path; it is admitted beside the Go compiler's version probe.
+    pub deferred_go: Option<Arc<DeferredGoOracle>>,
     /// Retained Go-only admission failure; it never prevents unrelated owners from starting.
     pub go_unavailable: Option<LocalRuntimeGoAuthorityFailure>,
     /// C# Roslyn helper authority.
@@ -2734,6 +2785,37 @@ pub struct LocalRuntimePackageAuthority {
 }
 
 impl LocalRuntimePackageAuthority {
+    /// The admitted Go oracle, whether it was supplied ready or finished its deferred admission.
+    pub(crate) fn go_oracle(&self) -> Option<&ConfiguredGoOracle> {
+        self.go.as_ref().or_else(|| {
+            self.deferred_go
+                .as_deref()
+                .and_then(DeferredGoOracle::outcome)
+                .and_then(|outcome| outcome.as_ref().ok())
+        })
+    }
+
+    /// The typed Go-only refusal, whether it was captured at host selection or by the deferred
+    /// admission.
+    pub(crate) fn go_authority_failure(&self) -> Option<LocalRuntimeGoAuthorityFailure> {
+        self.go_unavailable.or_else(|| {
+            self.deferred_go
+                .as_deref()
+                .and_then(DeferredGoOracle::outcome)
+                .and_then(|outcome| outcome.as_ref().err().copied())
+        })
+    }
+
+    /// True while a deferred Go admission has neither produced an oracle nor failed.
+    fn go_admission_pending(&self) -> bool {
+        self.go.is_none()
+            && self.go_unavailable.is_none()
+            && self
+                .deferred_go
+                .as_deref()
+                .is_some_and(|deferred| deferred.outcome().is_none())
+    }
+
     fn admitted_python_checker(&self) -> LocalRuntimePythonCheckerAdmission<&Pyrefly> {
         match (&self.python_checker, self.deferred_native_python.as_ref()) {
             (LocalRuntimePythonCheckerAdmission::DeferredNativePython, Some(deferred)) => {
@@ -2746,6 +2828,83 @@ impl LocalRuntimePackageAuthority {
             }
             _ => self.python_checker.as_ref(),
         }
+    }
+}
+
+/// One owner-shared Go oracle admission whose cost grows with the installed Go toolchain.
+///
+/// Admitting Go captures the identity of the selected executable and its whole GOROOT, which is
+/// work that no owner without Go packages should pay before it can answer. The first caller runs
+/// the admission; every other caller waits for that single outcome, success or typed refusal.
+pub struct DeferredGoOracle {
+    admit: Box<
+        dyn Fn() -> Result<ConfiguredGoOracle, LocalRuntimeGoAuthorityFailure> + Send + Sync,
+    >,
+    outcome: OnceLock<Result<ConfiguredGoOracle, LocalRuntimeGoAuthorityFailure>>,
+}
+
+impl core::fmt::Debug for DeferredGoOracle {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("DeferredGoOracle")
+            .field("resolved", &self.outcome.get().map(Result::is_ok))
+            .finish_non_exhaustive()
+    }
+}
+
+impl DeferredGoOracle {
+    /// Defers `admit` until the first call to [`Self::resolve`].
+    pub fn new(
+        admit: impl Fn() -> Result<ConfiguredGoOracle, LocalRuntimeGoAuthorityFailure>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        Self {
+            admit: Box::new(admit),
+            outcome: OnceLock::new(),
+        }
+    }
+
+    /// Runs the admission once and returns its final outcome.
+    pub fn resolve(&self) -> &Result<ConfiguredGoOracle, LocalRuntimeGoAuthorityFailure> {
+        self.outcome.get_or_init(|| (self.admit)())
+    }
+
+    fn outcome(&self) -> Option<&Result<ConfiguredGoOracle, LocalRuntimeGoAuthorityFailure>> {
+        self.outcome.get()
+    }
+}
+
+/// The Go oracle a request waits for, however it was admitted.
+#[derive(Clone)]
+enum GoAuthoritySource {
+    Absent,
+    Ready(ConfiguredGoOracle),
+    Deferred(Arc<DeferredGoOracle>),
+}
+
+impl GoAuthoritySource {
+    fn of(authority: &LocalRuntimePackageAuthority) -> Self {
+        match (&authority.go, &authority.deferred_go) {
+            (Some(oracle), _) => Self::Ready(oracle.clone()),
+            (None, Some(deferred)) => Self::Deferred(Arc::clone(deferred)),
+            (None, None) => Self::Absent,
+        }
+    }
+
+    fn oracle(&self) -> Option<&ConfiguredGoOracle> {
+        match self {
+            Self::Absent => None,
+            Self::Ready(oracle) => Some(oracle),
+            Self::Deferred(deferred) => deferred
+                .outcome()
+                .and_then(|outcome| outcome.as_ref().ok()),
+        }
+    }
+
+    fn is_pending(&self) -> bool {
+        matches!(self, Self::Deferred(deferred) if deferred.outcome().is_none())
     }
 }
 
@@ -3111,7 +3270,7 @@ impl LocalCompilerClient {
         let capabilities = Arc::new(RwLock::new(LocalCompilerCapabilities::from_configuration(
             &configuration,
         )));
-        let go_authority = configuration.package_authority.go.clone();
+        let go_authority = GoAuthoritySource::of(&configuration.package_authority);
         let native_python = configuration
             .package_authority
             .deferred_native_python
@@ -3359,8 +3518,15 @@ impl LocalCompilerClient {
         let native_python = (facts.language == Language::Python)
             .then_some(self.shared.native_python.as_ref())
             .flatten();
+        // A Go request may be the first to need the whole-installation admission, which can take
+        // longer than a version probe on a cold or busy machine; it gets the request deadline.
+        let go_admission = facts.language == Language::Go && self.shared.go_authority.is_pending();
         let deadline = Instant::now()
-            .checked_add(native_python.map_or(PROBE_WAIT, |_| *self.shared.native_python_timeout))
+            .checked_add(if native_python.is_some() || go_admission {
+                *self.shared.native_python_timeout
+            } else {
+                PROBE_WAIT
+            })
             .expect("validated compiler admission wait fits the monotonic clock");
         if let Some(deferred) = native_python {
             if !self.shared.alive.load(Ordering::Acquire) {
@@ -3604,7 +3770,7 @@ impl LocalCompilerClient {
     ) -> Result<Option<GoPackageAuthorityWitness>, PackageSemanticRuntimeError> {
         let facts = request.facts();
         if facts.language != Language::Go { return Ok(None); }
-        let Some(oracle) = &self.shared.go_authority else { return Ok(None); };
+        let Some(oracle) = self.shared.go_authority.oracle() else { return Ok(None); };
         if cancelled.load(Ordering::Acquire) {
             return Err(PackageSemanticRuntimeError::Runtime(
                 facts.terminal(CompilerRuntimeCause::RequestCancelled),
@@ -3746,7 +3912,7 @@ struct RuntimeShared {
     capabilities: Arc<RwLock<LocalCompilerCapabilities>>,
     capability_signal: Arc<CapabilitySignal>,
     input_witnesses: Arc<CompilerInputWitnessStore>,
-    go_authority: Option<ConfiguredGoOracle>,
+    go_authority: GoAuthoritySource,
     native_python: Option<Arc<DeferredNativePython>>,
     native_python_timeout: LocalCompilerTimeout,
     native_python_observations: Sender<ToolchainProbeObservation>,
@@ -4261,8 +4427,8 @@ fn run_worker_generation(
         typescript_project_host: configuration.typescript_project_host.as_ref(),
         python_checker: configuration.package_authority.admitted_python_checker(),
         rust,
-        go: configuration.package_authority.go.as_ref(),
-        go_unavailable: configuration.package_authority.go_unavailable,
+        go: configuration.package_authority.go_oracle(),
+        go_unavailable: configuration.package_authority.go_authority_failure(),
         csharp,
         java,
         maximum_image_bytes: configuration
@@ -6003,7 +6169,7 @@ mod request_lease_tests {
             ))),
             capability_signal: Arc::new(CapabilitySignal::new()),
             input_witnesses: Arc::new(CompilerInputWitnessStore::new(root.join("witnesses"))),
-            go_authority: None,
+            go_authority: GoAuthoritySource::Absent,
             native_python: None,
             native_python_timeout: configuration.timeout,
             native_python_observations: channel().0,
@@ -6939,5 +7105,199 @@ mod deferred_native_python_tests {
         assert_eq!(cold.admission_attempts.load(Ordering::Relaxed), 1);
         drop(repeated);
         drop(client);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod deferred_go_oracle_tests {
+    use super::*;
+    use backend_frontend_go::legacy::oracle::GoOracleChildEnvironment;
+    use backend_frontend_go::legacy::{GoOracle, GoOracleConfiguration};
+    use backend_semantic::vocabulary::GoVersion;
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::sync::atomic::AtomicUsize;
+
+    struct Fixture {
+        root: PathBuf,
+        go: PathBuf,
+    }
+
+    impl Fixture {
+        fn new(label: &str) -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let root = std::env::temp_dir().join(format!(
+                "nudox-deferred-go-{label}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(root.join("bin")).unwrap();
+            std::fs::create_dir_all(root.join("goroot")).unwrap();
+            std::fs::create_dir_all(root.join("modules")).unwrap();
+            std::fs::write(root.join("goroot/VERSION"), "go1.99.0\n").unwrap();
+            let go = root.join("bin/go");
+            std::fs::write(
+                &go,
+                "#!/bin/sh\nif [ \"$1\" = version ]; then echo 'go version go1.99.0 test/amd64'; fi\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&go, std::fs::Permissions::from_mode(0o700)).unwrap();
+            Self {
+                go: std::fs::canonicalize(go).unwrap(),
+                root: std::fs::canonicalize(root).unwrap(),
+            }
+        }
+
+        fn oracle(&self) -> Result<ConfiguredGoOracle, LocalRuntimeGoAuthorityFailure> {
+            admit_fixture_oracle(&self.go, &self.root)
+        }
+
+        fn configuration(
+            &self,
+            deferred: &Arc<DeferredGoOracle>,
+        ) -> LocalCompilerRuntimeConfiguration {
+            let mut row = LocalRuntimeToolchain::probing(NativeTool::GoCompiler, self.go.clone());
+            row.attach_deferred_go(deferred);
+            LocalCompilerRuntimeConfiguration::new(
+                LocalCompilerRuntimePaths::new(
+                    self.root.join("artifacts"),
+                    self.root.join("journal"),
+                    self.root.join("native"),
+                )
+                .unwrap(),
+                vec![row].into_boxed_slice(),
+                Box::new([]),
+                LocalRuntimePackageAuthority {
+                    deferred_go: Some(Arc::clone(deferred)),
+                    ..Default::default()
+                },
+                LocalCompilerTimeout::new(Duration::from_secs(60)).unwrap(),
+                PublicationLimits::new(NonZeroUsize::MIN, NonZeroUsize::MIN).unwrap(),
+                LocalCompilerScratch::with_fragment_capacity(
+                    NonZeroUsize::new(16 * 1024 * 1024).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn admit_fixture_oracle(
+        go: &Path,
+        root: &Path,
+    ) -> Result<ConfiguredGoOracle, LocalRuntimeGoAuthorityFailure> {
+        let environment = GoOracleChildEnvironment::new(
+            go.to_path_buf(),
+            root.join("goroot"),
+            root.join("modules"),
+            root.join("build-cache"),
+        )
+        .map_err(|_| LocalRuntimeGoAuthorityFailure::ToolchainIdentityUnavailable)?;
+        let configuration = GoOracleConfiguration::go_toolchain(go.to_path_buf())
+            .map_err(|_| LocalRuntimeGoAuthorityFailure::ExecutableUnavailable)?;
+        GoOracle::default()
+            .with_configuration(configuration)
+            .with_child_environment(environment)
+            .map_err(|_| LocalRuntimeGoAuthorityFailure::OracleUnavailable)
+    }
+
+    fn limits() -> ToolchainProbeLimits {
+        ToolchainProbeLimits::new(Duration::from_secs(10), NonZeroUsize::new(4096).unwrap())
+            .unwrap()
+    }
+
+    fn go_profile() -> LanguageProfile {
+        LanguageProfile::Go(GoVersion::Go125)
+    }
+
+    #[test]
+    fn opening_the_configuration_does_not_admit_go_and_the_row_is_probing() {
+        let fixture = Fixture::new("not-admitted");
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&attempts);
+        let deferred = Arc::new(DeferredGoOracle::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Err(LocalRuntimeGoAuthorityFailure::GoRootUnavailable)
+        }));
+        let configuration = fixture.configuration(&deferred);
+        let capability = configuration.capabilities().for_profile(go_profile());
+        assert_eq!(capability.state(), LocalCompilerCapabilityState::Probing);
+        assert!(capability.local_authority_fingerprint().is_none());
+        assert!(capability.manifest().is_none());
+        assert_eq!(attempts.load(Ordering::SeqCst), 0, "admission is not run at open");
+        assert!(configuration.toolchains[0].probe_request().is_some());
+    }
+
+    #[test]
+    fn the_go_version_probe_settles_the_deferred_refusal_exactly_once() {
+        let fixture = Fixture::new("refused");
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&attempts);
+        let deferred = Arc::new(DeferredGoOracle::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Err(LocalRuntimeGoAuthorityFailure::GoRootUnavailable)
+        }));
+        let mut configuration = fixture.configuration(&deferred);
+        let request = configuration.toolchains[0].probe_request().unwrap();
+        let settled = request.admit(limits()).unwrap();
+        assert_eq!(settled.state, LocalRuntimeToolchainState::Ready);
+        configuration.toolchains[0] = settled;
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            configuration.package_authority.go_authority_failure(),
+            Some(LocalRuntimeGoAuthorityFailure::GoRootUnavailable)
+        );
+        assert_eq!(
+            configuration.capabilities().for_profile(go_profile()).state(),
+            LocalCompilerCapabilityState::ProbeFailed,
+            "the typed Go-only refusal is what the capability table reports"
+        );
+        assert!(deferred.resolve().is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1, "the outcome is final");
+    }
+
+    #[test]
+    fn a_successful_deferred_admission_makes_go_ready_with_the_same_identity_as_eager_admission() {
+        let fixture = Fixture::new("ready");
+        let deferred = Arc::new(DeferredGoOracle::new({
+            let go = fixture.go.clone();
+            let root = fixture.root.clone();
+            move || admit_fixture_oracle(&go, &root)
+        }));
+        let mut configuration = fixture.configuration(&deferred);
+        let request = configuration.toolchains[0].probe_request().unwrap();
+        configuration.toolchains[0] = request.admit(limits()).unwrap();
+        let deferred_capability = configuration.capabilities().for_profile(go_profile());
+        assert_eq!(deferred_capability.state(), LocalCompilerCapabilityState::Ready);
+
+        // The same installation admitted eagerly, as startup used to, yields the same identity.
+        let eager = LocalRuntimePackageAuthority {
+            go: Some(fixture.oracle().unwrap()),
+            ..Default::default()
+        };
+        let runtime = LocalRuntimeToolchain::resolved(
+            NativeTool::GoCompiler,
+            fixture.go.clone(),
+            b"go version go1.99.0 test/amd64\n",
+        )
+        .unwrap();
+        assert_eq!(
+            package_authority_fingerprint(go_profile(), &eager, Some(&runtime)),
+            deferred_capability.local_authority_fingerprint(),
+        );
+    }
+
+    #[test]
+    fn a_changed_toolchain_changes_the_deferred_identity() {
+        let fixture = Fixture::new("changed");
+        let first = fixture.oracle().unwrap().local_configuration_fingerprint();
+        std::fs::write(fixture.root.join("goroot/VERSION"), "go1.99.1\n").unwrap();
+        let second = fixture.oracle().unwrap().local_configuration_fingerprint();
+        assert_ne!(first, second);
     }
 }

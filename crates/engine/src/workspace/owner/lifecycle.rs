@@ -160,16 +160,18 @@ impl<M: WorkspaceModel> WorkspaceOwner<M> {
             .map_err(WorkspaceError::store)?
             .with_relation::<crate::workspace::catalog::CatalogPayloadRefRelation>()
             .map_err(WorkspaceError::store)?;
-        let admission = lease.directory_admission();
-        for relative in [
-            "objects",
-            "objects/packs",
-            "objects/objects",
-            "objects/closures",
-            "objects/nodes",
-        ] {
-            admission.admit(relative).map_err(WorkspaceError::io)?;
-        }
+        // One batch: the lease checks run once and each directory that gained entries is flushed
+        // once, together, rather than once per created directory.
+        lease
+            .directory_admission()
+            .admit_all([
+                "objects",
+                "objects/packs",
+                "objects/objects",
+                "objects/closures",
+                "objects/nodes",
+            ])
+            .map_err(WorkspaceError::io)?;
         let store = Arc::new(
             FileStore::open_with_registry(
                 directory.join("objects"),

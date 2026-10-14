@@ -2592,12 +2592,166 @@ fn helper_source_identity() -> [u8; 32] {
     digest.finalize().into()
 }
 
+/// Content identity of the selected Go executable and complete GOROOT closure.
+///
+/// Reading every byte of a Go installation costs seconds on a developer machine and far more on a
+/// busy one, so the result is memoized per machine. A memoized identity is reused only while a
+/// fresh metadata-only walk of the same closure reproduces the exact fingerprint recorded with it
+/// (every path, kind, size, mode, owner-visible link target, inode, device, and nanosecond
+/// modification and change time), and only when no member was touched close enough to the original
+/// read for that read to have raced with an edit. Any difference, or an unusable cache, falls back
+/// to hashing the contents, so a changed toolchain always produces a new identity.
 fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<[u8; 32]> {
+    #[cfg(all(unix, not(test)))]
+    {
+        let memo = backend_platform::user_cache::DerivedFactMemo::in_user_cache(
+            "go-toolchain-identity",
+        );
+        hash_toolchain_identity_memoized(executable, goroot, memo.as_ref())
+    }
+    #[cfg(any(not(unix), test))]
+    {
+        hash_toolchain_identity_memoized(executable, goroot, None)
+    }
+}
+
+/// Members touched this recently before a read began could have changed again without moving
+/// their timestamps (coarse filesystem clocks), so no memo is trusted for them.
+const TOOLCHAIN_MEMO_RACY_WINDOW_NANOS: i128 = 2_000_000_000;
+const TOOLCHAIN_MEMO_RECORD_BYTES: usize = 32 + 32 + 16;
+
+#[derive(Clone, Copy)]
+struct ToolchainMemoRecord {
+    fingerprint: [u8; 32],
+    identity: [u8; 32],
+    read_started_nanos: i128,
+}
+
+impl ToolchainMemoRecord {
+    fn encode(self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(TOOLCHAIN_MEMO_RECORD_BYTES);
+        bytes.extend_from_slice(&self.fingerprint);
+        bytes.extend_from_slice(&self.identity);
+        bytes.extend_from_slice(&self.read_started_nanos.to_be_bytes());
+        bytes
+    }
+
+    fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != TOOLCHAIN_MEMO_RECORD_BYTES {
+            return None;
+        }
+        Some(Self {
+            fingerprint: bytes[..32].try_into().ok()?,
+            identity: bytes[32..64].try_into().ok()?,
+            read_started_nanos: i128::from_be_bytes(bytes[64..80].try_into().ok()?),
+        })
+    }
+}
+
+fn toolchain_memo_key(executable: &Path, goroot: &Path) -> Vec<u8> {
+    let mut key = Vec::new();
+    key.extend_from_slice(b"nudox.go-toolchain-identity.memo.v1\0");
+    key.extend_from_slice(executable.as_os_str().as_encoded_bytes());
+    key.push(0);
+    key.extend_from_slice(goroot.as_os_str().as_encoded_bytes());
+    key
+}
+
+fn unix_nanos_now() -> i128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| i128::try_from(elapsed.as_nanos()).unwrap_or(i128::MAX))
+}
+
+fn hash_toolchain_identity_memoized(
+    executable: &Path,
+    goroot: &Path,
+    memo: Option<&backend_platform::user_cache::DerivedFactMemo>,
+) -> std::io::Result<[u8; 32]> {
+    let Some(memo) = memo else {
+        return Ok(walk_toolchain(executable, goroot, false)?.digest);
+    };
+    let key = toolchain_memo_key(executable, goroot);
+    let read_started_nanos = unix_nanos_now();
+    // The metadata walk performs every structural refusal (links, specials, bounds), so a reused
+    // identity is only ever returned for a closure the content walk would also have accepted.
+    let observed = walk_toolchain(executable, goroot, true)?;
+    if let Some(record) = memo
+        .load(&key)
+        .as_deref()
+        .and_then(ToolchainMemoRecord::decode)
+        && record.fingerprint == observed.digest
+        && observed.newest_change_nanos < record.read_started_nanos - TOOLCHAIN_MEMO_RACY_WINDOW_NANOS
+    {
+        return Ok(record.identity);
+    }
+    let identity = walk_toolchain(executable, goroot, false)?.digest;
+    if observed.newest_change_nanos < read_started_nanos - TOOLCHAIN_MEMO_RACY_WINDOW_NANOS {
+        // Best effort: an unwritable cache only costs the next start a re-read.
+        let _ = memo.store(
+            &key,
+            &ToolchainMemoRecord {
+                fingerprint: observed.digest,
+                identity,
+                read_started_nanos,
+            }
+            .encode(),
+        );
+    }
+    Ok(identity)
+}
+
+/// One complete walk of the selected Go closure.
+struct ToolchainWalk {
+    /// The content identity when the walk read contents, otherwise the metadata fingerprint.
+    digest: [u8; 32],
+    /// The newest modification or change time of any selected file, in Unix nanoseconds.
+    newest_change_nanos: i128,
+}
+
+fn walk_toolchain(
+    executable: &Path,
+    goroot: &Path,
+    metadata_only: bool,
+) -> std::io::Result<ToolchainWalk> {
     use std::io::ErrorKind;
 
     struct WalkBudget {
         entries: usize,
         bytes: u64,
+        /// A metadata-only walk fingerprints each file's observable state instead of reading it.
+        metadata_only: bool,
+        newest_change_nanos: i128,
+    }
+
+    #[cfg(unix)]
+    fn observe_file_state(
+        metadata: &std::fs::Metadata,
+        budget: &mut WalkBudget,
+        digest: &mut Sha256,
+    ) {
+        use std::os::unix::fs::MetadataExt as _;
+        let nanos = |seconds: i64, subsecond: i64| {
+            i128::from(seconds) * 1_000_000_000 + i128::from(subsecond)
+        };
+        let modified = nanos(metadata.mtime(), metadata.mtime_nsec());
+        let changed = nanos(metadata.ctime(), metadata.ctime_nsec());
+        budget.newest_change_nanos = budget.newest_change_nanos.max(modified).max(changed);
+        digest.update(b"state\0");
+        digest.update(metadata.dev().to_be_bytes());
+        digest.update(metadata.ino().to_be_bytes());
+        digest.update(modified.to_be_bytes());
+        digest.update(changed.to_be_bytes());
+    }
+
+    #[cfg(not(unix))]
+    fn observe_file_state(
+        _metadata: &std::fs::Metadata,
+        budget: &mut WalkBudget,
+        _digest: &mut Sha256,
+    ) {
+        // Without change times and inode numbers a metadata walk cannot vouch for contents.
+        budget.newest_change_nanos = i128::MAX;
     }
 
     fn path_bytes(path: &Path) -> std::io::Result<&[u8]> {
@@ -2700,7 +2854,11 @@ fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<
             use std::os::unix::fs::PermissionsExt;
             digest.update(metadata.permissions().mode().to_be_bytes());
         }
-        hash_regular_file_handle(file, maximum, role, digest)?;
+        if budget.metadata_only {
+            observe_file_state(&metadata, budget, digest);
+        } else {
+            hash_regular_file_handle(file, maximum, role, digest)?;
+        }
         Ok(())
     }
 
@@ -2883,10 +3041,17 @@ fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<
     let executable_parent = DirectoryCapability::open_read_only_source(executable_parent)?;
     let mut executable_file = executable_parent.open_file_read(executable_name)?;
     let mut digest = Sha256::new();
-    digest.update(b"nudox.go-toolchain-identity.v3\0");
+    // The two walks hash different things and must never be confused for one another.
+    digest.update(if metadata_only {
+        b"nudox.go-toolchain-fingerprint.v1\0".as_slice()
+    } else {
+        b"nudox.go-toolchain-identity.v3\0".as_slice()
+    });
     let mut budget = WalkBudget {
         entries: 0,
         bytes: 0,
+        metadata_only,
+        newest_change_nanos: i128::MIN,
     };
     add_open_file(
         &mut executable_file,
@@ -2908,7 +3073,10 @@ fn hash_toolchain_identity(executable: &Path, goroot: &Path) -> std::io::Result<
         &mut budget,
         &mut digest,
     )?;
-    Ok(digest.finalize().into())
+    Ok(ToolchainWalk {
+        digest: digest.finalize().into(),
+        newest_change_nanos: budget.newest_change_nanos,
+    })
 }
 
 fn digest_hex(bytes: &[u8]) -> String {
@@ -3576,6 +3744,141 @@ mod read_tests {
             std::fs::create_dir(&deep)?;
         }
         assert!(hash_toolchain_identity(&deep_go, &deep_goroot).is_err());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn memo_fixture(root: &Path) -> io::Result<(PathBuf, PathBuf)> {
+        use std::os::unix::fs::PermissionsExt;
+        let executable = root.join("bin/go");
+        let goroot = root.join("goroot");
+        std::fs::create_dir_all(executable.parent().expect("bin parent"))?;
+        std::fs::create_dir_all(goroot.join("src"))?;
+        std::fs::write(&executable, b"selected go executable")?;
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))?;
+        std::fs::write(goroot.join("VERSION"), "go1.27.1\n")?;
+        std::fs::write(goroot.join("src/main.go"), "package main\n")?;
+        Ok((executable, goroot))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_memoized_toolchain_identity_is_reused_only_while_its_fingerprint_is_unchanged()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::{
+            ToolchainMemoRecord, hash_toolchain_identity_memoized, toolchain_memo_key,
+            unix_nanos_now, walk_toolchain,
+        };
+        let root = tempfile::tempdir()?;
+        let (executable, goroot) = memo_fixture(root.path())?;
+        let memo = backend_platform::user_cache::DerivedFactMemo::beneath(
+            &root.path().join("cache"),
+            "go-toolchain-identity",
+        );
+        let key = toolchain_memo_key(&executable, &goroot);
+        let content_identity = hash_toolchain_identity(&executable, &goroot)?;
+
+        // Members changed moments ago may still be mid-edit: nothing is recorded for them.
+        assert_eq!(
+            hash_toolchain_identity_memoized(&executable, &goroot, Some(&memo))?,
+            content_identity
+        );
+        assert_eq!(memo.load(&key), None, "freshly written members are never memoized");
+
+        // A record whose fingerprint matches and whose read began well after every member's last
+        // change is trusted without reading contents. The planted identity proves no read happened.
+        let fingerprint = walk_toolchain(&executable, &goroot, true)?.digest;
+        let planted = ToolchainMemoRecord {
+            fingerprint,
+            identity: [0x5a; 32],
+            read_started_nanos: unix_nanos_now() + 60_000_000_000,
+        };
+        memo.store(&key, &planted.encode())?;
+        assert_eq!(
+            hash_toolchain_identity_memoized(&executable, &goroot, Some(&memo))?,
+            [0x5a; 32]
+        );
+
+        // Any observable change to a member invalidates the record and yields the real identity,
+        // even when the new contents have the same length. (The pause keeps the rewrite out of the
+        // filesystem's timestamp tick of the original write, which no real edit can share.)
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(goroot.join("VERSION"), "go1.27.2\n")?;
+        let changed = hash_toolchain_identity_memoized(&executable, &goroot, Some(&memo))?;
+        assert_ne!(changed, [0x5a; 32]);
+        assert_ne!(changed, content_identity);
+        assert_eq!(changed, hash_toolchain_identity(&executable, &goroot)?);
+
+        // So does an added, renamed, or removed member.
+        memo.store(
+            &key,
+            &ToolchainMemoRecord {
+                fingerprint: walk_toolchain(&executable, &goroot, true)?.digest,
+                identity: [0x5a; 32],
+                read_started_nanos: unix_nanos_now() + 60_000_000_000,
+            }
+            .encode(),
+        )?;
+        std::fs::write(goroot.join("src/extra.go"), "package main\n")?;
+        assert_ne!(
+            hash_toolchain_identity_memoized(&executable, &goroot, Some(&memo))?,
+            [0x5a; 32]
+        );
+        std::fs::remove_file(goroot.join("src/extra.go"))?;
+        std::fs::rename(goroot.join("src/main.go"), goroot.join("src/other.go"))?;
+        assert_ne!(
+            hash_toolchain_identity_memoized(&executable, &goroot, Some(&memo))?,
+            [0x5a; 32]
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_memoized_toolchain_record_is_refused_when_its_read_raced_with_a_change()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::{
+            ToolchainMemoRecord, hash_toolchain_identity_memoized, toolchain_memo_key,
+            unix_nanos_now, walk_toolchain,
+        };
+        let root = tempfile::tempdir()?;
+        let (executable, goroot) = memo_fixture(root.path())?;
+        let memo = backend_platform::user_cache::DerivedFactMemo::beneath(
+            &root.path().join("cache"),
+            "go-toolchain-identity",
+        );
+        let key = toolchain_memo_key(&executable, &goroot);
+        // The recorded read began before the members' last change, so it cannot vouch for them.
+        memo.store(
+            &key,
+            &ToolchainMemoRecord {
+                fingerprint: walk_toolchain(&executable, &goroot, true)?.digest,
+                identity: [0x5a; 32],
+                read_started_nanos: unix_nanos_now() - 60_000_000_000,
+            }
+            .encode(),
+        )?;
+        assert_ne!(
+            hash_toolchain_identity_memoized(&executable, &goroot, Some(&memo))?,
+            [0x5a; 32]
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_toolchain_fingerprint_walk_applies_the_same_structural_refusals_as_the_content_walk()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::{hash_toolchain_identity_memoized, walk_toolchain};
+        let root = tempfile::tempdir()?;
+        let (executable, goroot) = memo_fixture(root.path())?;
+        std::os::unix::fs::symlink("/etc/passwd", goroot.join("outside"))?;
+        assert!(walk_toolchain(&executable, &goroot, true).is_err());
+        let memo = backend_platform::user_cache::DerivedFactMemo::beneath(
+            &root.path().join("cache"),
+            "go-toolchain-identity",
+        );
+        assert!(hash_toolchain_identity_memoized(&executable, &goroot, Some(&memo)).is_err());
         Ok(())
     }
 

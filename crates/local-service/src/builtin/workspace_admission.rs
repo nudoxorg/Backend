@@ -8,7 +8,14 @@ pub(super) fn admit_local_owner_directories(
 ) -> io::Result<()> {
     // These are private application namespaces, not acquired package source
     // trees. Archived builds and object contents are deliberately not visited.
-    for path in [
+    // The whole set is admitted together so that each directory that gains
+    // entries is flushed once rather than once per created child.
+    admission.admit_all(local_owner_directories())
+}
+
+/// Every private directory a local owner expects to exist, parents before children.
+fn local_owner_directories() -> Vec<String> {
+    let mut directories = [
         "compiler",
         "compiler/artifacts",
         "compiler/journal",
@@ -20,15 +27,15 @@ pub(super) fn admit_local_owner_directories(
         "forge/content",
         "registry/v1/cas/objects",
         "registry/registry-acquisition/coordination",
-    ] {
-        admission.admit(path)?;
-    }
+    ]
+    .map(str::to_owned)
+    .to_vec();
     for child in ["packs", "objects", "closures", "nodes"] {
-        admission.admit(format!("semantic-objects/{child}"))?;
+        directories.push(format!("semantic-objects/{child}"));
     }
     for root in ["forge/content", "registry/v1/cas/objects"] {
         for child in ["objects", "temps", "transfers", "quarantine"] {
-            admission.admit(format!("{root}/{child}"))?;
+            directories.push(format!("{root}/{child}"));
         }
     }
     for root in [
@@ -36,8 +43,32 @@ pub(super) fn admit_local_owner_directories(
         "registry/registry-acquisition/coordination",
     ] {
         for child in ["leases", "objects", "temps"] {
-            admission.admit(format!("{root}/{child}"))?;
+            directories.push(format!("{root}/{child}"));
         }
     }
-    Ok(())
+    directories
+}
+
+#[cfg(test)]
+mod tests {
+    use super::local_owner_directories;
+
+    #[test]
+    fn the_admitted_set_is_the_exact_local_owner_namespace() {
+        let directories = local_owner_directories();
+        assert_eq!(directories.len(), 11 + 4 + 8 + 6);
+        for required in [
+            "compiler/journal",
+            "semantic-objects/closures",
+            "forge/content/quarantine",
+            "registry/v1/cas/objects/transfers",
+            "registry/registry-acquisition/coordination/leases",
+        ] {
+            assert!(directories.iter().any(|path| path == required), "{required}");
+        }
+        let mut unique = directories.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), directories.len(), "no directory is listed twice");
+    }
 }
