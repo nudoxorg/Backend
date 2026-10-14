@@ -217,8 +217,29 @@ def require_cli_success(name: str, answer: dict) -> None:
         raise RuntimeError(f"{name} failed: {answer}")
 
 
+def require_completed_index(answer: dict, profile_count: int) -> str:
+    """Exit zero alone admits failed terminal operations; require native completion."""
+    require_cli_success("cli add", answer)
+    observation = answer["json"].get("index_operation", {})
+    detail = observation.get("detail", {})
+    terminal = detail.get("state", {})
+    profiles = detail.get("source_capture", {}).get("profiles", [])
+    if observation.get("state") != "known" or terminal.get("state") != "published":
+        raise RuntimeError("index setup: expected a published operation receipt")
+    if len(profiles) != profile_count or any(
+        p.get("state", {}).get("state") != "published"
+        or p.get("state", {}).get("detail", {}).get("coverage") != {"coverage": "complete"}
+        for p in profiles
+    ):
+        raise RuntimeError("index setup: every fixture profile must publish complete native coverage")
+    root = terminal.get("detail", {}).get("view_root")
+    if not isinstance(root, str) or not re.fullmatch(r"[0-9a-f]{64}", root):
+        raise RuntimeError("index setup: missing exact published view root")
+    return root
+
+
 def require_live_health(summary: dict, full: dict, witness: dict) -> None:
-    """Whole-owner CLI and MCP status must agree; package views have a different basis."""
+    """Whole-owner CLI and MCP status must agree on public identity and coverage."""
     for name, detail, value in (("summary", "summary", summary), ("full", "full", full), ("MCP", "full", witness)):
         if value.get("answer") != "status" or value.get("detail") != detail:
             raise RuntimeError(f"health {name}: wrong answer/detail: {value}")
@@ -262,7 +283,7 @@ def require_bounded_search(reference: dict, bounded: dict, limit: int) -> None:
         raise RuntimeError(f"bounded search: limit {limit} has an untruthful completeness flag")
 
 
-def run_live_contracts(owner: Owner, project: Path, config: dict) -> dict:
+def run_live_contracts(owner: Owner, project: Path, config: dict, published_root: str) -> dict:
     times = {}
 
     def query(name: str, arguments: list[str]) -> dict:
@@ -312,7 +333,8 @@ def run_case(case: dict, bin_dir: Path) -> dict:
     try:
         answer, seconds = run_cli(owner, project, ["add", str(project), "--wait"], timeout)
         require_cli_success("cli add", answer)
-        log("index terminal receipt: " + json.dumps(answer.get("json"), sort_keys=True))
+        published_root = require_completed_index(answer, len(case["languages"]))
+        log(f"index terminal receipt: published {len(case['languages'])} complete native profiles; view {published_root}")
         # Indexing is setup: require success above, then snapshot the verdict.
         # The caller journal embeds fresh random operation/receipt identities;
         # search/outline/packages below snapshot the published product state.
@@ -340,7 +362,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
             record["performance"]["seconds"]["mcp"] = round(seconds, 2)
         if case.get("live_contracts"):
             record["performance"]["seconds"].update(
-                run_live_contracts(owner, project, case["live_contracts"])
+                run_live_contracts(owner, project, case["live_contracts"], published_root)
             )
         record["performance"].update(owner.usage())
     finally:

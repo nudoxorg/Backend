@@ -136,8 +136,10 @@ missing suggestion or changed operand; the product run must still pass in CI.
 The polyglot case additionally reads passive health in summary and full detail
 from the exact published locald. Both must be available/populated and carry exact revision/source identities
 matching an independent full MCP `backend.status` read of the same whole owner.
-Readiness, coverage and visible row counts must agree; readiness is reported
-truthfully, rather than forcing a global `ready` value. Summary omits full-only source fields and all short tags must
+Readiness, coverage and visible row counts must agree. Setup requires a published
+operation with all seven native profiles complete; health must then certify that
+exact receipt root as ready. Failed/partial terminal receipts cannot pass on exit
+zero. Coverage transitions must survive publication alongside changed rows. Summary omits full-only source fields and all short tags must
 match their exact identities. This uses public cross-interface evidence instead
 of an embedded echo owner or internal request/frame counters.
 

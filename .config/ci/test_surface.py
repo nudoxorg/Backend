@@ -18,6 +18,25 @@ class AdmissionTests(unittest.TestCase):
             with self.subTest(answer=answer), self.assertRaises(RuntimeError):
                 surface.require_cli_success("cli add", answer)
 
+    def test_failed_pending_or_partial_index_receipts_are_refused(self):
+        import copy
+        p = {"state": {"state": "published", "detail": {"coverage": {"coverage": "complete"}}}}
+        answer = {"exit": 0, "json": {"index_operation": {"state": "known", "detail": {
+            "state": {"state": "published", "detail": {"view_root": "a" * 64}},
+            "source_capture": {"profiles": [p]}}}}}
+        self.assertEqual(surface.require_completed_index(answer, 1), "a" * 64)
+        for state in ("failed", "active", "partially_published"):
+            bad = copy.deepcopy(answer)
+            bad["json"]["index_operation"]["detail"]["state"]["state"] = state
+            with self.subTest(state=state), self.assertRaises(RuntimeError):
+                surface.require_completed_index(bad, 1)
+        bad = copy.deepcopy(answer)
+        bad["json"]["index_operation"]["detail"]["source_capture"]["profiles"][0]["state"]["state"] = "pending"
+        with self.assertRaises(RuntimeError):
+            surface.require_completed_index(bad, 1)
+        with self.assertRaises(RuntimeError):
+            surface.require_completed_index(answer, 7)
+
     def test_normalizer_preserves_semantic_and_budget_fields(self):
         self.assertEqual(surface.stable({"timeout_ms": 100, "diagnostic": "bad", "duration_ms": 3}),
                          {"timeout_ms": 100, "diagnostic": "bad"})
