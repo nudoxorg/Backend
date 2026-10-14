@@ -181,6 +181,16 @@ fn take_json(
     let Some(value) = arguments.get(spec.json_name()) else {
         return Ok(());
     };
+    if matches!(
+        spec.continuation_domain(),
+        Some(crate::ContinuationDomain::NativeOwnerJson)
+    ) && !value.is_object()
+    {
+        return Err(Fault::usage(
+            spec.json_name(),
+            "native continuation must be the exact cursor object from the preceding page",
+        ));
+    }
     if spec.kind() == ArgumentKind::Flag {
         if value.as_bool().unwrap_or(false) {
             call.raise(spec.name());
@@ -199,7 +209,12 @@ fn take_json(
                 | ArgumentKind::CargoPackageSourceRequest
                 | ArgumentKind::PackageSourceMembershipRequest
                 | ArgumentKind::SemanticShapeRequest
+                | ArgumentKind::SemanticSourceRequest
         ) && scalar.is_object()
+            || matches!(
+                spec.continuation_domain(),
+                Some(crate::ContinuationDomain::NativeOwnerJson)
+            ) && scalar.is_object()
         {
             serde_json::to_string(&scalar).ok()
         } else {
@@ -208,11 +223,7 @@ fn take_json(
         .ok_or_else(|| {
             Fault::usage(
                 spec.json_name(),
-                format!(
-                    "`{}` must be a {}",
-                    spec.json_name(),
-                    spec.kind().json_type()
-                ),
+                format!("`{}` must be a {}", spec.json_name(), spec.json_type()),
             )
         })?;
         if positional {
@@ -469,33 +480,28 @@ fn path_or(invocation: &Invocation, project: &str) -> String {
 }
 
 fn limit(invocation: &Invocation) -> Result<u16, Fault> {
+    let domain = invocation
+        .grammar()
+        .options()
+        .iter()
+        .find(|option| option.name() == "limit")
+        .and_then(|option| option.page_limit_domain())
+        .ok_or_else(|| Fault::usage("limit", "this command has no page-bound domain"))?;
     let Some(value) = invocation.option("limit") else {
-        return Ok(DEFAULT_LIMIT);
+        return Ok(domain.default_limit());
     };
     value
         .parse::<u16>()
         .ok()
-        .filter(|limit| *limit > 0 && *limit <= 200)
+        .filter(|limit| domain.contains(*limit))
         .ok_or_else(|| {
             Fault::usage(
                 "limit",
-                format!("`{value}` is not a page bound; choose a whole number from 1 to 200"),
-            )
-        })
-}
-
-fn graph_limit(invocation: &Invocation) -> Result<u16, Fault> {
-    let Some(value) = invocation.option("limit") else {
-        return Ok(64);
-    };
-    value
-        .parse::<u16>()
-        .ok()
-        .filter(|limit| *limit > 0 && *limit <= backend_library::MAX_PACKAGE_GRAPH_PAGE_ROWS)
-        .ok_or_else(|| {
-            Fault::usage(
-                "limit",
-                format!("`{value}` is not a package graph page bound; choose a whole number from 1 to {}", backend_library::MAX_PACKAGE_GRAPH_PAGE_ROWS),
+                format!(
+                    "`{value}` is not a page bound; choose a whole number from {} to {}",
+                    domain.minimum(),
+                    domain.maximum()
+                ),
             )
         })
 }
@@ -714,7 +720,7 @@ fn surface(
                 package(invocation, 0)?,
                 direction,
                 authority,
-                graph_limit(invocation)?,
+                limit(invocation)?,
             )
             .map_err(|error| Fault::usage("package-graph", error.to_string()))?;
             if let Some(cursor) = graph_cursor(invocation)? {
@@ -827,6 +833,23 @@ fn surface(
         },
         CommandId::SemanticVersions => SurfaceCommand::SemanticVersions {
             package: package(invocation, 0)?,
+            limit: limit(invocation)?,
+            cursor: invocation
+                .option("cursor")
+                .map(|value| backend_library::SemanticVersionsCursor::new(value.to_owned()))
+                .transpose()
+                .map_err(|error| Fault::usage("cursor", error.to_string()))?,
+        },
+        CommandId::SemanticSource => SurfaceCommand::SemanticSource {
+            request: serde_json::from_str::<backend_library::SemanticSourceRequest>(
+                invocation.require(0)?,
+            )
+            .map_err(|error| {
+                Fault::usage(
+                    "request",
+                    format!("invalid semantic source request: {error}"),
+                )
+            })?,
         },
         CommandId::SemanticShapes => {
             let request = serde_json::from_str::<backend_library::SemanticShapeReadRequest>(

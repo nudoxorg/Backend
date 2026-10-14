@@ -406,6 +406,18 @@ pub struct Page {
 }
 
 impl Page {
+    pub(crate) fn expose_mcp_advice(&mut self, exposure: crate::McpExposure) {
+        for note in &mut self.notes {
+            *note = note.clone().with_mcp_exposure(exposure);
+        }
+        match &mut self.source {
+            Source::Sited { fault, .. } | Source::Absent { fault } => {
+                *fault = fault.clone().with_mcp_exposure(exposure);
+            }
+            Source::Captured { .. } => {}
+        }
+    }
+
     /// Assembles one page from already-typed parts.
     #[must_use]
     pub fn new(identity: Identity, kind: Option<DeclarationKind>, source: Source) -> Self {

@@ -987,6 +987,9 @@ pub struct ProductDto {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package_source_membership_page:
         Option<backend_library::PackageSourceMembershipPageResultV1>,
+    /// Exact guarded native graph page, retaining every edge and authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package_graph_page: Option<backend_library::PackageGraphPage>,
     /// Exact existing shape wire tree exported after direct certificate admission.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_data: Option<crate::product::ProductSemanticData>,
@@ -999,8 +1002,9 @@ pub struct ProductDto {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct IndexPollDto {
-    /// Installed command with the exact durable key or issued ticket.
-    pub shell: String,
+    /// Optional command in an observed installed CLI/default-authority context.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
     /// Exact next MCP tool call; no new index mutation is inferred.
     pub call: serde_json::Value,
 }
@@ -1009,13 +1013,17 @@ impl IndexPollDto {
     /// Derives one observation from the shared typed operation/job policy.
     #[must_use]
     pub fn new(view: &ProductView) -> Option<Self> {
-        Self::from_affordance(view.index_poll_affordance()?, None)
+        Self::from_affordance(view.index_poll_affordance()?, None, view.cli_context())
     }
 
     /// Keeps the requested receipt detail when the next MCP action is copied.
     #[must_use]
     pub fn for_detail(view: &ProductView, detail: Detail) -> Option<Self> {
-        Self::from_affordance(view.index_poll_affordance()?, Some(detail))
+        Self::from_affordance(
+            view.index_poll_affordance()?,
+            Some(detail),
+            view.cli_context(),
+        )
     }
 
     /// Projects an admitted unchanged reference with the same detail policy.
@@ -1029,10 +1037,31 @@ impl IndexPollDto {
                 reference: reference.clone(),
             },
             Some(detail),
+            None,
         )
     }
 
-    fn from_affordance(affordance: Affordance, detail: Option<Detail>) -> Option<Self> {
+    /// Supplies the same optional observed CLI context for a conditional poll.
+    #[must_use]
+    pub fn for_reference_in_context(
+        reference: &backend_client::IndexProgressReference,
+        detail: Detail,
+        context: Option<&crate::StartupRecoveryContext>,
+    ) -> Option<Self> {
+        Self::from_affordance(
+            Affordance::ObserveIndexChanges {
+                reference: reference.clone(),
+            },
+            Some(detail),
+            context,
+        )
+    }
+
+    fn from_affordance(
+        affordance: Affordance,
+        detail: Option<Detail>,
+        context: Option<&crate::StartupRecoveryContext>,
+    ) -> Option<Self> {
         let mut call = affordance.tool_call()?;
         if let Some(detail) = detail {
             call.get_mut("arguments")?.as_object_mut()?.insert(
@@ -1041,7 +1070,7 @@ impl IndexPollDto {
             );
         }
         Some(Self {
-            shell: affordance.shell()?,
+            shell: context.and_then(|context| affordance.poll_shell_in_context(context, detail)),
             call,
         })
     }
@@ -1157,6 +1186,7 @@ impl ProductDto {
             },
             selected_source_frontier: view.selected_source_frontier().cloned(),
             package_source_membership_page: view.package_source_membership_page().cloned(),
+            package_graph_page: view.package_graph_page().cloned(),
             semantic_data: view.semantic_data().cloned(),
             package_discovery: view.package_discovery().cloned(),
         }

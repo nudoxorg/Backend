@@ -48,10 +48,22 @@ pub use python_project::{
 };
 /// Bounded transport decoding and presentation for thin CLI and MCP consumers.
 pub mod protocol;
+mod owner_statement;
+pub use owner_statement::{NativeOwnerStatement, seal_native_owner_statement, verify_native_owner_statement};
 mod registry_forge;
 mod registry_native;
 mod rich_graph;
 mod semantic_shape;
+mod semantic_source;
+pub use semantic_source::{
+    AdmittedSemanticSourceChunk, SemanticHistoryProofReference, SemanticSourceAssembly,
+    SemanticSourceChunk, SemanticSourceDocument, SemanticSourceError, SemanticSourceHistory,
+    SemanticSourceIdentity, SemanticSourceMetadata, SemanticSourceRange,
+    SemanticSourceRecordSchema, SemanticSourceReference, SemanticSourceRequest,
+    SemanticVersionDescriptor, SemanticVersionsCursor, SemanticVersionsCursorClaims, SemanticVersionsPage,
+    VerifiedSemanticVersionsCursor,
+    VerifiedSemanticSourceReference, canonical_semantic_source,
+};
 mod source_atom;
 mod source_discovery;
 mod source_membership;
@@ -174,6 +186,7 @@ pub use package_graph_page::{
     MAX_PACKAGE_GRAPH_AUTHORITIES, MAX_PACKAGE_GRAPH_PAGE_ROWS, PACKAGE_GRAPH_PAGE_SCHEMA,
     PackageGraphControl, PackageGraphCursor, PackageGraphDirection, PackageGraphKnowledge,
     PackageGraphPage, PackageGraphPageError, PackageGraphPageRequest, PackageGraphPageTerminal,
+    VerifiedPackageGraphPageRequest,
 };
 pub use progress::{
     FaultRows, IngestProgress, LanguageRows, MAX_PROGRESS_FAULTS, MAX_PROGRESS_LANGUAGES,
@@ -216,9 +229,9 @@ pub use semantic_shape::{
     SemanticShapeAdmissionSummary, SemanticShapeBatch, SemanticShapeBudget, SemanticShapeEntry,
     SemanticShapeError, SemanticShapeFact, SemanticShapeImageOrigin, SemanticShapeLanguageFact,
     SemanticShapeLanguageFacts, SemanticShapeMember, SemanticShapeMemberName,
-    SemanticShapeReadRequest, SemanticShapeRequest, SemanticShapeSelection,
-    SemanticShapeSourceOrigin, SemanticShapeUnavailable, SemanticTypeElement, SemanticTypeExpr,
-    SemanticTypeFact, SemanticTypeUnavailable, semantic_shape_source_key,
+    SemanticShapeReadRequest, SemanticShapeRequest, SemanticShapeSelection, SemanticShapeSource,
+    SemanticShapeSourceOrigin, SemanticShapeUnavailable, SemanticSourceEpoch, SemanticTypeElement,
+    SemanticTypeExpr, SemanticTypeFact, SemanticTypeUnavailable, semantic_shape_source_key,
     semantic_shape_source_preimage,
 };
 pub use source_atom::SourceAtomText;

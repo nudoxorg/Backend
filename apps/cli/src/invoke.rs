@@ -205,6 +205,15 @@ pub fn help_for(grammar: CommandGrammar) -> String {
         out.push_str("\noptions\n");
         for spec in grammar.options().iter().chain(grammar.cli_options()) {
             let _ = writeln!(out, "  --{:<12}  {}", spec.name(), spec.help());
+            if let Some(domain) = spec.page_limit_domain() {
+                let _ = writeln!(
+                    out,
+                    "                 Range: {} to {}; default {}.",
+                    domain.minimum(),
+                    domain.maximum(),
+                    domain.default_limit()
+                );
+            }
         }
     }
     if !grammar.aliases().is_empty() {

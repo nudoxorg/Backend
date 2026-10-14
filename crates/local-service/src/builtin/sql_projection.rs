@@ -158,7 +158,7 @@ impl ProjectionOwner {
 
     pub(super) async fn read_package_graph_page(
         &self,
-        request: &backend_library::PackageGraphPageRequest,
+        request: &backend_library::VerifiedPackageGraphPageRequest<'_>,
     ) -> Result<backend_library::PackageGraphPage, backend_extension_turso::PackageGraphReadError>
     {
         match &self.role {

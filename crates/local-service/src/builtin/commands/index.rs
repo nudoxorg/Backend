@@ -6187,7 +6187,7 @@ pub(super) fn semantic_version_record(
     }
 }
 
-fn selected_project_source_frontier(
+pub(super) fn selected_project_source_frontier(
     snapshot: &backend_engine::WorkspaceSnapshot,
     package: &backend_engine::PackageReference,
 ) -> Result<Option<backend_engine::SelectedProjectSourceFrontier>, BuiltinModelError> {
@@ -6662,6 +6662,9 @@ pub(in crate::builtin) fn package_source_membership_page_from_snapshot(
     })
 }
 
+// Keep the canonical full-history freshness control without manufacturing
+// owner source-reference authority. Production discovery uses native DTO29 pages.
+#[cfg(test)]
 pub(in crate::builtin) fn semantic_versions(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     package: &backend_engine::PackageReference,

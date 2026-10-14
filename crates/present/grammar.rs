@@ -51,7 +51,7 @@ pub enum ArgumentKind {
     Generation,
     /// Direction around a package in the dependency graph.
     GraphDirection,
-    /// A bounded page size between 1 and 200.
+    /// A positive page size within the operand's declared domain.
     Limit,
     /// Opaque continuation token returned by a previous page.
     Cursor,
@@ -67,6 +67,8 @@ pub enum ArgumentKind {
     PackageSourceMembershipRequest,
     /// Exact source selection, full selected keys, and caller shape budgets.
     SemanticShapeRequest,
+    /// Exact portable semantic-source guard and native byte-range request.
+    SemanticSourceRequest,
     /// A non-negative progress event sequence.
     Sequence,
     /// A caller observation duration expressed in whole seconds.
@@ -96,6 +98,7 @@ impl ArgumentKind {
             Self::CargoPackageSourceRequest => "SOURCE_REQUEST_JSON",
             Self::PackageSourceMembershipRequest => "MEMBERSHIP_REQUEST_JSON",
             Self::SemanticShapeRequest => "SHAPE_REQUEST_JSON",
+            Self::SemanticSourceRequest => "SOURCE_REQUEST_JSON",
             Self::Sequence => "SEQUENCE",
             Self::DurationSeconds => "SECONDS",
             Self::Generation => "GENERATION",
@@ -115,7 +118,9 @@ impl ArgumentKind {
             Self::IndexJobTicket
             | Self::CargoPackageReadmeOrigin
             | Self::CargoPackageSourceRequest => "object",
-            Self::PackageSourceMembershipRequest | Self::SemanticShapeRequest => "object",
+            Self::PackageSourceMembershipRequest
+            | Self::SemanticShapeRequest
+            | Self::SemanticSourceRequest => "object",
             _ => "string",
         }
     }
@@ -143,6 +148,61 @@ impl ArgumentKind {
     }
 }
 
+/// One positive page-bound domain shared by lowering and surface discovery.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct PageLimitDomain {
+    maximum: u16,
+    default: u16,
+}
+
+impl PageLimitDomain {
+    const STANDARD: Self = Self::new(backend_library::QueryLimit::MAX, crate::DEFAULT_LIMIT);
+
+    // Only grammar declarations can construct domains. An invalid declaration
+    // fails constant evaluation instead of advertising an uncallable range.
+    const fn new(maximum: u16, default: u16) -> Self {
+        assert!(default > 0 && default <= maximum);
+        Self { maximum, default }
+    }
+
+    /// The inclusive lower bound for a page request.
+    #[must_use]
+    pub const fn minimum(self) -> u16 {
+        1
+    }
+
+    /// The inclusive upper bound for a page request.
+    #[must_use]
+    pub const fn maximum(self) -> u16 {
+        self.maximum
+    }
+
+    /// The bound used when the caller omits the option.
+    #[must_use]
+    pub const fn default_limit(self) -> u16 {
+        self.default
+    }
+
+    /// Whether a caller's explicit bound belongs to this domain.
+    #[must_use]
+    pub const fn contains(self, value: u16) -> bool {
+        value >= self.minimum() && value <= self.maximum
+    }
+}
+
+/// The authority and wire shape of one command's continuation operand.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ContinuationDomain {
+    /// A selected projection page authenticated by the surface wrapper.
+    PresentationPage,
+    /// An opaque owner token authenticated by the existing surface wrapper.
+    PresentationOwnerToken,
+    /// An opaque token whose native owner authenticates its selected roots.
+    NativeOwnerToken,
+    /// A typed JSON cursor whose native owner verifies the exact graph guards.
+    NativeOwnerJson,
+}
+
 /// One operand of one command.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ArgumentSpec {
@@ -154,6 +214,8 @@ pub struct ArgumentSpec {
     required: bool,
     repeated: bool,
     help: &'static str,
+    page_limit: Option<PageLimitDomain>,
+    continuation: Option<ContinuationDomain>,
 }
 
 impl ArgumentSpec {
@@ -165,6 +227,8 @@ impl ArgumentSpec {
             required: true,
             repeated: false,
             help,
+            page_limit: None,
+            continuation: None,
         }
     }
 
@@ -176,6 +240,8 @@ impl ArgumentSpec {
             required: false,
             repeated: false,
             help,
+            page_limit: None,
+            continuation: None,
         }
     }
 
@@ -187,6 +253,8 @@ impl ArgumentSpec {
             required: true,
             repeated: true,
             help,
+            page_limit: None,
+            continuation: None,
         }
     }
 
@@ -203,6 +271,8 @@ impl ArgumentSpec {
             required: false,
             repeated: false,
             help,
+            page_limit: None,
+            continuation: None,
         }
     }
 
@@ -240,6 +310,57 @@ impl ArgumentSpec {
     #[must_use]
     pub const fn help(self) -> &'static str {
         self.help
+    }
+
+    /// Attaches the continuation authority to a cursor operand only.
+    #[must_use]
+    pub const fn with_continuation_domain(mut self, domain: ContinuationDomain) -> Self {
+        assert!(matches!(self.kind, ArgumentKind::Cursor));
+        self.continuation = Some(domain);
+        self
+    }
+
+    /// The cursor's authoritative transport/domain contract.
+    #[must_use]
+    pub const fn continuation_domain(self) -> Option<ContinuationDomain> {
+        if !matches!(self.kind, ArgumentKind::Cursor) {
+            return None;
+        }
+        match self.continuation {
+            Some(domain) => Some(domain),
+            None => Some(ContinuationDomain::PresentationPage),
+        }
+    }
+
+    /// The JSON input type, including the declared native cursor shape.
+    #[must_use]
+    pub const fn json_type(self) -> &'static str {
+        if matches!(
+            self.continuation_domain(),
+            Some(ContinuationDomain::NativeOwnerJson)
+        ) {
+            "object"
+        } else {
+            self.kind.json_type()
+        }
+    }
+
+    const fn with_page_limit(mut self, domain: PageLimitDomain) -> Self {
+        assert!(matches!(self.kind, ArgumentKind::Limit));
+        self.page_limit = Some(domain);
+        self
+    }
+
+    /// The grammar-owned range and default for a positive page bound.
+    #[must_use]
+    pub const fn page_limit_domain(self) -> Option<PageLimitDomain> {
+        if !matches!(self.kind, ArgumentKind::Limit) {
+            return None;
+        }
+        match self.page_limit {
+            Some(domain) => Some(domain),
+            None => Some(PageLimitDomain::STANDARD),
+        }
     }
 }
 
@@ -304,6 +425,22 @@ impl CommandGrammar {
             ),
         ];
         if self.name == "add" { ADD } else { &[] }
+    }
+
+    /// The continuation domain of the explicit operand or projection-only page.
+    /// Graph and Outline retain their existing presentation paging controls;
+    /// these are not added to the daemon's CLI operands.
+    #[must_use]
+    pub fn continuation_domain(self) -> Option<ContinuationDomain> {
+        self.options
+            .iter()
+            .find_map(|spec| spec.continuation_domain())
+            .or_else(|| match self.spec()?.id {
+                CommandId::Graph | CommandId::GraphQuery | CommandId::Outline => {
+                    Some(ContinuationDomain::PresentationPage)
+                }
+                _ => None,
+            })
     }
 
     /// Returns the sentence that says *when* to reach for this command.
@@ -377,6 +514,7 @@ impl CommandGrammar {
             | CommandId::IndexSearch
             | CommandId::PackageVersions
             | CommandId::SemanticVersions
+            | CommandId::SemanticSource
             | CommandId::PackageSourceMembership
             | CommandId::SelectSemanticVersion
             | CommandId::PackageProfile
@@ -533,7 +671,7 @@ const CURSOR: ArgumentSpec = ArgumentSpec::optional(
 );
 
 /// The calling convention of every registry row, in registry order.
-pub const GRAMMARS: [CommandGrammar; 53] = [
+pub const GRAMMARS: [CommandGrammar; 54] = [
     CommandGrammar {
         name: "advisory",
         tool: "backend.advisory",
@@ -808,7 +946,7 @@ pub const GRAMMARS: [CommandGrammar; 53] = [
             ArgumentKind::Text,
             "Name prefix or term.",
         )],
-        options: &[LIMIT, CURSOR],
+        options: &[LIMIT, CURSOR.with_continuation_domain(ContinuationDomain::PresentationOwnerToken)],
         when: "Use for a name-first lookup across every package the local registry index knows, indexed or not.",
     },
     CommandGrammar {
@@ -832,8 +970,11 @@ pub const GRAMMARS: [CommandGrammar; 53] = [
             ArgumentKind::PackageReference,
             "A pinned purl or an exact local package label.",
         )],
-        options: &[],
-        when: "Use before select-semantic-version to see which compiler generations were retained.",
+        options: &[
+            LIMIT.with_page_limit(PageLimitDomain::new(backend_library::QueryLimit::MAX, 1)),
+            CURSOR.with_continuation_domain(ContinuationDomain::NativeOwnerToken),
+        ],
+        when: "Use before select-semantic-version to discover exact retained compiler identities. Default returns one bounded descriptor with complete history counts and a portable native semantic-source reference; resume the returned cursor for all versions.",
     },
     CommandGrammar {
         name: "semantic-shapes",
@@ -842,10 +983,22 @@ pub const GRAMMARS: [CommandGrammar; 53] = [
         positional: &[ArgumentSpec::required(
             "request",
             ArgumentKind::SemanticShapeRequest,
-            "Exact selected SemanticVersionRecord, full selected SymbolKey byte arrays, max_nodes and max_bytes.",
+            "Exact portable semantic-source reference or full inline SemanticVersionRecord with mandatory source_epoch roots; full selected SymbolKey byte arrays, max_nodes and max_bytes.",
         )],
         options: &[],
         when: "Use after semantic-versions and an exact selected-key read to obtain compiler-owned member/type shapes with source/image provenance. Unavailable and unsupported remain typed facts; no source-text fallback is inferred.",
+    },
+    CommandGrammar {
+        name: "semantic-source",
+        tool: "backend.semantic_source",
+        aliases: &[],
+        positional: &[ArgumentSpec::required(
+            "request",
+            ArgumentKind::SemanticSourceRequest,
+            "Owner-authenticated reference returned by semantic-versions, with range.offset and range.max_bytes. Copy each returned next offset to retrieve the same complete canonical source; omitted range starts at zero with the product text bound.",
+        )],
+        options: &[],
+        when: "Read or resume the complete captured source through exact native byte ranges. Assemble only one source identity in order; only the complete digest-checked union is a source operand.",
     },
     CommandGrammar {
         name: "package-source-membership",
@@ -1145,13 +1298,17 @@ pub const GRAMMARS: [CommandGrammar; 53] = [
             ArgumentSpec::optional(
                 "limit",
                 ArgumentKind::Limit,
-                "Rows to return, from 1 to 128.",
-            ),
+                "Maximum rows in this package graph page.",
+            )
+            .with_page_limit(PageLimitDomain::new(
+                backend_library::MAX_PACKAGE_GRAPH_PAGE_ROWS,
+                64,
+            )),
             ArgumentSpec::optional(
                 "cursor",
                 ArgumentKind::Cursor,
-                "JSON continuation from the preceding package-graph page.",
-            ),
+                "Exact JSON cursor object copied from package_graph_page.terminal.cursor in the preceding response.",
+            ).with_continuation_domain(ContinuationDomain::NativeOwnerJson),
         ],
         when: "Use for a package's exact dependency or dependent edges, with each source authority, ecosystem, resolver scope, version requirement, and selected graph snapshot preserved.",
     },

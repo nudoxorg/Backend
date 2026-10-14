@@ -1924,8 +1924,9 @@ fn compose_owner_timed(
     {
         eprintln!("journey startup phase: SemanticAuthority::open begin");
     }
-    let mut semantic_authority = SemanticAuthority::open(&config.workspace)
-        .map_err(|error| ProcessError::Profile(error.to_string()))?;
+    let mut semantic_authority =
+        SemanticAuthority::open_with_product_authority(&config.workspace, product_secret)
+            .map_err(|error| ProcessError::Profile(error.to_string()))?;
     #[cfg(feature = "cluster-process-journey-hooks")]
     if std::env::var_os("BACKEND_JOURNEY_REMOTE_SEGMENT_GC")
         .is_some_and(|value| value.to_str() == Some("1"))

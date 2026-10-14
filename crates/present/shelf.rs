@@ -182,6 +182,14 @@ pub struct Shelf {
 }
 
 impl Shelf {
+    pub(crate) fn expose_mcp_advice(&mut self, exposure: crate::McpExposure) {
+        for entry in &mut self.entries {
+            if let Readiness::Failed { fault } = &mut entry.readiness {
+                *fault = fault.clone().with_mcp_exposure(exposure);
+            }
+        }
+    }
+
     /// Records one shelf at an exact revision.
     #[must_use]
     pub fn new(revision: KeyTag, entries: impl Into<Box<[ShelfEntry]>>) -> Self {

@@ -1,0 +1,198 @@
+{
+  "source": "e315da1ea22958522aae8401af959f45de12e2ac",
+  "receipt_sha256": "52fa6ee282f8fcac0e525743ef7655eda01f2f203075eac333b3ebc386103c0c",
+  "raw_frames_only": true,
+  "complete_search_or_resolve_union_claimed": false,
+  "captures": [
+    {
+      "label": "searxng-warm:search-real-first3",
+      "request_file": "search-real-first3.request.json",
+      "response_file": "search-real-first3.response.json",
+      "request_sha256": "d8d1b336c76f8670dc4936f499368b7eabf2c2f60df7739987fa53c3a8b02421",
+      "response_frame_sha256": "8f8a689c21c7941a6107fc7d8049e73de62e973f322dffd1c357343f6d9fbc09",
+      "request_bytes": 123,
+      "response_frame_bytes": 8761,
+      "response_offset": 72885,
+      "records_count": 3,
+      "coordinates": [
+        "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/search/__init__.py:47::Search",
+        "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/search/processors/online.py:245::search",
+        "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/engines/mariadb_server.py:79::search"
+      ],
+      "request": {
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "name": "backend.search",
+          "arguments": {
+            "query": "Search",
+            "limit": 3
+          }
+        },
+        "id": 9
+      },
+      "response_keys": [
+        "query",
+        "coverage",
+        "readiness",
+        "records",
+        "more",
+        "semantic_search",
+        "answer",
+        "detail",
+        "nextCursor",
+        "budget"
+      ],
+      "isError": false
+    },
+    {
+      "label": "searxng-warm:search-real-next3",
+      "request_file": "search-real-next3.request.json",
+      "response_file": "search-real-next3.response.json",
+      "request_sha256": "4291af5d18f02f6967e7423047c9d95b6206577bc6355388708e047588594d15",
+      "response_frame_sha256": "c5478b14c2ef9bda9a21fedf3edae0dad2bbf144d83bfa14d747cab5dab44f39",
+      "request_bytes": 5443,
+      "response_frame_bytes": 7215,
+      "response_offset": 81646,
+      "records_count": 3,
+      "coordinates": [
+        "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/engines/valkey_server.py:67::search",
+        "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/engines/mysql_server.py:86::search",
+        "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/engines/demo_offline.py:83::search"
+      ],
+      "request": {
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "name": "backend.search",
+          "arguments": {
+            "query": "Search",
+            "limit": 3,
+            "cursor": "mcp2-1791927755-pc4-eJztOnt4FNW9s4uIhkIrvZbeKnIcLuwu2WxmZ7OvSVelmAhCSEwiKcSwnpk5sxnZnVnmnM3DJKJWbUVaixa9amn1k1q1omK1lEqtWqnWq4hKvZFPuOJ99NZH5eKH1geX-52Z2cfsbkjwtl_rd-_-kcye8zu_9-v8Zr92QdtCxsUw7t4htg8ZWNU1VuBjftZAa3IIk6Qqs0LQz0p6JgM1mRWG2NUq_c9iBA2pl_WzMiSQrhM0QFiB7civp9WMSlgh5GdFiFXMCqwYi4mSLEKZCyvBaDgc5GJRhY_DoBgKR0MRFOY4SeLCYS7UIMlxOa4ovBiOxRrEBoUXo1Kc9bNSzsC6QckZSFKziBXYaDQki9FwPAY5GEJKSOHiEZGT5TgKibIMwxIKwYaIjCKIF2UuLkajMs_BGBdCPBSjHGT9RcnZhjgPeU4Ko6AcRtGQxMnRUDSIoCIFGygJJYS4UJyP8_EYH4qGG-IRiY8qMV5uUKJxyCPWz4oG1KReiisS5mBY5uVQTApzUSnCB0UxCmUkxSMhqEApKsrRBk4UpViY46JiUJIjXBxGoorIN8R4hepQT7ECG-RhAycGYVyOiSGocHEeifFwtCEcDccjUSkYh2FZjEuwIYZkFG7g-QjiYwofD0WCKBSNcKyfxVIvykDTGoauUzuFYJTnJS4IYyElGpIjXBAFY5IsheMcHwtFUFCWZE4JSpCToIjCUIERMSrJwXBURrwUDFKk1Ec0CbEC72fX5JAxmNQVBSNq9RHqQlBOZqCmKggTVtBy6fTIyIiLYZgpU-9ZN-_a6UvfuXtk3dHgRmV0ygvfafzx8EePa2t9bfMSj-x8Yrx9NP8a0HJP_Zbml8_fPu1zh-f-et6OL8479Os9J17YfdWHX77nmjfWHml7YObwKfdeNu12uGX3g80fXDIUu2LzgtWdv3zwcPbEToZx_bZreVuwq6WZdzMM42Jabzv7ub23nfOT586ZNHrSnXsu--edh77_7ZcHX7l-3x8e_9bkU68YDj21c3LjJY3uVc_86-bQS7evWvbsqr1bHv35AzNWNy7Z-uHJXx9o_OnW7V_a_8md77fdsuH6K2ca8VPTO24Y_t1DU7e39J-3Sb1r6lm3f--xnH6g7vzQodp_WKB3_OkxdfiO0Y2XXu297-YXXZCZ5BqPCYZh3DczbtcfH0mh5y89rfvww8_sr7v44NboD4c3nfmlIzcOrflkmfvBxnNvZiZNuqK98xtbp9xy0ynnzL7o3Vkft-6a_4_3jj69SNs8-m_78flX-RmGYboWtvDu8XS1IVRHnnpq5d49a14afT0S29N8Xf39tVPuVUcvSrRvnHL6Uab4yXW1tfPuiUhyDeNyvXbgreH2K7-buK92eE7XP_1MOdDELNv2_Vdv3LS3q7bvvJn7baRg3X3_dfKsFR99MPziiz9Ys-RPGz_8j4eu3vWfLTP2vrIZH7lavmvK9J9f9_wvdidnXviFbx669bQw1to-9_iFk5a--urR2q9f9fChbb91TWlu-9FLL69vGxZP27bl7ZuEj57-JZm642pm6PRXTr5r7UOL6hmGOSEDVc110ozNU7-y6Trh4A1vbSRdK1JP3Nqz_dlF7_z71-a9cb0vckb0Yuq_aVU0oDHontyf2LZiXc1Z7x286cF9P2jc96NdQvN-rXb3bf0v1Vx-1vxtNQzDIFuMyWaE2F9mS5DAtJ6qMxfrsjCF6vp4xsVMsvJnXvTxBLPhXMzkExfPBzsP_O73X52G17z5yd-tWPfe63Gf78po501Prr1yzwe3BhjGtX754qau5U3tHYtbl-VNBiYgwvGwAsYL3TzcBCxiwo1rj0l_OYwTlNmdhxcMv-vus_ErrgPrX1vh_oY26_nPn377s4-t_Gj18Itd-_2nFODdk1wnTh8fmv1wOb-s9dwmxuV2uQAt1NaHPVAwvP0_Tk3b0tS5oGDX_7fXuPYy7WA_z3fln8BJh-_YcMHFI3XgD-e8t9QYTWx57oNs8NahTsETRzNeWPWyBTZjClV5e2sXc5wHPwOmYVbV0zahHuvpSLAuO0h6da0upddBSUJZAjUJ1fEcHwlywVA91nOGhHA9bQgHtJQgmA_mV6m3PplUNZUkk4HsoNAQFQQrvbmOHj16tKC27MGV2kp1xxOX37Hs3d1PZ199__LZzLaancLSDdPWf-dXA-8XAA997-Mfv33g_o_P2NW__Lsb1m3s33qff8mWzPTfY-YrsZ2XbSoLCuZ0ixpQNUU3MpCougYkXSNQ1ZCRh5ompSHGwAIVXO78-pfHkoNhmHrbg77AOA7XAAAAy7LHIsuybI0JJyMF5LF6MUorfmDRSpo1QQA2mgvoN9ZnIbcJLNZUosK0eikCpBfZ5CnmPMwcQBGDPmjgwhrOZZHh9QUKRH3FLZRWAsegDhIO3pznDIRzaZIsSCiAdnNlYX4BJMpXKkgTaJAkUTNIAEpahwQMg2W6hkDC_OcEhhLJwbQJredI9QMFDdtsowGCDA2mkyLUUqa2faDuLCDqetqh2IW9SFoNVIWq1UBAxQCC_FlAzwYAWKyAQYT9IJeVIUHH1gWAmgwMRHKGBjqNHAqUGklVKhUfcHBa5G1MCgEDyaqBJJLMGWmQAClEzKP0q7cCvc_STNFNOntVDDIIatgWuR9SmftgWpVNgU0JqJMZCBOgm5qxtQpkHeEyfJpOgIaQDIgORGS6varlkOwAUxWgYlXDZibxji-WH2BilERA_lOi2JqytWaYxpVuADXcjwxkYMsFhKI2LPrYdvSBQAEy0NHZ2r7gvKYAxKsr9RmwtXpsE1GbarKXeqY_T8lHtZUdNNRULxGAmtJ0A3UbKKsbZIGRymWQRjoHs6inXDDqst48Dov_OUDWbQnr7Ht7McNQf7AXcdHxSS6bRt1pFZNu6xETw9SyH7RbwG3QgBnc0-O34qtHOGZuyVMQwERwggTo7inqfg7IwAHqWjCdphpEEkEyQFpK1RCww7wALCMFUu3a6yABuFJMZiYpUwZQdKMa7iL7FMBaM5ACVK1aXOa3k1RCpy9mDV1CGOs007W1ty5s6uhobe8IpBDxFo4FNJhBvvIwoOFSOF3p4HPyWqCRZgKjARUT3Gg-DyICdMMMSA81iQdkEOnVZTtKx8bWCzEQEdKAAtU0kgshXrJN8ZsgBkqpmCADyYEKhPnoLk8qmOhZO2dYBtD0fjup5mmoGOAcziKtIjMU1GGHTTGOkqqStA8huXraqJIkxmQSkbwzFfjMUgdFBJV4dol3J81tmiOKPNLwspYrk4O_6FMBCRKU0ktThS1uGW4VmwVsomJIek4jVDOa5PVY1DylZKnT-YHH4srjBx7zAH3ASCOeinIAs1S7BX0Q3YznasrAAQvWW-bitIupmiT9ZaL6KohbBbU8wh1AldGfgQPeslV_qQ-ZzAXsnRKScwCUL8lRGcvIZOBAPmGWkMGIEFVL4W6PniMpXdVSnp5uTxVYTzFjOxsVkBhTMmt2VkqsXIP2XtIcqhaFUJWq7NpOZMa1E3dV95oDlukUjx9oOshhZFiHhGNaIgtxMUhQ-tNwQnPMsbgRc8TBTrOhZ0oWABqgtxGqBCjqfQXHcWCrsEFG1Sr9xcGab0Ji5ZmfuJJbqmj4XDsBlYuSgQOfQowqrP45hBnLTi1wAMw7LgtNSCwH_TGEKmBJ66kUMgIyEnMprwM360SemItBucYSc7EfnO2ILXOpCsnEXOxj_cdg3rlXbhrHplNAx1YVykWAErHtZjCfi_1lzFQ0vplcmqjZNHK2gv7j7NtKqivtXdOqRgQgqxiKaZTIGjoxuytzSlCSHGwWVJlmNmJ4czlVbvCWpv9i-5W0SkjVgkH7sgK_Dq0l7ftIAkh6djAp5QwDaYW21-wO0ADxFluz7hJqPXamdVZmQrGRXvoOQ9VSgU7zyVspt9tVZYD0ZPyx0R1Ljz565PNLav7-zV3z7t55w8Cbm5hZ144u-up5z6ydboHVbKsYIE3s4GdhgNT75xogFUo5rte1NK3l2UGBbwhbYNYo6b-Pf5R07bRTf7HlrQ2JrdcfXPrH5uekR65reb3zzJnat3-179rhG7iH83LkD7xTDCbv2De3xZqkZ7KQqGIatZi9eGsfMgxVLrnHmYHnLP2CGW2FNcvdBdBqymsFX3G3ctzClk1XSvJUxWCluOVIe45dn-A6IS_3meMag2GYwzb0lDf-T2nJees3h2oaIv26sTqpakkreXiLuP1OZCX5jxiD5bUVl7Th2CzLWWhga9xn3_7LZkNmki0dY6SVgJ0Yk_QNvGQVVr-tOGe6M6HL71v2mKG4QKtCURonyZJGwyr6GKcDHR1LmwyD3r4xqGgfCtLly79X0jUNSealluquCou9UJPTKGmRUHWtCouUM-uSmKCDoSpIHD0DW-BxaMQP-pChKoOJoRE2YM1uvbagAwHbtOaNz362rnz2FcO83wcsBL4KbXg78_0MxIOapOoBe8Gk7fsbVlDFTZRd1NnZVoW5_FAwZ1gjbwEMcSMAF9xeAEPBEYB9dIMvKrgCf3n_ZHh9oA6MGUd-gALJpDmHTyYDSbOmJ5MVWJ1iVtjH7nSa8nqrahCdjkiLkheU_NcxQyUff00bHK_CnTTpy4aBJjOQFsIskXphwRL-sQA7db0FaoO25fD4BxaYfem5SFORXAW6WhD-hYyJAhmEMUyhCrWUOWC1Rls0dCjXWfCfjtlxc2LRo0wHKiZDn69qw7v7XyZpe_AZF82-RH_t0bk3_ua9t1tugfdPvfPJC29rvusnOzgL7ITaioZ3Ygc_Cw0v-l83vPZQuj4DDRXKYhIjow8ZtN2Nxku73SPH3-2udKszyO5926ePBtbP_dkpL7jnnflAx6y1fb2NPdrOE97N_8ajYJfakj7O2TXQlwdWNFntFBZchVfos8eRg2GYVhvWPes4KNQUL82FCeyQx1zwCNbGSAkM0ZNGTgMJ-ysmBqgFHrB0ccviTjMdtjY3dzR10kzoyTu2ncW8Fv5uD_1BjqZ7ekAdCPrAfGB3bJRIWfdwwVJgviMVwFzM-h0sWPAGovw6JPLavV-_SnpB0i7qqq4FrJ83es1MJOVKXghIOToOR1KOoPx8xCSRJ1je00l62iyElHS32s31mHdslV6hKSoZYclQzQgvttwUwqCDehPGmQdX92Vglk4wVYl4L1Wz3gIBOi3Jes1pgaH3-0o6H1v4AJRlmoQCZDCLcGAJGlwO0znkNVEmzL_2ocJQA7tdrv8BC_oSAA-4f560998316d6541911e74b696196e39"
+          }
+        },
+        "id": 10
+      },
+      "response_keys": [
+        "query",
+        "coverage",
+        "readiness",
+        "records",
+        "more",
+        "semantic_search",
+        "answer",
+        "detail",
+        "nextCursor",
+        "budget"
+      ],
+      "isError": false
+    },
+    {
+      "label": "searxng-warm:resolve-real-first3",
+      "request_file": "resolve-real-first3.request.json",
+      "response_file": "resolve-real-first3.response.json",
+      "request_sha256": "481e79daa84e3f281a18f765836ec8a2660485e7b0e49dbc11368855aee9b58d",
+      "response_frame_sha256": "c558f8181b57cbb0cfb8337588a031fd1736b0a813738828adbd3da273f599e0",
+      "request_bytes": 125,
+      "response_frame_bytes": 7812,
+      "response_offset": 88861,
+      "records_count": 3,
+      "coordinates": [
+        "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/search/__init__.py:47::Search",
+        "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/enginelib/__init__.py:408::search",
+        "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/engines/command.py:129::search"
+      ],
+      "request": {
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "name": "backend.resolve",
+          "arguments": {
+            "query": "Search",
+            "limit": 3
+          }
+        },
+        "id": 11
+      },
+      "response_keys": [
+        "query",
+        "coverage",
+        "readiness",
+        "records",
+        "more",
+        "answer",
+        "detail",
+        "nextCursor",
+        "budget"
+      ],
+      "isError": false
+    },
+    {
+      "label": "searxng-warm:resolve-real-next3",
+      "request_file": "resolve-real-next3.request.json",
+      "response_file": "resolve-real-next3.response.json",
+      "request_sha256": "8612e59317ad836faf840e1d597583f6cf578fa50174573d813a1eb2ee39f7a0",
+      "response_frame_sha256": "a20638fdd51b986a32a8489a12b4a42beb3296b1a63104c48a1607e547998b34",
+      "request_bytes": 4718,
+      "response_frame_bytes": 6941,
+      "response_offset": 96673,
+      "records_count": 3,
+      "coordinates": [
+        "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/engines/demo_offline.py:83::search",
+        "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/engines/dummy-offline.py:15::search",
+        "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/engines/mariadb_server.py:79::search"
+      ],
+      "request": {
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "name": "backend.resolve",
+          "arguments": {
+            "query": "Search",
+            "limit": 3,
+            "cursor": "mcp2-1791927756-pc4-eJztWXt0FNUZn92IEai2xioe1HodJNnAZLMz-56crSCCouZhiESNYbkzc2czsDuzzL0LiQSUFqii1VLFN60cKVaFVlRKaamFKgdtFUVQA21t0T7sw9bSIohaeu7M7HtJgrV_eE73n52997vf4_c97jffXnxV2xTGxTBudSE7H5lYM3RWFCIca6J5GYRJXFNYkedY2UiloK6w4kJ2rka_WR2mEMuxCiSQrhLUS1iRnYGgKfewHJvUUhphRT_HShBrmBVZKRKRZEWCii-o8uFgkPdFwqoQhbzkD4b9IRT0-WTZFwz6_AFZiSpRVRWkYCQSkAKqIIXlKMuxcsbEhknFmUjW0ogV2VAkLEWjMh9SlLDEK0He74NhpASloKyokXBUhSofRhHEC34eQkGRwzDgEwSo-NWgT43yLJe3m5WDfDgSFIIKr0QEVQoHQkFBjfiikqCoMh8KCnIgKoVUwR-ASkBQQ34fUuSowktBX1gOR0Isx0om1OUeVmQDoaAPBhVB8Udkuh0SeEkKQwXJ0ZAfqlAOS0o44JMkORL0-cISLyshXxSGwqokBCKCSjE0EqzI8gIM-CQeRpWI5IeqLyogKRoMB4LhYDQUlvkoDCpSVIaBCFJQMCAIISREVCHqD_HIHw75WI7Fcg9KQcsbpmFQPylRP0R-PuSXhJDkDwUjiuxTZT4o-wK8zAcVny8QgVGBl8J-SYjKvAoVOQKjsiIhQQlHApQpjRBdRqwocOy8DDL74oaqYkS9vogGEFTiKahrKsKEFfVMMrlo0SIXwzDVox9dUXvLaVe--91FK47xq9SB6pdvb3qk_-g2_cb6ttrYph3bh9pHE5aD5kcbN0zbc_mWUz93aPyztVvPqD347N6Tr-5a-sHZjy5_68aP274_pv_0xxaf-hDc8MoT0w7PWRhZsnby3I6fPHEofXIHw7he6JzZxnc2TxPcDMO4mNYHLnpx_wOTHn9xUtXAKQ_vXfzGjoMPfn1P3-t3_PpP224eceaSfv9zO0Y0zWlyz3r-7bX-Vx-a1fLzWfs3_PiH36-Z23TFxg9GXtPb9NTGLWe9-dHD77fdt_KOr4wxo2cmt36z_7UnR29pXnDpam3d6C8_dNczGeNAw-X-gxMvnGzMOPKM1r9mYNUNyzzr79ntgkyVayglGIZx38O4XX_blEAv3XBO16Gnn3-zYfZ7G8Pf7l99wVkf37lw3kct7ieaLrmHqapa0t7x1Y3V9919-qTzr__7eR-27ppw72MDOy_T1w787k18-VKOYRimc0qz4B4Kq5X-BvLcc9ft3zvv1YHfhiJ7p93a-L2J1Y9pA9fH2ldVn3uMyX8ynW3tgns4lixnXK5fHfhLf_tXvhFbP7F_XOcvfqAemMq0bH5w352r93dOnH_pmDcdpmDF-n-MPO_ao4f7d-_-1rwrjqz64A9PLtv1TnPN_tfX4o-XKeuqT_vhrS_96JX4mKu_8LWD958TxHrb57ZdXXXlvn3HJl6z9OmDm19wVU9r-86re25r65fO2bzhr3eLR3f-hIzeuoxZeO7rI9fd-ORljQzDnJSCmu46pWbt6LGrbxXf--ZfVpHOaxPb7-_e8vPL3v39xbVv3VEf-lJ4No3fpCaZ0Oxzj-hZeN_21BsbXztj1OLXNr10pO_oPxbfXsM_1rBzrXvCnkOfX8kwDHLMGGFliPPjfBkSmDQSDdZiQxomUMN8gWGYKrt-Zk0fyjCHzsWMOHnHmGXjdw80bp7WfmTkk7_ZjrjpPzgY2HDx-753X9i9qXrncoZx3TZz-tTOmVPbZ0xvbcm6DAzDhBNRBQyVulm6YXjEohvSH1X_O47DtNmdpd8nvn1WU-1T6OvbPjpz2-Tt3cxlj16wual--9FfrXjwl2-9sTRH765ynXza0NRjwzOFltZLpjIut8sF6DVtf8aen3O88x2lrm2e2jE559f_-2tIf1l-cJ4nuLJP4JRDa1ZeNXtRA_jTpH9eaQ7ENrx4OM3fv7BDrIuimpdn7bHJaqop5O2tncwJHvwMuIaZ1UjbhEZsJEN8Q7qP9Bh6Q8JogLKM0gTqMmoQfEKI9_H-RmxkTBnhRoyg2asnRNF6sH7KPY3xuKZrJB73pvvEQFgU7fLmOnbs2LEcbOn3rtOv07Zuv2lNy99f2Zne9_5N5zObR-0Qr1x56m23_7T3_Rzhwbs-fOSvB7734Zd2LZj5jZUrVi3YuJ67YkPqtD9iZmxkx-LVJUnBnGtLA5quGmYKEs3QgWzoBGo6MrNUp8pJiDGwSUWXO7t-9vHsYBim0YmgLzBFh0cBAADLsoOJZVl2lEWnIBVkuXowSqocsGXFrTtBBA6bq-gvtt5m7giYrmtEg0ntBgRID3LEU85ZmnGAMgbzoYlzaziTRqan3psTWp_fQknVO4h0ECvSrficiXAmSeI5C0XQbq1MyS6AWOlKmWgCTRInWgqJQE0akIB-0GLoCMSsr2JiKJMMTFrURoZUPpBD2FEb9RJk6jAZl6CesNCuBw1fBpJhJIuAndKD5LlAUymsJgIaBhBkzwJ61gvAdBX0IcyBTFqBBA2OBYC6AkxEMqYOOswM8hY6SVPLgfcWaZrX7bgSvCZSNBPJJJ4xkyAGEohYR-lPTxn7ehuZfJh09GgYpBDUsWPyAkhtng-TmmIZbFlAg8xEmADDQsZBFSgGwiX8dIMAHSEFEANIyAp7Tc8gpYhMU4GGNR1blcQztFkcwMQsyIDspwDYUSVr02ASl4cB1PECZCIT2yEg5tGw5WMn0Hu9OUrvjI7W9smXTvVCPLccT6-D6uAuoj7VFQ-NTC4rqZ6ile4ztUQPEYGW0A0TdZkobZhkspnIpJBOOvrSqLvUMBqyniwPW_9xQDEcCxuct_Z8haHx4CzifOCTTDqJupIaJl32IyamhTIH2m3iNmjCFO7u5uz86hYHrS1ZCSIYDk8QA13deezHgRTspaEFk0mKIJIJUgDSE5qOgJPmOWIFqZCi66yDGPAVcrIqSQkYQDXMSrzz6lMCe81EKtD0SnmZ3Y5TC4tjMW0aMsLYoJWurb11ytQZM1rbZ3gTiHhyx7x0XFJfmgY0XXKnywN8XBYFmmkWMerVMMFN1nMfIsAwrYSsoy6pAylEegzFydLjc-uBGEgI6UCFWhIpuRQv2Kb8LRITJTRMkIkUbxnDbHaXFhVMjLRTM2wH6MYCp6hmZWgY4AxOI72sMuTgcNImn0dxTY07h5BSuWxUKBLHVRKRbDDl9EzTAEUEFUR2QXTHrW1aI_I60vSyl8uLA5ePKa8MCUoYhaXCMbeEt4atC2y4ZshGRicUGV321NnS6grF0qDjQJ2tVR0H6qwD9AEjndSVXQcwTdHN4UEMK58rgYG9Nq2nJMRpF1OxSHIlptaXCbcv1NIMLyIqz_4U7PWUrHKFMWQp53V2CkSOA1CZk6E2lohJwd5swSwQgxEhmp7AXXVGhiQMTU_UdXfVVaCty1fs4kYFxI5rmT07KxRWiqCzF7eGqnkjNLWiuk4QWXldzLtieI0DLQblwwHdABmMTPuQOKgn0hDnkwQlP4kmtMYMpo2UIUXqTDONVMECQL30bYSCACVjfi5wiriV-SCl6eXxUqRa_bDMyio_fJCbKyB8iVOASk1Jwd5PYEYFVT8NY47np2bYC2pPyEPDMqtI_nGMynFJGokEMr0KkjIJTxFvtph5bDwGpYjFxmMOXFSUW9ZSBZGx8bie5QZRvniv1DVFm8UGFm1VkJwnKDDbaQaztZgrUaas8U1lkkRLJ1FxK8idYN9WcLvS3jWp6UQEioahlESxtGkQq7uypgQFxcFRQVNoZSOmJ5PRlICnsPzn26-4fYVUvDBoX5bTtwi1uPM-EgOyke6LyxnTRHqu7bW6A9RLPPnWrKtAWrdTaYtvZkK5kR76H4amJ7wd1pOn3G63q8IAqe6L65Yvvxz-WG1d_8B7cXbNkcOxkY-89u6EZ9Y8PunC624-ZJNVTS4bIA3v4GdhgBT_rwdITo_e6PzxSAdIvBC1d-0J0scnPkFqe37T01v_NcKL375pb9ucW65RDq_ds2Bm7bNxsWf6S-TY4qz62QMT8zlk1yXO7hGx9RY11VLRnm1g0VVVMjoqt4BhmCUOkWvSCbC2QtNEtPUs2nDmKHKK5pb1qufIihMjbmacWmoTOW8bckoRy8sItpORBjky43bcgxhwwp5AM4FIzHmXtCTHVdNIxZ0-iwPQTOAYfS3lqICsJV119I8N3ajrrq8v529PfTyVduYYmu7JVt7iop9XuWLqdYh3vrN4bPzl_UsmX_RM1fibztslHqipben-6oydp0yomTdgk7l_U5Z6wzv4WUg96VNKvaQmFY9vfZHC7Pv3iWdfaM4T3M-ufz42hozetWPSultq_jyw8fA7W26Wzz5pfL_r91tK57ceZ5Ba9FoLZs82VDWp6Wj27OyLfPZEc0FOYeuCcxoT6zazg1IEbKt93rrW6JAFs1bOsUW5xYquk7J8zxkEF4Zx3ZulW_qpyi8cTA4XCZZl3S636z91hGl8-12b3e2978ac49e765590710f8af6321b"
+          }
+        },
+        "id": 12
+      },
+      "response_keys": [
+        "query",
+        "coverage",
+        "readiness",
+        "records",
+        "more",
+        "answer",
+        "detail",
+        "nextCursor",
+        "budget"
+      ],
+      "isError": false
+    }
+  ],
+  "search_observed_two_page_union": {
+    "rows": 6,
+    "unique": 6,
+    "coordinates": [
+      "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/search/__init__.py:47::Search",
+      "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/search/processors/online.py:245::search",
+      "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/engines/mariadb_server.py:79::search",
+      "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/engines/valkey_server.py:67::search",
+      "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/engines/mysql_server.py:86::search",
+      "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/engines/demo_offline.py:83::search"
+    ],
+    "complete": false
+  },
+  "resolve_observed_two_page_union": {
+    "rows": 6,
+    "unique": 6,
+    "coordinates": [
+      "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/search/__init__.py:47::Search",
+      "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/enginelib/__init__.py:408::search",
+      "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/engines/command.py:129::search",
+      "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/engines/demo_offline.py:83::search",
+      "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/engines/dummy-offline.py:15::search",
+      "/root/sol61-python-go-acceptance-20261013/sources/searxng::searx/engines/mariadb_server.py:79::search"
+    ],
+    "complete": false
+  }
+}

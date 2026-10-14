@@ -43,6 +43,11 @@ pub(crate) trait Endpoint {
 
     fn set_request_context(&mut self, _context: Option<RequestContext>) {}
 
+    /// Immutable attachment metadata remains available without a lease or dial.
+    fn cli_context(&self) -> Option<backend_present::StartupRecoveryContext> {
+        None
+    }
+
     /// Opens one fresh connection, transferring owner-admitted page state
     /// from the retired product when one exists.
     ///
@@ -282,6 +287,7 @@ const fn surface_is_repeatable(command: &SurfaceCommand) -> Repeatable {
         | SurfaceCommand::IndexProgress { .. }
         | SurfaceCommand::PackageVersions { .. }
         | SurfaceCommand::SemanticVersions { .. }
+        | SurfaceCommand::SemanticSource { .. }
         | SurfaceCommand::PackageProfile { .. }
         | SurfaceCommand::ForgeReference { .. }
         | SurfaceCommand::Subscriptions
@@ -345,6 +351,10 @@ impl<E: Endpoint> Engine for Reconnecting<E> {
 }
 
 impl<E: Endpoint> Product for Reconnecting<E> {
+    fn cli_context(&self) -> Option<backend_present::StartupRecoveryContext> {
+        self.endpoint.cli_context()
+    }
+
     fn set_request_context(&mut self, context: Option<RequestContext>) -> Result<(), ClientError> {
         if context.is_none()
             && self
@@ -741,6 +751,17 @@ mod tests {
     impl Endpoint for Fixture {
         type Product = Connection;
 
+        fn cli_context(&self) -> Option<backend_present::StartupRecoveryContext> {
+            Some(backend_present::StartupRecoveryContext::new(
+                "/scope/project".to_owned(),
+                "/scope/owner.sock".to_owned(),
+                "/observed/bundle/backend-cli".to_owned(),
+                backend_present::StartupRecoveryCommand::Status,
+                backend_present::StartupRecoveryMode::Active,
+                backend_present::StartupRecoveryWorkspace::Explicit("/scope/workspace".to_owned()),
+            ))
+        }
+
         fn connect(
             &mut self,
             _previous: Option<Self::Product>,
@@ -751,6 +772,17 @@ mod tests {
                 alive: true,
             })
         }
+    }
+
+    #[test]
+    fn immutable_local_context_does_not_open_a_disconnected_owner() {
+        let handle = Reconnecting::disconnected(Fixture {
+            log: Arc::new(std::sync::Mutex::new(Vec::new())),
+            connects: 0,
+        });
+        assert!(handle.cli_context().is_some());
+        assert!(handle.product.is_none());
+        assert_eq!(handle.endpoint.connects, 0);
     }
 
     /// Builds a handle whose current connection is already dead.
@@ -1126,7 +1158,9 @@ mod tests {
         let result = super::super::RpcError::from_fault(&fault)
             .into_tool_result_for_call(
                 "backend.index",
-                Some(&serde_json::json!({"path":"/abs/project"})),
+                serde_json::json!({"path":"/abs/project"})
+                    .as_object()
+                    .expect("arguments"),
             )
             .expect("ambiguous mutation is a typed tool result");
         assert!(result["structuredContent"].get("shell").is_none());
@@ -1384,7 +1418,9 @@ mod tests {
         let result = super::super::RpcError::from_fault(&fault)
             .into_tool_result_for_call(
                 "backend.index",
-                Some(&serde_json::json!({"path":"/abs/project"})),
+                serde_json::json!({"path":"/abs/project"})
+                    .as_object()
+                    .expect("arguments"),
             )
             .expect("ordinary ambiguous disconnect refusal");
         assert!(result["structuredContent"].get("shell").is_none());
@@ -1428,7 +1464,9 @@ mod tests {
         let next_result = super::super::RpcError::from_fault(&next_fault)
             .into_tool_result_for_call(
                 "backend.index",
-                Some(&serde_json::json!({"path":"/abs/project"})),
+                serde_json::json!({"path":"/abs/project"})
+                    .as_object()
+                    .expect("arguments"),
             )
             .expect("the next explicit request failed before submission");
         assert_eq!(

@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 pub(crate) struct SemanticShapeRequestWire {
     basis: String,
     source: crate::SemanticVersionRecord,
+    source_epoch: crate::SemanticSourceEpoch,
     symbols: Vec<SymbolAddressWire>,
     max_nodes: u16,
     max_bytes: u32,
@@ -18,6 +19,7 @@ pub(crate) fn request_to_wire(request: &SemanticShapeRequest) -> SemanticShapeRe
     SemanticShapeRequestWire {
         basis: encode_id(request.basis().as_bytes()),
         source: request.source().clone(),
+        source_epoch: request.source_epoch(),
         symbols: request
             .symbols()
             .iter()
@@ -45,6 +47,12 @@ pub(crate) fn request_from_wire(
         .map(|symbol| symbol_address_from_wire(symbol, certificate))
         .collect::<Result<Vec<_>, _>>()?
         .into_boxed_slice();
-    SemanticShapeRequest::from_admitted_parts(basis, value.source, symbols, budget)
-        .map_err(|error| error.to_string())
+    SemanticShapeRequest::from_admitted_parts(
+        basis,
+        value.source,
+        value.source_epoch,
+        symbols,
+        budget,
+    )
+    .map_err(|error| error.to_string())
 }
