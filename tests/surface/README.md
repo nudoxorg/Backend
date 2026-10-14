@@ -342,11 +342,36 @@ CLI/MCP both find ready Python `NamedSignal` as a struct at
 records equal the first three CLI records. Packages names the ready project
 `blinker`. Source-less context/import rows remain in the golden; embedding-based
 search remains explicitly unconfigured. CLI/MCP outlines are honestly truncated
-at200/100 declarations; this case does not claim exhaustive outline traversal.
+at 200/100 declarations; this case does not claim exhaustive outline traversal.
 Both offered MCP continuations (NamedSignal search and same-session outline)
 passed real native consumption before normalization, with full wire accounting
 and readable previews retained.
 
-Initial indexing was3.30s, owner CPU1.82s and owner peak279,160KiB. This first
+Initial indexing was 3.30s, owner CPU 1.82s and owner peak 279,160KiB. This first
 performance sample is provisional. The independent exact-head comparison must
 match the reviewed answers and the existing performance guards before merge.
+
+### Hybrid-core performance calibration (W2.5, 2026-10-14)
+
+After #249, normal artifact-backed runs measured the same Go answers/root with
+indexing 23.18–42.11s and owner CPU 16.36–31.27s. The first two fast samples alone
+were too narrow for a stable baseline. Same-artifact diagnostics in the failed
+663 task isolated logical CPU 0 (max 4.8 GHz) versus 12 (max 3.5 GHz): owner CPU 16.24s
+versus27.55s with identical answers/root. Only these diagnostic subprocesses were
+pinned; production scheduling and worker capabilities remain unchanged. Their
+single-CPU wall times 37.81/62.58s also constrain the Go compiler children and
+are not normal unconstrained job timings.
+
+Use the slower **normal** 663 sample for Go index 42.11s, owner CPU 31.27s and
+first source search 3.65s. Keep the 1.5x time/CPU ratios, existing floors, memory
+baseline and every answer unchanged. This still rejects the pre-optimization
+189.84s/187.16s behavior; it accommodates the CPU-class sensitivity observed with
+identical artifacts. Cross-host variability remains uncalibrated, and the tiers
+remain advisory until the separately approved required-check cutover.
+
+The same Python artifact's independent CPU 12 run matched every reviewed answer,
+including normalized continuation accounting. It measured index 4.56s and owner
+CPU 3.14s (versus normal 663 sample 3.30s/1.82s). Use 4.56s/3.14s as the initial
+Python index/CPU baseline; keep its original memory and query baselines. No
+ratio, floor, source witness or public answer was changed. Final ordinary
+exact-head CI must still pass both real projects and the unchanged polyglot case.

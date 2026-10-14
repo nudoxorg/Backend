@@ -3018,10 +3018,10 @@
     }
   },
   "performance": {
-    "cpu_seconds": 1.82,
+    "cpu_seconds": 3.14,
     "peak_rss_kib": 279160,
     "seconds": {
-      "cli add": 3.3,
+      "cli add": 4.56,
       "cli outline": 0.06,
       "cli packages": 0.02,
       "cli search NamedSignal": 0.74,
