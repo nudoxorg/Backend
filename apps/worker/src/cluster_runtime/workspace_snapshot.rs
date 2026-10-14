@@ -17,6 +17,23 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Binds the capsule raw digest to the bytes streamed by the verified CAS
+/// writer, before a later descriptor read constructs the immutable capsule.
+struct PayloadDigestWriter<'file> {
+    file: &'file mut File,
+    digest: blake3::Hasher,
+}
+impl Write for PayloadDigestWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let count = self.file.write(bytes)?;
+        self.digest.update(&bytes[..count]);
+        Ok(count)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+}
+
 const READY_MARKER: &[u8] = b"backend-worker-workspace-ready-v1\n";
 static NEXT_WORKSPACE_SNAPSHOT: AtomicU64 = AtomicU64::new(0);
 
@@ -350,14 +367,20 @@ fn materialize_unix(
         let metadata = file.metadata().map_err(operation)?;
         validate_owned_regular_file(&metadata, expected_uid)?;
         let mut file = file;
+        let mut payload_writer = PayloadDigestWriter {
+            file: &mut file,
+            digest: blake3::Hasher::new(),
+        };
         let verified = input
             .store
             .write_verified_object_payload(
                 UntrustedObjectId::from_bytes(*object_id),
                 *length,
-                &mut file,
+                &mut payload_writer,
             )
             .map_err(operation)?;
+        let payload_identity = *payload_writer.digest.finalize().as_bytes();
+        drop(payload_writer);
         if verified.id().as_bytes() != object_id || verified.payload_len() != *length {
             return Err(ClusterWorkerError::InvalidInputClosure);
         }
@@ -381,26 +404,14 @@ fn materialize_unix(
                 return Err(ClusterWorkerError::InputBounds);
             }
             file.seek(SeekFrom::Start(0)).map_err(operation)?;
-            let mut bytes = Vec::new();
-            bytes
-                .try_reserve(usize::try_from(*length).map_err(|_| ClusterWorkerError::InputBounds)?)
-                .map_err(operation)?;
-            (&mut file)
-                .take(length.saturating_add(1))
-                .read_to_end(&mut bytes)
-                .map_err(operation)?;
-            if bytes.len() as u64 != *length {
-                return Err(ClusterWorkerError::InvalidInputClosure);
-            }
             let cancelled = std::sync::atomic::AtomicBool::new(false);
             let control = backend_frontend_python::legacy::checker::PythonProjectControl {
                 cancelled: &cancelled,
                 deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
             };
-            let identity = *blake3::hash(&bytes).as_bytes();
             python_environment = Some(
-                backend_frontend_python::legacy::checker::PythonEnvironmentCapture::decode(
-                    &bytes, identity, control,
+                backend_frontend_python::legacy::checker::PythonEnvironmentCapture::decode_from_reader(
+                    &mut file, *length, payload_identity, control,
                 )
                 .map_err(operation)?,
             );
@@ -1009,14 +1020,20 @@ fn materialize_windows(
             .filter(|total| *total <= max_input_bytes)
             .ok_or(ClusterWorkerError::InputBounds)?;
         let mut file = root.create_file_exclusive(&segments).map_err(operation)?;
+        let mut payload_writer = PayloadDigestWriter {
+            file: &mut file,
+            digest: blake3::Hasher::new(),
+        };
         let verified = input
             .store
             .write_verified_object_payload(
                 UntrustedObjectId::from_bytes(*object_id),
                 *length,
-                &mut file,
+                &mut payload_writer,
             )
             .map_err(operation)?;
+        let payload_identity = *payload_writer.digest.finalize().as_bytes();
+        drop(payload_writer);
         if verified.id().as_bytes() != object_id || verified.payload_len() != *length {
             return Err(ClusterWorkerError::InvalidInputClosure);
         }
@@ -1042,26 +1059,14 @@ fn materialize_windows(
                 return Err(ClusterWorkerError::InputBounds);
             }
             file.seek(SeekFrom::Start(0)).map_err(operation)?;
-            let mut bytes = Vec::new();
-            bytes
-                .try_reserve(usize::try_from(*length).map_err(|_| ClusterWorkerError::InputBounds)?)
-                .map_err(operation)?;
-            (&mut file)
-                .take(length.saturating_add(1))
-                .read_to_end(&mut bytes)
-                .map_err(operation)?;
-            if bytes.len() as u64 != *length {
-                return Err(ClusterWorkerError::InvalidInputClosure);
-            }
             let cancelled = std::sync::atomic::AtomicBool::new(false);
             let control = backend_frontend_python::legacy::checker::PythonProjectControl {
                 cancelled: &cancelled,
                 deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
             };
-            let identity = *blake3::hash(&bytes).as_bytes();
             python_environment = Some(
-                backend_frontend_python::legacy::checker::PythonEnvironmentCapture::decode(
-                    &bytes, identity, control,
+                backend_frontend_python::legacy::checker::PythonEnvironmentCapture::decode_from_reader(
+                    &mut file, *length, payload_identity, control,
                 )
                 .map_err(operation)?,
             );

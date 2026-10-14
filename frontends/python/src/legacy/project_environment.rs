@@ -741,20 +741,63 @@ impl PythonEnvironmentCapture {
         expected: [u8; 32],
         control: PythonProjectControl<'_>,
     ) -> Result<Self, CheckerError> {
+        Self::decode_from_reader(
+            &mut std::io::Cursor::new(bytes),
+            bytes.len() as u64,
+            expected,
+            control,
+        )
+    }
+
+    /// Decode directly from the already verified CAS payload descriptor. Each
+    /// source allocation becomes capsule ownership; no whole wire buffer or
+    /// second source copy is retained. The raw payload digest must be supplied
+    /// by the verified CAS writer, not inferred from this subsequent read.
+    pub fn decode_from_reader(
+        reader: &mut impl Read,
+        length: u64,
+        expected: [u8; 32],
+        control: PythonProjectControl<'_>,
+    ) -> Result<Self, CheckerError> {
         checkpoint(control)?;
-        if bytes.len() > PYTHON_ENVIRONMENT_MAX_WIRE_BYTES
-            || !bytes.starts_with(MAGIC)
-            || blake3::hash(bytes).as_bytes() != &expected
-        {
+        if length > PYTHON_ENVIRONMENT_MAX_WIRE_BYTES as u64 {
             return Err(project_error(
                 "",
-                "dependency capture object identity or bound mismatch",
+                "dependency capture object exceeds wire bound",
             ));
         }
-        let environment = decode_environment(&bytes[MAGIC.len()..], control)?;
+        let mut wire = Wire {
+            reader,
+            remaining: length,
+            metadata: 0,
+            digest: blake3::Hasher::new(),
+            control,
+        };
+        if wire.bytes(MAGIC.len())? != MAGIC {
+            return Err(project_error("", "invalid environment capture magic"));
+        }
+        let environment = decode_environment(&mut wire, control)?;
+        if wire.remaining != 0 {
+            return Err(project_error("", "environment object has trailing bytes"));
+        }
+        let mut extra = [0; 1];
+        checkpoint(control)?;
+        if wire.reader.read(&mut extra).map_err(io_error)? != 0 {
+            return Err(project_error(
+                "",
+                "environment reader exceeds admitted payload length",
+            ));
+        }
+        checkpoint(control)?;
+        if wire.digest.finalize().as_bytes() != &expected {
+            return Err(project_error(
+                "",
+                "dependency payload changed after CAS verification",
+            ));
+        }
         let mut capture = Self::admit(environment, control)?;
         capture.local_witness = false;
-        if capture.identity != expected {
+        if capture.identity != expected || capture.encoded_length != length {
             return Err(project_error("", "noncanonical dependency capture object"));
         }
         Ok(capture)
@@ -1512,50 +1555,85 @@ fn encode_environment(
     checkpoint(control)
 }
 
-struct Wire<'a>(&'a [u8], usize);
-impl<'a> Wire<'a> {
-    fn take(&mut self, count: usize) -> Result<&'a [u8], CheckerError> {
-        if count > self.0.len() {
+struct Wire<'reader, 'control, R> {
+    reader: &'reader mut R,
+    remaining: u64,
+    metadata: usize,
+    digest: blake3::Hasher,
+    control: PythonProjectControl<'control>,
+}
+impl<R: Read> Wire<'_, '_, R> {
+    fn read(&mut self, bytes: &mut [u8]) -> Result<(), CheckerError> {
+        if bytes.len() as u64 > self.remaining {
             return Err(project_error("", "truncated environment object"));
         }
-        let (bytes, rest) = self.0.split_at(count);
-        self.0 = rest;
+        for chunk in bytes.chunks_mut(65536) {
+            let mut filled = 0;
+            while filled < chunk.len() {
+                checkpoint(self.control)?;
+                let count = match self.reader.read(&mut chunk[filled..]) {
+                    Ok(0) => return Err(project_error("", "truncated environment payload")),
+                    Ok(count) => count,
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(error) => return Err(io_error(error)),
+                };
+                self.digest.update(&chunk[filled..filled + count]);
+                self.remaining -= count as u64;
+                filled += count;
+            }
+        }
+        checkpoint(self.control)
+    }
+    fn fixed<const N: usize>(&mut self) -> Result<[u8; N], CheckerError> {
+        let mut bytes = [0; N];
+        self.read(&mut bytes)?;
+        Ok(bytes)
+    }
+    fn bytes(&mut self, count: usize) -> Result<Vec<u8>, CheckerError> {
+        if count as u64 > self.remaining {
+            return Err(project_error("", "truncated environment object"));
+        }
+        checkpoint(self.control)?;
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(count)
+            .map_err(|error| io_error(std::io::Error::other(error.to_string())))?;
+        bytes.resize(count, 0);
+        self.read(&mut bytes)?;
         Ok(bytes)
     }
     fn count(&mut self, maximum: usize) -> Result<usize, CheckerError> {
-        let count = u32::from_be_bytes(self.take(4)?.try_into().expect("four bytes")) as usize;
+        let count = u32::from_be_bytes(self.fixed::<4>()?) as usize;
         if count > maximum {
             return Err(project_error("", "environment wire count exceeds bound"));
         }
         Ok(count)
     }
-    fn field(&mut self, maximum: usize) -> Result<&'a [u8], CheckerError> {
+    fn field(&mut self, maximum: usize) -> Result<Vec<u8>, CheckerError> {
         let count = self.count(maximum)?;
-        self.take(count)
+        self.bytes(count)
     }
-    fn metadata_field(&mut self, maximum: usize) -> Result<&'a [u8], CheckerError> {
-        let bytes = self.field(maximum)?;
-        self.1 = self
-            .1
-            .checked_add(bytes.len() + 128)
+    fn metadata_field(&mut self, maximum: usize) -> Result<Vec<u8>, CheckerError> {
+        let count = self.count(maximum)?;
+        self.metadata = self
+            .metadata
+            .checked_add(count + 128)
             .filter(|total| *total <= MAX_METADATA_BYTES)
             .ok_or_else(|| project_error("", "environment wire metadata exceeds bound"))?;
-        Ok(bytes)
+        self.bytes(count)
     }
     fn text(&mut self) -> Result<String, CheckerError> {
-        std::str::from_utf8(self.metadata_field(64 * 1024)?)
-            .map(str::to_owned)
+        String::from_utf8(self.metadata_field(64 * 1024)?)
             .map_err(|_| project_error("", "environment wire path is not UTF-8"))
     }
     fn tag(&mut self) -> Result<u8, CheckerError> {
-        Ok(self.take(1)?[0])
+        Ok(self.fixed::<1>()?[0])
     }
 }
-fn decode_environment(
-    bytes: &[u8],
+fn decode_environment<R: Read>(
+    wire: &mut Wire<'_, '_, R>,
     control: PythonProjectControl<'_>,
 ) -> Result<Environment, CheckerError> {
-    let mut wire = Wire(bytes, 0);
     let project = PathBuf::from(wire.text()?);
     let probe_count = wire.count(16)?;
     let mut probes = Vec::new();
@@ -1564,12 +1642,12 @@ fn decode_environment(
         let relative = PathBuf::from(wire.text()?);
         let bytes = match wire.tag()? {
             0 => None,
-            1 => Some(wire.metadata_field(1024 * 1024)?.to_vec()),
+            1 => Some(wire.metadata_field(1024 * 1024)?),
             _ => return Err(project_error("", "invalid environment probe tag")),
         };
         probes.push(SelectionProbe { relative, bytes });
     }
-    let interpreter = serde_json::from_slice(wire.metadata_field(MAX_PROBE_BYTES)?)
+    let interpreter = serde_json::from_slice(&wire.metadata_field(MAX_PROBE_BYTES)?)
         .map_err(|_| project_error("", "invalid interpreter witness"))?;
     let root_count = wire.count(2)?;
     let mut roots = Vec::new();
@@ -1601,11 +1679,11 @@ fn decode_environment(
                     let bytes = wire
                         .field(MAX_FILE_BYTES.min(MAX_PAYLOAD_BYTES.saturating_sub(total_bytes)))?;
                     total_bytes += bytes.len();
-                    MemberPayload::Source(bytes.to_vec())
+                    MemberPayload::Source(bytes)
                 }
                 1 => MemberPayload::Compiled {
-                    length: u64::from_be_bytes(wire.take(8)?.try_into().expect("eight bytes")),
-                    digest: wire.take(32)?.try_into().expect("digest bytes"),
+                    length: u64::from_be_bytes(wire.fixed::<8>()?),
+                    digest: wire.fixed::<32>()?,
                 },
                 _ => return Err(project_error("", "invalid dependency member kind")),
             };
@@ -1617,9 +1695,6 @@ fn decode_environment(
             directories,
             members,
         });
-    }
-    if !wire.0.is_empty() {
-        return Err(project_error("", "environment object has trailing bytes"));
     }
     Ok(Environment {
         project,
@@ -1645,6 +1720,97 @@ mod tests {
         let mut workspace = super::super::Workspace::create()?;
         workspace.path = workspace.path.canonicalize().map_err(io_error)?;
         Ok(workspace)
+    }
+
+    #[test]
+    fn streaming_decoder_bounds_reads_and_rejects_changed_truncated_or_cancelled_payloads()
+    -> Result<(), CheckerError> {
+        struct Fragmented<'a> {
+            bytes: &'a [u8],
+            reads: usize,
+            largest: usize,
+            cancel: Option<&'a AtomicBool>,
+        }
+        impl Read for Fragmented<'_> {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                self.largest = self.largest.max(output.len());
+                let count = self.bytes.len().min(output.len()).min(7);
+                output[..count].copy_from_slice(&self.bytes[..count]);
+                self.bytes = &self.bytes[count..];
+                self.reads += 1;
+                if self.reads == 3 {
+                    if let Some(cancel) = self.cancel {
+                        cancel.store(true, Ordering::Release);
+                    }
+                }
+                Ok(count)
+            }
+        }
+        struct NeverRead;
+        impl Read for NeverRead {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                panic!("oversized payload must fail before IO or allocation")
+            }
+        }
+        let root = fixture()?;
+        let cancelled = AtomicBool::new(false);
+        let capture = PythonEnvironmentCapture::capture(&root.path, control(&cancelled))?;
+        let bytes = capture.encode(control(&cancelled))?;
+        let mut fragments = Fragmented {
+            bytes: &bytes,
+            reads: 0,
+            largest: 0,
+            cancel: None,
+        };
+        let reopened = PythonEnvironmentCapture::decode_from_reader(
+            &mut fragments,
+            bytes.len() as u64,
+            capture.identity(),
+            control(&cancelled),
+        )?;
+        assert_eq!(reopened.identity(), capture.identity());
+        assert!(fragments.reads > 3);
+        assert!(fragments.largest <= 65536);
+        assert!(
+            PythonEnvironmentCapture::decode_from_reader(
+                &mut NeverRead,
+                PYTHON_ENVIRONMENT_MAX_WIRE_BYTES as u64 + 1,
+                capture.identity(),
+                control(&cancelled)
+            )
+            .is_err()
+        );
+        for (length, expected) in [
+            (bytes.len() as u64 - 1, capture.identity()),
+            (bytes.len() as u64 + 1, capture.identity()),
+            (bytes.len() as u64, [0x55; 32]),
+        ] {
+            assert!(
+                PythonEnvironmentCapture::decode_from_reader(
+                    &mut std::io::Cursor::new(&bytes),
+                    length,
+                    expected,
+                    control(&cancelled)
+                )
+                .is_err()
+            );
+        }
+        let mut cancelling = Fragmented {
+            bytes: &bytes,
+            reads: 0,
+            largest: 0,
+            cancel: Some(&cancelled),
+        };
+        assert!(matches!(
+            PythonEnvironmentCapture::decode_from_reader(
+                &mut cancelling,
+                bytes.len() as u64,
+                capture.identity(),
+                control(&cancelled)
+            ),
+            Err(CheckerError::Cancelled { .. })
+        ));
+        Ok(())
     }
 
     #[test]
