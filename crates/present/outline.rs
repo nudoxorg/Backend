@@ -566,11 +566,16 @@ mod lane_twin_tests {
         );
         let opt = &merged[0];
         assert_eq!(
-            opt.identity().map(|identity| identity.coordinate().as_str()),
+            opt.identity()
+                .map(|identity| identity.coordinate().as_str()),
             Some("/abs/p::src/a.rs:19::Opt"),
             "the structural coordinate is the one entry's address"
         );
-        let members = opt.children().iter().map(OutlineEntry::name).collect::<Vec<_>>();
+        let members = opt
+            .children()
+            .iter()
+            .map(OutlineEntry::name)
+            .collect::<Vec<_>>();
         assert_eq!(members.len(), 2, "{members:?}");
         assert!(members.contains(&"parse".to_owned()) && members.contains(&"alphabet".to_owned()));
         assert_eq!(merged.iter().map(OutlineEntry::count).sum::<usize>(), 4);

@@ -2371,6 +2371,30 @@ fn a_page_of_only_placeholders_is_a_summary_not_an_empty_page() {
 }
 
 #[test]
+fn a_declaration_of_no_stated_language_is_not_tagged_with_a_placeholder() {
+    // A compiler-backed local carries no captured site, so no language.
+    let coordinate = format!("{PROJECT}::semantic::{}::scratch", "2f".repeat(32));
+    let local = backend_library::Row::in_package(
+        RowId::Symbol(symbol_key(&coordinate)),
+        basis(),
+        package_key(PROJECT),
+        coordinate,
+    )
+    .with_kind(DeclarationKind::Variable);
+    let list = record_list_from_rows("scratch", &[local], &[Coverage::Complete], false);
+    assert_eq!(list.records().len(), 1);
+    let rendered = text::records(&list, None, Theme::plain());
+    let head = rendered
+        .lines()
+        .find(|line| line.starts_with('●'))
+        .expect("record head");
+    assert!(head.ends_with("variable"), "no language tag: {head}");
+    assert!(!rendered.contains("··"), "{rendered}");
+    let markdown = markdown::records(&list, None);
+    assert!(!markdown.contains("unknown"), "{markdown}");
+}
+
+#[test]
 fn twins_are_kept_apart_when_the_pairing_is_not_one_to_one() {
     // Two compiler-backed rows at one site, or an import against a
     // declaration, are not evidence of one declaration.

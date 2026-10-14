@@ -228,11 +228,17 @@ fn push_record(lines: &mut Lines, record: &Record, within: Option<&ProjectRef>, 
     if let Some(kind) = record.kind() {
         tags.push(format!("{} {}", KindGlyph::new(kind), kind.name()));
     }
-    tags.push(LanguageGlyph::new(record.language()).as_str().to_owned());
+    // A declaration whose language the producer did not state is not tagged
+    // with a placeholder.
+    if record.language() != crate::language::Language::Unknown {
+        tags.push(LanguageGlyph::new(record.language()).as_str().to_owned());
+    }
     if record.state() != crate::record::RecordState::Ready {
         tags.push(record.state().name().to_owned());
     }
-    let _ = write!(head, "  {}", theme.paint(Style::Dim, &tags.join(" · ")));
+    if !tags.is_empty() {
+        let _ = write!(head, "  {}", theme.paint(Style::Dim, &tags.join(" · ")));
+    }
     lines.push(head);
     lines.push(format!(
         "  {}",

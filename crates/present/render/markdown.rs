@@ -342,7 +342,9 @@ fn mcp_summary_record(record: &Record) -> Option<String> {
     if let Some(kind) = record.kind() {
         tags.push(kind.name());
     }
-    tags.push(record.language().name());
+    if record.language() != crate::language::Language::Unknown {
+        tags.push(record.language().name());
+    }
     if record.state() != crate::record::RecordState::Ready {
         tags.push(record.state().name());
     }
@@ -375,8 +377,7 @@ fn mcp_summary_record(record: &Record) -> Option<String> {
     );
     row.push_str("• ");
     append_code_span(&mut row, name, name_ticks, name_padding);
-    let _ = write!(&mut row, " · {}", tags[0]);
-    for tag in tags.iter().skip(1) {
+    for tag in &tags {
         let _ = write!(&mut row, " · {tag}");
     }
     row.push('\n');
@@ -688,11 +689,15 @@ fn push_record(lines: &mut Lines, record: &Record, within: Option<&ProjectRef>) 
     if let Some(kind) = record.kind() {
         tags.push(kind.name().to_owned());
     }
-    tags.push(record.language().name().to_owned());
+    if record.language() != crate::language::Language::Unknown {
+        tags.push(record.language().name().to_owned());
+    }
     if record.state() != crate::record::RecordState::Ready {
         tags.push(record.state().name().to_owned());
     }
-    let _ = write!(head, "  ·  {}", tags.join(" · "));
+    if !tags.is_empty() {
+        let _ = write!(head, "  ·  {}", tags.join(" · "));
+    }
     lines.push(head);
     let mut detail = format!("`{}`", record.identity().coordinate());
     if let Some(signature) = record.signature() {

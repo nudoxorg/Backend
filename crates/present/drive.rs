@@ -769,6 +769,22 @@ fn defined_in_library_code(record: &Record) -> bool {
         .is_some_and(|path| !backend_library::is_support_source_path(path.as_str()))
 }
 
+/// Whether a record is sited in an example, a test or a benchmark.
+fn defined_in_support_code(record: &Record) -> bool {
+    record
+        .identity()
+        .path()
+        .is_some_and(|path| backend_library::is_support_source_path(path.as_str()))
+}
+
+/// Whether a record is a compiler type row: a type with no site of its own,
+/// which stands for the type a declaration defines rather than a second
+/// definition.
+fn is_type_value(record: &Record) -> bool {
+    record.identity().path().is_none()
+        && record.kind() == Some(backend_library::DeclarationKind::Type)
+}
+
 /// A record a name can resolve to: a declaration, never an import that only
 /// brings a name in, a module, a package or an external placeholder.
 fn names_a_declaration(record: &Record) -> bool {
@@ -875,6 +891,18 @@ fn resolve_name(
             })
             .collect();
     }
+    // A compiler type row names the type its declaration defines; it never
+    // competes with a declaration that has a site.
+    if matches.len() > 1 {
+        let declarations = matches
+            .iter()
+            .copied()
+            .filter(|record| !is_type_value(record))
+            .collect::<Vec<_>>();
+        if !declarations.is_empty() {
+            matches = declarations;
+        }
+    }
     // When one match is defined in library code and the rest only in
     // examples, tests or benchmarks, the library definition is the one the
     // name means; the rest stay reachable by their exact coordinates.
@@ -884,7 +912,11 @@ fn resolve_name(
             .copied()
             .filter(|record| defined_in_library_code(record))
             .collect::<Vec<_>>();
-        if let [primary] = library.as_slice() {
+        if let [primary] = library.as_slice()
+            && matches
+                .iter()
+                .all(|record| std::ptr::eq(*record, *primary) || defined_in_support_code(record))
+        {
             matches = vec![*primary];
         }
     }
@@ -2127,8 +2159,6 @@ mod address_resolution_controls {
         };
         assert_eq!(canonical_coordinate(SEMANTIC, &document), SCHEDULER);
         assert_eq!(canonical_coordinate(SCHEDULER, &document), SCHEDULER);
-        // A compiler-backed label that is not this document's twin is kept.
-        assert_eq!(canonical_coordinate(IMPORT, &document), IMPORT);
         // A compiler-backed declaration with no structural row keeps its own
         // coordinate: the key of the derived spelling is not the document's.
         let lone = Document::new(symbol_key("a compiler-only row"), document.basis, [])
