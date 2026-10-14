@@ -534,13 +534,7 @@ impl PythonEnvironmentCapture {
         let mut count = 0usize;
         let mut size = 0usize;
         let mut compiled_size = 0u64;
-        let mut metadata_bytes = environment
-            .probes
-            .iter()
-            .map(|probe| {
-                probe.bytes.as_ref().map_or(0, Vec::len) + probe.relative.as_os_str().len()
-            })
-            .sum::<usize>();
+        let metadata_bytes = environment_metadata_charge(&environment, control)?;
         let mut roots = BTreeSet::new();
         for root in &environment.roots {
             normal_absolute(&root.original)?;
@@ -561,7 +555,6 @@ impl PythonEnvironmentCapture {
             for member in &root.members {
                 checkpoint(control)?;
                 normal_relative(&member.path)?;
-                metadata_bytes = metadata_bytes.saturating_add(member.path.len() + 128);
                 let path = Path::new(&member.path);
                 let parent = path.parent().unwrap_or(Path::new(""));
                 let parent = canonical_path_spelling(parent)?;
@@ -607,7 +600,6 @@ impl PythonEnvironmentCapture {
                 return Err(project_error("", "dependency root directory is absent"));
             }
             for path in &root.directories {
-                metadata_bytes = metadata_bytes.saturating_add(path.len() + 64);
                 if !path.is_empty() {
                     let relative = normal_relative(path)?;
                     let parent =
@@ -1473,6 +1465,68 @@ impl Write for HashWriter {
     }
 }
 
+/// One metadata grammar for producer and decoder. Every text/config/JSON
+/// field owns the same fixed bookkeeping charge; source bodies are separately
+/// budgeted. Bounds are checked before decoder allocation and producer success.
+fn charge_metadata(total: &mut usize, length: usize, maximum: usize) -> Result<(), CheckerError> {
+    if length > maximum {
+        return Err(project_error(
+            "",
+            "environment metadata field exceeds bound",
+        ));
+    }
+    *total = total
+        .checked_add(length)
+        .and_then(|total| total.checked_add(128))
+        .filter(|total| *total <= MAX_METADATA_BYTES)
+        .ok_or_else(|| project_error("", "environment metadata exceeds capture bound"))?;
+    Ok(())
+}
+
+fn environment_metadata_charge(
+    environment: &Environment,
+    control: PythonProjectControl<'_>,
+) -> Result<usize, CheckerError> {
+    let mut total = 0usize;
+    charge_metadata(
+        &mut total,
+        canonical_path_spelling(&environment.project)?.len(),
+        64 * 1024,
+    )?;
+    for probe in &environment.probes {
+        checkpoint(control)?;
+        charge_metadata(
+            &mut total,
+            canonical_path_spelling(&probe.relative)?.len(),
+            64 * 1024,
+        )?;
+        if let Some(bytes) = &probe.bytes {
+            charge_metadata(&mut total, bytes.len(), 1024 * 1024)?;
+        }
+    }
+    let interpreter = serde_json::to_vec(&environment.interpreter)
+        .map_err(|_| project_error("", "interpreter witness encoding failed"))?;
+    charge_metadata(&mut total, interpreter.len(), MAX_PROBE_BYTES)?;
+    for root in &environment.roots {
+        checkpoint(control)?;
+        charge_metadata(
+            &mut total,
+            canonical_path_spelling(&root.original)?.len(),
+            64 * 1024,
+        )?;
+        for path in root
+            .directories
+            .iter()
+            .map(String::as_str)
+            .chain(root.members.iter().map(|member| member.path.as_str()))
+        {
+            checkpoint(control)?;
+            charge_metadata(&mut total, path.len(), 64 * 1024)?;
+        }
+    }
+    Ok(total)
+}
+
 fn field(writer: &mut impl Write, bytes: &[u8]) -> Result<(), CheckerError> {
     let length = u32::try_from(bytes.len())
         .map_err(|_| project_error("", "environment wire field overflow"))?;
@@ -1668,11 +1722,7 @@ impl<R: Read> Wire<'_, '_, R> {
     }
     fn metadata_field(&mut self, maximum: usize) -> Result<Vec<u8>, CheckerError> {
         let count = self.count(maximum)?;
-        self.metadata = self
-            .metadata
-            .checked_add(count + 128)
-            .filter(|total| *total <= MAX_METADATA_BYTES)
-            .ok_or_else(|| project_error("", "environment wire metadata exceeds bound"))?;
+        charge_metadata(&mut self.metadata, count, maximum)?;
         self.bytes(count)
     }
     fn text(&mut self) -> Result<String, CheckerError> {
@@ -1775,12 +1825,7 @@ mod tests {
         Ok(workspace)
     }
 
-    #[test]
-    fn admission_and_roundtrip_preserve_nested_native_probe_and_member_parents()
-    -> Result<(), CheckerError> {
-        // Transport/type admission only: these synthetic paths never execute a
-        // checker or establish semantic facts. The genuine installed gate below
-        // separately exercises capture and native consumption of nested roots.
+    fn transport_environment() -> Environment {
         let project = if cfg!(windows) {
             PathBuf::from("C:/project")
         } else {
@@ -1818,7 +1863,7 @@ mod tests {
             machine: std::env::consts::ARCH.into(),
             stdlib: stdlib.clone(),
         };
-        let environment = Environment {
+        Environment {
             project,
             probes: vec![SelectionProbe {
                 relative: PathBuf::from("local").join("py3").join("pyvenv.cfg"),
@@ -1842,7 +1887,16 @@ mod tests {
                 },
             ],
             interpreter: Some(interpreter),
-        };
+        }
+    }
+
+    #[test]
+    fn admission_and_roundtrip_preserve_nested_native_probe_and_member_parents()
+    -> Result<(), CheckerError> {
+        // Transport/type admission only: these synthetic paths never execute a
+        // checker or establish semantic facts. The genuine installed gate below
+        // separately exercises capture and native consumption of nested roots.
+        let environment = transport_environment();
         let cancelled = AtomicBool::new(false);
         let admitted = PythonEnvironmentCapture::admit(environment, control(&cancelled))?;
         let bytes = admitted.encode(control(&cancelled))?;
@@ -1857,6 +1911,39 @@ mod tests {
             canonical_path_spelling(&decoded.environment.probes[0].relative)?,
             "local/py3/pyvenv.cfg"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn producer_metadata_boundary_capsules_always_decoderoundtrip() -> Result<(), CheckerError> {
+        let cancelled = AtomicBool::new(false);
+        let mut environment = transport_environment();
+        environment.roots[0].directories = vec!["".into()];
+        environment.roots[0].members.clear();
+        let base = environment_metadata_charge(&environment, control(&cancelled))?;
+        let name = format!("boundary-{:06}-{}", 0, "x".repeat(134));
+        let charge = name.len() + 128;
+        let count = (MAX_METADATA_BYTES - base) / charge;
+        assert!(
+            count + 2 < MAX_FILES,
+            "metadata must be the limiting authority in this control"
+        );
+        environment.roots[0]
+            .directories
+            .extend((0..count).map(|ordinal| format!("boundary-{ordinal:06}-{}", "x".repeat(134))));
+        let measured = environment_metadata_charge(&environment, control(&cancelled))?;
+        assert!(MAX_METADATA_BYTES - measured < charge);
+        let admitted = PythonEnvironmentCapture::admit(environment.clone(), control(&cancelled))?;
+        let wire = admitted.encode(control(&cancelled))?;
+        let decoded =
+            PythonEnvironmentCapture::decode(&wire, admitted.identity(), control(&cancelled))?;
+        assert_eq!(decoded.environment.roots[0].directories.len(), count + 1);
+        assert_eq!(decoded.identity(), admitted.identity());
+        environment.roots[0]
+            .directories
+            .push("z".repeat(name.len()));
+        assert!(environment_metadata_charge(&environment, control(&cancelled)).is_err());
+        assert!(PythonEnvironmentCapture::admit(environment, control(&cancelled)).is_err());
         Ok(())
     }
 
