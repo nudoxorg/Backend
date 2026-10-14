@@ -190,14 +190,18 @@ fn semantic_profile_is_complete(
     )>,
     package: Option<backend_engine::PackageKey>,
     path: &str,
+    python_version: Option<backend_semantic::vocabulary::PythonVersion>,
 ) -> Result<bool, super::BuiltinModelError> {
     let Some(package) = package else {
         return Ok(false);
     };
     // A file whose extension has no semantic profile is never covered by a
     // completed compile, so it keeps its structural facts.
-    let Some(profile) = super::ingest::source_profile(std::path::Path::new(path))
-        .map_err(super::BuiltinModelError)?
+    let Some(profile) = super::ingest::source_profile_with_python_version(
+        std::path::Path::new(path),
+        python_version,
+    )
+    .map_err(super::BuiltinModelError)?
     else {
         return Ok(false);
     };
@@ -1847,9 +1851,9 @@ pub fn execute() {}
     fn complete_c_publication_does_not_suppress_cxx_fallback() -> Result<(), String> {
         let package = package_key("mixed-c-cxx");
         let complete = BTreeSet::from([(package.to_bytes(), LanguageProfile::C(CStandard::C23))]);
-        if !semantic_profile_is_complete(&complete, Some(package), "source.c")
+        if !semantic_profile_is_complete(&complete, Some(package), "source.c", None)
             .map_err(|error| error.to_string())?
-            || semantic_profile_is_complete(&complete, Some(package), "source.cpp")
+            || semantic_profile_is_complete(&complete, Some(package), "source.cpp", None)
                 .map_err(|error| error.to_string())?
         {
             return Err("C and C++ semantic fallback profiles collapsed".to_owned());
