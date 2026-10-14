@@ -14,6 +14,7 @@ pub mod compiler_trust;
 mod discovery;
 mod embedded;
 pub mod listener;
+mod owner_trace;
 mod private_temp;
 pub mod process;
 pub mod protocol;

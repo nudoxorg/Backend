@@ -291,9 +291,10 @@ fn prepare_index_project_at(
     }
 }
 
-/// Captures the owner-backed source frontier and workspace root before an
-/// index scan is handed to a worker. This copies only bounded relation data;
-/// filesystem discovery stays outside the owner loop.
+/// Pins the owner's workspace root and snapshot before an index scan is handed
+/// to a worker. This is constant time: reading the previously indexed frontier
+/// out of the snapshot is proportional to the project's file count, so the
+/// scan worker does it ([`IndexScanWork::load_prior_frontier`]).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn capture_index_scan(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
@@ -306,40 +307,6 @@ pub(super) fn capture_index_scan(
     capture_workspace_snapshot: bool,
     cancellation: Arc<AtomicBool>,
 ) -> Result<IndexScanWork, BuiltinModelError> {
-    let snapshot = daemon.engine().daemon().owner().snapshot();
-    let relation = snapshot
-        .relation::<BuiltinWorkspaceRelation>()
-        .map_err(|error| BuiltinModelError(format!("open product source: {error}")))?;
-    let project_key = package.to_bytes();
-    let before = relation
-        .lookup(&project_key)
-        .map_err(|error| BuiltinModelError(format!("read indexed project: {error}")))?;
-    let old_files = match before.as_ref() {
-        Some(record) => {
-            super::super::profile::resolve_project_file_keys(project_key, record, |page_key| {
-                relation.lookup(page_key).map_err(|error| {
-                    BuiltinModelError(format!("read indexed membership page: {error}"))
-                })
-            })?
-        }
-        None => Vec::new(),
-    };
-    if old_files.len() > ProductSourceRecord::MAX_PROJECT_FILES {
-        return Err(BuiltinModelError(
-            "project source frontier exceeds its bounded file limit".to_owned(),
-        ));
-    }
-    let admitted_files = relation
-        .lookup_many_sorted(&old_files)
-        .map_err(|error| BuiltinModelError(format!("read reusable source files: {error}")))?;
-    let mut reusable = BTreeMap::new();
-    for (key, record) in old_files.iter().copied().zip(admitted_files) {
-        let record = record.ok_or_else(|| {
-            BuiltinModelError("project frontier refers to a missing source file".to_owned())
-        })?;
-        super::super::profile::validate_project_file(project_key, key, &record)?;
-        reusable.insert(key, record);
-    }
     Ok(IndexScanWork {
         package,
         label: label.to_owned(),
@@ -347,19 +314,71 @@ pub(super) fn capture_index_scan(
         coordinate: coordinate.cloned(),
         request_id,
         execution_intent,
-        project_key,
+        project_key: package.to_bytes(),
         workspace_root: daemon.engine().daemon().owner().head().root(),
-        before,
-        old_files,
-        reusable,
+        snapshot: daemon.engine().daemon().owner().snapshot(),
+        before: None,
+        old_files: Vec::new(),
+        reusable: BTreeMap::new(),
         capture_workspace_snapshot,
         cancellation,
     })
 }
 
+impl IndexScanWork {
+    /// Reads the project's previously indexed source frontier from the pinned
+    /// snapshot: the project row, its membership pages and every reusable file
+    /// row, each validated against the project they claim.
+    fn load_prior_frontier(&mut self) -> Result<(), BuiltinModelError> {
+        let relation = self
+            .snapshot
+            .relation::<BuiltinWorkspaceRelation>()
+            .map_err(|error| BuiltinModelError(format!("open product source: {error}")))?;
+        let project_key = self.project_key;
+        let before = relation
+            .lookup(&project_key)
+            .map_err(|error| BuiltinModelError(format!("read indexed project: {error}")))?;
+        let old_files = match before.as_ref() {
+            Some(record) => {
+                super::super::profile::resolve_project_file_keys(project_key, record, |page_key| {
+                    relation.lookup(page_key).map_err(|error| {
+                        BuiltinModelError(format!("read indexed membership page: {error}"))
+                    })
+                })?
+            }
+            None => Vec::new(),
+        };
+        if old_files.len() > ProductSourceRecord::MAX_PROJECT_FILES {
+            return Err(BuiltinModelError(
+                "project source frontier exceeds its bounded file limit".to_owned(),
+            ));
+        }
+        let admitted_files = relation
+            .lookup_many_sorted(&old_files)
+            .map_err(|error| BuiltinModelError(format!("read reusable source files: {error}")))?;
+        let mut reusable = BTreeMap::new();
+        for (key, record) in old_files.iter().copied().zip(admitted_files) {
+            let record = record.ok_or_else(|| {
+                BuiltinModelError("project frontier refers to a missing source file".to_owned())
+            })?;
+            super::super::profile::validate_project_file(project_key, key, &record)?;
+            reusable.insert(key, record);
+        }
+        self.before = before;
+        self.old_files = old_files;
+        self.reusable = reusable;
+        Ok(())
+    }
+}
+
 /// Performs filesystem discovery and optional full compiler-workspace capture
 /// using only the immutable input copied from the owner.
-pub(super) fn run_index_scan(work: IndexScanWork) -> Result<IndexScanResult, IndexScanFailure> {
+pub(super) fn run_index_scan(mut work: IndexScanWork) -> Result<IndexScanResult, IndexScanFailure> {
+    if work.cancellation.load(Ordering::Acquire) {
+        return Err(IndexScanFailure::Cancelled);
+    }
+    work.load_prior_frontier()
+        .map_err(IndexScanFailure::Refused)?;
     if work.cancellation.load(Ordering::Acquire) {
         return Err(IndexScanFailure::Cancelled);
     }
@@ -432,29 +451,80 @@ pub(super) fn run_index_scan(work: IndexScanWork) -> Result<IndexScanResult, Ind
     })
 }
 
-/// Completes source and semantic admission on the owner after a worker scan.
-/// The captured workspace root fences the immutable scan input from a newer
-/// owner selection before any candidate observations are prepared.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn finish_index_scan(
-    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+/// What a finished scan comes to before anything durable is committed.
+pub(super) enum ScanPlan {
+    /// No compiler profile needs another compile: the product transition is
+    /// complete as prepared.
+    Ready(PreparedProductSelection),
+    /// Source rows and Pending captures must commit before compilation starts.
+    Capture(Box<ScanCapture>),
+}
+
+/// The source-plus-Pending-capture transition of one scan, and everything the
+/// job needs once it has committed. It is derived from an immutable snapshot
+/// and the semantic writer alone, so it can be prepared and committed off the
+/// owner loop.
+pub(super) struct ScanCapture {
+    /// The one durable transition that admits the source frontier and marks
+    /// every profile Pending. The previous semantic generation stays selected.
+    /// The caller binds the operation key before staging it.
+    pub(super) intent: BuiltinIntent,
+    /// What the job does once that transition has committed.
+    pub(super) continuation: ScanContinuation,
+}
+
+/// A prepared capture's state after its transition committed.
+pub(super) struct ScanContinuation {
+    /// Pending markers the transition installs, keyed by publication.
+    pub(super) captures: BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+    /// Source/configuration frontier that must still hold when the transition
+    /// is selected.
+    pub(super) revision_fence: ingest::CompilerRevisionFence,
+    after: AfterCapture,
+}
+
+/// Owned state carried from the prepared capture to compilation. Every field
+/// is plain data so the continuation can move between threads.
+struct AfterCapture {
+    package: backend_engine::PackageKey,
+    package_reference: backend_engine::PackageReference,
+    label: String,
+    request_id: u64,
+    execution_intent: CompileExecutionIntent,
+    coordinate: Option<PackageUrl>,
+    /// The caller's spelling of the root, kept for alias-retarget checks.
+    requested_root: PathBuf,
+    project_key: [u8; 32],
+    before: Option<ProductSourceRecord>,
+    fresh: Vec<ingest::CompilerSourceHandle>,
+    reused: Vec<ingest::ReusedCompilerFile>,
+    source_admission_policy: super::super::source_budget::SourceAdmissionPolicy,
+    observations: BTreeMap<LanguageProfile, SourceObservationReceipt>,
+    cancellation: Arc<AtomicBool>,
+    workspace_snapshot: Option<ingest::CompilerWorkspaceSnapshot>,
+    /// The scan's fence, retained for the final product selection.
+    final_revision_fence: ingest::CompilerRevisionFence,
+}
+
+/// The committed source frontier, read back from the selected workspace.
+struct CommittedFrontier {
+    project: ProductSourceRecord,
+    file_keys: Vec<[u8; 32]>,
+    frontier: CapturedProjectFileFrontier,
+}
+
+/// Prepares one finished scan against an immutable owner snapshot: source and
+/// semantic admission, candidate observations, the exact row changes, and the
+/// Pending capture markers. Nothing here commits a workspace transition, so it
+/// may run on any thread that owns the semantic writer.
+pub(super) fn prepare_scan_plan(
+    base_snapshot: &WorkspaceSnapshot,
     result: IndexScanResult,
     compiler: &LocalCompilerClient,
     semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
-    owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
-    pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
-    defer: bool,
     operation_key: Option<backend_library::IndexOperationKey>,
-    committed_captures: &mut BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
-    mut index_operations: Option<&mut IndexOperationJournal>,
-) -> Result<PreparedIndex, BuiltinModelError> {
-    let current_root = daemon.engine().daemon().owner().head().root();
-    if current_root != result.work.workspace_root {
-        return Err(BuiltinModelError(
-            "workspace selection changed while the project scan was running; retry indexing"
-                .to_owned(),
-        ));
-    }
+) -> Result<ScanPlan, BuiltinModelError> {
+    let mut lp = crate::owner_trace::laps();
     let IndexScanResult {
         work,
         scan,
@@ -462,11 +532,10 @@ pub(super) fn finish_index_scan(
     } = result;
     let final_revision_fence = scan.revision_fence.clone();
     let cancellation = work.cancellation.clone();
-    let base_snapshot = daemon.engine().daemon().owner().snapshot();
     let relation = base_snapshot
         .relation::<BuiltinWorkspaceRelation>()
         .map_err(|error| BuiltinModelError(format!("open product source: {error}")))?;
-    let facts_relation = product_source_file_facts_relation(&base_snapshot)
+    let facts_relation = product_source_file_facts_relation(base_snapshot)
         .map_err(|error| BuiltinModelError(format!("open product source facts: {error}")))?;
     let IndexScanWork {
         package,
@@ -481,8 +550,7 @@ pub(super) fn finish_index_scan(
         reusable,
         ..
     } = work;
-    let requested_root = source_root.as_path();
-    let coordinate = coordinate.as_ref();
+    let requested_root = source_root;
     let revision_fence = &scan.revision_fence;
     if cancellation.load(Ordering::Acquire) {
         return Err(BuiltinModelError(ingest::INDEX_SCAN_CANCELLED.to_owned()));
@@ -497,6 +565,7 @@ pub(super) fn finish_index_scan(
             "project root or files changed after source admission; retry indexing".to_owned(),
         ));
     }
+    lp.lap("scan.fs_revision_check_1");
     // Use the root pinned by the scan for configuration, compiler-input, and
     // profile reads. Keep the original spelling only for alias-retarget checks
     // at later admission fences.
@@ -506,7 +575,7 @@ pub(super) fn finish_index_scan(
         package,
         &label,
         source_root,
-        coordinate,
+        coordinate.as_ref(),
         request_id,
         compiler,
     )?;
@@ -519,6 +588,7 @@ pub(super) fn finish_index_scan(
         ingest::present_compiler_paths(&scan.compiler_sources, &scan.reused_compiler_files);
     let lost = ingest::lost_compiler_profiles(source_root, &reusable, &present)
         .map_err(BuiltinModelError)?;
+    lp.lap("scan.admit_inputs");
     // Persist candidate observations first. They fence compilation but remain
     // private to freshness and query paths until the combined product intent
     // commits.
@@ -526,8 +596,11 @@ pub(super) fn finish_index_scan(
     observed_profiles.extend(lost.iter().copied());
     let mut observations = BTreeMap::new();
     for profile in observed_profiles {
-        let coordinate =
-            super::super::compiler_scope::semantic_coordinate(package, profile, coordinate)?;
+        let coordinate = super::super::compiler_scope::semantic_coordinate(
+            package,
+            profile,
+            coordinate.as_ref(),
+        )?;
         let key = ProductSemanticPublicationKey::new(
             semantic_context.package_reference.clone(),
             coordinate,
@@ -553,7 +626,8 @@ pub(super) fn finish_index_scan(
             semantic_authority.observe(&key, input_digest, count)?,
         );
     }
-    let mut file_keys = scan.files.iter().map(|(key, _)| *key).collect::<Vec<_>>();
+    lp.lap("scan.semantic_observe");
+    let file_keys = scan.files.iter().map(|(key, _)| *key).collect::<Vec<_>>();
     let project_update = ProductSourceRecord::project_with_membership_pages(
         &label,
         scan.source_version,
@@ -561,7 +635,7 @@ pub(super) fn finish_index_scan(
         None,
     )
     .map_err(BuiltinModelError)?;
-    let mut project = project_update.project_record().clone();
+    let project = project_update.project_record().clone();
     let mut changes = Vec::new();
     if before.as_ref() != Some(&project) {
         changes.push(BuiltinSourceChange {
@@ -625,251 +699,454 @@ pub(super) fn finish_index_scan(
         &scan.files,
         &old_files,
     )?;
+    lp.lap("scan.diff_rows");
     // Source comparisons and exact after-images are now prepared. The committed
-    // project is reread below before compilation; the scan's decoded compact
-    // rows and accounting/configuration payloads are not compiler authority.
+    // project is reread after the capture commits before compilation; the
+    // scan's decoded compact rows and accounting/configuration payloads are
+    // not compiler authority.
     drop(scan.files);
     drop(scan.encoded_fact_bytes);
     drop(scan.compiler_configuration);
-    // Keep these source rows private until every semantic profile has been
-    // admitted. The eventual BuiltinIntent carries source and semantic roots
-    // in one workspace transition.
     // This compiler owner does not expose a complete typed present-and-negative
     // read set, so its source/configuration digest cannot authorize reuse.
     // Every live semantic profile rebuilds until the authority can prove its
     // complete input closure.
-    let (
-        semantic_changes,
-        selected,
-        cargo_alias_observations,
-        capture_changes,
-        profile_refusals,
-        partial_plan,
-    ) = {
-        let fresh_profiles = scan
-            .compiler_sources
-            .iter()
-            .map(|source| {
-                ingest::compilation_profile(source_root, &source.relative_path, source.profile)
-            })
-            .collect::<BTreeSet<_>>();
-        let mut reusable_inputs = BTreeSet::new();
-        for (profile, admitted) in &inputs {
-            if compiler_exact_witness_is_current(
-                daemon,
-                package,
-                &label,
-                coordinate,
-                compiler,
-                source_root,
-                *profile,
-                *admitted,
-            )? {
-                reusable_inputs.insert(*profile);
-            }
-        }
-        let dirty = profiles_requiring_compilation(
-            &live,
-            &lost,
-            &fresh_profiles,
-            &inputs,
-            &reusable_inputs,
-        );
-        let (fresh, reused) = ingest::select_compiler_inputs(
+    let fresh_profiles = scan
+        .compiler_sources
+        .iter()
+        .map(|source| {
+            ingest::compilation_profile(source_root, &source.relative_path, source.profile)
+        })
+        .collect::<BTreeSet<_>>();
+    let mut reusable_inputs = BTreeSet::new();
+    for (profile, admitted) in &inputs {
+        if compiler_exact_witness_is_current(
+            base_snapshot,
+            package,
+            &label,
+            coordinate.as_ref(),
+            compiler,
             source_root,
-            scan.compiler_sources,
-            scan.reused_compiler_files,
-            &dirty,
-        );
-        if dirty.is_empty() {
-            (
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Vec::new(),
-                Box::new([]) as Box<[backend_library::IndexOperationProfileRefusal]>,
-                None,
-            )
-        } else {
-            // Admit the exact structural source frontier together with a
-            // per-profile Pending marker before entering any compiler path.
-            // Candidate observations remain private until this one workspace
-            // transition commits; the selected semantic generation remains
-            // the prior coherent claim and is stale against the new source.
-            let (captures, pending_changes, _capture_observations) =
-                prepare_source_capture_changes(
-                    daemon,
-                    package,
-                    &semantic_context,
-                    &dirty,
-                    &observations,
-                    scan.source_version,
-                    operation_key,
-                )?;
-            if !ingest::compiler_revision_is_current_with_cancellation(
-                revision_fence,
-                Some(cancellation.as_ref()),
-            )
-            .map_err(BuiltinModelError)?
-            {
-                return Err(BuiltinModelError(
-                    "compiler source or configuration revision changed before source capture; retry indexing"
-                        .to_owned(),
-                ));
-            }
-            let mut capture_intent = BuiltinIntent::index_with_capture(
+            *profile,
+            *admitted,
+        )? {
+            reusable_inputs.insert(*profile);
+        }
+    }
+    lp.lap("scan.witness_check");
+    let dirty =
+        profiles_requiring_compilation(&live, &lost, &fresh_profiles, &inputs, &reusable_inputs);
+    let (fresh, reused) = ingest::select_compiler_inputs(
+        source_root,
+        scan.compiler_sources,
+        scan.reused_compiler_files,
+        &dirty,
+    );
+    if dirty.is_empty() {
+        // Nothing to compile: the structural source rows are the whole
+        // transition and carry no Pending capture.
+        if cancellation.load(Ordering::Acquire) {
+            return Err(BuiltinModelError(ingest::INDEX_SCAN_CANCELLED.to_owned()));
+        }
+        if !ingest::compiler_revision_is_current_with_cancellation(
+            revision_fence,
+            Some(cancellation.as_ref()),
+        )
+        .map_err(BuiltinModelError)?
+        {
+            return Err(BuiltinModelError(
+                "project root or files changed before product selection; retry indexing".to_owned(),
+            ));
+        }
+        let intent = if changes.is_empty() && source_facts_changes.is_empty() {
+            None
+        } else if !source_facts_changes.is_empty() {
+            Some(BuiltinIntent::index_with_source_facts(
                 package,
                 &label,
-                std::mem::take(&mut changes),
+                changes,
                 Vec::new(),
-                pending_changes,
-            )?;
-            if !source_facts_changes.is_empty() {
-                capture_intent =
-                    capture_intent.with_source_facts(std::mem::take(&mut source_facts_changes))?;
-            }
-            let capture_intent = match operation_key {
-                Some(key) => capture_intent.with_operation_key(key)?,
-                None => capture_intent,
-            };
-            let capture_request =
-                super::adapter::prepare_owned_builtin_intent(daemon, capture_intent)?;
-            let capture_request_identity = capture_request.request_identity();
-            let daemon_for_commit = &mut *daemon;
-            semantic_authority.commit_product_selection_transaction(Vec::new(), move || {
-                super::adapter::commit_prepared_builtin_intent(
-                    daemon_for_commit,
-                    request_id,
-                    capture_request,
-                )
-            })?;
-            *committed_captures = captures.clone();
-            if let (Some(operation_key), Some(index_operations)) =
-                (operation_key, index_operations.as_deref_mut())
-            {
-                let receipt = source_capture_receipt_for_root(
-                    daemon,
-                    &semantic_context.package_reference,
-                    operation_key,
-                    Some(capture_request_identity),
-                )?
-                .ok_or_else(|| {
-                    BuiltinModelError(
-                        "source capture root does not retain its exact keyed operation marker"
-                            .to_owned(),
-                    )
-                })?;
-                index_operations
-                    .source_captured(operation_key, receipt)
-                    .map_err(|error| {
-                        BuiltinModelError(format!("persist source-capture receipt: {error}"))
-                    })?;
-            }
-
-            // Compilation must use the source rows that actually committed.
-            // Re-read the committed project and file frontier instead of
-            // trusting the private scan image for semantic staging.
-            let (captured_project, captured_file_keys, captured_file_frontier) =
-                current_project_frontier(daemon, project_key)?;
-            project = captured_project.clone();
-            file_keys = captured_file_keys.clone();
-            let before_capture = Some(captured_project.clone());
-
-            let sources = ingest::admit_compiler_sources_for_scan(
+                Vec::new(),
+                source_facts_changes,
+            )?)
+        } else {
+            Some(BuiltinIntent::index_with_semantics(
+                package,
+                &label,
+                changes,
+                Vec::new(),
+            )?)
+        };
+        return Ok(ScanPlan::Ready(PreparedProductSelection {
+            intent,
+            selected: Vec::new(),
+            revision_fence: Some(final_revision_fence),
+            profile_refusals: Box::new([]),
+            partial_plan: None,
+        }));
+    }
+    // Admit the exact structural source frontier together with a per-profile
+    // Pending marker before entering any compiler path. Candidate observations
+    // remain private until the one workspace transition commits; the selected
+    // semantic generation remains the prior coherent claim and is stale against
+    // the new source.
+    let (captures, pending_changes, _capture_observations) = prepare_source_capture_changes(
+        base_snapshot,
+        package,
+        &semantic_context,
+        &dirty,
+        &observations,
+        scan.source_version,
+        operation_key,
+    )?;
+    lp.lap("scan.prepare_capture");
+    let package_reference = semantic_context.package_reference.clone();
+    drop(semantic_context);
+    if !ingest::compiler_revision_is_current_with_cancellation(
+        revision_fence,
+        Some(cancellation.as_ref()),
+    )
+    .map_err(BuiltinModelError)?
+    {
+        return Err(BuiltinModelError(
+            "compiler source or configuration revision changed before source capture; retry indexing"
+                .to_owned(),
+        ));
+    }
+    lp.lap("scan.fs_revision_check_2");
+    let mut intent = BuiltinIntent::index_with_capture(
+        package,
+        &label,
+        std::mem::take(&mut changes),
+        Vec::new(),
+        pending_changes,
+    )?;
+    if !source_facts_changes.is_empty() {
+        intent = intent.with_source_facts(std::mem::take(&mut source_facts_changes))?;
+    }
+    Ok(ScanPlan::Capture(Box::new(ScanCapture {
+        intent,
+        continuation: ScanContinuation {
+            captures,
+            revision_fence: scan.revision_fence,
+            after: AfterCapture {
+                package,
+                package_reference,
+                label,
+                request_id,
+                execution_intent,
+                coordinate,
                 requested_root,
-                revision_fence,
+                project_key,
+                before,
                 fresh,
                 reused,
-                scan.source_admission_policy,
-                Some(cancellation.as_ref()),
+                source_admission_policy: scan.source_admission_policy,
+                observations,
+                cancellation,
+                workspace_snapshot,
+                final_revision_fence,
+            },
+        },
+    })))
+}
+
+/// Reads back exactly the project and file rows a committed capture selected.
+fn read_committed_frontier(
+    committed: &WorkspaceSnapshot,
+    project_key: [u8; 32],
+) -> Result<CommittedFrontier, BuiltinModelError> {
+    let (project, file_keys, frontier) = current_project_frontier_at(committed, project_key)?;
+    Ok(CommittedFrontier {
+        project,
+        file_keys,
+        frontier,
+    })
+}
+
+impl ScanContinuation {
+    /// The package whose source frontier the capture admits.
+    pub(super) fn package_reference(&self) -> &backend_engine::PackageReference {
+        &self.after.package_reference
+    }
+
+    /// Continues a committed capture into deferred compilation: re-reads the
+    /// committed frontier, admits the compiler sources against the scan's
+    /// fence, and prepares one candidate attempt per profile. It needs only
+    /// the committed snapshot and the semantic writer, so it runs on the same
+    /// worker that committed the capture.
+    pub(super) fn into_deferred(
+        self,
+        committed: &WorkspaceSnapshot,
+        compiler: &LocalCompilerClient,
+        semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
+    ) -> Result<DeferredIndex, BuiltinModelError> {
+        let Self {
+            captures,
+            revision_fence,
+            after,
+        } = self;
+        let mut lp = crate::owner_trace::laps();
+        let CommittedFrontier {
+            project,
+            file_keys,
+            frontier,
+        } = read_committed_frontier(committed, after.project_key)?;
+        lp.lap("worker.read_committed_frontier");
+        let sources = ingest::admit_compiler_sources_for_scan(
+            &after.requested_root,
+            &revision_fence,
+            after.fresh,
+            after.reused,
+            after.source_admission_policy,
+            Some(after.cancellation.as_ref()),
+        )
+        .map_err(BuiltinModelError)?;
+        lp.lap("worker.admit_compiler_sources");
+        let semantic_context = SemanticCompilationContext {
+            package: after.package,
+            package_reference: after.package_reference,
+            source_root: revision_fence.canonical_root(),
+            coordinate: after.coordinate.as_ref(),
+            correlation: CorrelationId(after.request_id),
+            compiler,
+        };
+        let before_capture = Some(project.clone());
+        let _trace = crate::owner_trace::span("worker.prepare_deferred_compile");
+        prepare_deferred_compile(
+            after.package,
+            &after.label,
+            after.project_key,
+            project,
+            before_capture,
+            file_keys,
+            frontier,
+            Vec::new(),
+            &semantic_context,
+            sources,
+            revision_fence.clone(),
+            &after.observations,
+            captures,
+            semantic_authority,
+        )
+    }
+}
+
+/// Completes source and semantic admission on the owner after a worker scan.
+/// The captured workspace root fences the immutable scan input from a newer
+/// owner selection before any candidate observations are prepared.
+///
+/// The owner loop uses [`prepare_scan_plan`] and [`ScanCapture::into_deferred`]
+/// on a worker instead; this synchronous composition remains for the paths
+/// that compile in place (compiler cluster, tests).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn finish_index_scan(
+    daemon: &mut crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    result: IndexScanResult,
+    compiler: &LocalCompilerClient,
+    semantic_authority: &mut super::super::semantic_authority::SemanticAuthority,
+    owner_cluster: Option<&super::super::cluster_dispatch::OwnerCompilerClusterRuntime>,
+    pending_stored_acks: Option<&Arc<Mutex<super::super::pending_stored::PendingStoredAckJournal>>>,
+    defer: bool,
+    operation_key: Option<backend_library::IndexOperationKey>,
+    committed_captures: &mut BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+    mut index_operations: Option<&mut IndexOperationJournal>,
+) -> Result<PreparedIndex, BuiltinModelError> {
+    let current_root = daemon.engine().daemon().owner().head().root();
+    if current_root != result.work.workspace_root {
+        return Err(BuiltinModelError(
+            "workspace selection changed while the project scan was running; retry indexing"
+                .to_owned(),
+        ));
+    }
+    let base_snapshot = daemon.engine().daemon().owner().snapshot();
+    let capture = match prepare_scan_plan(
+        &base_snapshot,
+        result,
+        compiler,
+        semantic_authority,
+        operation_key,
+    )? {
+        ScanPlan::Ready(prepared) => return Ok(PreparedIndex::Ready(prepared)),
+        ScanPlan::Capture(capture) => *capture,
+    };
+    let mut lp = crate::owner_trace::laps();
+    let ScanCapture {
+        intent,
+        continuation:
+            ScanContinuation {
+                captures,
+                revision_fence,
+                after,
+            },
+    } = capture;
+    let intent = match operation_key {
+        Some(key) => intent.with_operation_key(key)?,
+        None => intent,
+    };
+    let capture_request = super::adapter::prepare_owned_builtin_intent(daemon, intent)?;
+    lp.lap("scan.prepare_intent");
+    let capture_request_identity = capture_request.request_identity();
+    let request_id = after.request_id;
+    let daemon_for_commit = &mut *daemon;
+    semantic_authority.commit_product_selection_transaction(Vec::new(), move || {
+        super::adapter::commit_prepared_builtin_intent(
+            daemon_for_commit,
+            request_id,
+            capture_request,
+        )
+    })?;
+    lp.lap("scan.commit_capture");
+    *committed_captures = captures.clone();
+    if let (Some(operation_key), Some(index_operations)) =
+        (operation_key, index_operations.as_deref_mut())
+    {
+        let receipt = source_capture_receipt_for_root(
+            daemon,
+            &after.package_reference,
+            operation_key,
+            Some(capture_request_identity),
+        )?
+        .ok_or_else(|| {
+            BuiltinModelError(
+                "source capture root does not retain its exact keyed operation marker".to_owned(),
             )
-            .map_err(BuiltinModelError);
-            let sources = match sources {
-                Ok(sources) => sources,
-                Err(error) => {
-                    let terminal = terminal_capture_changes(
-                        daemon,
-                        &captures,
-                        backend_engine::builtin::SemanticUnavailableReason::Rejected,
-                        None,
-                    )?;
-                    commit_semantic_terminal(daemon, package, &label, request_id, terminal)?;
-                    return Err(error);
-                }
-            };
-            if defer && owner_cluster.is_none() {
-                return prepare_deferred_compile(
-                    package,
-                    &label,
-                    project_key,
-                    captured_project,
-                    before_capture,
-                    captured_file_keys,
-                    captured_file_frontier,
-                    Vec::new(),
-                    &semantic_context,
-                    sources,
-                    revision_fence.clone(),
-                    &observations,
-                    captures,
-                    semantic_authority,
-                )
-                .map(PreparedIndex::Compile);
-            }
-            let mut compiled = match compile_semantic_publications(
-                daemon,
-                &semantic_context,
-                sources,
-                &revision_fence,
-                &observations,
-                semantic_authority,
-                workspace_snapshot.as_ref(),
-                owner_cluster,
-                pending_stored_acks,
-                execution_intent,
-            ) {
-                Ok(result) => result,
-                Err(error) => {
-                    let terminal = terminal_capture_changes(
-                        daemon,
-                        &captures,
-                        backend_engine::builtin::SemanticUnavailableReason::Rejected,
-                        None,
-                    )?;
-                    commit_semantic_terminal(daemon, package, &label, request_id, terminal)?;
-                    return Err(error);
-                }
-            };
-            let completed = completed_capture_changes(
+        })?;
+        index_operations
+            .source_captured(operation_key, receipt)
+            .map_err(|error| {
+                BuiltinModelError(format!("persist source-capture receipt: {error}"))
+            })?;
+    }
+    lp.lap("scan.capture_receipt");
+
+    // Compilation must use the source rows that actually committed. Re-read
+    // the committed project and file frontier instead of trusting the private
+    // scan image for semantic staging.
+    let committed = daemon.engine().daemon().owner().snapshot();
+    let CommittedFrontier {
+        project: captured_project,
+        file_keys: captured_file_keys,
+        frontier: captured_file_frontier,
+    } = read_committed_frontier(&committed, after.project_key)?;
+    lp.lap("scan.project_frontier");
+    let project = captured_project.clone();
+    let file_keys = captured_file_keys.clone();
+    let before_capture = Some(captured_project.clone());
+    let AfterCapture {
+        package,
+        package_reference,
+        label,
+        request_id,
+        execution_intent,
+        coordinate,
+        requested_root,
+        project_key,
+        before,
+        fresh,
+        reused,
+        source_admission_policy,
+        observations,
+        cancellation,
+        workspace_snapshot,
+        final_revision_fence,
+    } = after;
+    let sources = ingest::admit_compiler_sources_for_scan(
+        &requested_root,
+        &revision_fence,
+        fresh,
+        reused,
+        source_admission_policy,
+        Some(cancellation.as_ref()),
+    )
+    .map_err(BuiltinModelError);
+    let sources = match sources {
+        Ok(sources) => sources,
+        Err(error) => {
+            let terminal = terminal_capture_changes(
                 daemon,
                 &captures,
-                &compiled.changes,
-                &compiled.admitted,
+                backend_engine::builtin::SemanticUnavailableReason::Rejected,
+                None,
             )?;
-            compiled.changes.extend(completed.retained_publications);
-            let mut capture_changes = completed.captures;
-            let (profile_refusals, partial_plan) = prepare_terminal_profile_partition(
-                daemon,
-                &captures,
-                &mut capture_changes,
-                &compiled.refused_profiles,
-                !compiled.admitted.is_empty(),
-            )?;
-            let selected = compiled
-                .admitted
-                .iter()
-                .map(AdmittedCapturePublication::selected_claim)
-                .collect();
-            (
-                compiled.changes,
-                selected,
-                compiled.cargo_alias_observations,
-                capture_changes,
-                profile_refusals,
-                partial_plan,
-            )
+            commit_semantic_terminal(daemon, package, &label, request_id, terminal)?;
+            return Err(error);
         }
     };
+    lp.lap("scan.admit_sources");
+    let semantic_context = SemanticCompilationContext {
+        package,
+        package_reference,
+        source_root: revision_fence.canonical_root(),
+        coordinate: coordinate.as_ref(),
+        correlation: CorrelationId(request_id),
+        compiler,
+    };
+    if defer && owner_cluster.is_none() {
+        let _t = crate::owner_trace::span("scan.prepare_deferred");
+        return prepare_deferred_compile(
+            package,
+            &label,
+            project_key,
+            captured_project,
+            before_capture,
+            captured_file_keys,
+            captured_file_frontier,
+            Vec::new(),
+            &semantic_context,
+            sources,
+            revision_fence.clone(),
+            &observations,
+            captures,
+            semantic_authority,
+        )
+        .map(PreparedIndex::Compile);
+    }
+    let mut compiled = match compile_semantic_publications(
+        daemon,
+        &semantic_context,
+        sources,
+        &revision_fence,
+        &observations,
+        semantic_authority,
+        workspace_snapshot.as_ref(),
+        owner_cluster,
+        pending_stored_acks,
+        execution_intent,
+    ) {
+        Ok(result) => result,
+        Err(error) => {
+            let terminal = terminal_capture_changes(
+                daemon,
+                &captures,
+                backend_engine::builtin::SemanticUnavailableReason::Rejected,
+                None,
+            )?;
+            commit_semantic_terminal(daemon, package, &label, request_id, terminal)?;
+            return Err(error);
+        }
+    };
+    let completed =
+        completed_capture_changes(daemon, &captures, &compiled.changes, &compiled.admitted)?;
+    compiled.changes.extend(completed.retained_publications);
+    let mut capture_changes = completed.captures;
+    let (profile_refusals, partial_plan) = prepare_terminal_profile_partition(
+        daemon,
+        &captures,
+        &mut capture_changes,
+        &compiled.refused_profiles,
+        !compiled.admitted.is_empty(),
+    )?;
+    let selected = compiled
+        .admitted
+        .iter()
+        .map(AdmittedCapturePublication::selected_claim)
+        .collect();
+    let semantic_changes = compiled.changes;
+    let cargo_alias_observations = compiled.cargo_alias_observations;
+    // The source rows committed with the capture; only Cargo alias evidence can
+    // still amend the project row.
+    let mut changes = Vec::new();
     let committed_relation = daemon
         .engine()
         .daemon()
@@ -894,7 +1171,7 @@ pub(super) fn finish_index_scan(
         return Err(BuiltinModelError(ingest::INDEX_SCAN_CANCELLED.to_owned()));
     }
     if !ingest::compiler_revision_is_current_with_cancellation(
-        revision_fence,
+        &revision_fence,
         Some(cancellation.as_ref()),
     )
     .map_err(BuiltinModelError)?
@@ -903,34 +1180,24 @@ pub(super) fn finish_index_scan(
             "project root or files changed before product selection; retry indexing".to_owned(),
         ));
     }
-    let intent = if changes.is_empty()
-        && semantic_changes.is_empty()
-        && capture_changes.is_empty()
-        && source_facts_changes.is_empty()
+    let intent = if changes.is_empty() && semantic_changes.is_empty() && capture_changes.is_empty()
     {
         None
+    } else if capture_changes.is_empty() {
+        Some(BuiltinIntent::index_with_semantics(
+            package,
+            &label,
+            changes,
+            semantic_changes,
+        )?)
     } else {
-        let intent = if !source_facts_changes.is_empty() {
-            BuiltinIntent::index_with_source_facts(
-                package,
-                &label,
-                changes,
-                semantic_changes,
-                capture_changes,
-                source_facts_changes,
-            )?
-        } else if capture_changes.is_empty() {
-            BuiltinIntent::index_with_semantics(package, &label, changes, semantic_changes)?
-        } else {
-            BuiltinIntent::index_with_capture(
-                package,
-                &label,
-                changes,
-                semantic_changes,
-                capture_changes,
-            )?
-        };
-        Some(intent)
+        Some(BuiltinIntent::index_with_capture(
+            package,
+            &label,
+            changes,
+            semantic_changes,
+            capture_changes,
+        )?)
     };
     Ok(PreparedIndex::Ready(PreparedProductSelection {
         intent,
@@ -1222,7 +1489,7 @@ mod owned_source_facts_handoff_tests {
 }
 
 fn prepare_source_capture_changes(
-    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    snapshot: &WorkspaceSnapshot,
     package: backend_engine::PackageKey,
     context: &SemanticCompilationContext<'_>,
     profiles: &BTreeSet<LanguageProfile>,
@@ -1237,13 +1504,12 @@ fn prepare_source_capture_changes(
     ),
     BuiltinModelError,
 > {
-    let snapshot = daemon.engine().daemon().owner().snapshot();
     let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| {
             BuiltinModelError(format!("open semantic source-capture relation: {error}"))
         })?;
-    let capture_relation = semantic_capture_relation(&snapshot).map_err(|error| {
+    let capture_relation = semantic_capture_relation(snapshot).map_err(|error| {
         BuiltinModelError(format!("open prior semantic capture relation: {error}"))
     })?;
     let mut captures = BTreeMap::new();
@@ -1314,10 +1580,10 @@ fn prepare_source_capture_changes(
     Ok((captures, changes, receipts))
 }
 
-/// Reads back exactly the project and file rows selected by the current
-/// workspace root after source capture has committed.
-fn current_project_frontier(
-    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+/// Reads back exactly the project and file rows selected by the given committed
+/// workspace after source capture has committed.
+fn current_project_frontier_at(
+    committed: &WorkspaceSnapshot,
     project_key: [u8; 32],
 ) -> Result<
     (
@@ -1327,11 +1593,7 @@ fn current_project_frontier(
     ),
     BuiltinModelError,
 > {
-    let relation = daemon
-        .engine()
-        .daemon()
-        .owner()
-        .snapshot()
+    let relation = committed
         .relation::<BuiltinWorkspaceRelation>()
         .map_err(|error| BuiltinModelError(format!("open committed source frontier: {error}")))?;
     let project = relation
@@ -1817,8 +2079,22 @@ fn commit_semantic_terminal(
     request_id: u64,
     capture_changes: Vec<BuiltinCaptureChange>,
 ) -> Result<(), BuiltinModelError> {
+    match semantic_terminal_intent(package, label, capture_changes)? {
+        Some(intent) => super::adapter::commit_builtin_intent(daemon, request_id, &intent),
+        None => Ok(()),
+    }
+}
+
+/// The one transition that closes a job's Pending captures with their
+/// terminal outcomes, bound to the captures' operation key. `None` when there
+/// is nothing to close.
+fn semantic_terminal_intent(
+    package: backend_engine::PackageKey,
+    label: &str,
+    capture_changes: Vec<BuiltinCaptureChange>,
+) -> Result<Option<BuiltinIntent>, BuiltinModelError> {
     if capture_changes.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     let operation_key = capture_changes
         .iter()
@@ -1842,7 +2118,22 @@ fn commit_semantic_terminal(
         )?,
         None => intent,
     };
-    super::adapter::commit_builtin_intent(daemon, request_id, &intent)
+    Ok(Some(intent))
+}
+
+/// Prepares, without committing it, the transition that closes `captures`
+/// after their job failed or was cancelled. The caller commits it off the
+/// owner loop.
+pub(super) fn terminal_capture_intent(
+    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    package: backend_engine::PackageKey,
+    label: &str,
+    captures: &BTreeMap<ProductSemanticPublicationKey, SemanticSourceCapture>,
+    reason: backend_engine::builtin::SemanticUnavailableReason,
+    compiler_failure: Option<(LanguageProfile, backend_library::PackageCompilerFailure)>,
+) -> Result<Option<BuiltinIntent>, BuiltinModelError> {
+    let changes = terminal_capture_changes(daemon, captures, reason, compiler_failure)?;
+    semantic_terminal_intent(package, label, changes)
 }
 
 pub(super) fn commit_pending_capture_failure(
@@ -1898,6 +2189,9 @@ pub(super) struct IndexScanWork {
     execution_intent: CompileExecutionIntent,
     project_key: [u8; 32],
     workspace_root: WorkspaceRoot,
+    /// The owner snapshot the scan was captured against. The worker reads the
+    /// prior source frontier from it.
+    snapshot: WorkspaceSnapshot,
     before: Option<ProductSourceRecord>,
     old_files: Vec<[u8; 32]>,
     reusable: BTreeMap<[u8; 32], ProductSourceRecord>,
@@ -1926,6 +2220,13 @@ pub(super) struct IndexScanResult {
     work: IndexScanWork,
     scan: ingest::IndexSnapshot,
     workspace_snapshot: Option<ingest::CompilerWorkspaceSnapshot>,
+}
+
+impl IndexScanResult {
+    /// The owner workspace root the scan was captured against.
+    pub(super) fn workspace_root(&self) -> &WorkspaceRoot {
+        &self.work.workspace_root
+    }
 }
 
 /// The complete candidate product transaction. Its intent is the one durable
@@ -2707,10 +3008,11 @@ pub(super) fn finish_deferred_index(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     job: DeferredIndex,
 ) -> Result<PreparedProductSelection, BuiltinModelError> {
+    let _t = crate::owner_trace::span("owner.finish_deferred_index");
     finish_deferred_index_for_snapshot(&daemon.engine().daemon().owner().snapshot(), job)
 }
 
-fn finish_deferred_index_for_snapshot(
+pub(super) fn finish_deferred_index_for_snapshot(
     snapshot: &WorkspaceSnapshot,
     mut job: DeferredIndex,
 ) -> Result<PreparedProductSelection, BuiltinModelError> {
@@ -2906,7 +3208,7 @@ fn compiler_input_admissions(
 }
 
 fn compiler_exact_witness_is_current(
-    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    snapshot: &WorkspaceSnapshot,
     package: backend_engine::PackageKey,
     label: &str,
     coordinate: Option<&PackageUrl>,
@@ -2921,7 +3223,7 @@ fn compiler_exact_witness_is_current(
     let Some(lineage) = admission.lineage else {
         return Ok(false);
     };
-    let Some(binding) = selected_semantic_binding(daemon, package, label, coordinate, profile)?
+    let Some(binding) = selected_semantic_binding(snapshot, package, label, coordinate, profile)?
     else {
         return Ok(false);
     };
@@ -2998,7 +3300,7 @@ fn observe_compiler_configuration(
 }
 
 fn selected_semantic_binding(
-    daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
+    snapshot: &WorkspaceSnapshot,
     package: backend_engine::PackageKey,
     label: &str,
     coordinate: Option<&PackageUrl>,
@@ -3010,11 +3312,7 @@ fn selected_semantic_binding(
         super::super::compiler_scope::semantic_coordinate(package, profile, coordinate)?;
     let key = ProductSemanticPublicationKey::new(package_reference, coordinate, profile)
         .map_err(|error| BuiltinModelError(error.to_owned()))?;
-    let relation = daemon
-        .engine()
-        .daemon()
-        .owner()
-        .snapshot()
+    let relation = snapshot
         .relation::<BuiltinSemanticRelation>()
         .map_err(|error| {
             BuiltinModelError(format!("open selected semantic publication: {error}"))

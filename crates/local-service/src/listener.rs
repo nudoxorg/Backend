@@ -674,7 +674,10 @@ impl<O: OwnerService> UnixListenerService<O> {
         // Keep owner progress independent of whether clients are currently
         // producing requests.
         self.prune_abandoned_replies();
-        let owner_progress = self.service.owner_mut().serve_one();
+        let owner_progress = {
+            let _t = crate::owner_trace::span("listener.serve_one");
+            self.service.owner_mut().serve_one()
+        };
         // A client can abandon while a synchronous owner poll is running.
         // Prune again before polling deferred completions so abandoned reply
         // registrations do not survive an otherwise completed owner turn.
@@ -683,7 +686,11 @@ impl<O: OwnerService> UnixListenerService<O> {
         // part (an index job's compile) ran off this loop while it answered
         // other requests.
         let mut deferred_progress = false;
-        for (ticket, result) in self.service.poll_deferred() {
+        let polled = {
+            let _t = crate::owner_trace::span("listener.poll_deferred");
+            self.service.poll_deferred()
+        };
+        for (ticket, result) in polled {
             if let Some(reply) = self.deferred.remove(&ticket) {
                 if result.is_err() {
                     self.report.failures = self.report.failures.saturating_add(1);
@@ -703,10 +710,12 @@ impl<O: OwnerService> UnixListenerService<O> {
                     self.report.frames = self.report.frames.saturating_add(1);
                     return true;
                 };
-                let result = match self
-                    .service
-                    .handle_payload_or_defer(&inbound.payload, ticket)
-                {
+                let handled = {
+                    let _t = crate::owner_trace::span("listener.handle_payload");
+                    self.service
+                        .handle_payload_or_defer(&inbound.payload, ticket)
+                };
+                let result = match handled {
                     Ok(crate::service::Handled::Deferred) => {
                         if inbound.response_waiter.is_abandoned() {
                             self.service.abandon_deferred_reply(ticket);
