@@ -668,13 +668,43 @@ pub(super) fn finish_index_scan(
                 reusable_inputs.insert(*profile);
             }
         }
-        let dirty = profiles_requiring_compilation(
+        let mut dirty = profiles_requiring_compilation(
             &live,
             &lost,
             &fresh_profiles,
             &inputs,
             &reusable_inputs,
         );
+        let structural_only = {
+            let sources_per_profile = profile_source_counts(
+                source_root,
+                &scan.compiler_sources,
+                &scan.reused_compiler_files,
+            );
+            let capabilities = compiler.capabilities();
+            let mut with_prior = BTreeSet::new();
+            for profile in &dirty {
+                if selected_semantic_binding(daemon, package, &label, coordinate, *profile)?
+                    .is_some()
+                {
+                    with_prior.insert(*profile);
+                }
+            }
+            structural_only_profiles(
+                &dirty,
+                &live,
+                &sources_per_profile,
+                &with_prior,
+                |profile| profile_toolchain_is_absent(capabilities.for_profile(profile)),
+            )
+        };
+        for profile in &structural_only {
+            dirty.remove(profile);
+            eprintln!(
+                "locald semantic profile {} stays structural-only: its toolchain is not configured and it holds a minority of this package's sources",
+                profile.language().name()
+            );
+        }
         let (fresh, reused) = ingest::select_compiler_inputs(
             source_root,
             scan.compiler_sources,
@@ -2928,6 +2958,134 @@ fn compiler_exact_witness_is_current(
     Ok(compiler.exact_input_witness_is_current(source_root, profile, lineage, witness, binding))
 }
 
+/// Counts the compiler sources of every profile in this scan, fresh and reused.
+fn profile_source_counts(
+    source_root: &Path,
+    fresh: &[ingest::CompilerSourceHandle],
+    reused: &[ingest::ReusedCompilerFile],
+) -> BTreeMap<LanguageProfile, usize> {
+    let mut counts = BTreeMap::new();
+    for (path, profile) in fresh
+        .iter()
+        .map(|source| (&source.relative_path, source.profile))
+        .chain(
+            reused
+                .iter()
+                .map(|source| (&source.relative_path, source.profile)),
+        )
+    {
+        *counts
+            .entry(ingest::compilation_profile(source_root, path, profile))
+            .or_insert(0_usize) += 1;
+    }
+    counts
+}
+
+/// Whether the capability has no selected toolchain at all (as opposed to one
+/// that failed its probe, which is a problem the user should hear about).
+fn profile_toolchain_is_absent(capability: backend_engine::application::LocalCompilerCapability) -> bool {
+    capability.state() == backend_engine::application::LocalCompilerCapabilityState::Unavailable
+        && capability.setup_issue().is_some_and(|issue| {
+            issue.failure == backend_library::interface::CompilerToolFailure::Missing
+        })
+}
+
+/// Profiles whose semantic compilation is skipped because they are incidental.
+///
+/// A language the package merely contains (a stray `.js` under a Python
+/// package's `docs/`) has no toolchain to compile with, and refusing it would
+/// make the whole package read as failed. A profile degrades to structural-only
+/// when its toolchain is absent, no earlier generation of it exists to keep
+/// serving, and a language that does have a toolchain owns strictly more of the
+/// package's sources. Every other profile keeps compiling and keeps its typed
+/// refusal, so a package whose main language lacks its toolchain still fails.
+fn structural_only_profiles(
+    candidates: &BTreeSet<LanguageProfile>,
+    live: &BTreeSet<LanguageProfile>,
+    sources_per_profile: &BTreeMap<LanguageProfile, usize>,
+    with_prior_generation: &BTreeSet<LanguageProfile>,
+    toolchain_is_absent: impl Fn(LanguageProfile) -> bool,
+) -> BTreeSet<LanguageProfile> {
+    let count = |profile: &LanguageProfile| sources_per_profile.get(profile).copied().unwrap_or(0);
+    candidates
+        .iter()
+        .copied()
+        .filter(|profile| {
+            toolchain_is_absent(*profile)
+                && !with_prior_generation.contains(profile)
+                && live.iter().any(|other| {
+                    other != profile && !toolchain_is_absent(*other) && count(other) > count(profile)
+                })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod structural_only_profile_tests {
+    use super::structural_only_profiles;
+    use backend_semantic::vocabulary::{
+        GoVersion, LanguageProfile, PythonVersion, TypeScriptSource,
+    };
+    use std::collections::{BTreeMap, BTreeSet};
+
+    const PYTHON: LanguageProfile = LanguageProfile::Python(PythonVersion::Python313);
+    const TYPESCRIPT: LanguageProfile = LanguageProfile::TypeScript(TypeScriptSource::TypeScript);
+    const GO: LanguageProfile = LanguageProfile::Go(GoVersion::Go125);
+
+    fn decide(
+        counts: &[(LanguageProfile, usize)],
+        absent: &[LanguageProfile],
+        prior: &[LanguageProfile],
+    ) -> BTreeSet<LanguageProfile> {
+        let live = counts.iter().map(|(profile, _)| *profile).collect::<BTreeSet<_>>();
+        structural_only_profiles(
+            &live,
+            &live,
+            &counts.iter().copied().collect::<BTreeMap<_, _>>(),
+            &prior.iter().copied().collect(),
+            |profile| absent.contains(&profile),
+        )
+    }
+
+    #[test]
+    fn a_stray_script_in_a_python_package_stays_structural_only() {
+        assert_eq!(
+            decide(&[(PYTHON, 27), (TYPESCRIPT, 2)], &[TYPESCRIPT], &[]),
+            BTreeSet::from([TYPESCRIPT])
+        );
+    }
+
+    #[test]
+    fn the_packages_main_language_without_its_toolchain_still_refuses() {
+        assert!(decide(&[(PYTHON, 3), (TYPESCRIPT, 200)], &[TYPESCRIPT], &[]).is_empty());
+        assert!(decide(&[(PYTHON, 2), (TYPESCRIPT, 2)], &[TYPESCRIPT], &[]).is_empty());
+    }
+
+    #[test]
+    fn a_package_with_only_the_missing_language_refuses() {
+        assert!(decide(&[(TYPESCRIPT, 2)], &[TYPESCRIPT], &[]).is_empty());
+    }
+
+    #[test]
+    fn a_profile_with_a_generation_to_keep_never_degrades_quietly() {
+        assert!(decide(&[(PYTHON, 27), (TYPESCRIPT, 2)], &[TYPESCRIPT], &[TYPESCRIPT]).is_empty());
+    }
+
+    #[test]
+    fn a_larger_language_that_also_lacks_its_toolchain_cannot_justify_the_degrade() {
+        assert!(decide(&[(PYTHON, 27), (TYPESCRIPT, 2)], &[PYTHON, TYPESCRIPT], &[]).is_empty());
+        assert_eq!(
+            decide(&[(PYTHON, 27), (TYPESCRIPT, 2), (GO, 1)], &[PYTHON, TYPESCRIPT], &[]),
+            BTreeSet::new()
+        );
+    }
+
+    #[test]
+    fn profiles_with_a_toolchain_always_compile() {
+        assert!(decide(&[(PYTHON, 27), (TYPESCRIPT, 2)], &[], &[]).is_empty());
+    }
+}
+
 fn profiles_requiring_compilation(
     live: &BTreeSet<LanguageProfile>,
     lost: &BTreeSet<LanguageProfile>,
@@ -3819,9 +3977,8 @@ fn admit_local_compile(
     } else {
         for gap in staged.coverage_gaps() {
             eprintln!(
-                "locald semantic source scope gap: path={} source={:?} bytes={} cause={:?}",
+                "locald semantic source scope gap: {} ({} bytes) has no semantic facts: {}",
                 gap.relative_path(),
-                gap.source().identity,
                 gap.source().byte_len,
                 gap.cause(),
             );
