@@ -111,6 +111,28 @@ class InstallerFilesystemTests(unittest.TestCase):
         finally:
             os.umask(saved_umask)
 
+    def test_install_restores_callers_umask_after_success_and_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            entry, manifest, archive = self._fixture_release(root, "d" * 40, "20261010")
+            prefix = root / "prefix"
+            for bad_entry in (False, True):
+                with self.subTest(bad_entry=bad_entry):
+                    saved_umask = os.umask(0o027)
+                    try:
+                        selected = {**entry, "tag": "../invalid"} if bad_entry else entry
+                        with patch.object(installer, "_glibc_version", return_value=(99, 0)), \
+                             patch.object(installer.subprocess, "run", return_value=type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()):
+                            if bad_entry:
+                                with self.assertRaises(installer.InstallError):
+                                    installer.install(prefix, selected, manifest, archive)
+                            else:
+                                installer.install(prefix, selected, manifest, archive)
+                        observed_umask = os.umask(0o027)
+                        self.assertEqual(observed_umask, 0o027)
+                    finally:
+                        os.umask(saved_umask)
+
     def _run_channel_main(self, prefix, entry, manifest, *, download_archive):
         from types import SimpleNamespace
         with patch.object(installer.sys, "platform", "linux"), \

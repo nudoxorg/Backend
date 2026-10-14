@@ -61,6 +61,23 @@ class Tests(unittest.TestCase):
    other=root/'other'; (other/'bin').mkdir(parents=True); (other/'bin/nudox').write_bytes(b'user command')
    with self.assertRaises(mac.InstallError): mac.install(other,entry,manifest,archive)
    self.assertEqual((other/'bin/nudox').read_bytes(),b'user command')
+ def test_install_restores_callers_umask_after_success_and_error(self):
+  with tempfile.TemporaryDirectory() as temp:
+   root=pathlib.Path(temp).resolve(); entry,manifest,archive,_=self.mac_release(root/'release')
+   prefix=root/'prefix'
+   for bad_entry in (False,True):
+    with self.subTest(bad_entry=bad_entry):
+     saved_umask=os.umask(0o027)
+     try:
+      selected={**entry,'tag':'../invalid'} if bad_entry else entry
+      if bad_entry:
+       with self.assertRaises(mac.InstallError): mac.install(prefix,selected,manifest,archive)
+      else:
+       mac.install(prefix,selected,manifest,archive)
+      observed_umask=os.umask(0o027)
+      self.assertEqual(observed_umask,0o027)
+     finally:
+      os.umask(saved_umask)
  def test_channel_update_dispatch(self):
   channel=json.loads((ROOT/'preview-channel.json').read_text())
   channel['bootstrap']['sha256']='b'*64; channel['bootstrap']['bytes']=3
