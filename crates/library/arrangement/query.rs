@@ -697,7 +697,9 @@ mod outline_selection_profile {
 #[cfg(test)]
 mod library_before_support_ranking {
     use super::*;
-    use crate::{Basis, DeclarationKind, SourceLocation, object_version, symbol_key, view_state_root};
+    use crate::{
+        Basis, DeclarationKind, SourceLocation, object_version, symbol_key, view_state_root,
+    };
 
     fn named(label: &str, kind: DeclarationKind, path: &str) -> Row {
         let basis = Basis::new(view_state_root(&[]), object_version(b"support-rank"));
@@ -708,20 +710,50 @@ mod library_before_support_ranking {
 
     #[test]
     fn library_code_ranks_above_examples_tests_and_benchmarks_for_one_exact_name() {
-        for support in ["tests", "examples", "benches", "src/__tests__", "app.spec.ts"] {
+        for support in [
+            "tests",
+            "examples",
+            "benches",
+            "src/__tests__",
+            "app.spec.ts",
+        ] {
             assert!(crate::is_support_source_path(support), "{support}");
         }
-        for library in ["src/alphabet.rs", "lib/examples_of.rs", "src/testing_helpers.rs"] {
+        for library in [
+            "src/alphabet.rs",
+            "lib/examples_of.rs",
+            "src/testing_helpers.rs",
+        ] {
             assert!(!crate::is_support_source_path(library), "{library}");
         }
         // `examples/…` sorts before `src/…` by label, so only the placement
         // tier can put the library definition first.
         let mut ranked = [
-            named("/p::examples/base64.rs:11::Alphabet", DeclarationKind::Enum, "examples/base64.rs"),
-            named("/p::tests/alphabet.rs:4::Alphabet", DeclarationKind::Struct, "tests/alphabet.rs"),
-            named("/p::src/alphabet.rs:55::Alphabet", DeclarationKind::Struct, "src/alphabet.rs"),
-            named("/p::examples/base64.rs:6::Alphabet", DeclarationKind::Import, "examples/base64.rs"),
-            named("/p::src/lib.rs:9::Alphabet", DeclarationKind::Import, "src/lib.rs"),
+            named(
+                "/p::examples/base64.rs:11::Alphabet",
+                DeclarationKind::Enum,
+                "examples/base64.rs",
+            ),
+            named(
+                "/p::tests/alphabet.rs:4::Alphabet",
+                DeclarationKind::Struct,
+                "tests/alphabet.rs",
+            ),
+            named(
+                "/p::src/alphabet.rs:55::Alphabet",
+                DeclarationKind::Struct,
+                "src/alphabet.rs",
+            ),
+            named(
+                "/p::examples/base64.rs:6::Alphabet",
+                DeclarationKind::Import,
+                "examples/base64.rs",
+            ),
+            named(
+                "/p::src/lib.rs:9::Alphabet",
+                DeclarationKind::Import,
+                "src/lib.rs",
+            ),
         ]
         .iter()
         .map(|row| NameRanked::new(row, Some("alphabet"), None).expect("candidate"))
