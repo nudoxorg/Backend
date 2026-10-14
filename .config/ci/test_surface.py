@@ -37,6 +37,7 @@ class LiveContractAdmissionTests(unittest.TestCase):
         for field in ("revision", "source"):
             changed = copy.deepcopy(full)
             changed[field] = "c" * 64
+            changed[field + "_tag"] = "c" * 8
             with self.subTest(field=field), self.assertRaises(RuntimeError):
                 surface.require_live_health(summary, changed, page)
 

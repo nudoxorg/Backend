@@ -223,21 +223,21 @@ def require_live_health(summary: dict, full: dict, page: dict) -> None:
         if value.get("answer") != "status" or value.get("detail") != name:
             raise RuntimeError(f"health {name}: wrong answer/detail: {value}")
         if value.get("availability") != "available" or value.get("readiness") != "ready":
-            raise RuntimeError(f"health {name}: indexed owner is not available/ready")
+            raise RuntimeError(f"health {name}: indexed owner is not available/ready: {value}")
         if not isinstance(value.get("coverage"), list) or not isinstance(value.get("capabilities"), dict):
             raise RuntimeError(f"health {name}: missing public coverage/capabilities")
         revision = value.get("revision", "")
         if not isinstance(revision, str) or not re.fullmatch(r"[a-f0-9]{64}", revision):
             raise RuntimeError(f"health {name}: revision is not an exact identity")
         if value.get("revision_tag") != revision[:8] or revision != page.get("source_root"):
-            raise RuntimeError(f"health {name}: revision disagrees with the admitted MCP outline")
+            raise RuntimeError(f"health {name}: revision {revision}/{value.get('revision_tag')} disagrees with MCP {page.get('source_root')}")
     if "source" in summary or "source_tag" in summary:
         raise RuntimeError("health summary exposed full-only source fields")
     source = full.get("source", "")
     if not isinstance(source, str) or not re.fullmatch(r"[a-f0-9]{64}", source):
         raise RuntimeError("health full: source is not an exact identity")
     if full.get("source_tag") != source[:8] or source != page.get("source_object"):
-        raise RuntimeError("health full: source disagrees with the admitted MCP outline")
+        raise RuntimeError(f"health full: source {source}/{full.get('source_tag')} disagrees with MCP {page.get('source_object')}")
 
 
 def require_bounded_search(reference: dict, bounded: dict, limit: int) -> None:
@@ -280,7 +280,7 @@ def run_live_contracts(owner: Owner, project: Path, config: dict, answers: dict)
         if row.get("identity", {}).get("name") == "language" and row.get("kind") == "function"
     }
     if not {("src/Duke.java", "java"), ("src/main.cpp", "cpp")}.issubset(methods):
-        raise RuntimeError("bounded search: reference lost authored Java/C++ language methods")
+        raise RuntimeError(f"bounded search: reference lost authored Java/C++ language methods: {methods}")
     for limit in (1, 3):
         bounded = query(f"bounded search limit {limit}", ["--limit", str(limit), "search", text])
         require_bounded_search(reference, bounded, limit)
