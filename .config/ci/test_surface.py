@@ -26,5 +26,28 @@ class AdmissionTests(unittest.TestCase):
         surface.require_cli_success("cli add", {"exit": 0, "json": {"answer": "indexed"}})
 
 
+class LiveContractAdmissionTests(unittest.TestCase):
+    def test_wrong_revision_or_source_cannot_pass_live_health(self):
+        import copy
+        root, source = "a" * 64, "b" * 64
+        summary = {"answer": "status", "detail": "summary", "availability": "available", "readiness": "ready", "coverage": [], "capabilities": {}, "revision": root, "revision_tag": root[:8]}
+        full = dict(summary, detail="full", source=source, source_tag=source[:8])
+        page = {"source_root": root, "source_object": source}
+        surface.require_live_health(summary, full, page)
+        for field in ("revision", "source"):
+            changed = copy.deepcopy(full)
+            changed[field] = "c" * 64
+            with self.subTest(field=field), self.assertRaises(RuntimeError):
+                surface.require_live_health(summary, changed, page)
+
+    def test_ignored_bound_lost_rank_or_false_completeness_is_rejected(self):
+        reference = {"answer": "records", "query": "language", "records": [{"id": 1}, {"id": 2}], "more": False}
+        good = dict(reference, records=[{"id": 1}], more=True)
+        surface.require_bounded_search(reference, good, 1)
+        for changed in (reference, dict(good, records=[{"id": 2}]), dict(good, more=False)):
+            with self.subTest(changed=changed), self.assertRaises(RuntimeError):
+                surface.require_bounded_search(reference, changed, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

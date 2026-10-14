@@ -217,6 +217,73 @@ def require_cli_success(name: str, answer: dict) -> None:
         raise RuntimeError(f"{name} failed: {answer}")
 
 
+def require_live_health(summary: dict, full: dict, page: dict) -> None:
+    """Compare public reads of the same live owner, never a private fixture root."""
+    for name, value in (("summary", summary), ("full", full)):
+        if value.get("answer") != "status" or value.get("detail") != name:
+            raise RuntimeError(f"health {name}: wrong answer/detail: {value}")
+        if value.get("availability") != "available" or value.get("readiness") != "ready":
+            raise RuntimeError(f"health {name}: indexed owner is not available/ready")
+        if not isinstance(value.get("coverage"), list) or not isinstance(value.get("capabilities"), dict):
+            raise RuntimeError(f"health {name}: missing public coverage/capabilities")
+        revision = value.get("revision", "")
+        if not isinstance(revision, str) or not re.fullmatch(r"[a-f0-9]{64}", revision):
+            raise RuntimeError(f"health {name}: revision is not an exact identity")
+        if value.get("revision_tag") != revision[:8] or revision != page.get("source_root"):
+            raise RuntimeError(f"health {name}: revision disagrees with the admitted MCP outline")
+    if "source" in summary or "source_tag" in summary:
+        raise RuntimeError("health summary exposed full-only source fields")
+    source = full.get("source", "")
+    if not isinstance(source, str) or not re.fullmatch(r"[a-f0-9]{64}", source):
+        raise RuntimeError("health full: source is not an exact identity")
+    if full.get("source_tag") != source[:8] or source != page.get("source_object"):
+        raise RuntimeError("health full: source disagrees with the admitted MCP outline")
+
+
+def require_bounded_search(reference: dict, bounded: dict, limit: int) -> None:
+    if reference.get("answer") != "records" or bounded.get("answer") != "records":
+        raise RuntimeError("bounded search: expected records answers")
+    rows = reference.get("records")
+    if not isinstance(rows, list) or len(rows) < 2 or reference.get("more") is not False:
+        raise RuntimeError("bounded search: reference must contain multiple complete results")
+    if bounded.get("query") != reference.get("query"):
+        raise RuntimeError("bounded search: changed query")
+    if bounded.get("records") != rows[:limit]:
+        raise RuntimeError(f"bounded search: limit {limit} lost rank order or returned the wrong rows")
+    if bounded.get("more") is not (len(rows) > limit):
+        raise RuntimeError(f"bounded search: limit {limit} has an untruthful completeness flag")
+
+
+def run_live_contracts(owner: Owner, project: Path, config: dict, answers: dict) -> dict:
+    times = {}
+
+    def query(name: str, arguments: list[str]) -> dict:
+        answer, seconds = run_cli(owner, project, arguments, 10)
+        require_cli_success(name, answer)
+        times[name] = round(seconds, 3)
+        return answer["json"]
+
+    summary = query("live health summary", ["--passive", "health"])
+    full = query("live health full", ["--passive", "--detail", "full", "health"])
+    outlines = [call["reply"].get("structuredContent", {}) for call in answers["mcp"]["calls"]
+                if call["call"]["tool"] == "backend.outline"]
+    if len(outlines) != 1 or not isinstance(outlines[0].get("page"), dict):
+        raise RuntimeError("live health needs one admitted public MCP outline page")
+    require_live_health(summary, full, outlines[0]["page"])
+    print("surface-contract: live health summary/full agree with MCP revision/source", flush=True)
+    text = config["bounded_search_query"]
+    reference = query("bounded search reference", ["search", text, "--limit", "200"])
+    # The fixture authors two lowercase language methods at these public paths.
+    paths = {row.get("identity", {}).get("path") for row in reference.get("records", [])}
+    if not {"src/Duke.java", "src/main.cpp"}.issubset(paths):
+        raise RuntimeError("bounded search: reference lost authored Java/C++ language methods")
+    for limit in (1, 3):
+        bounded = query(f"bounded search limit {limit}", ["--limit", str(limit), "search", text])
+        require_bounded_search(reference, bounded, limit)
+        print(f"surface-contract: search limit {limit} preserves rank/completeness", flush=True)
+    return times
+
+
 def run_case(case: dict, bin_dir: Path) -> dict:
     case_root = SCRATCH / case["name"]
     if case_root.exists():
@@ -255,6 +322,10 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                     raise RuntimeError(f"MCP search returned no fixture symbols: {result}")
             record["answers"]["mcp"] = answer
             record["performance"]["seconds"]["mcp"] = round(seconds, 2)
+        if case.get("live_contracts"):
+            record["performance"]["seconds"].update(
+                run_live_contracts(owner, project, case["live_contracts"], record["answers"])
+            )
         record["performance"].update(owner.usage())
     finally:
         owner.stop()

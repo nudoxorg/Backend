@@ -1,5 +1,5 @@
 {
-  "about": "T2 surface corpus: each case is indexed once through the CLI, then queried through CLI and MCP against the same backend-locald. Reviewed answers and performance baselines live in snapshots/<name>.json; see .config/ci/surface.py.",
+  "about": "Artifact-driven CLI contracts and projects indexed once, queried through CLI/MCP against the same owner; reviewed answers in snapshots/, relational live checks in surface.py.",
   "cases": [
     {
       "name": "cli-usage",
@@ -70,7 +70,10 @@
           "tool": "backend.outline",
           "arguments": {}
         }
-      ]
+      ],
+      "live_contracts": {
+        "bounded_search_query": "language"
+      }
     }
   ]
 }
