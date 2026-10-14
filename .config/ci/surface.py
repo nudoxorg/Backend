@@ -530,6 +530,74 @@ def run_live_contracts(owner: Owner, project: Path, config: dict, published_root
     return times
 
 
+def require_continuation_reply(first: dict, following: dict, published_root: str) -> None:
+    """Prove an offered token works through a fresh public client before normalizing it."""
+    token = first.get("nextCursor")
+    if not isinstance(token, str) or not token or following.get("answer") != first.get("answer"):
+        raise RuntimeError("snapshot continuation: missing token or changed answer kind")
+    if following.get("nextCursor") == token:
+        raise RuntimeError("snapshot continuation: repeated cursor")
+    if first["answer"] == "records":
+        if first.get("more") is not True:
+            raise RuntimeError("snapshot continuation: token on an exhausted search")
+        for field in ("query", "coverage", "readiness", "detail", "semantic_search"):
+            if following.get(field) != first.get(field):
+                raise RuntimeError(f"snapshot continuation: changed {field}")
+        before, after = first.get("records"), following.get("records")
+        if not isinstance(before, list) or not before or not isinstance(after, list) or not after:
+            raise RuntimeError("snapshot continuation: empty records page")
+        old = [row.get("identity", {}).get("coordinate") for row in before]
+        new = [row.get("identity", {}).get("coordinate") for row in after]
+        if any(not isinstance(key, str) or not key for key in old + new) or set(old) & set(new):
+            raise RuntimeError("snapshot continuation: missing identities or repeated rows")
+        more = following.get("more")
+    elif first["answer"] == "outline":
+        page, next_page = first.get("page", {}), following.get("page", {})
+        if page.get("more") is not True:
+            raise RuntimeError("snapshot continuation: token on an exhausted outline")
+        if page.get("source_root") != published_root or next_page.get("source_root") != published_root:
+            raise RuntimeError("snapshot continuation: changed published source root")
+        for field in ("branch", "log", "schema", "sequence", "limit"):
+            if field not in page or next_page.get(field) != page[field]:
+                raise RuntimeError(f"snapshot continuation: changed outline {field}")
+        if not following.get("roots") or following["roots"] == first.get("roots") or following.get("declarations", 0) <= 0:
+            raise RuntimeError("snapshot continuation: empty or repeated outline page")
+        more = next_page.get("more")
+    else:
+        raise RuntimeError("snapshot continuation: unsupported answer")
+    next_token = following.get("nextCursor")
+    if not isinstance(more, bool) or (more and (not isinstance(next_token, str) or not next_token)) or (not more and next_token is not None):
+        raise RuntimeError("snapshot continuation: dishonest continuation flag")
+
+
+def normalize_continuations(value, proven_tokens: set[str]):
+    """Compare public content, not opaque proof bytes, only after real token consumption."""
+    if isinstance(value, list):
+        return [normalize_continuations(item, proven_tokens) for item in value]
+    if not isinstance(value, dict):
+        return value
+    result = {key: normalize_continuations(item, proven_tokens) for key, item in value.items()}
+    token = value.get("nextCursor")
+    if token is not None:
+        if not isinstance(token, str) or token not in proven_tokens:
+            raise RuntimeError("snapshot continuation: unconsumed token cannot be normalized")
+        prefix = token.split("-", 1)[0]
+        if not re.fullmatch(r"(?:pc|mcp)[0-9]+", prefix):
+            raise RuntimeError("snapshot continuation: unknown token family")
+        budget = value.get("budget", {})
+        size, width, estimated = (budget.get(key) for key in ("bytes", "bytesPerToken", "estimatedTokens"))
+        if any(type(number) is not int for number in (size, width, estimated)) or width <= 0 or size < len(token.encode()) or estimated != (size + width - 1) // width:
+            raise RuntimeError("snapshot continuation: invalid encoded-byte budget")
+        payload_size = size - len(token.encode())
+        result["budget"] = dict(result["budget"])
+        result["budget"].pop("bytes")
+        result["budget"].pop("estimatedTokens")
+        result["budget"].update(bytesExcludingCursor=payload_size,
+                                estimatedTokensExcludingCursor=(payload_size + width - 1) // width)
+        result["nextCursor"] = prefix + "-<live-validated>"
+    return result
+
+
 def require_authored_symbols(answer: dict, expected: dict, language: str) -> None:
     for name, filename in expected.items():
         if not any(row.get("identity", {}).get("name") == name
@@ -557,6 +625,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
     timeout = case.get("timeout_seconds", 300)
     owner = Owner(bin_dir, case_root)
     record = {"answers": {}, "performance": {"seconds": {}}}
+    proven_tokens = set()
     try:
         if case.get("index_mode", "resumable") == "resumable":
             answer, index_times = run_resumable_index(owner, project, len(case["languages"]), timeout)
@@ -581,6 +650,13 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                 raise RuntimeError(f"{key}: expected fixture symbol, got no records")
             if args[0] == "search" and args[-1] in case.get("authored_symbols", {}):
                 require_authored_symbols(answer["json"], {args[-1]: case["authored_symbols"][args[-1]]}, case["languages"][0])
+            if answer["json"].get("nextCursor") is not None:
+                token = answer["json"]["nextCursor"]
+                following, _ = run_cli(owner, project, args + ["--cursor", token], 10)
+                require_cli_success(key + " continuation", following)
+                require_continuation_reply(answer["json"], following["json"], published_root)
+                proven_tokens.add(token)
+                log(f"{key}: offered continuation consumed by a fresh CLI client")
             record["answers"][key] = answer
             record["performance"]["seconds"][key] = round(seconds, 2)
         if case.get("mcp"):
@@ -596,6 +672,19 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                 text = result["call"].get("arguments", {}).get("query")
                 if result["call"]["tool"] == "backend.search" and text in case.get("authored_symbols", {}):
                     require_authored_symbols(reply["structuredContent"], {text: case["authored_symbols"][text]}, case["languages"][0])
+                first = reply.get("structuredContent", {})
+                if first.get("nextCursor") is not None:
+                    token = first["nextCursor"]
+                    call = result["call"]
+                    continued, _ = run_mcp(owner, project, [{"tool": call["tool"], "arguments": dict(call.get("arguments", {}), cursor=token)}], 10)
+                    if continued["exit"] != 0 or len(continued["calls"]) != 1:
+                        raise RuntimeError("snapshot continuation: MCP session failed")
+                    following = continued["calls"][0]["reply"]
+                    if not isinstance(following, dict) or following.get("isError", False) or not isinstance(following.get("structuredContent"), dict):
+                        raise RuntimeError("snapshot continuation: MCP refused offered token")
+                    require_continuation_reply(first, following["structuredContent"], published_root)
+                    proven_tokens.add(token)
+                    log(f"{call['tool']}: offered continuation consumed by a fresh MCP session")
             record["answers"]["mcp"] = answer
             record["performance"]["seconds"]["mcp"] = round(seconds, 2)
         if case.get("live_contracts"):
@@ -605,7 +694,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
         record["performance"].update(owner.usage())
     finally:
         owner.stop()
-    record["answers"] = stable(record["answers"])
+    record["answers"] = stable(normalize_continuations(record["answers"], proven_tokens))
     return record
 
 

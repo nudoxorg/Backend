@@ -212,5 +212,54 @@ class AuthoredCorpusAdmissionTests(unittest.TestCase):
                 surface.require_authored_symbols(wrong, expected, "go")
 
 
+class SnapshotContinuationTests(unittest.TestCase):
+    def page(self, token="pc4-one", coordinate="first"):
+        size = 100 + len(token)
+        return {"answer": "records", "query": "Digest", "records": [{"identity": {"coordinate": coordinate}}],
+                "more": True, "nextCursor": token,
+                "budget": {"bytes": size, "bytesPerToken": 4, "estimatedTokens": (size + 3) // 4}}
+
+    def test_only_consumed_tokens_are_normalized_and_payload_budget_survives(self):
+        first, other = self.page(), self.page("pc4-a-longer-proof")
+        with self.assertRaises(RuntimeError):
+            surface.normalize_continuations(first, set())
+        actual = surface.normalize_continuations(first, {first["nextCursor"]})
+        self.assertEqual(actual, surface.normalize_continuations(other, {other["nextCursor"]}))
+        self.assertEqual(actual["budget"], {"bytesExcludingCursor": 100, "bytesPerToken": 4, "estimatedTokensExcludingCursor": 25})
+        changed = self.page(coordinate="different-declaration")
+        self.assertNotEqual(actual, surface.normalize_continuations(changed, {changed["nextCursor"]}))
+        invalid = self.page()
+        invalid["budget"]["estimatedTokens"] += 1
+        with self.assertRaises(RuntimeError):
+            surface.normalize_continuations(invalid, {invalid["nextCursor"]})
+        unchanged = {"budget": {"bytes": 99, "estimatedTokens": 25}, "state": "stale"}
+        self.assertEqual(surface.normalize_continuations(unchanged, set()), unchanged)
+
+    def test_search_continuation_refuses_fault_repetition_and_scope_drift(self):
+        first = self.page()
+        following = {"answer": "records", "query": "Digest", "records": [{"identity": {"coordinate": "second"}}], "more": False}
+        surface.require_continuation_reply(first, following, "root")
+        for wrong in ({"answer": "fault"}, dict(following, records=[]), dict(following, records=first["records"]),
+                      dict(following, query="other"), dict(following, nextCursor=first["nextCursor"]),
+                      dict(following, more=True)):
+            with self.subTest(answer=wrong), self.assertRaises(RuntimeError):
+                surface.require_continuation_reply(first, wrong, "root")
+
+    def test_outline_continuation_keeps_the_published_basis(self):
+        import copy
+        first = {"answer": "outline", "roots": [{"key": "first"}], "declarations": 1, "nextCursor": "mcp2-one",
+                 "page": {"source_root": "root", "branch": "branch", "log": "log", "schema": 3, "sequence": 2, "limit": 100, "more": True}}
+        following = {"answer": "outline", "roots": [{"key": "second"}], "declarations": 1,
+                     "page": dict(first["page"], more=False)}
+        surface.require_continuation_reply(first, following, "root")
+        for field in ("source_root", "branch", "log", "schema", "sequence", "limit"):
+            wrong = copy.deepcopy(following)
+            wrong["page"][field] = "changed"
+            with self.subTest(field=field), self.assertRaises(RuntimeError):
+                surface.require_continuation_reply(first, wrong, "root")
+        with self.assertRaises(RuntimeError):
+            surface.require_continuation_reply(first, dict(following, roots=first["roots"]), "root")
+
+
 if __name__ == "__main__":
     unittest.main()

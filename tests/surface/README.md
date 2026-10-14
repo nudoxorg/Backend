@@ -258,3 +258,19 @@ not claim exhaustive outline traversal or removal of source-less package-context
 rows. Initial indexing took 189.73s, owner CPU 187.26s and owner peak RSS
 379,308KiB. This is a first baseline, not a calibrated fleet-wide performance
 claim; representative-corpus scale and indexing efficiency remain open.
+
+The first comparison (pr-t1/599, `06daafdca`) kept the exact native view root
+and declaration answers, but opaque continuation proof bytes varied between
+fresh owners. Snapshot admission now consumes every offered first-page token
+through a fresh CLI client or MCP session before replacing its spelling with
+`<live-validated>`. It rejects refused tokens, repeated/empty pages, search scope
+changes, outline basis changes and dishonest continuation flags. This is a
+one-hop continuation proof, alongside the existing synthetic exhaustive search
+traversal; it does not claim exhaustive real-project outline traversal.
+
+For token-bearing answers only, the normalizer validates the reported byte/token
+arithmetic, then records `bytesExcludingCursor` and
+`estimatedTokensExcludingCursor`. It subtracts exactly the opaque token's UTF-8
+length; payload size, token ratio and all semantic/basis/budget fields elsewhere
+remain compared. Raw encoded token length is intentionally not a stable golden
+contract. Refusal and normalization controls run in `test_surface.py`.
