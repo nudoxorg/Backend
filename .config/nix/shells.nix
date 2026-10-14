@@ -276,6 +276,7 @@ let
         toolchains.stable
         pkgs.nushell
         pkgs.python3
+        pkgs.cargo-nextest
         pkgs.pkg-config
         pkgs.git
         pkgs.coreutils
