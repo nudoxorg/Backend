@@ -1211,6 +1211,19 @@ pub(crate) fn join_project_mention(
     if !names_a_type && link_kind != LinkKind::Imports {
         return Ok(None);
     }
+    // A name the native Python checker bound is exact, whatever the kind of
+    // use that mentions it.
+    for kind in [
+        ItemKind::Record,
+        ItemKind::Function,
+        ItemKind::Static,
+        ItemKind::Field,
+        ItemKind::Alias,
+    ] {
+        if let Some(identity) = foreign_native_source_retarget(image, external, kind, index)? {
+            return Ok(Some(identity).filter(|candidate| published.contains(candidate)));
+        }
+    }
     let identity = if let Some(identity) =
         foreign_package_mention_retarget(image, external, caller_path, project_paths, index)?
     {

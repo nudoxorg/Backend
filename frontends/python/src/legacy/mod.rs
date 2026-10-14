@@ -280,6 +280,9 @@ pub enum OccurrenceKind {
     /// nor an attribute: a function passed as a value, a class named as a
     /// base or an annotation, a decorator, a constant read.
     NameRead,
+    /// The imported name of a module-level `from module import name`, at the
+    /// place it is written: the import statement's own use of what it names.
+    ImportBinding,
 }
 /// How a call's receiver was written, which decides the target key the
 /// occurrence resolves through. Bare-name and module-gated rows keep the
@@ -2789,6 +2792,18 @@ impl Projection<'_> {
             .as_ref()
             .map(|module| module.as_str().to_owned())
             .or_else(|| Some(alias.name.as_str().to_owned()));
+        let imports_a_name = alias.name.as_str() != "*"
+            && import.module.as_ref().map(|module| module.as_str()) != Some("__future__");
+        if imports_a_name {
+            self.facts.occurrences.push(OccurrenceFact {
+                owner: MODULE_IDENTITY.to_owned(),
+                target: alias.name.as_str().to_owned(),
+                kind: OccurrenceKind::ImportBinding,
+                confidence: Confidence::Index,
+                span: span(alias.name.range()),
+                receiver: OccurrenceReceiver::None,
+            });
+        }
         self.add_declaration(DeclarationFact {
             name: binding,
             name_span: binding_span,

@@ -853,6 +853,60 @@ fn compiler_graph_relation_kinds_survive_owner_page_assembly() {
 }
 
 #[test]
+fn a_call_known_only_by_name_is_grouped_apart_and_says_so() {
+    let centre = symbol_key(DECLARATION);
+    let guessed = symbol_key("/abs/polyglot::src/lib.rs:5::guessed");
+    let proven = symbol_key("/abs/polyglot::src/lib.rs:8::proven");
+    let guessed_row = backend_library::Row::new(RowId::Symbol(guessed), basis(), "guessed")
+        .with_kind(DeclarationKind::Function);
+    let proven_row = backend_library::Row::new(RowId::Symbol(proven), basis(), "proven")
+        .with_kind(DeclarationKind::Function);
+    let document = Document::new(
+        centre,
+        basis().root,
+        vec![Fragment::Text("ferris".to_owned())],
+    )
+    .with_location(SourceAvailability::NotCaptured);
+    let page = page_from_document_with_graph_relations(
+        DECLARATION,
+        &document,
+        &[declaration_row()],
+        &[guessed_row, proven_row],
+        &[
+            GraphRelation::new(
+                RowId::Symbol(centre),
+                RowId::Symbol(guessed),
+                SemanticLinkKind::Calls,
+            )
+            .with_confidence(backend_library::SemanticConfidence::Syntactic),
+            GraphRelation::new(
+                RowId::Symbol(centre),
+                RowId::Symbol(proven),
+                SemanticLinkKind::Calls,
+            ),
+        ],
+        Vec::new(),
+    );
+    let labels = page
+        .relations()
+        .iter()
+        .map(|group| group.label())
+        .collect::<Vec<_>>();
+    assert!(labels.contains(&RelationLabel::Typed(
+        SemanticLinkKind::Calls,
+        RelationDirection::Outgoing,
+    )));
+    let unverified =
+        RelationLabel::Unverified(SemanticLinkKind::Calls, RelationDirection::Outgoing);
+    assert!(labels.contains(&unverified), "{labels:?}");
+    assert_eq!(unverified.as_str(), "calls (name match)");
+    assert_eq!(
+        RelationLabel::Unverified(SemanticLinkKind::Calls, RelationDirection::Incoming).as_str(),
+        "called by (name match)"
+    );
+}
+
+#[test]
 fn a_record_renders_identity_first_and_never_clips_the_coordinate() {
     let row = declaration_row();
     let record = Record::from_row(&row).with_summary("Lights the beacon.");

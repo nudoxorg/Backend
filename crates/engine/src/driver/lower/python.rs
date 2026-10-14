@@ -1945,7 +1945,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 Err(fault) => return Err(lane_rejected(fault)),
             }
         }
-        self.emit_import_occurrences(&rows)
+        Ok(())
     }
 
     /// Pushes the module's own owner row when something written at module
@@ -1976,46 +1976,6 @@ impl<'a, 'source> Emitter<'a, 'source> {
             span,
             imported: None,
         }))
-    }
-
-    /// One import occurrence per import binding: the binding names what it
-    /// imports, so a use of that name is traceable to the statement that
-    /// brought it in. The target is the module's own spelling, which the
-    /// project join retargets onto a declaration of this project.
-    fn emit_import_occurrences(
-        &mut self,
-        rows: &[Pushed<'source>],
-    ) -> Result<(), PythonCollectError> {
-        for row in rows {
-            let (Some(imported), Some(declaration)) = (row.imported, row.declaration) else {
-                continue;
-            };
-            let binding = self.module.declarations[declaration].name_span;
-            if !span_contains(row.span, binding) {
-                continue;
-            }
-            let module_spelling = self.slice(imported)?;
-            let name = core::str::from_utf8(row.name).map_err(|_| {
-                PythonCollectError::Projection(PythonProjectionFault::ForeignSpellingUtf8 {
-                    start: imported.start,
-                    end: imported.end,
-                })
-            })?;
-            let target = foreign_package(module_spelling, name, imported, None)?;
-            let lane_occurrence = Occurrence {
-                target,
-                kind: ReferenceKind::Import,
-                confidence: OccurrenceConfidence::Index,
-                span: RelSpan::new_trusted(
-                    binding.start - row.span.start,
-                    binding.end - row.span.start,
-                ),
-            };
-            self.facts
-                .push_occurrence(row.ordinal, lane_occurrence)
-                .map_err(lane_rejected)?;
-        }
-        Ok(())
     }
 
     /// The kind of use one occurrence is. A call is a call; a name read that
@@ -2224,6 +2184,11 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 OccurrenceConfidence::Oracle,
             )));
         }
+        // An import statement names its target only where the checker bound
+        // it; a bare spelling is no evidence of which declaration it means.
+        if occurrence.kind == OccurrenceKind::ImportBinding {
+            return Ok(None);
+        }
         let checked = self
             .checker
             .as_ref()
@@ -2329,7 +2294,10 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 }
             }
             OccurrenceReceiver::Constructed { class } => match occurrence.kind {
-                OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall | OccurrenceKind::NameRead => {
+                OccurrenceKind::MethodCall
+                | OccurrenceKind::FunctionCall
+                | OccurrenceKind::NameRead
+                | OccurrenceKind::ImportBinding => {
                     if let Some(resolved) =
                         self.class_qualified_call_target(occurrence, class, checked)?
                     {
@@ -2471,7 +2439,10 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     }
                 };
                 match occurrence.kind {
-                    OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall | OccurrenceKind::NameRead => {
+                    OccurrenceKind::MethodCall
+                | OccurrenceKind::FunctionCall
+                | OccurrenceKind::NameRead
+                | OccurrenceKind::ImportBinding => {
                         match self.super_member_in_mro(
                             occurrence,
                             &mro,
@@ -4642,14 +4613,20 @@ impl<'a, 'source> Emitter<'a, 'source> {
         });
         let Some(class_name) = class_name else {
             return match occurrence.kind {
-                OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall | OccurrenceKind::NameRead => {
+                OccurrenceKind::MethodCall
+                | OccurrenceKind::FunctionCall
+                | OccurrenceKind::NameRead
+                | OccurrenceKind::ImportBinding => {
                     method_foreign().map(Some)
                 }
                 OccurrenceKind::AttributeRead => field_foreign().map(Some),
             };
         };
         match occurrence.kind {
-            OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall | OccurrenceKind::NameRead => {
+            OccurrenceKind::MethodCall
+                | OccurrenceKind::FunctionCall
+                | OccurrenceKind::NameRead
+                | OccurrenceKind::ImportBinding => {
                 if let Some(resolved) =
                     self.class_qualified_call_target(occurrence, &class_name, checked)?
                 {
@@ -5802,7 +5779,10 @@ impl<'a, 'source> Emitter<'a, 'source> {
         occurrence: &OccurrenceFact,
     ) -> Result<OccurrenceTarget<'source>, PythonCollectError> {
         match occurrence.kind {
-            OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall | OccurrenceKind::NameRead => {
+            OccurrenceKind::MethodCall
+                | OccurrenceKind::FunctionCall
+                | OccurrenceKind::NameRead
+                | OccurrenceKind::ImportBinding => {
                 foreign_method(self.slice(occurrence.span)?, occurrence.span)
             }
             OccurrenceKind::AttributeRead => {
@@ -6146,6 +6126,7 @@ fn reference_kind(kind: OccurrenceKind) -> ReferenceKind {
         OccurrenceKind::MethodCall => ReferenceKind::MethodCall,
         OccurrenceKind::AttributeRead => ReferenceKind::FieldAccess,
         OccurrenceKind::NameRead => ReferenceKind::VariableUse,
+        OccurrenceKind::ImportBinding => ReferenceKind::Import,
     }
 }
 
@@ -8269,18 +8250,16 @@ mod tests {
     }
 
     #[test]
-    fn a_module_qualifier_is_not_a_use_but_the_import_is() {
-        use backend_semantic::ir::LinkKind::Imports;
-        let uses = lowered_uses(b"import json\nfrom os import path\n\ndef load(text):\n    return json.loads(text)\n");
+    fn a_module_qualifier_is_not_read_as_a_name() {
+        let uses = lowered_uses(
+            b"import json\nfrom os import path\n\ndef load(text):\n    return json.loads(text)\n",
+        );
         assert!(
-            !uses
-                .iter()
-                .any(|(owner, kind, target)| owner == "load" && target == "external:json" && *kind != backend_semantic::ir::LinkKind::MethodCall),
+            !uses.iter().any(|(owner, kind, target)| owner == "load"
+                && target == "external:json"
+                && *kind != backend_semantic::ir::LinkKind::MethodCall),
             "the qualifier `json` is not read as a name: {uses:?}"
         );
-        assert!(
-            uses.iter().any(|(owner, kind, _)| owner == "json" && *kind == Imports),
-            "the import binding names what it imports: {uses:?}"
-        );
     }
+
 }

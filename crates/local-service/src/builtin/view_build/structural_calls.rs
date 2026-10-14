@@ -83,6 +83,17 @@ impl<'a> ModuleIndex<'a> {
             );
             return out;
         }
+        if let Some(rest) = project_alias_rest(specifier) {
+            for root in PROJECT_ALIAS_ROOTS {
+                let base = if root.is_empty() {
+                    rest.to_owned()
+                } else {
+                    format!("{root}/{rest}")
+                };
+                self.push_candidate(&base, &mut out);
+            }
+            return out;
+        }
         if specifier.contains("::") {
             let mut remainder = specifier;
             let mut base = caller_dir;

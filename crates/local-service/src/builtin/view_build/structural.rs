@@ -1268,6 +1268,18 @@ fn push_go_import_paths(
     }
 }
 
+/// The directories a `@/` or `~/` import alias commonly names (a bundler or
+/// `tsconfig` `paths` entry such as `"@/*": ["./src/*"]`), tried in order.
+const PROJECT_ALIAS_ROOTS: &[&str] = &["src", ""];
+
+/// What follows the `@/` or `~/` of a project import alias.
+fn project_alias_rest(specifier: &str) -> Option<&str> {
+    specifier
+        .strip_prefix("@/")
+        .or_else(|| specifier.strip_prefix("~/"))
+        .filter(|rest| !rest.is_empty() && !rest.starts_with('/'))
+}
+
 pub(crate) fn resolve_specifier_paths(
     specifier: &str,
     caller_path: &str,
@@ -1283,6 +1295,18 @@ pub(crate) fn resolve_specifier_paths(
             .replace('\\', "/");
         let mut resolved = BTreeSet::new();
         push_resolved_candidate(&normalized, project_paths, &mut resolved);
+        return resolved;
+    }
+    if let Some(rest) = project_alias_rest(specifier) {
+        let mut resolved = BTreeSet::new();
+        for root in PROJECT_ALIAS_ROOTS {
+            let base = if root.is_empty() {
+                rest.to_owned()
+            } else {
+                format!("{root}/{rest}")
+            };
+            push_resolved_candidate(&base, project_paths, &mut resolved);
+        }
         return resolved;
     }
     if specifier.contains("::")
