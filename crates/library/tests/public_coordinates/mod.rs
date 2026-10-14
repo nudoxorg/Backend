@@ -456,3 +456,193 @@ fn retained_symbol_document_address_requires_exact_unique_membership_and_full_ba
             .is_some()
     );
 }
+
+fn structural_twin_of(semantic: &Row, basis: Basis, package: PackageKey) -> Row {
+    Row::in_package(RowId::Symbol(symbol_key(ALIAS)), basis, package, ALIAS).with_source(
+        semantic
+            .source
+            .captured()
+            .expect("semantic row captured its site")
+            .clone(),
+    )
+}
+
+#[test]
+fn lane_twins_are_one_declaration_addressed_by_its_structural_row() {
+    let (basis, package, _, owner, semantic) = rows();
+    let structural = structural_twin_of(&semantic, basis, package);
+    let library = projection(vec![owner, semantic.clone(), structural.clone()]);
+    let view = library.view();
+
+    // Exact labels keep selecting exactly their own row ...
+    assert_eq!(
+        resolve_selected_view_address(view, ALIAS)
+            .declaration()
+            .expect("structural label")
+            .expect("row")
+            .id,
+        structural.id
+    );
+    assert_eq!(
+        resolve_selected_view_address(view, &semantic.label)
+            .declaration()
+            .expect("semantic label")
+            .expect("row")
+            .id,
+        semantic.id
+    );
+    // ... while the canonical resolvers send both spellings to one row.
+    for spelling in [ALIAS, semantic.label.as_str()] {
+        let address = resolve_canonical_declaration(view, spelling);
+        let SelectedViewAddress::Declaration { row, .. } = address else {
+            panic!("{spelling} names a declaration");
+        };
+        assert_eq!(row.id, structural.id, "{spelling}");
+        assert_eq!(
+            resolve_canonical_document_row(view, spelling)
+                .expect("document address")
+                .expect("document row")
+                .id,
+            structural.id,
+            "{spelling}"
+        );
+    }
+    assert!(matches!(
+        resolve_canonical_declaration(view, &semantic.label),
+        SelectedViewAddress::Declaration {
+            matched_as: AddressMatchKind::LaneTwin,
+            ..
+        }
+    ));
+    assert_eq!(
+        view.structural_twin(&semantic).map(|row| row.id),
+        Some(structural.id)
+    );
+    assert_eq!(
+        view.semantic_twin(&structural).map(|row| row.id),
+        Some(semantic.id)
+    );
+    assert!(view.structural_twin(&structural).is_none());
+    assert!(view.semantic_twin(&semantic).is_none());
+    assert_eq!(view.canonical_row_id(semantic.id), structural.id);
+    assert_eq!(view.canonical_row_id(structural.id), structural.id);
+    // The selection a document certificate is built from names the same row
+    // for either spelling.
+    let source = Basis {
+        root: view.root(),
+        ..view.basis()
+    };
+    for spelling in [ALIAS, semantic.label.as_str()] {
+        let selection = DocumentSelection::from_selected_view(view, source, spelling)
+            .expect("either spelling selects a document");
+        assert_eq!(RowId::Symbol(selection.symbol()), structural.id);
+        assert_eq!(selection.coordinate(), spelling);
+    }
+
+    // A names page lists the declaration once, under its structural row.
+    let names = library
+        .names(&NameQuery::new(
+            "draw",
+            library.revision_root(),
+            QueryLimit::default(),
+        ))
+        .expect("names page");
+    assert_eq!(
+        names.root.row_refs().map(|row| row.id).collect::<Vec<_>>(),
+        vec![structural.id]
+    );
+    // Naming only the compiler-backed spelling still resolves, to the twin.
+    let by_address = library
+        .names(&NameQuery::new(
+            semantic.label.clone(),
+            library.revision_root(),
+            QueryLimit::default(),
+        ))
+        .expect("address page");
+    assert_eq!(
+        by_address
+            .root
+            .row_refs()
+            .map(|row| row.id)
+            .collect::<Vec<_>>(),
+        vec![structural.id]
+    );
+}
+
+#[test]
+fn lane_twins_stay_separate_unless_each_lane_has_exactly_one_row_of_the_same_sort() {
+    let (basis, package, _, owner, semantic) = rows();
+    let structural = structural_twin_of(&semantic, basis, package);
+
+    // A second compiler-backed row at the site makes the pairing ambiguous.
+    let mut other = semantic.clone();
+    other.id = RowId::Symbol(symbol_key("other-compiler-identity"));
+    other.label = "pkg:workspace::nested::semantic::other-origin::draw".to_owned();
+    let ambiguous = projection(vec![
+        owner.clone(),
+        semantic.clone(),
+        other,
+        structural.clone(),
+    ]);
+    assert!(ambiguous.view().structural_twin(&semantic).is_none());
+    assert_eq!(
+        ambiguous.view().canonical_row_id(semantic.id),
+        semantic.id,
+        "an ambiguous site never rewrites an identity"
+    );
+
+    // An import pairs only with an import.
+    let imported = semantic.clone().with_kind(DeclarationKind::Import);
+    let mixed = projection(vec![owner.clone(), imported.clone(), structural.clone()]);
+    assert!(mixed.view().structural_twin(&imported).is_none());
+    let both = projection(vec![
+        owner.clone(),
+        imported.clone(),
+        structural.clone().with_kind(DeclarationKind::Import),
+    ]);
+    assert!(both.view().structural_twin(&imported).is_some());
+
+    // A different name at the same line is another declaration.
+    let mut renamed = structural.clone();
+    renamed.id = RowId::Symbol(symbol_key("pkg:workspace::nested::src/lib.rs:9::paint"));
+    renamed.label = "pkg:workspace::nested::src/lib.rs:9::paint".to_owned();
+    let apart = projection(vec![owner, semantic.clone(), renamed]);
+    assert!(apart.view().structural_twin(&semantic).is_none());
+}
+
+#[test]
+fn external_placeholders_are_inert_only_without_any_declaration_fact() {
+    let (basis, _, _, _, _) = rows();
+    let hex = "ab".repeat(32);
+    let label = format!("pkg:workspace::nested::external::symbol:{hex}::get");
+    assert_eq!(external_placeholder_display(&label), Some("get"));
+    for not_external in [
+        "pkg:workspace::nested::semantic::origin::get",
+        "pkg:workspace::nested::src/lib.rs:9::get",
+        "pkg:workspace::nested::external::symbol:short::get",
+        &format!("pkg:workspace::nested::external::symbol:{hex}::"),
+    ] {
+        assert_eq!(
+            external_placeholder_display(not_external),
+            None,
+            "{not_external}"
+        );
+    }
+    let placeholder = Row::new(RowId::Symbol(symbol_key(&label)), basis, label)
+        .with_document(Box::<[Fragment]>::default());
+    assert!(is_inert_external_placeholder(&placeholder));
+    assert!(!is_inert_external_placeholder(
+        &placeholder.clone().with_kind(DeclarationKind::Function)
+    ));
+    assert!(!is_inert_external_placeholder(
+        &placeholder.clone().with_signature("fn get()")
+    ));
+    assert!(!is_inert_external_placeholder(
+        &placeholder
+            .clone()
+            .with_source(SourceLocation::new("src/lib.rs", 1).expect("site"))
+    ));
+    assert!(!is_inert_external_placeholder(
+        &placeholder.with_document(vec![Fragment::Text("documented".to_owned())])
+    ));
+}

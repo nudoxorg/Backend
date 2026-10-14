@@ -78,6 +78,7 @@ pub struct CapturedSourceCoordinate<'row> {
     package_label: &'row str,
     name: &'row str,
     location: &'row crate::SourceLocation,
+    semantic: bool,
 }
 
 impl<'row> CapturedSourceCoordinate<'row> {
@@ -103,6 +104,7 @@ impl<'row> CapturedSourceCoordinate<'row> {
         location: &'row crate::SourceLocation,
     ) -> Option<Self> {
         let suffix = row.label.strip_prefix(package_label)?.strip_prefix("::")?;
+        let semantic_lane = suffix.starts_with("semantic::");
         let name = if let Some(semantic) = suffix.strip_prefix("semantic::") {
             let (identity, name) = semantic.split_once("::")?;
             if identity.is_empty() {
@@ -125,7 +127,16 @@ impl<'row> CapturedSourceCoordinate<'row> {
             package_label,
             name,
             location,
+            semantic: semantic_lane,
         })
+    }
+
+    /// Whether the row is the compiler-backed (`<pkg>::semantic::<id>::<name>`)
+    /// spelling of its declaration rather than the structural
+    /// (`<pkg>::<path>:<line>::<name>`) one.
+    #[must_use]
+    pub fn is_semantic(self) -> bool {
+        self.semantic
     }
 
     /// Captured relative source path.
@@ -229,6 +240,9 @@ pub enum AddressMatchKind {
     ExactLabel,
     /// The legacy project/path/line/name spelling uniquely names a captured site.
     LegacySourceSite,
+    /// The coordinate named the other publication lane's row for the same
+    /// declaration; the structural row that stands for both was selected.
+    LaneTwin,
 }
 
 /// Typed resolution of one public coordinate against a selected view.
@@ -375,4 +389,69 @@ fn canonical_line(line: &str) -> Option<u32> {
         return None;
     }
     line.parse().ok()
+}
+
+/// Resolves a public coordinate like [`resolve_selected_view_address`], then
+/// follows a compiler-backed row to the structural row that stands for the
+/// same declaration (see [`crate::ViewRoot::canonical_declaration`]).
+///
+/// A declaration published by both lanes has two spellings
+/// (`<pkg>::<path>:<line>::<name>` and `<pkg>::semantic::<id>::<name>`) and
+/// two native rows. Either spelling resolves here to the same row, so every
+/// command that takes a coordinate answers for one declaration.
+pub fn resolve_canonical_declaration<'view>(
+    view: &'view crate::ViewRoot,
+    coordinate: &str,
+) -> SelectedViewAddress<'view> {
+    match resolve_selected_view_address(view, coordinate) {
+        SelectedViewAddress::Declaration { row, matched_as } => {
+            let canonical = view.canonical_declaration(row);
+            if canonical.id == row.id {
+                SelectedViewAddress::Declaration { row, matched_as }
+            } else {
+                SelectedViewAddress::Declaration {
+                    row: canonical,
+                    matched_as: AddressMatchKind::LaneTwin,
+                }
+            }
+        }
+        other => other,
+    }
+}
+
+/// Resolves a document address like [`resolve_selected_document_row`], then
+/// follows a compiler-backed row to its structural twin so that both
+/// spellings of one declaration select the same document row.
+///
+/// # Errors
+/// Refuses ambiguous labels and coordinates naming a non-symbol row.
+pub fn resolve_canonical_document_row<'view>(
+    view: &'view crate::ViewRoot,
+    coordinate: &str,
+) -> Result<Option<&'view Row>, crate::CommandFailure> {
+    Ok(resolve_selected_document_row(view, coordinate)?.map(|row| view.canonical_declaration(row)))
+}
+
+/// The display name of an external-target placeholder label
+/// (`<project>::external::symbol:<64 hex>::<display>`), when `label` is one.
+#[must_use]
+pub fn external_placeholder_display(label: &str) -> Option<&str> {
+    let (_, tail) = label.split_once("::external::symbol:")?;
+    let (key, display) = tail.split_once("::")?;
+    (key.len() == 64 && key.bytes().all(|byte| byte.is_ascii_hexdigit()) && !display.is_empty())
+        .then_some(display)
+}
+
+/// Whether `row` is an external-target placeholder that carries no facts: no
+/// kind, signature, source, or documentation. Such a row is only a name for
+/// something a declaration links to elsewhere, so result lists omit it or
+/// collapse it into one summary rather than spend a record on it.
+#[must_use]
+pub fn is_inert_external_placeholder(row: &Row) -> bool {
+    matches!(row.id, RowId::Symbol(_))
+        && row.kind.is_none()
+        && row.signature.is_none()
+        && row.source.captured().is_none()
+        && row.document.is_empty()
+        && external_placeholder_display(&row.label).is_some()
 }

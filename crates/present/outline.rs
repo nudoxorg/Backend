@@ -8,8 +8,9 @@
 //! a node that cannot be matched says so with its tag rather than pretending
 //! to be a name.
 
-use crate::identity::{Identity, IdentityKey, KeyTag};
+use crate::identity::{Identity, IdentityKey, IdentityShape, KeyTag};
 use backend_library::{DeclarationKind, OutlineExtent, OutlineNode, SymbolKey};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::page::Truncation;
 
@@ -89,6 +90,80 @@ impl OutlineEntry {
     pub fn is_resolved(&self) -> bool {
         self.identity.is_some() && self.children.iter().all(Self::is_resolved)
     }
+}
+
+/// The declaration an entry names: its project, file, line and name, which
+/// both publication lanes agree on for one declaration.
+fn site_of(entry: &OutlineEntry) -> Option<(String, String, u32, String)> {
+    let identity = entry.identity.as_ref()?;
+    if !matches!(
+        identity.shape(),
+        IdentityShape::Declaration | IdentityShape::Semantic
+    ) {
+        return None;
+    }
+    Some((
+        identity.project()?.root().to_owned(),
+        identity.path()?.as_str().to_owned(),
+        identity.line()?.get(),
+        identity.name().to_owned(),
+    ))
+}
+
+/// Merges, among siblings, each structural/compiler-backed pair of entries
+/// for one declaration into the structural entry, whose children are both
+/// entries' children (merged the same way, since a declaration's members are
+/// published by both lanes too).
+///
+/// The pairing is as strict as the owner's: the same site, exactly one entry
+/// per lane, and an import only with an import. Anything else stays listed.
+pub(crate) fn merge_lane_twins(entries: Vec<OutlineEntry>) -> Vec<OutlineEntry> {
+    let mut sites = BTreeMap::<(String, String, u32, String), (Vec<usize>, Vec<usize>)>::new();
+    for (at, entry) in entries.iter().enumerate() {
+        let Some(site) = site_of(entry) else {
+            continue;
+        };
+        let lanes = sites.entry(site).or_default();
+        if entry
+            .identity
+            .as_ref()
+            .is_some_and(|identity| identity.shape() == IdentityShape::Semantic)
+        {
+            lanes.1.push(at);
+        } else {
+            lanes.0.push(at);
+        }
+    }
+    let mut twin_of = BTreeMap::<usize, usize>::new();
+    let mut shadowed = BTreeSet::<usize>::new();
+    for (structural, semantic) in sites.values() {
+        let ([structural], [semantic]) = (structural.as_slice(), semantic.as_slice()) else {
+            continue;
+        };
+        let imports = |at: usize| entries[at].kind == Some(DeclarationKind::Import);
+        if imports(*structural) == imports(*semantic) {
+            twin_of.insert(*structural, *semantic);
+            shadowed.insert(*semantic);
+        }
+    }
+    let mut slots = entries.into_iter().map(Some).collect::<Vec<_>>();
+    let mut merged = Vec::with_capacity(slots.len());
+    for at in 0..slots.len() {
+        if shadowed.contains(&at) {
+            continue;
+        }
+        let Some(mut entry) = slots[at].take() else {
+            continue;
+        };
+        let mut children = entry.children.into_vec();
+        if let Some(twin) = twin_of.get(&at).and_then(|twin| slots[*twin].take()) {
+            entry.kind = entry.kind.or(twin.kind);
+            children.extend(twin.children.into_vec());
+        }
+        entry.children = merge_lane_twins(children).into_boxed_slice();
+        merged.push(entry);
+    }
+    merged
 }
 
 /// One package outline, resolved to names.
@@ -270,7 +345,6 @@ pub(crate) fn page_tree(
     limit: u16,
 ) -> Result<OutlineTree, backend_client::ClientError> {
     use backend_library::{RowId, package_key};
-    use std::collections::{BTreeMap, BTreeSet};
     let rows = snapshot.root.rows();
     let package = package_key(path);
     if !(1..=backend_library::QueryLimit::MAX).contains(&limit)
@@ -333,7 +407,7 @@ pub(crate) fn page_tree(
     }
     Ok(OutlineTree::new(
         Identity::parse_with_key(path, IdentityKey::Package(package)),
-        entries,
+        merge_lane_twins(entries),
         if snapshot.next.is_some() {
             OutlineExtent::Truncated
         } else {
@@ -412,5 +486,113 @@ mod page_scope_tests {
             serde_json::from_value(serde_json::to_value(&dto).expect("projection"))
                 .expect("stable typed decode");
         assert_eq!(decoded, dto);
+    }
+}
+
+#[cfg(test)]
+mod lane_twin_tests {
+    use super::*;
+
+    const PROJECT: &str = "/abs/p";
+
+    fn entry(
+        label: &str,
+        line: u32,
+        kind: DeclarationKind,
+        children: Vec<OutlineEntry>,
+    ) -> OutlineEntry {
+        let identity = Identity::parse(label).with_captured_source(Some("src/a.rs"), Some(line));
+        OutlineEntry {
+            tag: KeyTag::from_key(&[7; 32]),
+            identity: Some(identity),
+            kind: Some(kind),
+            children: children.into_boxed_slice(),
+        }
+    }
+
+    fn structural(
+        name: &str,
+        line: u32,
+        kind: DeclarationKind,
+        children: Vec<OutlineEntry>,
+    ) -> OutlineEntry {
+        entry(
+            &format!("{PROJECT}::src/a.rs:{line}::{name}"),
+            line,
+            kind,
+            children,
+        )
+    }
+
+    fn semantic(
+        name: &str,
+        line: u32,
+        kind: DeclarationKind,
+        children: Vec<OutlineEntry>,
+    ) -> OutlineEntry {
+        entry(
+            &format!("{PROJECT}::semantic::{}::{name}", "ab".repeat(32)),
+            line,
+            kind,
+            children,
+        )
+    }
+
+    #[test]
+    fn each_declaration_both_lanes_published_is_one_entry_with_both_lanes_members() {
+        // `Opt` (line 19) is listed by both lanes; the compiler also lists a
+        // field the structural baseline cannot see, and both list `parse`.
+        let merged = merge_lane_twins(vec![
+            semantic(
+                "Opt",
+                19,
+                DeclarationKind::Struct,
+                vec![
+                    semantic("alphabet", 21, DeclarationKind::Field, vec![]),
+                    semantic("parse", 20, DeclarationKind::Method, vec![]),
+                ],
+            ),
+            structural(
+                "Opt",
+                19,
+                DeclarationKind::Struct,
+                vec![structural("parse", 20, DeclarationKind::Method, vec![])],
+            ),
+            structural("Other", 40, DeclarationKind::Struct, vec![]),
+        ]);
+        assert_eq!(
+            merged.iter().map(OutlineEntry::name).collect::<Vec<_>>(),
+            ["Opt", "Other"]
+        );
+        let opt = &merged[0];
+        assert_eq!(
+            opt.identity()
+                .map(|identity| identity.coordinate().as_str()),
+            Some("/abs/p::src/a.rs:19::Opt"),
+            "the structural coordinate is the one entry's address"
+        );
+        let members = opt
+            .children()
+            .iter()
+            .map(OutlineEntry::name)
+            .collect::<Vec<_>>();
+        assert_eq!(members.len(), 2, "{members:?}");
+        assert!(members.contains(&"parse".to_owned()) && members.contains(&"alphabet".to_owned()));
+        assert_eq!(merged.iter().map(OutlineEntry::count).sum::<usize>(), 4);
+    }
+
+    #[test]
+    fn entries_without_a_one_to_one_pair_stay_listed() {
+        let two_compiler = merge_lane_twins(vec![
+            structural("Opt", 19, DeclarationKind::Struct, vec![]),
+            semantic("Opt", 19, DeclarationKind::Struct, vec![]),
+            semantic("Opt", 19, DeclarationKind::Struct, vec![]),
+        ]);
+        assert_eq!(two_compiler.len(), 3);
+        let import_against_declaration = merge_lane_twins(vec![
+            structural("Opt", 19, DeclarationKind::Struct, vec![]),
+            semantic("Opt", 19, DeclarationKind::Import, vec![]),
+        ]);
+        assert_eq!(import_against_declaration.len(), 2);
     }
 }

@@ -14,7 +14,7 @@ use std::collections::BinaryHeap;
 struct NameRanked {
     id: RowId,
     normalized_label: String,
-    placement: (bool, bool, u8),
+    placement: (bool, bool, bool, bool, u8),
 }
 
 impl NameRanked {
@@ -33,18 +33,25 @@ impl NameRanked {
                         .strip_suffix(text)
                         .is_some_and(|prefix| prefix.ends_with("::"))
             });
+        // Among exact names a declaration comes before an import that only
+        // brings it in, library code before examples, tests and benchmarks,
+        // and a declaration with a captured site before one without, then by
+        // how much its kind is the thing the name names.
+        let path = row.source.file_path();
         Some(Self {
             id: row.id,
             normalized_label,
             placement: (
                 exact,
+                row.kind != Some(crate::DeclarationKind::Import),
+                path.is_some_and(|path| !super::is_support_source_path(path)),
                 row.source.captured().is_some(),
                 row.kind.map_or(1, super::declaration_name_priority),
             ),
         })
     }
 
-    fn ordering_key(&self) -> (Reverse<(bool, bool, u8)>, &str, RowId) {
+    fn ordering_key(&self) -> (Reverse<(bool, bool, bool, bool, u8)>, &str, RowId) {
         (Reverse(self.placement), &self.normalized_label, self.id)
     }
 }
@@ -113,14 +120,7 @@ impl PartialOrd for SearchRanked {
 // paths are a navigation hint, never a declaration or language authority.
 fn outline_order(row: &Row) -> (Reverse<(bool, bool, u8)>, &str, RowId) {
     let path = row.source.file_path();
-    let support = path.is_some_and(|path| {
-        path.split('/')
-            .any(|part| matches!(part, "test" | "tests" | "__tests__"))
-            || path.ends_with(".spec.ts")
-            || path.ends_with(".spec.tsx")
-            || path.ends_with(".test.ts")
-            || path.ends_with(".test.tsx")
-    });
+    let support = path.is_some_and(super::is_support_source_path);
     (
         Reverse((
             path.is_some() && !support,
@@ -559,11 +559,13 @@ mod ordering_laws {
         assert!(original == changed);
         assert_eq!(original.cmp(&changed), Ordering::Equal);
 
+        // A declaration of the exact name, sourced or not, outranks an import
+        // that only brings the name in, however well sited the import is.
         let tiers = [
             fixture("z::Environment", DeclarationKind::Class, true),
             fixture("c::Environment", DeclarationKind::Field, true),
-            fixture("b::Environment", DeclarationKind::Import, true),
             fixture("a::Environment", DeclarationKind::Type, false),
+            fixture("b::Environment", DeclarationKind::Import, true),
             fixture("a::MockEnvironment", DeclarationKind::Class, true),
         ]
         .into_iter()
@@ -689,5 +691,88 @@ mod outline_selection_profile {
                 std::hint::black_box((old, ranked));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod library_before_support_ranking {
+    use super::*;
+    use crate::{
+        Basis, DeclarationKind, SourceLocation, object_version, symbol_key, view_state_root,
+    };
+
+    fn named(label: &str, kind: DeclarationKind, path: &str) -> Row {
+        let basis = Basis::new(view_state_root(&[]), object_version(b"support-rank"));
+        Row::new(RowId::Symbol(symbol_key(label)), basis, label)
+            .with_kind(kind)
+            .with_source(SourceLocation::new(path, 3).expect("fixture site"))
+    }
+
+    #[test]
+    fn library_code_ranks_above_examples_tests_and_benchmarks_for_one_exact_name() {
+        for support in [
+            "tests",
+            "examples",
+            "benches",
+            "src/__tests__",
+            "app.spec.ts",
+        ] {
+            assert!(crate::is_support_source_path(support), "{support}");
+        }
+        for library in [
+            "src/alphabet.rs",
+            "lib/examples_of.rs",
+            "src/testing_helpers.rs",
+        ] {
+            assert!(!crate::is_support_source_path(library), "{library}");
+        }
+        // `examples/…` sorts before `src/…` by label, so only the placement
+        // tier can put the library definition first.
+        let mut ranked = [
+            named(
+                "/p::examples/base64.rs:11::Alphabet",
+                DeclarationKind::Enum,
+                "examples/base64.rs",
+            ),
+            named(
+                "/p::tests/alphabet.rs:4::Alphabet",
+                DeclarationKind::Struct,
+                "tests/alphabet.rs",
+            ),
+            named(
+                "/p::src/alphabet.rs:55::Alphabet",
+                DeclarationKind::Struct,
+                "src/alphabet.rs",
+            ),
+            named(
+                "/p::examples/base64.rs:6::Alphabet",
+                DeclarationKind::Import,
+                "examples/base64.rs",
+            ),
+            named(
+                "/p::src/lib.rs:9::Alphabet",
+                DeclarationKind::Import,
+                "src/lib.rs",
+            ),
+        ]
+        .iter()
+        .map(|row| NameRanked::new(row, Some("alphabet"), None).expect("candidate"))
+        .collect::<Vec<_>>();
+        sort_names(&mut ranked);
+        let labels = ranked
+            .iter()
+            .map(|row| row.normalized_label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            labels,
+            [
+                "/p::src/alphabet.rs:55::alphabet",
+                "/p::examples/base64.rs:11::alphabet",
+                "/p::tests/alphabet.rs:4::alphabet",
+                "/p::src/lib.rs:9::alphabet",
+                "/p::examples/base64.rs:6::alphabet",
+            ],
+            "library declaration, then support declarations, then imports"
+        );
     }
 }

@@ -46,7 +46,7 @@ pub struct ViewRoot {
     /// First row identity for each exact label, built without cloning row bodies.
     pub(super) label_ids: Arc<OnceLock<BTreeMap<String, LabelRows>>>,
     /// Captured alias lookup keys and unique/ambiguous native row identities.
-    pub(super) source_alias_ids: Arc<OnceLock<BTreeMap<crate::SymbolKey, Option<RowId>>>>,
+    pub(super) source_alias_ids: Arc<OnceLock<BTreeMap<crate::SymbolKey, SiteRows>>>,
     /// Coverage for each requested lane.
     pub(crate) coverage: Box<[Coverage]>,
     /// Producer-admitted witness for complete source coverage.
@@ -77,6 +77,51 @@ pub(super) struct LabelRows {
     first: RowId,
     symbol: LabelSymbol,
     ambiguous: bool,
+}
+
+/// One slot of a captured source site: no row, exactly one, or several.
+#[derive(Clone, Copy, Debug, Default)]
+enum SiteSlot {
+    #[default]
+    Empty,
+    One(RowId),
+    Many,
+}
+
+impl SiteSlot {
+    fn add(&mut self, id: RowId) {
+        *self = match *self {
+            Self::Empty => Self::One(id),
+            Self::One(_) | Self::Many => Self::Many,
+        };
+    }
+}
+
+/// The rows that share one canonical captured source site, by publication
+/// lane. A structural row and a compiler-backed row for the same declaration
+/// meet here: they have the same package, relative path, line and name.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct SiteRows {
+    structural: SiteSlot,
+    semantic: SiteSlot,
+}
+
+impl SiteRows {
+    /// The only row at this site, when exactly one row of either lane has it.
+    fn sole(self) -> Option<RowId> {
+        match (self.structural, self.semantic) {
+            (SiteSlot::One(id), SiteSlot::Empty) | (SiteSlot::Empty, SiteSlot::One(id)) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// The structural and semantic rows, when each lane has exactly one.
+    fn pair(self) -> Option<(RowId, RowId)> {
+        match (self.structural, self.semantic) {
+            (SiteSlot::One(structural), SiteSlot::One(semantic)) => Some((structural, semantic)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -358,37 +403,13 @@ impl ViewRoot {
         &self,
         key: crate::SymbolKey,
     ) -> super::SelectedViewAddress<'_> {
-        let index = self.source_alias_ids.get_or_init(|| {
-            let mut index = BTreeMap::new();
-            for row in self.row_refs() {
-                let Some(package) = row
-                    .package
-                    .and_then(|package| self.row_ref(RowId::Package(package)))
-                else {
-                    continue;
-                };
-                let Some(proof) =
-                    super::CapturedSourceCoordinate::from_row_and_package(row, package)
-                else {
-                    continue;
-                };
-                let Some(key) = proof.address_key() else {
-                    continue;
-                };
-                index
-                    .entry(key)
-                    .and_modify(|entry| *entry = None)
-                    .or_insert(Some(row.id));
-            }
-            index
-        });
-        let Some(id) = index.get(&key) else {
+        let Some(sites) = self.source_sites().get(&key) else {
             return super::SelectedViewAddress::Absent;
         };
-        let Some(id) = id else {
+        let Some(id) = sites.sole() else {
             return super::SelectedViewAddress::Ambiguous;
         };
-        let Some(row) = self.row_ref(*id) else {
+        let Some(row) = self.row_ref(id) else {
             return super::SelectedViewAddress::Absent;
         };
         let Some(package) = row
@@ -407,6 +428,88 @@ impl ViewRoot {
         } else {
             super::SelectedViewAddress::Absent
         }
+    }
+
+    /// Every captured declaration site, keyed by its canonical structural
+    /// spelling, with the rows of each publication lane that claim it. Built
+    /// once per immutable root from borrowed rows.
+    fn source_sites(&self) -> &BTreeMap<crate::SymbolKey, SiteRows> {
+        self.source_alias_ids.get_or_init(|| {
+            let mut index: BTreeMap<crate::SymbolKey, SiteRows> = BTreeMap::new();
+            for row in self.row_refs() {
+                let Some(package) = row
+                    .package
+                    .and_then(|package| self.row_ref(RowId::Package(package)))
+                else {
+                    continue;
+                };
+                let Some(proof) =
+                    super::CapturedSourceCoordinate::from_row_and_package(row, package)
+                else {
+                    continue;
+                };
+                let Some(key) = proof.address_key() else {
+                    continue;
+                };
+                let sites = index.entry(key).or_default();
+                if proof.is_semantic() {
+                    sites.semantic.add(row.id);
+                } else {
+                    sites.structural.add(row.id);
+                }
+            }
+            index
+        })
+    }
+
+    /// The structural and compiler-backed rows that are one declaration.
+    ///
+    /// The equivalence is explicit and conservative: both rows belong to the
+    /// same package, capture the same relative path and line, spell the same
+    /// declaration name, and each lane has exactly one such row. An import
+    /// pairs only with an import. Anything less (a repeated site, a name that
+    /// differs, a row without a captured site) leaves both rows separate.
+    fn declaration_pair(&self, row: &Row) -> Option<(&Row, &Row)> {
+        let package = self.row_ref(RowId::Package(row.package?))?;
+        let proof = super::CapturedSourceCoordinate::from_row_and_package(row, package)?;
+        let (structural, semantic) = self.source_sites().get(&proof.address_key()?)?.pair()?;
+        if row.id != structural && row.id != semantic {
+            return None;
+        }
+        let (structural, semantic) = (self.row_ref(structural)?, self.row_ref(semantic)?);
+        let imports = |row: &Row| row.kind == Some(crate::DeclarationKind::Import);
+        (imports(structural) == imports(semantic)).then_some((structural, semantic))
+    }
+
+    /// The structural row that is the canonical address of a compiler-backed
+    /// declaration row, when both lanes published that declaration.
+    #[must_use]
+    pub fn structural_twin(&self, row: &Row) -> Option<&Row> {
+        let (structural, semantic) = self.declaration_pair(row)?;
+        (semantic.id == row.id).then_some(structural)
+    }
+
+    /// The compiler-backed row that carries the semantic facts of a structural
+    /// declaration row, when both lanes published that declaration.
+    #[must_use]
+    pub fn semantic_twin(&self, row: &Row) -> Option<&Row> {
+        let (structural, semantic) = self.declaration_pair(row)?;
+        (structural.id == row.id).then_some(semantic)
+    }
+
+    /// The one row that stands for a declaration: the structural row when
+    /// both lanes published it, otherwise the row itself.
+    #[must_use]
+    pub fn canonical_declaration<'view>(&'view self, row: &'view Row) -> &'view Row {
+        self.structural_twin(row).unwrap_or(row)
+    }
+
+    /// The identity of [`Self::canonical_declaration`], for edge endpoints.
+    #[must_use]
+    pub fn canonical_row_id(&self, id: RowId) -> RowId {
+        self.row_ref(id)
+            .and_then(|row| self.structural_twin(row))
+            .map_or(id, |row| row.id)
     }
 
     fn label_ids(&self) -> &BTreeMap<String, LabelRows> {

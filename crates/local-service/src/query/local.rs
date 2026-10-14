@@ -595,6 +595,11 @@ struct SelectedEntity {
     candidate: backend_extension_qdrant::CandidateId,
     fact_index: usize,
     origin: SearchOrigin,
+    /// Another row already stands for this declaration in results: the
+    /// compiler-backed twin of a structural row, or an external placeholder
+    /// that carries no facts. A hidden row keeps its entity, candidate and
+    /// direct-lookup identity, but is never offered to search.
+    hidden: bool,
 }
 
 struct SelectedCorpus {
@@ -1017,6 +1022,9 @@ impl LocalAnswer {
         candidate: backend_extension_qdrant::CandidateId,
     ) -> Option<(EntityId, Row)> {
         let selected = self.corpus.selected.candidate(candidate)?;
+        if selected.hidden {
+            return None;
+        }
         let row = self.corpus.view.row(selected.row)?;
         Some((selected.entity, row))
     }
@@ -2410,6 +2418,7 @@ fn collect_selected_documents(
         })
         .collect();
     let mut left_out = LeftOut::default();
+    let mut twin_texts: Vec<(EntityId, Vec<(String, String)>)> = Vec::new();
     for (fact_index, fact) in semantic_evidence.facts().iter().enumerate() {
         let presentation = fact.presentation();
         let Some((row, source)) = selected_rows.remove(&presentation.id) else {
@@ -2422,11 +2431,16 @@ fn collect_selected_documents(
             if !candidate_ids.insert(candidate) {
                 return Err(QueryError::IdentityCollision);
             }
+            let view_row = view.row_ref(row);
+            let structural_twin = view_row.and_then(|view_row| view.structural_twin(view_row));
+            let hidden = structural_twin.is_some()
+                || view_row.is_some_and(backend_library::is_inert_external_placeholder);
             selected.push(SelectedEntity {
                 entity,
                 row,
                 candidate,
                 fact_index,
+                hidden,
                 origin: if matches!(
                     fact.evidence(),
                     SemanticQueryEvidence::CompilerExternalTarget(_)
@@ -2453,13 +2467,20 @@ fn collect_selected_documents(
             // member of `entities`/`candidates`/`semantic_documents`; so
             // direct coordinate lookups (`show`) and the semantic/vector
             // lane are unaffected.
-            if !is_synthetic_result_slot {
+            if !is_synthetic_result_slot && !hidden {
                 let row_fields = fields_for_fact(fact);
                 checked_document_bytes(0, &row_fields)?;
                 documents.push((entity, row_fields));
+            } else if let Some(twin) = structural_twin {
+                // The compiler-backed row is not offered to search, but what
+                // only the compiler wrote about the declaration (its type,
+                // its documentation) still has to find the one row that
+                // stands for it.
+                twin_texts.push((entity_id(workspace, twin.id)?, fields_for_fact(fact)));
             }
         }
     }
+    attach_twin_texts(&mut documents, twin_texts);
     left_out.rows_without_evidence = selected_rows.len();
     selected.sort_unstable_by_key(|entry| entry.entity);
     if selected
@@ -2495,6 +2516,45 @@ fn collect_selected_documents(
             left_out,
         },
     ))
+}
+
+/// Appends the text only a compiler-backed twin carries (its signature and
+/// documentation) to the lexical document of the structural row that stands
+/// for the declaration, so hiding the twin from search never hides what it
+/// said. A merge that would exceed the document bound is skipped: recall is
+/// best effort, never a reason to refuse a corpus.
+fn attach_twin_texts(
+    documents: &mut [(EntityId, Vec<(String, String)>)],
+    twin_texts: Vec<(EntityId, Vec<(String, String)>)>,
+) {
+    let positions = documents
+        .iter()
+        .enumerate()
+        .map(|(at, (entity, _))| (*entity, at))
+        .collect::<BTreeMap<_, _>>();
+    for (entity, extra) in twin_texts {
+        let Some(&at) = positions.get(&entity) else {
+            continue;
+        };
+        let mut merged = documents[at].1.clone();
+        for (name, value) in extra
+            .into_iter()
+            .filter(|(name, _)| matches!(name.as_str(), "signature" | "documentation"))
+        {
+            match merged.iter_mut().find(|(existing, _)| *existing == name) {
+                Some((_, text)) if text.contains(&value) => {}
+                Some((_, text)) => {
+                    text.push('\n');
+                    text.push_str(&value);
+                }
+                None => merged.push((name, value)),
+            }
+        }
+        merged.sort();
+        if checked_document_bytes(0, &merged).is_ok() {
+            documents[at].1 = merged;
+        }
+    }
 }
 
 fn checked_document_bytes(

@@ -16,7 +16,8 @@ mod transition;
 
 pub use coordinate::{
     AddressMatchKind, CapturedSourceCoordinate, PackageQualifiedDeclaration, SelectedViewAddress,
-    resolve_selected_document_row, resolve_selected_view_address,
+    external_placeholder_display, is_inert_external_placeholder, resolve_canonical_declaration,
+    resolve_canonical_document_row, resolve_selected_document_row, resolve_selected_view_address,
 };
 pub(crate) use descriptor::DescriptorParts;
 pub use descriptor::{ViewRootDescriptor, ViewRootDescriptorClaim};

@@ -51,9 +51,9 @@ pub(crate) use call_join::{
 #[cfg(test)]
 pub(crate) use call_join::{foreign_display_name, join_project_call};
 
-pub(crate) use backend_library::resolve_selected_view_address;
 #[cfg(test)]
 use backend_library::{AddressMatchKind, SelectedViewAddress};
+pub(crate) use backend_library::{resolve_canonical_declaration, resolve_selected_view_address};
 #[cfg(test)]
 pub(crate) use identity::query_semantic_id;
 #[cfg(test)]

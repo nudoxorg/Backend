@@ -151,6 +151,22 @@ pub fn fault(fault: &Fault, theme: Theme) -> String {
             theme.paint(Style::Name, &affordance)
         );
     }
+    for candidate in fault.candidates() {
+        let kind = candidate.kind().map_or_else(
+            || "·".to_owned(),
+            |kind| format!("{} {}", KindGlyph::new(kind), kind.name()),
+        );
+        let _ = write!(
+            out,
+            "\n  {} {}",
+            theme.paint(Style::Dim, &format!("{kind} {}", candidate.location())),
+            candidate.shell().map_or_else(String::new, |shell| format!(
+                "{} {}",
+                theme.paint(Style::Dim, "→"),
+                theme.paint(Style::Name, &shell)
+            )),
+        );
+    }
     out
 }
 
@@ -195,6 +211,9 @@ fn records_with_cursor(
     for record in list.records() {
         push_record(&mut lines, record, within, theme);
     }
+    if let Some(externals) = list.collapsed_externals() {
+        lines.push(theme.paint(Style::Dim, &externals.render()));
+    }
     lines.finish()
 }
 
@@ -209,11 +228,17 @@ fn push_record(lines: &mut Lines, record: &Record, within: Option<&ProjectRef>, 
     if let Some(kind) = record.kind() {
         tags.push(format!("{} {}", KindGlyph::new(kind), kind.name()));
     }
-    tags.push(LanguageGlyph::new(record.language()).as_str().to_owned());
+    // A declaration whose language the producer did not state is not tagged
+    // with a placeholder.
+    if record.language() != crate::language::Language::Unknown {
+        tags.push(LanguageGlyph::new(record.language()).as_str().to_owned());
+    }
     if record.state() != crate::record::RecordState::Ready {
         tags.push(record.state().name().to_owned());
     }
-    let _ = write!(head, "  {}", theme.paint(Style::Dim, &tags.join(" · ")));
+    if !tags.is_empty() {
+        let _ = write!(head, "  {}", theme.paint(Style::Dim, &tags.join(" · ")));
+    }
     lines.push(head);
     lines.push(format!(
         "  {}",

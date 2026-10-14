@@ -1029,7 +1029,21 @@ fn read(view: &ViewRoot, locators: &[ProductText]) -> Result<Box<[DeclarationRec
     locators
         .iter()
         .map(|locator| {
-            let row = view.row_by_label(locator.as_str());
+            // Either spelling of a declaration both lanes published reads the
+            // one structural row that stands for it, labelled by its own
+            // canonical coordinate.
+            let row = view
+                .row_by_label(locator.as_str())
+                .or_else(|| {
+                    backend_library::resolve_selected_view_address(view, locator.as_str())
+                        .declaration()
+                        .ok()
+                        .flatten()
+                })
+                .map(|row| view.canonical_declaration(row));
+            let label = row
+                .and_then(|row| ProductText::new(row.label.as_str()).ok())
+                .unwrap_or_else(|| locator.clone());
             Ok(DeclarationRecord {
                 extent: row
                     .and_then(|value| value.excerpt.extent())
@@ -1041,7 +1055,7 @@ fn read(view: &ViewRoot, locators: &[ProductText]) -> Result<Box<[DeclarationRec
                             backend_library::DeclarationReadExtent::Truncated
                         }
                     }),
-                label: locator.clone(),
+                label,
                 stable_id: row.map(|value| match value.id {
                     RowId::Package(id) => id.to_bytes(),
                     RowId::Symbol(id) => id.to_bytes(),

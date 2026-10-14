@@ -570,7 +570,7 @@ impl DocumentSelection {
         {
             return None;
         }
-        let row = super::resolve_selected_document_row(view, coordinate).ok()??;
+        let row = super::resolve_canonical_document_row(view, coordinate).ok()??;
         let RowId::Symbol(symbol) = row.id else {
             return None;
         };
