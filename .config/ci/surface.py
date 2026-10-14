@@ -275,6 +275,17 @@ def require_same_index_receipt(answer: dict, project: Path, expected: dict, prof
         raise RuntimeError("index resumption: terminal receipt or source capture changed")
 
 
+def require_mcp_index_receipt(reply: dict, project: Path, expected: dict, profile_count: int) -> None:
+    if not isinstance(reply, dict) or reply.get("isError", False):
+        raise RuntimeError(f"MCP index lookup: expected successful tool result, got {reply}")
+    body = reply.get("structuredContent", {})
+    projection = body.get("surface", {})
+    if projection.get("result") != "index-operation-status" or body.get("fault") is not None:
+        raise RuntimeError(f"MCP index lookup: wrong typed surface projection: {body}")
+    require_same_index_receipt({"exit": 0, "json": {"index_operation": projection.get("data")}},
+                               project, expected, profile_count)
+
+
 def run_resumable_index(owner: Owner, project: Path, profile_count: int, timeout: float) -> tuple[dict, dict]:
     started = time.monotonic()
     # Exercise the installed alias and a caller deadline without terminating the owner.
@@ -290,7 +301,7 @@ def run_resumable_index(owner: Owner, project: Path, profile_count: int, timeout
     times["index progress after caller deadline"] = round(seconds, 3)
     completed, seconds = run_cli(owner, project,
         ["add", str(project), "--execution-intent", "background", "--wait"], timeout)
-    log(f"resumed wait: exit={completed['exit']}; operation={json.dumps(completed.get('json', {}).get('index_operation', {}))[:5000]}")
+    log(f"resumed wait: exit={completed['exit']}; checking complete native publication")
     require_completed_index(completed, profile_count)
     terminal = require_index_identity(completed, project, initial)
     times["resumed index wait"] = round(seconds, 3)
@@ -309,10 +320,8 @@ def run_resumable_index(owner: Owner, project: Path, profile_count: int, timeout
     if session["exit"] != 0 or len(session["calls"]) != 1:
         raise RuntimeError("completed MCP operation lookup: session failed")
     reply = session["calls"][0]["reply"]
-    if not isinstance(reply, dict) or reply.get("isError", False) or not isinstance(reply.get("structuredContent"), dict):
-        raise RuntimeError(f"completed MCP operation lookup failed: {reply}")
-    log("completed MCP operation lookup: checking terminal receipt")
-    require_same_index_receipt({"exit": 0, "json": reply["structuredContent"]}, project, terminal, profile_count)
+    log("completed MCP operation lookup: checking typed terminal receipt")
+    require_mcp_index_receipt(reply, project, terminal, profile_count)
     times["completed MCP operation lookup"] = round(seconds, 3)
     log("background index: zero-wait caller left; fresh alias/add clients retained one key; explicit keyed replay; CLI/MCP terminal receipts agree")
     return completed, times

@@ -86,6 +86,18 @@ class IndexResumptionAdmissionTests(unittest.TestCase):
             {"state": {"state": "published", "detail": {"coverage": {"coverage": "complete"}}}}
         ]}
         surface.require_same_index_receipt(answer, Path("/project"), terminal, 1)
+        mcp = {"isError": False, "structuredContent": {"surface": {
+            "result": "index-operation-status", "data": answer["json"]["index_operation"]}}}
+        surface.require_mcp_index_receipt(mcp, Path("/project"), terminal, 1)
+        for wrong in (
+            dict(mcp, isError=True),
+            {"structuredContent": answer["json"]},
+            {"structuredContent": {"surface": {"result": "index-operation-started", "data": answer["json"]["index_operation"]}}},
+            {"structuredContent": {"surface": {"result": "index-operation-status", "data": {"state": "unknown"}}}},
+            {"structuredContent": dict(mcp["structuredContent"], fault={"slug": "refused"})},
+        ):
+            with self.subTest(mcp=wrong), self.assertRaises(RuntimeError):
+                surface.require_mcp_index_receipt(wrong, Path("/project"), terminal, 1)
         for field, value in (
             ("state", {"state": "published", "detail": {"view_root": "d" * 64}}),
             ("source_capture", {"profiles": []}),
