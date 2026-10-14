@@ -11,6 +11,9 @@ use backend_engine::{
     ProductSourceFileFactsUpdate, ProductSourceRecord, ProductSourceRelation, Relation,
     SourceUnavailableReason, build_product_source_file_facts, product_source_file_key,
 };
+use backend_frontend_python::legacy::checker::{
+    PythonEnvironmentCapture, PythonEnvironmentInput, PythonProjectControl,
+};
 use backend_library::{
     DiscoveryPolicy, EntryKind, discover_source_entries, source_selection_policy,
 };
@@ -69,6 +72,8 @@ fn absolute_path_spelling(path: &Path) -> Result<PathBuf, String> {
 /// One complete, deterministic project scan before comparison with the
 /// selected versioned relation.
 pub(super) struct IndexSnapshot {
+    pub(super) python_environment:
+        Option<backend_frontend_python::legacy::checker::PythonEnvironmentInput>,
     pub(super) source_version: [u8; 32],
     pub(super) files: Vec<([u8; 32], ProductSourceRecord)>,
     /// Complete file-facts updates produced before compact source-row retention.
@@ -1272,6 +1277,7 @@ fn scan_source_paths(
     project: [u8; 32],
     reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
     frontends: &FrontendSet,
+    python_version: PythonVersion,
     delta: Option<&source_frontier::SourceDelta>,
     source_policy: SourceAdmissionPolicy,
     cancellation: Option<&AtomicBool>,
@@ -1317,6 +1323,7 @@ fn scan_source_paths(
                             project,
                             reusable,
                             frontends,
+                            python_version,
                             delta,
                             source_policy,
                             cancellation,
@@ -1427,6 +1434,7 @@ fn scan_source_path(
     project: [u8; 32],
     reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
     frontends: &FrontendSet,
+    python_version: PythonVersion,
     delta: Option<&source_frontier::SourceDelta>,
     source_policy: SourceAdmissionPolicy,
     cancellation: Option<&AtomicBool>,
@@ -1449,12 +1457,14 @@ fn scan_source_path(
                 .ok_or_else(|| {
                     "source frontier row lost its exact source-fact identity".to_owned()
                 })?;
-            let profile = profile_fault(frontends, path).map_err(|fault| match fault {
-                SourceFault::Unavailable(_)
-                | SourceFault::UnavailableRead(_, _)
-                | SourceFault::Vanished => "source frontier profile changed".to_owned(),
-                SourceFault::Fatal(error) => error,
-            })?;
+            let profile = project_profile_fault(frontends, path, python_version).map_err(
+                |fault| match fault {
+                    SourceFault::Unavailable(_)
+                    | SourceFault::UnavailableRead(_, _)
+                    | SourceFault::Vanished => "source frontier profile changed".to_owned(),
+                    SourceFault::Fatal(error) => error,
+                },
+            )?;
             let source_bytes = usize::try_from(cached.revision.length)
                 .map_err(|_| "source byte length exceeds this target".to_owned())?;
             let mut file = reused_scanned_file(
@@ -1479,6 +1489,7 @@ fn scan_source_path(
         project,
         reusable,
         frontends,
+        python_version,
         source_policy,
     )
 }
@@ -1581,6 +1592,22 @@ pub(super) fn scan_project_for_unproven_authorities_cancellable(
     reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
     cancellation: &AtomicBool,
 ) -> Result<IndexSnapshot, String> {
+    scan_project_for_unproven_authorities_cancellable_with_interpreter(
+        coordinate,
+        project,
+        reusable,
+        cancellation,
+        None,
+    )
+}
+
+pub(super) fn scan_project_for_unproven_authorities_cancellable_with_interpreter(
+    coordinate: &str,
+    project: [u8; 32],
+    reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
+    cancellation: &AtomicBool,
+    interpreter: Option<&backend_engine::application::PythonInterpreterHostAdmission>,
+) -> Result<IndexSnapshot, String> {
     let source_policy = SourceAdmissionPolicy::from_environment()?;
     check_scan_cancellation(Some(cancellation))?;
     scan_project_with_configuration_policy_attempt(
@@ -1592,6 +1619,8 @@ pub(super) fn scan_project_for_unproven_authorities_cancellable(
         true,
         Some(cancellation),
         source_policy,
+        interpreter,
+        None,
     )
 }
 
@@ -1626,6 +1655,8 @@ fn scan_project_with_configuration_policy(
         true,
         None,
         source_policy,
+        None,
+        None,
     )
 }
 
@@ -1638,6 +1669,8 @@ fn scan_project_with_configuration_policy_attempt(
     allow_frontier_reuse: bool,
     cancellation: Option<&AtomicBool>,
     source_policy: SourceAdmissionPolicy,
+    interpreter: Option<&backend_engine::application::PythonInterpreterHostAdmission>,
+    captured_python: Option<PythonEnvironmentCapture>,
 ) -> Result<IndexSnapshot, String> {
     check_scan_cancellation(cancellation)?;
     let requested_root = absolute_path_spelling(Path::new(coordinate))?;
@@ -1660,6 +1693,37 @@ fn scan_project_with_configuration_policy_attempt(
     check_scan_cancellation(cancellation)?;
     let mut paths = std::mem::take(&mut project_paths.sources);
     paths.sort();
+    // Admission is project-wide and precedes every revision/delta/row/fact key.
+    // A negative environment honestly uses the existing source-only 3.14 default.
+    let no_cancellation = AtomicBool::new(false);
+    let python_control = PythonProjectControl {
+        cancelled: cancellation.unwrap_or(&no_cancellation),
+        deadline: std::time::Instant::now() + std::time::Duration::from_secs(15 * 60),
+    };
+    let python_environment = if paths.iter().any(|path| {
+        frontends
+            .for_path(path)
+            .is_some_and(|frontend| frontend.language() == SourceLanguage::Python)
+    }) {
+        Some(match captured_python {
+            Some(captured) => captured,
+            None => match interpreter {
+                Some(admission) => admission.capture_project(&root, python_control),
+                None => PythonEnvironmentCapture::capture(&root, python_control),
+            }
+            .map_err(|error| error.to_string())?,
+        })
+    } else {
+        None
+    };
+    check_scan_cancellation(cancellation)?;
+    let python_version = python_environment
+        .as_ref()
+        .map(PythonEnvironmentCapture::selected_profile)
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .flatten()
+        .unwrap_or(PythonVersion::Python314);
     let directories = std::mem::take(&mut project_paths.directories);
     let (local_policy_paths, mut local_policy_paths_complete) =
         match source_frontier::source_policy_candidates(&root, &directories) {
@@ -1743,7 +1807,7 @@ fn scan_project_with_configuration_policy_attempt(
                 absolute: path.clone(),
                 relative,
                 language: frontend.language(),
-                analysis: frontend.analysis_version(),
+                analysis: project_analysis_version(frontend, python_version),
                 revision: project_paths.file_revisions.get(path).copied().flatten(),
             })
         })
@@ -1800,6 +1864,7 @@ fn scan_project_with_configuration_policy_attempt(
         project,
         reusable,
         frontends,
+        python_version,
         source_delta.as_ref(),
         source_policy,
         cancellation,
@@ -1833,6 +1898,8 @@ fn scan_project_with_configuration_policy_attempt(
                 false,
                 cancellation,
                 source_policy,
+                interpreter,
+                python_environment.clone(),
             )?;
             full.source_bytes_read = full.source_bytes_read.saturating_add(source_bytes_read);
             return Ok(full);
@@ -1894,6 +1961,7 @@ fn scan_project_with_configuration_policy_attempt(
         CompilerConfigurationSnapshot::default()
     };
     let snapshot = IndexSnapshot {
+        python_environment: python_environment.map(PythonEnvironmentInput::Captured),
         source_version: *source.finalize().as_bytes(),
         files,
         source_facts,
@@ -2370,6 +2438,7 @@ fn scan_file(
     project: [u8; 32],
     reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
     frontends: &FrontendSet,
+    python_version: PythonVersion,
     source_policy: SourceAdmissionPolicy,
 ) -> Result<Option<ScannedFile>, String> {
     match scan_one(
@@ -2379,6 +2448,7 @@ fn scan_file(
         project,
         reusable,
         frontends,
+        python_version,
         source_policy,
     ) {
         Ok(file) => Ok(Some(file)),
@@ -2387,11 +2457,18 @@ fn scan_file(
             Err(format!("read source {}: {message}", path.display()))
         }
         Err(SourceFault::Unavailable(reason)) => {
-            unavailable_file(root, path, project, frontends, reason, 0).map(Some)
+            unavailable_file(root, path, project, frontends, python_version, reason, 0).map(Some)
         }
-        Err(SourceFault::UnavailableRead(reason, bytes_read)) => {
-            unavailable_file(root, path, project, frontends, reason, bytes_read).map(Some)
-        }
+        Err(SourceFault::UnavailableRead(reason, bytes_read)) => unavailable_file(
+            root,
+            path,
+            project,
+            frontends,
+            python_version,
+            reason,
+            bytes_read,
+        )
+        .map(Some),
     }
 }
 
@@ -2401,6 +2478,7 @@ fn unavailable_file(
     path: &Path,
     project: [u8; 32],
     frontends: &FrontendSet,
+    python_version: PythonVersion,
     reason: SourceUnavailableReason,
     source_bytes_read: usize,
 ) -> Result<ScannedFile, String> {
@@ -2409,12 +2487,13 @@ fn unavailable_file(
         .for_path(path)
         .ok_or_else(|| "unsupported source language".to_owned())?;
     let key = product_source_file_key(project, &relative);
-    let record = ProductSourceRecord::file_unavailable(
+    let record = ProductSourceRecord::profiled_file_unavailable(
         project,
         relative.clone(),
         frontend.language(),
-        frontend.analysis_version(),
+        project_analysis_version(frontend, python_version),
         reason,
+        (frontend.language() == SourceLanguage::Python).then_some(python_version),
     )?;
     let mut encoded = Vec::new();
     ProductSourceRelation::encode_value(&record, &mut encoded);
@@ -2451,6 +2530,7 @@ fn scan_one(
     project: [u8; 32],
     reusable: &BTreeMap<[u8; 32], ProductSourceRecord>,
     frontends: &FrontendSet,
+    python_version: PythonVersion,
     source_policy: SourceAdmissionPolicy,
 ) -> Result<ScannedFile, SourceFault> {
     let relative_path = path
@@ -2468,7 +2548,7 @@ fn scan_one(
     let frontend = frontends
         .for_path(path)
         .ok_or_else(|| SourceFault::Fatal("unsupported source language".to_owned()))?;
-    let profile = match profile_fault(frontends, path) {
+    let profile = match project_profile_fault(frontends, path, python_version) {
         Ok(profile) => profile,
         Err(SourceFault::Unavailable(reason)) => {
             return Err(SourceFault::UnavailableRead(reason, bytes.len()));
@@ -2477,7 +2557,7 @@ fn scan_one(
     };
     let key = product_source_file_key(project, &relative);
     let content = typed_of::<InputContentSchema>(&bytes).to_bytes();
-    let analysis = frontend.analysis_version();
+    let analysis = project_analysis_version(frontend, python_version);
     let reusable_record = reusable.get(&key).filter(|record| {
         record.file_fields().is_some_and(|fields| {
             fields.project == project
@@ -2488,6 +2568,7 @@ fn scan_one(
                 // bytes were never admitted. A real digest is never that value,
                 // and this fence keeps such a row from becoming compiler input.
                 && fields.content_version != [0; 32]
+                && fields.python_version == (frontend.language() == SourceLanguage::Python).then_some(python_version)
                 && fields.analysis_version == analysis
                 && fields.source_identity.is_some()
         })
@@ -2507,6 +2588,7 @@ fn scan_one(
                 path,
                 project,
                 frontends,
+                python_version,
                 SourceUnavailableReason::NotText,
                 source_bytes,
             )
@@ -2543,6 +2625,7 @@ fn scan_one(
                 path,
                 project,
                 frontends,
+                python_version,
                 SourceUnavailableReason::Unparsed,
                 source_bytes,
             )
@@ -2590,7 +2673,7 @@ fn scan_one(
     } else {
         // Bind identity before compaction: its final wire format also encodes
         // containment per declaration, so reserving only a header is insufficient.
-        ProductSourceRecord::identified_file_within_row_capacity(
+        ProductSourceRecord::profiled_file_within_row_capacity(
             project,
             relative.clone(),
             analyzed.language(),
@@ -2598,6 +2681,7 @@ fn scan_one(
             analysis,
             analyzed.declarations().clone(),
             source_fact_identity,
+            (frontend.language() == SourceLanguage::Python).then_some(python_version),
         )
         .map_err(SourceFault::Fatal)?
     };
@@ -2936,7 +3020,7 @@ pub(super) fn lost_compiler_profiles(
         if fields.content_version == [0; 32] || present.contains(fields.path) {
             continue;
         }
-        let Some(profile) = source_profile(Path::new(fields.path))? else {
+        let Some(profile) = source_record_profile(fields)? else {
             continue;
         };
         lost.insert(compilation_profile(source_root, fields.path, profile));
@@ -3045,7 +3129,19 @@ fn reread_fault(path: &str, fault: SourceFault) -> String {
 /// # Errors
 /// Returns an error only when the frontend registry itself cannot be built.
 pub(super) fn source_profile(path: &Path) -> Result<Option<LanguageProfile>, String> {
-    Ok(profile_of(frontends()?, path))
+    source_profile_with_python_version(path, None)
+}
+
+pub(super) fn source_profile_with_python_version(
+    path: &Path,
+    python_version: Option<PythonVersion>,
+) -> Result<Option<LanguageProfile>, String> {
+    Ok(profile_of(frontends()?, path).map(|profile| match profile {
+        LanguageProfile::Python(_) => {
+            LanguageProfile::Python(python_version.unwrap_or(PythonVersion::Python314))
+        }
+        other => other,
+    }))
 }
 
 /// Resolves a discovered path's profile, or the typed fault its absence is.
@@ -3069,6 +3165,46 @@ fn profile_of(frontends: &FrontendSet, path: &Path) -> Option<LanguageProfile> {
     dialect(language, &extension)
 }
 
+/// Persisted Python rows carry the actual admitted minor. Only historical rows
+/// without the field use the historical 3.14 producer interpretation.
+pub(super) fn source_record_profile(
+    file: backend_engine::builtin::ProductFileRef<'_>,
+) -> Result<Option<LanguageProfile>, String> {
+    if file.language == SourceLanguage::Python {
+        return Ok(Some(LanguageProfile::Python(
+            file.python_version.unwrap_or(PythonVersion::Python314),
+        )));
+    }
+    source_profile(Path::new(file.path))
+}
+
+fn project_analysis_version(frontend: &ProductFrontend, python_version: PythonVersion) -> [u8; 32] {
+    let analysis = frontend.analysis_version();
+    if frontend.language() != SourceLanguage::Python {
+        return analysis;
+    }
+    let mut identity = blake3::Hasher::new();
+    identity.update(b"nudox.python.structural-project-profile.v1\0");
+    identity.update(&analysis);
+    identity.update(
+        &backend_frontend_python::legacy::checker::python_version_numbers(python_version)[1]
+            .to_be_bytes(),
+    );
+    *identity.finalize().as_bytes()
+}
+
+fn project_profile_fault(
+    frontends: &FrontendSet,
+    path: &Path,
+    python_version: PythonVersion,
+) -> Result<LanguageProfile, SourceFault> {
+    let profile = profile_fault(frontends, path)?;
+    Ok(match profile {
+        LanguageProfile::Python(_) => LanguageProfile::Python(python_version),
+        other => other,
+    })
+}
+
 /// Returns the key the view uses to pair a publication with its files.
 ///
 /// A path names its language and dialect, never a Rust crate's edition: the
@@ -3085,8 +3221,9 @@ pub(super) const fn lane_profile(profile: LanguageProfile) -> LanguageProfile {
 
 /// Selects the dialect a claimed extension names inside one language.
 ///
-/// Only TypeScript and Clang carry two dialects; every other language has a
-/// single profile, so its extensions cannot disagree.
+/// TypeScript and Clang extensions select their dialect. Python's path-only
+/// default is 3.14; project admission overrides it before producing any source
+/// record or compiler frontier. Saved Python records carry their literal minor.
 fn dialect(language: SourceLanguage, extension: &str) -> Option<LanguageProfile> {
     Some(match language {
         SourceLanguage::Rust => LanguageProfile::Rust(RustEdition::Rust2024),
@@ -3127,6 +3264,206 @@ mod tests {
             Ok(_) => panic!("a pre-cancelled scan must not open the workspace"),
         };
         assert_eq!(error, INDEX_SCAN_CANCELLED);
+    }
+
+    #[test]
+    fn project_python_analysis_keys_and_saved_profile_are_consistent_for_all_minors()
+    -> Result<(), String> {
+        let frontends = frontends()?;
+        let frontend = frontends
+            .for_path(Path::new("main.py"))
+            .ok_or("missing Python parser")?;
+        let mut analyses = BTreeSet::new();
+        for version in backend_frontend_python::legacy::checker::SUPPORTED_PYTHON_VERSIONS {
+            let analysis = project_analysis_version(frontend, version);
+            assert!(
+                analyses.insert(analysis),
+                "each minor must fence parser facts and reuse"
+            );
+            let row = ProductSourceRecord::profiled_file_unavailable(
+                [1; 32],
+                "main.py",
+                SourceLanguage::Python,
+                analysis,
+                SourceUnavailableReason::NotText,
+                Some(version),
+            )?;
+            let mut bytes = Vec::new();
+            ProductSourceRelation::encode_value(&row, &mut bytes);
+            let reopened = ProductSourceRelation::decode_value(&bytes)
+                .map_err(|_| "saved Python profile decode")?;
+            assert_eq!(
+                source_record_profile(reopened.file_fields().ok_or("missing Python row")?)?,
+                Some(LanguageProfile::Python(version))
+            );
+            assert_eq!(
+                project_profile_fault(frontends, Path::new("main.py"), version)
+                    .map_err(|_| "Python source profile")?,
+                LanguageProfile::Python(version)
+            );
+        }
+        // A historical row has exactly the original default, never an inferred hash profile.
+        let legacy = ProductSourceRecord::file_unavailable(
+            [1; 32],
+            "old.py",
+            SourceLanguage::Python,
+            [2; 32],
+            SourceUnavailableReason::NotText,
+        )?;
+        assert_eq!(
+            source_record_profile(legacy.file_fields().ok_or("legacy Python row")?)?,
+            Some(LanguageProfile::Python(PythonVersion::Python314))
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires managed genuine CPython 3.12 and 3.14; ordinary venv admission then real native checker"]
+    fn genuine_ordinary_venv_selects_profile_before_rows_facts_and_native_compilation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use backend_engine::application::{
+            ClosedLocalHostEnvironmentSnapshot, LocalCompilerHost, LocalHostDiscovery,
+            LocalHostEnvironment, LocalHostVariable,
+        };
+        use backend_frontend_python::legacy::checker::{
+            NativePythonProjectAuthority, PythonProjectBytesSource,
+        };
+        use std::ffi::OsString;
+        use std::time::{Duration, Instant};
+        struct Closed(ClosedLocalHostEnvironmentSnapshot);
+        impl LocalHostEnvironment for Closed {
+            fn value(&self, role: LocalHostVariable) -> Option<OsString> {
+                self.0
+                    .path(role)
+                    .map(|path| path.as_os_str().to_os_string())
+            }
+        }
+        let hosts = [
+            (
+                PythonVersion::Python314,
+                PathBuf::from(
+                    std::env::var_os("NUDOX_TEST_ENV_CPYTHON")
+                        .ok_or("managed gate requires genuine CPython314")?,
+                ),
+            ),
+            (
+                PythonVersion::Python312,
+                PathBuf::from(
+                    std::env::var_os("NUDOX_TEST_ENV_CPYTHON312")
+                        .ok_or("managed gate requires genuine CPython312")?,
+                ),
+            ),
+        ];
+        let source = "from pathlib import Path\nvalue: Path = Path('ordinary')\n";
+        let cancelled = AtomicBool::new(false);
+        for (expected, selected) in &hosts {
+            let scratch = scratch("ordinary-python-profile")?;
+            let root = scratch.0.canonicalize()?;
+            let venv = root.join("venv");
+            let selected = selected.canonicalize()?;
+            // Only the independently configured host executable creates the ordinary venv.
+            let output = std::process::Command::new(&selected)
+                .args(["-I", "-S", "-B", "-m", "venv", "--without-pip"])
+                .arg(&venv)
+                .output()?;
+            assert!(
+                output.status.success(),
+                "ordinary venv creation: {:?}",
+                output
+            );
+            fs::write(root.join("main.py"), source)?;
+            let snapshot = ClosedLocalHostEnvironmentSnapshot::from_paths([
+                (
+                    LocalHostVariable::NudoxPythonDefault,
+                    hosts[0].1.canonicalize()?,
+                ),
+                (
+                    LocalHostVariable::NudoxPythonCandidate1,
+                    hosts[1].1.canonicalize()?,
+                ),
+            ])?;
+            let host = LocalCompilerHost::new(Closed(snapshot), LocalHostDiscovery::ClosedSnapshot);
+            let admission = host.capture_python_interpreter_admission()?;
+            let coordinate = root.to_str().ok_or("non-text gate path")?;
+            let scan = scan_project_for_unproven_authorities_cancellable_with_interpreter(
+                coordinate,
+                [19; 32],
+                &BTreeMap::new(),
+                &cancelled,
+                Some(&admission),
+            )?;
+            let environment = scan
+                .python_environment
+                .as_ref()
+                .ok_or("missing installed capture")?
+                .captured()?;
+            assert_eq!(environment.selected_profile()?, Some(*expected));
+            let (_, record) = scan
+                .files
+                .iter()
+                .find(|(_, record)| record.label() == "main.py")
+                .ok_or("missing actual source row")?;
+            let file = record.file_fields().ok_or("source row")?;
+            assert_eq!(file.python_version, Some(*expected));
+            assert_eq!(
+                file.analysis_version,
+                project_analysis_version(
+                    frontends()?
+                        .for_path(Path::new("main.py"))
+                        .ok_or("Python parser")?,
+                    *expected
+                )
+            );
+            let main_source = scan
+                .compiler_sources
+                .iter()
+                .find(|source| source.relative_path == "main.py")
+                .ok_or("missing exact compiler frontier source")?;
+            assert_eq!(main_source.profile, LanguageProfile::Python(*expected));
+            let main_facts = scan
+                .source_facts
+                .iter()
+                .find(|update| {
+                    update.manifest().file_key() == product_source_file_key([19; 32], "main.py")
+                })
+                .ok_or("missing actual structural fact pages")?;
+            assert!(main_facts.manifest().matches_file_identity(file));
+            let control = PythonProjectControl {
+                cancelled: &cancelled,
+                deadline: Instant::now() + Duration::from_secs(180),
+            };
+            let authority = NativePythonProjectAuthority::admit_controlled(control)?
+                .with_timeout(Duration::from_secs(180));
+            let sources = [PythonProjectBytesSource {
+                relative_path: "main.py",
+                source: source.as_bytes(),
+            }];
+            let report = authority.analyze_project_bytes_with_environment(
+                &root,
+                "ordinary-minor-profile",
+                &sources,
+                Some(environment),
+                *expected,
+                control,
+            )?;
+            let module = report
+                .module("main.py")
+                .ok_or("missing genuine native source")?;
+            assert!(!module.imports.is_empty());
+            assert!(
+                module.imports.iter().all(|import| import.resolved),
+                "actual stdlib capture must resolve pathlib"
+            );
+            let mut bytes = Vec::new();
+            ProductSourceRelation::encode_value(record, &mut bytes);
+            let reopened =
+                ProductSourceRelation::decode_value(&bytes).map_err(|_| "source row restart")?;
+            assert_eq!(
+                source_record_profile(reopened.file_fields().ok_or("saved source")?)?,
+                Some(LanguageProfile::Python(*expected))
+            );
+        }
+        Ok(())
     }
 
     #[test]
@@ -3811,6 +4148,8 @@ mod tests {
             true,
             None,
             source_policy,
+            None,
+            None,
         )
     }
 
@@ -5451,6 +5790,7 @@ mod robustness_tests {
             [8; 32],
             &BTreeMap::new(),
             frontends,
+            PythonVersion::Python314,
             source_policy,
         )?;
         assert!(

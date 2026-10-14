@@ -298,10 +298,7 @@ impl CreatedDirectory {
     /// Renames this receipt's direct child to an unused direct name, preserving
     /// the rename's commit status. The identity check and rename are separate
     /// calls; callers must hold their cooperative namespace guard throughout.
-    pub fn rename_noreplace(
-        &self,
-        destination: &str,
-    ) -> Result<(), CreatedDirectoryRenameError> {
+    pub fn rename_noreplace(&self, destination: &str) -> Result<(), CreatedDirectoryRenameError> {
         self.verify_named()
             .map_err(CreatedDirectoryRenameError::NameChanged)?;
         self.parent
@@ -329,9 +326,7 @@ impl CreatedDirectory {
         }
         let path_child = DirectoryCapability::open(path)?;
         if !path_child.same_object_as(&self.child)? {
-            return Err(invalid(
-                "created directory path resolves to another object",
-            ));
+            return Err(invalid("created directory path resolves to another object"));
         }
         Ok(())
     }
@@ -369,8 +364,7 @@ impl CreatedDirectory {
         #[cfg(windows)]
         {
             match self.cleanup {
-                CreatedDirectoryCleanup::PinnedHandle
-                | CreatedDirectoryCleanup::CreatedHandle => {
+                CreatedDirectoryCleanup::PinnedHandle | CreatedDirectoryCleanup::CreatedHandle => {
                     self.child.handle.remove_created_empty_self()
                 }
                 CreatedDirectoryCleanup::RenameableHandle => self
@@ -428,6 +422,12 @@ impl DirectoryCapability {
             let _ = other;
             Err(unsupported())
         }
+    }
+
+    /// Compares two already held source directory objects without folding names
+    /// or reopening either pathname.
+    pub fn is_same_source_directory(&self, other: &Self) -> io::Result<bool> {
+        self.same_object_as(other)
     }
 
     /// Verifies that a raw path still resolves to this held directory object.
@@ -720,11 +720,9 @@ impl DirectoryCapability {
         ) {
             Ok(created) => Ok(created.into_capability()),
             Err(DirectoryCreateFailure::NotCreated(source)) => Err(source),
-            Err(DirectoryCreateFailure::CreatedButUnpinned(source)) => {
-                Err(io::Error::other(DirectoryCreateFailure::CreatedButUnpinned(
-                    source,
-                )))
-            }
+            Err(DirectoryCreateFailure::CreatedButUnpinned(source)) => Err(io::Error::other(
+                DirectoryCreateFailure::CreatedButUnpinned(source),
+            )),
             Err(DirectoryCreateFailure::CreatedButUnready { directory, source }) => {
                 match directory.remove_all(MAX_DIRECTORY_CLEANUP_ENTRIES) {
                     Ok(()) => Err(source),
@@ -1142,6 +1140,106 @@ impl DirectoryCapability {
         }
     }
 
+    /// Returns the enumerated spelling of one selected child directory,
+    /// matching its pinned object identity rather than folding names. Unrelated
+    /// links remain opaque and are never opened as part of this lookup.
+    pub fn actual_source_child_directory(
+        &self,
+        name: &str,
+        maximum: usize,
+        checkpoint: &mut impl FnMut() -> io::Result<()>,
+    ) -> io::Result<(String, Self)> {
+        checkpoint()?;
+        validate_component(name)?;
+        #[cfg(unix)]
+        {
+            use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags, fstat, openat, statat};
+            use std::os::unix::ffi::OsStrExt;
+            let selected = self.open_dir(name)?;
+            let selected_id = fstat(selected.handle.as_ref())?;
+            let enumeration = openat(
+                self.handle.as_ref(),
+                ".",
+                OFlags::RDONLY
+                    | OFlags::DIRECTORY
+                    | OFlags::NOFOLLOW
+                    | OFlags::NONBLOCK
+                    | OFlags::CLOEXEC,
+                Mode::empty(),
+            )?;
+            let mut entries = Dir::read_from(&enumeration)?;
+            let mut matched = None;
+            let mut count = 0usize;
+            for entry in &mut entries {
+                checkpoint()?;
+                let entry = entry?;
+                let actual = entry.file_name();
+                if matches!(actual.to_bytes(), b"." | b"..") {
+                    continue;
+                }
+                count += 1;
+                if count > maximum {
+                    return Err(invalid("selected-directory enumeration exceeds bound"));
+                }
+                let metadata = statat(self.handle.as_ref(), actual, AtFlags::SYMLINK_NOFOLLOW)?;
+                if FileType::from_raw_mode(metadata.st_mode) != FileType::Directory
+                    || metadata.st_dev != selected_id.st_dev
+                    || metadata.st_ino != selected_id.st_ino
+                {
+                    continue;
+                }
+                let actual = std::ffi::OsStr::from_bytes(actual.to_bytes())
+                    .to_str()
+                    .ok_or_else(|| invalid("selected directory spelling is not Unicode"))?;
+                let candidate = self.open_dir(actual)?;
+                if !candidate.same_object_as(&selected)? {
+                    return Err(invalid("selected directory changed during identity lookup"));
+                }
+                if actual == name {
+                    return Ok((actual.to_owned(), candidate));
+                }
+                if matched.replace((actual.to_owned(), candidate)).is_some() {
+                    return Err(invalid("selected directory identity has ambiguous names"));
+                }
+            }
+            return matched
+                .ok_or_else(|| invalid("selected directory disappeared during identity lookup"));
+        }
+        #[cfg(windows)]
+        {
+            let (name, child) = self
+                .handle
+                .actual_source_child_directory(name, maximum, checkpoint)?;
+            return Ok((
+                name,
+                Self {
+                    handle: Arc::new(child),
+                    purpose: self.purpose,
+                },
+            ));
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = maximum;
+            Err(unsupported())
+        }
+    }
+
+    /// Selects one regular source file and returns its actual component name
+    /// with the held file. Windows obtains the spelling from kernel enumeration
+    /// and retains the existing no-reparse/single-link source checks.
+    #[cfg(windows)]
+    pub fn actual_source_child_file(
+        &self,
+        name: &str,
+        maximum: usize,
+        checkpoint: &mut impl FnMut() -> io::Result<()>,
+    ) -> io::Result<(String, File)> {
+        validate_component(name)?;
+        self.handle
+            .actual_source_child_file(name, maximum, checkpoint)
+    }
+
     /// Lists direct children with an explicit cardinality ceiling.
     pub fn entries(&self, maximum: usize) -> io::Result<Vec<DirectoryEntry>> {
         #[cfg(unix)]
@@ -1375,13 +1473,14 @@ impl OwnedWorkspaceDirectory {
             parent.verify_path(&path)?;
             if repair_application {
                 let application_path = path.join(application);
-                crate::durable::ensure_private_application_directory(&application_path)
-                    .map_err(|error| {
+                crate::durable::ensure_private_application_directory(&application_path).map_err(
+                    |error| {
                         io::Error::new(
                             error.kind(),
                             format!("{}: {error}", application_path.display()),
                         )
-                    })?;
+                    },
+                )?;
                 parent.verify_path(&path)?;
             }
             parent.open_or_create_private_dir(application)?
@@ -1433,8 +1532,9 @@ impl OwnedWorkspaceDirectory {
             .unwrap_or(Path::new("."));
         let parent = DirectoryCapability::open(parent_path)?;
         validate_workspace_parent(&parent)?;
-        let directory = parent.open_or_create_private_dir(name)
-            .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", path.display())))?;
+        let directory = parent.open_or_create_private_dir(name).map_err(|error| {
+            io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+        })?;
         let workspace = Self { path, directory };
         workspace.verify_path()?;
         Ok(workspace)
@@ -1444,12 +1544,13 @@ impl OwnedWorkspaceDirectory {
     /// workspace directory.
     pub fn child(&self, name: &str) -> io::Result<Self> {
         let path = self.path.join(name);
-        let directory = self.directory.open_or_create_private_dir(name)
-            .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", path.display())))?;
-        let workspace = Self {
-            path,
-            directory,
-        };
+        let directory = self
+            .directory
+            .open_or_create_private_dir(name)
+            .map_err(|error| {
+                io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+            })?;
+        let workspace = Self { path, directory };
         workspace.verify_path()?;
         Ok(workspace)
     }
@@ -1466,7 +1567,9 @@ impl OwnedWorkspaceDirectory {
         let mut directory = self.clone();
         for component in relative.components() {
             let std::path::Component::Normal(name) = component else {
-                return Err(invalid("owned workspace descendant has an unsafe component"));
+                return Err(invalid(
+                    "owned workspace descendant has an unsafe component",
+                ));
             };
             let name = name
                 .to_str()
@@ -1513,9 +1616,8 @@ fn validate_workspace_parent(parent: &DirectoryCapability) -> io::Result<()> {
 
     let metadata = parent.handle.metadata()?;
     let mode = metadata.mode();
-    let user_owned = metadata.uid() == geteuid().as_raw()
-        && mode & 0o300 == 0o300
-        && mode & 0o022 == 0;
+    let user_owned =
+        metadata.uid() == geteuid().as_raw() && mode & 0o300 == 0o300 && mode & 0o022 == 0;
     let protected_temporary = metadata.uid() == 0 && mode & 0o1000 != 0;
     if !metadata.is_dir() || !(user_owned || protected_temporary) {
         return Err(io::Error::new(
@@ -1721,9 +1823,9 @@ mod tests {
         OwnedWorkspaceDirectory,
     };
     use std::fs;
-    use std::os::unix::fs::symlink;
     use std::os::unix::fs::MetadataExt as _;
     use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::fs::symlink;
     use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1762,14 +1864,21 @@ mod tests {
         let home = root.join("home");
         fs::create_dir(&home).unwrap();
         fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).unwrap();
-        let app = OwnedWorkspaceDirectory::under_user_data(&home, &["Library", "Application Support"], "Nudox")
-            .expect("empty public home bootstrap");
+        let app = OwnedWorkspaceDirectory::under_user_data(
+            &home,
+            &["Library", "Application Support"],
+            "Nudox",
+        )
+        .expect("empty public home bootstrap");
         assert_private_mode(app.path());
         app.verify_path().expect("pinned original path");
         let moved = root.join("moved-home");
         fs::rename(&home, &moved).unwrap();
         fs::create_dir(&home).unwrap();
-        assert!(app.verify_path().is_err(), "a replacement pathname cannot inherit the pinned identity");
+        assert!(
+            app.verify_path().is_err(),
+            "a replacement pathname cannot inherit the pinned identity"
+        );
         drop(app);
         let public_app = home.join("Nudox");
         fs::create_dir(&public_app).unwrap();
@@ -1786,9 +1895,9 @@ mod tests {
         let Some(mask) = std::env::var_os("BACKEND_PLATFORM_WORKSPACE_UMASK_PROBE") else {
             return;
         };
-        let mask = u16::from_str_radix(mask.to_str().expect("umask text"), 8)
-            .expect("umask value");
-        let _previous_mask = rustix::process::umask(rustix::fs::Mode::from_bits_truncate(mask.into()));
+        let mask = u16::from_str_radix(mask.to_str().expect("umask text"), 8).expect("umask value");
+        let _previous_mask =
+            rustix::process::umask(rustix::fs::Mode::from_bits_truncate(mask.into()));
         let root = std::env::temp_dir().join(format!(
             "backend-platform-workspace-umask-{}-{}",
             std::process::id(),
@@ -1802,7 +1911,9 @@ mod tests {
         let search = workspace
             .child("search-index-v2")
             .expect("create private Tantivy root");
-        let objects = search.child("objects").expect("create private object child");
+        let objects = search
+            .child("objects")
+            .expect("create private object child");
         assert_private_mode(workspace.path());
         assert_private_mode(search.path());
         assert_private_mode(objects.path());
@@ -1900,7 +2011,11 @@ mod tests {
         assert_ne!(before.uid(), rustix::process::geteuid().as_raw());
         assert!(OwnedWorkspaceDirectory::open(&foreign).is_err());
         let after = fs::metadata(&foreign).expect("foreign directory remains");
-        assert_eq!(after.uid(), before.uid(), "refusal must not change ownership");
+        assert_eq!(
+            after.uid(),
+            before.uid(),
+            "refusal must not change ownership"
+        );
         assert_eq!(
             after.permissions().mode() & 0o777,
             before.permissions().mode() & 0o777,
@@ -2084,15 +2199,17 @@ mod tests {
             || Ok(()),
         );
         let created = result.expect("openat pins the occupant currently at the direct name");
-        let pinned_identity = FileIdentity::of_file(created.child.handle.as_ref())
-            .expect("receipt child identity");
+        let pinned_identity =
+            FileIdentity::of_file(created.child.handle.as_ref()).expect("receipt child identity");
         assert_ne!(
             original_identity.get().expect("record original identity"),
             pinned_identity,
             "Unix mkdirat returns no handle, so this receipt cannot prove inode continuity"
         );
         assert_eq!(
-            replacement_identity.get().expect("record replacement identity"),
+            replacement_identity
+                .get()
+                .expect("record replacement identity"),
             pinned_identity,
             "the receipt identifies the private child observed by openat"
         );
@@ -2118,8 +2235,7 @@ mod tests {
         let replacement = parent
             .create_private_dir("child")
             .expect("install private replacement directory");
-        fs::write(root.join("child/payload"), b"replacement bytes")
-            .expect("replacement payload");
+        fs::write(root.join("child/payload"), b"replacement bytes").expect("replacement payload");
         drop(replacement);
 
         let failure = created
@@ -2152,8 +2268,7 @@ mod tests {
             .expect("create tracked child");
         fs::rename(&root, &moved).expect("rename pinned parent directory");
         fs::create_dir(&root).expect("install a replacement at the old parent path");
-        let replacement_parent =
-            DirectoryCapability::open(&root).expect("pin replacement parent");
+        let replacement_parent = DirectoryCapability::open(&root).expect("pin replacement parent");
         let replacement = replacement_parent
             .create_private_dir("child")
             .expect("install a private replacement child");
@@ -2283,7 +2398,10 @@ mod tests {
             "the admitted descriptors must still refer to the named file"
         );
         let metadata = fs::symlink_metadata(&named).expect("named file metadata");
-        assert!(metadata.file_type().is_file(), "named child must be regular");
+        assert!(
+            metadata.file_type().is_file(),
+            "named child must be regular"
+        );
         assert_eq!(
             metadata.uid(),
             rustix::process::geteuid().as_raw(),
@@ -2340,7 +2458,10 @@ mod tests {
             FileIdentity::of_path_nofollow(&target).expect("target remains the same object"),
             target_identity
         );
-        assert_eq!(fs::read(&target).expect("read target"), b"keep target bytes");
+        assert_eq!(
+            fs::read(&target).expect("read target"),
+            b"keep target bytes"
+        );
 
         let hard = root.join("hard");
         fs::write(&hard, b"keep hard-linked bytes").expect("write hard-linked file");
@@ -2367,7 +2488,10 @@ mod tests {
             2,
             "refusal must not unlink either name"
         );
-        assert_eq!(fs::read(&hard).expect("read hard file"), b"keep hard-linked bytes");
+        assert_eq!(
+            fs::read(&hard).expect("read hard file"),
+            b"keep hard-linked bytes"
+        );
 
         let loose = root.join("loose");
         fs::write(&loose, b"keep loose-mode bytes").expect("write loosely protected file");
@@ -2379,17 +2503,24 @@ mod tests {
             .expect_err("group-readable file must be refused");
         assert_eq!(loose_error.kind(), std::io::ErrorKind::PermissionDenied);
         let loose_metadata = fs::symlink_metadata(&loose).expect("loose metadata");
-        assert_eq!(loose_metadata.mode() & 0o777, 0o644, "refusal must not chmod");
+        assert_eq!(
+            loose_metadata.mode() & 0o777,
+            0o644,
+            "refusal must not chmod"
+        );
         assert_eq!(
             FileIdentity::of_path_nofollow(&loose).expect("loose file remains"),
             loose_identity
         );
-        assert_eq!(fs::read(&loose).expect("read loose file"), b"keep loose-mode bytes");
+        assert_eq!(
+            fs::read(&loose).expect("read loose file"),
+            b"keep loose-mode bytes"
+        );
 
         let non_file = root.join("directory");
         fs::create_dir(&non_file).expect("create non-file child");
-        let directory_identity = FileIdentity::of_path_nofollow(&non_file)
-            .expect("non-file child identity");
+        let directory_identity =
+            FileIdentity::of_path_nofollow(&non_file).expect("non-file child identity");
         assert!(
             directory
                 .open_private_file_read_write("directory", true)
@@ -2612,8 +2743,7 @@ mod windows_tests {
         let existing = parent
             .create_private_dir("occupied")
             .expect("create existing child");
-        fs::write(path.join("occupied/payload"), b"preserve me")
-            .expect("existing payload");
+        fs::write(path.join("occupied/payload"), b"preserve me").expect("existing payload");
         drop(existing);
 
         let failure = parent
@@ -2674,8 +2804,7 @@ mod windows_tests {
         let replacement = parent
             .create_private_dir("child")
             .expect("create replacement at the same name");
-        fs::write(path.join("child/payload"), b"replacement bytes")
-            .expect("replacement payload");
+        fs::write(path.join("child/payload"), b"replacement bytes").expect("replacement payload");
         drop(replacement);
 
         let failure = created

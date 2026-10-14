@@ -2865,6 +2865,7 @@ impl CommandAdapter {
             indexing.execution_intent,
             self.owner_cluster.is_some(),
             Arc::clone(&indexing.cancelled),
+            self.compiler.python_interpreter_admission(),
         )?;
         indexing._staged_project = Some(staged);
         self.spawn_index_scan(indexing, work)
@@ -3738,6 +3739,7 @@ impl CommandAdapter {
                     execution_intent,
                     self.owner_cluster.is_some(),
                     Arc::clone(&cancelled),
+                    self.compiler.python_interpreter_admission(),
                 )?;
                 self.spawn_index_scan(&mut indexing, work)?;
             }

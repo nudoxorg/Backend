@@ -17,6 +17,23 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Binds the capsule raw digest to the bytes streamed by the verified CAS
+/// writer, before a later descriptor read constructs the immutable capsule.
+struct PayloadDigestWriter<'file> {
+    file: &'file mut File,
+    digest: blake3::Hasher,
+}
+impl Write for PayloadDigestWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let count = self.file.write(bytes)?;
+        self.digest.update(&bytes[..count]);
+        Ok(count)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+}
+
 const READY_MARKER: &[u8] = b"backend-worker-workspace-ready-v1\n";
 static NEXT_WORKSPACE_SNAPSHOT: AtomicU64 = AtomicU64::new(0);
 
@@ -25,6 +42,8 @@ static NEXT_WORKSPACE_SNAPSHOT: AtomicU64 = AtomicU64::new(0);
 pub(super) struct MaterializedWorkspace {
     pub(super) root: Box<Path>,
     pub(super) sources: Box<[OwnedPackageSource]>,
+    pub(super) python_environment:
+        Option<backend_frontend_python::legacy::checker::PythonEnvironmentCapture>,
     _cleanup: WorkspaceSnapshotGuard,
 }
 
@@ -53,6 +72,13 @@ impl std::fmt::Debug for MaterializedWorkspace {
             .debug_struct("MaterializedWorkspace")
             .field("root", &self.root)
             .field("sources", &self.sources.len())
+            .field(
+                "python_environment",
+                &self
+                    .python_environment
+                    .as_ref()
+                    .map(|capture| capture.identity()),
+            )
             .field("_cleanup", &self._cleanup)
             .finish()
     }
@@ -107,6 +133,10 @@ pub(super) fn materialize_workspace_snapshot(
     snapshot_parent: &Path,
     max_input_bytes: u64,
 ) -> Result<MaterializedWorkspace, ClusterWorkerError> {
+    preflight_python_environment_records(
+        input.manifest.profile(),
+        input.workspace_tree.pages().map(|page| page.record()),
+    )?;
     #[cfg(unix)]
     {
         materialize_unix(input, snapshot_parent, max_input_bytes)
@@ -121,6 +151,102 @@ pub(super) fn materialize_workspace_snapshot(
         Err(operation(
             "descriptor-relative workspace snapshots are unsupported on this platform",
         ))
+    }
+}
+
+fn preflight_python_environment_records<'a>(
+    profile: backend_semantic::vocabulary::LanguageProfile,
+    records: impl IntoIterator<Item = &'a CompilerInputTreeRecordV2>,
+) -> Result<(), ClusterWorkerError> {
+    use backend_frontend_python::legacy::checker::{
+        PYTHON_ENVIRONMENT_INPUT_PATH, PYTHON_ENVIRONMENT_MAX_WIRE_BYTES,
+    };
+    let python = matches!(
+        profile,
+        backend_semantic::vocabulary::LanguageProfile::Python(_)
+    );
+    let mut seen = false;
+    for record in records {
+        match record {
+            CompilerInputTreeRecordV2::File {
+                path, role, length, ..
+            } => {
+                let reserved = path.as_ref() == PYTHON_ENVIRONMENT_INPUT_PATH;
+                if *role == CompilerWorkspaceFileRoleV2::PythonEnvironment {
+                    if !reserved || !python || seen {
+                        return Err(ClusterWorkerError::InvalidInputClosure);
+                    }
+                    if *length > PYTHON_ENVIRONMENT_MAX_WIRE_BYTES as u64 {
+                        return Err(ClusterWorkerError::InputBounds);
+                    }
+                    seen = true;
+                } else if reserved {
+                    return Err(ClusterWorkerError::InvalidInputClosure);
+                }
+            }
+            CompilerInputTreeRecordV2::Directory { path }
+                if path.as_ref() == PYTHON_ENVIRONMENT_INPUT_PATH =>
+            {
+                return Err(ClusterWorkerError::InvalidInputClosure);
+            }
+            _ => {}
+        }
+    }
+    if python != seen {
+        return Err(ClusterWorkerError::InvalidInputClosure);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod python_environment_preflight_tests {
+    use super::*;
+    use backend_frontend_python::legacy::checker::{
+        PYTHON_ENVIRONMENT_INPUT_PATH, PYTHON_ENVIRONMENT_MAX_WIRE_BYTES,
+    };
+    use backend_semantic::vocabulary::{LanguageProfile, PythonVersion, RustEdition};
+
+    #[test]
+    fn typed_role_path_profile_and_caps_are_refused_before_any_store_or_filesystem_io() {
+        let python = LanguageProfile::Python(PythonVersion::Python314);
+        let other = LanguageProfile::Rust(RustEdition::Rust2024);
+        let file = |path: &str, role, length| CompilerInputTreeRecordV2::File {
+            path: path.into(),
+            role,
+            object_id: [0x41; 32],
+            length,
+        };
+        let valid = file(
+            PYTHON_ENVIRONMENT_INPUT_PATH,
+            CompilerWorkspaceFileRoleV2::PythonEnvironment,
+            64,
+        );
+        assert!(preflight_python_environment_records(python, [&valid]).is_ok());
+        assert!(preflight_python_environment_records(other, [&valid]).is_err());
+        assert!(preflight_python_environment_records(python, std::iter::empty()).is_err());
+        assert!(preflight_python_environment_records(python, [&valid, &valid]).is_err());
+        for bad in [
+            file(
+                "other.capture",
+                CompilerWorkspaceFileRoleV2::PythonEnvironment,
+                64,
+            ),
+            file(
+                PYTHON_ENVIRONMENT_INPUT_PATH,
+                CompilerWorkspaceFileRoleV2::Source,
+                64,
+            ),
+            file(
+                PYTHON_ENVIRONMENT_INPUT_PATH,
+                CompilerWorkspaceFileRoleV2::PythonEnvironment,
+                PYTHON_ENVIRONMENT_MAX_WIRE_BYTES as u64 + 1,
+            ),
+            CompilerInputTreeRecordV2::Directory {
+                path: PYTHON_ENVIRONMENT_INPUT_PATH.into(),
+            },
+        ] {
+            assert!(preflight_python_environment_records(python, [&bad]).is_err());
+        }
     }
 }
 
@@ -206,6 +332,7 @@ fn materialize_unix(
     }
 
     let mut sources = Vec::new();
+    let mut python_environment = None;
     let mut source_bytes = 0_u64;
     let mut total_bytes = 0_u64;
     for record in &records {
@@ -240,20 +367,55 @@ fn materialize_unix(
         let metadata = file.metadata().map_err(operation)?;
         validate_owned_regular_file(&metadata, expected_uid)?;
         let mut file = file;
+        let mut payload_writer = PayloadDigestWriter {
+            file: &mut file,
+            digest: blake3::Hasher::new(),
+        };
         let verified = input
             .store
             .write_verified_object_payload(
                 UntrustedObjectId::from_bytes(*object_id),
                 *length,
-                &mut file,
+                &mut payload_writer,
             )
             .map_err(operation)?;
+        let payload_identity = *payload_writer.digest.finalize().as_bytes();
+        drop(payload_writer);
         if verified.id().as_bytes() != object_id || verified.payload_len() != *length {
             return Err(ClusterWorkerError::InvalidInputClosure);
         }
         file.sync_all().map_err(operation)?;
         fchmod(&file, Mode::RUSR).map_err(operation)?;
         file.sync_all().map_err(operation)?;
+        if *role == CompilerWorkspaceFileRoleV2::PythonEnvironment {
+            if path.as_ref()
+                != backend_frontend_python::legacy::checker::PYTHON_ENVIRONMENT_INPUT_PATH
+                || python_environment.is_some()
+                || !matches!(
+                    input.manifest.profile(),
+                    backend_semantic::vocabulary::LanguageProfile::Python(_)
+                )
+            {
+                return Err(ClusterWorkerError::InvalidInputClosure);
+            }
+            if *length
+                > backend_frontend_python::legacy::checker::PYTHON_ENVIRONMENT_MAX_WIRE_BYTES as u64
+            {
+                return Err(ClusterWorkerError::InputBounds);
+            }
+            file.seek(SeekFrom::Start(0)).map_err(operation)?;
+            let cancelled = std::sync::atomic::AtomicBool::new(false);
+            let control = backend_frontend_python::legacy::checker::PythonProjectControl {
+                cancelled: &cancelled,
+                deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+            };
+            python_environment = Some(
+                backend_frontend_python::legacy::checker::PythonEnvironmentCapture::decode_from_reader(
+                    &mut file, *length, payload_identity, control,
+                )
+                .map_err(operation)?,
+            );
+        }
         if *role == CompilerWorkspaceFileRoleV2::Source {
             source_bytes = source_bytes
                 .checked_add(*length)
@@ -272,6 +434,13 @@ fn materialize_unix(
             }
             sources.push(OwnedPackageSource::from_bytes(path, source).map_err(operation)?);
         }
+    }
+    if matches!(
+        input.manifest.profile(),
+        backend_semantic::vocabulary::LanguageProfile::Python(_)
+    ) && python_environment.is_none()
+    {
+        return Err(ClusterWorkerError::InvalidInputClosure);
     }
     if sources.is_empty() || total_bytes > max_input_bytes {
         return Err(ClusterWorkerError::InvalidInputClosure);
@@ -313,6 +482,7 @@ fn materialize_unix(
     Ok(MaterializedWorkspace {
         root: root_path.into_boxed_path(),
         sources: sources.into_boxed_slice(),
+        python_environment,
         _cleanup: cleanup,
     })
 }
@@ -831,6 +1001,7 @@ fn materialize_windows(
     }
 
     let mut sources = Vec::new();
+    let mut python_environment = None;
     let mut source_bytes = 0_u64;
     let mut total_bytes = 0_u64;
     for record in &records {
@@ -849,14 +1020,20 @@ fn materialize_windows(
             .filter(|total| *total <= max_input_bytes)
             .ok_or(ClusterWorkerError::InputBounds)?;
         let mut file = root.create_file_exclusive(&segments).map_err(operation)?;
+        let mut payload_writer = PayloadDigestWriter {
+            file: &mut file,
+            digest: blake3::Hasher::new(),
+        };
         let verified = input
             .store
             .write_verified_object_payload(
                 UntrustedObjectId::from_bytes(*object_id),
                 *length,
-                &mut file,
+                &mut payload_writer,
             )
             .map_err(operation)?;
+        let payload_identity = *payload_writer.digest.finalize().as_bytes();
+        drop(payload_writer);
         if verified.id().as_bytes() != object_id || verified.payload_len() != *length {
             return Err(ClusterWorkerError::InvalidInputClosure);
         }
@@ -865,6 +1042,35 @@ fn materialize_windows(
         permissions.set_readonly(true);
         file.set_permissions(permissions).map_err(operation)?;
         file.sync_all().map_err(operation)?;
+        if *role == CompilerWorkspaceFileRoleV2::PythonEnvironment {
+            if path.as_ref()
+                != backend_frontend_python::legacy::checker::PYTHON_ENVIRONMENT_INPUT_PATH
+                || python_environment.is_some()
+                || !matches!(
+                    input.manifest.profile(),
+                    backend_semantic::vocabulary::LanguageProfile::Python(_)
+                )
+            {
+                return Err(ClusterWorkerError::InvalidInputClosure);
+            }
+            if *length
+                > backend_frontend_python::legacy::checker::PYTHON_ENVIRONMENT_MAX_WIRE_BYTES as u64
+            {
+                return Err(ClusterWorkerError::InputBounds);
+            }
+            file.seek(SeekFrom::Start(0)).map_err(operation)?;
+            let cancelled = std::sync::atomic::AtomicBool::new(false);
+            let control = backend_frontend_python::legacy::checker::PythonProjectControl {
+                cancelled: &cancelled,
+                deadline: std::time::Instant::now() + std::time::Duration::from_secs(60),
+            };
+            python_environment = Some(
+                backend_frontend_python::legacy::checker::PythonEnvironmentCapture::decode_from_reader(
+                    &mut file, *length, payload_identity, control,
+                )
+                .map_err(operation)?,
+            );
+        }
         if *role == CompilerWorkspaceFileRoleV2::Source {
             source_bytes = source_bytes
                 .checked_add(*length)
@@ -883,6 +1089,13 @@ fn materialize_windows(
             }
             sources.push(OwnedPackageSource::from_bytes(path, source).map_err(operation)?);
         }
+    }
+    if matches!(
+        input.manifest.profile(),
+        backend_semantic::vocabulary::LanguageProfile::Python(_)
+    ) && python_environment.is_none()
+    {
+        return Err(ClusterWorkerError::InvalidInputClosure);
     }
     if sources.is_empty() || total_bytes > max_input_bytes {
         return Err(ClusterWorkerError::InvalidInputClosure);
@@ -911,6 +1124,7 @@ fn materialize_windows(
     Ok(MaterializedWorkspace {
         root: root_path.into_boxed_path(),
         sources: sources.into_boxed_slice(),
+        python_environment,
         _cleanup: cleanup,
     })
 }

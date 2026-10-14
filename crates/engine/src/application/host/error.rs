@@ -30,6 +30,14 @@ pub enum LocalCompilerHostError {
     /// The selected host snapshot could not be encoded or admitted.
     #[error(transparent)]
     HostSnapshot(#[from] ClosedLocalHostEnvironmentSnapshotError),
+    /// Independent installed Python selection exceeds the closed candidate bound.
+    #[error(
+        "installed Python selection exceeds {maximum} candidates; configure NUDOX_PYTHON explicitly"
+    )]
+    PythonCandidateCapacity {
+        /// Maximum canonical independent candidate images.
+        maximum: usize,
+    },
     /// No platform data-root authority was available.
     #[error("no durable local compiler data root is configured for this platform")]
     DataRootUnavailable,

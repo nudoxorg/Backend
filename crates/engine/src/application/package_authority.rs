@@ -126,17 +126,23 @@ impl RustPackageAuthorityConfiguration<'_> {
         profile: LanguageProfile,
         control: CompileControl<'_>,
     ) -> Result<&RustToolchain, PackageAuthorityError> {
-        self.toolchain.resolve(control).map_err(|cause| match cause {
-            super::LocalRuntimeRustAuthorityFailure::Cancelled => PackageAuthorityError::Cancelled {
-                profile,
-                stage: PackageAuthorityStage::RustProject,
-            },
-            super::LocalRuntimeRustAuthorityFailure::Deadline => PackageAuthorityError::Deadline {
-                profile,
-                stage: PackageAuthorityStage::RustProject,
-            },
-            cause => PackageAuthorityError::RustToolchainAdmission { profile, cause },
-        })
+        self.toolchain
+            .resolve(control)
+            .map_err(|cause| match cause {
+                super::LocalRuntimeRustAuthorityFailure::Cancelled => {
+                    PackageAuthorityError::Cancelled {
+                        profile,
+                        stage: PackageAuthorityStage::RustProject,
+                    }
+                }
+                super::LocalRuntimeRustAuthorityFailure::Deadline => {
+                    PackageAuthorityError::Deadline {
+                        profile,
+                        stage: PackageAuthorityStage::RustProject,
+                    }
+                }
+                cause => PackageAuthorityError::RustToolchainAdmission { profile, cause },
+            })
     }
 }
 
@@ -319,6 +325,7 @@ pub(crate) fn enter_python_project_authority(
     request: PackageAuthorityRequest<'_, '_>,
     package_name: &str,
     sources: &[PythonProjectBytesSource<'_>],
+    environment: Option<&backend_frontend_python::legacy::checker::PythonEnvironmentInput>,
 ) -> Result<PythonProjectReport, PackageAuthorityError> {
     checkpoint(
         request.control,
@@ -358,11 +365,20 @@ pub(crate) fn enter_python_project_authority(
         });
     };
     require_native_python_toolchain(authority, resolved.identity)?;
+    let environment = environment
+        .ok_or_else(|| {
+            PackageAuthorityError::PythonPyrefly(
+                backend_frontend_python::legacy::checker::CheckerError::EnvironmentCaptureMissing,
+            )
+        })?
+        .captured()
+        .map_err(PackageAuthorityError::PythonPyrefly)?;
     let report = authority
-        .analyze_project_bytes(
+        .analyze_project_bytes_with_environment(
             request.package_root,
             package_name,
             sources,
+            Some(environment),
             profile,
             PythonProjectControl {
                 cancelled: request.control.cancelled,
@@ -697,11 +713,18 @@ fn enter_package_authority_with_retained_rust_workspace<'request, 'config, 'work
                 let go_authority = match captured_go_authority {
                     Some(witness) => witness,
                     None => {
-                        owned_witness = oracle.package_authority_witness_cancellable(request.package_root, Some(request.control.cancelled))?;
+                        owned_witness = oracle.package_authority_witness_cancellable(
+                            request.package_root,
+                            Some(request.control.cancelled),
+                        )?;
                         &owned_witness
                     }
                 };
-                checkpoint(request.control, request.profile, PackageAuthorityStage::GoOracle)?;
+                checkpoint(
+                    request.control,
+                    request.profile,
+                    PackageAuthorityStage::GoOracle,
+                )?;
                 // Scoped to exactly the package that owns `source_path`:
                 // sibling packages are import context only and are never
                 // serialized, so a module whose subpackages share a

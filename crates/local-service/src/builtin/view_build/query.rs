@@ -495,8 +495,8 @@ pub(super) fn append_structural_query_facts(
         // structural evidence to either, so it contributes no query facts.
         // Skipping one odd file is the whole point: failing here is what made
         // a single unprofiled file refuse the entire rebuild.
-        let Some(profile) = super::super::ingest::source_profile(std::path::Path::new(file.path))
-            .map_err(BuiltinModelError)?
+        let Some(profile) =
+            super::super::ingest::source_record_profile(file).map_err(BuiltinModelError)?
         else {
             continue;
         };

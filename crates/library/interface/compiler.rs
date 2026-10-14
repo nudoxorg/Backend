@@ -1111,6 +1111,10 @@ pub enum PythonAuthorityFailureKind {
     InvalidFactSpan,
     /// Captured user configuration was rejected by the pinned native schema.
     ConfigurationRefused,
+    /// Selected-program caller omitted the installed-environment disposition.
+    EnvironmentInputMissing,
+    /// Ordinary selected environment could not be captured as immutable input.
+    EnvironmentCaptureRefused,
 }
 
 impl PythonAuthorityFailureKind {
@@ -1139,6 +1143,8 @@ impl PythonAuthorityFailureKind {
             Self::WorkspaceIoFailed => "python_workspace_io_failed",
             Self::InvalidFactSpan => "python_invalid_fact_span",
             Self::ConfigurationRefused => "python_configuration_refused",
+            Self::EnvironmentInputMissing => "python_environment_input_missing",
+            Self::EnvironmentCaptureRefused => "python_environment_capture_refused",
         }
     }
 
@@ -1179,6 +1185,12 @@ impl PythonAuthorityFailureKind {
             Self::WorkspaceIoFailed => "Python checker workspace I/O failed",
             Self::InvalidFactSpan => "Python checker returned a source span outside captured bytes",
             Self::ConfigurationRefused => "Python configuration was refused by the native compiler",
+            Self::EnvironmentInputMissing => {
+                "Python checking requires an admitted installed-environment capture"
+            }
+            Self::EnvironmentCaptureRefused => {
+                "The selected Python environment could not be captured; install or repair its ordinary dependencies"
+            }
         }
     }
 }
