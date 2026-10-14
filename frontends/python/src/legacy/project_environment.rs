@@ -515,6 +515,19 @@ impl PythonEnvironmentCapture {
         interpreter: impl FnOnce() -> Result<Option<PythonInterpreterSelection>, CheckerError>,
         control: PythonProjectControl<'_>,
     ) -> Result<Self, CheckerError> {
+        Self::capture_with_matching_interpreter_provider(project, |_| interpreter(), control)
+    }
+
+    /// A captured venv constrains selection within an independently admitted
+    /// host candidate set; the requirement never supplies execution permission.
+    /// Source-only projects neither construct a requirement nor invoke the provider.
+    pub fn capture_with_matching_interpreter_provider(
+        project: &Path,
+        interpreter: impl FnOnce(
+            &super::project_profile::PythonVenvInterpreterRequirement,
+        ) -> Result<Option<PythonInterpreterSelection>, CheckerError>,
+        control: PythonProjectControl<'_>,
+    ) -> Result<Self, CheckerError> {
         checkpoint(control)?;
         normal_absolute(project)?;
         let mut probes = Vec::new();
@@ -651,13 +664,25 @@ impl PythonEnvironmentCapture {
                     "system-site-packages venv is not an isolated declared dependency cohort",
                 ));
             }
-            let selection = interpreter()?.ok_or_else(|| {
-                project_error(
-                    "",
-                    "selected venv requires a host-policy-admitted CPython installation",
-                )
-            })?;
+            let requirement =
+                super::project_profile::PythonVenvInterpreterRequirement::from_captured(
+                    project, &venv, text, control,
+                )?;
+            let [major, minor] =
+                super::project_profile::python_version_numbers(requirement.profile());
+            let selection = interpreter(&requirement)?
+                .ok_or(CheckerError::PythonInterpreterSelectionUnavailable { major, minor })?;
+            checkpoint(control)?;
+            if !requirement.matches_host_candidate(&selection.executable, control)? {
+                return Err(CheckerError::PythonInterpreterSelectionMismatch {
+                    path: selection.executable.clone(),
+                    major,
+                    minor,
+                });
+            }
             let interpreter = probe_interpreter(project, &venv, text, &selection, control)?;
+            requirement.validate_version(interpreter.version)?;
+            requirement.validate_current(control)?;
             let site = site_packages_path(&venv, interpreter.version);
             let mut budget = EnvironmentScanBudget::default();
             environment.roots.push(capture_root_with_budget(
@@ -869,6 +894,21 @@ impl PythonEnvironmentCapture {
             encoded_length: hasher.1,
             local_witness: true,
         })
+    }
+
+    /// Actual supported profile of the fully captured interpreter metadata.
+    /// None is reserved for the exact source-only/negative-environment snapshot;
+    /// missing or unsupported installed environments remain typed errors.
+    pub fn selected_profile(
+        &self,
+    ) -> Result<Option<backend_semantic::vocabulary::PythonVersion>, CheckerError> {
+        self.environment
+            .interpreter
+            .as_ref()
+            .map(|interpreter| {
+                super::project_profile::profile_for_interpreter_version(interpreter.version)
+            })
+            .transpose()
     }
 
     /// Stable environment and dependency content identity, including selection negatives.
@@ -2631,6 +2671,7 @@ mod tests {
                 .unwrap();
             environment.roots[0].original = site_packages_path(venv, interpreter.version);
             let admitted = PythonEnvironmentCapture::admit(environment, control(&cancelled))?;
+            assert_eq!(admitted.selected_profile()?, Some(matching));
             for profile in profiles {
                 assert_eq!(
                     admitted.validate_profile(profile).is_ok(),
@@ -3005,6 +3046,34 @@ mod tests {
                 control(&cancelled)
             ),
             Err(CheckerError::Cancelled { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn matching_provider_remains_lazy_and_unknown_captured_minors_are_typed()
+    -> Result<(), CheckerError> {
+        let root = fixture()?;
+        let cancelled = AtomicBool::new(false);
+        let capture = PythonEnvironmentCapture::capture_with_matching_interpreter_provider(
+            &root.path,
+            |_| panic!("negative environment has no host requirement"),
+            control(&cancelled),
+        )?;
+        assert_eq!(capture.selected_profile()?, None);
+        let mut environment = transport_environment();
+        let interpreter = environment.interpreter.as_mut().unwrap();
+        interpreter.version = [3, 9, 0];
+        let venv = interpreter
+            .selected
+            .parent()
+            .and_then(Path::parent)
+            .unwrap();
+        environment.roots[0].original = site_packages_path(venv, interpreter.version);
+        let unsupported = PythonEnvironmentCapture::admit(environment, control(&cancelled))?;
+        assert!(matches!(
+            unsupported.selected_profile(),
+            Err(CheckerError::UnsupportedPythonEnvironmentVersion { major: 3, minor: 9 })
         ));
         Ok(())
     }
@@ -3899,6 +3968,19 @@ for name, source, requirement in [('second_pkg', 'answer: int = 42\n', ''), ('fi
             "local/py3/lib/python3.14/site-packages/first_pkg/__init__.py"
         )));
         assert!(!capture.is_dependency_member(Path::new("local/py30/project.py")));
+        let matching = PythonEnvironmentCapture::capture_with_matching_interpreter_provider(
+            &project,
+            |requirement| {
+                assert_eq!(requirement.profile(), profile);
+                assert!(
+                    requirement.matches_host_candidate(Path::new(&cpython), control(&cancelled))?
+                );
+                Ok(Some(trusted.clone()))
+            },
+            control(&cancelled),
+        )?;
+        assert_eq!(matching.selected_profile()?, Some(profile));
+        assert_eq!(matching.identity(), capture.identity());
         let report = authority.analyze_project_bytes_with_environment(
             &project,
             "ordinary-installed",
