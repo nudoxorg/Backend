@@ -82,9 +82,22 @@ class RestoreMtimesTests(unittest.TestCase):
         if marker not in self.external_targets:
             self.external_targets.append(marker)
         marker.write_text("build completed")
-        timestamp = time.time_ns() - 1_000_000_000
+        # A completed build's output must be newer than every input. Model
+        # that order explicitly instead of depending on filesystem clock ticks.
+        inputs = [path.stat().st_mtime_ns for path in self.root.rglob("*")
+                  if ".git" not in path.parts and not path.is_symlink()]
+        timestamp = max([time.time_ns(), *inputs]) + 1_000_000
         os.utime(marker, ns=(timestamp, timestamp))
         return marker.stat().st_mtime_ns
+
+    def changed_after(self, directory, output_time):
+        """Model a later input mutation even on a coarsely timestamped FS."""
+        timestamp = max(time.time_ns(), output_time) + 1_000_000
+        while True:
+            os.utime(directory, ns=(timestamp, timestamp))
+            if directory == self.root:
+                break
+            directory = directory.parent
 
     def test_unchanged_directory_regains_its_contents_mtime(self):
         self.first_build()
@@ -136,6 +149,7 @@ class RestoreMtimesTests(unittest.TestCase):
 
         build_mtime = self.build_marker()
         (watched / "new_input.md").unlink()
+        self.changed_after(watched, build_mtime)
         restore_mtimes.main(self.manifest)
         self.assertGreater(watched.stat().st_mtime_ns, build_mtime)
         self.assertGreater((self.root / "crate").stat().st_mtime_ns, build_mtime)
@@ -146,6 +160,72 @@ class RestoreMtimesTests(unittest.TestCase):
         restore_mtimes.main(self.manifest)
         self.assertLess(watched.stat().st_mtime_ns, next_build_mtime)
         self.assertLess((self.root / "crate").stat().st_mtime_ns, next_build_mtime)
+
+    def assert_removed_input_survives_interrupted_build(self, ignored=False, tracked=False):
+        if ignored:
+            (self.root / '.gitignore').write_text('crate/test_laziness/input.md\n')
+            git(self.root, 'add', '.gitignore')
+            commit(self.root, 'ignore directory input')
+        self.first_build()
+        self.fresh_clone()
+        watched = self.root / 'crate/test_laziness'
+        if tracked:
+            removed = watched / 'test_b.md'
+        else:
+            removed = watched / 'input.md'
+            removed.write_text('input consumed by the previous build')
+        restore_mtimes.main(self.manifest)
+        cached_output = self.build_marker()
+        if tracked:
+            git(self.root, 'rm', '-qf', str(removed.relative_to(self.root)))
+            commit(self.root, 'remove tracked directory input')
+        else:
+            removed.unlink()
+        self.changed_after(watched, cached_output)
+        restore_mtimes.main(self.manifest)
+        self.assertGreater(watched.stat().st_mtime_ns, cached_output)
+        # No build completed. A fresh checkout/retry must not put this
+        # directory behind the still-cached output from before the removal.
+        self.fresh_clone()
+        restore_mtimes.main(self.manifest)
+        self.assertGreater(watched.stat().st_mtime_ns, cached_output)
+        self.assertGreater((self.root / 'crate').stat().st_mtime_ns, cached_output)
+        completed_output = self.build_marker()
+        self.fresh_clone()
+        restore_mtimes.main(self.manifest)
+        self.assertLess(watched.stat().st_mtime_ns, completed_output)
+        self.assertLess((self.root / 'crate').stat().st_mtime_ns, completed_output)
+
+    def test_legacy_directory_signature_migration_preserves_retry_invalidation(self):
+        self.first_build()
+        cached_output = self.build_marker()
+        manifest = json.loads(Path(self.manifest).read_text())
+        manifest[restore_mtimes.DIRECTORIES] = {
+            key: value['digest'] if isinstance(value, dict) else value
+            for key, value in manifest[restore_mtimes.DIRECTORIES].items()
+        }
+        Path(self.manifest).write_text(json.dumps(manifest))
+        watched = self.root/'crate/test_laziness'
+        self.fresh_clone()
+        self.changed_after(watched, cached_output)
+        restore_mtimes.main(self.manifest)
+        self.assertGreater(watched.stat().st_mtime_ns, cached_output)
+        self.fresh_clone()
+        restore_mtimes.main(self.manifest)
+        self.assertGreater(watched.stat().st_mtime_ns, cached_output)
+        completed_output = self.build_marker()
+        self.fresh_clone()
+        restore_mtimes.main(self.manifest)
+        self.assertLess(watched.stat().st_mtime_ns, completed_output)
+
+    def test_untracked_removal_stays_invalidated_after_interrupted_build(self):
+        self.assert_removed_input_survives_interrupted_build()
+
+    def test_ignored_removal_stays_invalidated_after_interrupted_build(self):
+        self.assert_removed_input_survives_interrupted_build(ignored=True)
+
+    def test_tracked_removal_stays_invalidated_after_interrupted_build(self):
+        self.assert_removed_input_survives_interrupted_build(tracked=True)
 
     def test_ignored_input_keeps_watched_directory_new(self):
         (self.root / ".gitignore").write_text("crate/test_laziness/ignored.md\n")
@@ -175,6 +255,7 @@ class RestoreMtimesTests(unittest.TestCase):
 
         build_mtime = self.build_marker()
         ignored.unlink()
+        self.changed_after(watched, build_mtime)
         restore_mtimes.main(self.manifest)
         self.assertGreater(watched.stat().st_mtime_ns, build_mtime)
         signatures = json.loads(Path(self.manifest).read_text())[restore_mtimes.DIRECTORIES]

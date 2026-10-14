@@ -16,7 +16,9 @@
 # run and recompiled backend-engine and everything above it (250-330 s,
 # Concourse 452816). A directory is restored only when its actual direct
 # entries and entry kinds match Git's tracked tree; unknown entries keep it
-# and its ancestors at "now" so Cargo can see real directory inputs.
+# and its ancestors at "now" so Cargo can see real directory inputs. Verified
+# directory timestamps are retained as well: resetting a removed input's
+# directory to its remaining files' older times could hide an interrupted build.
 import hashlib
 import json
 import os
@@ -195,7 +197,14 @@ def main(manifest_path):
     # that miss so an ancestor cannot hide a changed nested directory.
     not_reusable = set(incomplete)
     for directory, digest in listings.items():
-        if directory in incomplete or recorded_directories.get(directory) == digest:
+        recorded = recorded_directories.get(directory)
+        valid = (
+            isinstance(recorded, dict)
+            and recorded.get("digest") == digest
+            and type(recorded.get("mtime")) is int
+            and recorded["mtime"] >= 0
+        )
+        if directory in incomplete or valid:
             continue
         ancestor = directory
         while ancestor in listings and ancestor not in not_reusable:
@@ -209,11 +218,19 @@ def main(manifest_path):
             or directory not in newest
         ):
             continue
-        os.utime(directory, ns=(newest[directory], newest[directory]))
+        mtime = max(recorded_directories[directory]["mtime"], newest[directory])
+        os.utime(directory, ns=(mtime, mtime))
         directories_restored += 1
 
+    # Record the actual directory invalidation time, not just remaining files'
+    # times. The manifest precedes Cargo: a cancelled or failed build must keep
+    # a removal newer than its old cached output on every later retry. A
+    # completed build naturally moves its output beyond this stable timestamp.
     current[DIRECTORIES] = {
-        directory: digest
+        directory: {
+            "digest": digest,
+            "mtime": max(os.lstat(directory).st_mtime_ns, newest.get(directory, 0)),
+        }
         for directory, digest in listings.items()
         if directory not in incomplete
     }
