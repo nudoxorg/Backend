@@ -274,3 +274,8 @@ arithmetic, then records `bytesExcludingCursor` and
 length; payload size, token ratio and all semantic/basis/budget fields elsewhere
 remain compared. Raw encoded token length is intentionally not a stable golden
 contract. Refusal and normalization controls run in `test_surface.py`.
+
+MCP outline can shrink its first page to fit the response budget. Continuation
+copies the returned `page.limit`, package project path and detail, as instructed
+by the public response; reusing an omitted/original limit correctly gets refused.
+The admission controls cover that client behavior too.

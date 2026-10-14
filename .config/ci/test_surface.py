@@ -245,6 +245,15 @@ class SnapshotContinuationTests(unittest.TestCase):
             with self.subTest(answer=wrong), self.assertRaises(RuntimeError):
                 surface.require_continuation_reply(first, wrong, "root")
 
+    def test_outline_resume_uses_the_returned_page_limit(self):
+        call = {"tool": "backend.outline", "arguments": {}}
+        first = {"nextCursor": "mcp2-proof", "page": {"limit": 50},
+                 "package": {"project": "/project"}, "detail": "summary"}
+        self.assertEqual(surface.mcp_continuation_call(call, first),
+                         {"tool": "backend.outline", "arguments": {"path": "/project", "limit": 50, "detail": "summary", "cursor": "mcp2-proof"}})
+        with self.assertRaises(RuntimeError):
+            surface.mcp_continuation_call(call, dict(first, page={}))
+
     def test_outline_continuation_keeps_the_published_basis(self):
         import copy
         first = {"answer": "outline", "roots": [{"key": "first"}], "declarations": 1, "nextCursor": "mcp2-one",

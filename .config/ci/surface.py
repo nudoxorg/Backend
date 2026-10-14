@@ -553,6 +553,8 @@ def require_continuation_reply(first: dict, following: dict, published_root: str
         more = following.get("more")
     elif first["answer"] == "outline":
         page, next_page = first.get("page", {}), following.get("page", {})
+        if following.get("package") != first.get("package"):
+            raise RuntimeError("snapshot continuation: changed outline package")
         if page.get("more") is not True:
             raise RuntimeError("snapshot continuation: token on an exhausted outline")
         if page.get("source_root") != published_root or next_page.get("source_root") != published_root:
@@ -568,6 +570,21 @@ def require_continuation_reply(first: dict, following: dict, published_root: str
     next_token = following.get("nextCursor")
     if not isinstance(more, bool) or (more and (not isinstance(next_token, str) or not next_token)) or (not more and next_token is not None):
         raise RuntimeError("snapshot continuation: dishonest continuation flag")
+
+
+def mcp_continuation_call(call: dict, first: dict) -> dict:
+    arguments = dict(call.get("arguments", {}), cursor=first["nextCursor"])
+    if call["tool"] == "backend.outline":
+        # MCP can reduce the first page to fit its response budget. Its
+        # continuation is bound to that effective limit, not the omitted or
+        # original request limit. Copy the public continuation operands.
+        limit = first.get("page", {}).get("limit")
+        path = first.get("package", {}).get("project")
+        detail = first.get("detail")
+        if type(limit) is not int or limit <= 0 or not isinstance(path, str) or not path or detail not in ("summary", "full"):
+            raise RuntimeError("snapshot continuation: missing effective outline operands")
+        arguments.update(path=path, limit=limit, detail=detail)
+    return {"tool": call["tool"], "arguments": arguments}
 
 
 def normalize_continuations(value, proven_tokens: set[str]):
@@ -676,12 +693,12 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                 if first.get("nextCursor") is not None:
                     token = first["nextCursor"]
                     call = result["call"]
-                    continued, _ = run_mcp(owner, project, [{"tool": call["tool"], "arguments": dict(call.get("arguments", {}), cursor=token)}], 10)
+                    continued, _ = run_mcp(owner, project, [mcp_continuation_call(call, first)], 10)
                     if continued["exit"] != 0 or len(continued["calls"]) != 1:
                         raise RuntimeError("snapshot continuation: MCP session failed")
                     following = continued["calls"][0]["reply"]
                     if not isinstance(following, dict) or following.get("isError", False) or not isinstance(following.get("structuredContent"), dict):
-                        raise RuntimeError("snapshot continuation: MCP refused offered token")
+                        raise RuntimeError(f"snapshot continuation: MCP refused offered token: {following}")
                     require_continuation_reply(first, following["structuredContent"], published_root)
                     proven_tokens.add(token)
                     log(f"{call['tool']}: offered continuation consumed by a fresh MCP session")
