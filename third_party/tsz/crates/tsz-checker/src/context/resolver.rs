@@ -1171,8 +1171,8 @@ impl<'a> CheckerContext<'a> {
         specifier: &str,
     ) -> bool {
         matches!(
-            self.project_module_consensus_for_specifier(source_file_idx, specifier),
-            Some(crate::context::ResolvedModuleRequestOutcome::External { .. })
+            self.project_module_consensus_memoized(source_file_idx, specifier),
+            Some(crate::context::ProjectModuleConsensus::External)
         )
     }
 
@@ -1183,10 +1183,50 @@ impl<'a> CheckerContext<'a> {
         source_file_idx: usize,
         specifier: &str,
     ) -> Option<usize> {
-        match self.project_module_consensus_for_specifier(source_file_idx, specifier) {
-            Some(crate::context::ResolvedModuleRequestOutcome::File(target)) => Some(*target),
+        match self.project_module_consensus_memoized(source_file_idx, specifier) {
+            Some(crate::context::ProjectModuleConsensus::File(target)) => Some(target),
             _ => None,
         }
+    }
+
+    /// [`Self::project_module_consensus_for_specifier`], computed once per pair.
+    ///
+    /// A hit is charged one unit so cancellation and deadlines are still observed.
+    /// Nothing is recorded when the computation saw a stop: its `None` is then an
+    /// artifact of the stop, not an answer.
+    fn project_module_consensus_memoized(
+        &self,
+        source_file_idx: usize,
+        specifier: &str,
+    ) -> Option<crate::context::ProjectModuleConsensus> {
+        use crate::context::{ProjectModuleConsensus, ResolvedModuleRequestOutcome};
+        // Without the compiler-owned outcome map there is no consensus to remember.
+        self.project_module_resolution_outcomes.as_ref()?;
+        if let Some(hit) = self
+            .project_module_consensus_memo
+            .borrow()
+            .get(&source_file_idx)
+            .and_then(|by_specifier| by_specifier.get(specifier))
+            .copied()
+        {
+            self.types.execution_checkpoint(1).ok()?;
+            return hit;
+        }
+        let computed = self
+            .project_module_consensus_for_specifier(source_file_idx, specifier)
+            .map(|outcome| match outcome {
+                ResolvedModuleRequestOutcome::File(target) => ProjectModuleConsensus::File(*target),
+                ResolvedModuleRequestOutcome::External { .. } => ProjectModuleConsensus::External,
+                ResolvedModuleRequestOutcome::Unresolved => ProjectModuleConsensus::Unresolved,
+            });
+        if self.types.execution_checkpoint(0).is_ok() {
+            self.project_module_consensus_memo
+                .borrow_mut()
+                .entry(source_file_idx)
+                .or_default()
+                .insert(specifier.to_owned(), computed);
+        }
+        computed
     }
 
     /// A generic lookup cannot recover lost syntax, but it can verify that

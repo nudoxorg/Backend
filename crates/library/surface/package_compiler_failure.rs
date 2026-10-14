@@ -420,6 +420,11 @@ pub struct CompilerAuthorityDiagnosticFacts {
     /// Exact closed TypeScript cause; transcript, paths and solver text remain local.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub typescript_failure: Option<crate::interface::TypeScriptAuthorityFailureKind>,
+    /// Where a native TypeScript program was when it stopped: its innermost
+    /// boundary, exact program path, and admitted work. Present only for a
+    /// program execution stop that observed a boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub typescript_stop_site: Option<crate::interface::TypeScriptStopSite>,
     /// Typed compiler version, bounded counts and exact missing API capability.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub typescript_admission: Option<crate::interface::TypeScriptCompilerAdmissionDetail>,
@@ -1810,6 +1815,7 @@ pub(crate) fn package_failure_from_terminal(
                         python_failure: diagnostic.python_failure,
                         python_configuration: diagnostic.python_configuration,
                         typescript_failure: diagnostic.typescript_failure,
+                        typescript_stop_site: diagnostic.typescript_stop_site.clone(),
                         typescript_admission: diagnostic.typescript_admission.clone(),
                         typescript_cause: diagnostic.typescript_cause.clone(),
                         go_failure: diagnostic.go_failure,
@@ -1855,6 +1861,7 @@ pub(crate) fn package_failure_from_terminal(
                         python_failure: diagnostic.python_failure,
                         python_configuration: diagnostic.python_configuration,
                         typescript_failure: diagnostic.typescript_failure,
+                        typescript_stop_site: diagnostic.typescript_stop_site.clone(),
                         typescript_admission: diagnostic.typescript_admission.clone(),
                         typescript_cause: diagnostic.typescript_cause.clone(),
                         go_failure: diagnostic.go_failure,
