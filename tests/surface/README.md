@@ -409,3 +409,58 @@ remains serial; explicit parallel runs keep the same performance gates and can
 fail from contention. Dedicated capacity and repeatable operating-mode calibration
 are needed before making parallelism the default. These trials are not a CI
 speed guarantee or completion of durable artifact fan-out.
+
+## Whole Rust source project (W2.3)
+
+`rust-percent-encoding` fetches the complete MIT OR Apache-2.0 crates.io source
+archive for percent-encoding2.3.2 using the existing reviewed fleet pin. It keeps
+Cargo manifests, all source files, tests and docs. No upstream scripts are run
+and sources are not rewritten to remove dependencies. Independent empty-cache
+`cargo metadata --offline --format-version 1` succeeds with the full resolve
+graph, so this project does not require installing upstream dependencies.
+
+The native public contract must publish one complete Rust profile and expose
+ready authored structs `PercentEncode` (`src/lib.rs:142`) and `AsciiSet`
+(`src/ascii_set.rs:28`). CLI searches, packages, bounded outline and corresponding
+MCP search/outline replies are compared using the same reviewed projection and
+live continuation checks as the existing real projects. A missing native symbol
+or partial/refused publication cannot become a new golden. Native review and an
+independent exact-head comparison are required before this slice is complete.
+
+Initial Rust snapshot review: Concourse484294/pr-t1/686, source5d4999f8b.
+The unchanged synthetic/Go/Python cases matched; the new case deliberately failed
+for a missing reviewed golden after all native/source/transport guards passed.
+Native complete Rust root is
+`df9e741237da30ee5a2f758eeece5c8bbb7f6404664c6d284af70bb78b0875fd`.
+Reviewed ready structs exactly match upstream PercentEncode at src/lib.rs:142
+and AsciiSet at src/ascii_set.rs:28. CLI returned4/8 search records; MCP's bounded
+first3 match CLI and both offered search continuations were consumed by fresh
+MCP clients. Complete public outline contains125 declarations and the ready
+package is percent-encoding. Source-less semantic instantiations/imports remain
+in the full compared result as returned (some language=unknown); no claim that
+every returned record is an authored source declaration.
+
+Initial native baseline: index19.38s, owner CPU19.46s, peak799588KiB; first
+PercentEncode query1.07s, AsciiSet0.04s, outline0.07s, packages0.02s, MCP0.21s.
+Existing1.5 time/CPU and1.25 memory ratios/floors stay unchanged. Independent
+exact-head comparison of this golden and every old case is required before merge.
+
+Rust repeatability uncovered a product ranking bug (484403/pr-t1/689 on
+5b408366b): unchanged complete native roots/rows but tied source-less types
+changed rank and MCP page composition. Local lexical tie order used provider
+EntityId, which is namespaced by the workspace. Both controlled and ordinary
+query paths now break equal placement/relevance ties by immutable canonical
+RowId, keeping provider identity and provenance/semantic ordering intact.
+No sorting/score normalization was added to the harness.
+
+Native fix review:484553/pr-t1/692 on e70b1e52f. All existing polyglot/Python
+answers and every performance guard passed. Rust's complete4/8 search row sets
+are unchanged; canonical tie order/ordinal scores and readable MCP previews
+change. Go Sum64String's complete18 rows are unchanged; Go Digest remains an
+honest bounded25-row page with continuation. All sourced Digest records,
+packages and complete outline are identical; four source-less ready/unknown
+function instances exchange at the25-row boundary as the tie order changes.
+They are not a claim of authored declarations or exhaustive Digest coverage.
+Fresh continuations/CLI–MCP prefix checks still pass. Revised Go/Rust answer
+snapshots retain every prior performance baseline and tolerance. Rust measured
+20.91s index/20.10CPU/825204KiB; a fresh exact-head comparison is required.

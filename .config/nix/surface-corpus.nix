@@ -16,8 +16,29 @@ let
   blinkerArchive =
     assert builtins.length blinkerPin == 1;
     pkgs.fetchurl { inherit (builtins.head blinkerPin) url hash; };
+  percentEncodingPin = builtins.filter (
+    candidate: candidate.coordinate == "cargo:percent-encoding@2.3.2"
+  ) pins;
+  percentEncodingArchive =
+    assert builtins.length percentEncodingPin == 1;
+    pkgs.fetchurl { inherit (builtins.head percentEncodingPin) url hash; };
 in
 {
+  rust-percent-encoding =
+    pkgs.runCommand "nudox-surface-rust-percent-encoding-2.3.2"
+      {
+        nativeBuildInputs = [
+          pkgs.gnutar
+          pkgs.gzip
+        ];
+      }
+      ''
+        mkdir "$out"
+        tar -xzf ${percentEncodingArchive} --strip-components=1 -C "$out"
+        test -f "$out/Cargo.toml"
+        test -f "$out/src/lib.rs"
+        test -f "$out/src/ascii_set.rs"
+      '';
   python-blinker =
     pkgs.runCommand "nudox-surface-python-blinker-1.9.0"
       {

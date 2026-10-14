@@ -1,0 +1,2994 @@
+{
+  "answers": {
+    "cli add": {
+      "exit": 0
+    },
+    "cli outline": {
+      "exit": 0,
+      "json": {
+        "answer": "outline",
+        "budget": {
+          "bytes": 26534,
+          "bytesPerToken": 4,
+          "estimatedTokens": 6634
+        },
+        "declarations": 125,
+        "detail": "summary",
+        "extent": "complete",
+        "package": {
+          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project",
+          "key": "4847644e",
+          "name": "project",
+          "project": "/tmp/nudox-surface/rust-percent-encoding/project",
+          "segments": [],
+          "shape": "package",
+          "trail": "project"
+        },
+        "roots": [
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::132add7525a3c47cfb99f4d72dad6ffee4b2e6d82cffacbdb4403ff51eae4d81::mask",
+                "key": "2c1d8ee8",
+                "kind": "field",
+                "name": "mask"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::03d4cf8275bbde9af062483aa42b5803afa6d6ab168baea9577972a2f0cf6f0b::AsciiSet",
+            "key": "45e837ef",
+            "kind": "struct",
+            "name": "AsciiSet"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::36c83b67e0b3a49c182a42ed3501afd57cead3ccd37a30cc9828a6e235cb0598::bytes",
+                "key": "7a1b556e",
+                "kind": "field",
+                "name": "bytes"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::8a8cfb01be6bd6efb0fd416ccc0ec9f2bae4356f840169c3b984a72770710af6::PercentDecode",
+            "key": "84f001f0",
+            "kind": "struct",
+            "name": "PercentDecode"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e753b3c063ae1149eb96633b51e034e962a553ef99f8c55912f94bc0122d4201::ascii_set",
+                "key": "e30abd5b",
+                "kind": "field",
+                "name": "ascii_set"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::70cb5784c7aa7f98a1db7ed7192c29719f09c344054148c05b34848ea44c9141::bytes",
+                "key": "f9cad9f7",
+                "kind": "field",
+                "name": "bytes"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::a3a78a92969ecd6d25f04a56b2d21af5b58b0d442df0bc27920dbc35f825ef8d::PercentEncode",
+            "key": "914f4f14",
+            "kind": "struct",
+            "name": "PercentEncode"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::76c4bcff7b4764a5488b556560ced842dbc2310b8b84ceda65a2c44becbc5cb6::BITS_PER_CHUNK",
+            "key": "1e028ddc",
+            "kind": "constant",
+            "name": "BITS_PER_CHUNK"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::aeb034d36bb2f35dd37ef1661880300276584c777911e7eb721c530a41a5f145::Chunk",
+            "key": "35a5a560",
+            "kind": "type",
+            "name": "Chunk"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::cd518faddae8c0f5b7845b3ef93a05a8e7771cfe8280d7f4d0d9d390b58626f8::static_assert",
+            "key": "504b7d77",
+            "kind": "macro",
+            "name": "static_assert"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::6e682004df350de41c873b6082eb2ccdcc7ef66356a7d893bb2c3abf1aba4817::NON_ALPHANUMERIC",
+            "key": "d302014c",
+            "kind": "constant",
+            "name": "NON_ALPHANUMERIC"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::5b8e76249194b4326f9197a73608a49502e52c610a7866079fa22cd369844700::CONTROLS",
+            "key": "e347cb62",
+            "kind": "constant",
+            "name": "CONTROLS"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::dc27d67e825dae54c0190c69893022680b3dbd61f4a0789365388eba74a158e1::ASCII_RANGE_LEN",
+            "key": "fa694001",
+            "kind": "constant",
+            "name": "ASCII_RANGE_LEN"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::bfb11ea45b8b92648a853e71ba03b01df35b1f990c4b0ed9fa571fd289ae1812::input",
+                "key": "12afb791",
+                "kind": "variable",
+                "name": "input"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::445c381786693cb732d4bfb9a66e65e8af35a17163a02b2cf6005633f6c63c33::decode_utf8_lossy",
+                "key": "a572ff80",
+                "kind": "variable",
+                "name": "decode_utf8_lossy"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::08045305779f9858cc23d30e41b0a5b695be085226e1f2fa42bc3a2a8e21d315::decode_utf8_lossy",
+            "key": "5317094f",
+            "kind": "function",
+            "name": "decode_utf8_lossy"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::40459e08c713cbbc4787bc1df47125b37c8790ab92347dd0adbc34957cb5321b::percent_encode",
+                "key": "22307241",
+                "kind": "variable",
+                "name": "percent_encode"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::37786f9ce0970a2daabbf0784c252bf6022f622c8a4f4ca822c17db37245b614::ascii_set",
+                "key": "483ba40a",
+                "kind": "variable",
+                "name": "ascii_set"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::f97a4dbb255827f701224445be92ddec6ac4cd4d2921c5439c0282abde144daf::input",
+                "key": "ae357939",
+                "kind": "variable",
+                "name": "input"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::b32114bb75cbcfe09c6ad40e840c02988c2da15211a4e55a9baedc6a1f9f4094::percent_encode",
+            "key": "9a9885e1",
+            "kind": "function",
+            "name": "percent_encode"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::0834b0a0298d374e5236a54f25f950dfec161c6fbaf5a98a71bbec6379b85b5c::after_percent_sign",
+                "key": "567c873d",
+                "kind": "variable",
+                "name": "after_percent_sign"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::d7244671b45eaa04a95fbe2720e4defdf616333c414d6b15dde827cab15be3ec::iter",
+                "key": "6dc05bfa",
+                "kind": "variable",
+                "name": "iter"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::9e88e95590b063921f1535ff4f92d8120fd47db18576f1f91189fb41985ac80c::after_percent_sign",
+            "key": "f8cc7d5f",
+            "kind": "function",
+            "name": "after_percent_sign"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e23890e5cb8ed4c324691e449e2bf2de62412dbe1ff477b03f11fb4b6329ef9a::ascii_set",
+            "key": "23cc721e",
+            "kind": "module",
+            "name": "ascii_set"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::f6ff4af48d0445a862ca7b44924a66c53728a211bf3d4c409ba6b948d8f25185::AsciiSet",
+            "key": "30459cd9",
+            "kind": "import",
+            "name": "AsciiSet"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::aed1f640bd70f00e3cc67fe791921d9d9cae8fbd01a85de9103a907d91441926::NON_ALPHANUMERIC",
+            "key": "e82f25d6",
+            "kind": "import",
+            "name": "NON_ALPHANUMERIC"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::96f27e0a38d7d22f95c1d1dc99e7bcb95c34b43f951a686a8b6e1b877b4f9e4b::CONTROLS",
+            "key": "fe754eca",
+            "kind": "import",
+            "name": "CONTROLS"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::299d54128aa181684c18b6dec059cb61a74ce0dcc8fae14bbe335f52a339b016::iter",
+                    "key": "3c9faa0b",
+                    "kind": "variable",
+                    "name": "iter"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::c5b00010b088691f5ead7058c4a7e2d74770908d1f9a8e73c527a41fda972c83::from",
+                    "key": "57d6ca81",
+                    "kind": "variable",
+                    "name": "from"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::faec605e678351e10d1944161949af5aeaa31cb9568fc0c60df2c98111a65d20::from",
+                "key": "badc6f74",
+                "kind": "function",
+                "name": "from"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::77b8ae9791b14918c22baaac78d56c6a40f21efeefcdbb1b2758febe98013f0b::Cow<'a, str>",
+            "key": "00be1040",
+            "kind": "type",
+            "name": "Cow<'a, str>"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::f5a8599341194aa127c6692ea8a9cfa8acaba4a591a6789c9a3815b8382da804::percent_decode",
+                "key": "1784b3a3",
+                "kind": "variable",
+                "name": "percent_decode"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::c523c97ac747f7e1ab8792de05e221738dbeb4f24344c47afb7fcdaeb0c0eab7::input",
+                "key": "ac22afda",
+                "kind": "variable",
+                "name": "input"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::8f34bd8b367968b228f57f85ed70f6920495197f95e6cda3b4abbf9ceecd08fa::percent_decode",
+            "key": "01f1f3cf",
+            "kind": "function",
+            "name": "percent_decode"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::3fd9c89cdfa2a077b7bfb7bd178effaabefa8488f0108fbdd0e9ac5dbdd469b4::iter",
+                    "key": "62b87d68",
+                    "kind": "variable",
+                    "name": "iter"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e1976d9ec46435cf3a7fb6ee41f531714770908d1f9a8e73c527a41fda972c83::from",
+                    "key": "b8b1ea83",
+                    "kind": "variable",
+                    "name": "from"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::85f7da7640554b6f07fbab2fa499b1a4355fad64c2a367faea54680f8e849e33::from",
+                "key": "33f5d5dd",
+                "kind": "function",
+                "name": "from"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::34dd6674f9a22f2745af6e10b6bb66c50b4264eac6cd1fef1712b7d4fd17c1d8::Cow<'a, [u8]>",
+            "key": "13f54d85",
+            "kind": "type",
+            "name": "Cow<'a, [u8]>"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e947e863014c8f2da08b4b6f9f81494e5f04c502934046a16e1ee2d61faf87e8::ENC_TABLE",
+                "key": "eb7a9d11",
+                "kind": "variable",
+                "name": "ENC_TABLE"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::aec417ed14a79ff238884a3654c2d6ed868a1429c09efa0d920e7447bb185143::byte",
+                "key": "64203f1e",
+                "kind": "variable",
+                "name": "byte"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::2bf951b841c18cdec7aba3cbfe78daadaed920778556a87c053f737235802d99::percent_encode_byte",
+                "key": "88498cd3",
+                "kind": "variable",
+                "name": "percent_encode_byte"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::ad696fc67dd957cf1a41320e26525509bb9e0885d0f234a9bcfa6b4ee98a9f3e::percent_encode_byte",
+            "key": "43389e52",
+            "kind": "function",
+            "name": "percent_encode_byte"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::5100eb07af1f06b074a532a5c9260d728c603614e6042db40d04dae076682456::percent_decode_str",
+                "key": "4871d089",
+                "kind": "variable",
+                "name": "percent_decode_str"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::6b9781e4c337953ade0f3dd2ac566bedd41555253b75adb089b87c659c2a04ff::input",
+                "key": "5f0077b1",
+                "kind": "variable",
+                "name": "input"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::b303ccf06117d3bd933bc94599718e6bd9950ec22b527128bc5f2458f5aa8e4b::percent_decode_str",
+            "key": "58eab1c1",
+            "kind": "function",
+            "name": "percent_decode_str"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::00fe250d3d268e3d7862cfacb1fc67dc4aad63ce0eb7a32ca37bae7286ccf321::Output",
+                "key": "b9407c8e",
+                "kind": "type",
+                "name": "Output"
+              },
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::d7d0ec2bcc4003aa6e36a73f0211b3e016a5d0ddbff1fd0b6dfc740034c8a0e6::not",
+                    "key": "4ec81750",
+                    "kind": "variable",
+                    "name": "not"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::c9f0f159a649ef941ed261cc60a5edc0fd33da06cb6ff70ad68c1932d5bd95f4::self",
+                    "key": "c083c78e",
+                    "kind": "variable",
+                    "name": "self"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::6f0ed9817db5cda6d029759a5f0fd1afb3f6c9340c71401c431811901f668796::not",
+                "key": "d52406ea",
+                "kind": "function",
+                "name": "not"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e87b278e6619b380f76383081933421344717f10d073c5db36fc8aed17534918::AsciiSet",
+            "key": "6b2768e1",
+            "kind": "type",
+            "name": "AsciiSet"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::fc56384af1d7d5c8c9021b548587c05a1f0e8949fc15023a6af02039921bd496::self",
+                    "key": "a9973f3b",
+                    "kind": "variable",
+                    "name": "self"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::7d71c165fd93d64bb423d88fb9b0c2b537b3312836470f19c9682c27759880a6::next",
+                    "key": "b82dfe0a",
+                    "kind": "variable",
+                    "name": "next"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::ce993b8fe28df368ee6df3192d211021d4729cce16651eeef7f610d65a8e2325::next",
+                "key": "1545aadd",
+                "kind": "function",
+                "name": "next"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::449e407e4b31f5cbfbaa90f9bb2964c7d2fa53889ea4aa096f6732cb02b699cc::Item",
+                "key": "394332b6",
+                "kind": "type",
+                "name": "Item"
+              },
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::7a726a19015d53c127763f29c77946c60e193cb34039c3884e1d57bec5767ba3::self",
+                    "key": "633c40a0",
+                    "kind": "variable",
+                    "name": "self"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::d2ebca396068f549aee00a40c19d47eb4cd1174dda3666c7da337e23e6fdac1a::size_hint",
+                    "key": "becd22e5",
+                    "kind": "variable",
+                    "name": "size_hint"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::dadc1099afc168ba86b6a70c14cb67c3ac99fad7c99226114764310c00c71f1a::size_hint",
+                "key": "6cbc1ca3",
+                "kind": "function",
+                "name": "size_hint"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::4aed7020f51960feb5764cf4dde915827adca6a378579e31080ecc01e8c5c901::PercentDecode<'_>",
+            "key": "6e78c6fa",
+            "kind": "type",
+            "name": "PercentDecode<'_>"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::32f69af6a15746e343fdbf2db0ab43af4cd1174dda3666c7da337e23e6fdac1a::size_hint",
+                    "key": "71b6d7e9",
+                    "kind": "variable",
+                    "name": "size_hint"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::7954f161a909ae4f40baff44fc9504a39388cd42bb64dfbfba08845d05c58410::self",
+                    "key": "8f72e110",
+                    "kind": "variable",
+                    "name": "self"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::9fd8b7a2a19f5061338385b076c3e17c2352dc6a54b8249f11b24670c07388a1::size_hint",
+                "key": "8723df02",
+                "kind": "function",
+                "name": "size_hint"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::23d61bc44c8af9051a50c9e0ab84070bf4fc01092278108d2fea5f46275e892c::Item",
+                "key": "c0a0001c",
+                "kind": "type",
+                "name": "Item"
+              },
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::0da8fc5e9aea914641f933bfd47a30901b904c205846802f7a024a33ec093b34::next",
+                    "key": "44c031af",
+                    "kind": "variable",
+                    "name": "next"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::9b59d6beb6a899315be513c862a8b26591234fddd42f0e99a19d7002e3720a53::self",
+                    "key": "c160facc",
+                    "kind": "variable",
+                    "name": "self"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::08a2f07551358c5f2d94c8553c3456780fbbe8a416e125a802d92e20ecb46be8::next",
+                "key": "f6dfe890",
+                "kind": "function",
+                "name": "next"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::a9f4c54e047df460cc9e5380ad005d9e718b09ab2ab76bbc4594afd16404cfa5::PercentEncode<'a>",
+            "key": "82a6e9fb",
+            "kind": "type",
+            "name": "PercentEncode<'a>"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::3152597927069d104342fbd5065f58b299f25ecb5086acda6906e25d22aa4d74::fmt",
+                    "key": "62fce9c0",
+                    "kind": "variable",
+                    "name": "fmt"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::eea084cd476da0516e7fac4732fd2f8d9388cd42bb64dfbfba08845d05c58410::self",
+                    "key": "63c89ab3",
+                    "kind": "variable",
+                    "name": "self"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::57c373afd3c909b8b5787bfcc5c6d3990eaf323325611e0f52533fa822f370ae::formatter",
+                    "key": "f38d1659",
+                    "kind": "variable",
+                    "name": "formatter"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::fc9298ac8c709e7ae8a6e79492fa2bc8662d5decd3401a2baa238834228e5012::fmt",
+                "key": "0212151c",
+                "kind": "function",
+                "name": "fmt"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::ec35dd9e841c3485403f84c0aa4c283af592c90b0b0595eaa39cf5d8b79cdd4f::PercentEncode<'_>",
+            "key": "834eec55",
+            "kind": "type",
+            "name": "PercentEncode<'_>"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::272e7c29e4c654f81ba7bede4d1c2a9c8b873b7ab74499304385e6fcb8f06fbf::input",
+                "key": "211e27b1",
+                "kind": "variable",
+                "name": "input"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::266a537e6e08792c09844fd752365854022f622c8a4f4ca822c17db37245b614::ascii_set",
+                "key": "e6b5803a",
+                "kind": "variable",
+                "name": "ascii_set"
+              },
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::6deb62e5d82f5e93bb7f596ec019a44c3439592055d873bfa7b1ba9e932f20c7::utf8_percent_encode",
+                "key": "efb43f16",
+                "kind": "variable",
+                "name": "utf8_percent_encode"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::634da06b4504632a7366df9e10181584b28f38468f980234ee3fca450ee77173::utf8_percent_encode",
+            "key": "92459a3d",
+            "kind": "function",
+            "name": "utf8_percent_encode"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::bcd7a6dfff40f102b0f029818a60925aaebf63f87b5c7e474595185d6f03f76f::EMPTY",
+                "key": "003b0f47",
+                "kind": "constant",
+                "name": "EMPTY"
+              },
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::fcdcb3e5c255aed3304ce939e38bc904ed0a33a006cbe99c45a726b8ed89b746::contains",
+                    "key": "05f3eab6",
+                    "kind": "variable",
+                    "name": "contains"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::ee425ee1da89806932f308c0faa6adc9868a1429c09efa0d920e7447bb185143::byte",
+                    "key": "0b079938",
+                    "kind": "variable",
+                    "name": "byte"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::46ac5451f243176a3029269a4ba25f87d391ac6b14843814dee8e993edfe70a9::self",
+                    "key": "b66533de",
+                    "kind": "variable",
+                    "name": "self"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e20179ce51bd2cd2e04dd869389fa551d6a9cf0f729a1d98b1fef24d46d1c2ae::contains",
+                "key": "3f4e3623",
+                "kind": "function",
+                "name": "contains"
+              },
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::cbb9efdd82f519938ce873b2342a113451743a28ece49407166002734353ab23::should_percent_encode",
+                    "key": "5048c5c5",
+                    "kind": "variable",
+                    "name": "should_percent_encode"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::6e23c6ade51d496baf917e97fa49f82d868a1429c09efa0d920e7447bb185143::byte",
+                    "key": "54b369bc",
+                    "kind": "variable",
+                    "name": "byte"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::cd91e2b53eb32c1e98d4d8281cd97b82d391ac6b14843814dee8e993edfe70a9::self",
+                    "key": "924b0da5",
+                    "kind": "variable",
+                    "name": "self"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::0feea62d396c4bd6104f2792493f97fe787322937f3bed54cabb0270b24bf4b8::should_percent_encode",
+                "key": "58dfee29",
+                "kind": "function",
+                "name": "should_percent_encode"
+              },
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::0f7e8a4bc5324a4d2fb2778b54f94cb7868a1429c09efa0d920e7447bb185143::byte",
+                    "key": "6c2d94e0",
+                    "kind": "variable",
+                    "name": "byte"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::bfedbd8a4374b454a9b63b5956288f40d391ac6b14843814dee8e993edfe70a9::self",
+                    "key": "6f1c038d",
+                    "kind": "variable",
+                    "name": "self"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::54ab33ad66ccfdb47fb90027f78ffe6d0f1de5bfc924daa7fa0518bd1859b0fe::add",
+                    "key": "d06f4fe9",
+                    "kind": "variable",
+                    "name": "add"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::2e0f070d2a9051d78e3bbc545d1689977259db8562657e4cfe761fc5a520e49a::add",
+                "key": "5de925b7",
+                "kind": "function",
+                "name": "add"
+              },
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::6d221fb7fb2319bb0ce9b085fa0986daf73dcadcdb6207915e384080ed85c128::remove",
+                    "key": "0210c5cd",
+                    "kind": "variable",
+                    "name": "remove"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::f76126447188bf18c254072f67baaf12d391ac6b14843814dee8e993edfe70a9::self",
+                    "key": "23491139",
+                    "kind": "variable",
+                    "name": "self"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e75444b3b050fa26aadd927726a1703c868a1429c09efa0d920e7447bb185143::byte",
+                    "key": "98b1a89f",
+                    "kind": "variable",
+                    "name": "byte"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::815b11fe07081b6d416194667accbafe2a7125c2c05a08d82f28899c5765ebe8::remove",
+                "key": "a2fd5b56",
+                "kind": "function",
+                "name": "remove"
+              },
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::cce8f806f2f8180c6e3c9da7df13afe3d391ac6b14843814dee8e993edfe70a9::self",
+                    "key": "290a7fa5",
+                    "kind": "variable",
+                    "name": "self"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::cba6e657fc79961ae7998fbbcc1e629b417ef3fdc39170c30e4a2f123c8ca679::complement",
+                    "key": "89eed424",
+                    "kind": "variable",
+                    "name": "complement"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::3f136ae114a9abb0cfd1857ed9e7a649aadfc1e319187d61522b5c4e601fba0b::complement",
+                "key": "633ddab3",
+                "kind": "function",
+                "name": "complement"
+              },
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::ed698d889497964202076c9dae3198c7d391ac6b14843814dee8e993edfe70a9::self",
+                    "key": "75ca828a",
+                    "kind": "variable",
+                    "name": "self"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::a1330b6aaa6fdb16ab7597ea1f54f7712357e5c7b0e576853b0bd2b99063ab3f::union",
+                    "key": "94336b3a",
+                    "kind": "variable",
+                    "name": "union"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::415609df44e2599d3c6bb682fe9e1d0707229c418324b496f49724f92b1de5aa::other",
+                    "key": "caa1b35f",
+                    "kind": "variable",
+                    "name": "other"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::f8829e84bd578ea89a481f677fc8044ec19e324d6961f07de782a17835d8bb68::union",
+                "key": "fd413bec",
+                "kind": "function",
+                "name": "union"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e87b278e6619b380f7638308193342139af01c5492dd599804843ff2d0c709b6::AsciiSet",
+            "key": "9b2b42b2",
+            "kind": "type",
+            "name": "AsciiSet"
+          },
+          {
+            "children": [
+              {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::bc5fcc8793d677d7788f07c1bf177f114aad63ce0eb7a32ca37bae7286ccf321::Output",
+                "key": "2a62c427",
+                "kind": "type",
+                "name": "Output"
+              },
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::a7eca0513bb7e1aecc1635d026c922730f1de5bfc924daa7fa0518bd1859b0fe::add",
+                    "key": "2276f25c",
+                    "kind": "variable",
+                    "name": "add"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::87ce176e6c0cc04b3d3ad21029f4933407229c418324b496f49724f92b1de5aa::other",
+                    "key": "2da732dc",
+                    "kind": "variable",
+                    "name": "other"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::bbe001a12ef6877f5ab97ac8a3bdb68afd33da06cb6ff70ad68c1932d5bd95f4::self",
+                    "key": "2f96855d",
+                    "kind": "variable",
+                    "name": "self"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::573faf1b419ed07e8f4a689e127fd8c6366956720435a7a3cdf7a3bdaafac9c8::add",
+                "key": "eb2329b7",
+                "kind": "function",
+                "name": "add"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e87b278e6619b380f763830819334213f9b909656c032298698b02d640eb6b71::AsciiSet",
+            "key": "c3534395",
+            "kind": "type",
+            "name": "AsciiSet"
+          },
+          {
+            "children": [
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::9f08b5e609966993ea28982ddd608bef54fb36d361610113dec29e54621864f2::self",
+                    "key": "0fd38e61",
+                    "kind": "variable",
+                    "name": "self"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::b586c367cbbcc7047c669e7f51eb967c347c7fe7847d43e0c26d4de923eef254::decode_utf8_lossy",
+                    "key": "80137747",
+                    "kind": "variable",
+                    "name": "decode_utf8_lossy"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::af9d6876906253a2e5457b3ab32edbb933ba1f01cced9e01abecb6350d72c413::decode_utf8_lossy",
+                "key": "1cbb4cb3",
+                "kind": "function",
+                "name": "decode_utf8_lossy"
+              },
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::929fdc8a5d3b9b9e6f4449eed733d7730e193cb34039c3884e1d57bec5767ba3::self",
+                    "key": "58d6559f",
+                    "kind": "variable",
+                    "name": "self"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::9926c4b07ef9eabab8799a6893f33c466b129aa537994e8b03631ad0b73498c7::if_any",
+                    "key": "8312c2b8",
+                    "kind": "variable",
+                    "name": "if_any"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::a887e8ad9fa37c9596bb008f712d2208b3ba6fd00466fed54e1ec4d0a4b683a6::if_any",
+                "key": "939176c9",
+                "kind": "function",
+                "name": "if_any"
+              },
+              {
+                "children": [
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::71f8378c6bafe295bba674061d1cb68654fb36d361610113dec29e54621864f2::self",
+                    "key": "415b963b",
+                    "kind": "variable",
+                    "name": "self"
+                  },
+                  {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::0d9c43b3b369e6f9f285f3e72c84d89994d0c9591b5ba08818e2dcd595b58163::decode_utf8",
+                    "key": "d472952d",
+                    "kind": "variable",
+                    "name": "decode_utf8"
+                  }
+                ],
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::3d4ee6cb70545e2f1a31e591b57cad886192d167d78da8274f587997addc63c8::decode_utf8",
+                "key": "ffbd07f3",
+                "kind": "function",
+                "name": "decode_utf8"
+              }
+            ],
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::105a1a133e96f96b8630d850184cc10c52dc07b337d5e0d5d927e3dd7f5e419b::PercentDecode<'a>",
+            "key": "f6654b68",
+            "kind": "type",
+            "name": "PercentDecode<'a>"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::5703ca985bf2d907523fe455452180148600d34c299fbea2f478a44f03e58f88::slice::Iter<'_, u8>",
+            "key": "0d4d0605",
+            "kind": "variable",
+            "name": "Iter<'_, u8>"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::fc7e7158aaac2f8c4663d4db518f7bf82e92661a3aab97ed4d7f965083563cba::[u8]",
+            "key": "144f347f",
+            "kind": "variable",
+            "name": "[u8]"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::5cea79ee62593124327bd713fe88cb1b90b9e1c90e02e3a722a32b6059e82f8a::fmt::Formatter<'_>",
+            "key": "2b9d1fa6",
+            "kind": "variable",
+            "name": "Formatter<'_>"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::4c69e7b181d43f1fb97b6175c41a8ccc7dad6e13e79e377fc763ef6e36140b05::Option<usize>",
+            "key": "6c573d3d",
+            "kind": "variable",
+            "name": "Option<usize>"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::f162bddfbaafad9f0b931ed42b035ca7a0a2817e25c09fb1ed5612663c405634::&'a str",
+            "key": "78197f2a",
+            "kind": "variable",
+            "name": "&'a str"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::9e79a9a2aaf39b2d716f05d6cc79a2428d3cac81453b682322e91d6c70cbd30b::Cow<'a, str>",
+            "key": "8b4df2cd",
+            "kind": "variable",
+            "name": "Cow<'a, str>"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::bb9f65084fc3f66f54db1c80dfd446bf2b2ecdcfdb3896444baa086a439dc976::[u8; 768]",
+            "key": "db90f6d1",
+            "kind": "variable",
+            "name": "[u8; 768]"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::bead6733899e232d71c285ddac655dbfc3d82b933ea7dc86822428439d84a3cf::crate",
+            "key": "e7b03ac4",
+            "kind": "module",
+            "name": "crate"
+          },
+          {
+            "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::5a1c9f9d303863a851959fe1d9d4e42cbb40692f79e0b41392f6474800c56f71::Vec<u8>",
+            "key": "f5d27ae7",
+            "kind": "variable",
+            "name": "Vec<u8>"
+          }
+        ],
+        "unnamed": 0
+      }
+    },
+    "cli packages": {
+      "exit": 0,
+      "json": {
+        "answer": "shelf",
+        "budget": {
+          "bytes": 408,
+          "bytesPerToken": 4,
+          "estimatedTokens": 102
+        },
+        "detail": "summary",
+        "projects": [
+          {
+            "declarations": null,
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project",
+              "key": "4847644e",
+              "name": "percent-encoding",
+              "project": "/tmp/nudox-surface/rust-percent-encoding/project",
+              "segments": [],
+              "shape": "package",
+              "trail": "project"
+            },
+            "readiness": "ready"
+          }
+        ],
+        "revision": "df9e7412"
+      }
+    },
+    "cli search AsciiSet": {
+      "exit": 0,
+      "json": {
+        "answer": "records",
+        "budget": {
+          "bytes": 4688,
+          "bytesPerToken": 4,
+          "estimatedTokens": 1172
+        },
+        "coverage": [
+          {
+            "lane": "exact",
+            "state": "complete"
+          },
+          {
+            "lane": "names",
+            "state": "complete"
+          },
+          {
+            "lane": "graph",
+            "state": "complete"
+          },
+          {
+            "lane": "semantic",
+            "reason": "unconfigured",
+            "state": "unavailable"
+          }
+        ],
+        "detail": "summary",
+        "more": false,
+        "query": "AsciiSet",
+        "readiness": "ready",
+        "records": [
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::03d4cf8275bbde9af062483aa42b5803afa6d6ab168baea9577972a2f0cf6f0b::AsciiSet",
+              "line": 28,
+              "name": "AsciiSet",
+              "path": "src/ascii_set.rs",
+              "segments": [
+                "AsciiSet"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  69,
+                  232,
+                  55,
+                  239,
+                  225,
+                  249,
+                  41,
+                  107,
+                  67,
+                  245,
+                  175,
+                  155,
+                  22,
+                  68,
+                  58,
+                  164,
+                  78,
+                  205,
+                  119,
+                  12,
+                  249,
+                  61,
+                  181,
+                  242,
+                  110,
+                  188,
+                  156,
+                  8,
+                  237,
+                  167,
+                  68,
+                  113
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › src/ascii_set.rs:28 › AsciiSet"
+            },
+            "kind": "struct",
+            "language": "rust",
+            "score": 4294967295,
+            "state": "ready",
+            "summary": "Represents a set of characters or bytes in the ASCII range."
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::f6ff4af48d0445a862ca7b44924a66c53728a211bf3d4c409ba6b948d8f25185::AsciiSet",
+              "line": 56,
+              "name": "AsciiSet",
+              "path": "src/lib.rs",
+              "segments": [
+                "AsciiSet"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  48,
+                  69,
+                  156,
+                  217,
+                  151,
+                  23,
+                  135,
+                  133,
+                  92,
+                  93,
+                  134,
+                  162,
+                  32,
+                  216,
+                  234,
+                  229,
+                  149,
+                  6,
+                  159,
+                  87,
+                  155,
+                  86,
+                  6,
+                  35,
+                  245,
+                  61,
+                  124,
+                  76,
+                  81,
+                  183,
+                  125,
+                  46
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › src/lib.rs:56 › AsciiSet"
+            },
+            "kind": "import",
+            "language": "rust",
+            "score": 4294967294,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e87b278e6619b380f76383081933421344717f10d073c5db36fc8aed17534918::AsciiSet",
+              "name": "AsciiSet",
+              "segments": [
+                "AsciiSet"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  107,
+                  39,
+                  104,
+                  225,
+                  160,
+                  236,
+                  4,
+                  238,
+                  53,
+                  53,
+                  248,
+                  228,
+                  186,
+                  82,
+                  160,
+                  49,
+                  193,
+                  72,
+                  96,
+                  63,
+                  110,
+                  121,
+                  107,
+                  115,
+                  248,
+                  199,
+                  145,
+                  63,
+                  53,
+                  105,
+                  188,
+                  250
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › AsciiSet"
+            },
+            "kind": "type",
+            "language": "unknown",
+            "score": 4294967293,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e87b278e6619b380f7638308193342139af01c5492dd599804843ff2d0c709b6::AsciiSet",
+              "name": "AsciiSet",
+              "segments": [
+                "AsciiSet"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  155,
+                  43,
+                  66,
+                  178,
+                  178,
+                  134,
+                  219,
+                  121,
+                  80,
+                  56,
+                  242,
+                  3,
+                  107,
+                  189,
+                  194,
+                  39,
+                  231,
+                  176,
+                  41,
+                  176,
+                  48,
+                  122,
+                  145,
+                  13,
+                  2,
+                  114,
+                  76,
+                  204,
+                  172,
+                  125,
+                  254,
+                  254
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › AsciiSet"
+            },
+            "kind": "type",
+            "language": "unknown",
+            "score": 4294967292,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e87b278e6619b380f763830819334213f9b909656c032298698b02d640eb6b71::AsciiSet",
+              "name": "AsciiSet",
+              "segments": [
+                "AsciiSet"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  195,
+                  83,
+                  67,
+                  149,
+                  209,
+                  104,
+                  65,
+                  210,
+                  23,
+                  36,
+                  240,
+                  115,
+                  15,
+                  75,
+                  90,
+                  46,
+                  52,
+                  135,
+                  77,
+                  171,
+                  232,
+                  182,
+                  164,
+                  109,
+                  223,
+                  141,
+                  122,
+                  164,
+                  80,
+                  135,
+                  171,
+                  76
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › AsciiSet"
+            },
+            "kind": "type",
+            "language": "unknown",
+            "score": 4294967291,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::ad696fc67dd957cf1a41320e26525509bb9e0885d0f234a9bcfa6b4ee98a9f3e::percent_encode_byte",
+              "name": "percent_encode_byte",
+              "segments": [
+                "percent_encode_byte"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  67,
+                  56,
+                  158,
+                  82,
+                  132,
+                  163,
+                  180,
+                  58,
+                  7,
+                  187,
+                  60,
+                  143,
+                  209,
+                  27,
+                  71,
+                  235,
+                  83,
+                  159,
+                  199,
+                  31,
+                  169,
+                  95,
+                  144,
+                  159,
+                  114,
+                  135,
+                  188,
+                  137,
+                  210,
+                  1,
+                  186,
+                  166
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › percent_encode_byte"
+            },
+            "kind": "function",
+            "language": "unknown",
+            "score": 4294967290,
+            "state": "ready",
+            "summary": "Return the percent-encoding of the given byte."
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::external::symbol:c06652b3a34e863900236254148c8f8e658a7226a2e935dc325dcb178857e50f::AsciiSet",
+              "name": "AsciiSet",
+              "segments": [
+                "AsciiSet"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  192,
+                  102,
+                  82,
+                  179,
+                  163,
+                  78,
+                  134,
+                  57,
+                  0,
+                  35,
+                  98,
+                  84,
+                  20,
+                  140,
+                  143,
+                  142,
+                  101,
+                  138,
+                  114,
+                  38,
+                  162,
+                  233,
+                  53,
+                  220,
+                  50,
+                  93,
+                  203,
+                  23,
+                  136,
+                  87,
+                  229,
+                  15
+                ]
+              },
+              "shape": "external",
+              "trail": "project › AsciiSet"
+            },
+            "language": "unknown",
+            "score": 4294967289,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::external::symbol:10324a45b79998d0a69484b44f57eb550683de2cce632bdda062c5ce9589117f::AsciiSet::EMPTY",
+              "name": "EMPTY",
+              "segments": [
+                "AsciiSet",
+                "EMPTY"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  16,
+                  50,
+                  74,
+                  69,
+                  183,
+                  153,
+                  152,
+                  208,
+                  166,
+                  148,
+                  132,
+                  180,
+                  79,
+                  87,
+                  235,
+                  85,
+                  6,
+                  131,
+                  222,
+                  44,
+                  206,
+                  99,
+                  43,
+                  221,
+                  160,
+                  98,
+                  197,
+                  206,
+                  149,
+                  137,
+                  17,
+                  127
+                ]
+              },
+              "shape": "external",
+              "trail": "project › AsciiSet::EMPTY"
+            },
+            "language": "unknown",
+            "score": 4294967288,
+            "state": "ready"
+          }
+        ],
+        "semantic_search": {
+          "reason": "unconfigured",
+          "status": "unavailable"
+        }
+      }
+    },
+    "cli search PercentEncode": {
+      "exit": 0,
+      "json": {
+        "answer": "records",
+        "budget": {
+          "bytes": 2641,
+          "bytesPerToken": 4,
+          "estimatedTokens": 661
+        },
+        "coverage": [
+          {
+            "lane": "exact",
+            "state": "complete"
+          },
+          {
+            "lane": "names",
+            "state": "complete"
+          },
+          {
+            "lane": "graph",
+            "state": "complete"
+          },
+          {
+            "lane": "semantic",
+            "reason": "unconfigured",
+            "state": "unavailable"
+          }
+        ],
+        "detail": "summary",
+        "more": false,
+        "query": "PercentEncode",
+        "readiness": "ready",
+        "records": [
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::a3a78a92969ecd6d25f04a56b2d21af5b58b0d442df0bc27920dbc35f825ef8d::PercentEncode",
+              "line": 142,
+              "name": "PercentEncode",
+              "path": "src/lib.rs",
+              "segments": [
+                "PercentEncode"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  145,
+                  79,
+                  79,
+                  20,
+                  226,
+                  128,
+                  135,
+                  214,
+                  53,
+                  61,
+                  134,
+                  112,
+                  105,
+                  220,
+                  216,
+                  224,
+                  236,
+                  223,
+                  219,
+                  198,
+                  28,
+                  106,
+                  172,
+                  58,
+                  245,
+                  109,
+                  88,
+                  118,
+                  86,
+                  87,
+                  15,
+                  182
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › src/lib.rs:142 › PercentEncode"
+            },
+            "kind": "struct",
+            "language": "rust",
+            "score": 4294967295,
+            "state": "ready",
+            "summary": "The return type of"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::a9f4c54e047df460cc9e5380ad005d9e718b09ab2ab76bbc4594afd16404cfa5::PercentEncode<'a>",
+              "name": "PercentEncode<'a>",
+              "segments": [
+                "PercentEncode<'a>"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  130,
+                  166,
+                  233,
+                  251,
+                  51,
+                  144,
+                  250,
+                  119,
+                  42,
+                  25,
+                  129,
+                  70,
+                  84,
+                  224,
+                  99,
+                  68,
+                  108,
+                  141,
+                  73,
+                  86,
+                  116,
+                  147,
+                  224,
+                  37,
+                  160,
+                  222,
+                  96,
+                  77,
+                  124,
+                  114,
+                  84,
+                  93
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › PercentEncode<'a>"
+            },
+            "kind": "type",
+            "language": "unknown",
+            "score": 4294967294,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::ec35dd9e841c3485403f84c0aa4c283af592c90b0b0595eaa39cf5d8b79cdd4f::PercentEncode<'_>",
+              "name": "PercentEncode<'_>",
+              "segments": [
+                "PercentEncode<'_>"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  131,
+                  78,
+                  236,
+                  85,
+                  79,
+                  147,
+                  67,
+                  133,
+                  110,
+                  245,
+                  89,
+                  51,
+                  231,
+                  66,
+                  123,
+                  230,
+                  207,
+                  45,
+                  44,
+                  96,
+                  83,
+                  231,
+                  67,
+                  222,
+                  69,
+                  124,
+                  204,
+                  85,
+                  2,
+                  249,
+                  82,
+                  44
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › PercentEncode<'_>"
+            },
+            "kind": "type",
+            "language": "unknown",
+            "score": 4294967293,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::external::symbol:349dca10b6b3dda9266e6e87a9894d00e2c19230d597112ce07f87d4cb754b60::From<PercentEncode<'a>>",
+              "name": "From<PercentEncode<'a>>",
+              "segments": [
+                "From<PercentEncode<'a>>"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  52,
+                  157,
+                  202,
+                  16,
+                  182,
+                  179,
+                  221,
+                  169,
+                  38,
+                  110,
+                  110,
+                  135,
+                  169,
+                  137,
+                  77,
+                  0,
+                  226,
+                  193,
+                  146,
+                  48,
+                  213,
+                  151,
+                  17,
+                  44,
+                  224,
+                  127,
+                  135,
+                  212,
+                  203,
+                  117,
+                  75,
+                  96
+                ]
+              },
+              "shape": "external",
+              "trail": "project › From<PercentEncode<'a>>"
+            },
+            "language": "unknown",
+            "score": 4294967292,
+            "state": "ready"
+          }
+        ],
+        "semantic_search": {
+          "reason": "unconfigured",
+          "status": "unavailable"
+        }
+      }
+    },
+    "mcp": {
+      "calls": [
+        {
+          "call": {
+            "arguments": {
+              "limit": 3,
+              "query": "PercentEncode"
+            },
+            "tool": "backend.search"
+          },
+          "reply": {
+            "_meta": {
+              "backend/wireBudget": {
+                "bytesPerToken": 4,
+                "limitBytes": 49152,
+                "limitTokens": 12000,
+                "normalizedEstimatedTokensExcludingCounters": 901,
+                "normalizedFrameBytesExcludingCounters": 3601,
+                "scope": "complete_jsonrpc_line",
+                "tokenPolicy": "cl100k_base/ordinary-v1",
+                "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
+                "vocabularySha256": "69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992"
+              }
+            },
+            "content": [
+              {
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n• `PercentEncode` · struct · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::a3a78a92969ecd6d25f04a56b2d21af5b58b0d442df0bc27920dbc35f825ef8d::PercentEncode`\n• `PercentEncode<'a>` · type · unknown\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::a9f4c54e047df460cc9e5380ad005d9e718b09ab2ab76bbc4594afd16404cfa5::PercentEncode<'a>`\n• `PercentEncode<'_>` · type · unknown\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::ec35dd9e841c3485403f84c0aa4c283af592c90b0b0595eaa39cf5d8b79cdd4f::PercentEncode<'_>`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
+                "type": "text"
+              }
+            ],
+            "isError": false,
+            "structuredContent": {
+              "answer": "records",
+              "budget": {
+                "bytesExcludingCursor": 2104,
+                "bytesPerToken": 4,
+                "estimatedTokensExcludingCursor": 526
+              },
+              "coverage": [
+                {
+                  "lane": "exact",
+                  "state": "complete"
+                },
+                {
+                  "lane": "names",
+                  "state": "complete"
+                },
+                {
+                  "lane": "graph",
+                  "state": "complete"
+                },
+                {
+                  "lane": "semantic",
+                  "reason": "unconfigured",
+                  "state": "unavailable"
+                }
+              ],
+              "detail": "summary",
+              "more": true,
+              "nextCursor": "mcp2-<live-validated>",
+              "query": "PercentEncode",
+              "readiness": "ready",
+              "records": [
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::a3a78a92969ecd6d25f04a56b2d21af5b58b0d442df0bc27920dbc35f825ef8d::PercentEncode",
+                    "line": 142,
+                    "name": "PercentEncode",
+                    "path": "src/lib.rs",
+                    "segments": [
+                      "PercentEncode"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        145,
+                        79,
+                        79,
+                        20,
+                        226,
+                        128,
+                        135,
+                        214,
+                        53,
+                        61,
+                        134,
+                        112,
+                        105,
+                        220,
+                        216,
+                        224,
+                        236,
+                        223,
+                        219,
+                        198,
+                        28,
+                        106,
+                        172,
+                        58,
+                        245,
+                        109,
+                        88,
+                        118,
+                        86,
+                        87,
+                        15,
+                        182
+                      ]
+                    },
+                    "shape": "semantic",
+                    "trail": "project › src/lib.rs:142 › PercentEncode"
+                  },
+                  "kind": "struct",
+                  "language": "rust",
+                  "score": 4294967295,
+                  "state": "ready",
+                  "summary": "The return type of"
+                },
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::a9f4c54e047df460cc9e5380ad005d9e718b09ab2ab76bbc4594afd16404cfa5::PercentEncode<'a>",
+                    "name": "PercentEncode<'a>",
+                    "segments": [
+                      "PercentEncode<'a>"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        130,
+                        166,
+                        233,
+                        251,
+                        51,
+                        144,
+                        250,
+                        119,
+                        42,
+                        25,
+                        129,
+                        70,
+                        84,
+                        224,
+                        99,
+                        68,
+                        108,
+                        141,
+                        73,
+                        86,
+                        116,
+                        147,
+                        224,
+                        37,
+                        160,
+                        222,
+                        96,
+                        77,
+                        124,
+                        114,
+                        84,
+                        93
+                      ]
+                    },
+                    "shape": "semantic",
+                    "trail": "project › PercentEncode<'a>"
+                  },
+                  "kind": "type",
+                  "language": "unknown",
+                  "score": 4294967294,
+                  "state": "ready"
+                },
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::ec35dd9e841c3485403f84c0aa4c283af592c90b0b0595eaa39cf5d8b79cdd4f::PercentEncode<'_>",
+                    "name": "PercentEncode<'_>",
+                    "segments": [
+                      "PercentEncode<'_>"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        131,
+                        78,
+                        236,
+                        85,
+                        79,
+                        147,
+                        67,
+                        133,
+                        110,
+                        245,
+                        89,
+                        51,
+                        231,
+                        66,
+                        123,
+                        230,
+                        207,
+                        45,
+                        44,
+                        96,
+                        83,
+                        231,
+                        67,
+                        222,
+                        69,
+                        124,
+                        204,
+                        85,
+                        2,
+                        249,
+                        82,
+                        44
+                      ]
+                    },
+                    "shape": "semantic",
+                    "trail": "project › PercentEncode<'_>"
+                  },
+                  "kind": "type",
+                  "language": "unknown",
+                  "score": 4294967293,
+                  "state": "ready"
+                }
+              ],
+              "semantic_search": {
+                "reason": "unconfigured",
+                "status": "unavailable"
+              }
+            }
+          }
+        },
+        {
+          "call": {
+            "arguments": {
+              "limit": 3,
+              "query": "AsciiSet"
+            },
+            "tool": "backend.search"
+          },
+          "reply": {
+            "_meta": {
+              "backend/wireBudget": {
+                "bytesPerToken": 4,
+                "limitBytes": 49152,
+                "limitTokens": 12000,
+                "normalizedEstimatedTokensExcludingCounters": 889,
+                "normalizedFrameBytesExcludingCounters": 3556,
+                "scope": "complete_jsonrpc_line",
+                "tokenPolicy": "cl100k_base/ordinary-v1",
+                "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
+                "vocabularySha256": "69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992"
+              }
+            },
+            "content": [
+              {
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n• `AsciiSet` · struct · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::03d4cf8275bbde9af062483aa42b5803afa6d6ab168baea9577972a2f0cf6f0b::AsciiSet`\n• `AsciiSet` · import · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::f6ff4af48d0445a862ca7b44924a66c53728a211bf3d4c409ba6b948d8f25185::AsciiSet`\n• `AsciiSet` · type · unknown\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::e87b278e6619b380f76383081933421344717f10d073c5db36fc8aed17534918::AsciiSet`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
+                "type": "text"
+              }
+            ],
+            "isError": false,
+            "structuredContent": {
+              "answer": "records",
+              "budget": {
+                "bytesExcludingCursor": 2106,
+                "bytesPerToken": 4,
+                "estimatedTokensExcludingCursor": 527
+              },
+              "coverage": [
+                {
+                  "lane": "exact",
+                  "state": "complete"
+                },
+                {
+                  "lane": "names",
+                  "state": "complete"
+                },
+                {
+                  "lane": "graph",
+                  "state": "complete"
+                },
+                {
+                  "lane": "semantic",
+                  "reason": "unconfigured",
+                  "state": "unavailable"
+                }
+              ],
+              "detail": "summary",
+              "more": true,
+              "nextCursor": "mcp2-<live-validated>",
+              "query": "AsciiSet",
+              "readiness": "ready",
+              "records": [
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::03d4cf8275bbde9af062483aa42b5803afa6d6ab168baea9577972a2f0cf6f0b::AsciiSet",
+                    "line": 28,
+                    "name": "AsciiSet",
+                    "path": "src/ascii_set.rs",
+                    "segments": [
+                      "AsciiSet"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        69,
+                        232,
+                        55,
+                        239,
+                        225,
+                        249,
+                        41,
+                        107,
+                        67,
+                        245,
+                        175,
+                        155,
+                        22,
+                        68,
+                        58,
+                        164,
+                        78,
+                        205,
+                        119,
+                        12,
+                        249,
+                        61,
+                        181,
+                        242,
+                        110,
+                        188,
+                        156,
+                        8,
+                        237,
+                        167,
+                        68,
+                        113
+                      ]
+                    },
+                    "shape": "semantic",
+                    "trail": "project › src/ascii_set.rs:28 › AsciiSet"
+                  },
+                  "kind": "struct",
+                  "language": "rust",
+                  "score": 4294967295,
+                  "state": "ready",
+                  "summary": "Represents a set of characters or bytes in the ASCII range."
+                },
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::f6ff4af48d0445a862ca7b44924a66c53728a211bf3d4c409ba6b948d8f25185::AsciiSet",
+                    "line": 56,
+                    "name": "AsciiSet",
+                    "path": "src/lib.rs",
+                    "segments": [
+                      "AsciiSet"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        48,
+                        69,
+                        156,
+                        217,
+                        151,
+                        23,
+                        135,
+                        133,
+                        92,
+                        93,
+                        134,
+                        162,
+                        32,
+                        216,
+                        234,
+                        229,
+                        149,
+                        6,
+                        159,
+                        87,
+                        155,
+                        86,
+                        6,
+                        35,
+                        245,
+                        61,
+                        124,
+                        76,
+                        81,
+                        183,
+                        125,
+                        46
+                      ]
+                    },
+                    "shape": "semantic",
+                    "trail": "project › src/lib.rs:56 › AsciiSet"
+                  },
+                  "kind": "import",
+                  "language": "rust",
+                  "score": 4294967294,
+                  "state": "ready"
+                },
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e87b278e6619b380f76383081933421344717f10d073c5db36fc8aed17534918::AsciiSet",
+                    "name": "AsciiSet",
+                    "segments": [
+                      "AsciiSet"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        107,
+                        39,
+                        104,
+                        225,
+                        160,
+                        236,
+                        4,
+                        238,
+                        53,
+                        53,
+                        248,
+                        228,
+                        186,
+                        82,
+                        160,
+                        49,
+                        193,
+                        72,
+                        96,
+                        63,
+                        110,
+                        121,
+                        107,
+                        115,
+                        248,
+                        199,
+                        145,
+                        63,
+                        53,
+                        105,
+                        188,
+                        250
+                      ]
+                    },
+                    "shape": "semantic",
+                    "trail": "project › AsciiSet"
+                  },
+                  "kind": "type",
+                  "language": "unknown",
+                  "score": 4294967293,
+                  "state": "ready"
+                }
+              ],
+              "semantic_search": {
+                "reason": "unconfigured",
+                "status": "unavailable"
+              }
+            }
+          }
+        },
+        {
+          "call": {
+            "arguments": {},
+            "tool": "backend.outline"
+          },
+          "reply": {
+            "_meta": {
+              "backend/wireBudget": {
+                "bytes": 32124,
+                "bytesPerToken": 4,
+                "estimatedTokens": 8031,
+                "limitBytes": 49152,
+                "limitTokens": 12000,
+                "scope": "complete_jsonrpc_line",
+                "tokenPolicy": "cl100k_base/ordinary-v1",
+                "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
+                "vocabularySha256": "69111b35d5b2fed760d611fd634c3dd0f75310ccfc1938740cda69041674e992"
+              }
+            },
+            "content": [
+              {
+                "text": "# project\n`/tmp/nudox-surface/rust-percent-encoding/project`\n\nτ Cow<'a, str>  `Cow<'a, str>`\n  ƒ from  `src/lib.rs:195 › from`\n    ▫ iter  `iter`\n    ▫ from  `from`\nƒ percent_decode  `percent_decode`\n  ▫ percent_decode  `percent_decode`\n  ▫ input  `input`\n▫ Iter<'_, u8>  `slice::Iter<'_, u8>`\nτ Cow<'a, [u8]>  `Cow<'a, [u8]>`\n  ƒ from  `src/lib.rs:281 › from`\n    ▫ iter  `iter`\n    ▫ from  `from`\n▫ [u8]  `[u8]`\n▪ BITS_PER_CHUNK  `src/ascii_set.rs:36 › BITS_PER_CHUNK`\n▦ ascii_set  `src/lib.rs:58 › ascii_set`\n▫ Formatter<'_>  `fmt::Formatter<'_>`\n→ AsciiSet  `src/lib.rs:56 › AsciiSet`\nτ Chunk  `src/ascii_set.rs:32 › Chunk`\nƒ percent_encode_byte  `percent_encode_byte`\n  ▫ byte  `byte`\n  ▫ percent_encode_byte  `percent_encode_byte`\n  ▫ ENC_TABLE  `src/lib.rs:74 › ENC_TABLE`\n▣ AsciiSet  `src/ascii_set.rs:28 › AsciiSet`\n  · mask  `src/ascii_set.rs:29 › mask`\n! static_assert  `src/ascii_set.rs:116 › static_assert`\nƒ decode_utf8_lossy  `src/lib.rs:339 › decode_utf8_lossy`\n  ▫ input  `input`\n  ▫ decode_utf8_lossy  `decode_utf8_lossy`\nƒ percent_decode_str  `percent_decode_str`\n  ▫ percent_decode_str  `percent_decode_str`\n  ▫ input  `input`\nτ AsciiSet  `AsciiSet`\n  τ Output  `src/ascii_set.rs:95 › Output`\n  ƒ not  `src/ascii_set.rs:97 › not`\n    ▫ not  `not`\n    ▫ self  `self`\n▫ Option<usize>  `Option<usize>`\nτ PercentDecode<'_>  `PercentDecode<'_>`\n  ƒ next  `src/lib.rs:263 › next`\n    ▫ self  `self`\n    ▫ next  `next`\n  τ Item  `src/lib.rs:261 › Item`\n  ƒ size_hint  `src/lib.rs:273 › size_hint`\n    ▫ self  `self`\n    ▫ size_hint  `size_hint`\n▫ &'a str  `&'a str`\nτ PercentEncode<'a>  `PercentEncode<'a>`\n  ƒ size_hint  `src/lib.rs:175 › size_hint`\n    ▫ size_hint  `size_hint`\n    ▫ self  `self`\n  τ Item  `src/lib.rs:148 › Item`\n  ƒ next  `src/lib.rs:150 › next`\n    ▫ next  `next`\n    ▫ self  `self`\nτ PercentEncode<'_>  `PercentEncode<'_>`\n  ƒ fmt  `src/lib.rs:185 › fmt`\n    ▫ fmt  `fmt`\n    ▫ self  `self`\n    ▫ formatter  `formatter`\n▣ PercentDecode  `src/lib.rs:248 › PercentDecode`\n  · bytes  `src/lib.rs:249 › bytes`\n▫ Cow<'a, str>  `Cow<'a, str>`\n▣ PercentEncode  `src/lib.rs:142 › PercentEncode`\n  · ascii_set  `src/lib.rs:144 › ascii_set`\n  · bytes  `src/lib.rs:143 › bytes`\nƒ utf8_percent_encode  `utf8_percent_encode`\n  ▫ input  `input`\n  ▫ ascii_set  `ascii_set`\n  ▫ utf8_percent_encode  `utf8_percent_encode`\nƒ percent_encode  `src/lib.rs:117 › percent_encode`\n  ▫ percent_encode  `percent_encode`\n  ▫ ascii_set  `ascii_set`\n  ▫ input  `input`\nτ AsciiSet  `AsciiSet`\n  ▪ EMPTY  `src/ascii_set.rs:40 › EMPTY`\n  ƒ contains  `src/ascii_set.rs:46 › contains`\n    ▫ contains  `contains`\n    ▫ byte  `byte`\n    ▫ self  `self`\n  ƒ should_percent_encode  `src/ascii_set.rs:52 › should_percent_encode`\n    ▫ should_percent_encode  `should_percent_encode`\n    ▫ byte  `byte`\n    ▫ self  `self`\n  ƒ add  `src/ascii_set.rs:56 › add`\n    ▫ byte  `byte`\n    ▫ self  `self`\n    ▫ add  `add`\n  ƒ complement  `complement`\n    ▫ self  `self`\n    ▫ complement  `complement`\n  ƒ remove  `src/ascii_set.rs:62 › remove`\n    ▫ remove  `remove`\n    ▫ self  `self`\n    ▫ byte  `byte`\n  ƒ union  `union`\n    ▫ self  `self`\n    ▫ union  `union`\n    ▫ other  `other`\nτ AsciiSet  `AsciiSet`\n  τ Output  `src/ascii_set.rs:87 › Output`\n  ƒ add  `src/ascii_set.rs:89 › add`\n    ▫ add  `add`\n    ▫ other  `other`\n    ▫ self  `self`\n▪ NON_ALPHANUMERIC  `src/ascii_set.rs:137 › NON_ALPHANUMERIC`\n▫ [u8; 768]  `[u8; 768]`\n▪ CONTROLS  `src/ascii_set.rs:107 › CONTROLS`\n▦ crate  `crate`\n→ NON_ALPHANUMERIC  `src/lib.rs:56 › NON_ALPHANUMERIC`\n▫ Vec<u8>  `Vec<u8>`\nτ PercentDecode<'a>  `PercentDecode<'a>`\n  ƒ decode_utf8_lossy  `src/lib.rs:330 › decode_utf8_lossy`\n    ▫ self  `self`\n    ▫ decode_utf8_lossy  `decode_utf8_lossy`\n  ƒ if_any  `src/lib.rs:292 › if_any`\n    ▫ self  `self`\n    ▫ if_any  `if_any`\n  ƒ decode_utf8  `src/lib.rs:312 › decode_utf8`\n    ▫ self  `self`\n    ▫ decode_utf8  `decode_utf8`\nƒ after_percent_sign  `src/lib.rs:252 › after_percent_sign`\n  ▫ after_percent_sign  `after_percent_sign`\n  ▫ iter  `iter`\n▪ ASCII_RANGE_LEN  `src/ascii_set.rs:34 › ASCII_RANGE_LEN`\n→ CONTROLS  `src/lib.rs:56 › CONTROLS`\n125 declaration(s) · complete\n",
+                "type": "text"
+              }
+            ],
+            "isError": false,
+            "structuredContent": {
+              "answer": "outline",
+              "budget": {
+                "bytes": 27092,
+                "bytesPerToken": 4,
+                "estimatedTokens": 6773
+              },
+              "declarations": 125,
+              "detail": "summary",
+              "extent": "complete",
+              "package": {
+                "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project",
+                "key": "4847644e",
+                "name": "project",
+                "project": "/tmp/nudox-surface/rust-percent-encoding/project",
+                "segments": [],
+                "shape": "package",
+                "trail": "project"
+              },
+              "page": {
+                "branch": "4650a5d2d38c507c621bb7adec963afac7bd740bbc85007b1cd609a67fb2482f",
+                "coverage": [
+                  {
+                    "lane": "exact",
+                    "state": "complete"
+                  },
+                  {
+                    "lane": "names",
+                    "state": "complete"
+                  },
+                  {
+                    "lane": "graph",
+                    "state": "complete"
+                  },
+                  {
+                    "lane": "semantic",
+                    "reason": "unconfigured",
+                    "state": "unavailable"
+                  }
+                ],
+                "limit": 200,
+                "log": "12a40b1a9d8b3af092eb9574575967c19a5db9ca48ede54226e28f29361e3760",
+                "more": false,
+                "schema": 3,
+                "sequence": 2,
+                "source_object": "a98a26890e4ceda87d8aff319566d807cf8e3ba77cfac06e7f2950263db5c5c1",
+                "source_root": "df9e741237da30ee5a2f758eeece5c8bbb7f6404664c6d284af70bb78b0875fd"
+              },
+              "roots": [
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::299d54128aa181684c18b6dec059cb61a74ce0dcc8fae14bbe335f52a339b016::iter",
+                          "key": "3c9faa0b",
+                          "kind": "variable",
+                          "name": "iter"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::c5b00010b088691f5ead7058c4a7e2d74770908d1f9a8e73c527a41fda972c83::from",
+                          "key": "57d6ca81",
+                          "kind": "variable",
+                          "name": "from"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::faec605e678351e10d1944161949af5aeaa31cb9568fc0c60df2c98111a65d20::from",
+                      "key": "badc6f74",
+                      "kind": "function",
+                      "name": "from"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::77b8ae9791b14918c22baaac78d56c6a40f21efeefcdbb1b2758febe98013f0b::Cow<'a, str>",
+                  "key": "00be1040",
+                  "kind": "type",
+                  "name": "Cow<'a, str>"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::f5a8599341194aa127c6692ea8a9cfa8acaba4a591a6789c9a3815b8382da804::percent_decode",
+                      "key": "1784b3a3",
+                      "kind": "variable",
+                      "name": "percent_decode"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::c523c97ac747f7e1ab8792de05e221738dbeb4f24344c47afb7fcdaeb0c0eab7::input",
+                      "key": "ac22afda",
+                      "kind": "variable",
+                      "name": "input"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::8f34bd8b367968b228f57f85ed70f6920495197f95e6cda3b4abbf9ceecd08fa::percent_decode",
+                  "key": "01f1f3cf",
+                  "kind": "function",
+                  "name": "percent_decode"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::5703ca985bf2d907523fe455452180148600d34c299fbea2f478a44f03e58f88::slice::Iter<'_, u8>",
+                  "key": "0d4d0605",
+                  "kind": "variable",
+                  "name": "Iter<'_, u8>"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::3fd9c89cdfa2a077b7bfb7bd178effaabefa8488f0108fbdd0e9ac5dbdd469b4::iter",
+                          "key": "62b87d68",
+                          "kind": "variable",
+                          "name": "iter"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e1976d9ec46435cf3a7fb6ee41f531714770908d1f9a8e73c527a41fda972c83::from",
+                          "key": "b8b1ea83",
+                          "kind": "variable",
+                          "name": "from"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::85f7da7640554b6f07fbab2fa499b1a4355fad64c2a367faea54680f8e849e33::from",
+                      "key": "33f5d5dd",
+                      "kind": "function",
+                      "name": "from"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::34dd6674f9a22f2745af6e10b6bb66c50b4264eac6cd1fef1712b7d4fd17c1d8::Cow<'a, [u8]>",
+                  "key": "13f54d85",
+                  "kind": "type",
+                  "name": "Cow<'a, [u8]>"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::fc7e7158aaac2f8c4663d4db518f7bf82e92661a3aab97ed4d7f965083563cba::[u8]",
+                  "key": "144f347f",
+                  "kind": "variable",
+                  "name": "[u8]"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::76c4bcff7b4764a5488b556560ced842dbc2310b8b84ceda65a2c44becbc5cb6::BITS_PER_CHUNK",
+                  "key": "1e028ddc",
+                  "kind": "constant",
+                  "name": "BITS_PER_CHUNK"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e23890e5cb8ed4c324691e449e2bf2de62412dbe1ff477b03f11fb4b6329ef9a::ascii_set",
+                  "key": "23cc721e",
+                  "kind": "module",
+                  "name": "ascii_set"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::5cea79ee62593124327bd713fe88cb1b90b9e1c90e02e3a722a32b6059e82f8a::fmt::Formatter<'_>",
+                  "key": "2b9d1fa6",
+                  "kind": "variable",
+                  "name": "Formatter<'_>"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::f6ff4af48d0445a862ca7b44924a66c53728a211bf3d4c409ba6b948d8f25185::AsciiSet",
+                  "key": "30459cd9",
+                  "kind": "import",
+                  "name": "AsciiSet"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::aeb034d36bb2f35dd37ef1661880300276584c777911e7eb721c530a41a5f145::Chunk",
+                  "key": "35a5a560",
+                  "kind": "type",
+                  "name": "Chunk"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::aec417ed14a79ff238884a3654c2d6ed868a1429c09efa0d920e7447bb185143::byte",
+                      "key": "64203f1e",
+                      "kind": "variable",
+                      "name": "byte"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::2bf951b841c18cdec7aba3cbfe78daadaed920778556a87c053f737235802d99::percent_encode_byte",
+                      "key": "88498cd3",
+                      "kind": "variable",
+                      "name": "percent_encode_byte"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e947e863014c8f2da08b4b6f9f81494e5f04c502934046a16e1ee2d61faf87e8::ENC_TABLE",
+                      "key": "eb7a9d11",
+                      "kind": "variable",
+                      "name": "ENC_TABLE"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::ad696fc67dd957cf1a41320e26525509bb9e0885d0f234a9bcfa6b4ee98a9f3e::percent_encode_byte",
+                  "key": "43389e52",
+                  "kind": "function",
+                  "name": "percent_encode_byte"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::132add7525a3c47cfb99f4d72dad6ffee4b2e6d82cffacbdb4403ff51eae4d81::mask",
+                      "key": "2c1d8ee8",
+                      "kind": "field",
+                      "name": "mask"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::03d4cf8275bbde9af062483aa42b5803afa6d6ab168baea9577972a2f0cf6f0b::AsciiSet",
+                  "key": "45e837ef",
+                  "kind": "struct",
+                  "name": "AsciiSet"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::cd518faddae8c0f5b7845b3ef93a05a8e7771cfe8280d7f4d0d9d390b58626f8::static_assert",
+                  "key": "504b7d77",
+                  "kind": "macro",
+                  "name": "static_assert"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::bfb11ea45b8b92648a853e71ba03b01df35b1f990c4b0ed9fa571fd289ae1812::input",
+                      "key": "12afb791",
+                      "kind": "variable",
+                      "name": "input"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::445c381786693cb732d4bfb9a66e65e8af35a17163a02b2cf6005633f6c63c33::decode_utf8_lossy",
+                      "key": "a572ff80",
+                      "kind": "variable",
+                      "name": "decode_utf8_lossy"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::08045305779f9858cc23d30e41b0a5b695be085226e1f2fa42bc3a2a8e21d315::decode_utf8_lossy",
+                  "key": "5317094f",
+                  "kind": "function",
+                  "name": "decode_utf8_lossy"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::5100eb07af1f06b074a532a5c9260d728c603614e6042db40d04dae076682456::percent_decode_str",
+                      "key": "4871d089",
+                      "kind": "variable",
+                      "name": "percent_decode_str"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::6b9781e4c337953ade0f3dd2ac566bedd41555253b75adb089b87c659c2a04ff::input",
+                      "key": "5f0077b1",
+                      "kind": "variable",
+                      "name": "input"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::b303ccf06117d3bd933bc94599718e6bd9950ec22b527128bc5f2458f5aa8e4b::percent_decode_str",
+                  "key": "58eab1c1",
+                  "kind": "function",
+                  "name": "percent_decode_str"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::00fe250d3d268e3d7862cfacb1fc67dc4aad63ce0eb7a32ca37bae7286ccf321::Output",
+                      "key": "b9407c8e",
+                      "kind": "type",
+                      "name": "Output"
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::d7d0ec2bcc4003aa6e36a73f0211b3e016a5d0ddbff1fd0b6dfc740034c8a0e6::not",
+                          "key": "4ec81750",
+                          "kind": "variable",
+                          "name": "not"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::c9f0f159a649ef941ed261cc60a5edc0fd33da06cb6ff70ad68c1932d5bd95f4::self",
+                          "key": "c083c78e",
+                          "kind": "variable",
+                          "name": "self"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::6f0ed9817db5cda6d029759a5f0fd1afb3f6c9340c71401c431811901f668796::not",
+                      "key": "d52406ea",
+                      "kind": "function",
+                      "name": "not"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e87b278e6619b380f76383081933421344717f10d073c5db36fc8aed17534918::AsciiSet",
+                  "key": "6b2768e1",
+                  "kind": "type",
+                  "name": "AsciiSet"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::4c69e7b181d43f1fb97b6175c41a8ccc7dad6e13e79e377fc763ef6e36140b05::Option<usize>",
+                  "key": "6c573d3d",
+                  "kind": "variable",
+                  "name": "Option<usize>"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::fc56384af1d7d5c8c9021b548587c05a1f0e8949fc15023a6af02039921bd496::self",
+                          "key": "a9973f3b",
+                          "kind": "variable",
+                          "name": "self"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::7d71c165fd93d64bb423d88fb9b0c2b537b3312836470f19c9682c27759880a6::next",
+                          "key": "b82dfe0a",
+                          "kind": "variable",
+                          "name": "next"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::ce993b8fe28df368ee6df3192d211021d4729cce16651eeef7f610d65a8e2325::next",
+                      "key": "1545aadd",
+                      "kind": "function",
+                      "name": "next"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::449e407e4b31f5cbfbaa90f9bb2964c7d2fa53889ea4aa096f6732cb02b699cc::Item",
+                      "key": "394332b6",
+                      "kind": "type",
+                      "name": "Item"
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::7a726a19015d53c127763f29c77946c60e193cb34039c3884e1d57bec5767ba3::self",
+                          "key": "633c40a0",
+                          "kind": "variable",
+                          "name": "self"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::d2ebca396068f549aee00a40c19d47eb4cd1174dda3666c7da337e23e6fdac1a::size_hint",
+                          "key": "becd22e5",
+                          "kind": "variable",
+                          "name": "size_hint"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::dadc1099afc168ba86b6a70c14cb67c3ac99fad7c99226114764310c00c71f1a::size_hint",
+                      "key": "6cbc1ca3",
+                      "kind": "function",
+                      "name": "size_hint"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::4aed7020f51960feb5764cf4dde915827adca6a378579e31080ecc01e8c5c901::PercentDecode<'_>",
+                  "key": "6e78c6fa",
+                  "kind": "type",
+                  "name": "PercentDecode<'_>"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::f162bddfbaafad9f0b931ed42b035ca7a0a2817e25c09fb1ed5612663c405634::&'a str",
+                  "key": "78197f2a",
+                  "kind": "variable",
+                  "name": "&'a str"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::32f69af6a15746e343fdbf2db0ab43af4cd1174dda3666c7da337e23e6fdac1a::size_hint",
+                          "key": "71b6d7e9",
+                          "kind": "variable",
+                          "name": "size_hint"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::7954f161a909ae4f40baff44fc9504a39388cd42bb64dfbfba08845d05c58410::self",
+                          "key": "8f72e110",
+                          "kind": "variable",
+                          "name": "self"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::9fd8b7a2a19f5061338385b076c3e17c2352dc6a54b8249f11b24670c07388a1::size_hint",
+                      "key": "8723df02",
+                      "kind": "function",
+                      "name": "size_hint"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::23d61bc44c8af9051a50c9e0ab84070bf4fc01092278108d2fea5f46275e892c::Item",
+                      "key": "c0a0001c",
+                      "kind": "type",
+                      "name": "Item"
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::0da8fc5e9aea914641f933bfd47a30901b904c205846802f7a024a33ec093b34::next",
+                          "key": "44c031af",
+                          "kind": "variable",
+                          "name": "next"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::9b59d6beb6a899315be513c862a8b26591234fddd42f0e99a19d7002e3720a53::self",
+                          "key": "c160facc",
+                          "kind": "variable",
+                          "name": "self"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::08a2f07551358c5f2d94c8553c3456780fbbe8a416e125a802d92e20ecb46be8::next",
+                      "key": "f6dfe890",
+                      "kind": "function",
+                      "name": "next"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::a9f4c54e047df460cc9e5380ad005d9e718b09ab2ab76bbc4594afd16404cfa5::PercentEncode<'a>",
+                  "key": "82a6e9fb",
+                  "kind": "type",
+                  "name": "PercentEncode<'a>"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::3152597927069d104342fbd5065f58b299f25ecb5086acda6906e25d22aa4d74::fmt",
+                          "key": "62fce9c0",
+                          "kind": "variable",
+                          "name": "fmt"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::eea084cd476da0516e7fac4732fd2f8d9388cd42bb64dfbfba08845d05c58410::self",
+                          "key": "63c89ab3",
+                          "kind": "variable",
+                          "name": "self"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::57c373afd3c909b8b5787bfcc5c6d3990eaf323325611e0f52533fa822f370ae::formatter",
+                          "key": "f38d1659",
+                          "kind": "variable",
+                          "name": "formatter"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::fc9298ac8c709e7ae8a6e79492fa2bc8662d5decd3401a2baa238834228e5012::fmt",
+                      "key": "0212151c",
+                      "kind": "function",
+                      "name": "fmt"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::ec35dd9e841c3485403f84c0aa4c283af592c90b0b0595eaa39cf5d8b79cdd4f::PercentEncode<'_>",
+                  "key": "834eec55",
+                  "kind": "type",
+                  "name": "PercentEncode<'_>"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::36c83b67e0b3a49c182a42ed3501afd57cead3ccd37a30cc9828a6e235cb0598::bytes",
+                      "key": "7a1b556e",
+                      "kind": "field",
+                      "name": "bytes"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::8a8cfb01be6bd6efb0fd416ccc0ec9f2bae4356f840169c3b984a72770710af6::PercentDecode",
+                  "key": "84f001f0",
+                  "kind": "struct",
+                  "name": "PercentDecode"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::9e79a9a2aaf39b2d716f05d6cc79a2428d3cac81453b682322e91d6c70cbd30b::Cow<'a, str>",
+                  "key": "8b4df2cd",
+                  "kind": "variable",
+                  "name": "Cow<'a, str>"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e753b3c063ae1149eb96633b51e034e962a553ef99f8c55912f94bc0122d4201::ascii_set",
+                      "key": "e30abd5b",
+                      "kind": "field",
+                      "name": "ascii_set"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::70cb5784c7aa7f98a1db7ed7192c29719f09c344054148c05b34848ea44c9141::bytes",
+                      "key": "f9cad9f7",
+                      "kind": "field",
+                      "name": "bytes"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::a3a78a92969ecd6d25f04a56b2d21af5b58b0d442df0bc27920dbc35f825ef8d::PercentEncode",
+                  "key": "914f4f14",
+                  "kind": "struct",
+                  "name": "PercentEncode"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::272e7c29e4c654f81ba7bede4d1c2a9c8b873b7ab74499304385e6fcb8f06fbf::input",
+                      "key": "211e27b1",
+                      "kind": "variable",
+                      "name": "input"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::266a537e6e08792c09844fd752365854022f622c8a4f4ca822c17db37245b614::ascii_set",
+                      "key": "e6b5803a",
+                      "kind": "variable",
+                      "name": "ascii_set"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::6deb62e5d82f5e93bb7f596ec019a44c3439592055d873bfa7b1ba9e932f20c7::utf8_percent_encode",
+                      "key": "efb43f16",
+                      "kind": "variable",
+                      "name": "utf8_percent_encode"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::634da06b4504632a7366df9e10181584b28f38468f980234ee3fca450ee77173::utf8_percent_encode",
+                  "key": "92459a3d",
+                  "kind": "function",
+                  "name": "utf8_percent_encode"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::40459e08c713cbbc4787bc1df47125b37c8790ab92347dd0adbc34957cb5321b::percent_encode",
+                      "key": "22307241",
+                      "kind": "variable",
+                      "name": "percent_encode"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::37786f9ce0970a2daabbf0784c252bf6022f622c8a4f4ca822c17db37245b614::ascii_set",
+                      "key": "483ba40a",
+                      "kind": "variable",
+                      "name": "ascii_set"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::f97a4dbb255827f701224445be92ddec6ac4cd4d2921c5439c0282abde144daf::input",
+                      "key": "ae357939",
+                      "kind": "variable",
+                      "name": "input"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::b32114bb75cbcfe09c6ad40e840c02988c2da15211a4e55a9baedc6a1f9f4094::percent_encode",
+                  "key": "9a9885e1",
+                  "kind": "function",
+                  "name": "percent_encode"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::bcd7a6dfff40f102b0f029818a60925aaebf63f87b5c7e474595185d6f03f76f::EMPTY",
+                      "key": "003b0f47",
+                      "kind": "constant",
+                      "name": "EMPTY"
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::fcdcb3e5c255aed3304ce939e38bc904ed0a33a006cbe99c45a726b8ed89b746::contains",
+                          "key": "05f3eab6",
+                          "kind": "variable",
+                          "name": "contains"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::ee425ee1da89806932f308c0faa6adc9868a1429c09efa0d920e7447bb185143::byte",
+                          "key": "0b079938",
+                          "kind": "variable",
+                          "name": "byte"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::46ac5451f243176a3029269a4ba25f87d391ac6b14843814dee8e993edfe70a9::self",
+                          "key": "b66533de",
+                          "kind": "variable",
+                          "name": "self"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e20179ce51bd2cd2e04dd869389fa551d6a9cf0f729a1d98b1fef24d46d1c2ae::contains",
+                      "key": "3f4e3623",
+                      "kind": "function",
+                      "name": "contains"
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::cbb9efdd82f519938ce873b2342a113451743a28ece49407166002734353ab23::should_percent_encode",
+                          "key": "5048c5c5",
+                          "kind": "variable",
+                          "name": "should_percent_encode"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::6e23c6ade51d496baf917e97fa49f82d868a1429c09efa0d920e7447bb185143::byte",
+                          "key": "54b369bc",
+                          "kind": "variable",
+                          "name": "byte"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::cd91e2b53eb32c1e98d4d8281cd97b82d391ac6b14843814dee8e993edfe70a9::self",
+                          "key": "924b0da5",
+                          "kind": "variable",
+                          "name": "self"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::0feea62d396c4bd6104f2792493f97fe787322937f3bed54cabb0270b24bf4b8::should_percent_encode",
+                      "key": "58dfee29",
+                      "kind": "function",
+                      "name": "should_percent_encode"
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::0f7e8a4bc5324a4d2fb2778b54f94cb7868a1429c09efa0d920e7447bb185143::byte",
+                          "key": "6c2d94e0",
+                          "kind": "variable",
+                          "name": "byte"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::bfedbd8a4374b454a9b63b5956288f40d391ac6b14843814dee8e993edfe70a9::self",
+                          "key": "6f1c038d",
+                          "kind": "variable",
+                          "name": "self"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::54ab33ad66ccfdb47fb90027f78ffe6d0f1de5bfc924daa7fa0518bd1859b0fe::add",
+                          "key": "d06f4fe9",
+                          "kind": "variable",
+                          "name": "add"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::2e0f070d2a9051d78e3bbc545d1689977259db8562657e4cfe761fc5a520e49a::add",
+                      "key": "5de925b7",
+                      "kind": "function",
+                      "name": "add"
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::cce8f806f2f8180c6e3c9da7df13afe3d391ac6b14843814dee8e993edfe70a9::self",
+                          "key": "290a7fa5",
+                          "kind": "variable",
+                          "name": "self"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::cba6e657fc79961ae7998fbbcc1e629b417ef3fdc39170c30e4a2f123c8ca679::complement",
+                          "key": "89eed424",
+                          "kind": "variable",
+                          "name": "complement"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::3f136ae114a9abb0cfd1857ed9e7a649aadfc1e319187d61522b5c4e601fba0b::complement",
+                      "key": "633ddab3",
+                      "kind": "function",
+                      "name": "complement"
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::6d221fb7fb2319bb0ce9b085fa0986daf73dcadcdb6207915e384080ed85c128::remove",
+                          "key": "0210c5cd",
+                          "kind": "variable",
+                          "name": "remove"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::f76126447188bf18c254072f67baaf12d391ac6b14843814dee8e993edfe70a9::self",
+                          "key": "23491139",
+                          "kind": "variable",
+                          "name": "self"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e75444b3b050fa26aadd927726a1703c868a1429c09efa0d920e7447bb185143::byte",
+                          "key": "98b1a89f",
+                          "kind": "variable",
+                          "name": "byte"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::815b11fe07081b6d416194667accbafe2a7125c2c05a08d82f28899c5765ebe8::remove",
+                      "key": "a2fd5b56",
+                      "kind": "function",
+                      "name": "remove"
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::ed698d889497964202076c9dae3198c7d391ac6b14843814dee8e993edfe70a9::self",
+                          "key": "75ca828a",
+                          "kind": "variable",
+                          "name": "self"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::a1330b6aaa6fdb16ab7597ea1f54f7712357e5c7b0e576853b0bd2b99063ab3f::union",
+                          "key": "94336b3a",
+                          "kind": "variable",
+                          "name": "union"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::415609df44e2599d3c6bb682fe9e1d0707229c418324b496f49724f92b1de5aa::other",
+                          "key": "caa1b35f",
+                          "kind": "variable",
+                          "name": "other"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::f8829e84bd578ea89a481f677fc8044ec19e324d6961f07de782a17835d8bb68::union",
+                      "key": "fd413bec",
+                      "kind": "function",
+                      "name": "union"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e87b278e6619b380f7638308193342139af01c5492dd599804843ff2d0c709b6::AsciiSet",
+                  "key": "9b2b42b2",
+                  "kind": "type",
+                  "name": "AsciiSet"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::bc5fcc8793d677d7788f07c1bf177f114aad63ce0eb7a32ca37bae7286ccf321::Output",
+                      "key": "2a62c427",
+                      "kind": "type",
+                      "name": "Output"
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::a7eca0513bb7e1aecc1635d026c922730f1de5bfc924daa7fa0518bd1859b0fe::add",
+                          "key": "2276f25c",
+                          "kind": "variable",
+                          "name": "add"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::87ce176e6c0cc04b3d3ad21029f4933407229c418324b496f49724f92b1de5aa::other",
+                          "key": "2da732dc",
+                          "kind": "variable",
+                          "name": "other"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::bbe001a12ef6877f5ab97ac8a3bdb68afd33da06cb6ff70ad68c1932d5bd95f4::self",
+                          "key": "2f96855d",
+                          "kind": "variable",
+                          "name": "self"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::573faf1b419ed07e8f4a689e127fd8c6366956720435a7a3cdf7a3bdaafac9c8::add",
+                      "key": "eb2329b7",
+                      "kind": "function",
+                      "name": "add"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e87b278e6619b380f763830819334213f9b909656c032298698b02d640eb6b71::AsciiSet",
+                  "key": "c3534395",
+                  "kind": "type",
+                  "name": "AsciiSet"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::6e682004df350de41c873b6082eb2ccdcc7ef66356a7d893bb2c3abf1aba4817::NON_ALPHANUMERIC",
+                  "key": "d302014c",
+                  "kind": "constant",
+                  "name": "NON_ALPHANUMERIC"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::bb9f65084fc3f66f54db1c80dfd446bf2b2ecdcfdb3896444baa086a439dc976::[u8; 768]",
+                  "key": "db90f6d1",
+                  "kind": "variable",
+                  "name": "[u8; 768]"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::5b8e76249194b4326f9197a73608a49502e52c610a7866079fa22cd369844700::CONTROLS",
+                  "key": "e347cb62",
+                  "kind": "constant",
+                  "name": "CONTROLS"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::bead6733899e232d71c285ddac655dbfc3d82b933ea7dc86822428439d84a3cf::crate",
+                  "key": "e7b03ac4",
+                  "kind": "module",
+                  "name": "crate"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::aed1f640bd70f00e3cc67fe791921d9d9cae8fbd01a85de9103a907d91441926::NON_ALPHANUMERIC",
+                  "key": "e82f25d6",
+                  "kind": "import",
+                  "name": "NON_ALPHANUMERIC"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::5a1c9f9d303863a851959fe1d9d4e42cbb40692f79e0b41392f6474800c56f71::Vec<u8>",
+                  "key": "f5d27ae7",
+                  "kind": "variable",
+                  "name": "Vec<u8>"
+                },
+                {
+                  "children": [
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::9f08b5e609966993ea28982ddd608bef54fb36d361610113dec29e54621864f2::self",
+                          "key": "0fd38e61",
+                          "kind": "variable",
+                          "name": "self"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::b586c367cbbcc7047c669e7f51eb967c347c7fe7847d43e0c26d4de923eef254::decode_utf8_lossy",
+                          "key": "80137747",
+                          "kind": "variable",
+                          "name": "decode_utf8_lossy"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::af9d6876906253a2e5457b3ab32edbb933ba1f01cced9e01abecb6350d72c413::decode_utf8_lossy",
+                      "key": "1cbb4cb3",
+                      "kind": "function",
+                      "name": "decode_utf8_lossy"
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::929fdc8a5d3b9b9e6f4449eed733d7730e193cb34039c3884e1d57bec5767ba3::self",
+                          "key": "58d6559f",
+                          "kind": "variable",
+                          "name": "self"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::9926c4b07ef9eabab8799a6893f33c466b129aa537994e8b03631ad0b73498c7::if_any",
+                          "key": "8312c2b8",
+                          "kind": "variable",
+                          "name": "if_any"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::a887e8ad9fa37c9596bb008f712d2208b3ba6fd00466fed54e1ec4d0a4b683a6::if_any",
+                      "key": "939176c9",
+                      "kind": "function",
+                      "name": "if_any"
+                    },
+                    {
+                      "children": [
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::71f8378c6bafe295bba674061d1cb68654fb36d361610113dec29e54621864f2::self",
+                          "key": "415b963b",
+                          "kind": "variable",
+                          "name": "self"
+                        },
+                        {
+                          "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::0d9c43b3b369e6f9f285f3e72c84d89994d0c9591b5ba08818e2dcd595b58163::decode_utf8",
+                          "key": "d472952d",
+                          "kind": "variable",
+                          "name": "decode_utf8"
+                        }
+                      ],
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::3d4ee6cb70545e2f1a31e591b57cad886192d167d78da8274f587997addc63c8::decode_utf8",
+                      "key": "ffbd07f3",
+                      "kind": "function",
+                      "name": "decode_utf8"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::105a1a133e96f96b8630d850184cc10c52dc07b337d5e0d5d927e3dd7f5e419b::PercentDecode<'a>",
+                  "key": "f6654b68",
+                  "kind": "type",
+                  "name": "PercentDecode<'a>"
+                },
+                {
+                  "children": [
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::0834b0a0298d374e5236a54f25f950dfec161c6fbaf5a98a71bbec6379b85b5c::after_percent_sign",
+                      "key": "567c873d",
+                      "kind": "variable",
+                      "name": "after_percent_sign"
+                    },
+                    {
+                      "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::d7244671b45eaa04a95fbe2720e4defdf616333c414d6b15dde827cab15be3ec::iter",
+                      "key": "6dc05bfa",
+                      "kind": "variable",
+                      "name": "iter"
+                    }
+                  ],
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::9e88e95590b063921f1535ff4f92d8120fd47db18576f1f91189fb41985ac80c::after_percent_sign",
+                  "key": "f8cc7d5f",
+                  "kind": "function",
+                  "name": "after_percent_sign"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::dc27d67e825dae54c0190c69893022680b3dbd61f4a0789365388eba74a158e1::ASCII_RANGE_LEN",
+                  "key": "fa694001",
+                  "kind": "constant",
+                  "name": "ASCII_RANGE_LEN"
+                },
+                {
+                  "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::96f27e0a38d7d22f95c1d1dc99e7bcb95c34b43f951a686a8b6e1b877b4f9e4b::CONTROLS",
+                  "key": "fe754eca",
+                  "kind": "import",
+                  "name": "CONTROLS"
+                }
+              ],
+              "unnamed": 0
+            }
+          }
+        }
+      ],
+      "exit": 0,
+      "tools": [
+        "backend.document",
+        "backend.graph",
+        "backend.index",
+        "backend.index_cancel",
+        "backend.index_progress",
+        "backend.index_search",
+        "backend.index_start",
+        "backend.outline",
+        "backend.package",
+        "backend.packages",
+        "backend.read",
+        "backend.references",
+        "backend.remove",
+        "backend.resolve",
+        "backend.search",
+        "backend.source",
+        "backend.status"
+      ]
+    }
+  },
+  "performance": {
+    "cpu_seconds": 19.46,
+    "peak_rss_kib": 799588,
+    "seconds": {
+      "cli add": 19.38,
+      "cli outline": 0.07,
+      "cli packages": 0.02,
+      "cli search AsciiSet": 0.04,
+      "cli search PercentEncode": 1.07,
+      "mcp": 0.21
+    }
+  }
+}

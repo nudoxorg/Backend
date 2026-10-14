@@ -1685,7 +1685,22 @@ impl QueryCoordinator {
                 .cmp(&self.corpus.placement_key(right.0, words))
                 .reverse()
                 .then_with(|| left.1.cmp(&right.1).reverse())
-                .then_with(|| left.0.cmp(&right.0))
+                // Provider IDs include the workspace namespace. Canonical
+                // rows in an identical view must not change tie order when
+                // that namespace changes after a fresh workspace/index run.
+                .then_with(|| {
+                    self.corpus
+                        .selected
+                        .entity(left.0)
+                        .map(|selected| selected.row)
+                        .cmp(
+                            &self
+                                .corpus
+                                .selected
+                                .entity(right.0)
+                                .map(|selected| selected.row),
+                        )
+                })
         };
         let exact_lexical_total = self
             .corpus
@@ -1838,7 +1853,22 @@ impl QueryCoordinator {
                 .cmp(&self.corpus.placement_key(right.0, words))
                 .reverse()
                 .then_with(|| left.1.cmp(&right.1).reverse())
-                .then_with(|| left.0.cmp(&right.0))
+                // Provider IDs include the workspace namespace. Canonical
+                // rows in an identical view must not change tie order when
+                // that namespace changes after a fresh workspace/index run.
+                .then_with(|| {
+                    self.corpus
+                        .selected
+                        .entity(left.0)
+                        .map(|selected| selected.row)
+                        .cmp(
+                            &self
+                                .corpus
+                                .selected
+                                .entity(right.0)
+                                .map(|selected| selected.row),
+                        )
+                })
         };
         let exact_lexical_total = self.corpus.lexical.for_each_ranked_hit_controlled(
             query.lexical(),
