@@ -13,7 +13,7 @@ fn object(properties: Value) -> Value {
 fn bytes(length: usize) -> Value {
     json!({"type":"array","items":{"type":"integer","minimum":0,"maximum":255},"minItems":length,"maxItems":length})
 }
-fn history_variant(state: &str, fields: Value) -> Value {
+fn history_variant(state: &str, fields: &Value) -> Value {
     let mut fields = fields.as_object().cloned().unwrap_or_default();
     fields.insert("state".to_owned(), json!({"const":state}));
     object(Value::Object(fields))
@@ -32,9 +32,9 @@ impl SemanticSourceRequest {
             json!({"package":package,"source_relation_root":digest,"source_version":digest,"file_count":count}),
         );
         let freshness = json!({"oneOf":[
-            history_variant("current", json!({"input_digest":digest})),
-            history_variant("historical", json!({"selected_input":digest,"latest_input":digest})),
-            history_variant("unverified", json!({})),
+            history_variant("current", &json!({"input_digest":digest})),
+            history_variant("historical", &json!({"selected_input":digest,"latest_input":digest})),
+            history_variant("unverified", &json!({})),
         ]});
         let metadata = object(json!({
             "package":package,"coordinate":label,"profile":profile,"generation":digest,
@@ -56,11 +56,13 @@ impl SemanticSourceRequest {
         let selection_id = json!({"selection_id":digest});
         let reason = json!({"selection_id":digest,"reason":{"type":"string","maxLength":crate::surface::MAX_SEMANTIC_HISTORY_STATUS_DETAIL_BYTES}});
         let history = json!({"oneOf":[
-            history_variant("not_selected", json!({})),
-            history_variant("not_requested", selection_id),history_variant("pending", selection_id),
-            history_variant("deferred", reason),history_variant("refused", reason),
-            history_variant("superseded", selection_id),
-            history_variant("published", json!({"selection_id":digest,"commit":digest,"reference":{"const":"selected-native-v3"},"proof":proof})),
+            history_variant("not_selected", &json!({})),
+            history_variant("not_requested", &selection_id),
+            history_variant("pending", &selection_id),
+            history_variant("deferred", &reason),
+            history_variant("refused", &reason),
+            history_variant("superseded", &selection_id),
+            history_variant("published", &json!({"selection_id":digest,"commit":digest,"reference":{"const":"selected-native-v3"},"proof":proof})),
         ]});
         let source = object(json!({
             "schema":{"const":1},"version":digest,
