@@ -395,6 +395,20 @@ pub enum LocalRuntimeGoAuthorityFailure {
     OracleUnavailable,
 }
 
+impl LocalRuntimeGoAuthorityFailure {
+    /// Sentence naming what could not be admitted and how to repair it.
+    #[must_use]
+    pub const fn explanation(self) -> &'static str {
+        match self {
+            Self::ExecutableUnavailable => "the selected go executable could not be used; set NUDOX_GO to its absolute path",
+            Self::GoRootUnavailable => "the selected go executable did not report a usable GOROOT",
+            Self::ModuleCacheUnavailable => "the Go module cache could not be opened; check GOMODCACHE",
+            Self::ToolchainIdentityUnavailable => "the Go installation could not be read to establish its identity",
+            Self::OracleUnavailable => "the selected Go oracle (NUDOX_GO_ORACLE) could not be used",
+        }
+    }
+}
+
 /// One closed Python checker admission state.
 ///
 /// Native authority carries its actual compiled producer identity. External `Ready`
@@ -2466,6 +2480,20 @@ pub enum LocalRuntimeRustAuthorityFailure {
     Deadline,
     /// The selected compiler, Cargo, and sysroot could not form a toolchain.
     ToolchainUnavailable,
+}
+
+impl LocalRuntimeRustAuthorityFailure {
+    /// Sentence naming what could not be admitted.
+    #[must_use]
+    pub const fn explanation(self) -> &'static str {
+        match self {
+            Self::CargoHomeUnavailable => "the default Cargo home could not be created or opened",
+            Self::SysrootUnavailable => "rustc did not report a usable sysroot",
+            Self::Cancelled => "the request was cancelled",
+            Self::Deadline => "the request deadline passed",
+            Self::ToolchainUnavailable => "rustc, cargo and the sysroot did not form a toolchain",
+        }
+    }
 }
 
 /// Request-time inferred sysroot and, when absent, default Cargo-home admission.
