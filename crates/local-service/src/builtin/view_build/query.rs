@@ -161,6 +161,7 @@ fn append_compiler_query_facts(
     }
 
     let opened = open_query_publications(&pending)?;
+    let sites = super::semantic::StructuralSites::of(sources)?;
     let mut package_published =
         BTreeMap::<backend_engine::PackageKey, BTreeSet<DeclarationIdentity>>::new();
     let mut package_paths = BTreeMap::<backend_engine::PackageKey, BTreeSet<String>>::new();
@@ -213,6 +214,18 @@ fn append_compiler_query_facts(
             let image = &opened_image.view;
             let caller_path = &opened_image.path;
             let session = DocumentationSession::new(image);
+            // The corpus names a declaration with the word its view row has, so
+            // it pairs entities with the file's written declarations the same
+            // way `project_image_rows` does (an import alias is the one word
+            // only the written twin settles), and only for an image built from
+            // the bytes now indexed.
+            let declarations = sites.declarations_of_source(
+                package.as_bytes(),
+                caller_path,
+                opened_image.source,
+            )?;
+            let declarations = declarations.iter().collect::<Vec<_>>();
+            let kinds = super::semantic::entity_kinds(profile, image, &session, &declarations)?;
             let identities = &opened_image.identities;
             let image_digest = opened_image.digest;
             let mut external_targets =
@@ -230,11 +243,7 @@ fn append_compiler_query_facts(
                     ));
                 }
                 let name = super::semantic_display_name(entity.name)?.to_owned();
-                // The search corpus names a declaration by what the image
-                // proves, the word its structural twin shares in every
-                // case but the few that only the written syntax settles.
-                let kind = super::kinds::image_entity_kind(profile, image, &session, &entity)
-                    .map_err(BuiltinModelError)?;
+                let kind = kinds.kind_of(identity, entity.entity.kind);
                 let content = semantic_row_content(profile, image, &entity, package, image_digest)?;
                 let parent = entity
                     .entity
@@ -425,6 +434,8 @@ fn append_compiler_query_facts(
 struct OpenedQueryImage<'a> {
     view: SemanticImageView<'a>,
     path: String,
+    /// The identity of the source bytes the image was compiled from.
+    source: backend_version::ContentId<backend_version::SourceFactDomain>,
     digest: [u8; 32],
     identities: BTreeSet<DeclarationIdentity>,
 }
@@ -447,7 +458,7 @@ fn open_query_publications<'a>(
             let view = bytes.reopen().map_err(|error| {
                 BuiltinModelError(format!("reopen semantic query image: {error}"))
             })?;
-            let path = compiled_source_path(&view)?;
+            let (path, source) = super::semantic::compiled_source(&view)?;
             let digest = bytes.content_digest();
             let mut identities = BTreeSet::new();
             let session = DocumentationSession::new(&view);
@@ -460,6 +471,7 @@ fn open_query_publications<'a>(
             images.push(OpenedQueryImage {
                 view,
                 path,
+                source,
                 digest,
                 identities,
             });

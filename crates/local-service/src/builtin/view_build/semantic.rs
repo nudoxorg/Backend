@@ -1028,7 +1028,7 @@ pub(crate) struct StructuralSites<'a> {
 }
 
 impl<'a> StructuralSites<'a> {
-    fn of(sources: &'a IndexedSources) -> Result<Self, BuiltinModelError> {
+    pub(super) fn of(sources: &'a IndexedSources) -> Result<Self, BuiltinModelError> {
         let mut files = BTreeMap::new();
         for (_, record) in &sources.files {
             let file = record
@@ -1056,6 +1056,29 @@ impl<'a> StructuralSites<'a> {
         };
         complete_declarations_for_file(self.sources, record)
     }
+
+    /// Returns the declarations of a file that provably hold the same bytes a
+    /// compiled image was built from, and none when they might not.
+    ///
+    /// A file whose persisted identity is absent or differs cannot be paired
+    /// without guessing, which is exactly when `project_image_rows` is given
+    /// no sites for a stale image.
+    pub(super) fn declarations_of_source(
+        &self,
+        project: &[u8; 32],
+        path: &str,
+        source: backend_version::ContentId<backend_version::SourceFactDomain>,
+    ) -> Result<Vec<backend_compile::SourceDeclaration>, BuiltinModelError> {
+        let current = self
+            .files
+            .get(&(*project, path.to_owned()))
+            .and_then(|record| record.file_fields())
+            .and_then(|file| file.source_identity);
+        if current != Some(source) {
+            return Ok(Vec::new());
+        }
+        self.declarations(project, path)
+    }
 }
 /// The kind of every entity of one image, and the written declaration each
 /// is paired with.
@@ -1064,7 +1087,7 @@ impl<'a> StructuralSites<'a> {
 /// the compiler-backed rows and the structural rows of the same file speak one
 /// vocabulary; a paired declaration then settles the spelling the grammar
 /// itself decided (`kinds::kind_with_site`).
-struct EntityKinds<'site> {
+pub(super) struct EntityKinds<'site> {
     /// The product kind each entity is shown as before its twin is known.
     derived: BTreeMap<DeclarationIdentity, backend_compile::DeclarationKind>,
     /// Each entity's written declaration, when one is known.
@@ -1073,7 +1096,7 @@ struct EntityKinds<'site> {
 
 impl EntityKinds<'_> {
     /// Returns the kind one entity is shown as.
-    fn kind_of(
+    pub(super) fn kind_of(
         &self,
         identity: DeclarationIdentity,
         item: backend_semantic::ir::ItemKind,
@@ -1099,7 +1122,7 @@ impl EntityKinds<'_> {
 /// every type with an `impl` (and every field named like a parameter) count
 /// more semantic entities than structural declarations, and the count rule
 /// then dropped the type's own site along with theirs.
-fn entity_kinds<'site, Reader: backend_semantic::ir::SemanticReader + ?Sized>(
+pub(super) fn entity_kinds<'site, Reader: backend_semantic::ir::SemanticReader + ?Sized>(
     profile: backend_semantic::vocabulary::LanguageProfile,
     reader: &Reader,
     session: &DocumentationSession<'_, Reader>,
