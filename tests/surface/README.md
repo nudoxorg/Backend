@@ -409,3 +409,20 @@ remains serial; explicit parallel runs keep the same performance gates and can
 fail from contention. Dedicated capacity and repeatable operating-mode calibration
 are needed before making parallelism the default. These trials are not a CI
 speed guarantee or completion of durable artifact fan-out.
+
+## Whole Rust source project (W2.3)
+
+`rust-percent-encoding` fetches the complete MIT OR Apache-2.0 crates.io source
+archive for percent-encoding2.3.2 using the existing reviewed fleet pin. It keeps
+Cargo manifests, all source files, tests and docs. No upstream scripts are run
+and sources are not rewritten to remove dependencies. Independent empty-cache
+`cargo metadata --offline --format-version 1` succeeds with the full resolve
+graph, so this project does not require installing upstream dependencies.
+
+The native public contract must publish one complete Rust profile and expose
+ready authored structs `PercentEncode` (`src/lib.rs:142`) and `AsciiSet`
+(`src/ascii_set.rs:28`). CLI searches, packages, bounded outline and corresponding
+MCP search/outline replies are compared using the same reviewed projection and
+live continuation checks as the existing real projects. A missing native symbol
+or partial/refused publication cannot become a new golden. Native review and an
+independent exact-head comparison are required before this slice is complete.

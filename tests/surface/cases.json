@@ -171,6 +171,55 @@
           "arguments": {}
         }
       ]
+    },
+    {
+      "name": "rust-percent-encoding",
+      "project_env": "NUDOX_SURFACE_RUST_PERCENT_ENCODING",
+      "upstream": "cargo:percent-encoding@2.3.2",
+      "languages": [
+        "rust"
+      ],
+      "index_mode": "wait",
+      "authored_symbols": {
+        "PercentEncode": "src/lib.rs",
+        "AsciiSet": "src/ascii_set.rs"
+      },
+      "cli": [
+        [
+          "search",
+          "PercentEncode"
+        ],
+        [
+          "search",
+          "AsciiSet"
+        ],
+        [
+          "outline"
+        ],
+        [
+          "packages"
+        ]
+      ],
+      "mcp": [
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "PercentEncode",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.search",
+          "arguments": {
+            "query": "AsciiSet",
+            "limit": 3
+          }
+        },
+        {
+          "tool": "backend.outline",
+          "arguments": {}
+        }
+      ]
     }
   ]
 }

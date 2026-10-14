@@ -322,6 +322,9 @@ let
         pkgs.coreutils
         pkgs.jdk25
       ];
+      NUDOX_SURFACE_RUST_PERCENT_ENCODING =
+        toString
+          (import ./surface-corpus.nix { inherit pkgs; }).rust-percent-encoding;
       NUDOX_SURFACE_GO_XXHASH = toString (import ./surface-corpus.nix { inherit pkgs; }).go-xxhash;
       NUDOX_SURFACE_PYTHON_BLINKER =
         toString
