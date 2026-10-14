@@ -1,5 +1,36 @@
 # Report 22: current execution and repair checkpoint
 
+## Follow-up: 2026-10-14, 23:39 UTC
+
+**The repaired MCP child and real GUI28 journey remain UNRUN.** Their new admissions both stopped before staging, a source transition, a managed permit, a native scope or an application PID. The last executed MCP suite remains b52's 255 passed/two failed; GUI27 remains failed. Installer activation, matched CLI/MCP/locald binaries, configured semantic search and fresh-project acceptance have not advanced.
+
+The CPU-affinity and cache-invalidation repairs are now verified on actual ILO Linux as well as the earlier macOS controls. Root independently staged only the four committed, hash-pinned Python files from canonical `27ab279ac4c8dc9d9c29bf5f49588018a5b1e838`, tree `caace2cd6c290de78af007cc0ec08935a529aaf2`, and directly retained SSH/stdout/stderr evidence: **CPU placement 12/12 and restore-mtimes 12/12 passed, zero skipped**, under CPython 3.14.6 on Linux 6.18.38. This includes the previously skipped Linux child-affinity lifecycle case. The owned temporary directory was clean and removed. These are 24 helper controls, not Rust/product tests or 24 extra unique cases on top of their macOS repetitions. An earlier agent-reported run lacked a durable raw capture and is not counted separately. Receipt: `ilo-python-helper-controls-root-01/root-verification.json` beneath the evidence root below.
+
+### Exact old artifacts were retired; later capacity still refused
+
+The corrected v4 retirement succeeded: **three superseded 3ee0 GUI paths, two unique inodes**, with the recoverable off-host archive verified beforehand. Root independently checked the full journal, all six live-process scan stages and fresh remote parent-directory inventories. Every other immediate entry retained its saved metadata; current af7 GUI, both MCP ELFs, helper, sources, SDKs, captures and receipts remained protected. Six double-confirmed process departures are retained explicitly; this is not an atomic global process-snapshot claim. Earlier v2/v3 failures remain unchanged.
+
+The retired inodes accounted for **1,445,797,888 allocated bytes** and **1,452,240,376 conservative charge bytes**. The separately measured volume-available delta was **1,445,752,832 bytes**. These quantities are not interchangeable. Current native carry remains **19,241,821,824 bytes**; separate GUI carry is now **13,772,189,176 bytes**. The completion SHA-256 is `162deb07fea63ccde7bf1973c96644a41d5579f0bac7f47b905a9117a73f4592`; Root's independent proof is `gui24-actual/gui3ee0-artifact-archive-01/root-independent-v4-completion-verification.json`, SHA-256 `69142badcecd4e1230acda3d4794e2bdf6d5c6e707db96bd0c05f5aa6b04583e`.
+
+Later fresh samples still refused the real follow-up work:
+
+| Actual advisory | ILO free bytes | Required before staging | Independent physical shortfall | Outcome |
+| --- | ---: | ---: | ---: | --- |
+| c1, 23:27:36 UTC | 102,994,616,320 | 103,650,983,936 | 656,367,616 | NO_START |
+| GUI28, 23:34:59 UTC | 102,970,462,208 | 103,368,417,280 | 397,955,072 | NO_START |
+
+Both complete local/ILO v6 samples also denied an observed unrelated local Cargo process using six jobs. The Mac was freshly unreachable and explicitly excluded under the existing ILO authorization. The available destination memory and slot counts did not override the jobs or disk gates. Full footprint measurement and actual permit acquisition were **not reached**. A misleading GUI refusal-receipt field was clarified append-only: an unperformed full-union probe remains mandatory for any future admission. Root reviewed both raw guards and the clarification; receipt: `native-no-starts-root/root-verification.json`. No unrelated workload was stopped and no floor, forecast, CI reserve or cumulative cap was lowered.
+
+Root personally merged [PR 284](https://dev.nudox.org/git/Nudox/Backend/pulls/284), making that existing boundary explicit in help and adding its missing regression. The remote exception bypasses only the numeric local host-slot cap; it continues to refuse an observed local Cargo process above four jobs. Root independently ran both relevant CPython suites: **20 +16 passed, zero skipped**. No runtime admission policy or default changed. Source `5d08861b3de3ba98810a85b24af55f144793b400`, tree `ef92d82d236d569d7b8dfdd5558ecdb9c34dfba1`; receipt: `fleet-local-jobs-root/root-verification.json`.
+
+### Prepared source is kept distinct from executed product behavior
+
+Root rejected GUI review06 because two historical diff pins were stale. Append-only review07 corrects only that metadata; Root independently verified every runtime/support/diff pin, all 35 archive members, the 30-file input manifest and the exact retirement proof chain. The archive and all runtime members are byte-identical to review06; nested resource/admission functions and the observer remain unchanged. Packet SHA-256: `d504092cef93b35fdcbe009c2b718a32588a7f0a58a824175ed827a6e8f3c4d6`; Root receipt: `gui28-final07-root/root-verification.json`. Its actual admission refusal above supplies no new pixels, Excalidraw indexing, graph/navigation, animation or restart proof, and cannot validate uncompiled PR 272.
+
+[PR 276](https://dev.nudox.org/git/Nudox/Backend/pulls/276) now includes canonical through `27ab279ac4` in source `fdfee84eade879609a713bc4746eb952132c6989`, tree `13b737de7932781c565c6a4719630b1d1edda67f`. Root verified the four incoming cache/packaging/readiness postimages against that exact base, every other prior composition entry unchanged, all three reviewed input ancestries and 18,223 canonical entries outside the delta. The product Rust postimages and PSRF/15 versus PSRG/16 resolution are unchanged. This is source integration, not native validation; later canonical commits are not silently credited to that tree. PRs 227, 272, 273 and 276 remain open pending their respective native/application gates.
+
+Evidence root: `/Users/mileswirht/.cache/nudox/mcp-current-triage/current-canonical-lock-repair-20261014`. The user's sole uncommitted `.config/nix/tools.nix` edit remains preserved at SHA-256 `93e10e14d6aaf80c35f554e719e10cb9a1fa63e8b573e53309fed42f8184ab18`. No release or production-readiness promotion occurred.
+
 ## Follow-up: 2026-10-14, 23:15 UTC
 
 **No new native c1, combined-language or GUI28 acceptance has run.** The last actual MCP result remains 255 passed/two failed on b52; the last actual GUI27 journey remains failed. Installer publication, startup help, native unit tests and fresh-project acceptance remain separate gates. No release or production-readiness promotion was made.
