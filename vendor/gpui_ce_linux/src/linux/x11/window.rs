@@ -547,8 +547,8 @@ impl X11WindowState {
             // a different native origin. Retain the server's actual geometry
             // before accessibility publishes its first screen coordinates.
             let actual = get_reply(|| "X11 initial GetGeometry failed.", xcb.get_geometry(x_window))?;
-            bounds.origin.x = actual.x.into();
-            bounds.origin.y = actual.y.into();
+            bounds.origin.x = i32::from(actual.x).into();
+            bounds.origin.y = i32::from(actual.y).into();
             if let Some(titlebar) = params.titlebar
                 && let Some(title) = titlebar.title
             {
