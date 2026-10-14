@@ -25,7 +25,7 @@ const MAX_PROBE_BYTES: usize = 16 * 1024;
 const MAX_METADATA_BYTES: usize = 32 * 1024 * 1024;
 /// Hard preallocation bound for an encoded environment input object.
 pub const PYTHON_ENVIRONMENT_MAX_WIRE_BYTES: usize = MAX_PAYLOAD_BYTES + MAX_METADATA_BYTES;
-const MAGIC: &[u8] = b"nudox.python.installed-environment.v2\0";
+const MAGIC: &[u8] = b"nudox.python.installed-environment.v3\0";
 /// Reserved compiler input member; its typed role, not its name, grants admission.
 pub const PYTHON_ENVIRONMENT_INPUT_PATH: &str = ".nudox-python-environment.capture";
 
@@ -238,6 +238,8 @@ struct Interpreter {
     version: [u32; 3],
     platform: String,
     machine: String,
+    #[serde(with = "portable_path_serde")]
+    stdlib_selected: PathBuf,
     #[serde(with = "portable_path_serde")]
     stdlib: PathBuf,
 }
@@ -720,6 +722,7 @@ impl PythonEnvironmentCapture {
                 normal_absolute(&interpreter.base_selected)?;
                 normal_absolute(&interpreter.base_image)?;
                 normal_absolute(&interpreter.selected)?;
+                normal_absolute(&interpreter.stdlib_selected)?;
                 normal_absolute(&interpreter.stdlib)?;
                 if interpreter.implementation != "cpython"
                     || interpreter.version[0] != 3
@@ -1092,41 +1095,12 @@ impl PythonEnvironmentCapture {
         if !self.local_witness {
             return Ok(());
         }
-        for probe in &self.environment.probes {
-            checkpoint(control)?;
-            if super::project::read_configuration_input(
-                &self.environment.project,
-                &probe.relative,
-                control,
-            )? != probe.bytes
-            {
-                return Err(project_error(
-                    "",
-                    "Python environment selection changed during capture",
-                ));
-            }
-        }
-        if let Some(interpreter) = &self.environment.interpreter {
-            if interpreter.selected.canonicalize().map_err(io_error)? != interpreter.venv_image
-                || hash_image(&interpreter.venv_image, control)? != interpreter.venv_digest
-                || interpreter
-                    .trusted_selected
-                    .canonicalize()
-                    .map_err(io_error)?
-                    != interpreter.image
-                || hash_image(&interpreter.image, control)? != interpreter.digest
-                || interpreter.base_selected.canonicalize().map_err(io_error)?
-                    != interpreter.base_image
-                || hash_image(&interpreter.base_image, control)? != interpreter.base_digest
-                || interpreter.home_selected.canonicalize().map_err(io_error)?
-                    != interpreter.home_directory
-            {
-                return Err(project_error(
-                    "",
-                    "selected interpreter changed during capture",
-                ));
-            }
-        }
+        validate_selection(
+            &self.environment.project,
+            &self.environment.probes,
+            self.environment.interpreter.as_ref(),
+            control,
+        )?;
         for root in &self.environment.roots {
             let current = capture_root(&root.original, root.kind, control)?;
             if &current != root {
@@ -1380,6 +1354,53 @@ fn normal_relative(path: &str) -> Result<PathBuf, CheckerError> {
     Ok(value.into())
 }
 
+/// Resolve a path supplied by the independently admitted CPython installation.
+/// Confinement compares actual canonical roots, never a raw drive-prefix form
+/// against a verbatim canonical path. The original selection stays in evidence.
+fn canonical_trusted_directory(
+    selected: &Path,
+    installation: &Path,
+    control: PythonProjectControl<'_>,
+) -> Result<PathBuf, CheckerError> {
+    checkpoint(control)?;
+    normal_absolute(selected)?;
+    normal_absolute(installation)?;
+    let actual = selected.canonicalize().map_err(io_error)?;
+    normal_absolute(&actual)?;
+    // The existing component codec removes only the native verbatim-drive
+    // wrapper. Decoded local witnesses therefore compare the same absolute
+    // component identity as producer-side canonical paths, without folding.
+    let actual_components = PathBuf::from(canonical_path_spelling(&actual)?);
+    let installation_components = PathBuf::from(canonical_path_spelling(installation)?);
+    if !actual_components.starts_with(&installation_components) {
+        return Err(project_error(
+            "",
+            "trusted interpreter directory escapes its selected installation",
+        ));
+    }
+    backend_platform::DirectoryCapability::open_read_only_source(&actual).map_err(io_error)?;
+    checkpoint(control)?;
+    Ok(actual)
+}
+
+fn validate_stdlib_selection(
+    interpreter: &Interpreter,
+    control: PythonProjectControl<'_>,
+) -> Result<(), CheckerError> {
+    let current = canonical_trusted_directory(
+        &interpreter.stdlib_selected,
+        &interpreter.installation,
+        control,
+    )?;
+    if canonical_path_spelling(&current)? != canonical_path_spelling(&interpreter.stdlib)? {
+        return Err(project_error(
+            "",
+            "trusted interpreter stdlib selection changed during capture",
+        ));
+    }
+    checkpoint(control)
+}
+
 fn validate_selection(
     project: &Path,
     probes: &[SelectionProbe],
@@ -1398,6 +1419,7 @@ fn validate_selection(
         }
     }
     if let Some(interpreter) = interpreter {
+        validate_stdlib_selection(interpreter, control)?;
         if interpreter.selected.canonicalize().map_err(io_error)? != interpreter.venv_image
             || hash_image(&interpreter.venv_image, control)? != interpreter.venv_digest
             || interpreter
@@ -1779,16 +1801,19 @@ fn probe_interpreter(
         return Err(project_error("", "selected environment is not CPython 3"));
     }
     validate_extension_suffixes(&probe.extension_suffixes)?;
-    normal_absolute(&probe.stdlib)?;
     let base_image = probe.base_image.canonicalize().map_err(io_error)?;
     let base_digest = hash_image(&base_image, control)?;
     let installation = probe.installation.canonicalize().map_err(io_error)?;
     normal_absolute(&installation)?;
+    let stdlib = canonical_trusted_directory(&probe.stdlib, &installation, control)?;
+    // BINDIR has the same raw Disk/verbatim-prefix issue as stdlib on Windows.
+    // It already has the original venv-home selection and retarget witness.
+    let home_directory = canonical_trusted_directory(&probe.bindir, &installation, control)?;
     if installation.parent().is_none()
         || !image.starts_with(&installation)
         || !base_image.starts_with(&installation)
-        || !probe.stdlib.starts_with(&installation)
-        || !probe.bindir.starts_with(&installation)
+        || !stdlib.starts_with(&installation)
+        || !home_directory.starts_with(&installation)
         || installation.starts_with(project)
     {
         return Err(project_error(
@@ -1810,7 +1835,6 @@ fn probe_interpreter(
     }
     let home_selected = PathBuf::from(home[0]);
     normal_absolute(&home_selected)?;
-    let home_directory = probe.bindir.canonicalize().map_err(io_error)?;
     if home_selected.canonicalize().map_err(io_error)? != home_directory {
         return Err(project_error(
             "",
@@ -1818,7 +1842,7 @@ fn probe_interpreter(
         ));
     }
     if cfg!(windows) && venv_digest != digest {
-        let template = probe.stdlib.join("venv/scripts/nt/python.exe");
+        let template = stdlib.join("venv/scripts/nt/python.exe");
         if hash_image(&template, control)? != venv_digest {
             return Err(project_error(
                 "",
@@ -1852,7 +1876,8 @@ fn probe_interpreter(
         version: probe.version,
         platform: probe.platform,
         machine: probe.machine,
-        stdlib: probe.stdlib,
+        stdlib_selected: probe.stdlib,
+        stdlib,
     })
 }
 
@@ -2300,6 +2325,7 @@ mod tests {
             version: [3, 14, 0],
             platform: std::env::consts::OS.into(),
             machine: std::env::consts::ARCH.into(),
+            stdlib_selected: stdlib.clone(),
             stdlib: stdlib.clone(),
         };
         Environment {
@@ -2327,6 +2353,169 @@ mod tests {
             ],
             interpreter: Some(interpreter),
         }
+    }
+
+    #[test]
+    fn trusted_stdlib_directory_is_actual_confined_and_cancellable() -> Result<(), CheckerError> {
+        let root = fixture()?;
+        let cancelled = AtomicBool::new(false);
+        std::fs::create_dir_all(root.path.join("installation/stdlib")).map_err(io_error)?;
+        std::fs::create_dir(root.path.join("outside")).map_err(io_error)?;
+        let installation = root
+            .path
+            .join("installation")
+            .canonicalize()
+            .map_err(io_error)?;
+        let selected = root.path.join("installation/stdlib");
+        let actual = canonical_trusted_directory(&selected, &installation, control(&cancelled))?;
+        assert_eq!(actual, selected.canonicalize().map_err(io_error)?);
+        assert!(actual.starts_with(&installation));
+        assert!(
+            canonical_trusted_directory(
+                &root.path.join("outside"),
+                &installation,
+                control(&cancelled)
+            )
+            .is_err()
+        );
+        std::fs::write(installation.join("ordinary-file"), b"not a directory").map_err(io_error)?;
+        assert!(
+            canonical_trusted_directory(
+                &installation.join("ordinary-file"),
+                &installation,
+                control(&cancelled)
+            )
+            .is_err()
+        );
+        cancelled.store(true, Ordering::Release);
+        assert!(matches!(
+            canonical_trusted_directory(&selected, &installation, control(&cancelled)),
+            Err(CheckerError::Cancelled { .. })
+        ));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn selected_stdlib_retarget_is_fenced_even_when_old_root_content_is_unchanged()
+    -> Result<(), CheckerError> {
+        let root = fixture()?;
+        let cancelled = AtomicBool::new(false);
+        std::fs::create_dir_all(root.path.join("installation/stdlib-one")).map_err(io_error)?;
+        std::fs::create_dir(root.path.join("installation/stdlib-two")).map_err(io_error)?;
+        std::fs::write(
+            root.path.join("installation/stdlib-one/source.py"),
+            "original = 42\n",
+        )
+        .map_err(io_error)?;
+        let installation = root
+            .path
+            .join("installation")
+            .canonicalize()
+            .map_err(io_error)?;
+        let selected = root.path.join("stdlib-selection");
+        std::os::unix::fs::symlink(installation.join("stdlib-one"), &selected).map_err(io_error)?;
+        let mut environment = transport_environment();
+        let interpreter = environment.interpreter.as_mut().unwrap();
+        interpreter.installation = installation.clone();
+        interpreter.stdlib_selected = selected.clone();
+        interpreter.stdlib =
+            canonical_trusted_directory(&selected, &installation, control(&cancelled))?;
+        validate_stdlib_selection(interpreter, control(&cancelled))?;
+        std::fs::remove_file(&selected).map_err(io_error)?;
+        std::os::unix::fs::symlink(installation.join("stdlib-two"), &selected).map_err(io_error)?;
+        assert!(validate_stdlib_selection(interpreter, control(&cancelled)).is_err());
+        assert_eq!(
+            std::fs::read(installation.join("stdlib-one/source.py")).map_err(io_error)?,
+            b"original = 42\n"
+        );
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn disk_stdlib_selection_normalizes_to_verbatim_installation_and_codec_roundtrips()
+    -> Result<(), CheckerError> {
+        let root = fixture()?;
+        let cancelled = AtomicBool::new(false);
+        std::fs::create_dir_all(root.path.join("installation/Lib")).map_err(io_error)?;
+        std::fs::create_dir(root.path.join("installation/bin")).map_err(io_error)?;
+        let installation = root
+            .path
+            .join("installation")
+            .canonicalize()
+            .map_err(io_error)?;
+        assert!(
+            matches!(installation.components().next(), Some(Component::Prefix(prefix)) if matches!(prefix.kind(), std::path::Prefix::VerbatimDisk(_)))
+        );
+        let selected = PathBuf::from(canonical_path_spelling(&installation.join("Lib"))?);
+        assert!(
+            matches!(selected.components().next(), Some(Component::Prefix(prefix)) if matches!(prefix.kind(), std::path::Prefix::Disk(_)))
+        );
+        assert!(
+            !selected.starts_with(&installation),
+            "raw prefixes demonstrate the original confinement bug"
+        );
+        let stdlib = canonical_trusted_directory(&selected, &installation, control(&cancelled))?;
+        assert!(stdlib.starts_with(&installation));
+        let mut environment = transport_environment();
+        let interpreter = environment.interpreter.as_mut().unwrap();
+        interpreter.installation = installation.clone();
+        interpreter.image = installation.join("python.exe");
+        interpreter.base_image = interpreter.image.clone();
+        interpreter.home_directory = installation.join("bin");
+        interpreter.stdlib_selected = selected.clone();
+        interpreter.stdlib = stdlib.clone();
+        environment.roots[1].original = stdlib.clone();
+        let admitted = PythonEnvironmentCapture::admit(environment, control(&cancelled))?;
+        let wire = admitted.encode(control(&cancelled))?;
+        let decoded =
+            PythonEnvironmentCapture::decode(&wire, admitted.identity(), control(&cancelled))?;
+        let received = decoded.environment.interpreter.as_ref().unwrap();
+        assert_eq!(
+            canonical_path_spelling(&received.stdlib_selected)?,
+            canonical_path_spelling(&selected)?
+        );
+        assert_eq!(
+            canonical_path_spelling(&received.stdlib)?,
+            canonical_path_spelling(&stdlib)?
+        );
+        assert!(received.stdlib.starts_with(&received.installation));
+        validate_stdlib_selection(received, control(&cancelled))?;
+        Ok(())
+    }
+
+    #[test]
+    fn captured_interpreter_minor_must_match_a_selected_existing_native_profile()
+    -> Result<(), CheckerError> {
+        use backend_semantic::vocabulary::PythonVersion;
+        let cancelled = AtomicBool::new(false);
+        let profiles = [
+            PythonVersion::Python310,
+            PythonVersion::Python311,
+            PythonVersion::Python312,
+            PythonVersion::Python313,
+            PythonVersion::Python314,
+        ];
+        for (minor, matching) in (10..=14).zip(profiles) {
+            let mut environment = transport_environment();
+            let interpreter = environment.interpreter.as_mut().unwrap();
+            interpreter.version = [3, minor, 0];
+            let venv = interpreter
+                .selected
+                .parent()
+                .and_then(Path::parent)
+                .unwrap();
+            environment.roots[0].original = site_packages_path(venv, interpreter.version);
+            let admitted = PythonEnvironmentCapture::admit(environment, control(&cancelled))?;
+            for profile in profiles {
+                assert_eq!(
+                    admitted.validate_profile(profile).is_ok(),
+                    profile == matching
+                );
+            }
+        }
+        Ok(())
     }
 
     #[test]
@@ -3572,6 +3761,17 @@ for name, source, requirement in [('second_pkg', 'answer: int = 42\n', ''), ('fi
             capture.selected_venv_relative(),
             Some(Path::new("local/py3"))
         );
+        let interpreter = capture
+            .environment
+            .interpreter
+            .as_ref()
+            .ok_or("missing genuine interpreter witness")?;
+        assert_eq!(
+            interpreter.stdlib_selected.canonicalize()?,
+            interpreter.stdlib
+        );
+        assert!(interpreter.stdlib.starts_with(&interpreter.installation));
+
         assert!(capture.is_dependency_member(Path::new(
             "local/py3/lib/python3.14/site-packages/first_pkg/__init__.py"
         )));
