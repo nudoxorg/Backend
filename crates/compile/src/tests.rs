@@ -846,8 +846,8 @@ fn native_cold_runner_keeps_output_and_coverage_separate() -> Result<(), Box<dyn
     let snapshot = authority.discover()?;
     let key = session_key(&authority, &snapshot);
     let command = SupervisedCommand::for_authority(
-        PathBuf::from("/bin/sh"),
-        vec!["-c".into(), "cat".into()],
+        test_coreutils_tool("cat"),
+        Vec::new(),
         ProcessEnvironment::new(Vec::new())?,
         PathBuf::from("/tmp"),
         ProcessStdin::bytes(b"raw authority bytes"),
@@ -1436,7 +1436,7 @@ fn supervisor_enforces_unix_cpu_time_limit() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "linux")))]
 #[test]
 fn unsupported_resource_bounds_are_reported_before_spawn() -> Result<(), Box<dyn Error>> {
     let process_limits = limits(32, 32, Duration::from_secs(1), 64)?.with_memory_bytes_limit(1)?;
@@ -1447,6 +1447,34 @@ fn unsupported_resource_bounds_are_reported_before_spawn() -> Result<(), Box<dyn
             UnsupportedLimit::MemoryBytes
         ))
     );
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_memory_ceiling_prevents_the_authority_from_succeeding() -> Result<(), Box<dyn Error>> {
+    let unrestricted = command(
+        "/bin/true",
+        &[],
+        limits(1024, 1024, Duration::from_secs(1), 64)?,
+    )?
+    .run()?;
+    assert_eq!(unrestricted.terminal(), ProcessTerminal::Success);
+    assert_eq!(unrestricted.status(), Some(0));
+    assert!(unrestricted.reaped());
+
+    // Linux supports the address-space ceiling. One byte (rounded to the
+    // shell's minimum KiB) cannot load the same executable that succeeded
+    // above; treating the request as unsupported or ignoring it must fail.
+    let bounded = command(
+        "/bin/true",
+        &[],
+        limits(1024, 1024, Duration::from_secs(1), 64)?.with_memory_bytes_limit(1)?,
+    )?
+    .run()?;
+    assert_eq!(bounded.terminal(), ProcessTerminal::Exit);
+    assert_ne!(bounded.status(), Some(0));
+    assert!(bounded.reaped());
     Ok(())
 }
 

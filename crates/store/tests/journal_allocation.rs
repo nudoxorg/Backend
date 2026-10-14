@@ -17,15 +17,17 @@ const REPLAY_RECORDS: usize = 64;
 // its slot buffer (656 bytes on 64-bit targets); platforms whose std mutex is a lazily boxed
 // pthread mutex add one 64-byte allocation when the channel first locks. The numbers are measured
 // per platform family with the workspace toolchain (rustc 1.97.1): the unix figure is the one the
-// ledger recorded, the Windows figure was measured on x86_64-pc-windows-msvc where the SRW lock is
+// ledger recorded on Darwin. Linux uses the inline futex mutex and its ARM64
+// run485634/3 measured two allocations/656 bytes, matching the Windows figure
+// measured on x86_64-pc-windows-msvc where the SRW lock is
 // inline.
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 const SYNC_CHANNEL_COUNT: u64 = 3;
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 const SYNC_CHANNEL_BYTES: u64 = 720;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const SYNC_CHANNEL_COUNT: u64 = 2;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 const SYNC_CHANNEL_BYTES: u64 = 656;
 
 #[derive(Debug, Error)]
