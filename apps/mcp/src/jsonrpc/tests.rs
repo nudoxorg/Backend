@@ -20,7 +20,7 @@ use backend_library::{
     SourceLocation, SurfaceReply, ViewRoot, ViewSnapshot, object_version, package_key, symbol_key,
     view_key, view_state_root,
 };
-use backend_present::{domain_name, grammar_for};
+use backend_present::{domain_name, grammar_for, grammar_for_tool};
 
 #[cfg(unix)]
 #[path = "tests/index_overlap.rs"]
@@ -2746,6 +2746,7 @@ fn every_registry_row_is_reachable_as_exactly_one_tool() {
             "backend.index_start",
             "backend.index_progress",
             "backend.index_cancel",
+            "backend.call",
         ]
     );
 }
@@ -5107,6 +5108,84 @@ fn resources_are_the_same_markdown_their_tools_return() {
     assert_eq!(text, text_of(&status), "one renderer, one answer");
 }
 
+fn catalog_card(server: &mut Server<Fake>, name: &str) -> Value {
+    catalog_card_with_id(server, name, &json!(9))
+}
+
+fn catalog_card_with_id(server: &mut Server<Fake>, name: &str, id: &Value) -> Value {
+    let mut uri = format!("{}/{name}", tools::CATALOG_RESOURCE_URI);
+    let mut document = String::new();
+    let mut version = None;
+    let mut total = None;
+    for _ in 0..1024 {
+        let response = server
+            .handle_value(
+                json!({"jsonrpc":"2.0","id":id,"method":"resources/read","params":{"uri":uri}}),
+                None,
+            )
+            .map(encoded_stdio_reply)
+            .expect("schema resource reply");
+        assert!(response.get("error").is_none(), "{response}");
+        assert_eq!(response["id"], *id);
+        assert_context_bounded(&response);
+        assert!(
+            wire_tokens(&response).expect("complete catalog envelope") <= MCP_CL100K_TOKEN_LIMIT
+        );
+        let result = &response["result"];
+        let content = &result["contents"][0];
+        assert_eq!(content["uri"], uri);
+        let range = &result["_meta"]["backend/catalogRange"];
+        assert_eq!(range["schema"], "backend-mcp.tool-card-range/v1");
+        assert_eq!(range["name"], name);
+        let selected_version = range["version"].as_str().expect("exact schema version");
+        assert!(
+            version
+                .as_ref()
+                .is_none_or(|version| version == selected_version)
+        );
+        version = Some(selected_version.to_owned());
+        let selected_total = range["totalBytes"].as_u64().expect("schema bytes");
+        assert!(total.is_none_or(|total| total == selected_total));
+        total = Some(selected_total);
+        assert_eq!(range["offset"], document.len());
+        let text = content["text"]
+            .as_str()
+            .expect("exact UTF-8 document range");
+        document.push_str(text);
+        assert_eq!(range["end"], document.len());
+        assert_eq!(
+            range["remainingBytes"],
+            selected_total - document.len() as u64
+        );
+        if range["complete"] == true {
+            assert_eq!(document.len() as u64, selected_total);
+            assert!(result["_meta"]["backend/nextUri"].is_null());
+            assert_eq!(
+                blake3::hash(document.as_bytes()).to_hex().to_string(),
+                selected_version
+            );
+            let card: Value =
+                serde_json::from_str(&document).expect("entire exact schema card JSON");
+            assert_eq!(card["name"], name);
+            return card;
+        }
+        assert!(
+            !text.is_empty(),
+            "nonterminal ranges make monotonic progress"
+        );
+        assert_eq!(
+            content["mimeType"], "text/plain",
+            "partial JSON is not advertised as a complete JSON document"
+        );
+        let next = result["_meta"]["backend/nextUri"]
+            .as_str()
+            .expect("exact next schema URI");
+        assert_ne!(next, uri);
+        uri = next.to_owned();
+    }
+    panic!("schema ranges did not terminate");
+}
+
 #[test]
 fn tool_catalog_names_callable_routes_without_advertising_unready_surfaces() {
     let mut server = ready(Fake::default());
@@ -5130,6 +5209,9 @@ fn tool_catalog_names_callable_routes_without_advertising_unready_surfaces() {
         "resources/read",
         &json!({"uri":"backend://tools/catalog"}),
     );
+    assert!(catalog.get("error").is_none(), "{catalog}");
+    assert_context_bounded(&catalog);
+    assert!(wire_tokens(&catalog).expect("complete catalog index") <= MCP_CL100K_TOKEN_LIMIT);
     let text = catalog["result"]["contents"][0]["text"]
         .as_str()
         .expect("catalog text");
@@ -5154,25 +5236,15 @@ fn tool_catalog_names_callable_routes_without_advertising_unready_surfaces() {
             "catalog route {name} is not callable"
         );
     }
-    let package_versions_schema = text
-        .split("`backend.package_versions` —")
-        .nth(1)
-        .and_then(|entry| entry.split_once("```json\n"))
-        .and_then(|(_, schema)| schema.split_once("\n```").map(|(schema, _)| schema))
-        .and_then(|schema| serde_json::from_str::<Value>(schema).ok())
-        .expect("catalog provides a parseable route input schema");
+    let package_versions = catalog_card(&mut server, "backend.package_versions");
+    let package_versions_schema = &package_versions["inputSchema"];
     assert_eq!(
         package_versions_schema["properties"]["package"]["type"],
         "string"
     );
     assert_eq!(package_versions_schema["required"], json!(["package"]));
-    let package_graph_schema = text
-        .split("`backend.package_graph` —")
-        .nth(1)
-        .and_then(|entry| entry.split_once("```json\n"))
-        .and_then(|(_, schema)| schema.split_once("\n```").map(|(schema, _)| schema))
-        .and_then(|schema| serde_json::from_str::<Value>(schema).ok())
-        .expect("catalog provides the package graph input schema");
+    let package_graph = catalog_card(&mut server, "backend.package_graph");
+    let package_graph_schema = &package_graph["inputSchema"];
     assert_eq!(package_graph_schema["properties"]["limit"]["minimum"], 1);
     assert_eq!(
         package_graph_schema["properties"]["limit"]["maximum"],
@@ -5231,6 +5303,193 @@ fn tool_catalog_names_callable_routes_without_advertising_unready_surfaces() {
     assert!(tools::tool_route("backend.type_graph").is_none());
     assert!(!text.contains("backend.type_graph"));
     assert!(text.contains("backend://schema/query"));
+}
+
+#[test]
+fn catalog_from_scratch_exposes_every_closed_route_schema_under_the_complete_budget() {
+    let mut server = ready(Fake::default());
+    let catalog = request(
+        &mut server,
+        "resources/read",
+        &json!({"uri":tools::CATALOG_RESOURCE_URI}),
+    );
+    assert!(catalog.get("error").is_none(), "{catalog}");
+    assert_context_bounded(&catalog);
+    assert!(wire_tokens(&catalog).expect("complete index tokens") <= MCP_CL100K_TOKEN_LIMIT);
+    let text = catalog["result"]["contents"][0]["text"]
+        .as_str()
+        .expect("index");
+    let entries = text
+        .lines()
+        .filter_map(|line| {
+            let line = line.strip_prefix("- `")?;
+            let (name, _) = line.split_once('`')?;
+            let (_, uri) = line.rsplit_once("](")?;
+            Some((name, uri.strip_suffix(')')?))
+        })
+        .collect::<Vec<_>>();
+    let actual = entries
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected = backend_present::GRAMMARS
+        .iter()
+        .map(|grammar| grammar.tool())
+        .chain([QUERY_TOOL, SURFACE_TOOL, tools::CALL_TOOL])
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        actual, expected,
+        "every descriptor appears once, including specialized index handlers"
+    );
+    assert_eq!(
+        actual.len(),
+        entries.len(),
+        "no duplicate route hides another"
+    );
+    let listed = request(&mut server, "tools/list", &json!({}));
+    for (name, uri) in entries {
+        assert_eq!(uri, format!("{}/{name}", tools::CATALOG_RESOURCE_URI));
+        let card = catalog_card(&mut server, name);
+        assert!(
+            !card["description"]
+                .as_str()
+                .expect("useful route help")
+                .is_empty()
+        );
+        assert_eq!(card["_meta"]["backend/catalog"]["uri"], uri);
+        assert_eq!(
+            card["_meta"]["backend/catalog"]["index"],
+            tools::CATALOG_RESOURCE_URI
+        );
+        if let Some(listed) = listed["result"]["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .find(|tool| tool["name"] == name)
+        {
+            for field in [
+                "title",
+                "description",
+                "inputSchema",
+                "outputSchema",
+                "annotations",
+            ] {
+                assert_eq!(
+                    card[field], listed[field],
+                    "schema card must retain exact MCP handler contract for {name}.{field}"
+                );
+            }
+        }
+        if let Some(grammar) = grammar_for_tool(name)
+            && !matches!(
+                tools::tool_route(name),
+                Some(
+                    ToolRoute::IndexStart
+                        | ToolRoute::IndexProgress
+                        | ToolRoute::IndexCancel
+                        | ToolRoute::RefusedIndexAwait
+                )
+            )
+        {
+            for argument in grammar.positional().iter().chain(grammar.options()) {
+                assert!(
+                    !card["inputSchema"]["properties"][argument.json_name()].is_null(),
+                    "missing exact operand {name}.{}",
+                    argument.json_name()
+                );
+            }
+            assert_eq!(card["inputSchema"]["additionalProperties"], false);
+        }
+    }
+    let templates = request(&mut server, "resources/templates/list", &json!({}));
+    assert!(
+        templates["result"]["resourceTemplates"]
+            .as_array()
+            .expect("templates")
+            .iter()
+            .any(|template| template["uriTemplate"]
+                == "backend://tools/catalog/{name}{?offset,limit,version}"
+                && template["mimeType"] == "application/json")
+    );
+    for uri in [
+        "backend://tools/catalog/backend.no_such_tool",
+        "backend://tools/catalog/",
+        "backend://tools/catalog/backend.status/extra",
+        "backend://tools/catalog/%62ackend.status",
+    ] {
+        let refused = request(&mut server, "resources/read", &json!({"uri":uri}));
+        assert_eq!(refused["error"]["code"], -32002);
+        assert!(refused.get("result").is_none());
+    }
+    assert_eq!(server.product.probe_calls, 0);
+    assert!(
+        server.product.surface_commands.is_empty(),
+        "discovery never starts or reads owner work"
+    );
+}
+
+#[test]
+fn catalog_ranges_bind_full_schema_bytes_and_actual_ids_without_owner_dispatch() {
+    let mut server = ready(Fake::default());
+    let name = "backend.semantic_shapes";
+    let ordinary = catalog_card(&mut server, name);
+    let large_id = json!("אב🙂\\\"".repeat(500));
+    let with_id = catalog_card_with_id(&mut server, name, &large_id);
+    assert_eq!(
+        with_id, ordinary,
+        "actual ID budgeting retains every complete schema operand"
+    );
+    let first_uri = format!("{}/{name}", tools::CATALOG_RESOURCE_URI);
+    let first = request(&mut server, "resources/read", &json!({"uri":first_uri}));
+    assert!(first.get("error").is_none(), "{first}");
+    let version = first["result"]["_meta"]["backend/catalogRange"]["version"]
+        .as_str()
+        .expect("schema version");
+    let single_byte = request(
+        &mut server,
+        "resources/read",
+        &json!({"uri":format!("{first_uri}?offset=0&limit=1&version={version}")}),
+    );
+    assert!(single_byte.get("error").is_none(), "{single_byte}");
+    assert_eq!(
+        single_byte["result"]["_meta"]["backend/catalogRange"]["offset"],
+        0
+    );
+    assert_eq!(
+        single_byte["result"]["_meta"]["backend/catalogRange"]["end"],
+        1
+    );
+    assert_eq!(single_byte["result"]["contents"][0]["text"], "{");
+    let bad_version = if version.starts_with('0') {
+        format!("1{}", &version[1..])
+    } else {
+        format!("0{}", &version[1..])
+    };
+    let stale = request(
+        &mut server,
+        "resources/read",
+        &json!({"uri":format!("{first_uri}?offset=1&limit=1&version={bad_version}")}),
+    );
+    assert_eq!(stale["error"]["code"], -32010);
+    assert!(stale.get("result").is_none());
+    for query in [
+        "offset=1".to_owned(),
+        format!("offset=0&offset=1&version={version}"),
+        format!("offset=0&limit=8193&version={version}"),
+        format!("offset=0&limit=0&version={version}"),
+        format!("offset=0&unknown=1&version={version}"),
+        format!("offset=184467440737095516160&version={version}"),
+    ] {
+        let refused = request(
+            &mut server,
+            "resources/read",
+            &json!({"uri":format!("{first_uri}?{query}")}),
+        );
+        assert_eq!(refused["error"]["code"], -32602);
+        assert!(refused.get("result").is_none());
+    }
+    assert_eq!(server.product.probe_calls, 0);
+    assert!(server.product.surface_commands.is_empty());
 }
 
 #[test]

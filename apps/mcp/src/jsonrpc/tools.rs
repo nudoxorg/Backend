@@ -24,7 +24,7 @@ pub(super) const QUERY_TOOL: &str = "backend.query";
 /// Compact access to registered named routes on tool-list-only hosts.
 pub(super) const CALL_TOOL: &str = "backend.call";
 pub(super) const CATALOG_RESOURCE_URI: &str = "backend://tools/catalog";
-const CATALOG_SCHEMA: &str = "backend-mcp.tool-catalog/v1";
+pub(super) const CATALOG_SCHEMA: &str = "backend-mcp.tool-catalog/v2";
 
 /// Starts one owner-managed package indexing operation.
 pub(super) const INDEX_START_TOOL: &str = "backend.index_start";
@@ -216,56 +216,95 @@ fn descriptors() -> Vec<ToolDescriptor> {
     descriptors
 }
 
-/// Describes every callable-but-not-default route, including its registry
-/// description, so capability-dependent features remain inspectable without
-/// advertising them as universally ready.
+/// Small complete route index. Exact schemas live at the named resource
+/// linked by each entry, so one complex operand cannot hide other capabilities.
 pub(super) fn catalog_markdown() -> String {
     let mut output = format!(
         "# MCP tool catalog\n\nSchema: `{CATALOG_SCHEMA}`. Resource: `{CATALOG_RESOURCE_URI}`.\n\n"
     );
     output.push_str(
-        "`tools/list` contains the default session tools. On a host exposing only listed tools, call `backend.call` with the exact registered `name` below and the route's nested `arguments` object. Each input schema below describes that object. The selected route's output and typed refusals are returned unchanged. A route can still return a typed fault when its required source metadata or product capability is unavailable; read `backend.status` and `backend://workspace/current` before treating an empty or unavailable result as evidence that the project has none.\n\n## Capability-dependent registry routes\n\n",
+        "`tools/list` contains the default session tools. Read a route's linked card for its complete input schema, result contract and help before calling it. A large card returns UTF-8 JSON text ranges: append contents[0].text in exact backend/catalogRange.offset/end order, copy result._meta[backend/nextUri] until complete, verify its unchanged version and totalBytes, then parse the full JSON. Fragments use text/plain; an unsplit card uses application/json. No argument schema is omitted. On a host exposing only listed tools, pass {\"name\":\"backend.<route>\",\"arguments\":{...}} to `backend.call`; put detail and cursor inside that selected arguments object. Copy `structuredContent.continuation_call` unchanged to continue an adaptive page. Preserve effective limits, typed native JSON cursors, exact source references and byte ranges.\n\nA registered route can still return a typed capability/source refusal. Read `backend.status` and `backend://workspace/current`; an unavailable or partial lane is not a complete empty answer. `backend.query` also has executable examples at `backend://schema/query`. `backend.surface` is direct-only and is refused by `backend.call`. `backend.index_await` is retired over MCP; poll `backend.index_progress` instead.\n\n## All closed routes\n\n",
     );
-    let descriptors = descriptors();
-    for descriptor in &descriptors {
-        if descriptor.discovery == Discovery::CatalogOnly
-            && let ToolRoute::Registry(grammar) = descriptor.route
-        {
-            let domain = grammar.domain().unwrap_or(CommandDomain::Library);
-            let schema = registry_tool(grammar, domain)["inputSchema"].clone();
-            let schema = serde_json::to_string_pretty(&schema)
-                .expect("registry input schema always serializes");
-            let _ = writeln!(
-                output,
-                "- `{}` — {}\n\n```json\n{schema}\n```\n",
-                descriptor.name,
-                grammar.description()
-            );
-        }
-    }
-    output.push_str("\n## Advanced and retired routes\n\n");
-    for descriptor in &descriptors {
-        if descriptor.discovery != Discovery::CatalogOnly {
-            continue;
-        }
-        match descriptor.route {
-            ToolRoute::Registry(_) => {}
-            ToolRoute::Query => output.push_str(
-                "- `backend.query` — Typed Trustfall joins over the selected immutable revision. This advanced lane is not in the default session tool set; read `backend://schema/query` for its input contract and executable examples.\n",
-            ),
-            ToolRoute::Surface => output.push_str(
-                "- `backend.surface` — Generic typed `SurfaceCommand` escape hatch for direct MCP clients; `backend.call` refuses this route. Pass `command` as a tagged object with an `operation` field; its accepted operations and fields are defined by `SurfaceCommand`. Prefer a matching named tool when one exists.\n",
-            ),
-            ToolRoute::RefusedIndexAwait => output.push_str(
-                "- `backend.index_await` — Retired over MCP because it may block on owner work; use `backend.index_progress` for immediate bounded polling. Calls are refused.\n",
-            ),
-            ToolRoute::IndexStart
-            | ToolRoute::IndexProgress
-            | ToolRoute::IndexCancel
-            | ToolRoute::NamedCall => {}
-        }
+    for descriptor in descriptors() {
+        let title = match descriptor.route {
+            ToolRoute::Registry(grammar) => {
+                grammar.spec().map_or(grammar.name(), |spec| spec.title)
+            }
+            ToolRoute::Query => "Typed graph query",
+            ToolRoute::Surface => "Direct typed raw surface",
+            ToolRoute::IndexStart => "Start indexing",
+            ToolRoute::IndexProgress => "Saved operation progress",
+            ToolRoute::IndexCancel => "Cancel indexing",
+            ToolRoute::RefusedIndexAwait => "Retired MCP wait",
+            ToolRoute::NamedCall => "Call registered tool",
+        };
+        let policy = if matches!(descriptor.route, ToolRoute::RefusedIndexAwait) {
+            "retired; calls refused"
+        } else if matches!(descriptor.route, ToolRoute::Surface) {
+            "direct-only"
+        } else if descriptor.discovery == Discovery::Listed {
+            "listed"
+        } else {
+            "capability-dependent"
+        };
+        let _ = writeln!(
+            output,
+            "- `{}` — {title} ({policy}); [schema and help]({CATALOG_RESOURCE_URI}/{})",
+            descriptor.name, descriptor.name
+        );
     }
     output
+}
+
+/// Complete descriptor-driven JSON card; constructing it performs no owner
+/// access and never substitutes a command-line grammar for an MCP job handler.
+pub(super) fn catalog_tool(name: &str) -> Option<Value> {
+    let descriptor = descriptor(name)?;
+    let mut tool = match descriptor.route {
+        ToolRoute::Query => query_catalog_tool(),
+        ToolRoute::Surface => json!({
+            "name":SURFACE_TOOL, "title":"Direct typed raw surface",
+            "description":"Direct clients may send {command:<closed tagged SurfaceCommand>,detail:<summary|standard|full>}. The command carries an operation tag and its exact typed operands. This private escape hatch is not a registered named target: backend.call refuses it before native dispatch. Use the equivalent registered route's complete schema and executable continuation when available; never move a returned command cursor into an outer argument.",
+            "_meta":{"backend/directOnly":true,"backend/registeredTarget":false}
+        }),
+        ToolRoute::RefusedIndexAwait => json!({
+            "name":"backend.index_await", "title":"Retired MCP wait",
+            "description":"MCP always refuses this retired route without owner work. Use backend.index_progress with the exact returned operation_key or ticket and admitted conditional-wait arguments; CLI add --wait is a separate caller lifetime.",
+            "_meta":{"backend/retired":true},
+            "inputSchema":{"type":"object","additionalProperties":true},
+            "outputSchema":{"type":"object","description":"Typed usage refusal; this route never publishes a terminal owner outcome."}
+        }),
+        _ => listed_tool(descriptor),
+    };
+    tool["_meta"]["backend/catalog"] = json!({
+        "schema":CATALOG_SCHEMA, "uri":format!("{CATALOG_RESOURCE_URI}/{name}"),
+        "index":CATALOG_RESOURCE_URI, "registeredTarget":named_target(descriptor.route),
+        "listed":descriptor.discovery == Discovery::Listed,
+        "continuation":"Copy structuredContent.continuation_call unchanged, including exposure, effective limit, cursor, source reference and byte range."
+    });
+    Some(tool)
+}
+
+fn query_catalog_tool() -> Value {
+    json!({
+        "name":QUERY_TOOL, "title":"Typed graph query",
+        "description":"Typed Trustfall joins over one selected immutable revision. Read backend://schema/query for starting edges, fields and executable examples. Variables are scalars or lists, never objects, and nesting is bounded. A first page may adapt its limit; copy its exact continuation_call to resume the same query/revision with the issued limit. Typed refusals preserve unavailable, cancelled and stale-source facts.",
+        "inputSchema":{
+            "type":"object", "properties":{
+                "query":{"type":"string","minLength":1},
+                "variables":{"anyOf":[{"type":"null"},{"type":"object","additionalProperties":{"$ref":"#/$defs/value"}}]},
+                "limit":{"type":"integer","minimum":1,"maximum":backend_library::QueryLimit::MAX,"default":backend_present::DEFAULT_LIMIT},
+                "cursor":{"type":"string","minLength":1,"description":"Exact owner continuation for this immutable query; prefer the complete executable continuation_call."},
+                "detail":detail_property(QUERY_TOOL)
+            },
+            "required":["query"],"additionalProperties":false,
+            "$defs":{"value":{"description":format!("Finite JSON scalars or lists, with at most {} nested array levels; object values are refused.",backend_library::MAX_GRAPH_VALUE_DEPTH),
+                "anyOf":[{"type":["null","boolean","number","string"]},{"type":"array","items":{"$ref":"#/$defs/value"}}]}}
+        },
+        "outputSchema":{"type":"object","description":"Unchanged graph-page structuredContent, including revision, rows, emitted count, terminal and optional executable continuation_call; errors are typed refusals."},
+        "annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false},
+        "_meta":{"backend/querySchema":"backend://schema/query"}
+    })
 }
 
 /// Checks JSON values against the primitive and collection shapes projected by

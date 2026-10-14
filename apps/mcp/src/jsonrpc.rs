@@ -792,7 +792,7 @@ impl<P: Product> Server<P> {
             .is_some_and(|uri| uri == "backend://workspace/current");
         let context =
             (is_workspace && self.working_directory.is_some()).then(|| self.instructions_context());
-        resources::read_resource(&mut self.product, params, context.as_deref())
+        resources::read_resource(&mut self.product, params, context.as_deref(), response_id)
     }
 
     fn instructions_context(&self) -> String {

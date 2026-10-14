@@ -30,7 +30,21 @@ fn compact_discovery_has_one_closed_registry_derived_target_set() {
     for grammar in backend_present::GRAMMARS {
         assert!(names.contains(&json!(grammar.tool())), "{}", grammar.tool());
     }
-    assert_eq!(names.len(), backend_present::GRAMMARS.len() + 1);
+    let actual_names = names
+        .iter()
+        .map(|name| name.as_str().expect("registered name"))
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected_names = backend_present::GRAMMARS
+        .iter()
+        .map(|grammar| grammar.tool())
+        .chain([QUERY_TOOL])
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(actual_names, expected_names);
+    assert_eq!(
+        names.len(),
+        actual_names.len(),
+        "closed names contain no duplicates"
+    );
     assert!(names.contains(&json!(QUERY_TOOL)));
     for excluded in [SURFACE_TOOL, CALL_TOOL, "backend.no_such_tool"] {
         assert!(!names.contains(&json!(excluded)));
@@ -47,6 +61,9 @@ fn compact_discovery_has_one_closed_registry_derived_target_set() {
         "resources/read",
         &json!({"uri": CATALOG_RESOURCE_URI}),
     );
+    assert!(catalog.get("error").is_none(), "{catalog}");
+    assert_context_bounded(&catalog);
+    assert!(wire_tokens(&catalog).expect("catalog index") <= MCP_CL100K_TOKEN_LIMIT);
     let text = catalog["result"]["contents"][0]["text"]
         .as_str()
         .expect("catalog");
@@ -146,31 +163,69 @@ fn compact_catalog_reads_preserve_typed_operands_refusals_and_semantic_data() {
         "../../../../../crates/present/fixtures/semantic-versions-semver-public.json"
     ))
     .expect("captured semantic packet");
-    let reply: SurfaceReply =
-        serde_json::from_value(packet["surface"].clone()).expect("typed reply");
-    let package = packet["surface"]["data"][0]["package"]["value"]
-        .as_str()
-        .expect("captured package");
-    let arguments = json!({"package": package, "detail": "full"});
+    let legacy: SurfaceReply =
+        serde_json::from_value(packet["surface"].clone()).expect("typed archived reply");
+    let record: backend_library::SemanticVersionRecord =
+        serde_json::from_value(packet["surface"]["data"][0].clone())
+            .expect("unchanged real42 record");
+    let arguments = json!({"package":record.package.as_str(),"detail":"full"});
+    let page = native_transport_source_page(&record);
     let mut direct = ready(Fake {
-        surface_reply: Some(reply.clone()),
+        surface_reply: Some(SurfaceReply::SemanticVersionsPage(page.clone())),
         ..Fake::default()
     });
     let original = call(&mut direct, "backend.semantic_versions", &arguments);
     let mut compact = ready(Fake {
-        surface_reply: Some(reply),
+        surface_reply: Some(SurfaceReply::SemanticVersionsPage(page.clone())),
         ..Fake::default()
     });
     let result = forwarded(&mut compact, "backend.semantic_versions", &arguments);
-    assert_eq!(result, original);
-    assert_context_bounded(&result);
-    assert_eq!(result["isError"], true);
-    assert_eq!(result["structuredContent"]["cause"], "oversized");
-    assert!(result["structuredContent"].get("semantic_data").is_none());
+    for answer in [&original, &result] {
+        assert_eq!(answer["isError"], false, "{answer}");
+        assert_context_bounded(answer);
+        let restored: backend_library::SemanticVersionsPage =
+            serde_json::from_value(answer["structuredContent"]["semantic_data"]["value"].clone())
+                .expect("current descriptor discovery");
+        assert_eq!(restored, page);
+        let backend_library::SemanticVersionDescriptor::Available { reference } =
+            &restored.entries[0]
+        else {
+            panic!("captured descriptor")
+        };
+        assert_eq!(reference.metadata.generation, record.generation);
+        assert_eq!(reference.metadata.coordinate, record.coordinate);
+        let backend_library::SemanticSourceHistory::Published { proof, .. } = &reference.history
+        else {
+            panic!("captured history")
+        };
+        assert_eq!(proof.image_count, 42);
+    }
     assert_eq!(
         compact.product.surface_commands,
         direct.product.surface_commands
     );
+    // The old complete array remains an archive fixture, not an admissible
+    // current paged reply. Both public exposures must refuse it explicitly.
+    for exposure in [McpExposure::Direct, McpExposure::RegisteredCall] {
+        let mut server = ready(Fake {
+            surface_reply: Some(legacy.clone()),
+            ..Fake::default()
+        });
+        let refused = request(
+            &mut server,
+            "tools/call",
+            &exposure
+                .expose_call(json!({"name":"backend.semantic_versions","arguments":arguments})),
+        );
+        assert!(
+            refused.get("error").is_some(),
+            "legacy reply cannot become an empty or partial success: {refused}"
+        );
+        assert!(refused.get("result").is_none());
+        assert!(refused["error"]["data"].get("semantic_data").is_none());
+        assert_eq!(server.product.surface_commands.len(), 1);
+        assert_context_bounded(&refused);
+    }
 }
 
 #[test]
@@ -707,16 +762,13 @@ fn catalog_native_json_graph_cursor_reaches_lowering_and_copyable_direct_or_comp
         "resources/read",
         &json!({"uri":CATALOG_RESOURCE_URI}),
     );
+    assert!(catalog.get("error").is_none(), "{catalog}");
     let text = catalog["result"]["contents"][0]["text"]
         .as_str()
         .expect("catalog");
-    let schema = text
-        .split("`backend.package_graph` —")
-        .nth(1)
-        .and_then(|entry| entry.split_once("```json\n"))
-        .and_then(|(_, schema)| schema.split_once("\n```").map(|(schema, _)| schema))
-        .and_then(|schema| serde_json::from_str::<Value>(schema).ok())
-        .expect("exact catalog input schema");
+    assert!(text.contains("backend://tools/catalog/backend.package_graph"));
+    let card = catalog_card(&mut discovery, "backend.package_graph");
+    let schema = &card["inputSchema"];
     assert_eq!(schema["properties"]["cursor"]["type"], "object");
     for compact in [false, true] {
         for detail in ["summary", "standard", "full"] {

@@ -13,7 +13,8 @@
 //! the card cannot promise a query the engine will not run.
 
 use super::codec::{empty_cursor, object, percent_decode, string};
-use super::tools::{CATALOG_RESOURCE_URI, catalog_markdown};
+use super::tools::{CATALOG_RESOURCE_URI, catalog_markdown, catalog_tool};
+use super::wire_admission::ResponseBudget;
 use super::{RpcError, answer_for};
 use backend_present::{
     DEFAULT_RESPONSE_BUDGET_BYTES, Detail, Engine, Request, encode_serializable, markdown,
@@ -226,12 +227,18 @@ pub(super) fn list_resources(params: &Value) -> Result<Value, RpcError> {
     encode_result("resources", ResourceBody { resources })
 }
 
-/// Lists the two addressable resource families.
+/// Lists addressable documents, outlines, source bytes and route schema cards.
 pub(super) fn list_resource_templates(params: &Value) -> Result<Value, RpcError> {
     empty_cursor(params)?;
     encode_result(
         "resource-templates",
         json!({ "resourceTemplates": [
+        {
+            "uriTemplate":"backend://tools/catalog/{name}{?offset,limit,version}",
+            "name":"mcp-tool-schema", "title":"Exact MCP route schema and help",
+            "description":"Read the exact closed-name URI from backend://tools/catalog. Assemble UTF-8 text in order using result._meta[backend/nextUri] and backend/catalogRange, then parse the complete JSON tool schema. The version binds every range to one exact descriptor; unknown names or stale versions are refused without owner work.",
+            "mimeType":"application/json"
+        },
         {
             "uriTemplate": "backend://document/{coordinate}",
             "name": "declaration-document",
@@ -262,9 +269,18 @@ pub(super) fn read_resource(
     engine: &mut dyn Engine,
     params: &Value,
     workspace_context: Option<&str>,
+    response_id: &Value,
 ) -> Result<Value, RpcError> {
     let params = object(params)?;
     let uri = string(params, "uri")?;
+    if let Some(selector) = uri.strip_prefix("backend://tools/catalog/") {
+        let range = CatalogRead::parse(selector)?;
+        let tool =
+            catalog_tool(range.name).ok_or_else(|| RpcError::new(-32002, "Resource not found"))?;
+        let text = serde_json::to_string(&tool)
+            .map_err(|error| RpcError::tool(format!("tool schema card encode failed: {error}")))?;
+        return catalog_page(uri, &text, range, response_id);
+    }
     let mut text = match uri {
         SCHEMA_URI => QUERY_SCHEMA_CARD.to_owned(),
         TOOLS_URI => catalog_markdown(),
@@ -286,6 +302,143 @@ pub(super) fn read_resource(
             }],
         },
     )
+}
+
+// This is static schema metadata, not a native owner continuation. The
+// version binds every resumed byte to the same complete descriptor JSON.
+const CATALOG_PAGE_BYTES: usize = 8192;
+
+struct CatalogRead<'a> {
+    name: &'a str,
+    offset: usize,
+    limit: usize,
+    version: Option<&'a str>,
+}
+impl<'a> CatalogRead<'a> {
+    fn parse(selector: &'a str) -> Result<Self, RpcError> {
+        let (name, query) = selector
+            .split_once('?')
+            .map_or((selector, None), |(name, query)| (name, Some(query)));
+        let mut range = Self {
+            name,
+            offset: 0,
+            limit: CATALOG_PAGE_BYTES,
+            version: None,
+        };
+        if let Some(query) = query {
+            let mut keys = std::collections::BTreeSet::new();
+            for field in query.split('&') {
+                let (key, value) = field
+                    .split_once('=')
+                    .ok_or_else(|| RpcError::invalid("catalog range requires key=value"))?;
+                if !keys.insert(key) {
+                    return Err(RpcError::invalid("duplicate catalog range argument"));
+                }
+                match key {
+                    "offset" => range.offset = catalog_unsigned(value)?,
+                    "limit" => range.limit = catalog_unsigned(value)?,
+                    "version"
+                        if value.len() == 64
+                            && value.bytes().all(|byte| {
+                                byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()
+                            }) =>
+                    {
+                        range.version = Some(value)
+                    }
+                    _ => {
+                        return Err(RpcError::invalid(
+                            "unknown or malformed catalog range argument",
+                        ));
+                    }
+                }
+            }
+            let Some(version) = range.version else {
+                return Err(RpcError::invalid(
+                    "catalog range requires its returned schema version",
+                ));
+            };
+            let canonical = format!(
+                "offset={}&limit={}&version={version}",
+                range.offset, range.limit
+            );
+            if query != canonical {
+                return Err(RpcError::invalid(
+                    "catalog range must copy its canonical returned URI",
+                ));
+            }
+        }
+        if !(1..=CATALOG_PAGE_BYTES).contains(&range.limit) {
+            return Err(RpcError::invalid(
+                "catalog range limit must be from 1 through 8192 bytes",
+            ));
+        }
+        Ok(range)
+    }
+}
+fn catalog_unsigned(value: &str) -> Result<usize, RpcError> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(RpcError::invalid(
+            "catalog range requires an unsigned byte offset or limit",
+        ));
+    }
+    value
+        .parse()
+        .map_err(|_| RpcError::invalid("catalog range integer overflow"))
+}
+
+fn catalog_page(
+    uri: &str,
+    text: &str,
+    range: CatalogRead<'_>,
+    response_id: &Value,
+) -> Result<Value, RpcError> {
+    let version = blake3::hash(text.as_bytes()).to_hex().to_string();
+    if range.version.is_some_and(|selected| selected != version) {
+        return Err(RpcError::new(
+            -32010,
+            "Catalog schema changed; restart its root resource",
+        ));
+    }
+    if range.offset > text.len() || !text.is_char_boundary(range.offset) {
+        return Err(RpcError::invalid(
+            "catalog offset is outside its exact UTF-8 document",
+        ));
+    }
+    let budget = ResponseBudget::new(response_id);
+    let mut limit = range.limit;
+    loop {
+        let mut end = range.offset.saturating_add(limit).min(text.len());
+        while end > range.offset && !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        // A positive range never returns an empty nonterminal page merely
+        // because its next complete character uses several UTF-8 bytes.
+        if end == range.offset && end < text.len() {
+            return Err(RpcError::invalid(
+                "catalog range cannot hold its next UTF-8 character",
+            ));
+        }
+        let complete = end == text.len();
+        let next = (!complete).then(|| {
+            format!(
+                "{TOOLS_URI}/{}?offset={end}&limit={limit}&version={version}",
+                range.name
+            )
+        });
+        let result = encode_result("resource", json!({
+            "contents":[{"uri":uri,"mimeType":if range.offset == 0 && complete {"application/json"} else {"text/plain"},"text":&text[range.offset..end]}],
+            "_meta":{"backend/catalogRange":{"schema":"backend-mcp.tool-card-range/v1","name":range.name,"version":version,
+                "offset":range.offset,"end":end,"limit":limit,"totalBytes":text.len(),"remainingBytes":text.len()-end,"complete":complete},
+                "backend/nextUri":next}
+        })).and_then(|result| budget.admit(result));
+        match result {
+            Ok(result) => return Ok(result),
+            Err(error) if super::semantic_pages::oversized(&error) && limit > 4 => {
+                limit = limit.div_ceil(2).max(4)
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -337,4 +490,79 @@ fn request_for(uri: &str) -> Result<Request, RpcError> {
         return percent_decode(path).map(Request::Outline);
     }
     Err(RpcError::new(-32002, "Resource not found"))
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+
+    #[test]
+    fn utf8_schema_ranges_reassemble_exact_scalars_and_fence_changed_documents() {
+        // Metadata encoder fixture, not an owner publication or native schema.
+        let text = r#"{"description":"λ🙂中文 λ🙂中文","type":"object"}"#;
+        let name = "backend.status";
+        let root = format!("{TOOLS_URI}/{name}");
+        let mut uri = root.clone();
+        let mut joined = String::new();
+        let mut selected = CatalogRead {
+            name,
+            offset: 0,
+            limit: 17,
+            version: None,
+        };
+        loop {
+            let result = catalog_page(&uri, text, selected, &json!("λ🙂caller"))
+                .expect("bounded actual encoder");
+            let range = &result["_meta"]["backend/catalogRange"];
+            assert_eq!(range["offset"], joined.len());
+            joined.push_str(
+                result["contents"][0]["text"]
+                    .as_str()
+                    .expect("whole UTF-8 scalars"),
+            );
+            assert_eq!(range["end"], joined.len());
+            if range["complete"] == true {
+                break;
+            }
+            uri = result["_meta"]["backend/nextUri"]
+                .as_str()
+                .expect("exact next URI")
+                .to_owned();
+            selected = CatalogRead::parse(
+                uri.strip_prefix("backend://tools/catalog/")
+                    .expect("namespace"),
+            )
+            .expect("canonical range");
+        }
+        assert_eq!(joined, text);
+        let version = blake3::hash(text.as_bytes()).to_hex().to_string();
+        let changed = format!("{text} ");
+        let stale = catalog_page(
+            &root,
+            &changed,
+            CatalogRead {
+                name,
+                offset: 1,
+                limit: 17,
+                version: Some(&version),
+            },
+            &json!(9),
+        )
+        .expect_err("old continuation cannot mix schema revisions");
+        assert_eq!(stale.code, -32010);
+        let inside_scalar = text.find('🙂').expect("scalar") + 1;
+        let invalid = catalog_page(
+            &root,
+            text,
+            CatalogRead {
+                name,
+                offset: inside_scalar,
+                limit: 17,
+                version: None,
+            },
+            &json!(9),
+        )
+        .expect_err("range cannot start inside UTF-8 scalar");
+        assert_eq!(invalid.code, -32602);
+    }
 }
