@@ -740,6 +740,13 @@ impl UiRootEntity {
             self.graph_view_generation = self.graph_view_generation.wrapping_add(1);
         }
         self.published = Some(Arc::clone(&snapshot));
+        if super::trace::enabled() {
+            super::trace::mark("ui.snapshot.publish", format_args!(
+                "projects={} overlay={:?} zoom={:?} motion={:?}",
+                snapshot.workspace().projects.len(), snapshot.overlay(),
+                snapshot.settings().zoom.steps().collect::<Vec<_>>(), snapshot.settings().motion,
+            ));
+        }
         if let Some(store) = &self.store {
             store.update(cx, |store, cx| store.admit_snapshot(snapshot, cx));
         }
@@ -754,6 +761,12 @@ impl UiRootEntity {
     /// Queues a typed intent; it is reduced at the end of the current effect
     /// cycle, so a burst of intents from one input is one reduction pass.
     pub fn queue(&mut self, intent: Intent, cx: &mut Context<Self>) {
+        if super::trace::enabled() && matches!(&intent, Intent::Zoom { .. } | Intent::ZoomTo { .. } | Intent::SetMotion(_) | Intent::AddProject { .. }) {
+            super::trace::mark("ui.intent.queue", match &intent {
+                Intent::Zoom { .. } => "Zoom", Intent::ZoomTo { .. } => "ZoomTo",
+                Intent::SetMotion(_) => "SetMotion", _ => "AddProject",
+            });
+        }
         if self.quitting { return; }
         if let Intent::ResolveCargoBrowse { expected, context } = &intent {
             let Some(dependency) = self.cargo_resolution_dependency(expected, context, cx) else { return; };
@@ -846,6 +859,12 @@ impl UiRootEntity {
 
     /// Applies a typed intent immediately from a harness or startup phase.
     pub fn dispatch(&mut self, intent: Intent, cx: &mut Context<Self>) {
+        if super::trace::enabled() && matches!(&intent, Intent::Zoom { .. } | Intent::ZoomTo { .. } | Intent::SetMotion(_) | Intent::AddProject { .. }) {
+            super::trace::mark("ui.intent.dispatch", match &intent {
+                Intent::Zoom { .. } => "Zoom", Intent::ZoomTo { .. } => "ZoomTo",
+                Intent::SetMotion(_) => "SetMotion", _ => "AddProject",
+            });
+        }
         if self.quitting { return; }
         if matches!(&intent, Intent::IndexProject { .. }) {
             if let Some(attachment) = self.store.as_ref().and_then(|store| store.read(cx).current_index_owner()) {

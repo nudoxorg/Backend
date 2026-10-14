@@ -311,6 +311,15 @@ impl Shell {
             // Bound editor actions run before raw capture listeners, so
             // input intent must retire delayed focus claims here as well.
             let _ = weak.update(cx, |shell, cx| {
+                if crate::runtime::trace::enabled() && event.keystroke.modifiers.secondary()
+                    && matches!(event.keystroke.key.as_str(), "=" | "+" | "-" | "0" | "," | "\\" | "o")
+                {
+                    crate::runtime::trace::mark("native.shortcut", format_args!(
+                        "key={} shift={} active={} focus={} background={}",
+                        event.keystroke.key, event.keystroke.modifiers.shift,
+                        window.is_window_active(), window.focused(cx).is_some(), shell.background_input_allowed(),
+                    ));
+                }
                 shell.hold.key_down();
                 shell.advance_transient_generation();
                 // The key dismissing Add belongs to the covered editor;
@@ -1765,6 +1774,12 @@ impl Shell {
 
     /// ⌘+ / ⌘− / ⌘0 on the display the window is on.
     fn zoom(&mut self, step: ZoomStep, cx: &mut Context<Self>) {
+        if crate::runtime::trace::enabled() {
+            crate::runtime::trace::mark("native.zoom", format_args!(
+                "step={step:?} display={} before={}", self.around.display,
+                self.links.snapshot(cx).settings().zoom.percent(&self.around.display),
+            ));
+        }
         self.links.dispatch(
             Intent::Zoom {
                 display: Arc::clone(&self.around.display),
