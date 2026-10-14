@@ -60,6 +60,66 @@ pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     write_private_atomic_platform(path, bytes)
 }
 
+/// Publishes a private diagnostic file without flushing it or its directory.
+///
+/// The replacement is still atomic (a reader sees the old file or the new one, never a mixture),
+/// but nothing waits for the device, and after a crash the file may be missing or hold the
+/// previous contents. Use it only for observations that nothing depends on being durable. On
+/// platforms without a cheaper protocol this is [`write_private_atomic`].
+///
+/// # Errors
+/// Returns an I/O error if the parent is not private or the replacement cannot be made.
+pub fn write_private_atomic_unflushed(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let parent = parent(path);
+        validate_unix_parent(parent)?;
+        reject_unix_symlink_destination(path)?;
+        let (temporary, mut file) = create_private_temporary(parent, path.file_name())?;
+        if let Err(error) = file
+            .set_permissions(fs::Permissions::from_mode(0o600))
+            .and_then(|()| file.write_all(bytes))
+        {
+            let _ = fs::remove_file(&temporary);
+            return Err(error);
+        }
+        drop(file);
+        if let Err(error) = replace_file(&temporary, path) {
+            let _ = fs::remove_file(&temporary);
+            return Err(error);
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        write_private_atomic(path, bytes)
+    }
+}
+
+/// Publishes a private state file unless it already holds exactly `bytes`.
+///
+/// A file that is present with the requested contents was published by an earlier
+/// [`write_private_atomic`], whose flushes it already carries, so rewriting it would only repeat
+/// two device flushes. Anything else (absent, different, unreadable, or not a private file) is
+/// published as usual. Returns whether a new file was written.
+///
+/// # Errors
+/// Returns the error of [`write_private_atomic`] when a write was needed and failed.
+pub fn write_private_atomic_if_changed(path: &Path, bytes: &[u8]) -> io::Result<bool> {
+    if let Ok(mut file) = open_private_read(path) {
+        use std::io::Read as _;
+        let mut existing = Vec::with_capacity(bytes.len().min(1 << 16));
+        let limit = u64::try_from(bytes.len()).unwrap_or(u64::MAX).saturating_add(1);
+        if (&mut file).take(limit).read_to_end(&mut existing).is_ok() && existing == bytes {
+            return Ok(false);
+        }
+    }
+    write_private_atomic(path, bytes)?;
+    Ok(true)
+}
+
 /// Opens a private state file for reading after checking the opened file.
 ///
 /// On Windows this rejects reparse points throughout the path chain and on
@@ -488,8 +548,9 @@ fn ensure_private_child_directory_unix(path: &Path, repair_owned: bool) -> io::R
             "application data directory is not owner-only",
         ));
     }
-    child.sync_all()?;
-    parent_handle.sync_all()
+    // The directory and its parent are independent barriers: flushed together they cost one
+    // device flush instead of two.
+    crate::durability::flush_concurrently(&[&child, &parent_handle], |handle| handle.sync_all())
 }
 
 #[cfg(windows)]
@@ -613,8 +674,10 @@ fn validate_unix_private_directory(directory: &File) -> io::Result<()> {
 #[cfg(unix)]
 fn flush_unix_private_directory(path: &Path, directory: &File) -> io::Result<()> {
     validate_unix_private_directory(directory)?;
-    directory.sync_all()?;
-    sync_parent(path)
+    // The directory and its parent are independent barriers: flushed together they cost one
+    // device flush instead of two.
+    let parent = File::open(parent(path))?;
+    crate::durability::flush_concurrently(&[directory, &parent], |handle| handle.sync_all())
 }
 
 #[cfg(unix)]
@@ -779,6 +842,56 @@ mod tests {
         assert!(ensure_private_application_directory(&child).is_err());
         assert_eq!(fs::metadata(&child).expect("unmodified child").permissions().mode() & 0o777, 0o755);
         fs::remove_dir_all(parent).expect("remove repair fixture");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unchanged_private_state_is_not_rewritten_and_changed_state_is() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+        let root = fixture("if-changed");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .expect("protect fixture directory");
+        let path = root.join("receipt.json");
+        assert!(write_private_atomic_if_changed(&path, b"first").expect("first write"));
+        let inode = fs::metadata(&path).expect("receipt").ino();
+        assert!(
+            !write_private_atomic_if_changed(&path, b"first").expect("identical bytes"),
+            "identical contents are left alone"
+        );
+        assert_eq!(fs::metadata(&path).expect("receipt").ino(), inode, "same file object");
+        assert!(write_private_atomic_if_changed(&path, b"second").expect("changed bytes"));
+        assert_eq!(fs::read(&path).expect("receipt"), b"second");
+        // A longer file that merely starts with the new bytes is a different file.
+        assert!(write_private_atomic_if_changed(&path, b"sec").expect("shorter bytes"));
+        assert_eq!(fs::read(&path).expect("receipt"), b"sec");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unflushed_private_publication_is_atomic_private_and_leaves_no_temporaries() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = fixture("unflushed");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+            .expect("protect fixture directory");
+        let path = root.join("diagnostic.json");
+        for generation in 0_u64..16 {
+            let bytes = generation.to_le_bytes();
+            write_private_atomic_unflushed(&path, &bytes).expect("publish generation");
+            assert_eq!(fs::read(&path).expect("read generation"), bytes);
+        }
+        assert_eq!(fs::metadata(&path).expect("metadata").permissions().mode() & 0o777, 0o600);
+        let names = fs::read_dir(&root)
+            .expect("read fixture")
+            .map(|entry| entry.expect("directory entry").file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(names, [OsString::from("diagnostic.json")]);
+        let occupied = root.join("occupied");
+        fs::create_dir(&occupied).expect("occupied destination");
+        assert!(write_private_atomic_unflushed(&occupied, b"state").is_err());
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
