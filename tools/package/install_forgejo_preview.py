@@ -29,7 +29,7 @@ MAX_ARCHIVE = 2 * 1024**3
 # Candidate bootstrap pins: R2 public bytes remain in fixtures and channel assets.
 LIBRARIES = {
     "macos-arm64": ("c4ed3976c405499619d2bc2834dae2a3503e25aa011237ad2027514240e68181", 47197, "install-macos-arm64"),
-    "linux-x64": ("e11fcc271fc3a8feb676b9f8c383bbf5bdc215578ffc399774819184908ed071", 49954, "install-linux-x64"),
+    "linux-x64": ("43d5ac941ee3f8ce1186583d1297fffdbd27d80924e22601cf4aa264de4b0bcc", 58374, "install-linux-x64"),
 }
 DOWNLOAD_TIMEOUT_SECONDS = 20
 DOWNLOAD_PROGRESS_INTERVAL_SECONDS = 5

@@ -56,6 +56,21 @@ def published_linux_library_bytes():
     return body
 
 
+def candidate_library_metadata(value, key):
+    """Point a hypothetical next-bootstrap channel at the exact current source."""
+    body = (ROOT / ("install_macos_preview.py" if key == "macos-arm64" else "install_linux.py")).read_bytes()
+    digest = hashlib.sha256(body).hexdigest()
+    if (digest, len(body)) != candidate_boot.LIBRARIES[key][:2]:
+        raise AssertionError(f"candidate {key} library differs from the candidate bootstrap pin")
+    entry = value["platforms"][key]
+    entry["installer"] = {
+        "url": candidate_boot.release_url(entry["tag"], candidate_boot.LIBRARIES[key][2] + "-" + digest[:16] + ".py"),
+        "sha256": digest,
+        "bytes": len(body),
+    }
+    return body
+
+
 def published_mac_library(root):
     """Materialize the exact R2 library bytes pinned by the unchanged channel."""
     path = Path(root) / "published-r2-install-macos-preview.py"
@@ -94,6 +109,7 @@ def candidate_mac_transport(root, entry, archive):
         "bytes": len(bootstrap_body),
     }
     value["platforms"]["macos-arm64"] = entry
+    candidate_library_metadata(value, "linux-x64")
     candidate_boot.validate_channel(value)
     candidate_boot.admit_libraries(value)
     metadata = Path(root) / "candidate-channel.json"
@@ -179,16 +195,47 @@ class Tests(unittest.TestCase):
         mac = published_mac_library_bytes()
         candidate_mac = (ROOT / "install_macos_preview.py").read_bytes()
         linux = published_linux_library_bytes()
+        candidate_linux = (ROOT / "install_linux.py").read_bytes()
         self.assertEqual((hashlib.sha256(mac).hexdigest(), len(mac)), boot.LIBRARIES["macos-arm64"][:2])
-        self.assertNotEqual((hashlib.sha256(candidate_mac).hexdigest(), len(candidate_mac)),
-                            boot.LIBRARIES["macos-arm64"][:2])
+        self.assertEqual((hashlib.sha256(candidate_mac).hexdigest(), len(candidate_mac)),
+                         candidate_boot.LIBRARIES["macos-arm64"][:2])
+        self.assertNotEqual(candidate_boot.LIBRARIES["macos-arm64"][:2], boot.LIBRARIES["macos-arm64"][:2])
         self.assertEqual((hashlib.sha256(linux).hexdigest(), len(linux)), boot.LIBRARIES["linux-x64"][:2])
+        self.assertEqual((hashlib.sha256(candidate_linux).hexdigest(), len(candidate_linux)),
+                         candidate_boot.LIBRARIES["linux-x64"][:2])
+        self.assertNotEqual(candidate_boot.LIBRARIES["linux-x64"][:2], boot.LIBRARIES["linux-x64"][:2])
+        candidate_channel = channel()
+        candidate_library_metadata(candidate_channel, "macos-arm64")
+        candidate_library_metadata(candidate_channel, "linux-x64")
+        candidate_boot.validate_channel(candidate_channel)
+        candidate_boot.admit_libraries(candidate_channel)
         script = published_bootstrap_bytes()
         candidate_script = (ROOT / "install_forgejo_preview.py").read_bytes()
         self.assertEqual(channel()["bootstrap"]["sha256"], hashlib.sha256(script).hexdigest())
         self.assertEqual(channel()["bootstrap"]["bytes"], len(script))
         self.assertNotEqual((hashlib.sha256(candidate_script).hexdigest(), len(candidate_script)),
                             (channel()["bootstrap"]["sha256"], channel()["bootstrap"]["bytes"]))
+
+    def test_candidate_linux_template_is_pinned_but_cannot_claim_r2_release_identity(self):
+        candidate_path = ROOT / "install_linux.py"
+        module = candidate_boot.load_library(candidate_path, "linux-x64")
+        self.assertEqual(module.PINNED_RELEASE_TAG, "")
+        self.assertEqual(module.PINNED_MANIFEST_SHA256, "")
+
+        historical = channel()
+        boot.validate_channel(historical)
+        boot.admit_libraries(historical)
+        candidate_historical = copy.deepcopy(historical)
+        candidate_library_metadata(candidate_historical, "macos-arm64")
+        candidate_boot.validate_channel(candidate_historical)
+        with self.assertRaisesRegex(candidate_boot.InstallError, "reviewed bytes"):
+            candidate_boot.admit_libraries(candidate_historical)
+
+        linux_entry = candidate_historical["platforms"]["linux-x64"]
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(candidate_boot.InstallError, "original pinned checkpoint"):
+                candidate_boot.prepare_install_identity(
+                    linux_entry, "linux-x64", module, Path(temporary) / "must-not-be-read.json")
 
     def test_candidate_bootstrap_repeat_reuses_verified_mac_install_before_archive_fetch(self):
         with tempfile.TemporaryDirectory() as temporary:
