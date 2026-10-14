@@ -39,11 +39,41 @@ let workspace_git_root = $git_probe.stdout | str trim
 let workspace_available = $workspace_root | path join "Cargo.toml" | path exists
 let git_available = $git_probe.exit_code == 0 and $workspace_git_root == ($workspace_root | path expand)
 
-let discovered_paths = if $workspace_available and not $git_available {
+# A path: flake may contain Git's directory even when its immutable checkout
+# cannot be opened by Git. Metadata is not source and has no governed owner.
+def snapshot-source-paths [workspace_root: string] {
     glob ($workspace_root | path join "**" "*")
     | where {|path| ($path | path type) == "file"}
     | each {|path| $path | path relative-to $workspace_root}
-    | where {|path| not ($path | str starts-with ".local/") and not ($path | str starts-with ".backend/") and not ($path | str starts-with "target/") and not ($path | str ends-with ".rmeta") and not ($path | str ends-with ".rlib")}
+    | where {|path| not ($path | str starts-with ".git/") and not ($path | str starts-with ".local/") and not ($path | str starts-with ".backend/") and not ($path | str starts-with "target/") and not ($path | str ends-with ".rmeta") and not ($path | str ends-with ".rlib")}
+}
+
+let snapshot_probe = (^mktemp -d | str trim)
+try {
+    for relative in [
+        ".git/config"
+        ".git/objects/sentinel"
+        ".local/ignored"
+        "target/ignored"
+        ".gitignore"
+        ".gitmodules"
+        ".config/source.json"
+        "src/real.rs"
+    ] {
+        let target = $snapshot_probe | path join $relative
+        mkdir ($target | path dirname)
+        "nonsecret fixture" | save -f $target
+    }
+    let discovered = snapshot-source-paths $snapshot_probe | sort
+    assert equal $discovered ([".gitignore" ".gitmodules" ".config/source.json" "src/real.rs"] | sort) "immutable snapshot must exclude Git metadata while retaining dotfile source"
+} catch {|error|
+    rm -rf $snapshot_probe
+    error make {msg: $error.msg}
+}
+rm -rf $snapshot_probe
+
+let discovered_paths = if $workspace_available and not $git_available {
+    snapshot-source-paths $workspace_root
 } else { [] }
 
 let git_paths = if $git_available {
