@@ -34,7 +34,8 @@ pub use self::identity::{
     TypedDeclarationKeyFault, VariantAvailability, VariantFingerprint, python_program_identity,
 };
 pub use self::occurrence::{
-    Confidence, ConfidenceCodeError, ReferenceKind, ReferenceKindCodeError, RelSpan, RelSpanFault,
+    Confidence, ConfidenceCodeError, MODULE_OWNER_NAME, ReferenceKind, ReferenceKindCodeError,
+    RelSpan, RelSpanFault,
 };
 pub use self::products::{
     ProductChildRole, ProductChildRoleCodeError, ProductConstructorFault, ProductConstructorTag,

@@ -156,7 +156,7 @@ pub use backend_library::{
     PackageReference, PageContinuation, PageRequest, PageTerminal, PolicyReason,
     ProductAdmissionError, ProductText, ProjectId, ProjectName, ProjectRecord, ProjectSelector,
     ProjectionPage, Query, QueryLimit, QueryPageRecipe, REGISTRY_FORGE_ASSOCIATION_VERSION,
-    REGISTRY_FORGE_BLOB_FRONTIER_VERSION, Reason, ReferenceFact, ReferenceRecord,
+    REGISTRY_FORGE_BLOB_FRONTIER_VERSION, Reason, ReferenceFact, ReferencePlace, ReferenceRecord,
     RegistryAuthorityId, RegistryDiscoveryCandidate, RegistryDiscoveryCompleteness,
     RegistryDiscoveryFreshness, RegistryDiscoveryStanding, RegistryDownloadCount,
     RegistryEcosystem, RegistryFactAvailability, RegistryForgeAssociation,

@@ -36,6 +36,7 @@ use backend_frontend_python::legacy::{
 };
 use backend_semantic::ir::{
     AnonRecordForm, Confidence, DocFragmentInput, DocLinkTarget, EntityId, EntityKind, ForeignKey,
+    MODULE_OWNER_NAME,
     ForeignOrigin, ListSpan, NominalRef, Occurrence, OccurrenceConfidence, OccurrenceTarget,
     PackageLineage, PrimitiveShape, ProductChildRole, PythonFacts, PythonParameterKind,
     ReferenceKind, RelSpan, SemanticProductConstructor, SemanticTypeChild, SemanticTypeRecord,
@@ -51,7 +52,7 @@ use crate::driver::{
         EmissionExtension, FactSet, LEAF_PRODUCT, MAX_TYPE_CHILDREN, SemanticFact,
         StagedSourceSpan, push_fact,
     },
-    types::{FactRejection, LoweringUnsupported},
+    types::{FactFault, FactRejection, LoweringUnsupported},
 };
 
 /// Exact direct-authority rejection while borrowing Ruff declarations.
@@ -213,6 +214,9 @@ impl<'report> CheckerIndex<'report> {
 struct Pushed<'source> {
     ordinal: u32,
     name: &'source [u8],
+    /// The extracted declaration this row was pushed for; the module's own
+    /// owner row has none.
+    declaration: Option<usize>,
     span: Span,
     /// The imported module spelling range when this row is an alias.
     imported: Option<Span>,
@@ -231,6 +235,8 @@ struct Emitter<'a, 'source> {
     /// twin (later wins) and for the dead subtree it owns. Distinct overloads
     /// keep distinct fingerprints, so every live signature survives.
     live: Vec<bool>,
+    /// The innermost class or function enclosing each declaration.
+    owners: Vec<Option<usize>>,
     /// Immutable receiver roles derived once from the existing lexical owner table.
     receiver_bindings: ReceiverBindings,
     /// Pushed declaration rows in lane order, built while emitting.
@@ -351,6 +357,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             facts,
             ordinals,
             live,
+            owners,
             receiver_bindings,
             pushed: Vec::new(),
             child_rows: Vec::new(),
@@ -1227,6 +1234,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
             self.pushed.push(Pushed {
                 ordinal: coordinate,
                 name,
+                declaration: Some(index),
                 span: declaration.span,
                 imported: declaration.value_span,
             });
@@ -1893,33 +1901,265 @@ impl<'a, 'source> Emitter<'a, 'source> {
     /// Streams every extractor occurrence row into the lane: the owner is
     /// the innermost already-pushed declaration whose span precedes the
     /// reference, and the target resolves through the module's own names.
+    /// A reference written at module level has no declaration to own it; it
+    /// is owned by a module row of its own, pushed only when one is needed.
     /// The type authority upgrades the evidence tier: a call site the oracle
     /// bound to a resolved import becomes `Import`, and a call site the
     /// oracle bound to a local declaration becomes `Oracle`. Every
     /// unresolved site keeps its index-tier fact unchanged.
     fn emit_occurrences(&mut self) -> Result<(), PythonCollectError> {
+        let module_owner = self.emit_module_owner()?;
         let rows = self.pushed.clone();
         for occurrence in &self.module.occurrences {
-            let Some(owner) = owner_row(&rows, occurrence) else {
-                // The module itself is not a lane fact (the driver fact set
-                // carries declarations only), so module-owned references
-                // have no honest owner row and are not synthesized one.
+            let owner = owner_row(&rows, occurrence).or_else(|| {
+                module_owner
+                    .as_ref()
+                    .filter(|_| occurrence.owner == self.module.identity)
+            });
+            let Some(owner) = owner else {
                 continue;
             };
+            if matches!(occurrence.receiver, OccurrenceReceiver::None)
+                && self.shadowed_by_local(&rows, occurrence)
+            {
+                continue;
+            }
             let Some((target, confidence)) = self.occurrence_target(&rows, occurrence)? else {
                 continue;
             };
+            let kind = self.lane_reference_kind(occurrence, &target);
             let lane_occurrence = Occurrence {
                 target,
-                kind: reference_kind(occurrence.kind),
+                kind,
                 confidence,
                 span: owner_relative_span(owner, occurrence),
             };
+            match self.facts.push_occurrence(owner.ordinal, lane_occurrence) {
+                Ok(()) => {}
+                // A name read is the cheapest use to lose: a file with more
+                // uses than the lane holds keeps its calls and declarations
+                // rather than failing as a whole.
+                Err(FactFault::OccurrenceCapacity) if occurrence.kind == OccurrenceKind::NameRead => {
+                    break;
+                }
+                Err(fault) => return Err(lane_rejected(fault)),
+            }
+        }
+        self.emit_import_occurrences(&rows)
+    }
+
+    /// Pushes the module's own owner row when something written at module
+    /// level needs one, and returns it. The row spans the whole module and
+    /// carries no name of its own; the view names it after its file.
+    fn emit_module_owner(&mut self) -> Result<Option<Pushed<'source>>, PythonCollectError> {
+        let needed = self.module.occurrences.iter().any(|occurrence| {
+            occurrence.owner == self.module.identity && owner_row(&self.pushed, occurrence).is_none()
+        });
+        if !needed {
+            return Ok(None);
+        }
+        let extension = self.python_extension(&[], None, Confidence::Syntactic)?;
+        let fact = SemanticFact::new(EntityKind::Module, MODULE_OWNER_NAME, LEAF_PRODUCT)
+            .typed(unknown_record(TypeReason::Unannotated))
+            .with_extension(EmissionExtension::Python(extension));
+        let ordinal = push_fact(self.facts, fact).map_err(PythonCollectError::Rejected)?;
+        let span = self.module.span;
+        let coordinate = Self::coordinate(span, ordinal)?;
+        self.attach_span(coordinate, span)?;
+        self.facts
+            .mark_parentage_root(coordinate)
+            .map_err(|fault| parentage_fault(span.start, span.end, fault))?;
+        Ok(Some(Pushed {
+            ordinal: coordinate,
+            name: MODULE_OWNER_NAME,
+            declaration: None,
+            span,
+            imported: None,
+        }))
+    }
+
+    /// One import occurrence per import binding: the binding names what it
+    /// imports, so a use of that name is traceable to the statement that
+    /// brought it in. The target is the module's own spelling, which the
+    /// project join retargets onto a declaration of this project.
+    fn emit_import_occurrences(
+        &mut self,
+        rows: &[Pushed<'source>],
+    ) -> Result<(), PythonCollectError> {
+        for row in rows {
+            let (Some(imported), Some(declaration)) = (row.imported, row.declaration) else {
+                continue;
+            };
+            let binding = self.module.declarations[declaration].name_span;
+            if !span_contains(row.span, binding) {
+                continue;
+            }
+            let module_spelling = self.slice(imported)?;
+            let name = core::str::from_utf8(row.name).map_err(|_| {
+                PythonCollectError::Projection(PythonProjectionFault::ForeignSpellingUtf8 {
+                    start: imported.start,
+                    end: imported.end,
+                })
+            })?;
+            let target = foreign_package(module_spelling, name, imported, None)?;
+            let lane_occurrence = Occurrence {
+                target,
+                kind: ReferenceKind::Import,
+                confidence: OccurrenceConfidence::Index,
+                span: RelSpan::new_trusted(
+                    binding.start - row.span.start,
+                    binding.end - row.span.start,
+                ),
+            };
             self.facts
-                .push_occurrence(owner.ordinal, lane_occurrence)
+                .push_occurrence(row.ordinal, lane_occurrence)
                 .map_err(lane_rejected)?;
         }
         Ok(())
+    }
+
+    /// The kind of use one occurrence is. A call is a call; a name read that
+    /// is a written base class inherits, one written inside an annotation or
+    /// naming a class mentions a type, and any other is a use of a value.
+    fn lane_reference_kind(
+        &self,
+        occurrence: &OccurrenceFact,
+        target: &OccurrenceTarget<'source>,
+    ) -> ReferenceKind {
+        if occurrence.kind != OccurrenceKind::NameRead {
+            return reference_kind(occurrence.kind);
+        }
+        let mut bases = Vec::new();
+        for declaration in &self.module.declarations {
+            if declaration.kind == DeclarationKind::Class
+                && span_contains(declaration.span, occurrence.span)
+            {
+                for base in &declaration.bases {
+                    base_name_spans(base, true, &mut bases);
+                }
+            }
+        }
+        if let Some((_, written_base)) = bases.iter().find(|(span, _)| *span == occurrence.span) {
+            return if *written_base {
+                ReferenceKind::Inherits
+            } else {
+                ReferenceKind::TypeReference
+            };
+        }
+        if self
+            .module
+            .annotations
+            .iter()
+            .any(|annotation| span_contains(annotation.span, occurrence.span))
+        {
+            return ReferenceKind::TypeReference;
+        }
+        let names_a_class = match target {
+            OccurrenceTarget::Local(entity) => self.pushed.iter().any(|row| {
+                row.ordinal == entity.raw
+                    && row.declaration.is_some_and(|declaration| {
+                        self.module.declarations[declaration].kind == DeclarationKind::Class
+                    })
+            }),
+            // An imported name is written as a class when it is spelled like
+            // one (`CapWords`, not a `CONSTANT`).
+            OccurrenceTarget::Foreign(_) => {
+                occurrence.target.starts_with(|first: char| first.is_ascii_uppercase())
+                    && occurrence.target.chars().any(|ch| ch.is_ascii_lowercase())
+            }
+            OccurrenceTarget::Stable(_) => false,
+        };
+        if names_a_class {
+            return ReferenceKind::TypeReference;
+        }
+        ReferenceKind::VariableUse
+    }
+
+    /// The row a bare name written at `occurrence` names, by lexical scope: a
+    /// definition nested in a function the occurrence is inside beats the
+    /// module's own, and a class-body name is seen only from the class body
+    /// itself. With no nested match the module-level row of that name, else
+    /// the first row of the name.
+    fn named_row<'rows>(
+        &self,
+        rows: &'rows [Pushed<'source>],
+        occurrence: &OccurrenceFact,
+    ) -> Option<&'rows Pushed<'source>> {
+        let target = occurrence.target.as_bytes();
+        let candidates = rows
+            .iter()
+            .filter(|row| row.name == target)
+            .collect::<Vec<_>>();
+        let first = *candidates.first()?;
+        if candidates.len() == 1 {
+            return Some(first);
+        }
+        let mut scopes = self
+            .module
+            .declarations
+            .iter()
+            .enumerate()
+            .filter(|(index, declaration)| {
+                self.live[*index]
+                    && matches!(
+                        declaration.kind,
+                        DeclarationKind::Function | DeclarationKind::Class
+                    )
+                    && span_contains(declaration.span, occurrence.span)
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        scopes.sort_by_key(|index| core::cmp::Reverse(self.module.declarations[*index].span.start));
+        let mut crossed_function = false;
+        for scope in scopes {
+            let kind = self.module.declarations[scope].kind;
+            if kind == DeclarationKind::Class && crossed_function {
+                continue;
+            }
+            if let Some(found) = candidates
+                .iter()
+                .find(|row| {
+                    row.declaration
+                        .is_some_and(|declaration| self.owners[declaration] == Some(scope))
+                })
+                .copied()
+            {
+                return Some(found);
+            }
+            if kind == DeclarationKind::Function {
+                crossed_function = true;
+            }
+        }
+        candidates
+            .iter()
+            .find(|row| {
+                row.declaration
+                    .is_some_and(|declaration| self.owners[declaration].is_none())
+            })
+            .copied()
+            .or(Some(first))
+    }
+
+    /// Whether a bare name at `occurrence` is a local variable or parameter
+    /// of an enclosing function: such a name is not the module's declaration
+    /// of that spelling, whatever it is called.
+    fn shadowed_by_local(&self, rows: &[Pushed<'source>], occurrence: &OccurrenceFact) -> bool {
+        let target = occurrence.target.as_str();
+        let declares = |names: &[String]| names.iter().any(|name| name == target);
+        self.module.binding_scopes.iter().any(|scope| {
+            span_contains(scope.span, occurrence.span)
+                && !declares(&scope.globals)
+                && !declares(&scope.nonlocals)
+                && (declares(&scope.locals) || declares(&scope.assigned))
+                && self
+                    .named_row(rows, occurrence)
+                    .is_none_or(|row| !self.nested_within(row, scope.span))
+        })
+    }
+
+    /// Whether `row` is a definition written inside `scope`.
+    fn nested_within(&self, row: &Pushed<'source>, scope: Span) -> bool {
+        row.declaration.is_some() && span_contains(scope, row.span) && scope != row.span
     }
 
     /// Resolves one occurrence target with its evidence tier. Bare-name and
@@ -2007,9 +2247,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                         return Ok(Some(resolved));
                     }
                 }
-                let matched = rows
-                    .iter()
-                    .find(|row| row.name == occurrence.target.as_bytes());
+                let matched = self.named_row(rows, occurrence);
                 let Some(row) = matched else {
                     // The extractor only records targets matched against module
                     // names; an unmatched row keeps its written target spelling:
@@ -2091,7 +2329,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                 }
             }
             OccurrenceReceiver::Constructed { class } => match occurrence.kind {
-                OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall => {
+                OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall | OccurrenceKind::NameRead => {
                     if let Some(resolved) =
                         self.class_qualified_call_target(occurrence, class, checked)?
                     {
@@ -2233,7 +2471,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
                     }
                 };
                 match occurrence.kind {
-                    OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall => {
+                    OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall | OccurrenceKind::NameRead => {
                         match self.super_member_in_mro(
                             occurrence,
                             &mro,
@@ -4404,14 +4642,14 @@ impl<'a, 'source> Emitter<'a, 'source> {
         });
         let Some(class_name) = class_name else {
             return match occurrence.kind {
-                OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall => {
+                OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall | OccurrenceKind::NameRead => {
                     method_foreign().map(Some)
                 }
                 OccurrenceKind::AttributeRead => field_foreign().map(Some),
             };
         };
         match occurrence.kind {
-            OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall => {
+            OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall | OccurrenceKind::NameRead => {
                 if let Some(resolved) =
                     self.class_qualified_call_target(occurrence, &class_name, checked)?
                 {
@@ -5564,7 +5802,7 @@ impl<'a, 'source> Emitter<'a, 'source> {
         occurrence: &OccurrenceFact,
     ) -> Result<OccurrenceTarget<'source>, PythonCollectError> {
         match occurrence.kind {
-            OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall => {
+            OccurrenceKind::MethodCall | OccurrenceKind::FunctionCall | OccurrenceKind::NameRead => {
                 foreign_method(self.slice(occurrence.span)?, occurrence.span)
             }
             OccurrenceKind::AttributeRead => {
@@ -5833,6 +6071,29 @@ fn parentage_fault<F>(start: u32, end: u32, _fault: F) -> PythonCollectError {
     PythonCollectError::Projection(PythonProjectionFault::Containment { start, end })
 }
 
+/// The written spans of the names in one base-class expression, each with
+/// whether it is the base itself (`A`, or `A` of `A[T]`) or only an argument
+/// of it (`T`).
+fn base_name_spans(base: &Annotation, written_base: bool, out: &mut Vec<(Span, bool)>) {
+    match base {
+        Annotation::Name {
+            span: Some(span), ..
+        } => out.push((*span, written_base)),
+        Annotation::Generic { base, args } => {
+            base_name_spans(base, written_base, out);
+            for argument in args {
+                base_name_spans(argument, false, out);
+            }
+        }
+        Annotation::List(items) | Annotation::Union(items) => {
+            for item in items {
+                base_name_spans(item, false, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Picks the innermost pushed row that owns an occurrence: the name must
 /// match and the live declaration must fully contain the reference, so the
 /// owner-relative span always lands inside its owner. Start-only matching
@@ -5884,6 +6145,7 @@ fn reference_kind(kind: OccurrenceKind) -> ReferenceKind {
         OccurrenceKind::FunctionCall => ReferenceKind::FunctionCall,
         OccurrenceKind::MethodCall => ReferenceKind::MethodCall,
         OccurrenceKind::AttributeRead => ReferenceKind::FieldAccess,
+        OccurrenceKind::NameRead => ReferenceKind::VariableUse,
     }
 }
 
@@ -7874,5 +8136,151 @@ mod tests {
             panic!("package-lineage grammar fault was erased");
         };
         assert_eq!((start, end, segment), (22, 31, 9));
+    }
+
+    /// Every use one Python source lowers to, as `(owner, kind, target)`: the
+    /// owner is the entity's name, the target is the local entity's name or
+    /// `external:<display>`.
+    fn lowered_uses(source: &[u8]) -> Vec<(String, backend_semantic::ir::LinkKind, String)> {
+        use backend_semantic::{
+            ir::{ExternalTarget, LinkTarget, SourceIdentity},
+            vocabulary::{CompileRecipeFact, LanguageProfile, NativeTool, PythonVersion, Stage},
+        };
+        use backend_version::{ContentId, SourceFactDomain, ToolchainDomain};
+        let profile = LanguageProfile::Python(PythonVersion::Python312);
+        let module = backend_frontend_python::legacy::extract(source, PythonVersion::Python312)
+            .expect("Ruff parses fixture");
+        let mut facts = crate::driver::lower::FactSet::new();
+        super::collect_with_checker(&module, source, &mut facts, None)
+            .expect("Ruff facts enter canonical lane");
+        let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(source);
+        let recipe = CompileRecipeFact::derive(
+            profile,
+            Stage::LowerIr,
+            NativeTool::Python,
+            identity,
+            ContentId::<ToolchainDomain>::from_canonical_bytes(b"python-uses-fixture"),
+        );
+        let ir = facts
+            .build_ir(
+                profile,
+                SourceIdentity {
+                    identity,
+                    byte_len: source.len() as u32,
+                },
+                recipe,
+                crate::driver::types::DeclarationScope::fixture(),
+            )
+            .expect("owned image admits the uses");
+        let name_of = |id| {
+            let item = ir.item(id).expect("entity");
+            String::from_utf8_lossy(item.name().named_bytes().unwrap_or(b"?")).into_owned()
+        };
+        let mut uses = ir
+            .link_occurrences()
+            .map(|(_, occurrence)| {
+                let link = ir.link(occurrence.link).expect("link");
+                let target = match link.target {
+                    LinkTarget::Local(entity) => name_of(entity),
+                    LinkTarget::External(external) => match ir.external(external) {
+                        Some(ExternalTarget::Foreign(foreign)) => format!(
+                            "external:{}",
+                            String::from_utf8_lossy(ir.atom(foreign.display).unwrap_or(b"?"))
+                        ),
+                        _ => "external".to_owned(),
+                    },
+                };
+                (name_of(link.from), link.kind, target)
+            })
+            .collect::<Vec<_>>();
+        uses.sort();
+        uses
+    }
+
+    #[test]
+    fn a_module_level_call_is_owned_by_a_module_row() {
+        use backend_semantic::ir::LinkKind::Calls;
+        let uses = lowered_uses(
+            b"def enclose(text):\n    return text\n\npattern = enclose('a')\nother = enclose('b')\n\ndef inside():\n    return enclose('c')\n",
+        );
+        let owners = uses
+            .iter()
+            .filter(|(_, kind, target)| *kind == Calls && target == "enclose")
+            .map(|(owner, _, _)| owner.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            owners,
+            vec!["<module>", "<module>", "inside"],
+            "both module-level calls and the one in a function: {uses:?}"
+        );
+    }
+
+    #[test]
+    fn a_file_with_nothing_at_module_level_gets_no_module_row() {
+        let uses = lowered_uses(b"def a():\n    return 1\n\ndef b():\n    return a()\n");
+        assert!(
+            uses.iter().all(|(owner, _, _)| owner != "<module>"),
+            "{uses:?}"
+        );
+    }
+
+    #[test]
+    fn a_function_used_as_a_value_a_base_and_an_annotation_are_each_a_use() {
+        use backend_semantic::ir::LinkKind::{Inherits, Reads, TypeReference};
+        let uses = lowered_uses(
+            b"import atexit\n\ndef cleanup():\n    pass\n\nclass Base:\n    pass\n\nclass Child(Base):\n    pass\n\ndef make(value: Child) -> Base:\n    return value\n\natexit.register(cleanup)\n",
+        );
+        let has = |owner: &str, kind, target: &str| {
+            uses.iter()
+                .any(|(o, k, t)| o == owner && *k == kind && t == target)
+        };
+        assert!(has("<module>", Reads, "cleanup"), "{uses:?}");
+        assert!(has("Child", Inherits, "Base"), "{uses:?}");
+        assert!(has("make", TypeReference, "Child"), "{uses:?}");
+        assert!(has("make", TypeReference, "Base"), "{uses:?}");
+    }
+
+    #[test]
+    fn a_local_variable_named_like_a_function_is_not_a_use_of_it() {
+        let uses = lowered_uses(
+            b"def handle():\n    pass\n\ndef run(handle):\n    return handle\n\ndef shadow():\n    handle = 3\n    return handle\n\ndef real():\n    return handle()\n",
+        );
+        let owners = uses
+            .iter()
+            .filter(|(_, _, target)| target == "handle")
+            .map(|(owner, _, _)| owner.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(owners, vec!["real"], "{uses:?}");
+    }
+
+    #[test]
+    fn a_nested_definition_is_the_target_of_the_call_beside_it() {
+        let uses = lowered_uses(
+            b"def first():\n    def handle():\n        pass\n    return handle()\n\ndef second():\n    def handle():\n        pass\n    return handle()\n",
+        );
+        // Each outer function calls its own nested `handle`: two uses, each
+        // of a different entity, so two distinct owners.
+        let owners = uses
+            .iter()
+            .filter(|(_, _, target)| target == "handle")
+            .map(|(owner, _, _)| owner.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(owners, vec!["first", "second"], "{uses:?}");
+    }
+
+    #[test]
+    fn a_module_qualifier_is_not_a_use_but_the_import_is() {
+        use backend_semantic::ir::LinkKind::Imports;
+        let uses = lowered_uses(b"import json\nfrom os import path\n\ndef load(text):\n    return json.loads(text)\n");
+        assert!(
+            !uses
+                .iter()
+                .any(|(owner, kind, target)| owner == "load" && target == "external:json" && *kind != backend_semantic::ir::LinkKind::MethodCall),
+            "the qualifier `json` is not read as a name: {uses:?}"
+        );
+        assert!(
+            uses.iter().any(|(owner, kind, _)| owner == "json" && *kind == Imports),
+            "the import binding names what it imports: {uses:?}"
+        );
     }
 }

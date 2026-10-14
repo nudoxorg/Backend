@@ -63,7 +63,7 @@ pub use crate::ir_vocabulary::{
     ExternalDeclarationIdentity, ExternalEntityRef, ExternalFragmentId, ExternalProductRef,
     ExternalTypeRef, ForeignDeclarationId, ForeignKey, ForeignKeyFault, ForeignOrigin,
     FunctionVariadicForm, ListSpan, MAX_ANONYMOUS_CALLABLE_ANCHOR_BYTES,
-    MAX_ANONYMOUS_CALLABLE_ROUTE_STEPS, NominalRef, Occurrence, OccurrenceTarget,
+    MAX_ANONYMOUS_CALLABLE_ROUTE_STEPS, MODULE_OWNER_NAME, NominalRef, Occurrence, OccurrenceTarget,
     PYTHON_NATIVE_SOURCE_ECOSYSTEM, PackageLineage, PackageLineageFault, PackageLineageView,
     PooledListError, PreimageOverflow, PrimitiveShape, PrimitiveShapeError, Product,
     ProductChildRole, ProductChildRoleCodeError, ProductChildren, ProductConstructorFault,

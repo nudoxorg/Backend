@@ -3517,7 +3517,7 @@ impl<'authority, 'analysis, 'source> Emitter<'authority, 'analysis, 'source> {
                     .map_err(|_| admission())?;
                 continue;
             }
-            if matches!(kind, ReferenceKind::TypeReference | ReferenceKind::Import)
+            if matches!(kind, ReferenceKind::TypeReference | ReferenceKind::Import | ReferenceKind::Implements)
                 && let Some(resolution) = &resolved
                 && let ra_ap_hir::PathResolution::Def(definition) = resolution
                 && self.ordinal_of_definition(definition).is_none()
@@ -4268,13 +4268,37 @@ fn module_def(definition: &RustDefinition) -> Option<ra_ap_hir::ModuleDef> {
     }
 }
 
+/// True when the path names the trait of an `impl Trait for Type` block.
+fn is_implemented_trait_path(path: &ast::Path) -> bool {
+    let Some(type_node) = path.syntax().parent() else {
+        return false;
+    };
+    let Some(path_type) = ast::PathType::cast(type_node) else {
+        return false;
+    };
+    let Some(implementation) = path_type.syntax().parent().and_then(ast::Impl::cast) else {
+        return false;
+    };
+    implementation
+        .trait_()
+        .is_some_and(|written| written.syntax().text_range() == path_type.syntax().text_range())
+}
+
 /// Categorizes one resolved path reference: imports, type positions, calls,
-/// and value uses, by the path's written syntax position and resolution.
+/// and value uses, by the path's written syntax position and resolution. The
+/// trait an implementation block names is implemented, not merely mentioned.
 fn reference_kind(path: &ast::Path, resolution: &ra_ap_hir::PathResolution) -> ReferenceKind {
     if let Some(parent) = path.syntax().parent()
         && parent.kind() == ra_ap_syntax::SyntaxKind::USE_TREE
     {
         return ReferenceKind::Import;
+    }
+    if matches!(
+        resolution,
+        ra_ap_hir::PathResolution::Def(ra_ap_hir::ModuleDef::Trait(_))
+    ) && is_implemented_trait_path(path)
+    {
+        return ReferenceKind::Implements;
     }
     match resolution {
         ra_ap_hir::PathResolution::Def(ra_ap_hir::ModuleDef::Function(_)) => {
@@ -5374,7 +5398,7 @@ mod tests {
     }
 
     /// An impl block links its trait: the trait path in the impl header is a
-    /// local oracle-resolved type reference owned by the implementation, and
+    /// local oracle-resolved implements edge owned by the implementation, and
     /// a method call through the impl resolves to the local method.
     #[test]
     fn trait_impls_link_the_trait_and_method_as_local_occurrences() -> Result<(), TestError> {
@@ -5385,7 +5409,7 @@ mod tests {
         let occurrences = occurrences(&view)?;
         let trait_edge = occurrences
             .iter()
-            .find(|(_, occurrence)| occurrence.kind == ReferenceKind::TypeReference)
+            .find(|(_, occurrence)| occurrence.kind == ReferenceKind::Implements)
             .ok_or(TestError::Missing("impl trait edge"))?;
         if trait_edge.1.target
             != OccurrenceTarget::Local(backend_semantic::ir::EntityId::new(service))
