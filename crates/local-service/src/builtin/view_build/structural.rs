@@ -1,7 +1,7 @@
 use super::super::{BuiltinModelError, IndexedSources, MAX_REBUILD_PACKAGES};
 use super::identity::{declaration_coordinate, declaration_symbol};
 use super::semantic_profile_is_complete;
-use backend_compile::Container;
+use backend_compile::{Container, SourceBinding, SourceBindingIdentity};
 use backend_engine::{DeclarationKind, RowId, RowIdentityPreimage};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
@@ -237,6 +237,8 @@ impl ProjectTypeIndex {
 pub(super) struct StructuralDeclaration {
     pub(super) coordinate: String,
     pub(super) parent: Option<String>,
+    pub(super) parent_binding: Option<SourceBinding>,
+    binding_capture: Option<backend_compile::SourceBindingCapture>,
     pub(super) id: RowId,
     pub(super) identity_preimage: Option<RowIdentityPreimage>,
     pub(super) is_file_module: bool,
@@ -267,6 +269,7 @@ pub(super) struct StructuralFilePlan {
 #[derive(Default)]
 pub(super) struct StructuralProjectionPlan {
     files: BTreeMap<[u8; 32], StructuralFilePlan>,
+    by_binding: BTreeMap<([u8; 32], SourceBinding), (RowId, backend_compile::SourceBindingCapture)>,
     pub(super) by_coordinate: BTreeMap<([u8; 32], String), Vec<StructuralSymbol>>,
 }
 
@@ -333,14 +336,38 @@ impl StructuralProjectionPlan {
             let mut occurrences = BTreeMap::new();
             let mut declarations = Vec::new();
             visit_complete_declarations(sources, record, |declaration| {
+                declaration
+                    .admit_binding_parentage()
+                    .map_err(BuiltinModelError)?;
                 let coordinate = containment.coordinate(declaration);
-                let (id, identity_preimage) = declaration_symbol(
-                    &coordinate,
-                    declaration.kind(),
-                    declaration.signature(),
-                    duplicate_coordinates.contains(&coordinate),
-                    &mut occurrences,
-                );
+                let (id, identity_preimage) = if duplicate_coordinates.contains(&coordinate)
+                    && let SourceBindingIdentity::Exact(binding) = declaration.binding_identity()
+                {
+                    let (name_start, name_end) = binding.name();
+                    let preimage = format!("{coordinate}\0binding-v1\0{name_start}:{name_end}");
+                    (
+                        RowId::Symbol(backend_engine::symbol_key(&preimage)),
+                        Some(preimage),
+                    )
+                } else {
+                    declaration_symbol(
+                        &coordinate,
+                        declaration.kind(),
+                        declaration.signature(),
+                        duplicate_coordinates.contains(&coordinate),
+                        &mut occurrences,
+                    )
+                };
+                if let SourceBindingIdentity::Exact(binding) = declaration.binding_identity()
+                    && plan
+                        .by_binding
+                        .insert((*file_key, binding.binding()), (id, binding))
+                        .is_some()
+                {
+                    return Err(BuiltinModelError(
+                        "source repeats an exact binding identity".to_owned(),
+                    ));
+                }
                 let identity_preimage = identity_preimage
                     .map(RowIdentityPreimage::try_from)
                     .transpose()
@@ -358,6 +385,14 @@ impl StructuralProjectionPlan {
                 declarations.push(StructuralDeclaration {
                     coordinate,
                     parent,
+                    binding_capture: match declaration.binding_identity() {
+                        SourceBindingIdentity::Exact(capture) => Some(capture),
+                        _ => None,
+                    },
+                    parent_binding: match declaration.container() {
+                        Container::Binding { binding } => Some(*binding),
+                        _ => None,
+                    },
                     id,
                     identity_preimage,
                     is_file_module: is_file_module(declaration, file.path),
@@ -380,6 +415,26 @@ impl StructuralProjectionPlan {
                     return Err(BuiltinModelError(
                         "structural file splice omitted a requested source".to_owned(),
                     ));
+                }
+            }
+        }
+        for (file_key, file) in &plan.files {
+            for declaration in &file.declarations {
+                if let Some(binding) = declaration.parent_binding {
+                    let (parent, parent_capture) =
+                        plan.by_binding.get(&(*file_key, binding)).ok_or_else(|| {
+                            BuiltinModelError(
+                                "exact structural parent binding is absent".to_owned(),
+                            )
+                        })?;
+                    let child = declaration.binding_capture.ok_or_else(|| {
+                        BuiltinModelError("exact parent lacks child evidence".to_owned())
+                    })?;
+                    if *parent == declaration.id || !parent_capture.strictly_contains(child) {
+                        return Err(BuiltinModelError(
+                            "exact parent does not strictly contain its child owner".to_owned(),
+                        ));
+                    }
                 }
             }
         }
@@ -406,6 +461,21 @@ impl StructuralProjectionPlan {
                 BuiltinModelError(
                     "structural declaration plan is out of sync with source".to_owned(),
                 )
+            })
+    }
+
+    /// Resolves an exact lexical target only within its owning file. Missing
+    /// targets are a capture/storage contract error, never a name fallback.
+    pub(super) fn binding_parent_id(
+        &self,
+        file_key: [u8; 32],
+        binding: SourceBinding,
+    ) -> Result<RowId, BuiltinModelError> {
+        self.by_binding
+            .get(&(file_key, binding))
+            .map(|(id, _)| *id)
+            .ok_or_else(|| {
+                BuiltinModelError("exact structural parent binding is absent".to_owned())
             })
     }
 
@@ -562,8 +632,14 @@ impl<'a> FileContainment<'a> {
         if is_file_module(declaration, self.path) {
             return None;
         }
+        if matches!(declaration.container(), Container::Binding { .. }) {
+            return None;
+        }
         Some(match declaration.container() {
             Container::Module => self.module_coordinate.clone(),
+            Container::Binding { .. } => {
+                unreachable!("exact targets resolve through binding identities")
+            }
             Container::Enclosing { name, line } => {
                 declaration_coordinate(self.label, self.path, line.get(), name)
             }

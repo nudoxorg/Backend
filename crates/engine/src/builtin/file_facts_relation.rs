@@ -7,7 +7,8 @@
 //! manifest binds the file key, exact source and analysis identities, count,
 //! and ordered page tree. Declaration pages contain no whole-file version;
 //! unchanged pages can therefore keep their keys when another part of the
-//! file changes.
+//! file changes. Exact byte anchors normalize to a checked page byte base in
+//! its authenticated directory reference, alongside the existing line base.
 
 use super::relation::{
     Container, DeclarationKind, ProductFileRef, ProductSourceRecord, ProductSourceRelation,
@@ -15,8 +16,8 @@ use super::relation::{
 };
 use crate::workspace::{WorkspaceRelationError, WorkspaceRelationHandle, WorkspaceSnapshot};
 use backend_compile::{
-    DeclarationFacts, Deprecation, Fact, MAX_FACT_TEXT_BYTES, Obligation, SourceExcerpt,
-    SourceExcerptExtent,
+    DeclarationFacts, Deprecation, Fact, MAX_FACT_TEXT_BYTES, Obligation, SourceBinding,
+    SourceBindingCapture, SourceBindingIdentity, SourceExcerpt, SourceExcerptExtent,
 };
 use backend_store::TypedObject;
 use backend_version::{
@@ -28,6 +29,31 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 const MAGIC: &[u8; 4] = b"PSF1";
+const BINDING_MAGIC: &[u8; 4] = b"PSF2";
+
+fn has_bindings(declarations: &[SourceDeclaration]) -> bool {
+    declarations.iter().any(|declaration| {
+        matches!(
+            declaration.binding_identity(),
+            SourceBindingIdentity::Exact(_)
+        ) || matches!(declaration.container(), Container::Binding { .. })
+    })
+}
+
+fn manifest_has_bindings(manifest: &ProductSourceFileFactsManifest) -> bool {
+    matches!(&manifest.status, ProductSourceFileFactsStatus::InlineComplete(declarations) if has_bindings(declarations))
+}
+
+fn record_has_bindings(record: &ProductSourceFileFactsRecord) -> bool {
+    match record {
+        ProductSourceFileFactsRecord::Manifest(manifest) => manifest_has_bindings(manifest),
+        ProductSourceFileFactsRecord::Page(page) => has_bindings(&page.declarations),
+        ProductSourceFileFactsRecord::Directory(directory) => directory
+            .pages
+            .iter()
+            .any(|page| page.binding_byte_base != 0),
+    }
+}
 const MANIFEST_TAG: u8 = 1;
 const DIRECTORY_TAG: u8 = 2;
 const DECLARATION_PAGE_TAG: u8 = 3;
@@ -138,6 +164,9 @@ pub struct ProductSourceFactsPageRef {
     pub key: [u8; 32],
     /// Page start line relative to its containing directory's base line.
     pub line_delta: u32,
+    /// Absolute byte base for exact anchors normalized in this page. Legacy
+    /// pages use zero. This is authenticated by the directory content key.
+    pub binding_byte_base: u32,
     /// Number of declarations in the page.
     pub declaration_count: u16,
     /// Stable semantic boundary key of the first declaration.
@@ -337,6 +366,7 @@ impl ProductSourceFileFactsUpdate {
 pub struct ProductSourceFactsPageView<'a> {
     /// Absolute one-based line at which this page starts.
     base_line: u32,
+    binding_byte_base: u32,
     declarations: &'a [SourceDeclaration],
     container_line_deltas: &'a [Option<i64>],
 }
@@ -364,6 +394,7 @@ impl<'a> ProductSourceFactsPageView<'a> {
             declaration,
             line,
             container_start_line,
+            binding_byte_base: self.binding_byte_base,
         })
     }
 
@@ -391,6 +422,7 @@ pub struct ProductSourceFactsDeclarationRef<'a> {
     declaration: &'a SourceDeclaration,
     line: u32,
     container_start_line: Option<u32>,
+    binding_byte_base: u32,
 }
 
 impl ProductSourceFactsDeclarationRef<'_> {
@@ -406,7 +438,9 @@ impl ProductSourceFactsDeclarationRef<'_> {
         self.container_start_line
     }
 
-    /// Borrowed complete structural and compiler-observed facts.
+    /// Borrowed complete structural and compiler-observed facts. Lines and
+    /// exact byte anchors remain page-relative; `to_owned` restores their
+    /// admitted absolute source coordinates.
     #[must_use]
     pub fn source_declaration(&self) -> &SourceDeclaration {
         self.declaration
@@ -420,6 +454,11 @@ impl ProductSourceFactsDeclarationRef<'_> {
     pub fn to_owned(self) -> Result<SourceDeclaration, String> {
         let container = match self.declaration.container() {
             Container::Module => Container::Module,
+            Container::Binding { binding } => Container::Binding {
+                binding: binding
+                    .shifted(i64::from(self.binding_byte_base))
+                    .ok_or_else(|| "admitted parent byte anchor overflowed".to_owned())?,
+            },
             Container::Attached { type_name } => Container::attached(type_name),
             Container::Enclosing { name, .. } => Container::enclosing(
                 name,
@@ -440,6 +479,14 @@ impl ProductSourceFactsDeclarationRef<'_> {
         .map_err(|error| format!("admitted source declaration is invalid: {error}"))?
         .with_source_excerpt(self.declaration.source_excerpt().clone())
         .with_container(container)
+        .with_binding_identity(match self.declaration.binding_identity() {
+            SourceBindingIdentity::Legacy => SourceBindingIdentity::Legacy,
+            SourceBindingIdentity::Exact(binding) => SourceBindingIdentity::Exact(
+                binding
+                    .shifted(i64::from(self.binding_byte_base))
+                    .ok_or_else(|| "admitted binding byte anchor overflowed".to_owned())?,
+            ),
+        })
         .with_facts(self.declaration.facts().clone()))
     }
 }
@@ -517,6 +564,7 @@ where
                     &directory_ref.key,
                 )?;
                 validate_page_identity(&page, self.project, &self.path, self.language, page_base)?;
+                validate_binding_byte_base(&page, page_ref.binding_byte_base)?;
                 let last_line = page_last_absolute_line(&page, page_base)?;
                 if previous_line.is_some_and(|previous| previous > page_base) {
                     return Err("facts page declarations are not ordered".to_owned());
@@ -524,6 +572,7 @@ where
                 previous_line = Some(last_line);
                 visit(ProductSourceFactsPageView {
                     base_line: page_base,
+                    binding_byte_base: page_ref.binding_byte_base,
                     declarations: &page.declarations,
                     container_line_deltas: &page.container_line_deltas,
                 })?;
@@ -633,6 +682,7 @@ pub fn build_product_source_file_facts(
             refs.push(ProductSourceFactsPageRef {
                 key: page.key,
                 line_delta,
+                binding_byte_base: page.binding_byte_base,
                 declaration_count,
                 first_boundary: page.first_boundary,
                 last_boundary: page.last_boundary,
@@ -822,6 +872,7 @@ where
                             .checked_add(page_ref.line_delta)
                             .ok_or_else(|| "facts page base line exceeds u32".to_owned())?,
                     )?;
+                    validate_binding_byte_base(&page, page_ref.binding_byte_base)?;
                     keys.push(page_ref.key);
                 }
             }
@@ -893,6 +944,7 @@ pub fn product_source_file_facts_record_key(
 struct BuiltPage {
     key: [u8; 32],
     base_line: u32,
+    binding_byte_base: u32,
     first_boundary: [u8; 32],
     last_boundary: [u8; 32],
     record: ProductSourceFactsPage,
@@ -993,6 +1045,7 @@ fn build_declaration_pages(
         pages.push(BuiltPage {
             key,
             base_line,
+            binding_byte_base: binding_byte_base(&declarations[start..end]),
             first_boundary: page.first_boundary,
             last_boundary: page.last_boundary,
             record: page,
@@ -1001,6 +1054,24 @@ fn build_declaration_pages(
         start = end;
     }
     Ok(pages)
+}
+
+fn binding_byte_base(declarations: &[SourceDeclaration]) -> u32 {
+    declarations
+        .iter()
+        .flat_map(|declaration| {
+            let own = match declaration.binding_identity() {
+                SourceBindingIdentity::Exact(binding) => Some(binding.owner().0),
+                _ => None,
+            };
+            let parent = match declaration.container() {
+                Container::Binding { binding } => Some(binding.name().0),
+                _ => None,
+            };
+            [own, parent].into_iter().flatten()
+        })
+        .min()
+        .unwrap_or(0)
 }
 
 fn build_page(
@@ -1015,6 +1086,7 @@ fn build_page(
     if declarations.is_empty() || declarations.len() != boundaries.len() {
         return Err("source facts page has no declarations or mismatched boundaries".to_owned());
     }
+    let byte_base = binding_byte_base(declarations);
     let mut relative = Vec::with_capacity(declarations.len());
     let mut container_line_deltas = Vec::with_capacity(declarations.len());
     for declaration in declarations {
@@ -1025,6 +1097,14 @@ fn build_page(
             .ok_or_else(|| "source declaration line moved before its page base".to_owned())?;
         let (container, delta) = match declaration.container() {
             Container::Module => (Container::Module, None),
+            Container::Binding { binding } => (
+                Container::Binding {
+                    binding: binding
+                        .shifted(-i64::from(byte_base))
+                        .ok_or_else(|| "parent byte anchor precedes page base".to_owned())?,
+                },
+                None,
+            ),
             Container::Attached { type_name } => (Container::attached(type_name), None),
             Container::Enclosing { name, line } => (
                 Container::enclosing(name, NonZeroU32::MIN),
@@ -1043,6 +1123,14 @@ fn build_page(
             .map_err(|error| format!("invalid source facts declaration: {error}"))?
             .with_source_excerpt(declaration.source_excerpt().clone())
             .with_container(container)
+            .with_binding_identity(match declaration.binding_identity() {
+                SourceBindingIdentity::Legacy => SourceBindingIdentity::Legacy,
+                SourceBindingIdentity::Exact(binding) => SourceBindingIdentity::Exact(
+                    binding
+                        .shifted(-i64::from(byte_base))
+                        .ok_or_else(|| "binding byte anchor precedes page base".to_owned())?,
+                ),
+            })
             .with_facts(declaration.facts().clone()),
         );
         container_line_deltas.push(delta);
@@ -1065,6 +1153,7 @@ fn estimate_declaration_bytes(declaration: &SourceDeclaration, path: &str) -> us
     let excerpt = declaration.source_excerpt().text().map_or(0, str::len);
     let container = match declaration.container() {
         Container::Module => 1,
+        Container::Binding { .. } => 9,
         Container::Attached { type_name }
         | Container::Enclosing {
             name: type_name, ..
@@ -1083,7 +1172,16 @@ fn estimate_declaration_bytes(declaration: &SourceDeclaration, path: &str) -> us
     // Every text field has a four-byte length and each typed fact/enum adds a
     // small fixed tag. The 64-byte allowance deliberately overestimates that
     // overhead before bounded page scratch is allocated.
-    text.saturating_add(64)
+    text.saturating_add(64).saturating_add(
+        if matches!(
+            declaration.binding_identity(),
+            SourceBindingIdentity::Exact(_)
+        ) {
+            17
+        } else {
+            0
+        },
+    )
 }
 
 fn validate_file_facts_input(path: &str, declarations: &[SourceDeclaration]) -> Result<(), String> {
@@ -1102,6 +1200,7 @@ fn validate_declarations(path: &str, declarations: &[SourceDeclaration]) -> Resu
     }
     let mut prior_line = 0u32;
     for declaration in declarations {
+        declaration.admit_binding_parentage()?;
         if declaration.location().path() != path || declaration.line() < prior_line {
             return Err("source facts declarations are not exact-path source order".to_owned());
         }
@@ -1124,7 +1223,7 @@ fn validate_declarations(path: &str, declarations: &[SourceDeclaration]) -> Resu
             return Err("source facts declaration has an invalid source excerpt".to_owned());
         }
         let container_name = match declaration.container() {
-            Container::Module => None,
+            Container::Module | Container::Binding { .. } => None,
             Container::Enclosing { name, .. } | Container::Attached { type_name: name } => {
                 Some(name.as_str())
             }
@@ -1166,6 +1265,16 @@ fn declaration_boundary_key(declaration: &SourceDeclaration) -> Result<[u8; 32],
     encode_source_excerpt(declaration.source_excerpt(), &mut bytes)?;
     match declaration.container() {
         Container::Module => bytes.push(0),
+        Container::Binding { binding } => {
+            bytes.push(3);
+            let SourceBindingIdentity::Exact(own) = declaration.binding_identity() else {
+                return Err("exact parent lacks child binding".to_owned());
+            };
+            bytes.extend_from_slice(
+                &(i64::from(binding.name().0) - i64::from(own.owner().0)).to_be_bytes(),
+            );
+            bytes.extend_from_slice(&(binding.name().1 - binding.name().0).to_be_bytes());
+        }
         Container::Enclosing { name, .. } => {
             bytes.push(1);
             push_text(&mut bytes, name)?;
@@ -1176,6 +1285,17 @@ fn declaration_boundary_key(declaration: &SourceDeclaration) -> Result<[u8; 32],
         }
     }
     encode_facts_infallible(declaration.facts(), &mut bytes);
+    if let SourceBindingIdentity::Exact(binding) = declaration.binding_identity() {
+        bytes.push(1);
+        super::relation::push_binding_identity(
+            &mut bytes,
+            SourceBindingIdentity::Exact(
+                binding
+                    .shifted(-i64::from(binding.owner().0))
+                    .ok_or("invalid binding shape")?,
+            ),
+        );
+    }
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"backend.product-source-facts.boundary.v1\0");
     hasher.update(&bytes);
@@ -1239,6 +1359,7 @@ where
             }
             let page = lookup_page(lookup, file_key, page_ref, &directory_ref.key)?;
             validate_page_identity(&page, project, path, language, page_base)?;
+            validate_binding_byte_base(&page, page_ref.binding_byte_base)?;
             let page_count = page.declarations.len();
             if page_count != usize::from(page_ref.declaration_count) {
                 return Err("source facts page count does not match its directory".to_owned());
@@ -1364,6 +1485,7 @@ fn validate_page_identity(
             return Err("source facts page declarations have invalid relative spans".to_owned());
         }
         prior_line = declaration.line();
+        declaration.admit_binding_parentage()?;
         match (declaration.container(), delta) {
             (Container::Enclosing { line, .. }, Some(value)) if line.get() == 1 => {
                 let absolute = i64::from(base_line)
@@ -1376,7 +1498,7 @@ fn validate_page_identity(
                     return Err("source facts container line is outside its declaration".to_owned());
                 }
             }
-            (Container::Module | Container::Attached { .. }, None) => {}
+            (Container::Module | Container::Attached { .. } | Container::Binding { .. }, None) => {}
             _ => return Err("source facts page container spans are malformed".to_owned()),
         }
     }
@@ -1386,6 +1508,36 @@ fn validate_page_identity(
         .is_none_or(|first| first.line() != 1)
     {
         return Err("source facts page does not start at its relative base".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_binding_byte_base(page: &ProductSourceFactsPage, byte_base: u32) -> Result<(), String> {
+    if byte_base != 0 && !has_bindings(&page.declarations) {
+        return Err("legacy facts page cannot carry an exact binding byte base".to_owned());
+    }
+    if binding_byte_base(&page.declarations) != 0 {
+        return Err("source facts anchors are not normalized to their byte base".to_owned());
+    }
+    for declaration in page.declarations.iter() {
+        let own = match declaration.binding_identity() {
+            SourceBindingIdentity::Exact(binding) => Some(binding),
+            _ => None,
+        };
+        let parent = match declaration.container() {
+            Container::Binding { binding } => Some(*binding),
+            _ => None,
+        };
+        if let Some(capture) = own {
+            capture
+                .shifted(i64::from(byte_base))
+                .ok_or("source facts absolute byte anchor overflowed")?;
+        }
+        if let Some(binding) = parent {
+            binding
+                .shifted(i64::from(byte_base))
+                .ok_or("source facts absolute parent anchor overflowed")?;
+        }
     }
     Ok(())
 }
@@ -1419,7 +1571,8 @@ fn encode_record(record: &ProductSourceFileFactsRecord) -> Vec<u8> {
 }
 
 fn encode_record_infallible(record: &ProductSourceFileFactsRecord, output: &mut Vec<u8>) {
-    output.extend_from_slice(MAGIC);
+    let exact = record_has_bindings(record);
+    output.extend_from_slice(if exact { BINDING_MAGIC } else { MAGIC });
     match record {
         ProductSourceFileFactsRecord::Manifest(manifest) => {
             output.push(MANIFEST_TAG);
@@ -1430,7 +1583,7 @@ fn encode_record_infallible(record: &ProductSourceFileFactsRecord, output: &mut 
             output.extend_from_slice(&directory.file_key);
             push_count_infallible(output, directory.pages.len());
             for page in directory.pages.iter() {
-                encode_page_ref(page, output);
+                encode_page_ref(page, output, exact);
             }
         }
         ProductSourceFileFactsRecord::Page(page) => {
@@ -1447,7 +1600,7 @@ fn encode_record_infallible(record: &ProductSourceFileFactsRecord, output: &mut 
                 .iter()
                 .zip(page.container_line_deltas.iter())
             {
-                encode_declaration_infallible(declaration, output);
+                encode_declaration_infallible(declaration, output, exact);
                 match container_delta {
                     Some(delta) => {
                         output.push(1);
@@ -1462,13 +1615,18 @@ fn encode_record_infallible(record: &ProductSourceFileFactsRecord, output: &mut 
 
 fn encode_manifest(manifest: &ProductSourceFileFactsManifest) -> Vec<u8> {
     let mut output = Vec::new();
-    output.extend_from_slice(MAGIC);
+    output.extend_from_slice(if manifest_has_bindings(manifest) {
+        BINDING_MAGIC
+    } else {
+        MAGIC
+    });
     output.push(MANIFEST_TAG);
     encode_manifest_payload(manifest, &mut output);
     output
 }
 
 fn encode_manifest_payload(manifest: &ProductSourceFileFactsManifest, output: &mut Vec<u8>) {
+    let exact = manifest_has_bindings(manifest);
     output.extend_from_slice(&manifest.project);
     push_text_infallible(output, &manifest.path);
     output.extend_from_slice(&manifest.content_version);
@@ -1479,7 +1637,7 @@ fn encode_manifest_payload(manifest: &ProductSourceFileFactsManifest, output: &m
             output.push(0);
             push_count_infallible(output, declarations.len());
             for declaration in declarations.iter() {
-                encode_declaration_infallible(declaration, output);
+                encode_declaration_infallible(declaration, output, exact);
             }
         }
         ProductSourceFileFactsStatus::Paged {
@@ -1505,15 +1663,22 @@ fn encode_directory_ref(reference: &ProductSourceFactsDirectoryRef, output: &mut
     output.extend_from_slice(&reference.last_boundary);
 }
 
-fn encode_page_ref(reference: &ProductSourceFactsPageRef, output: &mut Vec<u8>) {
+fn encode_page_ref(reference: &ProductSourceFactsPageRef, output: &mut Vec<u8>, exact: bool) {
     output.extend_from_slice(&reference.key);
     output.extend_from_slice(&reference.line_delta.to_be_bytes());
+    if exact {
+        output.extend_from_slice(&reference.binding_byte_base.to_be_bytes());
+    }
     output.extend_from_slice(&reference.declaration_count.to_be_bytes());
     output.extend_from_slice(&reference.first_boundary);
     output.extend_from_slice(&reference.last_boundary);
 }
 
-fn encode_declaration_infallible(declaration: &SourceDeclaration, output: &mut Vec<u8>) {
+fn encode_declaration_infallible(
+    declaration: &SourceDeclaration,
+    output: &mut Vec<u8>,
+    exact: bool,
+) {
     output.extend_from_slice(&declaration.line().to_be_bytes());
     push_text_infallible(output, declaration.location().path());
     push_text_infallible(output, declaration.name());
@@ -1523,6 +1688,9 @@ fn encode_declaration_infallible(declaration: &SourceDeclaration, output: &mut V
     encode_source_excerpt_infallible(declaration.source_excerpt(), output);
     encode_container_infallible(declaration.container(), output);
     encode_facts_infallible(declaration.facts(), output);
+    if exact {
+        super::relation::push_binding_identity(output, declaration.binding_identity());
+    }
 }
 
 fn encode_source_excerpt(excerpt: &SourceExcerpt, output: &mut Vec<u8>) -> Result<(), String> {
@@ -1548,6 +1716,10 @@ fn encode_source_excerpt_infallible(excerpt: &SourceExcerpt, output: &mut Vec<u8
 fn encode_container_infallible(container: &Container, output: &mut Vec<u8>) {
     match container {
         Container::Module => output.push(0),
+        Container::Binding { binding } => {
+            output.push(3);
+            super::relation::push_binding(output, *binding);
+        }
         Container::Enclosing { name, line } => {
             output.push(1);
             push_text_infallible(output, name);
@@ -1582,9 +1754,11 @@ fn encode_facts_infallible(facts: &DeclarationFacts, output: &mut Vec<u8>) {
 
 fn decode_record(bytes: &[u8]) -> Result<ProductSourceFileFactsRecord, ()> {
     let mut reader = FactsReader::new(bytes);
-    if reader.take(4)? != MAGIC {
-        return Err(());
-    }
+    let exact = match reader.take(4)? {
+        magic if magic == MAGIC => false,
+        magic if magic == BINDING_MAGIC => true,
+        _ => return Err(()),
+    };
     let record = match reader.byte()? {
         MANIFEST_TAG => {
             let project = reader.array()?;
@@ -1599,7 +1773,7 @@ fn decode_record(bytes: &[u8]) -> Result<ProductSourceFileFactsRecord, ()> {
                         reader.count_items(ProductSourceRecord::MAX_FILE_DECLARATIONS, 25)?;
                     let mut declarations = Vec::with_capacity(count);
                     for _ in 0..count {
-                        declarations.push(decode_declaration(&mut reader)?);
+                        declarations.push(decode_declaration(&mut reader, exact)?);
                     }
                     ProductSourceFileFactsStatus::InlineComplete(Arc::from(declarations))
                 }
@@ -1635,7 +1809,7 @@ fn decode_record(bytes: &[u8]) -> Result<ProductSourceFileFactsRecord, ()> {
             let count = reader.count_items(MAX_PAGES_PER_DIRECTORY, 102)?;
             let mut pages = Vec::with_capacity(count);
             for _ in 0..count {
-                pages.push(decode_page_ref(&mut reader)?);
+                pages.push(decode_page_ref(&mut reader, exact)?);
             }
             ProductSourceFileFactsRecord::Directory(ProductSourceFactsDirectory {
                 file_key,
@@ -1653,7 +1827,7 @@ fn decode_record(bytes: &[u8]) -> Result<ProductSourceFileFactsRecord, ()> {
             let mut declarations = Vec::with_capacity(count);
             let mut container_line_deltas = Vec::with_capacity(count);
             for _ in 0..count {
-                declarations.push(decode_declaration(&mut reader)?);
+                declarations.push(decode_declaration(&mut reader, exact)?);
                 container_line_deltas.push(match reader.byte()? {
                     0 => None,
                     1 => Some(reader.i64()?),
@@ -1690,17 +1864,29 @@ fn decode_directory_ref(
     })
 }
 
-fn decode_page_ref(reader: &mut FactsReader<'_>) -> Result<ProductSourceFactsPageRef, ()> {
+fn decode_page_ref(
+    reader: &mut FactsReader<'_>,
+    exact: bool,
+) -> Result<ProductSourceFactsPageRef, ()> {
     Ok(ProductSourceFactsPageRef {
         key: reader.array()?,
         line_delta: reader.u32()?,
+        binding_byte_base: if exact { reader.u32()? } else { 0 },
         declaration_count: reader.u16()?,
         first_boundary: reader.array()?,
         last_boundary: reader.array()?,
     })
 }
 
-fn decode_declaration(reader: &mut FactsReader<'_>) -> Result<SourceDeclaration, ()> {
+fn decode_binding_capture(reader: &mut FactsReader<'_>) -> Result<SourceBindingCapture, ()> {
+    SourceBindingCapture::new(reader.u32()?, reader.u32()?, reader.u32()?, reader.u32()?).ok_or(())
+}
+
+fn decode_binding(reader: &mut FactsReader<'_>) -> Result<SourceBinding, ()> {
+    SourceBinding::new(reader.u32()?, reader.u32()?).ok_or(())
+}
+
+fn decode_declaration(reader: &mut FactsReader<'_>, exact: bool) -> Result<SourceDeclaration, ()> {
     let line = NonZeroU32::new(reader.u32()?).ok_or(())?;
     let path = reader.text(SourceLocation::MAX_PATH_BYTES)?;
     let name = reader.text(SourceDeclaration::MAX_TEXT_BYTES)?;
@@ -1728,6 +1914,9 @@ fn decode_declaration(reader: &mut FactsReader<'_>) -> Result<SourceDeclaration,
     };
     let container = match reader.byte()? {
         0 => Container::Module,
+        3 if exact => Container::Binding {
+            binding: decode_binding(reader)?,
+        },
         1 => {
             let name = reader.text(SourceDeclaration::MAX_TEXT_BYTES)?;
             let line = NonZeroU32::new(reader.u32()?).ok_or(())?;
@@ -1737,6 +1926,15 @@ fn decode_declaration(reader: &mut FactsReader<'_>) -> Result<SourceDeclaration,
         _ => return Err(()),
     };
     let facts = decode_facts(reader)?;
+    let identity = if exact {
+        match reader.byte()? {
+            0 => SourceBindingIdentity::Legacy,
+            1 => SourceBindingIdentity::Exact(decode_binding_capture(reader)?),
+            _ => return Err(()),
+        }
+    } else {
+        SourceBindingIdentity::Legacy
+    };
     Ok(SourceDeclaration::with_location(
         SourceLocation::new(path, line.get()).map_err(|_| ())?,
         name,
@@ -1747,6 +1945,7 @@ fn decode_declaration(reader: &mut FactsReader<'_>) -> Result<SourceDeclaration,
     .map_err(|_| ())?
     .with_source_excerpt(excerpt)
     .with_container(container)
+    .with_binding_identity(identity)
     .with_facts(facts))
 }
 
@@ -1884,6 +2083,275 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::path::Path;
+
+    #[test]
+    fn exact_binding_parent_tail_edit_reuses_earlier_child_pages() {
+        let frontend = backend_frontend_typescript::syntax_frontend().expect("frontend");
+        let path = "src/large.ts";
+        let mut source = "function large() {\n".to_owned();
+        for index in 0..900 {
+            source.push_str(&format!("const child_{index} = {index};\n"));
+        }
+        source.push_str("return 0;\n}\n");
+        let edited = source.replace("return 0;\n}", "return 0 + 100000;\n}");
+        let before = frontend
+            .analyze(Path::new(path), source.as_bytes())
+            .expect("before");
+        let after = frontend
+            .analyze(Path::new(path), edited.as_bytes())
+            .expect("after");
+        let capture = |analysis: &backend_compile::SourceAnalysis| match analysis
+            .declarations()
+            .iter()
+            .find(|decl| decl.name() == "large")
+            .expect("large")
+            .binding_identity()
+        {
+            SourceBindingIdentity::Exact(capture) => capture,
+            SourceBindingIdentity::Legacy => panic!("exact large binding"),
+        };
+        assert_eq!(capture(&before).binding(), capture(&after).binding());
+        assert_ne!(
+            capture(&before).owner(),
+            capture(&after).owner(),
+            "actual body extent changed"
+        );
+        for (old, new) in before
+            .declarations()
+            .iter()
+            .zip(after.declarations().iter())
+            .filter(|(old, _)| old.name().starts_with("child_"))
+        {
+            assert_eq!(old.binding_identity(), new.binding_identity());
+            assert_eq!(
+                old.container(),
+                new.container(),
+                "child parent references exclude the parent's body extent"
+            );
+        }
+        let build = |analysis: &backend_compile::SourceAnalysis, text: &str| {
+            build_product_source_file_facts(
+                [0x66; 32],
+                path,
+                SourceLanguage::TypeScript,
+                [3; 32],
+                [4; 32],
+                ContentId::<SourceFactDomain>::from_canonical_bytes(text.as_bytes()),
+                analysis.declarations(),
+            )
+            .expect("facts")
+        };
+        let first = build(&before, &source);
+        let second = build(&after, &edited);
+        let child_pages = |update: &ProductSourceFileFactsUpdate| {
+            update
+                .pages()
+                .iter()
+                .filter_map(|(key, row)| {
+                    let ProductSourceFileFactsRecord::Page(page) = row else {
+                        return None;
+                    };
+                    page.declarations
+                        .iter()
+                        .all(|decl| decl.name().starts_with("child_"))
+                        .then_some(*key)
+                })
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let old = child_pages(&first);
+        let new = child_pages(&second);
+        assert!(
+            old.len() >= 2,
+            "real large-function fixture must span several child-only pages"
+        );
+        assert_eq!(
+            old, new,
+            "tail-body edit must preserve every earlier child-only page key"
+        );
+    }
+
+    #[test]
+    fn exact_bindings_round_trip_inline_and_paged_with_utf8_and_shadowed_parents() {
+        let path = "src/shadow.ts";
+        let frontend = backend_frontend_typescript::syntax_frontend().expect("frontend");
+        let shadow = "// λ consumes two UTF-8 bytes\nconst left = () => { const worker = () => { const value = 1; return value; }; return worker; }, right = () => { const worker = () => { const value = 1; return value; }; return worker; };\n";
+        for padding in [0, 600] {
+            let mut source = shadow.to_owned();
+            for index in 0..padding {
+                source.push_str(&format!("const padding_{index} = {index};\n"));
+            }
+            let analysis = frontend
+                .analyze(Path::new(path), source.as_bytes())
+                .expect("real TypeScript capture");
+            let declarations = analysis.declarations().to_vec();
+            let workers = declarations
+                .iter()
+                .filter(|decl| decl.name() == "worker")
+                .collect::<Vec<_>>();
+            assert_eq!(workers.len(), 2);
+            for worker in workers {
+                let SourceBindingIdentity::Exact(binding) = worker.binding_identity() else {
+                    panic!("exact worker");
+                };
+                let (start, end) = binding.name();
+                assert_eq!(
+                    &source[start as usize..end as usize],
+                    "worker",
+                    "anchors use UTF-8 bytes"
+                );
+            }
+            let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(source.as_bytes());
+            let update = build_product_source_file_facts(
+                [0x44; 32],
+                path,
+                SourceLanguage::TypeScript,
+                [3; 32],
+                [4; 32],
+                identity,
+                &declarations,
+            )
+            .expect("facts");
+            assert_eq!(
+                update.pages().is_empty(),
+                padding == 0,
+                "exercise both storage layouts"
+            );
+            let source_row = source_row(
+                [0x44; 32],
+                path,
+                [3; 32],
+                [4; 32],
+                identity,
+                declarations.clone(),
+            );
+            let rows = update
+                .into_rows()
+                .map(|(key, row)| {
+                    let bytes = encode_record(&row);
+                    let decoded = ProductSourceFileFactsRelation::decode_value(&bytes)
+                        .expect("stored facts decode");
+                    assert_eq!(decoded, row);
+                    (key, decoded)
+                })
+                .collect::<BTreeMap<_, _>>();
+            let file_key = product_source_file_key([0x44; 32], path);
+            let ProductSourceFileFactsRecord::Manifest(manifest) =
+                rows.get(&file_key).expect("manifest")
+            else {
+                panic!("manifest kind");
+            };
+            let admission = admit_product_source_file_facts(
+                source_row.file_fields().expect("file"),
+                file_key,
+                manifest.clone(),
+                |key| Ok(rows.get(key).cloned()),
+            )
+            .expect("admit stored closure");
+            let recovered = match admission {
+                ProductSourceFileFactsAdmission::InlineComplete(inline) => {
+                    inline.declarations().to_vec()
+                }
+                ProductSourceFileFactsAdmission::PagedVerified(mut paged) => {
+                    let mut recovered = Vec::new();
+                    paged
+                        .visit_pages(|page| {
+                            for index in 0..page.len() {
+                                recovered.push(
+                                    page.declaration(index)
+                                        .ok_or("missing page declaration")?
+                                        .to_owned()?,
+                                );
+                            }
+                            Ok(())
+                        })
+                        .expect("restore exact absolute anchors");
+                    recovered
+                }
+                ProductSourceFileFactsAdmission::Unavailable(_) => panic!("full captured facts"),
+            };
+            assert_eq!(
+                recovered, declarations,
+                "parent targets and binding identity survive actual codecs"
+            );
+        }
+    }
+
+    #[test]
+    fn exact_binding_codec_rejects_forged_ranges_legacy_headers_and_overflowed_page_bases() {
+        let path = "src/anchors.ts";
+        let binding = SourceBindingCapture::new(0, 30, 6, 10).expect("binding");
+        let declaration = SourceDeclaration::at_path(
+            path,
+            "root",
+            DeclarationKind::Constant,
+            1,
+            "const root = 1;",
+            "",
+        )
+        .expect("declaration")
+        .with_binding_identity(SourceBindingIdentity::Exact(binding));
+        let identity = ContentId::<SourceFactDomain>::from_canonical_bytes(b"source");
+        let update = build_product_source_file_facts(
+            [2; 32],
+            path,
+            SourceLanguage::TypeScript,
+            [3; 32],
+            [4; 32],
+            identity,
+            std::slice::from_ref(&declaration),
+        )
+        .expect("facts");
+        let row = ProductSourceFileFactsRecord::Manifest(update.manifest().clone());
+        let bytes = encode_record(&row);
+        assert_eq!(&bytes[..4], BINDING_MAGIC);
+        let mut legacy_header = bytes.clone();
+        legacy_header[..4].copy_from_slice(MAGIC);
+        assert!(
+            decode_record(&legacy_header).is_err(),
+            "old format cannot claim new exact facts"
+        );
+        let mut inverted = bytes.clone();
+        let at = inverted.len() - 16;
+        inverted[at..at + 4].copy_from_slice(&31_u32.to_be_bytes());
+        assert!(
+            decode_record(&inverted).is_err(),
+            "forged owner outside its name is refused"
+        );
+        let self_parent = declaration.clone().with_container(Container::Binding {
+            binding: binding.binding(),
+        });
+        assert!(
+            build_product_source_file_facts(
+                [2; 32],
+                path,
+                SourceLanguage::TypeScript,
+                [3; 32],
+                [4; 32],
+                identity,
+                &[self_parent]
+            )
+            .is_err()
+        );
+        let legacy_child = declaration
+            .clone()
+            .with_binding_identity(SourceBindingIdentity::Legacy)
+            .with_container(Container::Binding {
+                binding: binding.binding(),
+            });
+        assert!(legacy_child.admit_binding_parentage().is_err());
+        let boundaries = [declaration_boundary_key(&declaration).expect("boundary")];
+        let page = build_page(
+            product_source_file_key([2; 32], path),
+            [2; 32],
+            path,
+            SourceLanguage::TypeScript,
+            1,
+            &[declaration],
+            &boundaries,
+        )
+        .expect("page");
+        assert!(validate_binding_byte_base(&page, u32::MAX).is_err());
+    }
 
     #[test]
     fn malformed_tiny_count_is_rejected_before_vector_allocation() {
@@ -2216,6 +2684,13 @@ mod tests {
                         || declaration.source_excerpt().text().is_none()
                     {
                         return Err("admitted TSX declaration lost captured facts".to_owned());
+                    }
+                    let restored = page
+                        .declaration(index)
+                        .ok_or("admitted declaration missing")?
+                        .to_owned()?;
+                    if restored != changed[visited] {
+                        return Err("paged TSX facts changed exact declaration anchors".to_owned());
                     }
                     visited += 1;
                 }

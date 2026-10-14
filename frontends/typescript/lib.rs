@@ -201,7 +201,7 @@ pub fn syntax_frontend() -> Result<backend_compile::SyntaxFrontend, backend_comp
     );
     backend_compile::SyntaxFrontend::new(
         backend_compile::SourceLanguage::TypeScript,
-        b"tree-sitter-typescript-0.23.2/tags-v5/binding-owner-v1",
+        b"tree-sitter-typescript-0.23.2/tags-v6/exact-binding-owner-v2",
         vec![
             backend_compile::GrammarVariant::new(
                 &["ts", "mts", "cts", "js", "mjs", "cjs"],
@@ -527,8 +527,7 @@ mod tests {
     #[test]
     fn syntax_parentage_keeps_each_multi_binding_initializer_with_its_own_declaration()
     -> Result<(), Box<dyn Error>> {
-        use backend_compile::{Container, DeclarationKind};
-        use std::num::NonZeroU32;
+        use backend_compile::{Container, DeclarationKind, SourceBindingIdentity};
 
         let source = concat!(
             "export const unrelated = 0, generateSchedule = () => {\n",
@@ -548,12 +547,28 @@ mod tests {
                 analysis.declarations().iter().find(|declaration| declaration.name() == name)
                     .expect("every captured binding is retained")
             };
-            let schedule = Container::enclosing("generateSchedule", NonZeroU32::new(1).unwrap());
+            let SourceBindingIdentity::Exact(binding) = find("generateSchedule").binding_identity()
+            else {
+                panic!("exact schedule binding");
+            };
+            let schedule = Container::Binding {
+                binding: binding.binding(),
+            };
             for name in ["allSections", "missingSections", "other", "chooseSections"] {
                 assert_eq!(find(name).container(), &schedule, "{path}/{name}");
             }
-            let closure = Container::enclosing("chooseSections", NonZeroU32::new(4).unwrap());
-            assert_eq!(find("nestedSections").container(), &closure, "{path}/nestedSections");
+            let SourceBindingIdentity::Exact(binding) = find("chooseSections").binding_identity()
+            else {
+                panic!("exact closure binding");
+            };
+            let closure = Container::Binding {
+                binding: binding.binding(),
+            };
+            assert_eq!(
+                find("nestedSections").container(),
+                &closure,
+                "{path}/nestedSections"
+            );
             assert_eq!(find("generateSchedule").container(), &Container::Module);
             assert_eq!(find("unrelated").container(), &Container::Module);
             assert_eq!(find("generateSchedule").kind(), DeclarationKind::Constant);
@@ -568,8 +583,94 @@ mod tests {
         for (child, owner) in [("firstLocal", "first"), ("secondLocal", "second")] {
             let declaration = analysis.declarations().iter().find(|decl| decl.name() == child)
                 .expect("both sibling initializer locals are captured");
-            assert_eq!(declaration.container(), &Container::enclosing(owner, NonZeroU32::new(1).unwrap()));
+            let parent = analysis
+                .declarations()
+                .iter()
+                .find(|decl| decl.name() == owner)
+                .expect("sibling owner");
+            let SourceBindingIdentity::Exact(binding) = parent.binding_identity() else {
+                panic!("exact sibling binding");
+            };
+            assert_eq!(
+                declaration.container(),
+                &Container::Binding {
+                    binding: binding.binding()
+                }
+            );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn syntax_parentage_distinguishes_same_line_shadowed_bindings_and_duplicate_patterns()
+    -> Result<(), Box<dyn Error>> {
+        use backend_compile::{Container, SourceBindingIdentity};
+        let source = "const left = () => { const worker = () => { const value = 1; return value; }; return worker; }, right = () => { const worker = () => { const value = 1; return value; }; return worker; };";
+        let frontend = syntax_frontend()?;
+        for path in ["shadow.ts", "shadow.tsx", "shadow.mjs"] {
+            let analysis = frontend.analyze(Path::new(path), source.as_bytes())?;
+            assert_eq!(
+                analysis.declarations().len(),
+                7,
+                "duplicate patterns merge only the same binding"
+            );
+            let workers = analysis
+                .declarations()
+                .iter()
+                .filter(|decl| decl.name() == "worker")
+                .collect::<Vec<_>>();
+            let values = analysis
+                .declarations()
+                .iter()
+                .filter(|decl| decl.name() == "value")
+                .collect::<Vec<_>>();
+            assert_eq!(workers.len(), 2);
+            assert_eq!(values.len(), 2);
+            assert_eq!(workers[0].signature(), workers[1].signature());
+            assert_eq!(workers[0].line(), workers[1].line());
+            assert_ne!(workers[0].binding_identity(), workers[1].binding_identity());
+            for value in values {
+                let SourceBindingIdentity::Exact(child) = value.binding_identity() else {
+                    panic!("exact value");
+                };
+                let Container::Binding { binding: parent } = value.container() else {
+                    panic!("exact parent");
+                };
+                let owner = workers.iter().find(|worker| matches!(worker.binding_identity(), SourceBindingIdentity::Exact(capture) if capture.binding() == *parent)).expect("both worker bindings remain addressable");
+                let SourceBindingIdentity::Exact(owner_capture) = owner.binding_identity() else {
+                    panic!("owner evidence");
+                };
+                assert!(owner_capture.strictly_contains(child));
+                let Container::Binding { binding: outer } = owner.container() else {
+                    panic!("exact outer");
+                };
+                let outer = analysis.declarations().iter().find(|decl| matches!(decl.binding_identity(), SourceBindingIdentity::Exact(capture) if capture.binding() == *outer)).expect("outer binding");
+                let expected = if child.owner().0 < source.find("right").unwrap() as u32 {
+                    "left"
+                } else {
+                    "right"
+                };
+                assert_eq!(outer.name(), expected, "{path}: same-line binding ancestry");
+            }
+        }
+        let nested = "function outer() { const repeat = () => { const repeat = () => { const leaf = 1; }; const leaf = 2; }; }";
+        let analysis = frontend.analyze(Path::new("nested.ts"), nested.as_bytes())?;
+        assert_eq!(analysis.declarations().len(), 6);
+        let mut parents = std::collections::BTreeSet::new();
+        for leaf in analysis
+            .declarations()
+            .iter()
+            .filter(|decl| decl.name() == "leaf")
+        {
+            let Container::Binding { binding } = leaf.container() else {
+                panic!("exact nested parent");
+            };
+            assert!(
+                parents.insert(*binding),
+                "each shadowed leaf belongs to a distinct repeat binding"
+            );
+        }
+        assert_eq!(parents.len(), 2);
         Ok(())
     }
 

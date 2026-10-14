@@ -304,6 +304,16 @@ impl ProjectCalls {
                 FileContainment::new(&project.label, file.path, project_key, &file.declarations);
             let mut lookup = FileDeclarations::default();
             let mut file_callers = Vec::new();
+            let binding_names = file
+                .declarations
+                .iter()
+                .filter_map(|owner| match owner.binding_identity() {
+                    backend_compile::SourceBindingIdentity::Exact(binding) => {
+                        Some((binding.binding(), owner.name()))
+                    }
+                    backend_compile::SourceBindingIdentity::Legacy => None,
+                })
+                .collect::<BTreeMap<_, _>>();
             for declaration in file.declarations.iter() {
                 if declares_a_nominal_type(declaration.kind()) {
                     lookup.nominal.insert(declaration.name());
@@ -334,6 +344,17 @@ impl ProjectCalls {
                             .entry(declaration.name())
                             .or_default()
                             .insert(id);
+                    }
+                    Container::Binding { binding } => {
+                        if let Some(&name) = binding_names.get(binding) {
+                            lookup
+                                .methods
+                                .entry(name)
+                                .or_default()
+                                .entry(declaration.name())
+                                .or_default()
+                                .insert(id);
+                        }
                     }
                     Container::Module => {}
                 }

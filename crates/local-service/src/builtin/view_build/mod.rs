@@ -946,10 +946,252 @@ pub fn execute() {}
         assert_eq!(parent_of(&rows, "fixture::scheduler.ts:2::allSections")?, schedule);
         assert_eq!(parent_of(&rows, "fixture::scheduler.ts:3::missingSections")?, schedule);
         assert_eq!(parent_of(&rows, schedule)?, "fixture::scheduler.ts");
-        assert_eq!(parent_of(&rows, "fixture::scheduler.ts:1::unrelated")?, "fixture::scheduler.ts");
-        let parent = rows.iter().find(|row| row.label == schedule).ok_or("schedule row")?.id;
-        assert_eq!(rows.iter().filter(|row| row.parent.map(RowId::Symbol) == Some(parent)).count(), 2,
-            "document/outline consumers receive exactly the actual local members");
+        assert_eq!(
+            parent_of(&rows, "fixture::scheduler.ts:1::unrelated")?,
+            "fixture::scheduler.ts"
+        );
+        let parent = rows
+            .iter()
+            .find(|row| row.label == schedule)
+            .ok_or("schedule row")?
+            .id;
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.parent.map(RowId::Symbol) == Some(parent))
+                .count(),
+            2,
+            "document/outline consumers receive exactly the actual local members"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn typescript_binding_parentage_round_trips_shadowed_bindings_into_distinct_stored_rows()
+    -> Result<(), String> {
+        use backend_compile::{Container, SourceBindingIdentity};
+        use backend_version::{CanonicalRelation, Relation};
+        let path = "shadow.ts";
+        let source = "const left = () => { const worker = () => { const value = 1; return value; }; return worker; }, right = () => { const worker = () => { const value = 1; return value; }; return worker; };";
+        let analysis = backend_frontend_typescript::syntax_frontend()
+            .map_err(|error| error.to_string())?
+            .analyze(std::path::Path::new(path), source.as_bytes())
+            .map_err(|error| error.to_string())?;
+        let mut sources = structural_sources(
+            [0x32; 32],
+            path,
+            backend_engine::SourceLanguage::TypeScript,
+            analysis.declarations().clone(),
+        )?;
+        for (_, record) in &mut sources.files {
+            let mut bytes = Vec::new();
+            backend_engine::ProductSourceRelation::encode_value(record, &mut bytes);
+            assert_eq!(
+                &bytes[..4],
+                b"PSRF",
+                "new anchors require a new persisted format"
+            );
+            *record = backend_engine::ProductSourceRelation::decode_value(&bytes)
+                .map_err(|error| format!("decode exact source facts: {error:?}"))?;
+            assert_eq!(
+                record
+                    .file_fields()
+                    .ok_or("file fields")?
+                    .declarations
+                    .as_ref(),
+                analysis.declarations().as_ref()
+            );
+        }
+        let project_rows =
+            |sources: &super::super::IndexedSources| -> Result<Vec<backend_engine::Row>, String> {
+                let plan = StructuralProjectionPlan::of(sources, &BTreeSet::new())
+                    .map_err(|error| error.to_string())?;
+                let (initial, _) = initial_view().map_err(|error| error.to_string())?;
+                let targets = super::SemanticTargets::default();
+                let scratch = std::env::temp_dir();
+                let mut projection =
+                    SourceRowProjection::new(&initial, sources, 64, &targets, &plan, &scratch)
+                        .map_err(|error| error.to_string())?;
+                for (key, file) in &sources.files {
+                    projection
+                        .append_file(*key, file, &BTreeSet::new(), &ProfileStalePaths::new())
+                        .map_err(|error| error.to_string())?;
+                }
+                projection
+                    .finish(Vec::new())
+                    .map_err(|error| error.to_string())
+            };
+        let rows = project_rows(&sources)?;
+        assert_eq!(
+            rows.len(),
+            8,
+            "package, module and all six bindings survive storage"
+        );
+        let file_key = sources.files[0].0;
+        let plan = StructuralProjectionPlan::of(&sources, &BTreeSet::new())
+            .map_err(|error| error.to_string())?;
+        let file = sources.files[0].1.file_fields().ok_or("file")?;
+        for (index, declaration) in file.declarations.iter().enumerate() {
+            let prepared = plan
+                .declaration(file_key, index)
+                .map_err(|error| error.to_string())?;
+            let row = rows
+                .iter()
+                .find(|row| row.id == prepared.id)
+                .ok_or("stored binding row")?;
+            if let Container::Binding { binding } = declaration.container() {
+                let parent = plan
+                    .binding_parent_id(file_key, *binding)
+                    .map_err(|error| error.to_string())?;
+                assert_eq!(row.parent.map(RowId::Symbol), Some(parent));
+                let owner = file.declarations.iter().find(|decl| matches!(decl.binding_identity(), SourceBindingIdentity::Exact(capture) if capture.binding() == *binding)).ok_or("exact stored owner")?;
+                if declaration.name() == "value" {
+                    assert_eq!(owner.name(), "worker");
+                    let Container::Binding { binding: outer } = owner.container() else {
+                        return Err("worker lost outer binding".to_owned());
+                    };
+                    let outer = file.declarations.iter().find(|decl| matches!(decl.binding_identity(), SourceBindingIdentity::Exact(capture) if capture.binding() == *outer)).ok_or("exact outer")?;
+                    let SourceBindingIdentity::Exact(own) = declaration.binding_identity() else {
+                        return Err("value lacks binding".to_owned());
+                    };
+                    assert_eq!(
+                        outer.name(),
+                        if own.owner().0 < source.find("right").ok_or("right")? as u32 {
+                            "left"
+                        } else {
+                            "right"
+                        }
+                    );
+                }
+            }
+        }
+        let mut facts = Vec::new();
+        append_structural_query_facts(&sources, &plan, &mut facts)
+            .map_err(|error| error.to_string())?;
+        for row in rows.iter().filter(|row| matches!(row.id, RowId::Symbol(_))) {
+            let fact = facts
+                .iter()
+                .find(|fact| fact.presentation().id == row.id.stable_key())
+                .ok_or("stored query fact")?;
+            assert_eq!(
+                fact.presentation().parent,
+                row.parent.map(|parent| RowId::Symbol(parent).stable_key())
+            );
+        }
+        let workers = rows
+            .iter()
+            .filter(|row| row.label == "fixture::shadow.ts:1::worker")
+            .collect::<Vec<_>>();
+        assert_eq!(workers.len(), 2);
+        assert_ne!(workers[0].id, workers[1].id);
+        assert_ne!(workers[0].parent, workers[1].parent);
+        for worker in workers {
+            assert!(worker.identity_preimage().is_some());
+        }
+        for name in ["left", "right"] {
+            assert!(
+                rows.iter().any(|row| row.id
+                    == RowId::Symbol(symbol_key(&format!("fixture::shadow.ts:1::{name}"))))
+            );
+        }
+        // Reordering captures cannot change an exact duplicate binding's row ID or parent.
+        let mut reordered = sources.files[0]
+            .1
+            .file_fields()
+            .ok_or("source")?
+            .declarations
+            .to_vec();
+        reordered.reverse();
+        let reversed = structural_sources(
+            [0x32; 32],
+            path,
+            backend_engine::SourceLanguage::TypeScript,
+            Arc::from(reordered),
+        )?;
+        let reverse_rows = project_rows(&reversed)?;
+        let graph = |rows: &[backend_engine::Row]| {
+            rows.iter()
+                .map(|row| (row.id, row.parent))
+                .collect::<BTreeMap<_, _>>()
+        };
+        assert_eq!(graph(&rows), graph(&reverse_rows));
+        Ok(())
+    }
+
+    #[test]
+    fn typescript_binding_parentage_refuses_cross_file_and_outside_owner_targets()
+    -> Result<(), String> {
+        use backend_compile::{
+            Container, SourceBindingCapture, SourceBindingIdentity, SourceDeclaration,
+        };
+        let parent_capture = SourceBindingCapture::new(0, 100, 9, 14).ok_or("parent capture")?;
+        let child_capture = SourceBindingCapture::new(30, 50, 36, 41).ok_or("child capture")?;
+        let parent = SourceDeclaration::at_path(
+            "other.ts",
+            "outer",
+            "function",
+            1,
+            "function outer() {}",
+            "",
+        )?
+        .with_binding_identity(SourceBindingIdentity::Exact(parent_capture));
+        let child =
+            SourceDeclaration::at_path("child.ts", "child", "constant", 1, "const child = 1;", "")?
+                .with_binding_identity(SourceBindingIdentity::Exact(child_capture))
+                .with_container(Container::Binding {
+                    binding: parent_capture.binding(),
+                });
+        let mut sources = structural_sources(
+            [0x33; 32],
+            "child.ts",
+            backend_engine::SourceLanguage::TypeScript,
+            Arc::from([child.clone()]),
+        )?;
+        let other = structural_sources(
+            [0x33; 32],
+            "other.ts",
+            backend_engine::SourceLanguage::TypeScript,
+            Arc::from([parent]),
+        )?;
+        sources.files.extend(other.files);
+        let mut keys = sources
+            .files
+            .iter()
+            .map(|(key, _)| *key)
+            .collect::<Vec<_>>();
+        keys.sort();
+        sources
+            .projects
+            .get_mut(&[0x33; 32])
+            .ok_or("project")?
+            .files = Arc::from(keys);
+        let error = match StructuralProjectionPlan::of(&sources, &BTreeSet::new()) {
+            Ok(_) => {
+                return Err("same byte anchor in another file was accepted as parent".to_owned());
+            }
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("exact structural parent binding is absent"));
+        let outside_parent = SourceBindingCapture::new(0, 20, 9, 14).ok_or("outside parent")?;
+        let parent = SourceDeclaration::at_path(
+            "child.ts",
+            "outer",
+            "function",
+            1,
+            "function outer() {}",
+            "",
+        )?
+        .with_binding_identity(SourceBindingIdentity::Exact(outside_parent));
+        let sources = structural_sources(
+            [0x33; 32],
+            "child.ts",
+            backend_engine::SourceLanguage::TypeScript,
+            Arc::from([parent, child]),
+        )?;
+        let error = match StructuralProjectionPlan::of(&sources, &BTreeSet::new()) {
+            Ok(_) => return Err("a non-containing parent owner was accepted".to_owned()),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("does not strictly contain its child owner"));
         Ok(())
     }
 
