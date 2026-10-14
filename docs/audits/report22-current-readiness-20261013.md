@@ -1,5 +1,48 @@
 # Report 22: current execution and repair checkpoint
 
+## Follow-up: 2026-10-14, 16:53 UTC
+
+**Product readiness remains unproved.** Root merged [PR 258](https://dev.nudox.org/git/Nudox/Backend/pulls/258), documenting borrowed forest/leaf ownership and bounded compiler diagnostic facts, and [PR 260](https://dev.nudox.org/git/Nudox/Backend/pulls/260), fixing installer umask leakage and both candidate library pins. Canonical before this documentation checkpoint is `81546bc1ae797e628cf3188bde33a294ebf7bd8e`. Coworker PRs 249–255 and 257 were fetched and preserved, including whole Python/Rust corpus cases, namespace-independent tied search ordering, bounded surface parallelism and exact-artifact CI evidence. Their snapshots are not Root's new native project acceptance.
+
+### Installer regression recovery
+
+The first current packaging suite executed 257 tests and reported seven failures and 23 errors. A stale candidate Mac pin caused bootstrap failures; process-wide umask leakage in current installers and two calls into immutable historical fixtures contaminated later SDK packaging controls. Linux and Mac `install()` now restore the caller's prior umask on success and failure. Tests scope calls into the historical fixture without changing its published bytes.
+
+Root caught a second stale pin after reviewing the first repair: the modified Linux installer still had its old candidate checksum. The follow-up binds both current source libraries and tests their distinction from historical R2 identity. On exact source `25c7019afc532cdb5800bb9a0a6bf89711ff21c7`, **all 260 packaging tests passed** under CPython 3.12.14 in 102.039 seconds. Root verified the full raw-log SHA-256 `f88040cb94fdbc5b70adcb42df85d85f121f16b5b24933949c19f349985e656c`, 260 unique test names, 256 inline plus four separate successful statuses, and the terminal success summary. The narrower runs and earlier 259-test run are not added to that total. Root composed the exact seven-file postimages in two atomic commits, ending at `ec985c4b94dd91c8f0923f345591e10924586b76`, before merging PR 260.
+
+This is packaging-harness proof, using test archives and fixtures; no fresh native installer activation or current product journey ran. The generic Linux source has blank release pins and still refuses to claim the old R2 release. A release must bind its actual manifest and recompute its installer/bootstrap identities. Historical public scripts, channels and binary assets were not changed or promoted.
+
+Anonymous public readback found the stable API catalog still marked `legacy`; the Forgejo diagnostic channel remains `production_ready:false`, using historical Linux c001 and Mac a659 assets. Small public scripts and manifests match their declared hashes. Forgejo archive HEADs returned 200; corresponding GitHub installer/archive HEADs returned 404. Archive bodies were not fetched, so HEAD success is not native installation proof. Readback receipt SHA-256: `a2e826be7ea4d87c942ff9528dd4b236c107e8cb2688d7ef12e860d18073608d`.
+
+### Actual new MCP build and incomplete native run
+
+Exact MCP source `3081b508198e8651ccce45e0cb529e43555cd0a5`, tree `8757fef18dd5930d4d0c35778aa79ae36ff62ad3`, compiled successfully on ILO: **13.456 seconds, zero errors, 881 warnings across its dependency graph**. Its retained test ELF is 168,583,376 bytes, SHA-256 `76763331f7b754d2b40f68a42d982d32c15f811f7902baa9dba3a48088baa7b1`. The actual unfiltered inventory contains 257 unique tests: all original 254 plus three bounded-card controls.
+
+The serial suite was interrupted by the live disk-reserve guard: **196 passed, five failed, one started without a terminal status, and 55 were not started**. There is no terminal full-suite summary and no final panic bodies. Root independently verified the raw Cargo stream, inventory, 201 completed statuses, source/tree and closed scope; raw stdout SHA-256 is `a9d0bc149f9e089085b99632563103a3568862722545fc8d026f99b6d9011ced`. Root's partial-verification receipt SHA-256 is `694254815b9536efb5d9e2031f7160a36daec0436572fcd4fe8b9b36eee86c11`.
+
+Failures were `package_graph_budget::{actual_caller_id_is_admitted_before_selection_and_resumes_refuse_atomically, default_graph_page_shrinks_before_admission_and_exact_copy_calls_cover_all_edges, graph_json_alternative_keeps_resumed_frontier_cancel_authority_and_catalog, minimum_graph_refusal_offers_only_proven_local_cli_json_and_keeps_the_input}` and `record_budget_pages::whole_response_budget_keeps_every_native_catalog_coordinate_through_copyable_continuations`. The scope reaped through ECHILD, its cgroup was deleted and its managed destination permit was released. A later retained-ELF phase is prepared to rerun these five controls and then all 257 without invoking Cargo, but has not executed at this checkpoint.
+
+The implemented catalog is now bounded and versioned: a small closed index links to complete per-handler schema cards with exact UTF-8 ranges, digest-fenced continuation URIs, actual caller-ID accounting and truthful fragment MIME. Root also reviewed two concrete source repairs: shortened previews retain the executable `structuredContent.continuation_call` hint, and proven graph JSON advice uses the dedicated CLI Surface route rather than an impossible named-registry lookup. They are published on [PR 227](https://dev.nudox.org/git/Nudox/Backend/pulls/227) at `12ee1e56ded14852e6fc793ae476e8447419bbba`. Native execution of these latest repairs remains **UNRUN**, and PR 227 remains open. No budgets, issued cursors, complete rows or test names were removed.
+
+### Ordinary desktop build is proved; repaired interaction is not
+
+The normal Linux desktop at `3183000a7788d20c2d4bef362a68869a24500cac`, tree `5f07dbec4d251e06703ad3c45804b7be3e1d82f2`, **built successfully in 357.789 seconds**, with zero compiler errors and 1,684 warnings across the build graph. It produced the ordinary application ELF, 726,409,696 bytes, SHA-256 `af7d79ab988dc2cbe2991a2e8deda2a210d6d3184c03f0c6f6a0f48b5734c183`; zero tests ran in that build.
+
+Root checked the complete raw Cargo stream, source/tool witnesses, actual executable device/inode/hash, application artifact role and closed/released scope. Root's completed build-verification receipt SHA-256 is `7c20776bbc8e12585c49b9a9eab7fa3ce1469c298032827fa7003f177e830b86`. This supersedes the earlier build-pending statement. **Current startup pixels, zoom/motion dispatch, resize/focus, navigation, real Add/publication and offline/cold restart remain UNRUN.** Sol resumed inspection and preparation of the existing native observer; preparation and old black screenshots are not current interaction proof.
+
+### Compiler compositions and resource gate
+
+The complete reviewed Python capture/profile candidate is `62e9af8315a88d0377534c8395b205e707349374`, tree `ef735814fdf4059af3a86d7208331389ebecbfe4`. It preserves all 17 foundational capture atoms plus the full profile companion. Captured minors select source/fact/reuse keys before ingest and persist in bounded rows; the 38-file composition preserves the coworker's Go source-site fix. Native controls remain unrun, and the genuine ordinary 3.12/3.14 gate still needs a verified ILO CPython 3.12 installation. A configured 3.14 tool cannot substitute for that gate.
+
+The reviewed TypeScript PR 234/237 composition remains `d7d2380f9a99dcb40ff62abb7ac58aa8aa063225`; its native parity, memory and real-project publication gates remain open. First-index prototypes stay separate. Neither source composition establishes successful large application indexing.
+
+The MCP stop occurred when free disk fell 169,803,776 bytes below its 99-GiB gate: sixteen GiB destination floor, eighty GiB measured CI reserve and a three-GiB compilation forecast. The planned retained-ELF-only rerun has a justified one-GiB forecast and a 97-GiB gate, while preserving the destination/CI reserves, native/GUI/combined ceilings, retirement carry, fresh v6 census and managed permit. Subsequent disk samples also fell below that gate. No duplicate actor or unguarded native workload was started to bypass it. Owned stale cache retirement is being reviewed; unrelated CI workloads, selected executable proofs and current warm targets are preserved.
+
+Root also ran 35 Python CI-harness controls on exact canonical `83550ee8d6e914fe7192f443dc08903a2f065a39`: surface 21, selection five, quarantine four, and tier routing five, all passed. These are harness controls, not native project acceptance. PR 258 has complete source/postimage review and diff checks; no new Clippy or post-edit native warning count is claimed.
+
+Current matched CLI/MCP/locald binaries, hundreds of fresh large-project flows, useful configured embedding search, repaired GUI captures, Mac bundle/Homebrew delivery and a newly promoted installer remain open product gates.
+
+
 ## Follow-up: 2026-10-14, 12:10 UTC
 
 **Product readiness is not established.** Canonical includes coworker [PR 244](https://dev.nudox.org/git/Nudox/Backend/pulls/244), fixing lost Go source sites with a pinned xxhash corpus case, and Root-merged [PR 246](https://dev.nudox.org/git/Nudox/Backend/pulls/246), removing compiler-proved redundant MCP overlap imports. Its exact head before this documentation checkpoint is `d5f4d91959cd88053f0f6ec671e79569eb9be521`. The user's existing Nix edit remains unchanged at SHA-256 `9cee064afabfacafd6b59a041993f6a0f98f382cf37866caf1d9e12225acff63`.
