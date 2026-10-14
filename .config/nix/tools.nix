@@ -35,6 +35,7 @@ let
     "third_party"
     # Embedded by local-service's browse.rs (include_bytes!).
     ".config/scripts/cargo-rustc-cache.sh"
+    ".config/scripts/cargo-shared-cache.sh"
   ];
   workspaceSource =
     if workspaceAvailable then

@@ -147,6 +147,20 @@ in
   agent-skills = commands.agentSkills;
   formatting = formatting.check;
 
+  # These files are compile-time byte authorities in local-service. Check the
+  # actual filtered product source without compiling the product first.
+  packaged-source-contract =
+    if tools.guiRuntime == null then
+      pkgs.writeText "packaged-source-contract-config-only" "No product workspace in configuration-only snapshot."
+    else
+      pkgs.runCommand "nudox-packaged-source-contract" { nativeBuildInputs = [ pkgs.diffutils ]; } ''
+        for script in cargo-shared-cache.sh cargo-rustc-cache.sh; do
+          cmp "${tools.guiRuntime.src}/.config/scripts/$script" \
+            "${workspaceRoot}/.config/scripts/$script"
+        done
+        touch "$out"
+      '';
+
   # Exercises the Cargo lease protocol with fake Cargo/git/sccache processes;
   # it is deliberately independent from the workspace build graph.
   cargo-cache-protocol =
