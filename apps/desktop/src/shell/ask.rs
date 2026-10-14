@@ -374,14 +374,14 @@ impl Ask {
                 {
                     return;
                 }
-                let admitted = {
+                let (admitted, owner_failed) = {
                     let store = ask.links.store.read(cx);
-                    authority
-                        .as_ref()
-                        .map_or_else(|| !store.owner_serving(), |lease| lease.admits(store))
+                    (authority.as_ref().map_or_else(|| !store.owner_serving(), |lease| lease.admits(store)),
+                        !store.owner_serving() && store.owner_fault().is_some())
                 };
                 if !admitted {
-                    ask.complete_submission(stale_submission(), cx);
+                    let outcome = if owner_failed { ask.empty_submission(cx) } else { stale_submission() };
+                    ask.complete_submission(outcome, cx);
                     return;
                 }
                 if authority.is_none() {
@@ -2128,6 +2128,65 @@ mod tests {
             rig.route(),
             destination,
             "fresh native input may use the replacement owner"
+        );
+    }
+
+    #[gpui::test]
+    fn queued_native_enter_preserves_the_typed_owner_failure_before_deferred_delivery(
+        cx: &mut TestAppContext,
+    ) {
+        let (mut rig, gate, root) = owner_ask(cx);
+        let original = rig.route();
+        let ask = rig.shell.read_with(&rig.cx, |shell, _| shell.ask_entity());
+        let input = ask.read_with(&rig.cx, |ask, _| ask.input.clone());
+        let frame = rig.cx.update(|window, _| window.a11y_frame_number());
+        rig.cx.update(|window, cx| {
+            assert!(input.read(cx).focus_handle(cx).is_focused(window));
+            assert!(
+                rig.graph.store.read(cx).owner_serving(),
+                "the native key captures a serving lease"
+            );
+            let visit = rig.graph.root.read(cx).graph_view_generation();
+            let revision = ask.read(cx).revision.get();
+            let key = gpui::Keystroke::parse("enter").expect("native Enter");
+            window.dispatch_event(
+                gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                    keystroke: key.clone(),
+                    is_held: false,
+                    prefer_character_input: false,
+                }),
+                cx,
+            );
+            assert_eq!(rig.graph.store.read(cx).snapshot().route(), &original);
+            gate.publish(crate::runtime::owner::OwnerState::Failed(
+                "owner failed after native Enter".into(),
+            ));
+            assert!(
+                !rig.graph.store.read(cx).owner_serving(),
+                "the live gate revokes before watcher delivery"
+            );
+            assert_eq!(rig.graph.store.read(cx).snapshot().key(), root);
+            assert_eq!(rig.graph.root.read(cx).graph_view_generation(), visit);
+            assert_eq!(ask.read(cx).revision.get(), revision);
+            window.dispatch_event(
+                gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke: key }),
+                cx,
+            );
+        });
+        rig.cx.run_until_parked();
+        assert_eq!(rig.route(), original);
+        assert_eq!(
+            input.read_with(&rig.cx, |input, _| input.value().to_string()),
+            "RelationLabel"
+        );
+        assert!(rig.cx.update(|window, _| window.a11y_frame_number()) > frame);
+        assert!(
+            ask_fault_status(&mut rig, "owner failed after native Enter"),
+            "the ordinary committed Ask Status keeps the current typed fault instead of masking it with stale-result words"
+        );
+        assert!(
+            rig.cx
+                .update(|window, cx| input.read(cx).focus_handle(cx).is_focused(window))
         );
     }
 
