@@ -36,11 +36,13 @@ pub(super) struct PresentationVisit {
     pub preferred: Option<PackageRef>,
 }
 
+#[derive(Clone)]
 struct ExactSelection {
     package: PackageRef,
     symbol: SymbolRef,
 }
 
+#[derive(Clone)]
 pub(super) struct RetainedPresentation {
     visit: PresentationVisit,
     geometry: Geometry,

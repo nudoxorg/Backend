@@ -317,7 +317,7 @@ fn canary_native_rig(cx: &mut TestAppContext, width: f32, scale: f32, appearance
     let launch_root = VersionedRoot::synthetic(view_state_root(&[("shell".to_owned(), "tests".to_owned())]), 4);
     let gate = crate::runtime::owner::OwnerGate::ready(launch_root, crate::model::ServiceMode::Attached);
     let mut rig = super::tests::rig_with_engine_gate(cx, None, width, 900.0,
-        ReadPool::start(2, |_| super::tests::Fixture).expect("fixture pool"), super::tests::RootOnly, Some(gate.clone()));
+        ReadPool::start(2, |_| super::tests::Fixture).expect("fixture pool"), super::jump_tests::StableRoot, Some(gate.clone()));
     let preference = match appearance {
         facet::tokens::Appearance::Abyss => crate::model::AppearancePreference::Abyss,
         facet::tokens::Appearance::Glacier => crate::model::AppearancePreference::Glacier,
@@ -325,9 +325,9 @@ fn canary_native_rig(cx: &mut TestAppContext, width: f32, scale: f32, appearance
     rig.go(Intent::SetAppearance(preference));
     let display = rig.shell.read_with(&rig.cx, |shell, _| shell.display_key());
     rig.go(Intent::ZoomTo { display, percent: (scale * 100.0) as u16 });
-    // Startup admits the owner and RootOnly can publish a newer cursor before
-    // this fixture is installed. The projection must bind to the same exact
-    // authority the current Reader will request, not the launch gate's key.
+    // Owner renewal and repaint are independent of publication. A RootOnly
+    // hydrator advances the cursor on every request and would accidentally
+    // turn these same-root interleavings into a different-root test.
     let root = rig.graph.store.read_with(&rig.cx, |store, _| {
         assert!(store.current_owner_attachment().is_some(), "canary needs a serving owner attachment");
         store.snapshot().key()
@@ -335,6 +335,7 @@ fn canary_native_rig(cx: &mut TestAppContext, width: f32, scale: f32, appearance
     let model_root = rig.graph.root.read_with(&rig.cx, |model, _| model.snapshot().key());
     assert!(root.same_authority(model_root), "canary store/model authority diverged before projection: store={root:?}, model={model_root:?}");
     assert_eq!(root.root(), launch_root.root(), "canary startup changed the certified fixture root");
+    assert!(root.same_authority(launch_root), "same-root native canary must retain the certified owner cursor");
     let package = PackageRef::parse("/fixture/real-rust-canary").expect("package");
     let basis = Basis::new(view_state_root(&[]), object_version(b"Run19 source fixture"));
     let mut exact = BTreeMap::new();
@@ -960,6 +961,41 @@ fn publication_preserves_selected_b_and_exact_camera_on_consumed_route_a(cx: &mu
 }
 
 #[gpui::test]
+fn native_history_restores_each_graph_visits_own_typed_selection_and_camera(cx: &mut TestAppContext) {
+    let route = view_route("RelationLabel", View::Graph);
+    let mut rig = continuity_rig(cx, route.clone());
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    let graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("first graph visit");
+    let first_camera = facet::motion::Camera::new(13.25, -8.75, 133.5);
+    graph.update(&mut rig.cx, |graph, cx| graph.fly_to(first_camera, cx));
+    rig.settle();
+    let first_visit = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.id);
+
+    // This is a distinct graph visit in the same immutable scene. No owner
+    // read or publication may erase the first visit's passive reading packet.
+    rig.go(Intent::Navigate(view_route("RelationDirection", View::Graph)));
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(0, cx));
+    let second_camera = facet::motion::Camera::new(-17.5, 22.25, 91.0);
+    graph.update(&mut rig.cx, |graph, cx| graph.fly_to(second_camera, cx));
+    rig.settle();
+    let second_visit = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.id);
+    assert_ne!(first_visit, second_visit);
+
+    rig.native_press("secondary-[");
+    rig.settle();
+    assert_eq!(rig.route(), route);
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.id), first_visit);
+    assert_eq!(graph.read_with(&rig.cx, |graph, _| (graph.focused(), graph.camera())), (Some(1), Some(first_camera)));
+    rig.native_press("secondary-]");
+    rig.settle();
+    assert_eq!(rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().session().reading.current.id), second_visit);
+    assert_eq!(graph.read_with(&rig.cx, |graph, _| (graph.focused(), graph.camera())), (Some(0), Some(second_camera)));
+    rig.native_press("secondary-[");
+    rig.settle();
+    assert_eq!(graph.read_with(&rig.cx, |graph, _| (graph.focused(), graph.camera())), (Some(1), Some(first_camera)));
+}
+
+#[gpui::test]
 fn covered_publication_preserves_graph_geometry_without_taking_settings_focus(cx: &mut TestAppContext) {
     let route = view_route("RelationLabel", View::Graph);
     let mut rig = continuity_rig(cx, route.clone());
@@ -1412,6 +1448,8 @@ fn stale_painted_graph_marker_cannot_take_focus_on_owner_replacement(cx: &mut Te
     rig.cx.simulate_mouse_up(marker, gpui::MouseButton::Left, gpui::Modifiers::none());
     assert!(graph.read_with(&rig.cx, |graph, _| graph.focused()).is_none());
     rig.repaint(); rig.settle();
+    assert!(graph.read_with(&rig.cx, |graph, _| graph.focused()).is_none(), "retired scene remains inert after renewal");
+    let graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("actually mounted replacement");
     let marker = graph.read_with(&rig.cx, |graph, _| graph.node_bounds(1)).expect("fresh marker").center();
     rig.cx.simulate_click(marker, gpui::Modifiers::none());
     assert_eq!(graph.read_with(&rig.cx, |graph, _| graph.focused()), Some(1));

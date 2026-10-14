@@ -8,7 +8,8 @@ use crate::runtime::{
     reads::{PageReader, ReadContext, ReadPool, ReadRequest},
 };
 use crate::model::{ServiceMode, pages::{PageValue, ReadFailure}};
-use crate::shell::tests::{Fixture, Rig, RootOnly, indexed_view_route, rig_with_engine_gate};
+use crate::shell::tests::{Fixture, Rig, indexed_view_route, rig_with_engine_gate};
+use crate::shell::jump_tests::StableRoot;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -46,7 +47,7 @@ fn rig(cx: &mut gpui::TestAppContext) -> (Rig, OwnerGate, Arc<SearchBarrier>, Re
     let barrier = Arc::new(SearchBarrier::default());
     let reads = barrier.clone();
     let pool = ReadPool::start(2, move |_| DelayedSearch(reads.clone())).expect("synthetic read lane");
-    let mut rig = rig_with_engine_gate(cx, Some(Route::World), 1440.0, 900.0, pool, RootOnly, Some(owner.clone()));
+    let mut rig = rig_with_engine_gate(cx, Some(Route::World), 1440.0, 900.0, pool, StableRoot, Some(owner.clone()));
     crate::shell::anatomy_tests::install(&mut rig);
     rig.settle();
     let release = ReleaseSearch(barrier.clone());

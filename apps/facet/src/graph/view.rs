@@ -70,6 +70,7 @@ pub type InteractionAdmission = Rc<dyn Fn(InteractionPhase, &App) -> bool>;
 
 /// Local query/caret state only. Search results, scene data, subscriptions,
 /// callback permission and focus-return claims are not retained here.
+#[derive(Clone)]
 pub struct LocalEditing { find: Entity<InputState> }
 
 /// A denied producer cannot fall through to another focus walk. Only an
@@ -741,6 +742,33 @@ impl GraphView {
         Some(super::presentation::Geometry::capture(self.scene.as_ref()?, self.camera()?, self.focused()))
     }
 
+    /// Immutable layout used by the host to remap a retained typed selection.
+    #[must_use]
+    pub fn scene(&self) -> Option<&Scene> { self.scene.as_deref() }
+
+    /// Restore passive reading context without issuing a navigation command,
+    /// recording a new trail stop, or acquiring native focus.
+    pub fn restore_presentation(&mut self, start: Start, window: &mut Window, cx: &mut Context<Self>) {
+        self.suspend(window, cx);
+        self.pending_enter = None;
+        self.state.apply(Event::Focus(None));
+        self.prism = None;
+        self.reading_a = 0.0;
+        self.motion.set(READING_KEY, 0.0);
+        self.motion.set(PRISM_KEY, 0.0);
+        self.search = empty_search();
+        self.results.clear();
+        self.painted_labels = None;
+        self.retained_placement = matches!(start, Start::Restore { .. });
+        self.start = start;
+        if let Start::Restore { camera, focus } = start {
+            if let Some(node) = focus { self.restore_selection(node); }
+            if let Some(rig) = &mut self.rig { rig.set(camera); }
+        } else if let Some(camera) = self.world_cam()
+            && let Some(rig) = &mut self.rig { rig.set(camera); }
+        cx.notify();
+    }
+
     /// The focused symbol.
     #[must_use]
     pub const fn focused(&self) -> Option<NodeId> {
@@ -758,10 +786,15 @@ impl GraphView {
     /// to this graph's new search engine without restoring native focus.
     #[must_use]
     pub fn with_local_editing(mut self, editing: LocalEditing, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        self.restore_local_editing(editing, window, cx);
+        self
+    }
+
+    /// Rebind only the retained query/caret to this visit's search engine.
+    pub fn restore_local_editing(&mut self, editing: LocalEditing, window: &mut Window, cx: &mut Context<Self>) {
         self._subscriptions.clear();
         self.find = editing.find;
         self._subscriptions.push(Self::observe_find(&self.find, window, cx));
-        self
     }
 
     /// Whether the native find input currently owns keyboard focus.

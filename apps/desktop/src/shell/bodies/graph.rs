@@ -93,6 +93,8 @@ pub(crate) struct Map {
     route_consumed: bool,
     presentation_visit: VisitIdentity,
     retained_presentation: Option<RetainedPresentation>,
+    /// Passive packets for bounded content history; never scene/owner leases.
+    history: BTreeMap<crate::navigation::presentation::VisitId, SavedGraphVisit>,
     presented_visit: Option<PresentationVisit>,
     /// The activation under which this retained scene was presented. A scene
     /// may restore passive context; only an explicit show can publish it for
@@ -117,6 +119,12 @@ struct GraphMountFocus {
     _origin: Option<gpui::FocusHandle>,
     settings_return: Option<LocalGraphReturnScope>,
     scheduled: bool,
+}
+
+struct SavedGraphVisit {
+    visit: PresentationVisit,
+    consumed: bool,
+    packet: RetainedPresentation,
 }
 
 #[derive(Clone)]
@@ -280,8 +288,10 @@ impl Map {
                     map.invalidate_open();
                     map.error = None;
                     if event.is_branch(Branch::Route) {
-                        map.cancel_presentation();
-                        map.route_consumed = false;
+                        // The route notification already describes the destination.
+                        // Save the departing graph under its presented reading visit
+                        // before show decides whether this is Back or a fresh entry.
+                        map.retain_presentation(cx);
                     }
                     if event.is_branch(Branch::Root) {
                         map.reset_indexed_world(cx);
@@ -379,6 +389,7 @@ impl Map {
             route_consumed: false,
             presentation_visit: VisitIdentity::default(),
             retained_presentation: None,
+            history: BTreeMap::new(),
             presented_visit: None,
             presented_content: None,
             semantic_focus: None,
@@ -405,6 +416,23 @@ impl Map {
             && visit.identity == self.presentation_visit
         {
             self.retained_presentation = RetainedPresentation::capture(graph.read(cx), identities, visit.clone());
+            if let Some(packet) = &self.retained_presentation {
+                self.history.insert(visit.reading, SavedGraphVisit {
+                    visit: visit.clone(), consumed: self.route_consumed, packet: packet.clone(),
+                });
+                // Follow the actual bounded session histories. A fresh branch
+                // drops discarded Forward packets and their local input entities.
+                let snapshot = self.links.snapshot(cx);
+                let session = snapshot.session();
+                let mut live = std::collections::BTreeSet::from([session.reading.current.id]);
+                for mut history in [session.back.clone(), session.forward.clone()] {
+                    while let Some((_, reading, tail)) = history.pop_visit() {
+                        live.insert(reading.id);
+                        history = tail;
+                    }
+                }
+                self.history.retain(|reading, _| live.contains(reading));
+            }
         }
     }
 
@@ -682,9 +710,10 @@ impl Map {
 
     pub(crate) fn suspend(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // A cover (Settings/Inbox) suspends native input while retaining the
-        // underlying reading visit. Route changes and explicit World commands
-        // independently cancel passive restoration.
+        // underlying reading visit. Fresh route entries and explicit World
+        // commands independently cancel passive restoration.
         if self.visible {
+            self.retain_presentation(cx);
             self.invalidate_open();
             if let Some(graph) = &self.graph {
                 graph.update(cx, |graph, cx| graph.suspend(window, cx));
@@ -712,12 +741,30 @@ impl Map {
             self.suspend(window, cx);
             return;
         }
-        let changed_reading = self.presented_visit.as_ref().is_some_and(|visit|
-            visit.reading != snapshot.session().reading.current.id);
+        let same_reading = self.presented_visit.as_ref().is_some_and(|visit|
+            visit.reading == snapshot.session().reading.current.id && visit.route == *route);
         // Back restores the original reading identity and intentionally keeps
         // its graph selection/camera. A fresh navigation to the same route has
         // a different reading identity and must consume that route anew.
-        let changed_entry = changed_route || changed_reading;
+        let returning = (!same_reading).then(|| self.history.remove(&snapshot.session().reading.current.id)).flatten()
+            .filter(|saved| saved.visit.route == *route);
+        let changed_entry = !same_reading && returning.is_none();
+        if let Some(SavedGraphVisit { visit, consumed, packet }) = returning {
+            self.presentation_visit = visit.identity.clone();
+            self.route_consumed = consumed;
+            self.retained_presentation = Some(packet.clone());
+            if let Some(graph) = &self.graph
+                && let Some(identities) = &self.identities
+                && let Some(restored) = graph.read(cx).scene().and_then(|scene| packet.restore(&visit, scene, identities))
+            {
+                graph.update(cx, |graph, cx| {
+                    graph.restore_presentation(restored.start, window, cx);
+                    if let Some(editing) = restored.editing { graph.restore_local_editing(editing, window, cx); }
+                });
+                self.error = restored.status.map(str::to_owned);
+                self.retained_presentation = None;
+            }
+        }
         let changed_activation = self.presented_content.as_ref().is_some_and(|visit| !visit.current(&snapshot));
         let arriving = !self.visible || changed_route || changed_activation;
         if arriving {
