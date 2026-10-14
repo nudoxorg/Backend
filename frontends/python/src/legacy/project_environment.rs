@@ -3715,7 +3715,10 @@ mod tests {
         std::fs::create_dir_all(root.path.join("venv/bin")).map_err(io_error)?;
         std::fs::write(
             root.path.join("venv/pyvenv.cfg"),
-            "include-system-site-packages = false\n",
+            format!(
+                "home = {}\nversion = 3.14.6\ninclude-system-site-packages = false\n",
+                root.path.display()
+            ),
         )
         .map_err(io_error)?;
         let executable = root.path.join("venv/bin/python");
@@ -3726,17 +3729,24 @@ mod tests {
         .map_err(io_error)?;
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))
             .map_err(io_error)?;
-        assert!(PythonEnvironmentCapture::capture(&root.path, control(&cancelled)).is_err());
+        assert!(matches!(
+            PythonEnvironmentCapture::capture(&root.path, control(&cancelled)),
+            Err(CheckerError::PythonInterpreterSelectionUnavailable {
+                major: 3,
+                minor: 14
+            })
+        ));
         assert!(!marker.exists());
         let hostile_selection = PythonInterpreterSelection::from_host_policy(executable)?;
-        assert!(
-            PythonEnvironmentCapture::capture_with_interpreter(
-                &root.path,
-                Some(&hostile_selection),
-                control(&cancelled)
-            )
-            .is_err()
+        let result = PythonEnvironmentCapture::capture_with_interpreter(
+            &root.path,
+            Some(&hostile_selection),
+            control(&cancelled),
         );
+        assert!(matches!(result,
+            Err(CheckerError::PythonInterpreterSelectionMismatch { path, major: 3, minor: 14 })
+                if path == hostile_selection.executable
+        ));
         assert!(!marker.exists());
         Ok(())
     }
