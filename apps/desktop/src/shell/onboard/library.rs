@@ -222,18 +222,6 @@ pub(crate) fn empty(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
     let how = ctx.say("Add a project folder. Nudox compiles it and every package it uses, then keeps them together here, ready to browse.");
     let find_how = ctx.say("Find searches indexed declarations and registry releases. Inspect an exact version and its recorded standing before adding it.");
     let private = ctx.say("Your source stays on this machine.");
-    // The Rust selection is language-specific; it does not describe the
-    // availability or publication outcome of other selected profiles.
-    let rust = crate::host::toolchain::report().map(|rust| {
-        let missing = matches!(rust, crate::host::toolchain::Rust::Missing { .. });
-        let words = match &rust {
-            crate::host::toolchain::Rust::Found { .. } => {
-                format!("Selected Rust toolchain: {}.", rust.words())
-            }
-            crate::host::toolchain::Rust::Missing { .. } => rust.words(),
-        };
-        (ctx.say(words), missing)
-    });
     let links = ctx.links.clone();
     let act: Act = {
         let links = links.clone();
@@ -301,21 +289,7 @@ pub(crate) fn empty(ctx: &mut Ctx<'_>, cx: &mut Context<Reader>) -> Leaf {
                     .text_center()
                     .min_w(px(0.0)),
             )
-            .child(quiet(private, &measure, palette))
-            .children(rust.map(|(words, missing)| {
-                if missing {
-                    text(ty::ROW, &measure, palette.ink1)
-                        .text_center()
-                        .min_w(px(0.0))
-                        .child(words)
-                        .into_any_element()
-                } else {
-                    quiet(words, &measure, palette)
-                        .text_center()
-                        .min_w(px(0.0))
-                        .into_any_element()
-                }
-            })),
+            .child(quiet(private, &measure, palette)),
     )
 }
 
