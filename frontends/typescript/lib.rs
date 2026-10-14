@@ -58,6 +58,7 @@ pub use tsz_common::{
     ProjectExecutionBudget as TszProjectExecutionBudget,
     ProjectExecutionIdentity as TszProjectExecutionIdentity,
     ProjectExecutionEvent as TszProjectExecutionEvent,
+    ProjectExecutionFile as TszProjectExecutionFile,
     ProjectExecutionPhase as TszProjectExecutionPhase,
     ProjectExecutionStop as TszProjectExecutionStop,
     ProjectExecutionTransition as TszProjectExecutionTransition,

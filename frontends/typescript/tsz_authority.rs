@@ -53,8 +53,9 @@ pub use query_session::{TszProjectQuerySession, TszProjectQuerySessionError};
 /// Include the normalized compiler options, tsconfig inheritance and project
 /// references, module-resolution inputs, package-manager/lockfile identity,
 /// resolved dependency and library content, and the selected TSZ revision.
-/// A change invalidates all parse/bind cache entries because TSZ binding may
-/// depend on those inputs.
+/// A change invalidates checked program authority. Parse/bind entries have a
+/// narrower identity: exact source bytes, parser target, module detection, and
+/// the exact library set actually consumed by binding.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct TszEnvironmentFingerprint([u8; 32]);
 
@@ -292,6 +293,10 @@ pub struct TszUpdateReport {
 pub struct TszProjectAuthority {
     environment: Option<TszEnvironmentFingerprint>,
     libraries: Option<[u8; 32]>,
+    binding_options: Option<[u8; 32]>,
+    // Cached binders carry library declaration arena provenance. Keep the
+    // original library objects whenever exact library bytes are unchanged.
+    lib_files: Vec<Arc<tsz::lib_loader::LibFile>>,
     bound_sources: BTreeMap<String, CachedBind>,
     project: Option<TszProject>,
 }
@@ -477,8 +482,9 @@ impl TszProjectAuthority {
         }
         let library_digest = library_digest(lib_files)?;
         let libraries_changed = self.libraries != Some(library_digest);
-        let environment_changed =
-            self.environment != Some(options.environment) || libraries_changed;
+        let environment_changed = self.environment != Some(options.environment);
+        let binding_digest = binding_options_digest(&options.checker);
+        let binding_options_changed = self.binding_options != Some(binding_digest);
         let checker_digest = checker_options_digest(&options.checker);
         let checker_options_changed = self
             .project
@@ -499,17 +505,26 @@ impl TszProjectAuthority {
             .project
             .as_ref()
             .is_some_and(|current| current.module_resolution_digest != module_resolution_digest);
-        if environment_changed || checker_options_changed {
+        // Parsing/binding consumes only the source, target, module detection,
+        // and library binders. The full environment also includes dependency
+        // source bytes and resolver reads; rebuilding every unchanged arena
+        // for those changes would discard the per-source cache on every edit.
+        if libraries_changed {
+            self.lib_files = lib_files.to_vec();
+        }
+        if libraries_changed || binding_options_changed {
             self.bound_sources.clear();
             self.project = None;
-            self.environment = Some(options.environment);
-            self.libraries = Some(library_digest);
-        } else if semantic_options_changed || module_resolutions_changed || file_formats_changed {
-            // Semantic options, exact resolution outcomes, and compiler file
-            // formats affect merged checking, but not parser/binder output. Reuse exact
-            // source binds while rebuilding the merged/checker project.
+        } else if environment_changed || checker_options_changed
+            || semantic_options_changed || module_resolutions_changed || file_formats_changed {
+            // Reuse exact source binds, but never a checked image or solver
+            // cache from another environment, option set, or module authority.
             self.project = None;
         }
+        self.environment = Some(options.environment);
+        self.libraries = Some(library_digest);
+        self.binding_options = Some(binding_digest);
+        let lib_files = self.lib_files.as_slice();
 
         report.removed_sources = self
             .bound_sources
@@ -1310,6 +1325,13 @@ where
     candidates.first().map(|(_, _, token)| *token)
 }
 
+fn binding_options_digest(options: &TszCheckerOptions) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"tsz.parse-bind-options.v1\0");
+    digest.update(format!("{:?}:{:?}", options.target, options.module_detection).as_bytes());
+    digest.finalize().into()
+}
+
 fn checker_options_digest(options: &TszCheckerOptions) -> [u8; 32] {
     // TSZ's options are a broad non-serializable struct. Its Debug output is
     // a same-revision in-process cache key only; the external environment
@@ -1686,6 +1708,61 @@ mod tests {
             .expect("exact project revision is reusable");
         assert!(exact.reused_project_result);
         assert_eq!(exact.parsed_and_bound, 0);
+    }
+
+    #[test]
+    fn dependency_environment_edit_retains_exact_binds_and_replaces_checked_types() {
+        fn observed(authority: &TszProjectAuthority) -> String {
+            let project = authority.project().unwrap();
+            let session = project.checked_query_session_unmetered_for_test().unwrap();
+            let index = session.file_index("src/main.ts").unwrap();
+            session.with_file_checker_and_types(index, |checker, binder, _, _| {
+                let ty = checker.get_type_of_symbol(binder.file_locals.get("actual").unwrap());
+                checker.format_type(ty)
+            }).unwrap()
+        }
+        let main = input("src/main.ts", "import { value } from './dep'; export const actual = value;");
+        let mut recipe = options();
+        recipe.module_resolutions.push(TszProjectModuleResolution {
+            importer_path: "src/main.ts".into(),
+            specifier: "./dep".into(),
+            request_kind: TszProjectModuleRequestKind::EsmImport,
+            resolution_mode: None,
+            target: TszProjectModuleResolutionTarget::File { path: "src/dep.ts".into() },
+        });
+        let mut authority = TszProjectAuthority::new();
+        authority.update(vec![main.clone(), input("src/dep.ts", "export const value: number = 1;")], recipe.clone(), &[]).unwrap();
+        assert_eq!(observed(&authority), "number");
+        let previous_main = Arc::clone(authority.project().unwrap().bound_sources.get("src/main.ts").unwrap());
+
+        // The real engine includes dependency source content in its full
+        // environment. That changes checked authority without changing the
+        // parser/binder inputs of this unchanged importer.
+        recipe.environment = TszEnvironmentFingerprint::from_sha256([0x71; 32]);
+        let changed = vec![main.clone(), input("src/dep.ts", "export const value: string = 'changed';")];
+        let report = authority.update(changed.clone(), recipe.clone(), &[]).unwrap();
+        assert_eq!((report.parsed_and_bound, report.reused_binds), (1, 1));
+        assert!(!report.reused_project_result);
+        assert!(Arc::ptr_eq(&previous_main, authority.project().unwrap().bound_sources.get("src/main.ts").unwrap()));
+        assert_eq!(observed(&authority), "string");
+        let mut fresh = TszProjectAuthority::new();
+        fresh.update(changed.clone(), recipe.clone(), &[]).unwrap();
+        assert_eq!(observed(&authority), observed(&fresh));
+        let diagnostics = |authority: &TszProjectAuthority| authority.project().unwrap().check_result().file_results.iter()
+            .map(|file| (file.file_name.clone(), file.diagnostics.clone())).collect::<Vec<_>>();
+        assert_eq!(diagnostics(&authority), diagnostics(&fresh));
+
+        recipe.checker.strict_null_checks = !recipe.checker.strict_null_checks;
+        recipe.environment = TszEnvironmentFingerprint::from_sha256([0x72; 32]);
+        let options_changed = authority.update(changed.clone(), recipe.clone(), &[]).unwrap();
+        assert_eq!((options_changed.parsed_and_bound, options_changed.reused_binds), (0, 2));
+        assert!(!options_changed.reused_project_result);
+        assert_eq!(observed(&authority), "string");
+
+        recipe.checker.module_detection = TszModuleDetectionKind::Force;
+        let binding_changed = authority.update(changed, recipe, &[]).unwrap();
+        assert_eq!((binding_changed.parsed_and_bound, binding_changed.reused_binds), (2, 0));
+        assert!(!binding_changed.reused_project_result);
     }
 
     #[test]
@@ -2713,6 +2790,47 @@ mod tests {
         assert_eq!(changed.parsed_and_bound, 1);
         assert_eq!(changed.reused_binds, 0);
         assert!(!changed.reused_project_result);
+    }
+
+    #[test]
+    fn equivalent_readmitted_libraries_preserve_cached_declaration_arena_provenance() {
+        let library = || TszLibraryInput::from_utf8(
+            "lib.fixture.d.ts", b"declare type LibraryLabel = string;".to_vec(),
+        ).unwrap().into_lib_file();
+        let original = library();
+        let first = vec![
+            input("src/a.ts", "export const a: LibraryLabel = 'a';"),
+            input("src/b.ts", "export const b: LibraryLabel = 'b';"),
+        ];
+        let mut authority = TszProjectAuthority::new();
+        authority.update(first.clone(), options(), &[Arc::clone(&original)]).unwrap();
+        let unchanged = Arc::clone(authority.project().unwrap().bound_sources.get("src/b.ts").unwrap());
+        // The production bridge constructs these objects again after each
+        // fresh admission. Equal bytes do not make their arena objects equal.
+        let readmitted = library();
+        assert!(!Arc::ptr_eq(&original, &readmitted));
+        let changed = vec![input("src/a.ts", "export const a: LibraryLabel = 'edited';"), first[1].clone()];
+        let mut recipe = options();
+        recipe.environment = TszEnvironmentFingerprint::from_sha256([0x73; 32]);
+        let report = authority.update(changed.clone(), recipe.clone(), &[Arc::clone(&readmitted)]).unwrap();
+        assert_eq!((report.parsed_and_bound, report.reused_binds), (1, 1));
+        let project = authority.project().unwrap();
+        assert!(Arc::ptr_eq(&project.lib_files[0], &original));
+        assert!(Arc::ptr_eq(project.bound_sources.get("src/b.ts").unwrap(), &unchanged));
+        let observed = |authority: &TszProjectAuthority| {
+            let project = authority.project().unwrap();
+            let session = project.checked_query_session_unmetered_for_test().unwrap();
+            let index = session.file_index("src/b.ts").unwrap();
+            session.with_file_checker_and_types(index, |checker, binder, _, _| {
+                let ty = checker.get_type_of_symbol(binder.file_locals.get("b").unwrap());
+                let ty = checker.resolve_lazy_type(ty);
+                checker.format_type(ty)
+            }).unwrap()
+        };
+        let mut cold = TszProjectAuthority::new();
+        cold.update(changed, recipe, &[readmitted]).unwrap();
+        assert_eq!(observed(&authority), observed(&cold));
+        assert_eq!(observed(&authority), "string");
     }
 
     #[test]
