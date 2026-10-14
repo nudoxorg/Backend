@@ -180,8 +180,12 @@ The former binds each product binary, runtime export and smoke driver hash to
 its source and manifest, even after task payloads expire. It does not retain the
 payload itself. Source-verified T2 report mode records bounded CPU model/affinity,
 observed clock ranges, cgroup limits/pressure/counters, host CPU/I/O pressure and
-a top-ten live owner-thread CPU sample at case end. Missing data is explicit;
-exited threads are absent. Context events are capped at64KiB and never alter a
+a top-ten live owner-thread CPU sample at case end. Cgroup values are read only
+when `/proc/self/cgroup` maps unambiguously into the visible cgroup2 mount and
+the resolved `cgroup.procs` lists this process; `cgroup_scope` records the path
+and mount root, otherwise those values are reported unavailable. Missing data
+is explicit; exited threads are absent.
+Context events are capped at64KiB and never alter a
 snapshot, baseline, tolerance or case verdict. Use them to investigate failures,
 not to automatically exempt a slow result. Physical CPU frequency samples do
 not establish the clock rate throughout an operation.

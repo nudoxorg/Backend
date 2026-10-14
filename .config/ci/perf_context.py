@@ -1,8 +1,10 @@
 """Bounded read-only observations; never inputs to performance pass/fail."""
+import hashlib
 from datetime import datetime, timezone
 import json
 import math
 import os
+import re
 from pathlib import Path
 
 LIMIT = 2048
@@ -19,6 +21,71 @@ FILES = {
 }
 
 
+def _mount_unescape(value: str) -> str:
+    return re.sub(r'\\([0-7]{3})', lambda match: chr(int(match.group(1), 8)), value)
+
+
+def cgroup_directory(proc: Path, mountpoint: Path) -> tuple[Path | None, dict]:
+    """Resolve this process's cgroup inside the visible cgroup2 mount.
+
+    If the proc path cannot be mapped unambiguously to the mount root, report
+    the scope as unavailable instead of reading counters from the hierarchy
+    root and implying that they belong to this process.
+    """
+    membership = read(proc / 'self/cgroup', 64 * 1024)
+    if 'text' not in membership or membership.get('truncated'):
+        return None, {'available': False, 'reason': 'membership-unavailable'}
+    paths = [line.split('::', 1)[1] for line in membership['text'].splitlines()
+             if '::' in line]
+    if len(paths) != 1:
+        return None, {'available': False, 'reason': 'membership-ambiguous'}
+    process_path = paths[0]
+    if (not process_path.startswith('/') or '\x00' in process_path
+            or any(part in ('.', '..') for part in process_path.split('/'))):
+        return None, {'available': False, 'reason': 'membership-invalid'}
+
+    mountinfo = read(proc / 'self/mountinfo', 256 * 1024)
+    if 'text' not in mountinfo or mountinfo.get('truncated'):
+        return None, {'available': False, 'reason': 'mountinfo-unavailable'}
+    mounts = []
+    for line in mountinfo['text'].splitlines():
+        before, separator, after = line.partition(' - ')
+        if not separator:
+            continue
+        left, right = before.split(), after.split()
+        if len(left) < 5 or not right or right[0] != 'cgroup2':
+            continue
+        root, visible_mount = map(_mount_unescape, (left[3], left[4]))
+        if os.path.normpath(visible_mount) == os.path.normpath(str(mountpoint)):
+            mounts.append(root)
+    if len(mounts) != 1:
+        return None, {'available': False, 'reason': 'cgroup2-mount-unavailable'}
+
+    mount_root = mounts[0]
+    if not mount_root.startswith('/') or '\x00' in mount_root:
+        return None, {'available': False, 'reason': 'mount-root-invalid'}
+    if process_path == '/' or process_path == mount_root:
+        relative = ''
+    elif mount_root == '/':
+        relative = process_path.lstrip('/')
+    elif process_path.startswith(mount_root.rstrip('/') + '/'):
+        relative = process_path[len(mount_root.rstrip('/')) + 1:]
+    else:
+        # The mount may be a bind of an unrelated subtree. Guessing that the
+        # proc path is namespace-relative would attribute another cgroup's
+        # counters to this process.
+        return None, {'available': False, 'reason': 'membership-outside-mount-root'}
+
+    directory = mountpoint / relative
+    if not directory.is_dir():
+        return None, {'available': False, 'reason': 'process-cgroup-missing'}
+    members = read(directory / 'cgroup.procs', 256 * 1024)
+    if 'text' not in members or str(os.getpid()) not in members['text'].splitlines():
+        return None, {'available': False, 'reason': 'process-membership-unverified'}
+    return directory, {'available': True, 'path': process_path,
+                       'mount_root': mount_root, 'verified_by': 'cgroup.procs'}
+
+
 def read(path: Path, limit: int = LIMIT):
     try:
         with path.open('rb') as stream:
@@ -30,8 +97,11 @@ def read(path: Path, limit: int = LIMIT):
 
 
 def system(proc: Path = Path('/proc'), cgroup: Path = Path('/sys/fs/cgroup')) -> dict:
+    cgroup_dir, scope = cgroup_directory(proc, cgroup)
     result = {'timestamp': datetime.now(timezone.utc).isoformat(),
-              'files': {key: read((cgroup if kind == 'cgroup' else proc) / path)
+              'cgroup_scope': scope,
+              'files': {key: (read(cgroup_dir / path) if cgroup_dir is not None else {'available': False})
+                        if kind == 'cgroup' else read(proc / path)
                         for key, (kind, path) in FILES.items()}}
     try:
         allowed = sorted(os.sched_getaffinity(0))
@@ -83,6 +153,54 @@ def owner_threads(pid: int, proc: Path = Path('/proc'), ticks: int | None = None
             'top': rows[:10], 'scope': 'Live owner threads at case end; excludes exited threads.'}
 
 
+def _error_class(name: object) -> str:
+    if not isinstance(name, str) or len(name) > 80 or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', name):
+        return 'Exception'
+    return name
+
+
+def unavailable(error: Exception) -> dict:
+    """Return safe failure metadata without exposing an exception message."""
+    return {'available': False, 'error_class': _error_class(type(error).__name__)}
+
+
+def observe(call, *args, **kwargs) -> tuple[object | None, dict | None]:
+    """Run an optional observation; only ordinary failures become metadata."""
+    try:
+        return call(*args, **kwargs), None
+    except Exception as error:
+        return None, unavailable(error)
+
+
+def _identity_record(record: dict) -> dict:
+    """Bound the identity/error portion shared by every compact encoding."""
+    identity = {'observations_truncated': True}
+    schema = record.get('schema')
+    identity['schema'] = schema if type(schema) is int else 1
+    for key in ('source_sha', 'artifact_manifest_sha256', 'case'):
+        value = record.get(key)
+        if not isinstance(value, str):
+            continue
+        identity[key] = value[:128]
+        if len(value) > 128:
+            identity[f'{key}_sha256'] = hashlib.sha256(value.encode('utf-8', errors='surrogatepass')).hexdigest()
+            identity[f'{key}_truncated'] = True
+    for phase in ('start', 'end', 'owner_threads_end', 'encoding', 'output'):
+        value = record.get(phase)
+        if not isinstance(value, dict) or value.get('available') is not False:
+            continue
+        failure = {'available': False}
+        if 'error_class' in value:
+            failure['error_class'] = _error_class(value.get('error_class'))
+        identity[phase] = failure
+    return identity
+
+
+def encode_identity(record: dict) -> str:
+    """Serialize bounded identities and error classes after an encoder failure."""
+    return json.dumps(_identity_record(record), sort_keys=True)
+
+
 def encode(record: dict) -> str:
     """Keep one retained event bounded even when proc data needs JSON escaping."""
     encoded = json.dumps(record, sort_keys=True)
@@ -100,7 +218,5 @@ def encode(record: dict) -> str:
     encoded = json.dumps(compact, sort_keys=True)
     if len(encoded.encode('utf-8')) <= 65536:
         return encoded
-    # Diagnostic collection cannot turn a product pass into a technical failure.
-    return json.dumps({key: compact[key] for key in
-                       ('schema', 'source_sha', 'artifact_manifest_sha256', 'case', 'observations_truncated')},
-                      sort_keys=True)
+    # Keep source and artifact identity if observations need a compact record.
+    return encode_identity(compact)
