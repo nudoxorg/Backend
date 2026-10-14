@@ -26,6 +26,14 @@ let
   # Linux software GPU drivers for the desktop window journeys; empty elsewhere.
   baseEnv = corpusEnv // tools.linuxGraphicsEnvironment;
   common = baseEnv // {
+    # Cargo's debug C builds use -O0. jemalloc's configure probes add -Werror,
+    # which turns glibc's "_FORTIFY_SOURCE requires optimization" into a hard
+    # `cargo build` failure in every development shell. Release hardening is
+    # configured by the packaged derivations, not by these shells.
+    hardeningDisable = [
+      "fortify"
+      "fortify3"
+    ];
     BACKEND_STABLE_CARGO = toolchains.stableCargo;
     # PR build/test commands opt into the leased wrapper; general tooling keeps
     # raw Cargo so immutable Nix checks do not require a mutable Git worktree.
