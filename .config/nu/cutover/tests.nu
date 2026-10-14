@@ -298,12 +298,15 @@ def test-concurrent-lease-once [] {
     let launcher = $scripts | path join "launch.sh"
     $"#!/bin/sh\ncd '($repo)'\nnu --no-config-file '($a)' > a.out 2>&1 & pa=\$!\nnu --no-config-file '($b)' > b.out 2>&1 & pb=\$!\nwhile [ ! -f '($scripts)/owner-a.ready' ] || [ ! -f '($scripts)/owner-b.ready' ]; do sleep 0.01; done\ntouch '($scripts)/go-owner-a'\nwhile [ ! -f '($scripts)/owner-a.publication-ready' ]; do sleep 0.01; done\ntouch '($scripts)/go-owner-b'\nwhile [ ! -f '($scripts)/owner-b.lock-waiting' ]; do sleep 0.01; done\ntouch '($scripts)/publication-release'\nwait \$pa; sa=\$?\nwait \$pb; sb=\$?\nprintf '%s %s\\n' \$sa \$sb\n" | save -f $launcher
     ^chmod +x $launcher
-    let status = (^sh $launcher | str trim)
-    if $status != "0 0" {
+    let launch = (^timeout --kill-after=5s 30s sh $launcher | complete)
+    let status = $launch.stdout | str trim
+    if $launch.exit_code != 0 or $status != "0 0" {
+        print $launch.stderr
         print $status
         print (open ($repo | path join "a.out"))
         print (open ($repo | path join "b.out"))
     }
+    assert equal $launch.exit_code 0 "concurrent lease barriers must complete before their deadline"
     assert equal $status "0 0" "concurrent contenders must both return a bounded result"
     let events = $repo | path join ".local" "cutover" "events"
     let lease_events = (
@@ -578,7 +581,12 @@ wait \$writer
 wait \$reader
 " | save -f $launcher
     ^chmod +x $launcher
-    let race_status = (^sh $launcher | complete)
+    let race_status = (^timeout --kill-after=5s 30s sh $launcher | complete)
+    if $race_status.exit_code != 0 {
+        print $race_status.stderr
+        print (open --raw ($repo | path join "writer.out"))
+        print (open --raw ($repo | path join "reader.out"))
+    }
     assert equal $race_status.exit_code 0 "reader/writer publication race must complete"
     cd $repo
     assert equal ((open ($barrier | path join "reader-count")) | into int) 1 "reader must not delete a live prepared event"

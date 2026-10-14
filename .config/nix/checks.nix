@@ -374,7 +374,9 @@ in
       pkgs.bash
       pkgs.stdenv.cc
       toolchains.stable
-    ];
+    ]
+    ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.procps ]
+    ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.darwin.ps ];
     environment = {
       BACKEND_CONFIG_MODE = "immutable";
       BACKEND_CONFIG_SNAPSHOT = "${../.}";
