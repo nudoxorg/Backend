@@ -968,7 +968,8 @@ impl WorkspaceRoot {
         maximum: usize,
     ) -> io::Result<Vec<DirEntry>> {
         let directory = self.open_dir_checked(path)?;
-        directory.read_open_directory_limited(maximum, WorkspacePurpose::PrivateState)
+        directory
+            .read_open_directory_limited(maximum, WorkspacePurpose::PrivateState, &mut || Ok(()))
     }
 
     /// Matches only the selected no-reparse child directory to its enumerated
@@ -1014,19 +1015,34 @@ impl WorkspaceRoot {
         path: &[&str],
         maximum: usize,
     ) -> io::Result<Vec<DirEntry>> {
+        self.read_dir_source_checked_limited_controlled(path, maximum, &mut || Ok(()))
+    }
+
+    /// Retains the same source-object/reparse checks while allowing cancellation
+    /// between enumeration records and per-entry handle validation.
+    pub fn read_dir_source_checked_limited_controlled(
+        &self,
+        path: &[&str],
+        maximum: usize,
+        checkpoint: &mut impl FnMut() -> io::Result<()>,
+    ) -> io::Result<Vec<DirEntry>> {
+        checkpoint()?;
         let directory = self.open_dir_source_checked(path)?;
-        directory.read_open_directory_limited(maximum, WorkspacePurpose::ReadOnlySource)
+        directory.read_open_directory_limited(maximum, WorkspacePurpose::ReadOnlySource, checkpoint)
     }
 
     fn read_open_directory_limited(
         &self,
         maximum: usize,
         purpose: WorkspacePurpose,
+        checkpoint: &mut impl FnMut() -> io::Result<()>,
     ) -> io::Result<Vec<DirEntry>> {
+        checkpoint()?;
         let directory = self.reopen_current_directory(purpose)?;
-        let names = enumerate_names(directory.handle(), maximum)?;
+        let names = enumerate_names_controlled(directory.handle(), maximum, checkpoint)?;
         let mut entries = Vec::with_capacity(names.len());
         for EnumeratedEntry { name, id } in names {
+            checkpoint()?;
             let handle = open_relative(
                 directory.handle(),
                 ExistingName::parse(&name)?,
@@ -1067,6 +1083,7 @@ impl WorkspaceRoot {
             };
             entries.push(DirEntry { name, kind });
         }
+        checkpoint()?;
         Ok(entries)
     }
 
