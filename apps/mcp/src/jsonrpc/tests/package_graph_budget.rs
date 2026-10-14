@@ -536,14 +536,19 @@ fn local_context() -> backend_present::StartupRecoveryContext {
 fn wide_single_edge() -> Vec<PackageDependencyRecord> {
     let source = PackageReference::parse(&format!("pkg:cargo/{}@1", "s".repeat(2000)))
         .expect("bounded source coordinate");
-    let target = "t".repeat(3000);
+    // Keep both the resolved PURL and its exact name near the URL bound. The
+    // 3000-byte spelling used to exceed that parser bound before reaching the
+    // response-budget control this fixture is meant to exercise.
+    let target = "t".repeat(
+        backend_library::interface::MAX_PACKAGE_URL_BYTES - "pkg:cargo/@1".len(),
+    );
     vec![PackageDependencyRecord::new_with_source_authority(
         source,
         PackageGraphSourceAuthority::Local([7; 32]),
         PackageDependencyTarget::new(
             RegistryEcosystem::Cargo,
             target.clone(),
-            "r".repeat(4000),
+            "r".repeat(backend_library::MAX_PRODUCT_TEXT_BYTES),
             Some(
                 PackageReference::parse(&format!("pkg:cargo/{target}@1"))
                     .expect("bounded exact resolved target"),
@@ -655,6 +660,7 @@ fn graph_json_alternative_keeps_resumed_frontier_cancel_authority_and_catalog() 
     let mut page = page_for(&resumed, &rows);
     resumed.control = backend_library::PackageGraphControl::Cancel;
     page.rows = Box::new([]);
+    page.knowledge = PackageGraphKnowledge::Unknown { reason: None };
     page.terminal = PackageGraphPageTerminal::Cancelled;
     let advice = backend_present::package_graph_json_alternative(
         &page,
