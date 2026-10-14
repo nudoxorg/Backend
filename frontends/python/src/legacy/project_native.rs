@@ -121,6 +121,8 @@ pub(super) fn analyze(
     let mut imports = BTreeMap::new();
     let mut candidates = BTreeMap::new();
     let mut compiled_imports = BTreeMap::<(&str, u32, u32), BTreeSet<std::path::PathBuf>>::new();
+    let mut dependency_compiled_candidates =
+        BTreeMap::<(&str, u32, u32, ModuleName), BTreeSet<std::path::PathBuf>>::new();
     let mut roots = BTreeSet::new();
     for handle in &raw_handles {
         let config = finder.python_file(handle.module_kind(), handle.path());
@@ -195,18 +197,22 @@ pub(super) fn analyze(
                     // fabricated empty compiled files in the mirror.
                     for module in &import.candidates {
                         let mut prefix = root.clone();
+                        let mut module_parts = Vec::new();
                         for component in module.as_str().split('.').filter(|part| !part.is_empty())
                         {
                             prefix.push(component);
+                            module_parts.push(component);
+                            let native_module = ModuleName::from_str(&module_parts.join("."));
                             for suffix in super::project_environment::compiled_resource_suffixes() {
                                 if let Some(original) = layout
                                     .compiled_dependency_candidate(&prefix.with_extension(suffix))
                                 {
-                                    compiled_imports
+                                    dependency_compiled_candidates
                                         .entry((
                                             source.relative_path,
                                             import.binding_span.start,
                                             import.binding_span.end,
+                                            native_module,
                                         ))
                                         .or_default()
                                         .insert(original.clone());
@@ -349,6 +355,25 @@ pub(super) fn analyze(
             "",
             &format!("native configuration errors: {causes}"),
         ));
+    }
+    // Preserve committed native precedence. A bundled typeshed/custom stub
+    // selected for this exact importing Handle supplies genuine authority even
+    // when its installed runtime has a binary witness; no path/name heuristic
+    // overrides that native decision.
+    for ((source, start, end, module), originals) in dependency_compiled_candidates {
+        checkpoint(control)?;
+        let handle = handles_by_path[source];
+        if read
+            .import_handle(handle, module, None)
+            .finding()
+            .is_some_and(|selected| selected.path().is_bundled())
+        {
+            continue;
+        }
+        compiled_imports
+            .entry((source, start, end))
+            .or_default()
+            .extend(originals);
     }
     // Recovery answers from an unavailable resource must not leak precise
     // authority through otherwise valid importing files. Use this committed
