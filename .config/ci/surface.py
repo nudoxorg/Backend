@@ -1156,7 +1156,10 @@ def main() -> int:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             parser.error("another surface run owns the fixed scratch paths")
-        return compare_cases(args, parser)
+        from cpu_placement import measurement_placement
+        with measurement_placement() as placement:
+            print("SURFACE-CPU-PLACEMENT " + json.dumps(placement, sort_keys=True), flush=True)
+            return compare_cases(args, parser)
 
 
 if __name__ == "__main__":
