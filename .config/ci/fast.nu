@@ -26,6 +26,10 @@ def fast-flake-checks []: nothing -> list<string> {
 }
 
 def main []: nothing -> nothing {
+    # Disposable W3.5 control: never merge this branch.
+    print "LIVE-FAST-CANCEL-READY"
+    sleep 2min
+
 
     # Check wall-clock expiry on every invocation, outside cached Nix checks.
     ^python3 ($env.FILE_PWD | path join "quarantine.py")
