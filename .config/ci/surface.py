@@ -334,9 +334,13 @@ def require_malformed_cursor_refusal(cli: dict, mcp: dict) -> None:
         or str(fault.get("operand", "")).lstrip("-") != "cursor"
         or "continuation token" not in str(fault.get("detail", "")).lower()):
         raise RuntimeError(f"malformed CLI cursor: expected a typed cursor refusal, got {cli}")
-    if (not isinstance(mcp, dict) or mcp.get("code") != -32602
-        or "cursor" not in str(mcp.get("message", "")).lower()):
-        raise RuntimeError(f"malformed MCP cursor: expected invalid-params cursor refusal, got {mcp}")
+    fault = mcp.get("structuredContent") if isinstance(mcp, dict) else None
+    if (not isinstance(mcp, dict) or mcp.get("isError") is not True
+        or not isinstance(fault, dict) or fault.get("answer") != "fault"
+        or fault.get("slug") != "usage" or fault.get("cause") != "malformed"
+        or fault.get("operand") != "arguments"
+        or "cursor" not in str(fault.get("detail", "")).lower()):
+        raise RuntimeError(f"malformed MCP cursor: expected a structured usage refusal, got {mcp}")
 
 
 def run_live_contracts(owner: Owner, project: Path, config: dict, published_root: str) -> dict:

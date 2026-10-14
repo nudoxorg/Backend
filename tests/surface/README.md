@@ -157,7 +157,7 @@ Traversal has a 30-second deadline and a reference-sized page cap; individual
 client calls are bounded to 10 seconds. Cursor values are never snapshotted.
 Mutation checks exercise loss, repetition, query/coverage drift and false
 exhaustion. Malformed CLI and MCP cursor strings must receive typed protocol
-and invalid-params refusals respectively; successful responses, endpoint failures
+and structured usage refusals respectively; successful responses, endpoint failures
 and unrelated errors cannot satisfy the guard. A fresh passive health read then
 confirms the owner remains ready at the same published revision. These malformed
 strings do not prove tamper rejection for an otherwise valid signed token.

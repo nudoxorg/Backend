@@ -119,7 +119,7 @@ class CursorRefusalAdmissionTests(unittest.TestCase):
     def test_success_transport_failure_and_unrelated_errors_cannot_pass(self):
         import copy
         cli = {"exit": 70, "json": {"answer": "fault", "slug": "protocol", "cause": "unproven", "operand": "cursor", "detail": "malformed continuation token"}}
-        mcp = {"code": -32602, "message": "cursor is unknown or malformed"}
+        mcp = {"isError": True, "structuredContent": {"answer": "fault", "slug": "usage", "cause": "malformed", "operand": "arguments", "detail": "cursor is unknown or malformed"}}
         surface.require_malformed_cursor_refusal(cli, mcp)
         wrong = copy.deepcopy(cli)
         wrong["exit"] = 0
@@ -130,7 +130,7 @@ class CursorRefusalAdmissionTests(unittest.TestCase):
             wrong["json"][field] = value
             with self.subTest(field=field), self.assertRaises(RuntimeError):
                 surface.require_malformed_cursor_refusal(wrong, mcp)
-        for wrong in ({"code": -32603, "message": "cursor unavailable"}, {"answer": "records"}, {"code": -32602, "message": "unrelated error"}):
+        for wrong in ({"code": -32603, "message": "cursor unavailable"}, {"answer": "records"}, dict(mcp, isError=False), {"isError": True, "structuredContent": dict(mcp["structuredContent"], detail="unrelated error")}, {"isError": True, "structuredContent": dict(mcp["structuredContent"], slug="endpoint")}):
             with self.subTest(reply=wrong), self.assertRaises(RuntimeError):
                 surface.require_malformed_cursor_refusal(cli, wrong)
 
