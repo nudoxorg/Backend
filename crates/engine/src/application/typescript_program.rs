@@ -54,6 +54,8 @@ pub(crate) struct NativeTypeScriptInputs {
     /// Membership of every captured package source in the exact configured program.
     pub(crate) package_membership: BTreeMap<Box<str>, TypeScriptPackageSourceMembership>,
     pub(crate) work_units: u64,
+    /// What one file of this program may spend before it alone becomes a coverage gap.
+    pub(crate) file_work_units: u64,
     pub(crate) solution: bool,
 }
 
@@ -1165,12 +1167,11 @@ pub(crate) fn build_native_forest_inputs(
         .collect::<BTreeMap<_, _>>();
     let mut work_units = 0u64;
     for (index, node) in nodes.iter().enumerate() {
-        work_units = work_units.saturating_add(node.native.work_units);
-        if work_units > MAX_PROJECT_WORK_UNITS {
-            return Err(bridge_error(
-                "project forest exceeds the shared checker work allowance",
-            ));
-        }
+        // The forest shares one counter. Its sum is clamped to the project cap
+        // rather than refused: a large project must degrade, not fail admission.
+        work_units = work_units
+            .saturating_add(node.native.work_units)
+            .min(MAX_PROJECT_WORK_UNITS);
         for (path, member) in &node.native.package_membership {
             if let Some(program_path) = member.selected_program_path() {
                 let owner = membership.get_mut(path).ok_or_else(|| {
@@ -1595,7 +1596,7 @@ fn build_native_inputs_for_config(
         &file_formats,
         resolver_witness.digest(),
     )?;
-    let work_units = calculate_work_units(inputs, &sources, &libraries, closure_work_units);
+    let work = calculate_work_allowance(inputs, &sources, &libraries, closure_work_units);
     let options = TszProjectOptions {
         checker,
         semantic_options: TszProjectSemanticOptions::declaration_scoped(),
@@ -1616,7 +1617,8 @@ fn build_native_inputs_for_config(
             access_digest,
         },
         package_membership,
-        work_units,
+        work_units: work.program,
+        file_work_units: work.per_file,
         solution,
     })
 }
@@ -2518,42 +2520,110 @@ fn compiler_access_digest(
     Ok(digest.finalize().into())
 }
 
-fn calculate_work_units(
+/// Work admitted to one native TypeScript program.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ProgramWorkAllowance {
+    /// Everything parse, bind, merge, checker planning, the application files'
+    /// checks, and every lazy semantic query of this program may spend.
+    pub(crate) program: u64,
+    /// What one application file's semantic check, or one file's lowering
+    /// queries, may spend before that file alone becomes a coverage gap.
+    pub(crate) per_file: u64,
+}
+
+/// The measured shape of one admitted program: what its allowance is derived from.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ProgramWorkShape {
+    /// Program members that are not declaration files; these are semantically
+    /// checked and lowered, so they carry the program's real work.
+    pub(crate) application_files: u64,
+    /// Bytes of those application files.
+    pub(crate) application_bytes: u64,
+    /// Bytes of declaration sources, default libraries, and captured
+    /// configuration. They are parsed, bound, and merged, but only the parts
+    /// that application code reaches are ever resolved.
+    pub(crate) declaration_bytes: u64,
+    /// Replay work of the compiler API's filesystem transcript.
+    pub(crate) closure_replay_work: u64,
+}
+
+impl ProgramWorkShape {
+    // Calibrated on measured real projects. Units admitted for a complete publication:
+    // Angular 19 starter 17M (4 application files), Next.js 15 app 6M (6 files).
+    // Parse, bind and merge cost about 0.2 units per declaration byte. Checking and
+    // lowering cost is set by the application files and by how much library surface
+    // they touch (the first file to touch Angular core pays about 12M), so every
+    // application file carries its own generous term. The allowance is a runaway
+    // guard with headroom of an order of magnitude, not a prediction.
+    const BASE_UNITS: u64 = 150_000_000;
+    const DECLARATION_UNITS_PER_BYTE: u64 = 8;
+    const APPLICATION_UNITS_PER_BYTE: u64 = 1_000;
+    const APPLICATION_FILE_UNITS: u64 = 8_000_000;
+    const CLOSURE_REPLAY_UNITS: u64 = 256;
+    /// A single file may spend at most this share of its program's allowance...
+    const FILE_SHARE_DENOMINATOR: u64 = 8;
+    /// ...but never less than this, so that a small program cannot starve a
+    /// file that legitimately resolves a large generic library.
+    const MIN_FILE_UNITS: u64 = 60_000_000;
+
+    /// Allowances for this shape, never above the global project cap.
+    pub(crate) fn allowance(self) -> ProgramWorkAllowance {
+        let program = Self::BASE_UNITS
+            .saturating_add(self.declaration_bytes.saturating_mul(Self::DECLARATION_UNITS_PER_BYTE))
+            .saturating_add(self.application_bytes.saturating_mul(Self::APPLICATION_UNITS_PER_BYTE))
+            .saturating_add(self.application_files.saturating_mul(Self::APPLICATION_FILE_UNITS))
+            .saturating_add(self.closure_replay_work.saturating_mul(Self::CLOSURE_REPLAY_UNITS))
+            .min(MAX_PROJECT_WORK_UNITS);
+        let per_file = (program / Self::FILE_SHARE_DENOMINATOR)
+            .max(Self::MIN_FILE_UNITS)
+            .min(program);
+        ProgramWorkAllowance { program, per_file }
+    }
+}
+
+/// Whether a program path names a declaration file (`.d.ts`, `.d.mts`, `.d.cts`,
+/// or an arbitrary-extension `.d.<ext>.ts`). Such files are parsed and bound but
+/// carry no application work of their own.
+fn is_declaration_path(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    [".ts", ".mts", ".cts"]
+        .iter()
+        .filter_map(|suffix| name.strip_suffix(suffix))
+        .any(|stem| stem.ends_with(".d") || stem.contains(".d."))
+}
+
+fn calculate_work_allowance(
     inputs: &TypeScriptProjectInputs<'_>,
     sources: &[TszFileInput],
     libraries: &[std::sync::Arc<backend_frontend_typescript::TszLibFile>],
     closure_work_units: u64,
-) -> u64 {
-    let source_bytes = sources
-        .iter()
-        .map(|source| source.source.len() as u64)
-        .sum::<u64>();
-    let library_bytes = libraries
-        .iter()
-        .map(|library| {
-            library
-                .arena
-                .get_source_file_at(library.root_index)
-                .map(|source| source.text.len() as u64)
-                .unwrap_or(0)
-        })
-        .sum::<u64>();
-    let config_bytes = inputs
-        .config_candidates
-        .iter()
-        .map(|config| config.bytes.len() as u64)
-        .sum::<u64>();
-    let bytes = source_bytes
-        .saturating_add(library_bytes)
-        .saturating_add(config_bytes);
-    let count = (sources.len() as u64)
-        .saturating_add(libraries.len() as u64)
-        .saturating_add(inputs.typescript_files.len() as u64);
-    1_000_000_u64
-        .saturating_add(bytes.saturating_mul(48))
-        .saturating_add(count.saturating_mul(65_536))
-        .saturating_add(closure_work_units.saturating_mul(256))
-        .min(MAX_PROJECT_WORK_UNITS)
+) -> ProgramWorkAllowance {
+    let mut shape = ProgramWorkShape {
+        closure_replay_work: closure_work_units,
+        ..ProgramWorkShape::default()
+    };
+    for source in sources {
+        let bytes = source.source.len() as u64;
+        if is_declaration_path(&source.path) {
+            shape.declaration_bytes = shape.declaration_bytes.saturating_add(bytes);
+        } else {
+            shape.application_files = shape.application_files.saturating_add(1);
+            shape.application_bytes = shape.application_bytes.saturating_add(bytes);
+        }
+    }
+    for library in libraries {
+        let bytes = library
+            .arena
+            .get_source_file_at(library.root_index)
+            .map_or(0, |source| source.text.len() as u64);
+        shape.declaration_bytes = shape.declaration_bytes.saturating_add(bytes);
+    }
+    for config in inputs.config_candidates.iter() {
+        shape.declaration_bytes = shape
+            .declaration_bytes
+            .saturating_add(config.bytes.len() as u64);
+    }
+    shape.allowance()
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -3480,3 +3550,109 @@ fn bridge_error(message: &str) -> TypeScriptProjectHostError {
 #[cfg(all(test, unix))]
 #[path = "typescript_program/membership_tests.rs"]
 mod membership_tests;
+
+#[cfg(test)]
+mod work_allowance_tests {
+    use super::{
+        MAX_PROJECT_WORK_UNITS, ProgramWorkShape, is_declaration_path,
+    };
+
+    #[test]
+    fn declaration_paths_are_recognised_in_every_spelling_and_application_paths_are_not() {
+        for declaration in [
+            "node_modules/@angular/core/index.d.ts",
+            "src/types/globals.d.ts",
+            "lib/esm/index.d.mts",
+            "lib/cjs/index.d.cts",
+            "src/assets/logo.d.svg.ts",
+            "index.d.ts",
+        ] {
+            assert!(is_declaration_path(declaration), "{declaration}");
+        }
+        for application in [
+            "src/main.ts",
+            "src/app/app.component.tsx",
+            "src/dts.ts",
+            "src/odd.d.txt",
+            "src/mod.mts",
+            "src/index.cts",
+            "src/model.d/x.ts",
+            "declare.ts",
+        ] {
+            assert!(!is_declaration_path(application), "{application}");
+        }
+    }
+
+    #[test]
+    fn an_empty_program_still_gets_a_working_floor_and_a_file_slice_within_it() {
+        let allowance = ProgramWorkShape::default().allowance();
+        assert!(allowance.program >= ProgramWorkShape::BASE_UNITS);
+        assert!(allowance.per_file >= 1);
+        assert!(allowance.per_file <= allowance.program);
+    }
+
+    #[test]
+    fn work_scales_with_application_files_not_with_dependency_declarations() {
+        let declarations_only = ProgramWorkShape {
+            declaration_bytes: 50 * 1024 * 1024,
+            ..ProgramWorkShape::default()
+        }
+        .allowance();
+        let one_more_application_file = ProgramWorkShape {
+            declaration_bytes: 50 * 1024 * 1024,
+            application_files: 1,
+            application_bytes: 4 * 1024,
+            ..ProgramWorkShape::default()
+        }
+        .allowance();
+        assert!(
+            one_more_application_file.program
+                >= declarations_only.program + ProgramWorkShape::APPLICATION_FILE_UNITS,
+            "every application file adds its own admitted work"
+        );
+        // 50 MiB of dependency typings add parse/bind cost, not application-sized work.
+        assert!(
+            declarations_only.program - ProgramWorkShape::BASE_UNITS
+                <= 50 * 1024 * 1024 * ProgramWorkShape::DECLARATION_UNITS_PER_BYTE
+        );
+    }
+
+    #[test]
+    fn a_files_slice_is_a_bounded_share_of_the_program_and_never_below_the_floor() {
+        let small = ProgramWorkShape {
+            application_files: 3,
+            ..ProgramWorkShape::default()
+        }
+        .allowance();
+        assert_eq!(small.per_file, ProgramWorkShape::MIN_FILE_UNITS.min(small.program));
+        let large = ProgramWorkShape {
+            application_files: 4_000,
+            application_bytes: 40 * 1024 * 1024,
+            declaration_bytes: 64 * 1024 * 1024,
+            ..ProgramWorkShape::default()
+        }
+        .allowance();
+        assert_eq!(
+            large.per_file,
+            (large.program / ProgramWorkShape::FILE_SHARE_DENOMINATOR)
+                .max(ProgramWorkShape::MIN_FILE_UNITS)
+        );
+        assert!(
+            large.per_file < large.program,
+            "one hot file can never consume the whole program"
+        );
+    }
+
+    #[test]
+    fn the_global_cap_bounds_every_allowance_without_overflow() {
+        let absurd = ProgramWorkShape {
+            application_files: u64::MAX,
+            application_bytes: u64::MAX,
+            declaration_bytes: u64::MAX,
+            closure_replay_work: u64::MAX,
+        }
+        .allowance();
+        assert_eq!(absurd.program, MAX_PROJECT_WORK_UNITS);
+        assert!(absurd.per_file <= absurd.program);
+    }
+}
