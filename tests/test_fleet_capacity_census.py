@@ -427,6 +427,50 @@ class FleetCapacityTests(unittest.TestCase):
         self.samples["ilo"]["transport_complete"] = False
         self.assertFalse(authorized()["advisory_allowed"])
 
+    def test_remote_local_cap_exception_keeps_local_active_cargo_job_limit(self) -> None:
+        local_orphans = [compiler_group(7000 + index) for index in range(6)]
+
+        def install_local_cargo(jobs: int) -> None:
+            cargo = compiler_group(
+                7100,
+                kind="cargo",
+                classification="build",
+                jobs=jobs,
+                cargo_pids=[7101],
+                pids=[7101],
+            )
+            install_groups(
+                self.samples,
+                "local",
+                [*local_orphans, cargo],
+                [cargo_entry(7101, 7100, jobs)],
+            )
+
+        install_local_cargo(4)
+        allowed = self.evaluate_ilo_scope()
+        self.assertTrue(allowed["advisory_allowed"], allowed["reasons"])
+        self.assertTrue(allowed["allow_local_over_cap_for_remote"])
+        self.assertTrue(allowed["destination_memory_only_for_remote"])
+        self.assertGreater(
+            allowed["hosts"]["local"]["compiler_admission_slot_count"],
+            allowed["hosts"]["local"]["host_admission_slot_limit"],
+        )
+        self.assertIn(
+            "local:over-host-cap-remote-admission-authorized",
+            allowed["limitations"],
+        )
+
+        install_local_cargo(6)
+        refused = self.evaluate_ilo_scope()
+        self.assertFalse(refused["advisory_allowed"])
+        self.assertTrue(refused["allow_local_over_cap_for_remote"])
+        self.assertTrue(refused["destination_memory_only_for_remote"])
+        self.assertIn("local:active-cargo-process-jobs-exceed-4", refused["reasons"])
+        self.assertIn(
+            "local:over-host-cap-remote-admission-authorized",
+            refused["limitations"],
+        )
+
     def test_offline_mac_is_excluded_only_by_explicit_reported_ilo_scope(self) -> None:
         result = self.evaluate_ilo_scope()
         self.assertTrue(result["advisory_allowed"], result["reasons"])
