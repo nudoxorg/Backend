@@ -38,6 +38,24 @@ pub const fn declaration_name_priority(kind: crate::DeclarationKind) -> u8 {
     }
 }
 
+/// Whether a package-relative source path is test, example or benchmark code
+/// rather than the package's library or application code.
+///
+/// The classification is a ranking hint for result order, never a declaration
+/// or language authority: a name that is both defined in library code and
+/// exercised in an example reads as the library's definition first.
+#[must_use]
+pub fn is_support_source_path(path: &str) -> bool {
+    path.split('/').any(|part| {
+        matches!(
+            part,
+            "test" | "tests" | "__tests__" | "example" | "examples" | "bench" | "benches"
+        )
+    }) || [".spec.ts", ".spec.tsx", ".test.ts", ".test.tsx"]
+        .iter()
+        .any(|suffix| path.ends_with(suffix))
+}
+
 mod query;
 mod schema;
 mod update;

@@ -151,6 +151,158 @@ impl Token {
     }
 }
 
+/// What a producer writes as a signature when it knows nothing about the type.
+const UNANNOTATED: &str = "unknown(unannotated)";
+
+/// The signature text worth showing for one declaration, or `None` when the
+/// producer recorded none.
+///
+/// Two producer spellings are normalized so no surface repeats them:
+///
+/// * the sentinel `unknown(unannotated)` says nothing and is dropped;
+/// * an import's canonical type renders as one fragment per line (kind,
+///   module specifier, imported name). It reads as the one line a reader
+///   would write: `import { name } from "module"` (`import type …`,
+///   `import * as name …`, or `import name …` for the other kinds); any other
+///   multi-line import text is joined onto one line.
+///
+/// Other declarations keep their signature text exactly.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn display_text(
+    kind: Option<backend_library::DeclarationKind>,
+    text: &str,
+) -> Option<String> {
+    display_text_in(kind, Language::Unknown, text)
+}
+
+/// [`display_text`] for a declaration of a known language, so an import reads
+/// the way that language writes one: `import { name } from "module"` for
+/// `TypeScript`, `from module import name` for Python, `use module::name;` for
+/// Rust. Other languages keep the neutral `import name from module`.
+#[must_use]
+pub(crate) fn display_text_in(
+    kind: Option<backend_library::DeclarationKind>,
+    language: Language,
+    text: &str,
+) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed == UNANNOTATED {
+        return None;
+    }
+    if let Some(readable) = readable_callable(trimmed) {
+        return Some(readable);
+    }
+    if kind != Some(backend_library::DeclarationKind::Import) || !trimmed.contains('\n') {
+        return Some(text.to_owned());
+    }
+    let lines = trimmed
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    if let [flavor, module, name] = lines.as_slice()
+        && let Some(one) = import_line(language, flavor, module, name)
+    {
+        return Some(one);
+    }
+    Some(lines.join(" "))
+}
+
+/// One import as the line its language would write, from the canonical
+/// `flavor` / `module` / `name` fragments; `None` for an unknown flavor.
+fn import_line(language: Language, flavor: &str, module: &str, name: &str) -> Option<String> {
+    if !matches!(flavor, "value" | "type" | "namespace" | "default") {
+        return None;
+    }
+    Some(match language {
+        Language::TypeScript | Language::Unknown => match flavor {
+            "value" => format!("import {{ {name} }} from \"{module}\""),
+            "type" => format!("import type {{ {name} }} from \"{module}\""),
+            "namespace" => format!("import * as {name} from \"{module}\""),
+            _ => format!("import {name} from \"{module}\""),
+        },
+        Language::Python => match flavor {
+            "namespace" => format!("import {module} as {name}"),
+            _ => format!("from {module} import {name}"),
+        },
+        Language::Rust => match flavor {
+            "namespace" => format!("use {module} as {name};"),
+            _ => format!("use {module}::{name};"),
+        },
+        _ => format!("import {name} from {module}"),
+    })
+}
+
+/// Reads the parameter names out of a callable's canonical IR spelling
+/// (`function(parameters=[element(kind=required,label=x"6170",type=…)],
+/// results=[…],…)`, where each name is hex), as `function(app, …)`.
+///
+/// A callable with no written signature carries only that machine encoding.
+/// Only a text of exactly that shape is rewritten; anything else, or any
+/// element that does not parse, leaves the text untouched.
+fn readable_callable(text: &str) -> Option<String> {
+    let rest = text.strip_prefix("function(parameters=[")?;
+    let mut names = Vec::new();
+    // Depth 1 is inside the parameter list; a nested callable type opens
+    // deeper brackets of its own whose parameters are not this one's.
+    let mut depth = 1_usize;
+    let mut element = None;
+    let mut quoted = false;
+    let mut closed = None;
+    for (at, character) in rest.char_indices() {
+        if character == '"' {
+            quoted = !quoted;
+        }
+        if quoted {
+            continue;
+        }
+        match character {
+            '(' | '[' => {
+                if depth == 1 && character == '(' && rest[..at].ends_with("element") {
+                    element = Some(at + 1);
+                }
+                depth += 1;
+            }
+            ')' | ']' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 1
+                    && let Some(start) = element.take()
+                {
+                    names.push(element_name(&rest[start..at])?);
+                } else if depth == 0 {
+                    closed = Some(at);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let after = &rest[closed? + 1..];
+    after
+        .starts_with(",results=")
+        .then(|| format!("function({})", names.join(", ")))
+}
+
+/// The parameter name of one `kind=…,label=…,type=…` element body.
+fn element_name(element: &str) -> Option<String> {
+    let label = element.split_once("label=")?.1;
+    if label.starts_with("none") {
+        return Some("_".to_owned());
+    }
+    let hex = label.strip_prefix("x\"")?.split_once('"')?.0;
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..hex.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(hex.get(at..at + 2)?, 16).ok())
+        .collect::<Option<Vec<_>>>()?;
+    String::from_utf8(bytes)
+        .ok()
+        .filter(|name| !name.is_empty())
+}
+
 /// One declaration signature as an ordered token stream.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Signature {

@@ -194,7 +194,10 @@ fn exact_source_declarations_precede_inferred_aliases_fields_and_imports() {
             })
             .collect(),
     );
-    let expected = [ids[3], ids[2], ids[1], ids[0], ids[4]];
+    // A declaration that brings the name into existence precedes an import that
+    // only refers to it, even when the declaration has no captured site (the
+    // inferred alias); sourced declarations still precede the unsourced one.
+    let expected = [ids[3], ids[2], ids[0], ids[1], ids[4]];
     for credit in [1, 2, 5] {
         let query = NameQuery::new(
             "Environment",

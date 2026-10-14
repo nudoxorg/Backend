@@ -383,11 +383,64 @@ pub fn open_directory(directory: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+/// The most flushes [`flush_concurrently`] keeps in flight at once.
+const MAX_CONCURRENT_FLUSHES: usize = 16;
+
+/// Runs one independent flush per item and returns once every flush has finished.
+///
+/// A flush of a clean or dirty file or directory costs one device cache flush on the common
+/// journaling filesystems, and a device that is busy with other writers answers each one only
+/// after queueing behind them. Flushes issued one after another therefore cost the sum of those
+/// waits, while flushes issued together are merged by the kernel into very few device flushes.
+/// Use this for a batch of barriers that do not depend on one another (for example the directories
+/// of a freshly created tree, or the files of one staged generation); it never reorders a barrier
+/// that must follow another, because it returns only after all of them completed.
+///
+/// # Errors
+/// Returns the error of the first failing item in input order after every flush has finished.
+pub fn flush_concurrently<T: Sync>(
+    items: &[T],
+    flush: impl Fn(&T) -> io::Result<()> + Sync,
+) -> io::Result<()> {
+    match items {
+        [] => return Ok(()),
+        [only] => return flush(only),
+        _ => {}
+    }
+    let flush = &flush;
+    let mut outcomes = Vec::with_capacity(items.len());
+    for batch in items.chunks(MAX_CONCURRENT_FLUSHES) {
+        let batch_outcomes = std::thread::scope(|scope| {
+            let started = batch
+                .iter()
+                .map(|item| {
+                    std::thread::Builder::new()
+                        .name("nudox-flush".to_owned())
+                        .spawn_scoped(scope, move || flush(item))
+                        .map_err(|_| item)
+                })
+                .collect::<Vec<_>>();
+            started
+                .into_iter()
+                .zip(batch)
+                .map(|(thread, item)| match thread {
+                    // A flush that could not get its own thread, or whose thread panicked, is
+                    // still performed here: the barrier is never skipped.
+                    Ok(thread) => thread.join().unwrap_or_else(|_| flush(item)),
+                    Err(item) => flush(item),
+                })
+                .collect::<Vec<_>>()
+        });
+        outcomes.extend(batch_outcomes);
+    }
+    outcomes.into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        open_directory, open_directory_nofollow, open_directory_readonly_nofollow,
-        open_regular_file_nofollow,
+        flush_concurrently, open_directory, open_directory_nofollow,
+        open_directory_readonly_nofollow, open_regular_file_nofollow,
     };
     use std::fs::{self, File};
     use std::io::Write as _;
@@ -420,6 +473,36 @@ mod tests {
             .expect("open the directory for flushing")
             .sync_all()
             .expect("flush the directory the rename was recorded in");
+
+        fs::remove_dir_all(&directory).expect("remove scratch directory");
+    }
+
+    #[test]
+    fn concurrent_flushes_complete_every_item_and_report_the_first_failure_in_order() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let directory = scratch("concurrent-flush");
+        fs::create_dir_all(&directory).expect("create scratch directory");
+        let handles = (0..40)
+            .map(|index| {
+                let path = directory.join(format!("child-{index}"));
+                fs::create_dir(&path).expect("create child");
+                open_directory(&path).expect("open child")
+            })
+            .collect::<Vec<_>>();
+        super::flush_concurrently(&handles, |handle| handle.sync_all()).expect("flush all");
+        super::flush_concurrently::<File>(&[], |handle| handle.sync_all()).expect("empty batch");
+
+        let finished = AtomicUsize::new(0);
+        let result = flush_concurrently(&[0_usize, 1, 2, 3, 4, 5, 6, 7, 8, 9], |item| {
+            finished.fetch_add(1, Ordering::SeqCst);
+            match item {
+                3 | 7 => Err(std::io::Error::other(format!("flush {item} failed"))),
+                _ => Ok(()),
+            }
+        });
+        assert_eq!(finished.load(Ordering::SeqCst), 10, "no flush is skipped on failure");
+        assert_eq!(result.expect_err("a flush failed").to_string(), "flush 3 failed");
 
         fs::remove_dir_all(&directory).expect("remove scratch directory");
     }

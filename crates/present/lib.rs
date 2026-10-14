@@ -114,16 +114,22 @@ pub use coverage::{
     CoverageLine, LaneCoverage, LaneShards, LaneState, RowCount as CoverageRows, lane_name,
     reason_name,
 };
-pub use drive::{Answer, ContinuationCursor, Engine, Probe, answer, answer_paged, probe_fault};
+pub use drive::{
+    Answer, ContinuationCursor, Engine, Probe, answer, answer_paged, probe_fault,
+    resolve_declaration,
+};
 pub use dto::{
-    CapabilitiesDto, CompilerToolRequirementDto, CoverageDto, FaultDto, IdentityDto,
-    IdentitySemanticData, IndexPollDto, LanguageCountDto, MemberGroupDto, OutlineDto,
+    CandidateDto, CapabilitiesDto, CompilerToolRequirementDto, CoverageDto, ExternalsDto, FaultDto,
+    IdentityDto, IdentitySemanticData, IndexPollDto, LanguageCountDto, MemberGroupDto, OutlineDto,
     OutlineNodeDto, OutlinePageDto, PageDto, ProductDto, ProductIndexSearchPageDto,
     ProductRecordDto, ReasonDto, RecordDto, RecordListDto, RelationGroupDto, SelectedSymbolIdDto,
     ShelfDto, ShelfEntryDto, SignatureTokenDto, SourceDto, StatusDto, SummaryPageDto, answer_value,
     fault_value,
 };
-pub use fault::{Affordance, Cause, CauseSlug, Fault, FaultSlug, Operand, OwnerContext};
+pub use fault::{
+    Affordance, Candidate, Cause, CauseSlug, Fault, FaultSlug, MAX_FAULT_CANDIDATES, Operand,
+    OwnerContext,
+};
 pub use glyph::{KindGlyph, LanguageGlyph, RelationDirection, RelationLabel, relation_label};
 pub use grammar::{
     ArgumentKind, ArgumentSpec, CommandGrammar, GRAMMARS, domain_name, domains, grammar_for,
@@ -146,7 +152,7 @@ pub use product::{
 };
 pub use projection::{PageProjection, PageSection};
 pub use readiness::{PublishedFacts, ReadinessState};
-pub use record::{Record, RecordList, RecordState, Score};
+pub use record::{CollapsedExternals, Record, RecordList, RecordState, Score};
 pub use render::{
     Colour, ContinuationTarget, Style, Theme, Width, continuation_note, display_width, markdown,
     text,

@@ -711,9 +711,25 @@ impl DirectoryCapability {
     /// This compatibility entrypoint delegates to the tracked create path and
     /// rolls back a post-create setup failure through its pinned-child receipt.
     pub fn create_private_dir(&self, name: &str) -> io::Result<Self> {
+        self.create_private_dir_flushing(name, true)
+    }
+
+    /// Creates one direct private directory like [`Self::create_private_dir`] but leaves the new
+    /// entry unflushed in this directory.
+    ///
+    /// The entry is not crash-durable until the caller flushes this directory with
+    /// [`Self::sync_all`]. That lets one flush cover every directory created beneath it in a
+    /// batch, instead of one flush per directory; a creation that is only ever repeated on the
+    /// next start (an empty namespace that is re-admitted anyway) needs nothing more.
+    pub fn create_private_dir_unflushed(&self, name: &str) -> io::Result<Self> {
+        self.create_private_dir_flushing(name, false)
+    }
+
+    fn create_private_dir_flushing(&self, name: &str, flush_parent: bool) -> io::Result<Self> {
         match self.create_private_dir_with_policy(
             name,
             CreatedDirectoryCleanup::PinnedHandle,
+            flush_parent,
             || Ok(()),
             || Ok(()),
             || Ok(()),
@@ -750,6 +766,7 @@ impl DirectoryCapability {
         self.create_private_dir_with_policy(
             name,
             CreatedDirectoryCleanup::RenameableHandle,
+            true,
             || Ok(()),
             || Ok(()),
             || Ok(()),
@@ -760,6 +777,7 @@ impl DirectoryCapability {
         &self,
         name: &str,
         cleanup: CreatedDirectoryCleanup,
+        flush_parent: bool,
         before_create: impl FnOnce() -> io::Result<()>,
         after_create: impl FnOnce() -> io::Result<()>,
         after_pin: impl FnOnce() -> io::Result<()>,
@@ -791,7 +809,7 @@ impl DirectoryCapability {
             if let Err(source) = after_pin()
                 .and_then(|()| set_unix_private_directory(created.child.handle.as_ref()))
                 .and_then(|()| created.child.validate_private())
-                .and_then(|()| self.sync_all())
+                .and_then(|()| if flush_parent { self.sync_all() } else { Ok(()) })
             {
                 return Err(DirectoryCreateFailure::CreatedButUnready {
                     directory: created,
@@ -803,6 +821,8 @@ impl DirectoryCapability {
         #[cfg(windows)]
         {
             use crate::win32::workspace_fs::WorkspaceDirectoryCreateFailure;
+            // Windows flushes the new entry as part of exclusive creation.
+            let _ = flush_parent;
             let child = match self.handle.create_child_dir_exclusive_tracked(
                 name,
                 cleanup == CreatedDirectoryCleanup::RenameableHandle,
@@ -1352,13 +1372,19 @@ impl OwnedWorkspaceDirectory {
             let mut parent = DirectoryCapability::open(anchor)?;
             validate_user_data_parent(&parent)?;
             let mut path = anchor.to_path_buf();
+            // Missing levels are created first and every directory that gained an entry is
+            // flushed once afterwards, together, instead of one flush per level in turn.
+            let mut unflushed = Vec::new();
             for name in suffix {
                 parent.verify_path(&path)?;
                 let child = match parent.open_dir(name) {
                     Ok(child) => child,
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                        match parent.create_private_dir(name) {
-                            Ok(child) => child,
+                        match parent.create_private_dir_unflushed(name) {
+                            Ok(child) => {
+                                unflushed.push(parent.clone());
+                                child
+                            }
                             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                                 parent.open_dir(name)?
                             }
@@ -1372,6 +1398,7 @@ impl OwnedWorkspaceDirectory {
                 child.verify_path(&path)?;
                 parent = child;
             }
+            crate::durability::flush_concurrently(&unflushed, DirectoryCapability::sync_all)?;
             parent.verify_path(&path)?;
             if repair_application {
                 let application_path = path.join(application);
@@ -1991,6 +2018,7 @@ mod tests {
         let result = parent.create_private_dir_with_policy(
             "new-child",
             CreatedDirectoryCleanup::RenameableHandle,
+            true,
             || Ok(()),
             || Ok(()),
             || {
@@ -2023,6 +2051,7 @@ mod tests {
         let result = parent.create_private_dir_with_policy(
             "unresolved-child",
             CreatedDirectoryCleanup::RenameableHandle,
+            true,
             || Ok(()),
             || {
                 Err(std::io::Error::new(
@@ -2063,6 +2092,7 @@ mod tests {
         let result = parent.create_private_dir_with_policy(
             "child",
             CreatedDirectoryCleanup::RenameableHandle,
+            true,
             || Ok(()),
             || {
                 let original = root.join("child");
@@ -2639,6 +2669,7 @@ mod windows_tests {
         let result = parent.create_private_dir_with_policy(
             "new-child",
             CreatedDirectoryCleanup::RenameableHandle,
+            true,
             || Ok(()),
             || Ok(()),
             || {

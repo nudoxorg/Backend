@@ -112,8 +112,7 @@ async fn publish_seed(
     #[cfg(test)]
     hold_after_stage_for_process_test();
     close_projection(staged);
-    if let Err(error) = receipt.capability().sync_all() {
-        let error = ProjectionError::Filesystem(error);
+    if let Err(error) = flush_staged_generation(receipt.capability()) {
         cleanup_stage(receipt, &error.to_string())?;
         return Err(error);
     }
@@ -170,6 +169,11 @@ async fn prepare_generation(
             .map_err(ProjectionError::from)?;
         let connection = database.connect()?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
+        // Nothing selects this generation until the selector is published, and
+        // `flush_staged_generation` makes every file of it durable first. A
+        // flush after each of the schema's statements and the seed rows would
+        // only add device flushes to a database no reader can open yet.
+        connection.execute_batch("PRAGMA synchronous=OFF;").await?;
         connection.execute_batch(schema::SCHEMA).await?;
         let mut projection = TursoProjection {
             _database: database,
@@ -225,6 +229,41 @@ async fn validate_seed_projection(
         }
         _ => Err(ProjectionError::StaleTransition),
     }
+}
+
+/// Makes a closed staged generation durable: every file in it and the
+/// directory that names them, flushed together because none depends on another.
+///
+/// The staged connection ran without per-commit flushes, so this is the only
+/// barrier its database and write-ahead log get before the selector is
+/// published. It must run after the database handles are closed.
+fn flush_staged_generation(directory: &DirectoryCapability) -> Result<(), ProjectionError> {
+    /// A staged generation holds the database, its log, and a few small files.
+    const MAX_STAGED_ENTRIES: usize = 32;
+    let mut files = Vec::new();
+    for entry in directory
+        .entries(MAX_STAGED_ENTRIES)
+        .map_err(ProjectionError::Filesystem)?
+    {
+        let Some(name) = entry.name.to_str() else {
+            continue;
+        };
+        if entry.kind != backend_platform::EntryKind::File {
+            continue;
+        }
+        match directory.open_file_read_write(name, false) {
+            Ok(file) => files.push(Some(file)),
+            // The engine may remove its log when it closes.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(ProjectionError::Filesystem(error)),
+        }
+    }
+    files.push(None);
+    backend_platform::durability::flush_concurrently(&files, |file| match file {
+        Some(file) => file.sync_all(),
+        None => directory.sync_all(),
+    })
+    .map_err(ProjectionError::Filesystem)
 }
 
 fn cleanup_stage(receipt: CreatedDirectory, cause: &str) -> Result<(), ProjectionError> {

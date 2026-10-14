@@ -168,6 +168,16 @@ impl Product for RetainedProduct {
 }
 
 fn retained_library() -> Library {
+    retained_library_with(false)
+}
+
+/// The same catalog with a second, separately sited definition of the class
+/// name, so the name is genuinely ambiguous.
+fn ambiguous_library() -> Library {
+    retained_library_with(true)
+}
+
+fn retained_library_with(second_definition: bool) -> Library {
     let frontend = backend_frontend_python::syntax_frontend().expect("production grammar");
     let analysis = frontend
         .analyze(
@@ -224,17 +234,40 @@ fn retained_library() -> Library {
         .with_kind(DeclarationKind::Type)
         .with_signature("unknown(unannotated)"),
     ];
+    if second_definition {
+        rows.push(
+            Row::in_package(
+                RowId::Symbol(symbol_key("second retained class fixture")),
+                basis(),
+                package_key(SHELF),
+                format!("{SHELF}::semantic::{}::{NAME}", "ef".repeat(32)),
+            )
+            .with_kind(declaration.kind())
+            .with_signature(HEADER)
+            .with_source(
+                backend_library::SourceLocation::new("httpie/legacy/argparser.py", 12)
+                    .expect("one-based site"),
+            )
+            .with_excerpt(declaration.source_excerpt().clone())
+            .with_document([Fragment::Text(declaration.documentation().to_owned())]),
+        );
+    }
     for display in [NAME, "external semantic target"] {
         for index in 0..2 {
             let symbol = symbol_key(&format!("independent retained external {display}/{index}"));
-            rows.push(Row::new(
-                RowId::Symbol(symbol),
-                basis(),
-                format!(
-                    "{SHELF}::external::{}::{display}",
-                    RowId::Symbol(symbol).stable_key(),
-                ),
-            ));
+            // Built the way the view builder builds an external target: a
+            // label and nothing else, not even a document.
+            rows.push(
+                Row::new(
+                    RowId::Symbol(symbol),
+                    basis(),
+                    format!(
+                        "{SHELF}::external::{}::{display}",
+                        RowId::Symbol(symbol).stable_key(),
+                    ),
+                )
+                .with_document(Box::<[Fragment]>::default()),
+            );
         }
     }
     let view = root(rows);
@@ -280,7 +313,10 @@ fn immutable_library_routes_keep_distinct_reusable_operands_headers_and_summary_
     let original = library.view().clone();
     for detail in ["summary", "standard", "full"] {
         let mut server = server(library.clone());
-        for (query, count) in [(NAME, 4), ("external semantic target", 2)] {
+        // Two external placeholders carry each name and nothing else: a name
+        // resolution omits them and a search summarizes them in one line, so
+        // neither lists them as records.
+        for (query, count) in [(NAME, 2), ("external semantic target", 0)] {
             for tool in ["backend.search", "backend.resolve"] {
                 let result = invoke(
                     &mut server,
@@ -292,6 +328,27 @@ fn immutable_library_routes_keep_distinct_reusable_operands_headers_and_summary_
                     .as_array()
                     .expect("selected records");
                 assert_eq!(records.len(), count);
+                if tool == "backend.search" {
+                    assert_eq!(
+                        result["structuredContent"]["externals"]["count"], 2,
+                        "{result}"
+                    );
+                    assert!(
+                        text_of(&result).contains("+ 2 external members: "),
+                        "{}",
+                        text_of(&result)
+                    );
+                } else {
+                    assert!(
+                        result["structuredContent"].get("externals").is_none(),
+                        "{result}"
+                    );
+                    assert!(
+                        !text_of(&result).contains("external members"),
+                        "{}",
+                        text_of(&result)
+                    );
+                }
                 let mut operands = std::collections::BTreeSet::new();
                 let mut symbols = std::collections::BTreeSet::new();
                 for record in records {
@@ -382,11 +439,51 @@ fn immutable_library_routes_keep_distinct_reusable_operands_headers_and_summary_
                 }
                 assert!(!text_of(&result).contains("def parse_args("));
                 if detail == "summary" {
-                    assert!(text_of(&result).contains("structuredContent.records"));
+                    // A page with no record has no records to point at.
+                    if count > 0 {
+                        assert!(text_of(&result).contains("structuredContent.records"));
+                    }
                     assert!(!text_of(&result).contains(HEADER));
                     assert!(records.iter().all(|row| row.get("signature").is_none()));
                 }
             }
+        }
+        // A placeholder is not listed, but it is still a row that reads: its
+        // page names the same operand and explains that no source was kept.
+        let placeholders = library
+            .view()
+            .row_refs()
+            .filter(|row| backend_library::is_inert_external_placeholder(row))
+            .map(|row| row.label.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(placeholders.len(), 4);
+        for coordinate in &placeholders {
+            let document = invoke(
+                &mut server,
+                "backend.document",
+                json!({"coordinate":coordinate,"detail":detail}),
+            );
+            assert_eq!(document["isError"], false, "{document}");
+            assert_eq!(
+                document["structuredContent"]["identity"]["coordinate"],
+                coordinate.as_str()
+            );
+            assert_eq!(
+                document["structuredContent"]["source_fault"]["cause"],
+                "not-captured"
+            );
+            assert!(document["structuredContent"].get("signature").is_none());
+            // Asked for by its own coordinate, the placeholder is the answer.
+            let graph = invoke(
+                &mut server,
+                "backend.graph",
+                json!({"coordinate":coordinate,"limit":200,"detail":detail}),
+            );
+            assert_eq!(graph["isError"], false, "{graph}");
+            assert_eq!(
+                graph["structuredContent"]["records"][0]["identity"]["coordinate"],
+                coordinate.as_str()
+            );
         }
         let refused = invoke(
             &mut server,
@@ -431,7 +528,8 @@ fn actual_package_only_route_keeps_unknown_counts_after_successful_selected_read
                 .as_array()
                 .expect("published fixture rows")
                 .len(),
-            4
+            2,
+            "the two external placeholders named {NAME} are summarized, not listed"
         );
         let packages = invoke(&mut server, "backend.packages", json!({"detail":detail}));
         assert_eq!(packages["isError"], false);
@@ -449,5 +547,66 @@ fn actual_package_only_route_keeps_unknown_counts_after_successful_selected_read
         );
         assert!(text_of(&packages).contains("declaration count unavailable"));
         assert!(!text_of(&packages).contains("0 declaration"));
+    }
+}
+
+#[test]
+fn a_name_one_sited_declaration_defines_is_that_declaration_whatever_type_rows_repeat_it() {
+    // The class has a site; the unannotated type row of the same name has
+    // none, and the external placeholders are not declarations.
+    let library = retained_library();
+    let mut server = server(library);
+    let by_name = invoke(&mut server, "backend.document", json!({"coordinate":NAME}));
+    assert_eq!(by_name["isError"], false, "{by_name}");
+    let coordinate = format!("{SHELF}::semantic::{}::{NAME}", "ab".repeat(32));
+    assert_eq!(
+        by_name["structuredContent"]["identity"]["coordinate"],
+        coordinate
+    );
+}
+
+#[test]
+fn a_name_two_declarations_share_is_refused_with_one_exact_call_per_candidate() {
+    let library = ambiguous_library();
+    for detail in ["summary", "standard", "full"] {
+        let mut server = server(library.clone());
+        for tool in [
+            "backend.document",
+            "backend.source",
+            "backend.graph",
+            "backend.references",
+        ] {
+            let refused = invoke(
+                &mut server,
+                tool,
+                json!({"coordinate":NAME,"detail":detail}),
+            );
+            assert_eq!(refused["isError"], true, "{tool}: {refused}");
+            let fault = &refused["structuredContent"];
+            assert_eq!(fault["slug"], "ambiguous", "{tool}: {refused}");
+            assert_eq!(fault["operand"], NAME);
+            let candidates = fault["candidates"].as_array().expect("listed candidates");
+            // The two sited classes carry the name; the unannotated type row
+            // stands for a class's type and the external placeholders named the
+            // same are not declarations, so neither is a candidate.
+            assert_eq!(candidates.len(), 2, "{tool}: {fault}");
+            let text = text_of(&refused);
+            assert!(text.starts_with(&format!("✗ ambiguous `{NAME}`")), "{text}");
+            for candidate in candidates {
+                let coordinate = candidate["coordinate"].as_str().expect("exact coordinate");
+                assert!(!coordinate.contains("::external::"), "{candidate}");
+                assert!(text.contains(coordinate), "{text}");
+                // The retry names the same tool with the exact coordinate; the
+                // read-only fixture can run every retry except references,
+                // which needs an owner.
+                let call = &candidate["call"];
+                assert_eq!(call["name"], tool, "{call}");
+                assert_eq!(call["arguments"]["coordinate"], coordinate);
+                if tool != "backend.references" {
+                    let retried = invoke(&mut server, tool, call["arguments"].clone());
+                    assert_eq!(retried["isError"], false, "{call}: {retried}");
+                }
+            }
+        }
     }
 }

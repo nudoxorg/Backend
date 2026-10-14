@@ -292,6 +292,14 @@ pub(super) fn execute_semantic_shapes(
                 "all semantic shape symbols must belong to the selected source package".to_owned(),
             )));
         }
+        // The compiler knows a declaration by its compiler-backed row. A
+        // structural address of a declaration both lanes published (its
+        // canonical spelling) reads the shape of that twin; the entry still
+        // answers for the address the caller asked about.
+        let symbol = match view.semantic_twin(row).map(|twin| twin.id) {
+            Some(backend_engine::RowId::Symbol(twin)) => twin,
+            _ => symbol,
+        };
         resolved.push(Some(symbol));
     }
 

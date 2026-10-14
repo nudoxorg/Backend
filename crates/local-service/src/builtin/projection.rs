@@ -202,7 +202,7 @@ fn document_certificate(
         })?;
     if let Some(selection) = &document.selection {
         let selected =
-            backend_library::resolve_selected_document_row(owner_root, selection.coordinate())
+            backend_library::resolve_canonical_document_row(owner_root, selection.coordinate())
                 .map_err(|failure| BuiltinModelError(failure.to_string()))?
                 .map(|row| row.id);
         if selected != Some(row.id)

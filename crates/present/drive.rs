@@ -28,18 +28,19 @@ use crate::assemble::{
     shelf_from_snapshot, shelf_from_snapshot_with_health,
 };
 use crate::call::Request;
-use crate::fault::{Affordance, Fault, Operand};
-use crate::identity::{Coordinate, Identity, KeyTag};
+use crate::fault::{Affordance, Candidate, Fault, MAX_FAULT_CANDIDATES, Operand};
+use crate::identity::{Coordinate, Identity, IdentityShape, KeyTag, LineNumber, PackagePath};
 use crate::outline::OutlineTree;
 use crate::page::Page;
 use crate::product::{ProductRecord, ProductView};
-use crate::record::RecordList;
+use crate::record::{Record, RecordList};
 use crate::shelf::Shelf;
 use crate::status::Status;
 use backend_client::ClientError;
 use backend_library::{
     CommandReply, CompileExecutionIntent, GraphRelation, HealthReport, IndexSearchCursor, IntentId,
-    PageContinuation, ReplyDto, Row, SurfaceCommand, SurfaceReply, ViewSnapshot, ViewStateRoot,
+    PageContinuation, ProductText, ReplyDto, Row, SurfaceCommand, SurfaceReply, ViewSnapshot,
+    ViewStateRoot,
 };
 
 /// One owner-issued continuation family supported by agent-facing surfaces.
@@ -505,16 +506,20 @@ fn accepted_view(heading: &str, path: &str, intent: IntentId) -> ProductView {
     )
 }
 
-fn page(engine: &mut dyn Engine, coordinate: &str) -> Result<Page, Fault> {
-    let reply = read(engine, Probe::Document(coordinate))?;
+fn page(engine: &mut dyn Engine, text: &str) -> Result<Page, Fault> {
+    let coordinate = declaration_operand(engine, text, "show")?;
+    let reply = read_declaration(engine, Probe::Document(&coordinate), &coordinate, "show")?;
     let (CommandReply::Document(document) | CommandReply::Page(document)) = reply.reply else {
         return Err(shape("document"));
     };
+    // Either spelling of a declaration both lanes published answers with the
+    // same page, addressed by its canonical (structural) coordinate.
+    let canonical = canonical_coordinate(&coordinate, &document);
     let mut notes = Vec::with_capacity(2);
-    let relation_rows = probe_rows(engine, coordinate, &mut notes);
-    let members = probe_members(engine, coordinate, &document, &mut notes);
+    let relation_rows = probe_rows(engine, &canonical, &mut notes);
+    let members = probe_members(engine, &canonical, &document, &mut notes);
     Ok(page_from_document_with_graph_relations(
-        coordinate,
+        &canonical,
         &document,
         &members,
         &relation_rows.rows,
@@ -523,12 +528,14 @@ fn page(engine: &mut dyn Engine, coordinate: &str) -> Result<Page, Fault> {
     ))
 }
 
-fn source(engine: &mut dyn Engine, coordinate: &str) -> Result<Answer, Fault> {
-    let reply = read(engine, Probe::Source(coordinate))?;
+fn source(engine: &mut dyn Engine, text: &str) -> Result<Answer, Fault> {
+    let coordinate = declaration_operand(engine, text, "source")?;
+    let reply = read_declaration(engine, Probe::Source(&coordinate), &coordinate, "source")?;
     let (CommandReply::Document(document) | CommandReply::Page(document)) = reply.reply else {
         return Err(shape("source"));
     };
-    let page = page_from_document(coordinate, &document, &[], &[], Vec::new());
+    let canonical = canonical_coordinate(&coordinate, &document);
+    let page = page_from_document(&canonical, &document, &[], &[], Vec::new());
     // Unlike a document page, this request asks specifically for source.
     // Retain the exact typed reason when no captured text can be supplied.
     if let Some(fault) = page.source().fault() {
@@ -537,15 +544,44 @@ fn source(engine: &mut dyn Engine, coordinate: &str) -> Result<Answer, Fault> {
     Ok(Answer::Page(Box::new(page)))
 }
 
-fn neighbourhood(engine: &mut dyn Engine, at: &str, incoming: bool) -> Result<Answer, Fault> {
-    let reply = read(
+/// Resolves the declaration operand of a coordinate-taking command to its one
+/// canonical, complete coordinate.
+///
+/// A complete coordinate in either spelling of a declaration both lanes
+/// published (`<project>::<path>:<line>::<name>` or
+/// `<project>::semantic::<id>::<name>`) resolves to the structural one; a name
+/// or partial address resolves through the same resolver as `resolve`. This is
+/// the one place that decides, so a surface that pages a declaration's
+/// neighbourhood itself asks here first and cannot disagree with `show`.
+///
+/// # Errors
+///
+/// Returns an `ambiguous` fault listing the candidates when several
+/// declarations match, a `not-found` fault with the nearest declarations when
+/// none does, or the typed fault the engine produced.
+pub fn resolve_declaration(
+    engine: &mut dyn Engine,
+    text: &str,
+    command: &'static str,
+) -> Result<String, Fault> {
+    let coordinate = declaration_operand(engine, text, command)?;
+    Ok(canonical_operand(engine, coordinate))
+}
+
+fn neighbourhood(engine: &mut dyn Engine, text: &str, incoming: bool) -> Result<Answer, Fault> {
+    let command = if incoming { "related" } else { "graph" };
+    let at = resolve_declaration(engine, text, command)?;
+    let reply = read_declaration(
         engine,
         if incoming {
-            Probe::Related(at)
+            Probe::Related(&at)
         } else {
-            Probe::Graph(at)
+            Probe::Graph(&at)
         },
+        &at,
+        command,
     )?;
+    let at = at.as_str();
     let CommandReply::Graph(snapshot) = reply.reply else {
         return Err(shape("graph"));
     };
@@ -577,12 +613,453 @@ fn outline(engine: &mut dyn Engine, path: &str) -> Result<Answer, Fault> {
 }
 
 fn surface(engine: &mut dyn Engine, command: &SurfaceCommand) -> Result<Answer, Fault> {
+    let command = resolve_surface_operands(engine, command)?;
     let reply = engine
         .surface(command.clone())
         .map_err(|error| Fault::from_client_error(&error, Operand::Whole))?;
     Ok(Answer::Product(Box::new(crate::product_view_for_command(
-        command, &reply,
+        &command, &reply,
     ))))
+}
+
+/// Names rows the resolver reads to decide whether text names one declaration.
+const NAME_ROWS: u16 = 24;
+
+/// Resolves the declaration operands of the commands that take a coordinate
+/// (`references`, `read`) exactly as `show`, `graph` and the rest do, so every
+/// command accepts the same spellings of one declaration.
+fn resolve_surface_operands(
+    engine: &mut dyn Engine,
+    command: &SurfaceCommand,
+) -> Result<SurfaceCommand, Fault> {
+    let admit = |text: String| {
+        ProductText::new(text.as_str())
+            .map_err(|error| Fault::admission(error, Operand::Argument(text)))
+    };
+    match command {
+        SurfaceCommand::References { target } => {
+            let coordinate = declaration_operand(engine, target.as_str(), "references")?;
+            let coordinate = canonical_operand(engine, coordinate);
+            if coordinate == target.as_str() {
+                return Ok(command.clone());
+            }
+            Ok(SurfaceCommand::References {
+                target: admit(coordinate)?,
+            })
+        }
+        SurfaceCommand::Read { locators } => {
+            let mut resolved: Vec<ProductText> = Vec::with_capacity(locators.len());
+            for locator in locators.iter() {
+                let coordinate = declaration_operand(engine, locator.as_str(), "read")?;
+                let coordinate = canonical_operand(engine, coordinate);
+                // Two spellings of one declaration are read once.
+                if resolved.iter().any(|seen| seen.as_str() == coordinate) {
+                    continue;
+                }
+                resolved.push(if coordinate == locator.as_str() {
+                    locator.clone()
+                } else {
+                    admit(coordinate)?
+                });
+            }
+            Ok(SurfaceCommand::Read {
+                locators: resolved.into_boxed_slice(),
+            })
+        }
+        other => Ok(other.clone()),
+    }
+}
+
+/// Whether `text` is spelled as an engine coordinate: rooted at an absolute
+/// project path (or a registry package). The owner answers for it, exactly as
+/// it names a declaration or refuses it. Anything else is a name or partial
+/// address for the resolver.
+fn is_complete_coordinate(text: &str) -> bool {
+    text.starts_with('/')
+        || text.starts_with("pkg:")
+        || matches!(
+            text.as_bytes(),
+            [drive, b':', b'/' | b'\\', ..] if drive.is_ascii_alphabetic()
+        )
+}
+
+/// The operand of a coordinate-taking command, as a complete coordinate.
+///
+/// A complete coordinate passes through untouched. Any other text goes to the
+/// same resolver `resolve` runs, so a bare name cannot fail where `resolve`
+/// would have found the declaration.
+fn declaration_operand(
+    engine: &mut dyn Engine,
+    text: &str,
+    command: &'static str,
+) -> Result<String, Fault> {
+    if is_complete_coordinate(text) {
+        return Ok(text.to_owned());
+    }
+    resolve_name(engine, text, command)
+}
+
+/// Splits an operand like `src/lib/scheduler.ts:21::generateSchedule` into
+/// the name to resolve and the file (and line) that must hold the match.
+struct NameOperand<'text> {
+    name: &'text str,
+    file: Option<&'text str>,
+    line: Option<u32>,
+}
+
+impl<'text> NameOperand<'text> {
+    fn parse(text: &'text str) -> Self {
+        let plain = Self {
+            name: text,
+            file: None,
+            line: None,
+        };
+        let Some((qualifier, name)) = text.rsplit_once("::") else {
+            return plain;
+        };
+        if name.is_empty() {
+            return plain;
+        }
+        let (file, line) = match qualifier.rsplit_once(':') {
+            Some((file, digits))
+                if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) =>
+            {
+                (file, digits.parse::<u32>().ok())
+            }
+            _ => (qualifier, None),
+        };
+        // Only a spelling that reads as a source file qualifies the name;
+        // `Class::method` and `module::function` stay relative names.
+        let reads_as_file = crate::language::Language::from_path(&PackagePath::new(file))
+            != crate::language::Language::Unknown;
+        if file.is_empty() || !reads_as_file {
+            return plain;
+        }
+        Self {
+            name,
+            file: Some(file),
+            line,
+        }
+    }
+
+    /// The final name segment, which a match must carry exactly.
+    fn leaf(&self) -> &'text str {
+        let after_colons = self.name.rsplit("::").next().unwrap_or(self.name);
+        after_colons.rsplit('.').next().unwrap_or(after_colons)
+    }
+
+    fn admits(&self, record: &Record) -> bool {
+        let identity = record.identity();
+        if let Some(file) = self.file {
+            let Some(path) = identity.path().map(PackagePath::as_str) else {
+                return false;
+            };
+            let at_boundary = path
+                .strip_suffix(file)
+                .is_some_and(|rest| rest.is_empty() || rest.ends_with('/'));
+            if !at_boundary {
+                return false;
+            }
+        }
+        self.line
+            .is_none_or(|line| identity.line().map(LineNumber::get) == Some(line))
+    }
+}
+
+/// Whether a record is sited in the package's library or application code,
+/// rather than in an example, a test or a benchmark.
+fn defined_in_library_code(record: &Record) -> bool {
+    record
+        .identity()
+        .path()
+        .is_some_and(|path| !backend_library::is_support_source_path(path.as_str()))
+}
+
+/// Whether a record is sited in an example, a test or a benchmark.
+fn defined_in_support_code(record: &Record) -> bool {
+    record
+        .identity()
+        .path()
+        .is_some_and(|path| backend_library::is_support_source_path(path.as_str()))
+}
+
+/// Whether a record is a compiler type row: a type with no site of its own,
+/// which stands for the type a declaration defines rather than a second
+/// definition.
+fn is_type_value(record: &Record) -> bool {
+    record.identity().path().is_none()
+        && record.kind() == Some(backend_library::DeclarationKind::Type)
+}
+
+/// A record a name can resolve to: a declaration, never an import that only
+/// brings a name in, a module, a package or an external placeholder.
+fn names_a_declaration(record: &Record) -> bool {
+    matches!(
+        record.identity().shape(),
+        IdentityShape::Declaration | IdentityShape::Semantic
+    ) && record.kind() != Some(backend_library::DeclarationKind::Import)
+}
+
+/// Longest signature or summary, in characters, a candidate spells out.
+const CANDIDATE_DETAIL_CHARS: usize = 72;
+
+/// The first line of `text`, trimmed and cut to `limit` characters.
+fn clip_line(text: &str, limit: usize) -> String {
+    let line = text.lines().next().unwrap_or_default().trim();
+    if line.chars().count() <= limit {
+        return line.to_owned();
+    }
+    let mut clipped = line.chars().take(limit).collect::<String>();
+    clipped.push('…');
+    clipped
+}
+
+/// Whether the records span more than one project, so a candidate's location
+/// must name its project to be told apart.
+fn spans_projects<'a>(records: impl IntoIterator<Item = &'a Record>) -> bool {
+    let mut roots = records.into_iter().filter_map(|record| {
+        record
+            .identity()
+            .project()
+            .map(crate::identity::ProjectRef::root)
+    });
+    roots
+        .next()
+        .is_some_and(|first| roots.any(|root| root != first))
+}
+
+fn candidate_of(record: &Record, command: &'static str, project: bool) -> Candidate {
+    let identity = record.identity();
+    // A declaration whose producer captured no site is told apart by what it
+    // does say about itself: its signature, then its first documentation line.
+    let location = match (identity.path(), identity.line()) {
+        (Some(path), Some(line)) => format!("{path}:{line}"),
+        (Some(path), None) => path.to_string(),
+        _ => record
+            .signature()
+            .map(crate::signature::Signature::text)
+            .or_else(|| record.summary().map(str::to_owned))
+            .map_or_else(
+                || identity.name().to_owned(),
+                |text| clip_line(&text, CANDIDATE_DETAIL_CHARS),
+            ),
+    };
+    let location = match identity.project() {
+        Some(owner) if project => format!("{} › {location}", owner.name()),
+        _ => location,
+    };
+    Candidate::new(
+        identity.coordinate().clone(),
+        record.kind(),
+        location,
+        command,
+    )
+}
+
+/// Resolves name text with the resolver behind `resolve`.
+///
+/// Exactly one declaration (after the two lanes' duplicates are merged and
+/// imports and placeholders are set aside) selects its coordinate. Several are
+/// refused with a bounded candidate list and the exact retry for each; none is
+/// refused with the nearest names.
+fn resolve_name(
+    engine: &mut dyn Engine,
+    text: &str,
+    command: &'static str,
+) -> Result<String, Fault> {
+    let operand = NameOperand::parse(text);
+    let snapshot = snapshot(
+        engine,
+        Probe::Names {
+            text: operand.name,
+            limit: NAME_ROWS,
+        },
+        "resolve",
+    )?;
+    let list = record_list(text, &snapshot);
+    let leaf = operand.leaf();
+    let declared = list
+        .records()
+        .iter()
+        .filter(|record| names_a_declaration(record))
+        .collect::<Vec<_>>();
+    let mut matches = declared
+        .iter()
+        .copied()
+        .filter(|record| record.identity().name() == leaf && operand.admits(record))
+        .collect::<Vec<_>>();
+    if matches.is_empty() {
+        matches = declared
+            .iter()
+            .copied()
+            .filter(|record| {
+                record.identity().name().eq_ignore_ascii_case(leaf) && operand.admits(record)
+            })
+            .collect();
+    }
+    // A compiler type row names the type its declaration defines; it never
+    // competes with a declaration that has a site.
+    if matches.len() > 1 {
+        let declarations = matches
+            .iter()
+            .copied()
+            .filter(|record| !is_type_value(record))
+            .collect::<Vec<_>>();
+        if !declarations.is_empty() {
+            matches = declarations;
+        }
+    }
+    // When one match is defined in library code and the rest only in
+    // examples, tests or benchmarks, the library definition is the one the
+    // name means; the rest stay reachable by their exact coordinates.
+    if matches.len() > 1 {
+        let library = matches
+            .iter()
+            .copied()
+            .filter(|record| defined_in_library_code(record))
+            .collect::<Vec<_>>();
+        if let [primary] = library.as_slice()
+            && matches
+                .iter()
+                .all(|record| std::ptr::eq(*record, *primary) || defined_in_support_code(record))
+        {
+            matches = vec![*primary];
+        }
+    }
+    match matches.as_slice() {
+        [only] => Ok(only.identity().coordinate().as_str().to_owned()),
+        [] => {
+            let near = list
+                .records()
+                .iter()
+                .filter(|record| {
+                    matches!(
+                        record.identity().shape(),
+                        IdentityShape::Declaration | IdentityShape::Semantic
+                    )
+                })
+                .take(MAX_FAULT_CANDIDATES)
+                .collect::<Vec<_>>();
+            let project = spans_projects(near.iter().copied());
+            let nearest = near
+                .iter()
+                .map(|record| candidate_of(record, command, project))
+                .collect();
+            Err(Fault::unresolved(text, nearest))
+        }
+        several => {
+            let project = spans_projects(several.iter().copied());
+            Err(Fault::ambiguous(
+                text,
+                several.len(),
+                !list.has_more(),
+                several
+                    .iter()
+                    .take(MAX_FAULT_CANDIDATES)
+                    .map(|record| candidate_of(record, command, project))
+                    .collect(),
+            ))
+        }
+    }
+}
+
+/// Reads one declaration probe; when the complete coordinate is absent,
+/// offers the declarations that share its name instead of a bare absence.
+fn read_declaration(
+    engine: &mut dyn Engine,
+    probe: Probe<'_>,
+    coordinate: &str,
+    command: &'static str,
+) -> Result<ReplyDto, Fault> {
+    let fault = match read(engine, probe) {
+        Ok(reply) => return Ok(reply),
+        Err(fault) => fault,
+    };
+    if fault.slug() != crate::fault::FaultSlug::NotFound {
+        return Err(fault);
+    }
+    let name = Identity::parse(coordinate).name().to_owned();
+    if name.is_empty() {
+        return Err(fault);
+    }
+    let nearest = engine
+        .probe(Probe::Names {
+            text: &name,
+            limit: NAME_ROWS,
+        })
+        .ok()
+        .and_then(|reply| match reply.reply {
+            CommandReply::Names(snapshot) | CommandReply::Search(snapshot) => Some(snapshot),
+            _ => None,
+        })
+        .map(|snapshot| record_list(&name, &snapshot))
+        .map(|list| {
+            let sharing = list
+                .records()
+                .iter()
+                .filter(|record| names_a_declaration(record) && record.identity().name() == name)
+                .take(MAX_FAULT_CANDIDATES)
+                .collect::<Vec<_>>();
+            let project = spans_projects(sharing.iter().copied());
+            sharing
+                .iter()
+                .map(|record| candidate_of(record, command, project))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if nearest.is_empty() {
+        return Err(fault);
+    }
+    Err(Fault::unresolved(coordinate, nearest)
+        .about(Operand::Coordinate(Coordinate::new(coordinate))))
+}
+
+/// The structural spelling of a declaration the caller named by its
+/// compiler-backed (`<project>::semantic::<id>::<name>`) coordinate.
+///
+/// The document says where the declaration sits, and the structural spelling
+/// is accepted only when its key is the document's own, so a declaration that
+/// has no structural row keeps the coordinate it was named by.
+fn canonical_coordinate(requested: &str, document: &backend_library::Document) -> String {
+    let Some(location) = document.location.captured() else {
+        return requested.to_owned();
+    };
+    let Some((project, rest)) = requested.split_once("::semantic::") else {
+        return requested.to_owned();
+    };
+    let Some((_, name)) = rest.split_once("::") else {
+        return requested.to_owned();
+    };
+    if project.is_empty() || name.is_empty() {
+        return requested.to_owned();
+    }
+    let structural = format!(
+        "{project}::{}:{}::{name}",
+        location.path(),
+        location.start_line()
+    );
+    if backend_library::symbol_key(&structural) == document.symbol {
+        structural
+    } else {
+        requested.to_owned()
+    }
+}
+
+/// The canonical coordinate of a declaration named by its compiler-backed
+/// spelling; any other coordinate is already canonical.
+fn canonical_operand(engine: &mut dyn Engine, coordinate: String) -> String {
+    if Identity::parse(&coordinate).shape() != IdentityShape::Semantic {
+        return coordinate;
+    }
+    match engine.probe(Probe::Document(&coordinate)) {
+        Ok(reply) => match reply.reply {
+            CommandReply::Document(document) | CommandReply::Page(document) => {
+                canonical_coordinate(&coordinate, &document)
+            }
+            _ => coordinate,
+        },
+        Err(_) => coordinate,
+    }
 }
 
 fn snapshot(engine: &mut dyn Engine, probe: Probe<'_>, what: &str) -> Result<ViewSnapshot, Fault> {
@@ -1378,5 +1855,338 @@ mod document_member_paging_controls {
                 "exact original owner cursor was forwarded"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod address_resolution_controls {
+    use super::*;
+    use backend_library::{
+        Basis, Coverage, Cursor, DeclarationKind, Document, DocumentQuery, Frontier, HealthReport,
+        Library, NameQuery, QueryLimit, RowId, SourceLocation, ViewRoot, object_version,
+        package_key, symbol_key, view_key, view_state_root,
+    };
+
+    const PROJECT: &str = "/workspace/next-asp";
+    const SCHEDULER: &str = "/workspace/next-asp::src/lib/scheduler.ts:21::generateSchedule";
+    const SEMANTIC: &str = "/workspace/next-asp::semantic::417a1b7eff7c444eb114d2b0ce7c4a2eecb261696ee43ad62d64ff06cb30f536::generateSchedule";
+    const IMPORT: &str = "/workspace/next-asp::semantic::1d2aa0501a247d84ae8e273f5889ad486c58efea5ec2e049ea35445fb29cad66::generateSchedule";
+    const OTHER: &str = "/workspace/next-asp::src/legacy/scheduler.ts:7::generateSchedule";
+    const EXAMPLE: &str = "/workspace/next-asp::examples/demo.ts:3::generateSchedule";
+    const UNIQUE: &str = "/workspace/next-asp::src/lib/scheduler.ts:40::scoreOf";
+    const SCORE_SEMANTIC: &str = "/workspace/next-asp::semantic::aa2d7a6b38c24be3fdd184f348b8b6c2f004655b1ed34167622f4940acb9ba63::scoreOf";
+
+    fn external(display: &str) -> String {
+        format!("{PROJECT}::external::symbol:{}::{display}", "3a".repeat(32))
+    }
+
+    fn catalog(with_duplicate_name: bool, with_example: bool) -> Library {
+        let basis = Basis::new(
+            view_state_root(&[(PROJECT.to_owned(), "twin observation".to_owned())]),
+            object_version(b"twin source"),
+        );
+        let package = package_key(PROJECT);
+        let site = |path: &str, line| SourceLocation::new(path, line).expect("source location");
+        let declared = |label: &str, kind, path: &str, line| {
+            Row::in_package(RowId::Symbol(symbol_key(label)), basis, package, label)
+                .with_kind(kind)
+                .with_source(site(path, line))
+        };
+        let mut rows = vec![
+            Row::in_package(RowId::Package(package), basis, package, PROJECT),
+            declared(
+                SCHEDULER,
+                DeclarationKind::Function,
+                "src/lib/scheduler.ts",
+                21,
+            )
+            .with_signature("export function generateSchedule(input: SchedulerInput): Schedule[]"),
+            declared(
+                SEMANTIC,
+                DeclarationKind::Function,
+                "src/lib/scheduler.ts",
+                21,
+            )
+            .with_signature("export function generateSchedule(input: SchedulerInput): Schedule[]"),
+            declared(IMPORT, DeclarationKind::Import, "src/app/page.tsx", 2)
+                .with_signature("value\n@/lib/scheduler\ngenerateSchedule"),
+            declared(
+                UNIQUE,
+                DeclarationKind::Function,
+                "src/lib/scheduler.ts",
+                40,
+            ),
+            declared(
+                SCORE_SEMANTIC,
+                DeclarationKind::Function,
+                "src/lib/scheduler.ts",
+                40,
+            ),
+        ];
+        for display in ["generateSchedule", "get", "length"] {
+            let label = external(display);
+            rows.push(
+                Row::new(RowId::Symbol(symbol_key(&label)), basis, label)
+                    .with_document(Box::<[backend_library::Fragment]>::default()),
+            );
+        }
+        if with_duplicate_name {
+            rows.push(declared(
+                OTHER,
+                DeclarationKind::Function,
+                "src/legacy/scheduler.ts",
+                7,
+            ));
+        }
+        if with_example {
+            rows.push(declared(
+                EXAMPLE,
+                DeclarationKind::Function,
+                "examples/demo.ts",
+                3,
+            ));
+        }
+        let root = ViewRoot::new_incomplete(
+            view_key(b"twin address resolution"),
+            basis,
+            Frontier::new(basis.branch, basis.log, basis.schema, basis.root, 3),
+            rows,
+            vec![Coverage::Unavailable {
+                lane: backend_library::Lane::Exact,
+                reason: backend_library::Reason::NoIndex,
+            }],
+        )
+        .expect("retained rows never claim native/source completeness");
+        Library::from_view(root.clone(), Cursor::for_view_root(&root)).expect("actual catalog")
+    }
+
+    struct Resolver {
+        catalog: Library,
+        probes: Vec<String>,
+    }
+
+    impl Resolver {
+        fn new(with_duplicate_name: bool) -> Self {
+            Self {
+                catalog: catalog(with_duplicate_name, false),
+                probes: Vec::new(),
+            }
+        }
+
+        fn with_example() -> Self {
+            Self {
+                catalog: catalog(false, true),
+                probes: Vec::new(),
+            }
+        }
+    }
+
+    impl Engine for Resolver {
+        fn revision(&mut self) -> Result<ViewStateRoot, ClientError> {
+            Ok(self.catalog.revision_root())
+        }
+        fn health(&mut self) -> Result<HealthReport, ClientError> {
+            Ok(HealthReport::from_root(
+                self.catalog.view(),
+                self.catalog.cursor(),
+            ))
+        }
+        fn surface(&mut self, _: SurfaceCommand) -> Result<SurfaceReply, ClientError> {
+            Err(ClientError::Protocol("not a surface fixture".to_owned()))
+        }
+        fn probe(&mut self, probe: Probe<'_>) -> Result<ReplyDto, ClientError> {
+            self.probes.push(format!("{probe:?}"));
+            let root = self.catalog.revision_root();
+            match probe {
+                Probe::Names { text, limit } => {
+                    let query = NameQuery::new(text, root, QueryLimit::new(limit).expect("credit"));
+                    Ok(ReplyDto::new(
+                        1,
+                        CommandReply::Names(
+                            self.catalog
+                                .names(&query)
+                                .map_err(|error| ClientError::CommandFailed(error.into()))?,
+                        ),
+                    ))
+                }
+                Probe::Document(at) | Probe::Source(at) => {
+                    let document = self
+                        .catalog
+                        .document(DocumentQuery::new(symbol_key(at), root))
+                        .map_err(|error| ClientError::CommandFailed(error.into()))?;
+                    Ok(ReplyDto::new(1, CommandReply::Document(document)))
+                }
+                Probe::Graph(at) | Probe::Related(at) => {
+                    let snapshot = self
+                        .catalog
+                        .graph(backend_library::GraphNeighborhoodQuery::new(
+                            symbol_key(at),
+                            root,
+                        ))
+                        .map_err(|error| ClientError::CommandFailed(error.into()))?;
+                    Ok(ReplyDto::new(1, CommandReply::Graph(snapshot)))
+                }
+                _ => Err(ClientError::Protocol("unexpected probe".to_owned())),
+            }
+        }
+    }
+
+    fn resolve(engine: &mut Resolver, text: &str) -> Result<String, Fault> {
+        declaration_operand(engine, text, "show")
+    }
+
+    #[test]
+    fn complete_coordinates_pass_through_without_a_probe() {
+        let mut engine = Resolver::new(false);
+        for coordinate in [SCHEDULER, SEMANTIC, "pkg:cargo/serde@1.0::src/lib.rs:1::x"] {
+            assert_eq!(resolve(&mut engine, coordinate).as_deref(), Ok(coordinate));
+        }
+        assert!(engine.probes.is_empty(), "{:?}", engine.probes);
+    }
+
+    #[test]
+    fn a_bare_name_resolves_to_the_one_declaration_after_merging_lanes_and_setting_aside_imports() {
+        let mut engine = Resolver::new(false);
+        // The structural row, its compiler-backed twin, an import of the name
+        // and two external placeholders all carry `generateSchedule`; only
+        // one is a declaration.
+        assert_eq!(
+            resolve(&mut engine, "generateSchedule").as_deref(),
+            Ok(SCHEDULER)
+        );
+        assert_eq!(resolve(&mut engine, "scoreOf").as_deref(), Ok(UNIQUE));
+    }
+
+    #[test]
+    fn a_file_qualified_name_narrows_to_the_matching_file_and_line() {
+        let mut engine = Resolver::new(true);
+        for text in [
+            "scheduler.ts:21::generateSchedule",
+            "lib/scheduler.ts::generateSchedule",
+            "src/lib/scheduler.ts:21::generateSchedule",
+        ] {
+            assert_eq!(
+                resolve(&mut engine, text).as_deref(),
+                Ok(SCHEDULER),
+                "{text}"
+            );
+        }
+        assert_eq!(
+            resolve(&mut engine, "legacy/scheduler.ts::generateSchedule").as_deref(),
+            Ok(OTHER)
+        );
+    }
+
+    #[test]
+    fn the_one_library_definition_is_the_name_even_when_an_example_repeats_it() {
+        let mut engine = Resolver::with_example();
+        assert_eq!(
+            resolve(&mut engine, "generateSchedule").as_deref(),
+            Ok(SCHEDULER),
+            "an example's function of the same name does not make the library one ambiguous"
+        );
+        // The example stays reachable by its own coordinate and as a file-qualified name.
+        assert_eq!(
+            resolve(&mut engine, "examples/demo.ts::generateSchedule").as_deref(),
+            Ok(EXAMPLE)
+        );
+        // Two library definitions are still ambiguous, with the library ones listed first.
+        let mut both = Resolver::new(true);
+        let fault = resolve(&mut both, "generateSchedule").expect_err("two library definitions");
+        assert_eq!(fault.slug(), crate::FaultSlug::Ambiguous);
+    }
+
+    #[test]
+    fn several_declarations_are_refused_with_one_exact_retry_each() {
+        let mut engine = Resolver::new(true);
+        let fault = resolve(&mut engine, "generateSchedule").expect_err("two declarations");
+        assert_eq!(fault.slug(), crate::FaultSlug::Ambiguous);
+        let mut coordinates = fault
+            .candidates()
+            .iter()
+            .map(|candidate| candidate.coordinate().as_str().to_owned())
+            .collect::<Vec<_>>();
+        coordinates.sort();
+        assert_eq!(coordinates, vec![OTHER.to_owned(), SCHEDULER.to_owned()]);
+        for candidate in fault.candidates() {
+            assert_eq!(candidate.kind(), Some(DeclarationKind::Function));
+            let shell = candidate.shell().expect("shell retry");
+            assert_eq!(
+                shell,
+                format!("nudox show {}", candidate.coordinate().as_str())
+            );
+            let call = candidate.tool_call().expect("tool retry");
+            assert_eq!(
+                call["arguments"]["coordinate"],
+                candidate.coordinate().as_str()
+            );
+        }
+        assert!(
+            fault
+                .candidates()
+                .iter()
+                .any(|candidate| { candidate.location() == "src/lib/scheduler.ts:21" })
+        );
+    }
+
+    #[test]
+    fn an_unknown_name_is_refused_with_the_nearest_declarations() {
+        let mut engine = Resolver::new(false);
+        let fault = resolve(&mut engine, "generateSchedul").expect_err("no exact declaration");
+        assert_eq!(fault.slug(), crate::FaultSlug::NotFound);
+        assert!(
+            fault
+                .candidates()
+                .iter()
+                .any(|candidate| candidate.coordinate().as_str() == SCHEDULER),
+            "{:?}",
+            fault.candidates()
+        );
+        let nothing = resolve(&mut engine, "zzzNothing").expect_err("nothing near");
+        assert_eq!(nothing.slug(), crate::FaultSlug::NotFound);
+        assert!(nothing.candidates().is_empty());
+        assert!(matches!(
+            nothing.affordance(),
+            Affordance::UseCommand { name: "search", .. }
+        ));
+    }
+
+    #[test]
+    fn both_spellings_show_the_same_declaration_under_its_structural_coordinate() {
+        // The fixture's engine cannot resolve a compiler-backed label (that
+        // is the owner's job), so the structural document stands in for the
+        // reply the owner returns for either spelling.
+        let mut engine = Resolver::new(false);
+        let reply = engine
+            .probe(Probe::Document(SCHEDULER))
+            .expect("structural document");
+        let CommandReply::Document(document) = reply.reply else {
+            panic!("document");
+        };
+        assert_eq!(canonical_coordinate(SEMANTIC, &document), SCHEDULER);
+        assert_eq!(canonical_coordinate(SCHEDULER, &document), SCHEDULER);
+        // A compiler-backed declaration with no structural row keeps its own
+        // coordinate: the key of the derived spelling is not the document's.
+        let lone = Document::new(symbol_key("a compiler-only row"), document.basis, [])
+            .with_location(document.location.clone());
+        assert_eq!(canonical_coordinate(SEMANTIC, &lone), SEMANTIC);
+    }
+
+    #[test]
+    fn name_resolution_misses_name_the_declarations_that_share_the_name() {
+        let mut engine = Resolver::new(false);
+        let stale = "/workspace/next-asp::src/lib/scheduler.ts:20::generateSchedule";
+        let fault = read_declaration(&mut engine, Probe::Document(stale), stale, "show")
+            .expect_err("stale line");
+        assert_eq!(fault.slug(), crate::FaultSlug::NotFound);
+        assert_eq!(
+            fault
+                .candidates()
+                .iter()
+                .map(|candidate| candidate.coordinate().as_str())
+                .collect::<Vec<_>>(),
+            vec![SCHEDULER],
+            "the stale coordinate points at where the declaration is now"
+        );
     }
 }

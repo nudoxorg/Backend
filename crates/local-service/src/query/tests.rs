@@ -1870,3 +1870,141 @@ fn the_words_place_the_declaration_they_name_in_the_package_they_name_first() {
 
 #[path = "source_ranking_tests.rs"]
 mod source_ranking_tests;
+
+#[test]
+fn local_search_offers_a_declaration_once_and_never_its_placeholders() {
+    let head = crate::builtin::genesis().expect("genesis");
+    let (base, _) = crate::builtin::initial_view().expect("initial view");
+    let capability = crate::builtin::test_builtin_view_capability().expect("capability");
+    let workspace = head.root();
+    let package = backend_engine::package_key("pkg");
+    let site = || backend_compile::SourceLocation::new("src/lib.rs", 2).expect("site");
+
+    let structural_label = "pkg::src/lib.rs:2::ferris".to_owned();
+    let semantic_label = format!("pkg::semantic::{}::ferris", "ab".repeat(32));
+    let external_label = format!("pkg::external::symbol:{}::ferris", "cd".repeat(32));
+    let project = Row::new(RowId::Package(package), base.basis(), "pkg");
+    let structural = Row::in_package(
+        RowId::Symbol(backend_engine::symbol_key(&structural_label)),
+        base.basis(),
+        package,
+        structural_label,
+    )
+    .with_kind(backend_engine::DeclarationKind::Function)
+    .with_source(site());
+    let semantic = Row::in_package(
+        RowId::Symbol(backend_engine::symbol_key("compiler identity of ferris")),
+        base.basis(),
+        package,
+        semantic_label,
+    )
+    .with_kind(backend_engine::DeclarationKind::Function)
+    .with_signature("fn ferris(count: usize)")
+    .with_source(site());
+    let placeholder = Row::new(
+        RowId::Symbol(backend_engine::symbol_key("external ferris")),
+        base.basis(),
+        external_label,
+    )
+    .with_document(Box::<[Fragment]>::default());
+
+    let view = backend_engine::ViewRoot::new_checked(
+        base.recipe(),
+        base.basis(),
+        base.frontier(),
+        vec![
+            project.clone(),
+            structural.clone(),
+            semantic.clone(),
+            placeholder.clone(),
+        ],
+        vec![ViewCoverage::Complete],
+        capability,
+    )
+    .expect("selected view");
+    // The view proves the pairing the search corpus relies on.
+    assert_eq!(
+        view.structural_twin(&semantic).map(|row| row.id),
+        Some(structural.id)
+    );
+    assert!(backend_library::is_inert_external_placeholder(&placeholder));
+
+    let profile = backend_semantic::vocabulary::LanguageProfile::Rust(
+        backend_semantic::vocabulary::RustEdition::Rust2021,
+    );
+    let project_id = RowId::Package(package).stable_key();
+    let fact = |row: &Row| {
+        let evidence = if row.id == RowId::Package(package) {
+            backend_extension_trustfall::SemanticQueryEvidence::Package(
+                backend_extension_trustfall::PackageScopeEvidence::new(package),
+            )
+        } else {
+            backend_extension_trustfall::SemanticQueryEvidence::StructuralFallback(
+                backend_extension_trustfall::StructuralFallbackEvidence::new(
+                    package, profile, [7; 32], [8; 32],
+                ),
+            )
+        };
+        backend_extension_trustfall::SemanticQueryFact::new(
+            evidence,
+            backend_extension_trustfall::SemanticQueryPresentation {
+                id: row.id.stable_key(),
+                kind: row
+                    .kind
+                    .map_or("project", backend_engine::DeclarationKind::name)
+                    .to_owned(),
+                coordinate: row.label.clone(),
+                name: row
+                    .label
+                    .rsplit("::")
+                    .next()
+                    .unwrap_or(&row.label)
+                    .to_owned(),
+                signature: row.signature.clone(),
+                documentation: String::new(),
+                score: None,
+                project: (row.id != RowId::Package(package)).then(|| project_id.clone()),
+                parent: None,
+                related: Box::new([]),
+            },
+        )
+    };
+    let evidence = backend_extension_trustfall::SemanticQueryCorpus::admit(
+        workspace,
+        vec![
+            fact(&project),
+            fact(&structural),
+            fact(&semantic),
+            fact(&placeholder),
+        ],
+    )
+    .expect("typed evidence");
+    let capability = view.capability().expect("view capability");
+    let coordinator = QueryCoordinator::new(
+        workspace,
+        view,
+        capability,
+        crate::builtin::admitted_coverage().expect("coverage"),
+        evidence,
+    )
+    .expect("coordinator");
+
+    let hits = |text: &str| {
+        let answer = coordinator
+            .search_local(LocalQuery::prefix(text, 10).expect("query"))
+            .expect("local search");
+        (
+            answer.total_matches,
+            answer
+                .rows
+                .into_iter()
+                .map(|ranked| ranked.row.id)
+                .collect::<Vec<_>>(),
+        )
+    };
+    // One row for the declaration, under its structural address; neither the
+    // compiler-backed twin nor the placeholder that is only named `ferris`.
+    assert_eq!(hits("ferris"), (1, vec![structural.id]));
+    // What only the compiler wrote about it still finds that one row.
+    assert_eq!(hits("usize"), (1, vec![structural.id]));
+}

@@ -1910,7 +1910,9 @@ fn compose_owner_timed(
     let selection_receipt = compiler_selection.encode_receipt().map_err(|error| {
         ProcessError::Profile(format!("encode compiler selection receipt: {error}"))
     })?;
-    backend_platform::durable::write_private_atomic(
+    // The receipt only changes when the selected toolchains do, so a restart with the same
+    // selection must not pay two device flushes to rewrite identical bytes.
+    backend_platform::durable::write_private_atomic_if_changed(
         &compiler_root.join("host-selection-v1.json"),
         selection_receipt.as_bytes(),
     )

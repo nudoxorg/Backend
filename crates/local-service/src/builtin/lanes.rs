@@ -41,6 +41,19 @@
 //!   records the mismatch. The answer is never silently rewritten from
 //!   structural rows, and never silently presented as fresh.
 //!
+//! ## One declaration, one address
+//!
+//! A Mixed file publishes a declaration twice: as a structural row
+//! (`<pkg>::<path>:<line>::<name>`) and as a compiler-backed row
+//! (`<pkg>::semantic::<id>::<name>`). They are one declaration when they are
+//! the same package, path, line and name, each lane has exactly one such row,
+//! and an import pairs only with an import (`ViewRoot::declaration_pair`). The
+//! structural row is then the canonical address: every command accepts either
+//! spelling and answers for the structural row, results list the declaration
+//! once, and the compiler-backed row only contributes its facts (call graph
+//! edges, reference sites with compiler proof, signature and documentation
+//! text for search). Rows that do not pair one-to-one stay separate.
+//!
 //! ## Provenance: how a client tells which layer answered
 //!
 //! * Structural rows use `project::path:line::Name` coordinates and a prose
