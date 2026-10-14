@@ -297,6 +297,16 @@ impl PythonEnvironmentCapture {
         interpreter: Option<&PythonInterpreterSelection>,
         control: PythonProjectControl<'_>,
     ) -> Result<Self, CheckerError> {
+        Self::capture_with_interpreter_provider(project, || Ok(interpreter.cloned()), control)
+    }
+
+    /// Request the independent host capability only after an installed venv is
+    /// selected. Source-only projects do not locate or probe unused host tools.
+    pub fn capture_with_interpreter_provider(
+        project: &Path,
+        interpreter: impl FnOnce() -> Result<Option<PythonInterpreterSelection>, CheckerError>,
+        control: PythonProjectControl<'_>,
+    ) -> Result<Self, CheckerError> {
         checkpoint(control)?;
         normal_absolute(project)?;
         let mut probes = Vec::new();
@@ -396,13 +406,13 @@ impl PythonEnvironmentCapture {
                     "system-site-packages venv is not an isolated declared dependency cohort",
                 ));
             }
-            let selection = interpreter.ok_or_else(|| {
+            let selection = interpreter()?.ok_or_else(|| {
                 project_error(
                     "",
                     "selected venv requires a host-policy-admitted CPython installation",
                 )
             })?;
-            let interpreter = probe_interpreter(project, &venv, text, selection, control)?;
+            let interpreter = probe_interpreter(project, &venv, text, &selection, control)?;
             let site = site_packages_path(&venv, interpreter.version);
             let mut budget = EnvironmentScanBudget::default();
             environment.roots.push(capture_root_with_budget(
@@ -1635,6 +1645,19 @@ mod tests {
         let mut workspace = super::super::Workspace::create()?;
         workspace.path = workspace.path.canonicalize().map_err(io_error)?;
         Ok(workspace)
+    }
+
+    #[test]
+    fn source_only_capture_never_resolves_unused_interpreter_policy() -> Result<(), CheckerError> {
+        let root = fixture()?;
+        let cancelled = AtomicBool::new(false);
+        let capture = PythonEnvironmentCapture::capture_with_interpreter_provider(
+            &root.path,
+            || panic!("unused host capability must not be resolved"),
+            control(&cancelled),
+        )?;
+        assert!(capture.selected_venv_relative().is_none());
+        Ok(())
     }
 
     #[test]

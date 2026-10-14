@@ -259,7 +259,7 @@ fn prepare_index_project_at(
         execution_intent,
         owner_cluster.is_some(),
         Arc::new(AtomicBool::new(false)),
-        compiler.python_interpreter_selection().cloned(),
+        compiler.python_interpreter_admission(),
     )?;
     let mut committed_captures = BTreeMap::new();
     let result = finish_index_scan(
@@ -309,7 +309,7 @@ pub(super) fn capture_index_scan(
     execution_intent: CompileExecutionIntent,
     capture_workspace_snapshot: bool,
     cancellation: Arc<AtomicBool>,
-    interpreter: Option<backend_frontend_python::legacy::checker::PythonInterpreterSelection>,
+    interpreter: Option<Arc<backend_engine::application::PythonInterpreterHostAdmission>>,
 ) -> Result<IndexScanWork, BuiltinModelError> {
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let relation = snapshot
@@ -397,11 +397,14 @@ pub(super) fn run_index_scan(work: IndexScanWork) -> Result<IndexScanResult, Ind
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(15 * 60),
         };
         scan.python_environment = Some(
-            match PythonEnvironmentCapture::capture_with_interpreter(
-                scan.revision_fence.canonical_root(),
-                work.interpreter.as_ref(),
-                control,
-            ) {
+            match match work.interpreter.as_ref() {
+                Some(admission) => {
+                    admission.capture_project(scan.revision_fence.canonical_root(), control)
+                }
+                None => {
+                    PythonEnvironmentCapture::capture(scan.revision_fence.canonical_root(), control)
+                }
+            } {
                 Ok(capture) => PythonEnvironmentInput::Captured(capture),
                 Err(_error) if work.cancellation.load(Ordering::Acquire) => {
                     return Err(IndexScanFailure::Cancelled);
@@ -1952,7 +1955,7 @@ pub(super) struct IndexScanWork {
     reusable: BTreeMap<[u8; 32], ProductSourceRecord>,
     capture_workspace_snapshot: bool,
     cancellation: Arc<AtomicBool>,
-    interpreter: Option<backend_frontend_python::legacy::checker::PythonInterpreterSelection>,
+    interpreter: Option<Arc<backend_engine::application::PythonInterpreterHostAdmission>>,
 }
 
 /// Worker scan outcome, distinguishing an explicit job cancellation from an

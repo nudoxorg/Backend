@@ -2758,8 +2758,7 @@ pub struct LocalRuntimePackageAuthority {
     pub python_checker: LocalRuntimePythonCheckerAdmission<Pyrefly>,
     /// Independent host-policy interpreter capability for installed input capture.
     /// It never names a project-selected venv executable.
-    pub python_interpreter:
-        Option<backend_frontend_python::legacy::checker::PythonInterpreterSelection>,
+    pub python_interpreter: Option<Arc<super::host::PythonInterpreterHostAdmission>>,
     /// One owner-shared request-time admission; lane workers never own independent caches.
     pub deferred_native_python: Option<Arc<DeferredNativePython>>,
     /// Rust Analyzer/Cargo authority.
@@ -3130,11 +3129,12 @@ impl Clone for LocalCompilerClient {
 }
 
 impl LocalCompilerClient {
-    /// Borrow the independent host-policy Python installation selection.
-    pub fn python_interpreter_selection(
+    /// Clone the independent frozen policy; resolving it is confined to a
+    /// selected installed environment request, never checker/owner startup.
+    pub fn python_interpreter_admission(
         &self,
-    ) -> Option<&backend_frontend_python::legacy::checker::PythonInterpreterSelection> {
-        self.shared.python_interpreter.as_ref()
+    ) -> Option<Arc<super::host::PythonInterpreterHostAdmission>> {
+        self.shared.python_interpreter.clone()
     }
 
     /// Checks the exact retained local Python program, producer, selected binding,
@@ -3902,8 +3902,7 @@ struct RuntimeShared {
     python_snapshots: Mutex<PythonSnapshotCache>,
     go_authority: Option<ConfiguredGoOracle>,
     native_python: Option<Arc<DeferredNativePython>>,
-    python_interpreter:
-        Option<backend_frontend_python::legacy::checker::PythonInterpreterSelection>,
+    python_interpreter: Option<Arc<super::host::PythonInterpreterHostAdmission>>,
     native_python_timeout: LocalCompilerTimeout,
     native_python_observations: Sender<ToolchainProbeObservation>,
 }
