@@ -32,6 +32,21 @@ pub(super) const INSTALLED_PYTHON_ROLES: [LocalHostVariable; PLATFORM_PATH_CAPAC
 ];
 
 impl<Environment: LocalHostEnvironment> LocalCompilerHost<Environment> {
+    /// Freezes independent interpreter candidates without starting an owner or probe.
+    ///
+    /// # Errors
+    /// Rejects a relative installation home. Selected-path failures remain deferred
+    /// until a project actually requests an installed environment.
+    pub fn capture_python_interpreter_admission(
+        &self,
+    ) -> Result<PythonInterpreterHostAdmission, LocalCompilerHostError> {
+        let home = self.optional_absolute_path(LocalHostVariable::Home)?;
+        Ok(PythonInterpreterHostAdmission::capture(
+            self,
+            home.as_deref(),
+        ))
+    }
+
     fn frozen_python_paths(
         &self,
         home: Option<&Path>,
