@@ -384,6 +384,13 @@ impl Ask {
                     ask.complete_submission(stale_submission(), cx);
                     return;
                 }
+                if authority.is_none() {
+                    // No serving read was captured. Retained row captions do
+                    // not replace the live owner's typed refusal on Enter.
+                    let outcome = ask.empty_submission(cx);
+                    ask.complete_submission(outcome, cx);
+                    return;
+                }
                 if secondary && !shift {
                     ask.choose_all(cx);
                 } else {
@@ -2202,21 +2209,8 @@ mod tests {
             ask.read_with(&rig.cx, |ask, cx| ask.read_status(cx).0.is_some()),
             "retained rows remain visible with explicit unavailable words"
         );
-        let json = rig
-            .cx
-            .update(|window, _| window.debug_a11y_tree_json())
-            .expect("passively renewed Ask tree");
-        let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree");
-        assert!(
-            tree["nodes"]
-                .as_object()
-                .expect("nodes")
-                .values()
-                .any(|node| node["aria"]["role"].as_str() == Some("Status")
-                    && node["aria"]["label"]
-                        .as_str()
-                        .is_some_and(|label| label.contains("same Ask owner refusal")))
-        );
+        assert!(ask_fault_status(&mut rig, "same Ask owner refusal"),
+            "the passively renewed Ask Status itself displays the typed refusal");
     }
 
     fn assert_refusal(rig: &mut crate::shell::tests::Rig, draft: &str, words: &str) {
@@ -2234,7 +2228,9 @@ mod tests {
     }
 
     #[gpui::test]
-    fn actual_empty_search_enter_and_all_results_keep_exact_draft_until_escape(cx: &mut TestAppContext) {
+    fn actual_empty_search_enter_and_all_results_keep_exact_draft_until_escape(
+        cx: &mut TestAppContext,
+    ) {
         let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0,
             ReadPool::start(1, |_| EmptySearch).expect("empty search reader"));
         native_ask(&mut rig);
@@ -2259,6 +2255,26 @@ mod tests {
         assert!(input.read_with(&rig.cx, |input, _| input.value().is_empty()), "only a new query visit clears the old draft");
     }
 
+    fn ask_fault_status(rig: &mut Rig, detail: &str) -> bool {
+        let json = rig
+            .cx
+            .update(|window, _| window.debug_a11y_tree_json())
+            .expect("current native Ask tree");
+        let tree: serde_json::Value = serde_json::from_str(&json).expect("native tree JSON");
+        let identity = format!("{:?}", gpui::ElementId::Name("ask-read-status".into()));
+        tree["nodes"]
+            .as_object()
+            .expect("native nodes")
+            .values()
+            .any(|node| {
+                node["element_id"].as_str() == Some(identity.as_str())
+                    && node["aria"]["role"].as_str() == Some("Status")
+                    && node["aria"]["label"]
+                        .as_str()
+                        .is_some_and(|words| words.contains(detail))
+            })
+    }
+
     #[gpui::test]
     fn actual_enter_denies_a_nonserving_owner_without_losing_the_draft(cx: &mut TestAppContext) {
         let mut rig = rig_with_reads(cx, Some(page_route("RelationLabel")), 1440.0, 900.0,
@@ -2272,6 +2288,8 @@ mod tests {
         rig.keys("enter");
         assert_eq!(rig.route(), route);
         assert_refusal(&mut rig, "RelationLabel", "index attachment retired");
+        assert!(ask_fault_status(&mut rig, "index attachment retired"),
+            "the Ask region itself retains the current typed owner fault after Enter");
     }
 
     #[gpui::test]
