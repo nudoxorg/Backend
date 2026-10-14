@@ -30,9 +30,9 @@ class LiveContractAdmissionTests(unittest.TestCase):
     def test_wrong_revision_or_source_cannot_pass_live_health(self):
         import copy
         root, source = "a" * 64, "b" * 64
-        summary = {"answer": "status", "detail": "summary", "availability": "available", "readiness": "ready", "coverage": [], "capabilities": {}, "revision": root, "revision_tag": root[:8]}
+        summary = {"answer": "status", "detail": "summary", "availability": "available", "readiness": "indexing", "publication": "populated", "rows": 25, "coverage": [], "capabilities": {}, "revision": root, "revision_tag": root[:8]}
         full = dict(summary, detail="full", source=source, source_tag=source[:8])
-        page = {"source_root": root, "source_object": source}
+        page = dict(full)
         surface.require_live_health(summary, full, page)
         for field in ("revision", "source"):
             changed = copy.deepcopy(full)

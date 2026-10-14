@@ -6662,7 +6662,7 @@ pub(in crate::builtin) fn package_source_membership_page_from_snapshot(
     })
 }
 
-pub(super) fn semantic_versions(
+pub(in crate::builtin) fn semantic_versions(
     daemon: &crate::Locald<BuiltinModel, BuiltinValidator, BuiltinAuthorityVerifier>,
     package: &backend_engine::PackageReference,
     workspace: Option<&Path>,

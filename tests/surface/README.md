@@ -134,9 +134,10 @@ missing suggestion or changed operand; the product run must still pass in CI.
 ## Live owner and bounded-search assertions (W1.3)
 
 The polyglot case additionally reads passive health in summary and full detail
-from the exact published locald. Both must be ready/available and carry an exact
-revision matching the admitted MCP outline page; full source identity must also
-match that page. Summary omits full-only source fields and all short tags must
+from the exact published locald. Both must be available/populated and carry exact revision/source identities
+matching an independent full MCP `backend.status` read of the same whole owner.
+Readiness, coverage and visible row counts must agree; readiness is reported
+truthfully, rather than forcing a global `ready` value. Summary omits full-only source fields and all short tags must
 match their exact identities. This uses public cross-interface evidence instead
 of an embedded echo owner or internal request/frame counters.
 

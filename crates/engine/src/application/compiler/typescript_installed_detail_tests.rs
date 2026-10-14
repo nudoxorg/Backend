@@ -4,7 +4,7 @@ use backend_library::interface::{
     TypeScriptAuthorityFailureKind as F, TypeScriptCompilerAdmissionCause as C,
     TypeScriptCompilerApiExport as A, TypeScriptCompilerPackageRole as R,
 };
-use backend_semantic::vocabulary::TypeScriptSource;
+use backend_semantic::vocabulary::{LanguageProfile, Stage, TypeScriptSource};
 
 fn package_path() -> Box<Path> {
     #[cfg(unix)]

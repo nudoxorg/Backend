@@ -896,11 +896,20 @@ impl TszProject {
         symbol: TszSymbolId,
         expected: &str,
     ) -> Option<&str> {
+        Self::property_name_source_in_program(self.program(), symbol, expected)
+    }
+
+    fn property_name_source_in_program<'source>(
+        program: &'source tsz::parallel::MergedProgram,
+        symbol: TszSymbolId,
+        expected: &str,
+    ) -> Option<&'source str> {
         if expected.is_empty() {
             return None;
         }
         let mut spelling = None;
-        self.with_property_name_sources_from_owner(
+        Self::with_property_name_sources_in_program(
+            program,
             symbol,
             |_| Ok(()),
             |name, raw| {
@@ -934,11 +943,20 @@ impl TszProject {
     pub fn with_property_name_sources_from_owner<'source>(
         &'source self,
         symbol: TszSymbolId,
+        checkpoint: impl FnMut(u64) -> Result<(), tsz_common::ProjectExecutionStop>,
+        consume: impl FnMut(&'source str, &'source str),
+    ) -> Result<(), tsz_common::ProjectExecutionStop> {
+        Self::with_property_name_sources_in_program(self.program(), symbol, checkpoint, consume)
+    }
+
+    fn with_property_name_sources_in_program<'source>(
+        program: &'source tsz::parallel::MergedProgram,
+        symbol: TszSymbolId,
         mut checkpoint: impl FnMut(u64) -> Result<(), tsz_common::ProjectExecutionStop>,
         mut consume: impl FnMut(&'source str, &'source str),
     ) -> Result<(), tsz_common::ProjectExecutionStop> {
         checkpoint(0)?;
-        let Some(owner) = self.program.symbols.get(symbol) else {
+        let Some(owner) = program.symbols.get(symbol) else {
             return Ok(());
         };
         if owner.declarations.len() != owner.stable_declarations.len() {
@@ -951,7 +969,7 @@ impl TszProject {
             }
             let Some(file) = usize::try_from(stable.file_idx)
                 .ok()
-                .and_then(|index| self.program.files.get(index))
+                .and_then(|index| program.files.get(index))
             else {
                 continue;
             };
@@ -2454,72 +2472,78 @@ mod tests {
         };
         // Corrupt only captured provenance for negative controls: no replacement
         // symbol or positive authority is synthesized by the fixture.
-        let project = authority.project.as_mut().unwrap();
-        project
-            .program
+        // Rebuild an owned unsealed model from the same real binds. The checked
+        // image remains immutable; corrupt only this detached negative control.
+        let project = authority.project().unwrap();
+        let binds: Vec<_> = project.bound_sources.values().map(Arc::as_ref).collect();
+        let mut program = tsz::parallel::merge_bind_results_ref_with_project_semantic_options(
+            &binds, project.options.semantic_options,
+        );
+        program.set_project_file_formats(&project.options.file_formats).unwrap();
+        program.set_project_module_resolutions(&project.options.module_resolutions).unwrap();
+        assert_eq!(
+            TszProject::property_name_source_in_program(&program, symbol, "label"),
+            Some("label"),
+            "the detached native model preserves the real positive binding before corruption"
+        );
+        program
             .symbols
             .get_mut(symbol)
             .unwrap()
             .stable_declarations
             .clear();
         assert_eq!(
-            project.property_name_source_from_owner(symbol, "label"),
+            TszProject::property_name_source_in_program(&program, symbol, "label"),
             None,
             "a missing stable partner is refused before zipped lookup"
         );
-        project
-            .program
+        program
             .symbols
             .get_mut(symbol)
             .unwrap()
             .stable_declarations
             .push(stable);
-        project
-            .program
+        program
             .symbols
             .get_mut(symbol)
             .unwrap()
             .stable_declarations[0]
-            .file_idx = project
-            .program
+            .file_idx = program
             .symbols
             .get(foreign_symbol)
             .unwrap()
             .stable_declarations[0]
             .file_idx;
         assert_eq!(
-            project.property_name_source_from_owner(symbol, "label"),
+            TszProject::property_name_source_in_program(&program, symbol, "label"),
             None,
             "same-spelled foreign source cannot replace this symbol's declaration"
         );
-        project
-            .program
+        program
             .symbols
             .get_mut(symbol)
             .unwrap()
             .stable_declarations[0] = stable;
-        project
-            .program
+        program
             .symbols
             .get_mut(symbol)
             .unwrap()
             .stable_declarations[0]
             .end -= 1;
         assert_eq!(
-            project.property_name_source_from_owner(symbol, "label"),
+            TszProject::property_name_source_in_program(&program, symbol, "label"),
             None,
             "a stale declaration span cannot lend spelling"
         );
-        project
-            .program
+        program
             .symbols
             .get_mut(symbol)
             .unwrap()
             .stable_declarations[0] = stable;
-        let file = &mut project.program.files[stable.file_idx as usize];
+        let file = &mut program.files[stable.file_idx as usize];
         Arc::make_mut(&mut file.node_symbols).insert(declaration.0, foreign_symbol);
         assert_eq!(
-            project.property_name_source_from_owner(symbol, "label"),
+            TszProject::property_name_source_in_program(&program, symbol, "label"),
             None,
             "even matching file/span needs the exact declaration-node symbol binding"
         );
