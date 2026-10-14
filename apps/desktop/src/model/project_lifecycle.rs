@@ -442,13 +442,12 @@ mod tests {
     #[test]
     fn typed_installed_compiler_refusal_keeps_shared_words_and_ignores_raw_owner_text() {
         use backend_library::interface::{
-            AuthorityDiagnosticClass, AuthorityPhase, CompilerDiagnostic, CompilerTerminal,
+            AuthorityDiagnosticClass, AuthorityPhase, CompilerDiagnostic, CompilerTerminal, ContentId,
+            Language, Stage,
             SourceAuthority, TypeScriptCompilerAdmissionCause as C,
             TypeScriptCompilerAdmissionDetail as D, TypeScriptCompilerPackageRole as R,
             TypeScriptCompilerVersion as V,
         };
-        use backend_semantic::vocabulary::{Language, Stage};
-        use backend_version::ContentId;
         let detail = D::new(R::SelectedCompiler, V::new("7.0.2"), C::RuntimeFiles {
                 observed: 257,
                 maximum: 256,

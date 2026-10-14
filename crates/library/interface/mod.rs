@@ -26,7 +26,8 @@ pub use backend_execution::adaptive::{
     RetryBudget,
 };
 pub use backend_semantic::vocabulary::{
-    AuthorityDiagnosticClass, AuthorityPhase, LoweringUnsupported, MAX_NATIVE_DIAGNOSTIC_BYTES,
+    AuthorityDiagnosticClass, AuthorityPhase, Language, LoweringUnsupported, MAX_NATIVE_DIAGNOSTIC_BYTES,
+    Stage,
 };
 pub use compiler::{
     AtomFaultFacts, BoundedCompilerFragmentDetail, BuildFaultKind, CanonicalDataFaultFacts,
