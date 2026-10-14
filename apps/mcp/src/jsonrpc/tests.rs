@@ -5356,6 +5356,58 @@ fn catalog_from_scratch_exposes_every_closed_route_schema_under_the_complete_bud
                 .expect("useful route help")
                 .is_empty()
         );
+        if name == SURFACE_TOOL {
+            assert_eq!(card["title"], "Direct-only expert protocol guidance");
+            assert!(card.get("inputSchema").is_none());
+            assert!(card.get("outputSchema").is_none());
+            let line = text
+                .lines()
+                .find(|line| line.starts_with("- `backend.surface`"))
+                .expect("expert route index entry");
+            assert!(line.contains("[expert protocol guidance]"));
+            assert!(!line.contains("[schema and help]"));
+        } else {
+            assert!(
+                card["inputSchema"].is_object(),
+                "complete input schema for {name}"
+            );
+            assert!(
+                card["outputSchema"].is_object(),
+                "complete output schema for {name}"
+            );
+        }
+        if card["_meta"]["backend/catalog"]["registeredTarget"] == true {
+            assert_ne!(name, SURFACE_TOOL);
+            assert!(card["inputSchema"].is_object());
+            assert!(card["outputSchema"].is_object());
+        }
+        if name == QUERY_TOOL {
+            let bounds = &card["_meta"]["backend/queryAdmission"];
+            assert_eq!(
+                bounds["maxQueryUtf8Bytes"],
+                backend_library::MAX_GRAPH_QUERY_BYTES
+            );
+            assert_eq!(
+                bounds["maxVariables"],
+                backend_library::MAX_GRAPH_QUERY_FIELDS
+            );
+            assert_eq!(
+                bounds["maxAggregateVariableBytes"],
+                backend_library::MAX_GRAPH_VALUE_BYTES
+            );
+            assert!(
+                card["inputSchema"]["properties"]["query"]
+                    .get("maxLength")
+                    .is_none(),
+                "UTF-8 byte limit is not a Unicode character limit"
+            );
+            let variables = &card["inputSchema"]["properties"]["variables"]["anyOf"][1];
+            assert_eq!(
+                variables["maxProperties"],
+                backend_library::MAX_GRAPH_QUERY_FIELDS
+            );
+            assert_eq!(variables["propertyNames"]["minLength"], 1);
+        }
         assert_eq!(card["_meta"]["backend/catalog"]["uri"], uri);
         assert_eq!(
             card["_meta"]["backend/catalog"]["index"],
@@ -5409,7 +5461,7 @@ fn catalog_from_scratch_exposes_every_closed_route_schema_under_the_complete_bud
             .iter()
             .any(|template| template["uriTemplate"]
                 == "backend://tools/catalog/{name}{?offset,limit,version}"
-                && template["mimeType"] == "application/json")
+                && template.get("mimeType").is_none())
     );
     for uri in [
         "backend://tools/catalog/backend.no_such_tool",
@@ -5460,6 +5512,14 @@ fn catalog_ranges_bind_full_schema_bytes_and_actual_ids_without_owner_dispatch()
         1
     );
     assert_eq!(single_byte["result"]["contents"][0]["text"], "{");
+    assert_eq!(
+        single_byte["result"]["contents"][0]["mimeType"], "text/plain",
+        "an actual partial JSON range uses fragment-compatible MIME"
+    );
+    assert_eq!(
+        single_byte["result"]["_meta"]["backend/catalogRange"]["complete"],
+        false
+    );
     let bad_version = if version.starts_with('0') {
         format!("1{}", &version[1..])
     } else {

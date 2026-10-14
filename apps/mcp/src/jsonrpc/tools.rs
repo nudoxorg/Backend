@@ -231,7 +231,7 @@ pub(super) fn catalog_markdown() -> String {
                 grammar.spec().map_or(grammar.name(), |spec| spec.title)
             }
             ToolRoute::Query => "Typed graph query",
-            ToolRoute::Surface => "Direct typed raw surface",
+            ToolRoute::Surface => "Direct-only expert protocol guidance",
             ToolRoute::IndexStart => "Start indexing",
             ToolRoute::IndexProgress => "Saved operation progress",
             ToolRoute::IndexCancel => "Cancel indexing",
@@ -247,9 +247,14 @@ pub(super) fn catalog_markdown() -> String {
         } else {
             "capability-dependent"
         };
+        let link = if matches!(descriptor.route, ToolRoute::Surface) {
+            "expert protocol guidance"
+        } else {
+            "schema and help"
+        };
         let _ = writeln!(
             output,
-            "- `{}` — {title} ({policy}); [schema and help]({CATALOG_RESOURCE_URI}/{})",
+            "- `{}` — {title} ({policy}); [{link}]({CATALOG_RESOURCE_URI}/{})",
             descriptor.name, descriptor.name
         );
     }
@@ -263,7 +268,7 @@ pub(super) fn catalog_tool(name: &str) -> Option<Value> {
     let mut tool = match descriptor.route {
         ToolRoute::Query => query_catalog_tool(),
         ToolRoute::Surface => json!({
-            "name":SURFACE_TOOL, "title":"Direct typed raw surface",
+            "name":SURFACE_TOOL, "title":"Direct-only expert protocol guidance",
             "description":"Direct clients may send {command:<closed tagged SurfaceCommand>,detail:<summary|standard|full>}. The command carries an operation tag and its exact typed operands. This private escape hatch is not a registered named target: backend.call refuses it before native dispatch. Use the equivalent registered route's complete schema and executable continuation when available; never move a returned command cursor into an outer argument.",
             "_meta":{"backend/directOnly":true,"backend/registeredTarget":false}
         }),
@@ -291,8 +296,11 @@ fn query_catalog_tool() -> Value {
         "description":"Typed Trustfall joins over one selected immutable revision. Read backend://schema/query for starting edges, fields and executable examples. Variables are scalars or lists, never objects, and nesting is bounded. A first page may adapt its limit; copy its exact continuation_call to resume the same query/revision with the issued limit. Typed refusals preserve unavailable, cancelled and stale-source facts.",
         "inputSchema":{
             "type":"object", "properties":{
-                "query":{"type":"string","minLength":1},
-                "variables":{"anyOf":[{"type":"null"},{"type":"object","additionalProperties":{"$ref":"#/$defs/value"}}]},
+                "query":{"type":"string","minLength":1,
+                    "description":format!("Nonempty query text; at most {} UTF-8 bytes, not Unicode characters.", backend_library::MAX_GRAPH_QUERY_BYTES)},
+                "variables":{
+                    "description":format!("At most {} nonempty variable names. Aggregate admission is at most {} bytes: UTF-8 variable names and string values, recursively summed lists, and 16 bytes per non-string scalar.",backend_library::MAX_GRAPH_QUERY_FIELDS,backend_library::MAX_GRAPH_VALUE_BYTES),
+                    "anyOf":[{"type":"null"},{"type":"object","maxProperties":backend_library::MAX_GRAPH_QUERY_FIELDS,"propertyNames":{"minLength":1},"additionalProperties":{"$ref":"#/$defs/value"}}]},
                 "limit":{"type":"integer","minimum":1,"maximum":backend_library::QueryLimit::MAX,"default":backend_present::DEFAULT_LIMIT},
                 "cursor":{"type":"string","minLength":1,"description":"Exact owner continuation for this immutable query; prefer the complete executable continuation_call."},
                 "detail":detail_property(QUERY_TOOL)
@@ -303,7 +311,12 @@ fn query_catalog_tool() -> Value {
         },
         "outputSchema":{"type":"object","description":"Unchanged graph-page structuredContent, including revision, rows, emitted count, terminal and optional executable continuation_call; errors are typed refusals."},
         "annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false},
-        "_meta":{"backend/querySchema":"backend://schema/query"}
+        "_meta":{"backend/querySchema":"backend://schema/query",
+            "backend/queryAdmission":{"maxQueryUtf8Bytes":backend_library::MAX_GRAPH_QUERY_BYTES,
+                "maxVariables":backend_library::MAX_GRAPH_QUERY_FIELDS,
+                "maxAggregateVariableBytes":backend_library::MAX_GRAPH_VALUE_BYTES,
+                "nonStringScalarBytes":16,"maxValueDepth":backend_library::MAX_GRAPH_VALUE_DEPTH,
+                "variableNames":"nonempty UTF-8; name bytes count toward the aggregate"}}
     })
 }
 
