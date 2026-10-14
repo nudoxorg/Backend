@@ -246,10 +246,7 @@ impl std::error::Error for WorkspaceCreateRollbackFailure {
 impl std::fmt::Debug for WorkspaceDirectoryCreateFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotCreated(source) => formatter
-                .debug_tuple("NotCreated")
-                .field(source)
-                .finish(),
+            Self::NotCreated(source) => formatter.debug_tuple("NotCreated").field(source).finish(),
             Self::Created { source, .. } => formatter
                 .debug_struct("Created")
                 .field("source", source)
@@ -981,7 +978,7 @@ impl WorkspaceRoot {
         &self,
         name: &str,
         maximum: usize,
-    ) -> io::Result<String> {
+    ) -> io::Result<(String, Self)> {
         let selected = self.open_dir_source_checked(&[name])?;
         let selected_id = FileId128::of_handle(selected.handle())?;
         let parent = self.reopen_current_directory(WorkspacePurpose::ReadOnlySource)?;
@@ -997,9 +994,9 @@ impl WorkspaceRoot {
                 ));
             }
             if entry.name == name {
-                return Ok(entry.name);
+                return Ok((entry.name, actual));
             }
-            if matched.replace(entry.name).is_some() {
+            if matched.replace((entry.name, actual)).is_some() {
                 return Err(invalid_data(
                     "selected directory identity has ambiguous names",
                 ));
@@ -2792,10 +2789,8 @@ mod tests {
     fn postcreate_setup_refusal_rolls_back_the_held_object_not_its_replacement_name() {
         let path = fresh_path("created-handle-rollback");
         let root = WorkspaceRoot::create(&path).expect("create private root");
-        let result = root.create_child_dir_exclusive_with_sharing(
-            "stage",
-            Sharing::Transient,
-            || {
+        let result =
+            root.create_child_dir_exclusive_with_sharing("stage", Sharing::Transient, || {
                 fs::rename(path.join("stage"), path.join("original-created-object"))?;
                 fs::create_dir(path.join("stage"))?;
                 fs::write(path.join("stage/payload"), b"replacement")?;

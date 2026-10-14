@@ -1022,10 +1022,10 @@ fn actual_project_directory(
         let name = name
             .to_str()
             .ok_or_else(|| project_error("", "venv component is not Unicode"))?;
-        let actual_name = directory
+        let (actual_name, child) = directory
             .actual_source_child_directory(name, MAX_FILES)
             .map_err(io_error)?;
-        directory = directory.open_dir(&actual_name).map_err(io_error)?;
+        directory = child;
         actual.push(actual_name);
     }
     directory.verify_path(&actual).map_err(io_error)?;
@@ -2040,6 +2040,36 @@ mod tests {
             canonical_path_spelling(&decoded.environment.probes[0].relative)?,
             "local/py3/pyvenv.cfg"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn actual_name_receipt_retains_the_selected_directory_across_replacement()
+    -> Result<(), CheckerError> {
+        let root = fixture()?;
+        std::fs::create_dir(root.path.join("venv")).map_err(io_error)?;
+        std::fs::create_dir(root.path.join("replacement")).map_err(io_error)?;
+        std::fs::write(root.path.join("venv/owned.py"), "original = 42\n").map_err(io_error)?;
+        std::fs::write(
+            root.path.join("replacement/foreign.py"),
+            "replacement = 43\n",
+        )
+        .map_err(io_error)?;
+        let parent = backend_platform::DirectoryCapability::open_read_only_source(&root.path)
+            .map_err(io_error)?;
+        let (name, held) = parent
+            .actual_source_child_directory("venv", MAX_FILES)
+            .map_err(io_error)?;
+        assert_eq!(name, "venv");
+        std::fs::rename(root.path.join("venv"), root.path.join("original-held"))
+            .map_err(io_error)?;
+        std::fs::rename(root.path.join("replacement"), root.path.join("venv")).map_err(io_error)?;
+        assert!(held.verify_path(&root.path.join("venv")).is_err());
+        held.verify_path(&root.path.join("original-held"))
+            .map_err(io_error)?;
+        let entries = held.entries(MAX_FILES).map_err(io_error)?;
+        assert!(entries.iter().any(|entry| entry.name == "owned.py"));
+        assert!(entries.iter().all(|entry| entry.name != "foreign.py"));
         Ok(())
     }
 
