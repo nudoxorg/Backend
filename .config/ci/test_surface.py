@@ -77,6 +77,15 @@ class LiveContractAdmissionTests(unittest.TestCase):
 
 
 class ContinuationAdmissionTests(unittest.TestCase):
+    def test_slow_page_cannot_pass_after_the_traversal_deadline(self):
+        from unittest.mock import Mock, patch
+        reference = {"records": [{"id": 1}, {"id": 2}], "more": False}
+        fetch = Mock(return_value={"answer": "records"})
+        with patch.object(surface.time, "monotonic", side_effect=[0, 0, 31]):
+            with self.assertRaisesRegex(RuntimeError, "deadline"):
+                surface.walk_search_pages(reference, fetch)
+        fetch.assert_called_once_with(None)
+
     def test_traversal_rejects_loss_repetition_drift_and_false_exhaustion(self):
         import copy
         reference = {"answer": "records", "query": "language", "records": [{"id": 1}, {"id": 2}, {"id": 3}], "more": False, "coverage": [], "readiness": "ready"}

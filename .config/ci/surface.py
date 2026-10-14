@@ -299,6 +299,8 @@ def walk_search_pages(reference: dict, fetch_page, limit: int = 1) -> tuple[int,
         if time.monotonic() - started > 30:
             raise RuntimeError("continuation: exceeded the traversal deadline")
         page = fetch_page(cursor)
+        if time.monotonic() - started > 30:
+            raise RuntimeError("continuation: exceeded the traversal deadline")
         if page.get("answer") != "records":
             raise RuntimeError("continuation: expected a records page")
         for field in ("query", "coverage", "readiness"):
