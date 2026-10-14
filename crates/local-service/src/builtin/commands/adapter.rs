@@ -4690,7 +4690,7 @@ impl CommandAdapter {
             let Some(label) = label else {
                 return Ok(None);
             };
-            let Some(row) = backend_library::resolve_selected_document_row(library.view(), label)?
+            let Some(row) = backend_library::resolve_canonical_document_row(library.view(), label)?
             else {
                 return Ok(None);
             };

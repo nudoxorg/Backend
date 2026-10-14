@@ -161,14 +161,25 @@ pub(super) fn execute_semantic_graph(
     })?;
     let source_id = backend_engine::RowId::Symbol(source_symbol);
     let semantic_query = query.with_resolved_symbol(source_symbol);
-    let package = {
+    // A structural declaration that the compiler also published is one
+    // declaration: its links live on the compiler-backed twin, and every
+    // endpoint is reported under its canonical (structural) row so the
+    // neighborhood lists each declaration once. A caller that addressed the
+    // compiler-backed row itself keeps that row as its center unchanged.
+    let (package, semantic_symbol, canonical_endpoints) = {
         let source = library.view().row_ref(source_id).ok_or_else(|| {
             BuiltinModelError("semantic graph source is absent from the selected view".to_owned())
         })?;
         let Some(package) = source.package else {
             return Ok(None);
         };
-        package
+        let twin = library.view().semantic_twin(source).map(|twin| twin.id);
+        let semantic_symbol = match twin {
+            Some(backend_engine::RowId::Symbol(symbol)) => symbol,
+            _ => source_symbol,
+        };
+        let shadowed_center = library.view().structural_twin(source).is_some();
+        (package, semantic_symbol, !shadowed_center)
     };
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let sources = read_package_sources(&snapshot, package)?;
@@ -198,7 +209,7 @@ pub(super) fn execute_semantic_graph(
             let image = image.reopen().map_err(|error| {
                 BuiltinModelError(format!("reopen semantic graph image: {error}"))
             })?;
-            if semantic_entity_for_symbol(&image, package, source_symbol)?.is_some() {
+            if semantic_entity_for_symbol(&image, package, semantic_symbol)?.is_some() {
                 source_binding = Some(*binding);
                 break;
             }
@@ -211,12 +222,13 @@ pub(super) fn execute_semantic_graph(
         return Ok(None);
     };
     let project_paths = project_paths_for_package(&sources, package);
+    let semantic_id = backend_engine::RowId::Symbol(semantic_symbol);
     let mut relations = project_semantic_graph_relations(
         &activations,
         view,
         package,
-        source_symbol,
-        source_id,
+        semantic_symbol,
+        semantic_id,
         include_incoming,
         &project_paths,
         &available.retargeting_scopes(package, &profile_scopes),
@@ -235,6 +247,20 @@ pub(super) fn execute_semantic_graph(
     ) {
         relations.insert(relation);
     }
+    let relations = if canonical_endpoints {
+        relations
+            .into_iter()
+            .map(|relation| {
+                backend_engine::GraphRelation::new(
+                    view.canonical_row_id(relation.from),
+                    view.canonical_row_id(relation.to),
+                    relation.relation,
+                )
+            })
+            .collect::<BTreeSet<_>>()
+    } else {
+        relations
+    };
     let relations = relations.into_iter().collect::<Vec<_>>();
     let mut snapshot = library
         .graph_from_semantic_relations(semantic_query, &relations)
@@ -657,10 +683,11 @@ fn project_reference_facts_from_bytes(
             })?,
         );
     }
-    project_opened_reference_facts(
+    project_opened_reference_facts_for_lanes(
         &opened,
         view,
         package,
+        target_symbol,
         target_symbol,
         project_paths,
         structural_pairs,
@@ -671,11 +698,54 @@ fn project_reference_facts_from_bytes(
     )
 }
 
+/// The reference facts of a declaration only one lane published: the same
+/// symbol names it to the compiler images and to the name-matched call pairs.
+#[cfg(test)]
 fn project_opened_reference_facts(
     images: &[backend_semantic::ir::SemanticImageView<'_>],
     view: &backend_engine::ViewRoot,
     package: backend_engine::PackageKey,
     target_symbol: backend_engine::SymbolKey,
+    project_paths: &BTreeSet<String>,
+    structural_pairs: &[(String, String)],
+    root: Option<&std::path::Path>,
+    scope: &std::collections::BTreeMap<
+        backend_semantic::vocabulary::Language,
+        view_build::RetargetingScope,
+    >,
+    programs: &[&view_build::CurrentNativeProgram],
+    legacy_image_program: bool,
+) -> Result<Vec<backend_engine::ReferenceFact>, BuiltinModelError> {
+    project_opened_reference_facts_for_lanes(
+        images,
+        view,
+        package,
+        target_symbol,
+        target_symbol,
+        project_paths,
+        structural_pairs,
+        root,
+        scope,
+        programs,
+        legacy_image_program,
+    )
+}
+
+/// Collects the reference facts of one declaration.
+///
+/// `target_symbol` is the compiler-backed row that the semantic images know
+/// the declaration by; `structural_symbol` is the structural row that the
+/// name-matched call pairs know it by. They are the same row when only one
+/// lane published the declaration, and the two twins of one declaration
+/// otherwise (see [`backend_engine::ViewRoot::semantic_twin`]). Every site is
+/// reported under its canonical (structural) row, so a call proven by the
+/// compiler and the same call found by name appear once.
+fn project_opened_reference_facts_for_lanes(
+    images: &[backend_semantic::ir::SemanticImageView<'_>],
+    view: &backend_engine::ViewRoot,
+    package: backend_engine::PackageKey,
+    target_symbol: backend_engine::SymbolKey,
+    structural_symbol: backend_engine::SymbolKey,
     project_paths: &BTreeSet<String>,
     structural_pairs: &[(String, String)],
     // The package's source root, where a name-matched call's file is read
@@ -700,7 +770,7 @@ fn project_opened_reference_facts(
         programs,
         legacy_image_program,
     )?;
-    let target_row_id = backend_engine::RowId::Symbol(target_symbol);
+    let target_row_id = backend_engine::RowId::Symbol(structural_symbol);
     let mut published = BTreeSet::new();
     for image in images {
         let session = DocumentationSession::new(image);
@@ -812,6 +882,15 @@ fn project_opened_reference_facts(
             }
         }
     }
+    // Both lanes' facts now name the declaration's canonical sites, so the
+    // name-matched pass below sees (and skips) every call the compiler proved.
+    for fact in &mut facts {
+        if let backend_engine::RowId::Symbol(site) =
+            view.canonical_row_id(backend_engine::RowId::Symbol(fact.site))
+        {
+            fact.site = site;
+        }
+    }
     let target_name = {
         let target_row = view.row_ref(target_row_id).ok_or_else(|| {
             BuiltinModelError("references target is absent from the selected view".to_owned())
@@ -826,7 +905,7 @@ fn project_opened_reference_facts(
                 BuiltinModelError("references target has no declaration name".to_owned())
             })?
     };
-    let target_identity = view_build::structural_symbol_identity(target_symbol);
+    let target_identity = view_build::structural_symbol_identity(structural_symbol);
     for (caller_coordinate, callee_coordinate) in structural_pairs {
         let Some(callee_id) =
             view_build::view_row_for_structural_coordinate(view, package, callee_coordinate)
@@ -849,11 +928,15 @@ fn project_opened_reference_facts(
                 "structural references site is not a declaration row".to_owned(),
             ));
         };
-        if reference_fact_has_site_and_relation(
-            &facts,
-            caller_symbol,
+        // The compiler already proved this caller's call, whether it wrote it
+        // as a plain call or a method call; the name match adds nothing.
+        if [
             backend_engine::SemanticLinkKind::Calls,
-        ) {
+            backend_engine::SemanticLinkKind::MethodCall,
+        ]
+        .into_iter()
+        .any(|relation| reference_fact_has_site_and_relation(&facts, caller_symbol, relation))
+        {
             continue;
         }
         // A name-matched call is placed where it is in the file, or not at
@@ -944,8 +1027,11 @@ pub(super) fn execute_references(
 ) -> Result<backend_engine::SurfaceReply, BuiltinModelError> {
     let library = daemon.engine().daemon().library();
     let view = library.view();
-    let (target_symbol, package, target_label) = {
-        let target_row = view_build::resolve_selected_view_address(view, target.as_str())
+    // Both spellings of a declaration published by both lanes name one
+    // declaration here: the structural row is its canonical address, and its
+    // compiler-backed twin supplies the semantic facts.
+    let (target_symbol, structural_symbol, package, target_label) = {
+        let target_row = view_build::resolve_canonical_declaration(view, target.as_str())
             .declaration()
             .map_err(|failure| {
                 BuiltinModelError(match failure {
@@ -969,7 +1055,16 @@ pub(super) fn execute_references(
                 "references target is not attributed to a package".to_owned(),
             ));
         };
-        (target_symbol, package, target_row.label.as_str())
+        let semantic_symbol = match view.semantic_twin(target_row).map(|twin| twin.id) {
+            Some(backend_engine::RowId::Symbol(symbol)) => symbol,
+            _ => target_symbol,
+        };
+        (
+            semantic_symbol,
+            target_symbol,
+            package,
+            target_row.label.as_str(),
+        )
     };
     let snapshot = daemon.engine().daemon().owner().snapshot();
     let sources = read_package_sources(&snapshot, package)?;
@@ -998,7 +1093,7 @@ pub(super) fn execute_references(
             structural_calls,
             daemon,
             target,
-            target_symbol,
+            structural_symbol,
             package,
             target_label,
         );
@@ -1021,11 +1116,12 @@ pub(super) fn execute_references(
         .projects
         .get(&package.to_bytes())
         .map(|project| std::path::PathBuf::from(&project.label));
-    let facts = project_opened_reference_facts(
+    let facts = project_opened_reference_facts_for_lanes(
         &opened,
         view,
         package,
         target_symbol,
+        structural_symbol,
         &project_paths,
         &pairs,
         root.as_deref(),
@@ -1039,7 +1135,7 @@ pub(super) fn execute_references(
             .any(|activation| activation.has_program_manifest()),
     )?;
     let references = library
-        .references_for_symbol(target_symbol, &facts)
+        .references_for_symbol(structural_symbol, &facts)
         .map_err(|error| {
             BuiltinModelError(format!("project references through the catalog: {error}"))
         })?;
@@ -8174,6 +8270,114 @@ mod project_call_tests {
         ) {
             return Err("rust function retarget target is not set_note".to_owned());
         }
+        Ok(())
+    }
+
+    /// The structural row (`<pkg>::<path>:<line>::<name>`) for a declaration
+    /// that the compiler also published, plus the package row that lets the
+    /// view prove the two are one declaration.
+    fn structural_twin_rows(
+        package: backend_engine::PackageKey,
+        declarations: &[(&str, u32, &str)],
+    ) -> Result<Vec<Row>, String> {
+        let (initial, _) = initial_view().map_err(|error| error.to_string())?;
+        let mut rows = vec![Row::in_package(
+            RowId::Package(package),
+            initial.basis(),
+            package,
+            "fixture",
+        )];
+        for (path, line, name) in declarations {
+            let label = format!("fixture::{path}:{line}::{name}");
+            let location =
+                backend_compile::SourceLocation::new(*path, *line).map_err(|error| error)?;
+            rows.push(
+                Row::in_package(
+                    RowId::Symbol(backend_engine::symbol_key(&label)),
+                    initial.basis(),
+                    package,
+                    label,
+                )
+                .with_kind(backend_engine::DeclarationKind::Function)
+                .with_source(location),
+            );
+        }
+        Ok(rows)
+    }
+
+    #[test]
+    fn references_report_a_call_once_under_the_structural_site_when_both_lanes_found_it()
+    -> Result<(), String> {
+        let package = package_key("fixture");
+        let service_bytes =
+            project_call_image("src/service.rs", 1, b"set_note", TreeEntityId::new(0), None)?;
+        let caller_bytes = project_call_image(
+            "src/lib.rs",
+            2,
+            b"drive",
+            TreeEntityId::new(0),
+            Some(rust_function_foreign_call_fixture(82)),
+        )?;
+        let mut rows = semantic_view_rows(
+            package,
+            &[
+                ("src/service.rs", 1, "set_note", fixture_version(1)),
+                ("src/lib.rs", 2, "drive", fixture_version(2)),
+            ],
+        )?;
+        rows.extend(structural_twin_rows(
+            package,
+            &[
+                ("src/service.rs", 1, "set_note"),
+                ("src/lib.rs", 2, "drive"),
+            ],
+        )?);
+        let view = semantic_view(rows)?;
+        let set_note = semantic_symbol(package, fixture_version(1).identity());
+        let drive = semantic_symbol(package, fixture_version(2).identity());
+        let structural_set_note = backend_engine::symbol_key("fixture::src/service.rs:1::set_note");
+        let structural_drive = backend_engine::symbol_key("fixture::src/lib.rs:2::drive");
+        // The two lanes are one declaration, the structural row canonical.
+        assert_eq!(
+            view.canonical_row_id(RowId::Symbol(set_note)),
+            RowId::Symbol(structural_set_note)
+        );
+        assert_eq!(
+            view.canonical_row_id(RowId::Symbol(drive)),
+            RowId::Symbol(structural_drive)
+        );
+        let opened = [&service_bytes, &caller_bytes]
+            .into_iter()
+            .map(|bytes| SemanticImageView::reopen(bytes).map_err(|error| error.to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+        // The compiler proved `drive` calls `set_note`, and name matching found
+        // the same call: the caller must appear once, as its structural row.
+        let pairs = [(
+            "fixture::src/lib.rs:2::drive".to_owned(),
+            "fixture::src/service.rs:1::set_note".to_owned(),
+        )];
+        let facts = super::project_opened_reference_facts_for_lanes(
+            &opened,
+            &view,
+            package,
+            set_note,
+            structural_set_note,
+            &project_paths(&["src/service.rs", "src/lib.rs"]),
+            &pairs,
+            None,
+            &BTreeMap::new(),
+            &[],
+            true,
+        )
+        .map_err(|error| error.to_string())?;
+        assert_eq!(facts.len(), 1, "{facts:?}");
+        assert_eq!(facts[0].site, structural_drive);
+        assert_eq!(facts[0].relation, backend_engine::SemanticLinkKind::Calls);
+        assert_eq!(
+            facts[0].evidence.confidence,
+            backend_engine::SemanticConfidence::Compiler,
+            "the compiler's proof is kept over the name match"
+        );
         Ok(())
     }
 
