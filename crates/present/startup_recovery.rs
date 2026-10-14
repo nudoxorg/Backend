@@ -19,23 +19,25 @@ pub enum StartupRecoveryWorkspace {
 pub struct StartupRecoveryContext {
     project: String,
     endpoint: String,
-    authority_secret: String,
+    executable: String,
     workspace: StartupRecoveryWorkspace,
 }
 
 impl StartupRecoveryContext {
-    /// Retains all selected operands and the original workspace boundary.
+    /// Retains the locally admitted executable, public operands, and workspace
+    /// boundary. The caller must omit this projection for a custom credential
+    /// selection: replay here uses the conventional credential without naming it.
     #[must_use]
     pub fn new(
         project: String,
         endpoint: String,
-        authority_secret: String,
+        executable: String,
         workspace: StartupRecoveryWorkspace,
     ) -> Self {
         Self {
             project,
             endpoint,
-            authority_secret,
+            executable,
             workspace,
         }
     }
@@ -45,12 +47,9 @@ impl StartupRecoveryContext {
     /// only the captured anchor. Every operand uses the shared shell quoting.
     #[must_use]
     pub fn shell(&self) -> String {
-        let authority = format!(
-            "BACKEND_LOCALD_AUTHORITY_SECRET_FILE={}",
-            crate::shell::quote_argument(&self.authority_secret)
-        );
         let mut command = format!(
-            "{authority} nudox --project {}",
+            "{} --project {}",
+            crate::shell::quote_argument(&self.executable),
             crate::shell::quote_argument(&self.project)
         );
         if let StartupRecoveryWorkspace::Explicit(directory) = &self.workspace {
@@ -59,15 +58,17 @@ impl StartupRecoveryContext {
         }
         command.push_str(" --endpoint ");
         command.push_str(&crate::shell::quote_argument(&self.endpoint));
-        command.push_str(" health");
+        command.push_str(" status");
         let anchor = match &self.workspace {
-            StartupRecoveryWorkspace::Explicit(_) => return command,
+            StartupRecoveryWorkspace::Explicit(_) => {
+                return format!("(unset BACKEND_LOCALD_AUTHORITY_SECRET_FILE; {command})");
+            }
             StartupRecoveryWorkspace::Home(anchor) => ("HOME", anchor),
             StartupRecoveryWorkspace::XdgState(anchor) => ("XDG_STATE_HOME", anchor),
             StartupRecoveryWorkspace::XdgData(anchor) => ("XDG_DATA_HOME", anchor),
         };
         format!(
-            "(unset BACKEND_LOCALD_WORKSPACE XDG_STATE_HOME XDG_DATA_HOME; {}={} {command})",
+            "(unset BACKEND_LOCALD_AUTHORITY_SECRET_FILE BACKEND_LOCALD_WORKSPACE XDG_STATE_HOME XDG_DATA_HOME; {}={} {command})",
             anchor.0,
             crate::shell::quote_argument(anchor.1)
         )

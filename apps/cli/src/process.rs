@@ -220,6 +220,21 @@ fn pending_status_retry(
     request: &Request,
     workspace: &backend_runtime::WorkspacePaths,
 ) -> Option<String> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let executable = std::env::current_exe().ok()?;
+    let metadata = executable.metadata().ok()?;
+    if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+        return None;
+    }
+    pending_status_retry_for(request, workspace, &executable)
+}
+
+#[cfg(unix)]
+fn pending_status_retry_for(
+    request: &Request,
+    workspace: &backend_runtime::WorkspacePaths,
+    executable: &std::path::Path,
+) -> Option<String> {
     // Do not guess a missing working-directory capture or project a non-UTF-8
     // operand. The generic original-command retry remains available instead.
     fn operand(path: &std::path::Path) -> Option<String> {
@@ -231,6 +246,11 @@ fn pending_status_retry(
     }
     let selected = workspace.startup_recovery_selection()?;
     operand(selected.data)?;
+    // A shell hint cannot preserve a custom credential without disclosing its
+    // path. Keep only the original-command instruction for that attachment.
+    if !selected.uses_default_authority() {
+        return None;
+    }
     let directory = match selected.workspace {
         backend_runtime::StartupWorkspaceSelection::Explicit(path) => {
             backend_present::StartupRecoveryWorkspace::Explicit(operand(path)?)
@@ -249,7 +269,7 @@ fn pending_status_retry(
         backend_present::StartupRecoveryContext::new(
             operand(selected.project)?,
             operand(selected.endpoint)?,
-            operand(selected.authority_secret)?,
+            operand(executable)?,
             directory,
         )
         .shell(),
@@ -665,7 +685,8 @@ mod startup_tests {
             assert!(retry.contains("--project '"));
             assert!(retry.contains("--workspace '"));
             assert!(retry.contains("'\\''$(sentinel)"));
-            assert!(retry.ends_with(" health"));
+            assert!(retry.ends_with(" status)"));
+            assert!(!retry.contains("authority.secret"));
         }
         assert!(pending_status_retry(&Request::Index(".".to_owned()), &workspace).is_none());
         let lossless = backend_runtime::WorkspacePaths::discover(
@@ -675,6 +696,13 @@ mod startup_tests {
         )
         .expect("read-only workspace discovery");
         assert!(pending_status_retry(&Request::Status, &lossless).is_none());
+        for executable in [
+            PathBuf::from("relative-backend-cli"),
+            root.join(OsString::from_vec(vec![b'c', 0xff])),
+            root.join(OsString::from_vec(vec![b'c', 0])),
+        ] {
+            assert!(pending_status_retry_for(&Request::Status, &workspace, &executable).is_none());
+        }
         assert!(!root.exists());
     }
 
@@ -716,7 +744,10 @@ mod startup_tests {
             "authority": paths.authority_secret().to_str(),
             "boundary": boundary,
             "anchor": anchor.and_then(std::path::Path::to_str),
-            "retry": pending_status_retry(&Request::Status, &paths),
+            "retry": std::env::var_os("NUDOX_TEST_RECOVERY_PROGRAM").map_or_else(
+                || pending_status_retry(&Request::Status, &paths),
+                |program| pending_status_retry_for(&Request::Status, &paths, std::path::Path::new(&program))
+            ),
         });
         println!("\nRECOVERY_SELECTION={value}");
     }
@@ -733,15 +764,16 @@ mod startup_tests {
         serde_json::from_str(line).expect("selection JSON")
     }
 
-    fn replay_startup_selection(executable: &std::path::Path, shell: &str) -> serde_json::Value {
+    fn replay_startup_selection(
+        executable: &std::path::Path,
+        program: &std::path::Path,
+        shell: &str,
+    ) -> serde_json::Value {
         use std::process::Command;
         const PROBE: &str = "process::startup_tests::startup_recovery_discovery_probe";
         const UNSET: &str = "__UNSET__";
-        let script = format!(
-            r#"nudox() {{ printf '%s\000' "$@" __ENV__ "${{HOME-__UNSET__}}" "${{XDG_STATE_HOME-__UNSET__}}" "${{XDG_DATA_HOME-__UNSET__}}" "${{BACKEND_LOCALD_WORKSPACE-__UNSET__}}" "${{BACKEND_LOCALD_AUTHORITY_SECRET_FILE-__UNSET__}}"; }}; {shell}"#
-        );
         let parsed = Command::new("/bin/sh")
-            .args(["-c", &script])
+            .args(["-c", shell])
             .env("HOME", "/wrong-home")
             .env("XDG_STATE_HOME", "/wrong-xdg-state")
             .env("XDG_DATA_HOME", "/wrong-xdg-data")
@@ -767,6 +799,8 @@ mod startup_tests {
             .expect("env boundary");
         assert_eq!(values.len(), split + 6);
         let mut replay = Command::new(executable);
+        // The replay probe must retain the same executable observation.
+        replay.env("NUDOX_TEST_RECOVERY_PROGRAM", program);
         replay.args(["--exact", PROBE, "--nocapture"]).env(
             "NUDOX_TEST_RECOVERY_ARGV",
             serde_json::to_string(&values[..split]).expect("actual parsed argv"),
@@ -791,7 +825,7 @@ mod startup_tests {
     }
 
     #[test]
-    fn pending_status_retry_replays_actual_discovery_with_authority_and_default_boundary() {
+    fn pending_status_retry_replays_local_executable_and_default_boundary_without_credentials() {
         use std::process::Command;
         const PROBE: &str = "process::startup_tests::startup_recovery_discovery_probe";
         let executable = std::env::current_exe().expect("current test executable");
@@ -806,6 +840,14 @@ mod startup_tests {
         let home = root.join("home ' $(sentinel)");
         let xdg = root.join("xdg ' $(sentinel)");
         let authority = root.join("authority ' $(sentinel)");
+        let capture_program = root.join("backend-cli ' $(sentinel)");
+        std::fs::create_dir(&root).expect("owned capture fixture directory");
+        std::fs::write(&capture_program, r#"#!/bin/sh
+printf '%s\000' "$@" __ENV__ "${HOME-__UNSET__}" "${XDG_STATE_HOME-__UNSET__}" "${XDG_DATA_HOME-__UNSET__}" "${BACKEND_LOCALD_WORKSPACE-__UNSET__}" "${BACKEND_LOCALD_AUTHORITY_SECRET_FILE-__UNSET__}"
+"#).expect("capture-only executable");
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&capture_program, std::fs::Permissions::from_mode(0o700))
+            .expect("owned capture program permissions");
         #[cfg(target_os = "macos")]
         let origins = ["explicit", "environment", "home"];
         #[cfg(not(target_os = "macos"))]
@@ -832,6 +874,7 @@ mod startup_tests {
                         "NUDOX_TEST_RECOVERY_ARGV",
                         serde_json::to_string(&argv).expect("original argv"),
                     )
+                    .env("NUDOX_TEST_RECOVERY_PROGRAM", &capture_program)
                     .env("HOME", &home)
                     .env_remove("XDG_STATE_HOME")
                     .env_remove("XDG_DATA_HOME")
@@ -861,18 +904,27 @@ mod startup_tests {
                         origin
                     }
                 );
+                if custom_authority {
+                    assert!(before["retry"].is_null(), "custom credentials stay private");
+                    continue;
+                }
                 let shell = before["retry"].as_str().expect("complete captured retry");
+                assert!(!shell.contains("authority.secret"));
+                assert!(!shell.contains(" nudox "));
+                assert!(shell.ends_with(" status)"));
                 assert_eq!(
                     before,
-                    replay_startup_selection(&executable, shell),
+                    replay_startup_selection(&executable, &capture_program, shell),
                     "{origin}/{custom_authority}"
                 );
             }
         }
         assert!(
-            !root.exists(),
-            "discovery and shell parsing never prepare state"
+            !state.exists() && !home.exists() && !xdg.exists() && !authority.exists(),
+            "discovery and shell parsing never prepare state or credentials"
         );
+        std::fs::remove_file(capture_program).expect("remove owned fixture program");
+        std::fs::remove_dir(root).expect("remove owned fixture directory");
     }
 
     #[test]

@@ -32,6 +32,15 @@ pub struct StartupRecoverySelection<'a> {
     pub workspace: StartupWorkspaceSelection<'a>,
 }
 
+impl StartupRecoverySelection<'_> {
+    /// Returns whether ordinary discovery can retain this credential selection
+    /// without printing its private path in a recovery command.
+    #[must_use]
+    pub fn uses_default_authority(&self) -> bool {
+        self.authority_secret == self.data.join(super::AUTHORITY_FILE)
+    }
+}
+
 impl WorkspacePaths {
     /// Projects the already-captured Unix recovery selection without reading
     /// the environment again or changing the workspace's admission boundary.
