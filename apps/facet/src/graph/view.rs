@@ -73,6 +73,25 @@ pub type InteractionAdmission = Rc<dyn Fn(InteractionPhase, &App) -> bool>;
 #[derive(Clone)]
 pub struct LocalEditing { find: Entity<InputState> }
 
+/// Historical editing values only. No native receiver, subscription, undo
+/// engine, composition, or focus permission crosses a reading visit.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LocalEditingSnapshot {
+    query: SharedString,
+    selection: std::ops::Range<usize>,
+    reversed: bool,
+    oversized: bool,
+}
+
+const MAX_HISTORICAL_QUERY_BYTES: usize = 64 * 1024;
+
+impl LocalEditingSnapshot {
+    #[must_use]
+    pub fn retention_notice(&self) -> Option<&'static str> {
+        self.oversized.then_some("The previous graph query exceeded the history limit and was cleared.")
+    }
+}
+
 /// A denied producer cannot fall through to another focus walk. Only an
 /// admitted edge hands focus back to the host's existing native zone order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -781,6 +800,39 @@ impl GraphView {
 
     #[must_use]
     pub fn local_editing(&self) -> LocalEditing { LocalEditing { find: self.find.clone() } }
+
+    #[must_use]
+    pub fn local_editing_snapshot(&self, cx: &App) -> LocalEditingSnapshot {
+        let input = self.find.read(cx);
+        let query = input.value();
+        if query.len() > MAX_HISTORICAL_QUERY_BYTES {
+            return LocalEditingSnapshot { oversized: true, ..Default::default() };
+        }
+        let selection = input.selected_range();
+        LocalEditingSnapshot {
+            query,
+            reversed: !selection.is_empty() && input.cursor() == selection.start,
+            selection,
+            oversized: false,
+        }
+    }
+
+    /// Historical values create a fresh native editor and do not take focus.
+    pub fn restore_editing_snapshot(&mut self, snapshot: LocalEditingSnapshot, window: &mut Window, cx: &mut Context<Self>) {
+        self._subscriptions.clear();
+        let (find, subscription) = Self::find_field(window, cx);
+        find.update(cx, |input, cx| {
+            input.set_value(snapshot.query, window, cx);
+            let selection = if snapshot.reversed { snapshot.selection.end..snapshot.selection.start } else { snapshot.selection };
+            input.set_selected_range(selection, cx);
+        });
+        self.find = find;
+        self._subscriptions.push(subscription);
+        self.search_query.clear();
+        self.search = empty_search();
+        self.results.clear();
+        cx.notify();
+    }
 
     /// The host has admitted the same local reading visit. Rebind the editor
     /// to this graph's new search engine without restoring native focus.

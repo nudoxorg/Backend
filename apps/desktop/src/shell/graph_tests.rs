@@ -996,6 +996,123 @@ fn native_history_restores_each_graph_visits_own_typed_selection_and_camera(cx: 
 }
 
 #[gpui::test]
+fn native_graph_history_restores_immutable_query_and_directed_selection_without_editor_focus(cx: &mut TestAppContext) {
+    use gpui_component::WindowExt as _;
+    let mut rig = continuity_rig(cx, view_route("RelationLabel", View::Graph));
+    let graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("graph");
+    rig.native_press("/");
+    rig.cx.simulate_input("RelationDirection");
+    rig.native_press("shift-left");
+    rig.native_press("shift-left");
+    rig.settle();
+    let first_input = rig.cx.update(|window, cx| window.focused_input(cx)
+        .and_then(|input| input.as_input().cloned()).expect("first visit's native editing engine"));
+    assert_eq!(first_input.read_with(&rig.cx, |input, _| (input.value().to_string(), input.selected_range(), input.cursor())),
+        ("RelationDirection".into(), 15..17, 15));
+    let first = graph.read_with(&rig.cx, |graph, cx| graph.local_editing_snapshot(cx));
+
+    rig.go(Intent::Navigate(view_route("RelationDirection", View::Graph)));
+    rig.native_press("/");
+    rig.cx.simulate_input("KindGlyph λ");
+    rig.native_press("left");
+    rig.native_press("shift-right");
+    rig.settle();
+    let second_input = rig.cx.update(|window, cx| window.focused_input(cx)
+        .and_then(|input| input.as_input().cloned()).expect("second visit's native editing engine"));
+    assert_ne!(first_input.entity_id(), second_input.entity_id(), "fresh visits cannot share mutable editing engines");
+    assert_eq!(second_input.read_with(&rig.cx, |input, _| (input.value().to_string(), input.selected_range(), input.cursor())),
+        ("KindGlyph λ".into(), 10..12, 12));
+    let second = graph.read_with(&rig.cx, |graph, cx| graph.local_editing_snapshot(cx));
+    assert_ne!(first, second);
+
+    rig.native_press("secondary-[");
+    rig.settle();
+    assert_eq!(graph.read_with(&rig.cx, |graph, cx| graph.local_editing_snapshot(cx)), first);
+    assert!(!rig.cx.update(|window, cx| graph.read(cx).find_focused(window, cx)), "historical values do not restore native editor ownership");
+    rig.native_press("secondary-]");
+    rig.settle();
+    assert_eq!(graph.read_with(&rig.cx, |graph, cx| graph.local_editing_snapshot(cx)), second);
+    assert!(!rig.cx.update(|window, cx| graph.read(cx).find_focused(window, cx)), "Forward restores values without acquiring typing focus");
+    assert_eq!(first_input.read_with(&rig.cx, |input, _| input.value().to_string()), "RelationDirection", "later native editing never mutates the departed engine");
+}
+
+#[gpui::test]
+fn native_graph_history_return_paints_changed_layout_missing_identity_notice(cx: &mut TestAppContext) {
+    let mut rig = continuity_rig(cx, Route::World);
+    rig.shell.update(&mut rig.cx, |shell, cx| shell.focus_graph_node(1, cx));
+    rig.settle();
+    rig.go(Intent::Navigate(page_route("RelationLabel")));
+    let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
+    let (world, identities) = continuity_world(&["KindGlyph", "RelationLabel", "ThirdSymbol"]);
+    rig.cx.update(|_, cx| super::bodies::graph::install_test_world(root, world, identities, cx));
+    publish_continuity(&mut rig);
+    rig.native_press("secondary-[");
+    rig.settle();
+    assert_eq!(rig.route(), Route::World);
+    let graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("changed layout mounts on native Back");
+    assert!(graph.read_with(&rig.cx, |graph, _| graph.focused()).is_none(), "neither old node index nor label guesses can restore absent B");
+    let notice = "The previous selection has no unique exact identity in the changed layout. Selection cleared; showing the whole world.";
+    assert!(super::tests::native_bounds(&mut rig, "Label", notice, false).is_some(), "the actual native status text survives arrival initialization");
+}
+
+#[gpui::test]
+fn delayed_native_graph_history_editing_restoration_cannot_take_later_ask_focus(cx: &mut TestAppContext) {
+    use crate::runtime::indexed_world::{self, TestProjectionGate};
+    use gpui_component::WindowExt as _;
+    let mut rig = continuity_rig(cx, Route::World);
+    let old_graph = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("original graph");
+    rig.native_press("/");
+    rig.cx.simulate_input("RelationDirection");
+    rig.native_press("shift-left");
+    rig.settle();
+    let editing = old_graph.read_with(&rig.cx, |graph, cx| graph.local_editing_snapshot(cx));
+    rig.go(Intent::Navigate(page_route("RelationLabel")));
+    let root = rig.graph.store.read_with(&rig.cx, |store, _| store.snapshot().key());
+    let (world, identities) = continuity_world(&["RelationLabel", "RelationDirection"]);
+    let gate = Arc::new(TestProjectionGate::default());
+    rig.cx.update(|_, cx| indexed_world::install_test_projection(root, "held historical graph", world, identities, Some(gate.clone()), cx));
+    publish_continuity(&mut rig);
+    rig.native_press("secondary-[");
+    rig.draw();
+    assert!(gate.entered(), "the history return's actual Memo projection worker is held");
+    assert!(rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).is_none());
+    rig.native_press("secondary-k");
+    rig.draw();
+    rig.cx.update(|window, cx| window.simulate_next_frame(cx));
+    rig.cx.run_until_parked();
+    rig.cx.simulate_input("Ask owns the later native editing visit");
+    let ask = rig.cx.update(|window, cx| {
+        assert!(window.has_focused_input(cx));
+        window.focused(cx).expect("actual later Ask focus")
+    });
+    gate.release();
+    rig.cx.run_until_parked();
+    let restored = rig.shell.read_with(&rig.cx, |shell, cx| shell.graph_entity(cx)).expect("ordinary worker completion restores historical graph");
+    assert_ne!(old_graph.entity_id(), restored.entity_id());
+    assert_eq!(restored.read_with(&rig.cx, |graph, cx| graph.local_editing_snapshot(cx)), editing);
+    assert_eq!(rig.cx.update(|window, cx| window.focused(cx)), Some(ask.clone()), "historical editor values cannot borrow the later native receiver");
+    assert!(rig.cx.update(|window, cx| window.is_focus_handle_mounted(&ask) && window.has_focused_input(cx)));
+}
+
+#[gpui::test]
+fn native_graph_history_reports_oversized_query_without_restricting_live_editor(cx: &mut TestAppContext) {
+    use gpui_component::WindowExt as _;
+    let mut rig = continuity_rig(cx, Route::World);
+    rig.native_press("/");
+    let query = "x".repeat(64 * 1024 + 1);
+    rig.cx.simulate_input(&query);
+    let input = rig.cx.update(|window, cx| window.focused_input(cx)
+        .and_then(|input| input.as_input().cloned()).expect("actual unrestricted local editor"));
+    assert_eq!(input.read_with(&rig.cx, |input, _| input.value().len()), query.len(), "the historical memory bound cannot restrict live name input");
+    rig.go(Intent::Navigate(view_route("RelationLabel", View::Graph)));
+    rig.native_press("secondary-[");
+    rig.settle();
+    assert_eq!(rig.route(), Route::World);
+    let notice = "The previous graph query exceeded the history limit and was cleared.";
+    assert!(super::tests::native_bounds(&mut rig, "Label", notice, false).is_some(), "bounded history must explain omitted query values in actual painted native text");
+}
+
+#[gpui::test]
 fn covered_publication_preserves_graph_geometry_without_taking_settings_focus(cx: &mut TestAppContext) {
     let route = view_route("RelationLabel", View::Graph);
     let mut rig = continuity_rig(cx, route.clone());

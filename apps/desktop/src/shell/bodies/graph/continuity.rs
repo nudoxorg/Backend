@@ -8,6 +8,13 @@ use crate::{
     navigation::{Route, presentation::VisitId},
 };
 use facet::graph::{GraphView, Start, presentation::Geometry, scene::Scene};
+use facet::graph::view::{LocalEditing, LocalEditingSnapshot};
+
+#[derive(Clone)]
+pub(super) enum EditingRestoration {
+    Live(LocalEditing),
+    History(LocalEditingSnapshot),
+}
 
 /// Explicit graph commands can cancel restoration within one canonical
 /// reading VisitId. Their foreground-only token uses allocation identity;
@@ -48,13 +55,13 @@ pub(super) struct RetainedPresentation {
     geometry: Geometry,
     selected: Option<ExactSelection>,
     had_selection: bool,
-    editing: Option<facet::graph::view::LocalEditing>,
+    editing: Option<EditingRestoration>,
 }
 
 pub(super) struct Restoration {
     pub start: Start,
-    pub status: Option<&'static str>,
-    pub editing: Option<facet::graph::view::LocalEditing>,
+    pub status: Option<String>,
+    pub editing: Option<EditingRestoration>,
 }
 
 impl RetainedPresentation {
@@ -74,8 +81,18 @@ impl RetainedPresentation {
                     symbol: exact.symbol,
                 }),
             had_selection: focus.is_some(),
-            editing: Some(graph.local_editing()),
+            editing: Some(EditingRestoration::Live(graph.local_editing())),
         })
+    }
+
+    /// History owns values; same-visit scene remounts may reuse the live
+    /// editor separately, preserving uninterrupted native local editing.
+    pub fn for_history(&self, graph: &GraphView, cx: &gpui::App) -> Self {
+        Self {
+            visit: self.visit.clone(), geometry: self.geometry,
+            selected: self.selected.clone(), had_selection: self.had_selection,
+            editing: Some(EditingRestoration::History(graph.local_editing_snapshot(cx))),
+        }
     }
 
     pub fn restore(
@@ -112,6 +129,12 @@ impl RetainedPresentation {
         } else {
             None
         };
+        let mut status = status.map(str::to_owned);
+        if let Some(EditingRestoration::History(editing)) = &self.editing
+            && let Some(notice) = editing.retention_notice()
+        {
+            status = Some(status.map_or_else(|| notice.to_owned(), |status| format!("{status} {notice}")));
+        }
         Some(Restoration {
             start: camera.map_or(Start::World, |camera| Start::Restore { camera, focus }),
             status,

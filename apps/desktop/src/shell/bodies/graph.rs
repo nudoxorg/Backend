@@ -4,7 +4,7 @@
 
 pub(crate) mod identity;
 mod continuity;
-use continuity::{PresentationVisit, RetainedPresentation, VisitIdentity};
+use continuity::{EditingRestoration, PresentationVisit, RetainedPresentation, VisitIdentity};
 use identity::{IdentityAdapter, MatchFailure, ResolvedSymbol};
 
 use crate::core::{Activity, ProducerAuthority, Resource, ResourceTerminal, VersionedRoot};
@@ -418,7 +418,7 @@ impl Map {
             self.retained_presentation = RetainedPresentation::capture(graph.read(cx), identities, visit.clone());
             if let Some(packet) = &self.retained_presentation {
                 self.history.insert(visit.reading, SavedGraphVisit {
-                    visit: visit.clone(), consumed: self.route_consumed, packet: packet.clone(),
+                    visit: visit.clone(), consumed: self.route_consumed, packet: packet.for_history(graph.read(cx), cx),
                 });
                 // Follow the actual bounded session histories. A fresh branch
                 // drops discarded Forward packets and their local input entities.
@@ -749,6 +749,7 @@ impl Map {
         let returning = (!same_reading).then(|| self.history.remove(&snapshot.session().reading.current.id)).flatten()
             .filter(|saved| saved.visit.route == *route);
         let changed_entry = !same_reading && returning.is_none();
+        let mut restoration_status = None;
         if let Some(SavedGraphVisit { visit, consumed, packet }) = returning {
             self.presentation_visit = visit.identity.clone();
             self.route_consumed = consumed;
@@ -759,9 +760,13 @@ impl Map {
             {
                 graph.update(cx, |graph, cx| {
                     graph.restore_presentation(restored.start, window, cx);
-                    if let Some(editing) = restored.editing { graph.restore_local_editing(editing, window, cx); }
+                    match restored.editing {
+                        Some(EditingRestoration::Live(editing)) => graph.restore_local_editing(editing, window, cx),
+                        Some(EditingRestoration::History(editing)) => graph.restore_editing_snapshot(editing, window, cx),
+                        None => {}
+                    }
                 });
-                self.error = restored.status.map(str::to_owned);
+                restoration_status = Some(restored.status);
                 self.retained_presentation = None;
             }
         }
@@ -790,13 +795,17 @@ impl Map {
                 self.route_consumed = false;
             }
             self.invalidate_open();
-            self.error = None;
+            if changed_entry { self.error = None; }
         }
+        if let Some(status) = restoration_status { self.error = status; }
         self.visible = true;
         let Some(graph) = self.graph.clone() else {
             self.publish_focus(cx);
             return;
         };
+        if changed_entry {
+            graph.update(cx, |graph, cx| graph.restore_editing_snapshot(Default::default(), window, cx));
+        }
         if changed_entry && matches!(route, Route::Symbol(_)) {
             // A different declaration must not briefly publish the preceding
             // declaration's selection while its exact entry read is pending.
@@ -1805,7 +1814,7 @@ impl Render for Map {
             self.presented_content = Some(crate::runtime::content_visit::ContentVisit::capture(&snapshot));
             let start = restored.as_ref().map_or(Start::World, |restored| restored.start);
             let editing = restored.and_then(|restored| {
-                self.error = restored.status.map(str::to_owned);
+                self.error = restored.status;
                 restored.editing
             });
             self.identities = Some(identities);
@@ -1814,7 +1823,11 @@ impl Render for Map {
             let peek_owner = owner.clone();
             self.graph = Some(cx.new(|cx| {
                 let mut graph = GraphView::with_scene(scene, start, window, cx);
-                if let Some(editing) = editing { graph = graph.with_local_editing(editing, window, cx); }
+                match editing {
+                    Some(EditingRestoration::Live(editing)) => graph = graph.with_local_editing(editing, window, cx),
+                    Some(EditingRestoration::History(editing)) => graph.restore_editing_snapshot(editing, window, cx),
+                    None => {}
+                }
                 graph.on_open(Rc::new(move |node, window, cx| {
                     let Some(map) = owner.upgrade() else {
                         return;
