@@ -250,13 +250,19 @@ impl UiRootEntity {
     #[must_use]
     pub fn new(mut runtime: DesktopRuntime, persistence: Option<PersistentState>) -> Self {
         let basis = runtime.snapshot().key();
-        let request = runtime.allocate_request();
+        // Startup is itself a typed intent.  The root is admitted before
+        // the first useful frame so a cold window never renders a fake
+        // catalog or a second, view-owned bootstrap path. A runtime that
+        // waits on an owner gate asks nothing yet: `admit_owner` issues the
+        // authoritative Root the moment the owner answers, and a Root queued
+        // here would only be cancelled by it (a second, wasted start).
+        let startup = (!runtime.has_owner_gate()).then(|| {
+            let request = runtime.allocate_request();
+            QueuedIntent::Plain(Intent::RefreshRoot { basis, request })
+        });
         Self {
             runtime,
-            // Startup is itself a typed intent.  The root is admitted before
-            // the first useful frame so a cold window never renders a fake
-            // catalog or a second, view-owned bootstrap path.
-            pending: vec![QueuedIntent::Plain(Intent::RefreshRoot { basis, request })],
+            pending: startup.into_iter().collect(),
             persistence,
             persistence_writer: None,
             persistence_wake: None,
@@ -1298,9 +1304,15 @@ impl UiRootEntity {
                 }
                 RuntimeEvent::InitialRootFailed(failure) => {
                     // This is an observation failure, not a dead-owner claim.
-                    // The gate rechecks its captured attachment and rejects a
-                    // failure after the actor has installed a certified root.
-                    self.runtime.report_initial_root_failure(failure);
+                    // A first transport failure refreshes the root once; any
+                    // other failure is definitive at once. The gate rechecks
+                    // its captured attachment and rejects a failure after the
+                    // actor has installed a certified root.
+                    if let Some(refresh) = self.runtime.refresh_transient_initial_root(&failure) {
+                        self.apply_events(refresh, cx);
+                    } else {
+                        self.runtime.report_initial_root_failure(failure);
+                    }
                 }
                 RuntimeEvent::RejectedStale(_) => {}
             }
@@ -1756,5 +1768,75 @@ mod partial_publication_tests {
         );
         assert!(super::newly_published_local_projects(&after, &after).is_empty());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod single_start_tests {
+    use super::*;
+    use super::super::actor::{EngineActor, EngineClient, EngineDto, EngineFault, EngineRequest};
+    use super::super::owner::{OwnerGate, OwnerState};
+    use std::sync::Mutex;
+
+    /// Waits on the gate like the product client, then records each Root it
+    /// is actually asked to run, with whether that Root was already cancelled.
+    struct RecordsRoots {
+        gate: OwnerGate,
+        roots: Arc<Mutex<Vec<(crate::navigation::RequestId, bool)>>>,
+    }
+
+    impl EngineClient for RecordsRoots {
+        fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+            self.gate.wait_cancelled(request.cancellation()).map_err(|_| EngineFault::Cancelled)?;
+            if matches!(request, EngineRequest::Root { .. }) {
+                self.roots.lock().expect("roots").push((request.request(), request.cancelled()));
+            }
+            Err(EngineFault::Cancelled)
+        }
+    }
+
+    fn runtime(gate: Option<&OwnerGate>, roots: &Arc<Mutex<Vec<(crate::navigation::RequestId, bool)>>>) -> DesktopRuntime {
+        let basis = crate::core::VersionedRoot::unserved();
+        let client = RecordsRoots {
+            gate: gate.cloned().unwrap_or_else(OwnerGate::starting),
+            roots: Arc::clone(roots),
+        };
+        DesktopRuntime::new(AppSnapshot::empty(basis), EngineActor::start(client, 4).expect("actor"))
+    }
+
+    #[test]
+    fn only_an_ungated_runtime_queues_its_startup_root_at_construction() {
+        let roots = Arc::default();
+        let gate = OwnerGate::starting();
+        let mut gated = runtime(Some(&gate), &roots);
+        gated.observe_initial_root(Some(gate));
+        assert!(UiRootEntity::new(gated, None).pending.is_empty(),
+            "an owner-gated window asks nothing until admit_owner issues the authoritative Root");
+        let ungated = UiRootEntity::new(runtime(None, &roots), None);
+        assert!(matches!(ungated.pending.as_slice(),
+            [QueuedIntent::Plain(Intent::RefreshRoot { .. })]), "no owner gate: the startup Root is the only Root");
+    }
+
+    #[gpui::test]
+    fn an_owner_answering_starts_exactly_one_root_and_cancels_none(cx: &mut gpui::TestAppContext) {
+        cx.executor().allow_parking();
+        let roots = Arc::default();
+        let gate = OwnerGate::starting();
+        let graph = cx.update(|cx| UiEntityGraph::install_with_owner(
+            cx, runtime(Some(&gate), &roots), None, None, Some(gate.clone()), None));
+        cx.run_until_parked();
+        assert!(!graph.root.read_with(cx, |root, _| root.has_pending_work()),
+            "before the owner answers, no Root waits at the gate to be superseded");
+        let basis = crate::core::VersionedRoot::synthetic(
+            backend_library::view_state_root(&[("single".to_owned(), "start".to_owned())]), 1);
+        gate.publish(OwnerState::Ready { key: basis, mode: crate::model::ServiceMode::Embedded });
+        super::super::wait::until("the answered owner's Root ran", || {
+            cx.run_until_parked();
+            !roots.lock().expect("roots").is_empty()
+        });
+        cx.run_until_parked();
+        let ran = roots.lock().expect("roots").clone();
+        assert_eq!(ran.len(), 1, "a double start would run or cancel a second Root: {ran:?}");
+        assert!(!ran[0].1, "the one Root was never cancelled by a rival: {ran:?}");
     }
 }

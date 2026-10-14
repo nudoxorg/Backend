@@ -886,3 +886,110 @@ fn a_polled_root_failure_is_retired_before_delivery_by_a_new_root_or_stop() {
         }
     }
 }
+
+
+fn next_root_failure(runtime: &mut DesktopRuntime) -> super::coordinator::InitialRootFailure {
+    let mut failure = None;
+    wait::until("an initial-root failure reached the UI mailbox", || {
+        failure = runtime.poll().into_iter().find_map(|event| match event {
+            RuntimeEvent::InitialRootFailed(failure) => Some(failure),
+            _ => None,
+        });
+        failure.is_some()
+    });
+    failure.expect("failure receipt")
+}
+
+/// Fails its first Root with `first`, then answers like [`EchoClient`].
+struct FlakyRoot {
+    first: Option<crate::core::FaultCode>,
+    roots: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl EngineClient for FlakyRoot {
+    fn execute(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
+        if matches!(request, EngineRequest::Root { .. }) {
+            self.roots.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if let Some(code) = self.first.take() {
+                return Err(EngineFault::Failed(crate::core::ErrorValue::new(code, "first root failed")));
+            }
+        }
+        EchoClient.execute(request)
+    }
+}
+
+#[test]
+fn a_first_transport_root_failure_refreshes_once_and_only_the_second_is_definitive() {
+    use super::owner::{ObservationFailure, OwnerFault, OwnerState};
+    let (mut runtime, gate) = initial_root_runtime(FailingClient);
+    let first = runtime.allocate_request();
+    let _ = runtime.dispatch(Intent::RefreshRoot { basis: runtime.snapshot().key(), request: first });
+    let earlier = next_root_failure(&mut runtime);
+
+    let refresh = runtime.refresh_transient_initial_root(&earlier).expect("first transport failure refreshes the root");
+    assert!(request_terminals(refresh).is_empty(), "the refresh is a new Root, not a terminal");
+    assert!(matches!(gate.state(), OwnerState::Ready { .. }), "the owner is not withdrawn by the first failure");
+    assert!(!runtime.report_initial_root_failure(earlier), "the first failure's receipt is spent");
+
+    let second = next_root_failure(&mut runtime);
+    assert!(runtime.refresh_transient_initial_root(&second).is_none(), "one refresh per attachment");
+    assert!(runtime.report_initial_root_failure(second));
+    assert!(matches!(gate.state(), OwnerState::Failed(OwnerFault::Observation(
+        ObservationFailure::InitialRootFailed { .. }))));
+}
+
+#[test]
+fn a_non_transport_first_root_failure_stays_immediately_definitive() {
+    for code in [crate::core::FaultCode::Protocol, crate::core::FaultCode::Missing, crate::core::FaultCode::Unsupported] {
+        struct Failing(crate::core::FaultCode);
+        impl EngineClient for Failing {
+            fn execute(&mut self, _: &EngineRequest) -> Result<EngineDto, EngineFault> {
+                Err(EngineFault::Failed(crate::core::ErrorValue::new(self.0, "definitive")))
+            }
+        }
+        let (mut runtime, gate) = initial_root_runtime(Failing(code));
+        let request = runtime.allocate_request();
+        let _ = runtime.dispatch(Intent::RefreshRoot { basis: runtime.snapshot().key(), request });
+        let failure = next_root_failure(&mut runtime);
+        assert!(runtime.refresh_transient_initial_root(&failure).is_none(), "{code:?}");
+        assert!(runtime.report_initial_root_failure(failure), "{code:?}");
+        assert!(matches!(gate.state(), super::owner::OwnerState::Failed(_)), "{code:?}");
+    }
+}
+
+#[test]
+fn a_refresh_that_succeeds_keeps_the_owner_and_the_failed_attempt_never_withdraws_it() {
+    let roots = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let client = FlakyRoot { first: Some(crate::core::FaultCode::Transport), roots: roots.clone() };
+    let (mut runtime, gate) = initial_root_runtime(client);
+    let first = runtime.allocate_request();
+    let _ = runtime.dispatch(Intent::RefreshRoot { basis: runtime.snapshot().key(), request: first });
+    let failure = next_root_failure(&mut runtime);
+    let _ = runtime.refresh_transient_initial_root(&failure).expect("refresh");
+    wait::until("the refreshed Root completed", || {
+        let _ = runtime.poll();
+        roots.load(std::sync::atomic::Ordering::SeqCst) == 2 && !runtime.has_pending_work()
+    });
+    assert!(matches!(gate.state(), super::owner::OwnerState::Ready { .. }));
+}
+
+#[test]
+fn a_transport_root_failure_is_not_refreshed_for_a_replaced_or_certified_attachment() {
+    use super::owner::{OwnerState, PublicationAdmission};
+    for replacement in [true, false] {
+        let (mut runtime, gate) = initial_root_runtime(FailingClient);
+        let captured = gate.ready_epoch().expect("captured owner");
+        let request = runtime.allocate_request();
+        let _ = runtime.dispatch(Intent::RefreshRoot { basis: runtime.snapshot().key(), request });
+        let failure = next_root_failure(&mut runtime);
+        if replacement {
+            gate.publish(OwnerState::Starting);
+            gate.publish(OwnerState::Ready { key: runtime.snapshot().key(), mode: crate::model::ServiceMode::Attached });
+        } else {
+            let view = super::owner::publication_tests::view();
+            let cursor = backend_library::Cursor::for_view_root_at(&view, 0);
+            assert_eq!(gate.publish_view(captured, view, cursor), PublicationAdmission::Admitted);
+        }
+        assert!(runtime.refresh_transient_initial_root(&failure).is_none(), "replacement={replacement}");
+    }
+}

@@ -733,6 +733,17 @@ impl OwnerGate {
         !inner.closed && inner.attachment == expected && !inner.observation_cancel.is_cancelled()
     }
 
+    /// Whether `expected` is still the serving attachment and has certified no
+    /// publication yet: the only window in which an initial-root failure can
+    /// still be acted on, by retry or by withdrawal.
+    pub(crate) fn initial_root_pending(&self, expected: Epoch) -> bool {
+        let inner = self.lock();
+        !inner.closed
+            && inner.attachment == expected
+            && matches!(inner.state, OwnerState::Ready { .. })
+            && inner.publication.is_none()
+    }
+
     /// Actor failure is definitive only before this attachment has certified a
     /// publication. Check under the same lock as withdrawal: a published root
     /// wins even when a later catalog failure is waiting in the UI mailbox.
@@ -795,14 +806,54 @@ impl OwnerGate {
     /// its condition variable, so cancellation cannot fall between the
     /// predicate check and the wait.
     pub(crate) fn wait_cancelled(&self, cancel: &super::actor::CancellationToken) -> Result<(), OwnerFault> {
+        let _wake = self.wake_on_cancel(cancel);
+        self.wait_while(PATIENCE, Some(cancel))
+    }
+
+    /// Registers the wake that lets a request's cancellation interrupt a wait
+    /// on this gate's condition variable.
+    fn wake_on_cancel(&self, cancel: &super::actor::CancellationToken) -> super::actor::CancellationWake {
         let weak = Arc::downgrade(&self.0);
-        let _wake = cancel.on_cancel(move || {
+        cancel.on_cancel(move || {
             if let Some(shared) = weak.upgrade() {
                 let _inner = shared.inner.lock().unwrap_or_else(PoisonError::into_inner);
                 shared.changed.notify_all();
             }
-        });
-        self.wait_while(PATIENCE, Some(cancel))
+        })
+    }
+
+    /// Worker-only timed pause before a transient retry. Returns `true` once
+    /// `duration` elapsed with the request live, the gate open, and `attached`
+    /// still the serving attachment; returns `false` as soon as the request is
+    /// cancelled, the gate closes, or the owner generation changes.
+    pub(crate) fn retry_pause(
+        &self,
+        attached: Option<Epoch>,
+        cancel: &super::actor::CancellationToken,
+        duration: Duration,
+    ) -> bool {
+        let _wake = self.wake_on_cancel(cancel);
+        let deadline = Instant::now() + duration;
+        let mut inner = self.lock();
+        loop {
+            let serving = (!inner.closed
+                && !inner.observation_suspended
+                && matches!(inner.state, OwnerState::Ready { .. }))
+            .then_some(inner.attachment);
+            if cancel.is_cancelled() || serving != attached {
+                return false;
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return true;
+            }
+            inner = self
+                .0
+                .changed
+                .wait_timeout(inner, left)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
     }
 
     /// [`Self::wait`] with its own patience: gives up with
@@ -1107,6 +1158,48 @@ mod tests {
             mode: ServiceMode::Attached,
         });
         assert_eq!(gate.wait(), Ok(()));
+    }
+
+    #[test]
+    fn a_retry_pause_elapses_and_ends_early_for_cancel_closure_or_a_new_attachment() {
+        use super::super::actor::CancellationToken;
+        let ready = || OwnerGate::ready(VersionedRoot::unserved(), ServiceMode::Attached);
+
+        let gate = ready();
+        let attached = gate.ready_epoch();
+        let started = Instant::now();
+        assert!(gate.retry_pause(attached, &CancellationToken::new(), Duration::from_millis(40)));
+        assert!(started.elapsed() >= Duration::from_millis(40));
+
+        // Every other end wakes a 60 s pause at once, never at its timeout.
+        type Ending = Box<dyn FnOnce(&OwnerGate, &CancellationToken) + Send>;
+        let endings: [(&str, Ending); 3] = [
+            ("cancel", Box::new(|_, cancel| cancel.cancel())),
+            ("closure", Box::new(|gate, _| gate.close())),
+            ("new attachment", Box::new(|gate, _| gate.publish(OwnerState::Starting))),
+        ];
+        for (name, end) in endings {
+            let gate = ready();
+            let attached = gate.ready_epoch();
+            let cancel = CancellationToken::new();
+            let (sent, received) = mpsc::channel();
+            let (pausing, token) = (gate.clone(), cancel.clone());
+            let worker = std::thread::spawn(move || {
+                sent.send(pausing.retry_pause(attached, &token, Duration::from_secs(60)))
+                    .expect("send pause result");
+            });
+            assert!(
+                received.recv_timeout(Duration::from_millis(60)).is_err(),
+                "{name}: the pause holds until something ends it"
+            );
+            end(&gate, &cancel);
+            assert_eq!(
+                received.recv_timeout(Duration::from_secs(2)).unwrap_or_else(|_| panic!("{name} woke the pause")),
+                false,
+                "{name}"
+            );
+            worker.join().expect("join pause");
+        }
     }
 
     #[test]

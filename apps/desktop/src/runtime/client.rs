@@ -18,6 +18,16 @@ use std::time::Duration;
 
 const DESKTOP_CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// Pause before each retry of a root bootstrap whose transport broke. Cold
+/// start overlaps the owner's busiest seconds, so a stalled or closed stream
+/// is retried on a fresh authenticated socket after a bounded, growing pause;
+/// one entry per retry, so the first attempt plus three retries at most.
+const BOOTSTRAP_RETRY_BACKOFF: [Duration; 3] = [
+    Duration::from_millis(100),
+    Duration::from_millis(250),
+    Duration::from_millis(500),
+];
+
 /// A worker-owned local service session with typed read replay.
 pub struct LocalEngineClient {
     endpoint: PathBuf,
@@ -31,7 +41,8 @@ pub struct LocalEngineClient {
     gate: Option<super::owner::OwnerGate>,
 }
 
-// A lease-release transport failure requires a fresh authenticated stream;
+// A transport failure anywhere in a bootstrap (setup, a page exchange, or a
+// release that could not keep its root) requires a fresh authenticated stream;
 // malformed proofs and acknowledgements must never be retried as connectivity.
 fn bootstrap_transport_break(error: &backend_client::LocalSubscriptionExchangeError) -> bool {
     use backend_client::LocalSubscriptionExchangeError;
@@ -132,7 +143,7 @@ impl LocalEngineClient {
             }
             if bootstrap_transport_break(&error) {
                 // A failed release does not prove the owner died. Preserve the
-                // exact exchange diagnostic after the one bounded retry.
+                // exact exchange diagnostic after the bounded retries.
                 return EngineFault::Failed(crate::core::ErrorValue::new(
                     FaultCode::Transport,
                     error.to_string(),
@@ -174,45 +185,46 @@ impl LocalEngineClient {
                 return Ok(publication);
             }
         }
-        let result = {
-            let subscription = self.subscription()?;
-            let _wake = cancel_wake(&cancel, subscription.interrupt_handle())?;
+        let mut retries = 0;
+        let admitted = loop {
+            let result = {
+                let subscription = self.subscription()?;
+                let _wake = cancel_wake(&cancel, subscription.interrupt_handle())?;
+                if cancel.is_cancelled() {
+                    return Err(EngineFault::Cancelled);
+                }
+                subscription.bootstrap_root_with_exchange_error()
+            };
             if cancel.is_cancelled() {
+                self.subscription = None;
                 return Err(EngineFault::Cancelled);
             }
-            subscription.bootstrap_root_with_exchange_error()
-        };
-        if cancel.is_cancelled() {
-            self.subscription = None;
-            return Err(EngineFault::Cancelled);
-        }
-        let admitted = match result {
-            Ok(root) => Ok(root),
-            Err(error) if bootstrap_transport_break(&error) => {
-                self.subscription = None;
-                if self
-                    .active_cancel
-                    .as_ref()
-                    .is_some_and(CancellationToken::is_cancelled)
-                {
-                    return Err(EngineFault::Cancelled);
-                }
-                let retry = {
-                    let subscription = self.subscription()?;
-                    let _wake = cancel_wake(&cancel, subscription.interrupt_handle())?;
-                    if cancel.is_cancelled() {
-                        return Err(EngineFault::Cancelled);
-                    }
-                    subscription.bootstrap_root_with_exchange_error()
-                };
-                if cancel.is_cancelled() {
+            match result {
+                Ok(root) => break root,
+                Err(error) if bootstrap_transport_break(&error) => {
+                    // The next attempt authenticates a fresh stream.
                     self.subscription = None;
-                    return Err(EngineFault::Cancelled);
+                    let Some(&delay) = BOOTSTRAP_RETRY_BACKOFF.get(retries) else {
+                        return Err(self.bootstrap_fault(error));
+                    };
+                    super::trace::mark(
+                        "root.bootstrap-retry",
+                        format_args!("attempt {} after {} ms: {error}", retries + 2, delay.as_millis()),
+                    );
+                    if !self.pause_before_retry(&cancel, delay) {
+                        // Cancelled, or the attached owner changed while it
+                        // waited; a replacement owner asks its own Root.
+                        return Err(if cancel.is_cancelled() {
+                            EngineFault::Cancelled
+                        } else {
+                            EngineFault::Superseded
+                        });
+                    }
+                    retries += 1;
                 }
-                retry.map_err(|error| self.bootstrap_fault(error))
+                Err(error) => return Err(self.bootstrap_fault(error)),
             }
-            Err(error) => Err(self.bootstrap_fault(error)),
-        }?;
+        };
         let (view, cursor) = admitted;
         if self.subscription.as_ref().is_some_and(|transport| {
             transport.authenticated_peer().is_none()
@@ -231,6 +243,15 @@ impl LocalEngineClient {
             }
         }
         Ok((view, cursor))
+    }
+
+    /// Waits out one retry backoff. Ends early with `false` when the request
+    /// is cancelled or the owner generation this client attached to is gone.
+    fn pause_before_retry(&self, cancel: &CancellationToken, delay: Duration) -> bool {
+        match &self.gate {
+            Some(gate) => gate.retry_pause(self.attached_epoch, cancel, delay),
+            None => pause_unless_cancelled(cancel, delay),
+        }
     }
 
     fn request_root(&mut self, request: &EngineRequest) -> Result<EngineDto, EngineFault> {
@@ -522,6 +543,36 @@ impl LocalEngineClient {
             }
             Err(error) => Err(self.client_fault(error)),
         }
+    }
+}
+
+/// A timed wait for a client with no owner gate, woken at once by `cancel`.
+/// Returns `false` when it was cancelled before `delay` elapsed.
+fn pause_unless_cancelled(cancel: &CancellationToken, delay: Duration) -> bool {
+    use std::sync::{Condvar, Mutex, PoisonError};
+    let signal = Arc::new((Mutex::new(()), Condvar::new()));
+    let woken = Arc::clone(&signal);
+    // The callback locks before notifying, so cancellation cannot fall
+    // between the predicate check below and the wait.
+    let _wake = cancel.on_cancel(move || {
+        let _guard = woken.0.lock().unwrap_or_else(PoisonError::into_inner);
+        woken.1.notify_all();
+    });
+    let deadline = std::time::Instant::now() + delay;
+    let mut guard = signal.0.lock().unwrap_or_else(PoisonError::into_inner);
+    loop {
+        if cancel.is_cancelled() {
+            return false;
+        }
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return true;
+        }
+        guard = signal
+            .1
+            .wait_timeout(guard, left)
+            .unwrap_or_else(PoisonError::into_inner)
+            .0;
     }
 }
 
@@ -975,6 +1026,204 @@ mod tests {
                 .interrupt_handle()
                 .is_some()
         );
+    }
+
+    /// A private owner endpoint that serves each accepted connection with
+    /// `serve(index, stream)`, and records how many connections arrived.
+    #[cfg(unix)]
+    struct FlakyOwner {
+        path: PathBuf,
+        accepted: Arc<std::sync::atomic::AtomicUsize>,
+        done: Option<std::thread::JoinHandle<()>>,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[cfg(unix)]
+    impl FlakyOwner {
+        fn start(
+            serve: impl Fn(usize, std::os::unix::net::UnixStream) + Send + 'static,
+        ) -> Self {
+            use std::os::unix::fs::PermissionsExt as _;
+            use std::sync::atomic::Ordering;
+            let path = PathBuf::from(format!(
+                "/tmp/nudox-bootstrap-backoff-{}-{}.sock",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock")
+                    .as_nanos(),
+            ));
+            let listener = std::os::unix::net::UnixListener::bind(&path).expect("private listener");
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                .expect("private endpoint");
+            listener.set_nonblocking(true).expect("bounded accept");
+            let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (count, halt) = (Arc::clone(&accepted), Arc::clone(&stop));
+            let done = std::thread::spawn(move || {
+                while !halt.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            stream.set_nonblocking(false).expect("blocking accepted stream");
+                            stream
+                                .set_read_timeout(Some(Duration::from_secs(2)))
+                                .expect("bounded owner read");
+                            let index = count.fetch_add(1, Ordering::SeqCst);
+                            serve(index, stream);
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        Err(error) => panic!("accept authenticated client: {error}"),
+                    }
+                }
+            });
+            Self { path, accepted, done: Some(done), stop }
+        }
+
+        fn accepted(&self) -> usize {
+            self.accepted.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for FlakyOwner {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(done) = self.done.take() {
+                let _ = done.join();
+            }
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    /// Reads the Open frame the client sent and drops the stream unanswered:
+    /// the client sees the owner close mid-bootstrap.
+    #[cfg(unix)]
+    fn close_after_open(mut stream: std::os::unix::net::UnixStream) {
+        use backend_replication::{LocalControlLimits, read_frame};
+        let _ = read_frame(&mut stream, LocalControlLimits::default());
+    }
+
+    #[cfg(unix)]
+    fn answer_open_with_rejection(mut stream: std::os::unix::net::UnixStream) {
+        use backend_replication::{
+            LocalControlLimits, LocalControlRequest, LocalControlResponse, decode_request,
+            encode_response, read_frame, write_frame,
+        };
+        let limits = LocalControlLimits::default();
+        let frame = read_frame(&mut stream, limits).expect("bootstrap reached the owner");
+        let LocalControlRequest::Subscription(request) =
+            decode_request(&frame, limits).expect("correlated bootstrap frame")
+        else {
+            panic!("bootstrap subscription");
+        };
+        let reply = encode_response(
+            &LocalControlResponse::Rejected {
+                request_id: request.request_id,
+                message: "recovery endpoint answered".to_owned(),
+            },
+            limits,
+        )
+        .expect("bounded reply");
+        write_frame(&mut stream, &reply, limits).expect("answer the fresh socket");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_broken_bootstrap_transport_is_retried_on_fresh_sockets_with_bounded_backoff() {
+        let owner = FlakyOwner::start(|index, stream| {
+            if index < 2 {
+                close_after_open(stream);
+            } else {
+                answer_open_with_rejection(stream);
+            }
+        });
+        let project = LocalProjectId::from_path(Path::new("/tmp")).expect("project");
+        let mut client = LocalEngineClient::new(&owner.path, project);
+        client.active_cancel = Some(CancellationToken::new());
+        let started = std::time::Instant::now();
+        let result = client.bootstrap_root(false);
+        let elapsed = started.elapsed();
+        assert!(
+            matches!(&result, Err(EngineFault::Failed(error))
+                if error.code() == FaultCode::Protocol && error.message().contains("recovery endpoint answered")),
+            "the third socket's answer, not the earlier closes, is the outcome: {result:?}"
+        );
+        assert_eq!(owner.accepted(), 3, "two retries reached fresh authenticated sockets");
+        assert!(
+            elapsed >= BOOTSTRAP_RETRY_BACKOFF[0] + BOOTSTRAP_RETRY_BACKOFF[1],
+            "the retries wait their backoff: {elapsed:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_bootstrap_transport_that_never_recovers_fails_as_transport_after_the_last_backoff() {
+        let owner = FlakyOwner::start(|_, stream| close_after_open(stream));
+        let project = LocalProjectId::from_path(Path::new("/tmp")).expect("project");
+        let mut client = LocalEngineClient::new(&owner.path, project);
+        client.active_cancel = Some(CancellationToken::new());
+        let started = std::time::Instant::now();
+        let result = client.bootstrap_root(false);
+        let elapsed = started.elapsed();
+        assert!(
+            matches!(&result, Err(EngineFault::Failed(error)) if error.code() == FaultCode::Transport),
+            "exhausted retries keep the transport cause: {result:?}"
+        );
+        assert_eq!(owner.accepted(), 1 + BOOTSTRAP_RETRY_BACKOFF.len());
+        assert!(elapsed >= BOOTSTRAP_RETRY_BACKOFF.iter().sum::<Duration>(), "{elapsed:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_ends_the_bootstrap_backoff_at_once_without_another_attempt() {
+        let owner = FlakyOwner::start(|_, stream| close_after_open(stream));
+        let project = LocalProjectId::from_path(Path::new("/tmp")).expect("project");
+        let mut client = LocalEngineClient::new(&owner.path, project);
+        let cancel = CancellationToken::new();
+        client.active_cancel = Some(cancel.clone());
+        let canceller = std::thread::spawn({
+            let cancel = cancel.clone();
+            move || {
+                std::thread::sleep(Duration::from_millis(30));
+                cancel.cancel();
+            }
+        });
+        let started = std::time::Instant::now();
+        let result = client.bootstrap_root(false);
+        canceller.join().expect("canceller");
+        assert!(matches!(result, Err(EngineFault::Cancelled)), "{result:?}");
+        assert!(
+            started.elapsed() < Duration::from_millis(600),
+            "cancel ends the backoff instead of running the 850 ms of remaining retries: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(owner.accepted(), 1, "no attempt follows the cancellation");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_changed_owner_attachment_ends_the_bootstrap_backoff_as_superseded() {
+        use super::super::owner::{OwnerGate, OwnerState};
+        let owner = FlakyOwner::start(|_, stream| close_after_open(stream));
+        let basis = VersionedRoot::unserved();
+        let gate = OwnerGate::ready(basis, crate::model::ServiceMode::Attached);
+        let project = LocalProjectId::from_path(Path::new("/tmp")).expect("project");
+        let mut client = LocalEngineClient::gated(&owner.path, project, gate.clone());
+        client.attached_epoch = gate.ready_epoch();
+        client.active_cancel = Some(CancellationToken::new());
+        let replacement = gate.clone();
+        let replacer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            replacement.publish(OwnerState::Starting);
+        });
+        let started = std::time::Instant::now();
+        let result = client.bootstrap_root(false);
+        replacer.join().expect("replacer");
+        assert!(matches!(result, Err(EngineFault::Superseded)), "{result:?}");
+        assert!(started.elapsed() < Duration::from_millis(600), "{:?}", started.elapsed());
+        assert_eq!(owner.accepted(), 1);
     }
 
     #[cfg(unix)]
