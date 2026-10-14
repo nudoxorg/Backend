@@ -104,7 +104,8 @@ fn write_terminal(formatter: &mut fmt::Formatter<'_>, terminal: &CompilerTermina
         }
         CompilerTerminal::DeadlineConstruction { timeout, .. } => write!(
             formatter,
-            "the compile timeout of {timeout:?} cannot be represented by this platform's clock"
+            "the compile timeout of {} seconds cannot be represented by this platform's clock",
+            timeout.as_secs()
         ),
         CompilerTerminal::Cancelled { diagnostic, .. } => {
             formatter.write_str("compilation was cancelled")?;

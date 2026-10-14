@@ -415,6 +415,9 @@ impl std::fmt::Display for PackageSourceCoverageGapCause {
             Self::TypeScriptSourceExcludedFromConfiguredProgram => {
                 "excluded from the configured TypeScript program"
             }
+            Self::TypeScriptSourceWorkBudgetExhausted => {
+                "checking it spent its TypeScript work allowance"
+            }
             Self::PythonSourceSyntaxUnavailable => "its Python syntax was rejected",
             Self::PythonSourceEncodingUnavailable => "its Python source encoding is unavailable",
             Self::PythonSourceDependencyUnavailable => {
