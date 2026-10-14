@@ -362,10 +362,10 @@ def run_live_contracts(owner: Owner, project: Path, config: dict, published_root
         print(f"surface-contract: search limit {limit} preserves rank/completeness", flush=True)
 
     def cli_page(cursor):
-        args = ["--limit", "1"]
+        args = ["--limit", "1", "search", text]
         if cursor is not None:
             args += ["--cursor", cursor]
-        answer, _ = run_cli(owner, project, [*args, "search", text], 10)
+        answer, _ = run_cli(owner, project, args, 10)
         require_cli_success("CLI search continuation", answer)
         return answer["json"]
 

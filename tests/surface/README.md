@@ -148,7 +148,8 @@ at global bounds 1 and 3. The reference must be complete and multi-result;
 bounded results must be its ordered prefix with a truthful `more` flag. These
 checks catch ignored bounds, lost/reordered results and false completeness.
 Both CLI and MCP also traverse that reference one result per page, using the
-returned opaque cursor in a fresh client process on every request. Combined rows
+returned opaque cursor in a fresh client process on every request. CLI resumes as
+`nudox --limit 1 search language --cursor TOKEN`; cursor is a command option. Combined rows
 must exhaust the same complete reference in order, with unchanged query,
 coverage and readiness. Missing/repeated cursors, duplicate/missing/reordered
 rows and false completeness fail. The last page must stop offering a cursor.
