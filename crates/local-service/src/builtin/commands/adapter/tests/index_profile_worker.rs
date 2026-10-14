@@ -151,7 +151,7 @@ fn existing_index_worker_shutdown_retires_current_and_queued_attempts() {
             let mut worker = ProfileWorker::spawn(work)
                 .unwrap_or_else(|(_, error)| panic!("spawn actual cancellation worker: {error}"));
             if mode == 2 {
-                let deadline = Instant::now() + Duration::from_secs(30);
+                let deadline = Instant::now() + super::control_deadline();
                 let completion = loop {
                     match worker.poll() {
                         Ok(completion) => break completion,
@@ -440,7 +440,7 @@ fn existing_index_worker_displaced_read_maps_retire_on_its_original_thread() {
     let work = actual_work(&mut fixture);
     let mut worker =
         ProfileWorker::spawn(work).unwrap_or_else(|(_, error)| panic!("actual worker: {error}"));
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + super::control_deadline();
     let completion = loop {
         match worker.poll() {
             Ok(completion) => break completion,
@@ -467,7 +467,7 @@ fn existing_index_worker_displaced_read_maps_retire_on_its_original_thread() {
             .send(())
             .expect("actual original compiler thread starts retirement");
         released
-            .recv_timeout(Duration::from_secs(30))
+            .recv_timeout(super::control_deadline())
             .expect("bounded retirement release");
     }));
     let worker = match completion.retire() {

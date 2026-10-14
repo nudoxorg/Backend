@@ -8,7 +8,7 @@ use backend_library::{
     IndexOperationStatus, IndexStartResult, PackageReference, SurfaceCommand, SurfaceReply,
 };
 
-fn dispatch(
+pub(super) fn dispatch(
     fixture: &mut AdapterFixture,
     id: u64,
     command: SurfaceCommand,
@@ -24,7 +24,7 @@ fn dispatch(
     Ok(result)
 }
 
-fn surface(result: Executed) -> SurfaceReply {
+pub(super) fn surface(result: Executed) -> SurfaceReply {
     let Executed::Reply(bytes) = result else {
         panic!("immediate owner reply required");
     };
@@ -35,7 +35,7 @@ fn surface(result: Executed) -> SurfaceReply {
     reply
 }
 
-fn status(fixture: &mut AdapterFixture, key: IndexOperationKey) -> IndexOperationStatus {
+pub(super) fn status(fixture: &mut AdapterFixture, key: IndexOperationKey) -> IndexOperationStatus {
     let reply = surface(
         dispatch(
             fixture,
@@ -50,8 +50,8 @@ fn status(fixture: &mut AdapterFixture, key: IndexOperationKey) -> IndexOperatio
     status
 }
 
-fn drain(fixture: &mut AdapterFixture) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+pub(super) fn drain(fixture: &mut AdapterFixture) {
+    let deadline = std::time::Instant::now() + super::control_deadline();
     loop {
         let (adapter, daemon) = fixture.parts();
         adapter.poll_deferred(daemon);
@@ -66,7 +66,7 @@ fn drain(fixture: &mut AdapterFixture) {
     }
 }
 
-fn prepare_project(fixture: &AdapterFixture) -> PackageReference {
+pub(super) fn prepare_project(fixture: &AdapterFixture) -> PackageReference {
     fs::write(
         Path::new(&fixture.label).join("pyproject.toml"),
         "[project]\nname=\"n15_refusal\"\nversion=\"1.0.0\"\n",
@@ -407,7 +407,7 @@ fn queued_remove_is_an_ordering_barrier_for_later_matching_start() {
     );
     assert_eq!(fixture.parts().0.waiting.len(), 2);
     assert_eq!(fixture.parts().0.next_index_ticket, next);
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + super::control_deadline();
     let mut responses = Vec::new();
     loop {
         let (adapter, daemon) = fixture.parts();
