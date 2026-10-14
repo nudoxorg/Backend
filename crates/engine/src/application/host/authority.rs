@@ -412,7 +412,7 @@ pub(super) fn go_authority_failure(
             ..
         } => LocalRuntimeGoAuthorityFailure::ExecutableUnavailable,
         LocalCompilerHostError::CreateDirectory {
-            directory: super::LocalHostDirectory::GoModuleCache,
+            directory: LocalHostDirectory::GoModuleCache,
             ..
         } => LocalRuntimeGoAuthorityFailure::ModuleCacheUnavailable,
         _ => LocalRuntimeGoAuthorityFailure::OracleUnavailable,
@@ -574,16 +574,18 @@ impl NativeExecutables {
                     (NativeTool::TypeScriptCompiler, Some(_), Some(_)) => {
                         LocalRuntimeToolchain::probing(tool, executable.to_path_buf())
                     }
-                    (NativeTool::TypeScriptCompiler, None, _) => LocalRuntimeToolchain::probe_failed(
-                        tool,
-                        crate::application::ToolchainProbeError::TypeScriptInterpreterUnavailable {
-                            compiler: executable.to_path_buf(),
-                        },
-                    ),
+                    (NativeTool::TypeScriptCompiler, None, _) => {
+                        LocalRuntimeToolchain::probe_failed(
+                            tool,
+                            ToolchainProbeError::TypeScriptInterpreterUnavailable {
+                                compiler: executable.to_path_buf(),
+                            },
+                        )
+                    }
                     (NativeTool::TypeScriptCompiler, Some(_), None) => {
                         LocalRuntimeToolchain::probe_failed(
                             tool,
-                            crate::application::ToolchainProbeError::TypeScriptModuleRootUnavailable {
+                            ToolchainProbeError::TypeScriptModuleRootUnavailable {
                                 compiler: executable.to_path_buf(),
                             },
                         )
