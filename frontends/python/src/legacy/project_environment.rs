@@ -64,16 +64,25 @@ struct SelectionProbe {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 struct Interpreter {
+    #[serde(with = "portable_path_serde")]
     selected: PathBuf,
+    #[serde(with = "portable_path_serde")]
     trusted_selected: PathBuf,
+    #[serde(with = "portable_path_serde")]
     image: PathBuf,
     digest: [u8; 32],
+    #[serde(with = "portable_path_serde")]
     venv_image: PathBuf,
     venv_digest: [u8; 32],
+    #[serde(with = "portable_path_serde")]
     installation: PathBuf,
+    #[serde(with = "portable_path_serde")]
     home_selected: PathBuf,
+    #[serde(with = "portable_path_serde")]
     home_directory: PathBuf,
+    #[serde(with = "portable_path_serde")]
     base_selected: PathBuf,
+    #[serde(with = "portable_path_serde")]
     base_image: PathBuf,
     base_digest: [u8; 32],
     abi: String,
@@ -81,6 +90,7 @@ struct Interpreter {
     version: [u32; 3],
     platform: String,
     machine: String,
+    #[serde(with = "portable_path_serde")]
     stdlib: PathBuf,
 }
 
@@ -1025,12 +1035,7 @@ fn capture_root_with_budget(
     while let Some(relative) = pending.pop() {
         checkpoint(control)?;
         let entries = directory_entries(root, &relative, control)?;
-        directories.push(
-            relative
-                .to_str()
-                .ok_or_else(|| project_error("", "dependency path is not UTF-8"))?
-                .to_owned(),
-        );
+        directories.push(canonical_path_spelling(&relative)?);
         budget.entries = budget
             .entries
             .checked_add(entries.len() + 1)
@@ -1062,10 +1067,7 @@ fn capture_root_with_budget(
                     pending.push(child);
                 }
             } else {
-                let spelling = child
-                    .to_str()
-                    .ok_or_else(|| project_error("", "dependency path is not UTF-8"))?
-                    .to_owned();
+                let spelling = canonical_path_spelling(&child)?;
                 let extension = child.extension().and_then(|part| part.to_str());
                 let compiled = matches!(extension, Some("so" | "pyd" | "dll"));
                 let source = matches!(extension, Some("py" | "pyi" | "pth"))
@@ -1481,13 +1483,68 @@ fn field(writer: &mut impl Write, bytes: &[u8]) -> Result<(), CheckerError> {
     writer.write_all(&length.to_be_bytes()).map_err(io_error)?;
     writer.write_all(bytes).map_err(io_error)
 }
+/// The wire owns components with slash separators. Native Windows backslashes
+/// and verbatim drive prefixes never enter relative member spellings.
+fn canonical_path_spelling(path: &Path) -> Result<String, CheckerError> {
+    let mut output = String::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => match prefix.kind() {
+                std::path::Prefix::Disk(drive) | std::path::Prefix::VerbatimDisk(drive) => {
+                    output.push(char::from(drive.to_ascii_uppercase()));
+                    output.push(':');
+                }
+                _ => return Err(CheckerError::UncapturedDependency { path: path.into() }),
+            },
+            Component::RootDir => output.push('/'),
+            Component::Normal(name) => {
+                let name = name
+                    .to_str()
+                    .ok_or_else(|| project_error("", "environment path is not UTF-8"))?;
+                if name.contains(['/', '\\', '\0']) {
+                    return Err(project_error(
+                        "",
+                        "environment component contains a wire separator",
+                    ));
+                }
+                if !output.is_empty() && !output.ends_with('/') {
+                    output.push('/');
+                }
+                output.push_str(name);
+            }
+            Component::CurDir | Component::ParentDir => {
+                return Err(CheckerError::UncapturedDependency { path: path.into() });
+            }
+        }
+    }
+    Ok(output)
+}
+
+mod portable_path_serde {
+    use super::*;
+    pub(super) fn serialize<S: serde::Serializer>(
+        path: &Path,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&canonical_path_spelling(path).map_err(serde::ser::Error::custom)?)
+    }
+    pub(super) fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<PathBuf, D::Error> {
+        let spelling = String::deserialize(deserializer)?;
+        let path = PathBuf::from(&spelling);
+        let canonical = canonical_path_spelling(&path).map_err(serde::de::Error::custom)?;
+        if canonical != spelling {
+            return Err(serde::de::Error::custom(
+                "noncanonical environment wire path",
+            ));
+        }
+        Ok(path)
+    }
+}
+
 fn path_field(writer: &mut impl Write, path: &Path) -> Result<(), CheckerError> {
-    field(
-        writer,
-        path.to_str()
-            .ok_or_else(|| project_error("", "environment path is not UTF-8"))?
-            .as_bytes(),
-    )
+    field(writer, canonical_path_spelling(path)?.as_bytes())
 }
 fn count(writer: &mut impl Write, count: usize) -> Result<(), CheckerError> {
     writer
@@ -1720,6 +1777,38 @@ mod tests {
         let mut workspace = super::super::Workspace::create()?;
         workspace.path = workspace.path.canonicalize().map_err(io_error)?;
         Ok(workspace)
+    }
+
+    #[test]
+    fn relative_members_use_canonical_slash_components_on_every_host() -> Result<(), CheckerError> {
+        let path = [
+            "local",
+            "py3",
+            "Lib",
+            "site-packages",
+            "package",
+            "__init__.py",
+        ]
+        .iter()
+        .collect::<PathBuf>();
+        let spelling = canonical_path_spelling(&path)?;
+        assert_eq!(spelling, "local/py3/Lib/site-packages/package/__init__.py");
+        assert_eq!(normal_relative(&spelling)?, path);
+        assert!(normal_relative("local\\py3\\package.py").is_err());
+        assert!(normal_relative("local//py3/package.py").is_err());
+        assert!(normal_relative("local/../package.py").is_err());
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                canonical_path_spelling(Path::new(r"C:\project\venv\Lib\site-packages"))?,
+                "C:/project/venv/Lib/site-packages"
+            );
+            assert_eq!(
+                canonical_path_spelling(Path::new(r"\\?\C:\project\venv"))?,
+                "C:/project/venv"
+            );
+        }
+        Ok(())
     }
 
     #[test]
