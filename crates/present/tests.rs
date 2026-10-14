@@ -17,6 +17,73 @@ const PROJECT: &str = "/abs/polyglot";
 const DECLARATION: &str = "/abs/polyglot::src/lib.rs:2::ferris";
 
 #[test]
+fn page_limit_domains_preserve_defaults_and_admit_exact_engine_boundaries() {
+    let graph = grammar_for("package-graph").expect("package graph grammar");
+    let mut invocation = Invocation::new(graph);
+    invocation.push("pkg:cargo/serde@1.0.228");
+    invocation.push("dependencies");
+    for (value, expected) in [(None, 64), (Some(1), 1), (Some(128), 128)] {
+        let mut input = invocation.clone();
+        if let Some(value) = value {
+            input.set("limit", value.to_string());
+        }
+        let Request::Surface(command) = lower(&input, PROJECT).expect("valid package graph bound")
+        else {
+            panic!("package graph is a surface command");
+        };
+        let backend_library::SurfaceCommand::PackageGraphPage { request } = *command else {
+            panic!("package graph request");
+        };
+        assert_eq!(request.limit, expected);
+        request.admit().expect("same bound admitted by the engine");
+    }
+    for value in ["0", "129", "200", "1.5", "65536"] {
+        let mut input = invocation.clone();
+        input.set("limit", value);
+        let fault = lower(&input, PROJECT).expect_err("invalid package graph bound");
+        assert_eq!(fault.slug(), FaultSlug::Usage);
+        assert_eq!(fault.operand().render(), "limit");
+        assert!(fault.cause().sentence().contains(&format!("`{value}`")));
+    }
+
+    for grammar in GRAMMARS {
+        for spec in grammar.positional().iter().chain(grammar.options()) {
+            assert_eq!(
+                spec.page_limit_domain().is_some(),
+                spec.kind() == ArgumentKind::Limit
+            );
+            if let Some(domain) = spec.page_limit_domain() {
+                assert!(domain.contains(domain.default_limit()));
+                assert_eq!(domain.minimum(), 1);
+                let (maximum, default) = if grammar.name() == "package-graph" {
+                    (backend_library::MAX_PACKAGE_GRAPH_PAGE_ROWS, 64)
+                } else {
+                    (200, DEFAULT_LIMIT)
+                };
+                assert_eq!(
+                    (domain.maximum(), domain.default_limit()),
+                    (maximum, default)
+                );
+            }
+        }
+    }
+
+    let mut search = Invocation::new(grammar_for("search").expect("search grammar"));
+    search.push("parse");
+    assert!(matches!(
+        lower(&search, PROJECT).expect("default search"),
+        Request::Search { limit: DEFAULT_LIMIT, .. }
+    ));
+    search.set("limit", "200");
+    assert!(matches!(
+        lower(&search, PROJECT).expect("maximum search"),
+        Request::Search { limit: 200, .. }
+    ));
+    search.set("limit", "201");
+    assert!(lower(&search, PROJECT).is_err());
+}
+
+#[test]
 fn durable_index_grammars_keep_exact_keys_and_reject_mixed_progress_identities() {
     let key = backend_library::IndexOperationKey::from_bytes([0x51; 32]).expect("key");
     let mut start = Invocation::new(grammar_for("index_start").expect("start grammar"));
@@ -1600,8 +1667,11 @@ fn semantic_shapes_cli_and_mcp_grammar_preserve_exact_selected_operands_and_egre
         panic!("shape command")
     };
     assert_eq!(request.symbols(), &[[6; 32]]);
+    let backend_library::SemanticShapeSource::Inline(inline_source) = request.source() else {
+        panic!("inline fixture")
+    };
     let versions = product_view(&backend_library::SurfaceReply::SemanticVersions(Box::new(
-        [request.source().clone()],
+        [inline_source.clone()],
     )));
     let versions_dto = crate::dto::ProductDto::new(&versions);
     let crate::ProductSemanticData::Versions(selections) =
@@ -1609,7 +1679,7 @@ fn semantic_shapes_cli_and_mcp_grammar_preserve_exact_selected_operands_and_egre
     else {
         panic!("version facet")
     };
-    assert_eq!(selections.as_ref(), &[request.source().clone()]);
+    assert_eq!(selections.as_ref(), &[inline_source.clone()]);
     let mut from_named = value.clone();
     from_named["source"] = serde_json::to_value(&selections[0]).expect("source operand");
     let roundtrip: backend_library::SemanticShapeReadRequest =
@@ -1700,9 +1770,14 @@ fn captured_semver_history_fits_once_and_preserves_the_complete_source_operand()
             serde_json::from_str(include_str!("../library/fixtures/semantic-shape-read.json"))
                 .expect("complete request grammar fixture");
         operands["source"] = value["semantic_data"]["value"][0].clone();
+        operands["source_epoch"]["source_relation_root"] =
+            operands["source"]["selected_source_frontier"]["source_relation_root"].clone();
         let request: backend_library::SemanticShapeReadRequest = serde_json::from_value(operands)
             .expect("exact published source remains a usable operand");
-        assert_eq!(request.source(), &records[0]);
+        assert_eq!(
+            request.source(),
+            &backend_library::SemanticShapeSource::Inline(records[0].clone())
+        );
         assert_eq!(
             serde_json::to_value(request.source()).expect("shape source DTO"),
             *source
@@ -2282,4 +2357,75 @@ fn legacy_unpaged_record_preview_retains_counts_beyond_native_page_credit() {
         total - shown
     )));
     assert!(short.len() <= 1000);
+}
+#[test]
+fn continuation_domain_owns_native_json_shape_and_preserves_cli_and_mcp_lowering() {
+    for grammar in GRAMMARS {
+        for spec in grammar.positional().iter().chain(grammar.options()) {
+            assert_eq!(
+                spec.continuation_domain().is_some(),
+                spec.kind() == ArgumentKind::Cursor
+            );
+        }
+    }
+    for name in ["search", "resolve", "graph", "outline"] {
+        assert_eq!(
+            grammar_for(name).expect("grammar").continuation_domain(),
+            Some(ContinuationDomain::PresentationPage)
+        );
+    }
+    assert_eq!(
+        grammar_for("index-search")
+            .expect("grammar")
+            .continuation_domain(),
+        Some(ContinuationDomain::PresentationOwnerToken)
+    );
+    let grammar = grammar_for("package-graph").expect("grammar");
+    assert_eq!(
+        grammar.continuation_domain(),
+        Some(ContinuationDomain::NativeOwnerJson)
+    );
+    let cursor = backend_library::PackageGraphCursor {
+        schema: backend_library::PACKAGE_GRAPH_PAGE_SCHEMA,
+        limit: 1,
+        seal: [0; 32],
+        view_root: [9; 32],
+        facts_witness: [10; 32],
+        recipe: [11; 32],
+        catalog_snapshot: Some([12; 32]),
+        source: None,
+        after_edge_id: [13; 32],
+    };
+    let arguments = serde_json::json!({"package":"pkg:cargo/serde@1.0.228","direction":"dependencies","limit":1,"cursor":cursor});
+    let mcp = Invocation::from_json(grammar, arguments.as_object().expect("arguments"))
+        .expect("native JSON operand");
+    let lowered = lower(&mcp, PROJECT).expect("native cursor lower");
+    let mut cli = Invocation::new(grammar);
+    cli.push("pkg:cargo/serde@1.0.228");
+    cli.push("dependencies");
+    cli.set("limit", "1");
+    cli.set(
+        "cursor",
+        serde_json::to_string(&cursor).expect("CLI cursor"),
+    );
+    let Request::Surface(cli_command) = lower(&cli, PROJECT).expect("CLI cursor lower") else {
+        panic!("CLI native surface")
+    };
+    let Request::Surface(command) = lowered else {
+        panic!("native surface")
+    };
+    assert_eq!(cli_command, command);
+    let backend_library::SurfaceCommand::PackageGraphPage { request } = *command else {
+        panic!("native graph")
+    };
+    assert_eq!(request.cursor, Some(cursor));
+    assert_eq!(request.catalog_snapshot, Some([12; 32]));
+    let mut malformed = arguments;
+    malformed["cursor"] = serde_json::json!("{}");
+    assert_eq!(
+        Invocation::from_json(grammar, malformed.as_object().expect("args"))
+            .expect_err("not an object")
+            .slug(),
+        FaultSlug::Usage
+    );
 }

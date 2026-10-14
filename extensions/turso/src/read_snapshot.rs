@@ -7,7 +7,9 @@
 //! namespace selector. They still need the caller's admitted view/facts proof.
 
 use crate::{PackageGraphReadError, PackageGraphRevision, ProjectionError, TursoProjection};
-use backend_library::{PackageGraphPage, PackageGraphPageRequest};
+#[cfg(test)]
+use backend_library::PackageGraphPageRequest;
+use backend_library::{PackageGraphPage, VerifiedPackageGraphPageRequest};
 
 /// One exact SQL read snapshot, with no mutation or selector-admission API.
 /// The read transaction lives until its connection is retired by the worker.
@@ -75,8 +77,24 @@ impl TursoProjectionReadSnapshot {
     /// adapter must still authenticate the result against selected facts.
     pub async fn read_package_graph_page(
         &self,
+        request: &VerifiedPackageGraphPageRequest<'_>,
+    ) -> Result<PackageGraphPage, PackageGraphReadError> {
+        crate::package_graph_read::read_page_snapshot(
+            &self.connection,
+            crate::package_graph_read::GraphReadAdmission::Owner(request),
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn read_unsealed_package_graph_page_for_test(
+        &self,
         request: &PackageGraphPageRequest,
     ) -> Result<PackageGraphPage, PackageGraphReadError> {
-        crate::package_graph_read::read_page_snapshot(&self.connection, request).await
+        crate::package_graph_read::read_page_snapshot(
+            &self.connection,
+            crate::package_graph_read::GraphReadAdmission::UnsealedFixture(request),
+        )
+        .await
     }
 }

@@ -835,9 +835,35 @@ pub fn admit_surface_reply(
     command: &crate::SurfaceCommand,
     reply: &crate::SurfaceReply,
 ) -> Result<(), ReplyAdmissionError> {
-    reply
-        .admit(command.id())
-        .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
+    if let (
+        crate::SurfaceCommand::SemanticSource { request },
+        crate::SurfaceReply::SemanticSource(chunk),
+    ) = (command, reply)
+    {
+        // Exact variant matching supplies the command-kind check. Correlation
+        // includes complete chunk admission and decodes this range only once.
+        chunk
+            .admit_request(request)
+            .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
+    } else {
+        reply
+            .admit(command.id())
+            .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
+    }
+    if let crate::SurfaceCommand::SemanticVersions {
+        package,
+        limit,
+        cursor,
+    } = command
+    {
+        let crate::SurfaceReply::SemanticVersionsPage(page) = reply else {
+            return Err(ReplyAdmissionError::Protocol(
+                "paged semantic-versions command requires a native descriptor page".to_owned(),
+            ));
+        };
+        page.admit_request(package, *limit, cursor.as_ref())
+            .map_err(|error| ReplyAdmissionError::Protocol(error.to_string()))?;
+    }
     admit_index_reply(command, reply)?;
     if let (crate::SurfaceCommand::ProjectTree { root }, crate::SurfaceReply::ProjectTree(tree)) =
         (command, reply)

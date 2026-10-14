@@ -10,6 +10,7 @@ mod journal_readiness;
 mod search_lane;
 mod semantic_query;
 mod semantic_shapes;
+mod semantic_source;
 mod snapshot;
 
 pub(in crate::builtin) use adapter::{CommandAdapter, Executed};

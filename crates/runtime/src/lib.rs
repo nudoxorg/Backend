@@ -1035,6 +1035,44 @@ fn locald_sibling(current: &Path) -> Result<PathBuf, RuntimeError> {
     Err(RuntimeError::MissingExecutable(sibling))
 }
 
+/// Observes an optional CLI in this installed executable's matched bundle.
+/// It never searches another installation, creates state, dials or starts an owner.
+#[must_use]
+pub fn installed_cli_executable() -> Option<PathBuf> {
+    cli_sibling(&std::env::current_exe().ok()?)
+}
+
+fn cli_sibling(current: &Path) -> Option<PathBuf> {
+    let current = fs::canonicalize(current).ok()?;
+    let candidate = current.with_file_name(format!("backend-cli{}", std::env::consts::EXE_SUFFIX));
+    let sibling = fs::canonicalize(candidate).ok()?;
+    if sibling.parent() != current.parent() {
+        return None;
+    }
+    observed_cli_executable(&sibling)
+}
+
+/// Read-only executable admission for an already-selected CLI path.
+/// The caller supplies its current process or a matched-bundle sibling.
+#[must_use]
+pub fn observed_cli_executable(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() || path.to_str()?.contains('\0') {
+        return None;
+    }
+    let metadata = fs::metadata(path).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return None;
+        }
+    }
+    Some(path.to_owned())
+}
+
 fn ensure_authority_secret(path: &Path) -> Result<(), RuntimeError> {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt as _;
@@ -1474,6 +1512,46 @@ mod tests {
         assert!(message.contains("backend-locald companion executable"));
         assert!(message.contains("cargo build -p backend-locald -p backend-cli -p backend-mcp"));
         assert!(message.contains(LOCALD_BIN_ENV));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_advice_admits_only_an_executable_in_the_current_resolved_bundle() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root = test_directory("cli-advice-bundle");
+        fs::create_dir_all(&root).expect("owned bundle fixture");
+        let current = root.join("backend-mcp");
+        fs::write(&current, b"MCP fixture").expect("observed bundle member");
+        assert!(
+            cli_sibling(&current).is_none(),
+            "source MCP/locald installation has no CLI"
+        );
+        let cli = root.join("backend-cli");
+        fs::write(&cli, b"CLI fixture").expect("observed CLI file");
+        fs::set_permissions(&cli, fs::Permissions::from_mode(0o600)).expect("nonexecutable");
+        assert!(
+            cli_sibling(&current).is_none(),
+            "file presence alone is insufficient"
+        );
+        fs::set_permissions(&cli, fs::Permissions::from_mode(0o700)).expect("executable");
+        assert_eq!(cli_sibling(&current), Some(cli.clone()));
+        let link = root.join("MCP link");
+        std::os::unix::fs::symlink(&current, &link).expect("launcher link");
+        assert_eq!(cli_sibling(&link), Some(cli.clone()));
+        fs::remove_file(cli).expect("remove owned CLI file");
+        assert!(cli_sibling(&link).is_none(), "no guessed PATH executable");
+        let other = root.join("other-installation");
+        fs::create_dir(&other).expect("other bundle fixture");
+        let foreign = other.join("backend-cli");
+        fs::write(&foreign, b"foreign CLI fixture").expect("foreign file");
+        fs::set_permissions(&foreign, fs::Permissions::from_mode(0o700))
+            .expect("foreign executable");
+        std::os::unix::fs::symlink(&foreign, root.join("backend-cli")).expect("cross-bundle link");
+        assert!(
+            cli_sibling(&current).is_none(),
+            "a sibling link cannot silently choose another bundle"
+        );
+        fs::remove_dir_all(root).expect("remove owned fixture");
     }
 
     #[cfg(unix)]

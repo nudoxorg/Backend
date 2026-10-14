@@ -1017,6 +1017,63 @@ fn graph_page(
     }
 }
 
+#[test]
+fn native_graph_frontier_refuses_forgery_and_resumes_with_same_cold_owner_key() {
+    let mut fixture = native_fixture();
+    let (source, _) =
+        crate::builtin::local_manifest::local_dependency_facts(Path::new(&fixture.label))
+            .expect("real manifest")
+            .expect("real selected local authority");
+    let request = backend_library::PackageGraphPageRequest::new(
+        source.coordinate,
+        backend_library::PackageGraphDirection::Dependencies,
+        Some(source.authority),
+        1,
+    )
+    .expect("one edge page");
+    let first = graph_page(&mut fixture, request.clone());
+    assert_eq!(first.limit, 1);
+    let backend_library::PackageGraphPageTerminal::More(cursor) = first.terminal.clone() else {
+        panic!("real two-edge manifest continues");
+    };
+    assert_ne!(cursor.seal, [0; 32]);
+    let second = graph_page(&mut fixture, request.clone().with_cursor(cursor.clone()));
+    assert_eq!(second.rows.len(), 1);
+    assert_ne!(first.rows[0].facts_version, second.rows[0].facts_version);
+
+    let mut forged = cursor.clone();
+    forged.after_edge_id = [0xff; 32];
+    let command = Command::Surface(backend_library::SurfaceCommand::PackageGraphPage {
+        request: request.clone().with_cursor(forged),
+    });
+    let body =
+        serde_json::to_vec(&backend_engine::CommandDto::new(0xb92, command)).expect("actual wire");
+    let (adapter, daemon) = fixture.parts();
+    let Executed::Reply(bytes) = adapter
+        .execute_or_defer(daemon, &body, 0xb92)
+        .expect("actual hostile dispatch")
+    else {
+        panic!("read cannot queue")
+    };
+    let reply = backend_engine::decode_reply_dto(&bytes).expect("bounded correlated refusal");
+    assert!(
+        matches!(reply.reply, CommandReply::Failed(_)),
+        "hostile frontier must never return an empty successful Complete page: {:?}",
+        reply.reply
+    );
+
+    let journal = fixture
+        .root
+        .0
+        .join("workspace/native-publication-view.journal");
+    fixture = fixture.reopen_with_view_journal(Some(journal));
+    let cold = graph_page(&mut fixture, request.with_cursor(cursor));
+    assert_eq!(
+        cold, second,
+        "persisted key and checked roots authenticate cold continuation"
+    );
+}
+
 fn native_dispatch_receipt_control(partial: bool) {
     let mut fixture = native_fixture();
     let (entered, mut release) = block_at(&mut fixture, TestStage::AfterReceipt);

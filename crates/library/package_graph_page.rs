@@ -12,7 +12,7 @@ pub const MAX_PACKAGE_GRAPH_PAGE_ROWS: u16 = 128;
 /// Maximum source authorities listed in an ambiguity response.
 pub const MAX_PACKAGE_GRAPH_AUTHORITIES: usize = 64;
 /// Schema for the root and facts-witness-bound package graph page contract.
-pub const PACKAGE_GRAPH_PAGE_SCHEMA: u16 = 2;
+pub const PACKAGE_GRAPH_PAGE_SCHEMA: u16 = 3;
 
 /// Direction of one package graph read.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
@@ -55,8 +55,92 @@ pub struct PackageGraphCursor {
     pub catalog_snapshot: Option<[u8; 32]>,
     /// Exact source authority selected by a forward lookup, if applicable.
     pub source: Option<PackageGraphSourceKey>,
+    /// Exact effective page size, authenticated with the keyset boundary.
+    #[serde(default)]
+    pub limit: u16,
     /// Last edge identity returned to the caller.
     pub after_edge_id: [u8; 32],
+    /// Owner seal over every continuation claim. Defaults only let an old
+    /// unsigned cursor decode far enough to receive an explicit restart fault.
+    #[serde(default)]
+    pub seal: [u8; 32],
+}
+
+/// Canonical owner statement for an issued graph boundary, excluding its seal.
+#[derive(Serialize)]
+struct PackageGraphCursorStatement<'a> {
+    schema: u16,
+    view_root: &'a [u8; 32],
+    facts_witness: &'a [u8; 32],
+    recipe: &'a [u8; 32],
+    catalog_snapshot: &'a Option<[u8; 32]>,
+    source: &'a Option<PackageGraphSourceKey>,
+    limit: u16,
+    after_edge_id: &'a [u8; 32],
+}
+
+impl crate::NativeOwnerStatement for PackageGraphCursorStatement<'_> {
+    const DOMAIN: &'static [u8] = b"backend.package-graph.cursor.v3\0";
+}
+
+impl PackageGraphCursor {
+    fn statement(&self) -> PackageGraphCursorStatement<'_> {
+        PackageGraphCursorStatement {
+            schema: self.schema,
+            view_root: &self.view_root,
+            facts_witness: &self.facts_witness,
+            recipe: &self.recipe,
+            catalog_snapshot: &self.catalog_snapshot,
+            source: &self.source,
+            limit: self.limit,
+            after_edge_id: &self.after_edge_id,
+        }
+    }
+}
+
+/// Borrowed capability proving that the request's exact frontier was issued
+/// by this owner. SQL page readers require this proof before seeking any edge.
+/// The immutable borrow prevents changing a claim after verification.
+#[derive(Clone, Copy)]
+pub struct VerifiedPackageGraphPageRequest<'a> {
+    request: &'a PackageGraphPageRequest,
+    authority: &'a [u8; 32],
+}
+
+impl std::fmt::Debug for VerifiedPackageGraphPageRequest<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("VerifiedPackageGraphPageRequest")
+            .field("request", self.request)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> VerifiedPackageGraphPageRequest<'a> {
+    /// Admits a first request or verifies every continuation claim under the
+    /// persisted product authority. No cursor cache or process-local issuer
+    /// state is needed when the same owner key resumes after a cold restart.
+    pub fn verify(
+        request: &'a PackageGraphPageRequest,
+        authority: &'a [u8; 32],
+    ) -> Result<Self, PackageGraphPageError> {
+        request.admit()?;
+        if let Some(cursor) = &request.cursor {
+            if cursor.recipe != request.recipe(cursor.source.as_ref()) {
+                return Err(PackageGraphPageError::CursorMismatch);
+            }
+            crate::verify_native_owner_statement(authority, &cursor.statement(), &cursor.seal)
+                .map_err(|_| PackageGraphPageError::CursorMismatch)?;
+        }
+        Ok(Self { request, authority })
+    }
+
+    /// The exact admitted immutable request, retaining its original limit,
+    /// source, roots and keyset boundary.
+    #[must_use]
+    pub const fn request(&self) -> &'a PackageGraphPageRequest {
+        self.request
+    }
 }
 
 /// Bounded request for a direct package dependency graph page.
@@ -142,7 +226,10 @@ impl PackageGraphPageRequest {
             return Err(PackageGraphPageError::AuthorityNotApplicable);
         }
         if let Some(cursor) = &self.cursor {
-            if cursor.schema != PACKAGE_GRAPH_PAGE_SCHEMA
+            if cursor.schema != PACKAGE_GRAPH_PAGE_SCHEMA {
+                return Err(PackageGraphPageError::CursorSchema);
+            }
+            if cursor.limit != self.limit
                 || cursor.catalog_snapshot != self.catalog_snapshot
                 || cursor.source.as_ref().is_some_and(|source| {
                     source.coordinate != self.package
@@ -171,7 +258,7 @@ impl PackageGraphPageRequest {
     #[must_use]
     pub fn recipe(&self, selected_source: Option<&PackageGraphSourceKey>) -> [u8; 32] {
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"nudox.package-graph.page.v2\0");
+        hasher.update(b"nudox.package-graph.page.v3\0");
         hasher.update(&[self.package.kind().tag()]);
         hash_identity_part(&mut hasher, self.package.as_str().as_bytes());
         match self.catalog_snapshot {
@@ -277,6 +364,8 @@ pub struct PackageGraphPage {
     /// Exact source selected for a forward lookup. Reverse rows carry their
     /// own exact source keys, so the page-level source remains absent there.
     pub source: Option<PackageGraphSourceKey>,
+    /// Exact effective page size, retained by every continuation.
+    pub limit: u16,
     /// Known, unknown, unavailable, or ambiguous fact state.
     pub knowledge: PackageGraphKnowledge,
     /// Dependency edges in stable edge-id order.
@@ -289,6 +378,12 @@ impl PackageGraphPage {
     /// Verifies the page's bounded and identity-preserving shape before it
     /// crosses a product or transport boundary.
     pub fn admit(&self) -> Result<(), PackageGraphPageError> {
+        if self.limit == 0 || self.limit > MAX_PACKAGE_GRAPH_PAGE_ROWS {
+            return Err(PackageGraphPageError::PageBound);
+        }
+        if self.rows.len() > usize::from(self.limit) {
+            return Err(PackageGraphPageError::PageBound);
+        }
         if self.schema != PACKAGE_GRAPH_PAGE_SCHEMA
             || self.rows.len() > usize::from(MAX_PACKAGE_GRAPH_PAGE_ROWS)
             || self
@@ -397,6 +492,7 @@ impl PackageGraphPage {
                         PackageGraphKnowledge::Known | PackageGraphKnowledge::Partial { .. }
                     )
                     || cursor.schema != PACKAGE_GRAPH_PAGE_SCHEMA
+                    || cursor.limit != self.limit
                     || cursor.view_root != self.view_root
                     || cursor.facts_witness != self.facts_witness
                     || cursor.catalog_snapshot != self.catalog_snapshot
@@ -427,7 +523,13 @@ impl PackageGraphPage {
     ) -> Result<(), PackageGraphPageError> {
         request.admit()?;
         self.admit()?;
-        if self.package != request.package || self.direction != request.direction {
+        if self.rows.len() > usize::from(request.limit) {
+            return Err(PackageGraphPageError::PageBound);
+        }
+        if self.limit != request.limit
+            || self.package != request.package
+            || self.direction != request.direction
+        {
             return Err(PackageGraphPageError::PageShape);
         }
         if request.control == PackageGraphControl::Cancel {
@@ -486,8 +588,11 @@ impl PackageGraphPage {
         Ok(())
     }
 
-    /// Authenticates this durable page against the exact resident checked
-    /// facts snapshot that was used to synchronize its projection.
+    /// Checks this durable page against the exact resident checked facts
+    /// snapshot that was used to synchronize its projection. This check alone
+    /// does not authenticate a caller's keyset frontier; production readers
+    /// require `VerifiedPackageGraphPageRequest` before SQL and seal the output
+    /// through `seal_against_checked_facts`.
     ///
     /// The forward path seeks directly to the selected canonical source and
     /// edge cursor. The reverse path reads only the matching sorted postings
@@ -501,9 +606,34 @@ impl PackageGraphPage {
     ) -> Result<(), PackageGraphPageError> {
         request.admit()?;
         self.admit_for(request)?;
-        let expected = expected_page(request, expected_view_root, graph)?;
+        let mut expected = expected_page(request, expected_view_root, graph)?;
+        // The seal is transport authentication, not a dependency fact. Compare
+        // every issued claim and row against checked facts without cloning the
+        // received page, then retain only its fixed-size seal for equality.
+        if let (PackageGraphPageTerminal::More(actual), PackageGraphPageTerminal::More(canonical)) =
+            (&self.terminal, &mut expected.terminal)
+        {
+            canonical.seal = actual.seal;
+        }
         if self != &expected {
             return Err(PackageGraphPageError::FactsMismatch);
+        }
+        Ok(())
+    }
+
+    /// Seals only a boundary whose exact rows and claims have been admitted
+    /// against the owner's resident checked facts and verified input request.
+    pub fn seal_against_checked_facts(
+        &mut self,
+        request: &VerifiedPackageGraphPageRequest<'_>,
+        expected_view_root: [u8; 32],
+        graph: &IndexedCheckedPackageGraph,
+    ) -> Result<(), PackageGraphPageError> {
+        self.admit_against_checked_facts(request.request(), expected_view_root, graph)?;
+        if let PackageGraphPageTerminal::More(cursor) = &mut self.terminal {
+            cursor.seal =
+                crate::seal_native_owner_statement(request.authority, &cursor.statement())
+                    .map_err(|_| PackageGraphPageError::CursorMismatch)?;
         }
         Ok(())
     }
@@ -553,6 +683,7 @@ fn expected_page(
     if request.control == PackageGraphControl::Cancel {
         return Ok(PackageGraphPage {
             schema: PACKAGE_GRAPH_PAGE_SCHEMA,
+            limit: request.limit,
             view_root,
             facts_witness,
             catalog_snapshot: request.catalog_snapshot,
@@ -693,6 +824,8 @@ fn expected_page(
             .ok_or(PackageGraphPageError::FactsMismatch)?;
         PackageGraphPageTerminal::More(PackageGraphCursor {
             schema: PACKAGE_GRAPH_PAGE_SCHEMA,
+            limit: request.limit,
+            seal: [0; 32],
             view_root,
             facts_witness,
             recipe: request.recipe(source.as_ref()),
@@ -705,6 +838,7 @@ fn expected_page(
     };
     Ok(PackageGraphPage {
         schema: PACKAGE_GRAPH_PAGE_SCHEMA,
+        limit: request.limit,
         view_root,
         facts_witness,
         catalog_snapshot: request.catalog_snapshot,
@@ -802,7 +936,9 @@ pub enum PackageGraphPageError {
     AuthoritySelector,
     /// The coordinate has more authorities than the bounded chooser allows.
     AuthorityFanout,
-    /// Cursor schema, recipe, or key did not match the request.
+    /// An older unsigned cursor requires restarting under the sealed contract.
+    CursorSchema,
+    /// Cursor recipe, key or owner seal did not match the request.
     CursorMismatch,
     /// The selected root or facts witness changed after the first page.
     StaleCursor,
@@ -823,7 +959,8 @@ impl std::fmt::Display for PackageGraphPageError {
             Self::AuthorityFanout => {
                 "package coordinate has too many source authorities to list safely"
             }
-            Self::CursorMismatch => "package graph cursor does not match its request",
+            Self::CursorSchema => "package graph cursor schema is no longer supported; restart the read without a cursor",
+            Self::CursorMismatch => "package graph cursor does not match its authenticated request; restart the read without a cursor",
             Self::StaleCursor => {
                 "package graph changed since this cursor was issued; restart the read"
             }
@@ -1101,6 +1238,194 @@ mod tests {
         graph: &IndexedCheckedPackageGraph,
     ) -> PackageGraphPage {
         expected_page(request, [0xa1; 32], graph).expect("expected page")
+    }
+
+    #[test]
+    fn public_page_admission_enforces_the_exact_requested_row_bound() {
+        let (graph, source, _) = checked_graph();
+        let broad = PackageGraphPageRequest::new(
+            source.coordinate.clone(),
+            PackageGraphDirection::Dependencies,
+            None,
+            MAX_PACKAGE_GRAPH_PAGE_ROWS,
+        )
+        .expect("bounded complete read");
+        let page = page_for(&broad, &graph);
+        assert!(
+            page.rows.len() > 1,
+            "the control needs multiple actual checked edges"
+        );
+        page.admit_for(&broad).expect("same requested bound");
+        let tight = PackageGraphPageRequest::new(
+            source.coordinate,
+            PackageGraphDirection::Dependencies,
+            None,
+            1,
+        )
+        .expect("one-row caller bound");
+        assert_eq!(
+            page.admit_for(&tight),
+            Err(PackageGraphPageError::PageBound)
+        );
+    }
+
+    #[test]
+    fn owner_seal_rejects_every_forged_frontier_and_survives_stateless_restart() {
+        assert!(
+            crate::DTO_VERSION >= 29,
+            "sealed graph shape joins the pending shared DTO29 cutover"
+        );
+        let (graph, source, edges) = checked_graph();
+        assert_eq!(
+            <PackageGraphCursorStatement<'_> as crate::NativeOwnerStatement>::DOMAIN.last(),
+            Some(&0)
+        );
+        let authority = [0x67; 32];
+        let first_request = PackageGraphPageRequest::new(
+            source.coordinate.clone(),
+            PackageGraphDirection::Dependencies,
+            Some(source.authority),
+            1,
+        )
+        .expect("one canonical checked edge per page");
+        let verified = VerifiedPackageGraphPageRequest::verify(&first_request, &authority)
+            .expect("first page is admitted without an input frontier");
+        let mut first = page_for(&first_request, &graph);
+        first
+            .seal_against_checked_facts(&verified, [0xa1; 32], &graph)
+            .expect("only actual checked boundary is sealed");
+        let PackageGraphPageTerminal::More(cursor) = first.terminal.clone() else {
+            panic!("four checked edges must continue");
+        };
+        assert_ne!(cursor.seal, [0; 32]);
+        let resume = first_request.clone().with_cursor(cursor.clone());
+        VerifiedPackageGraphPageRequest::verify(&resume, &authority).expect("issued frontier");
+        assert!(VerifiedPackageGraphPageRequest::verify(&resume, &[0x68; 32]).is_err());
+
+        let mutations: [fn(&mut PackageGraphCursor); 7] = [
+            |c| c.after_edge_id = [0xff; 32],
+            |c| c.view_root[0] ^= 1,
+            |c| c.facts_witness[0] ^= 1,
+            |c| c.recipe[0] ^= 1,
+            |c| c.catalog_snapshot = Some([0x11; 32]),
+            |c| c.source = None,
+            |c| c.seal[0] ^= 1,
+        ];
+        for mutate in mutations {
+            let mut forged = cursor.clone();
+            mutate(&mut forged);
+            let forged_request = first_request.clone().with_cursor(forged);
+            assert_eq!(
+                VerifiedPackageGraphPageRequest::verify(&forged_request, &authority).err(),
+                Some(PackageGraphPageError::CursorMismatch)
+            );
+        }
+        let mut changed_limit = cursor.clone();
+        changed_limit.limit = 2;
+        let larger_request = PackageGraphPageRequest::new(
+            source.coordinate,
+            PackageGraphDirection::Dependencies,
+            Some(source.authority),
+            2,
+        )
+        .expect("valid but different bound")
+        .with_cursor(changed_limit);
+        assert_eq!(
+            VerifiedPackageGraphPageRequest::verify(&larger_request, &authority).err(),
+            Some(PackageGraphPageError::CursorMismatch)
+        );
+
+        // A caller can manufacture a mutually consistent empty Complete page
+        // for a high raw frontier. It still cannot obtain the verified request
+        // required by the SQL reader or checked-boundary signer.
+        let mut high = cursor.clone();
+        high.after_edge_id = [0xff; 32];
+        let high_request = first_request.clone().with_cursor(high);
+        let empty = page_for(&high_request, &graph);
+        assert!(empty.rows.is_empty());
+        assert_eq!(empty.terminal, PackageGraphPageTerminal::Complete);
+        assert!(VerifiedPackageGraphPageRequest::verify(&high_request, &authority).is_err());
+
+        // No process-local token dictionary: serialize the exact public
+        // cursor, drop the original page, then verify with the same key.
+        let bytes = serde_json::to_vec(&cursor).expect("portable cursor");
+        drop(first);
+        let mut request =
+            first_request.with_cursor(serde_json::from_slice(&bytes).expect("cold cursor decoder"));
+        let mut ids = vec![cursor.after_edge_id];
+        loop {
+            let verified = VerifiedPackageGraphPageRequest::verify(&request, &authority)
+                .expect("cold same-key frontier");
+            let mut page = page_for(&request, &graph);
+            page.seal_against_checked_facts(&verified, [0xa1; 32], &graph)
+                .expect("checked successor");
+            ids.extend(page.rows.iter().map(|row| row.facts_version));
+            match page.terminal {
+                PackageGraphPageTerminal::More(next) => request = request.with_cursor(next),
+                PackageGraphPageTerminal::Complete => break,
+                PackageGraphPageTerminal::Cancelled => panic!("read was not cancelled"),
+            }
+        }
+        let mut expected = edges
+            .iter()
+            .map(|edge| edge.facts_version)
+            .collect::<Vec<_>>();
+        expected.sort();
+        assert_eq!(ids, expected);
+    }
+
+    #[test]
+    fn unsigned_schema_two_cursor_explicitly_requires_a_restart() {
+        let (graph, source, _) = checked_graph();
+        let request = PackageGraphPageRequest::new(
+            source.coordinate,
+            PackageGraphDirection::Dependencies,
+            None,
+            1,
+        )
+        .expect("first page");
+        let PackageGraphPageTerminal::More(cursor) = page_for(&request, &graph).terminal else {
+            panic!("fixture continues");
+        };
+        let mut value = serde_json::to_value(cursor).expect("legacy shape");
+        value["schema"] = serde_json::json!(2);
+        let object = value.as_object_mut().expect("cursor object");
+        object.remove("seal");
+        object.remove("limit");
+        let old = serde_json::from_value(value).expect("decode for useful refusal");
+        let error = VerifiedPackageGraphPageRequest::verify(&request.with_cursor(old), &[0x67; 32])
+            .expect_err("old unsigned frontier cannot seek");
+        assert_eq!(error, PackageGraphPageError::CursorSchema);
+        assert!(
+            error
+                .to_string()
+                .contains("restart the read without a cursor")
+        );
+    }
+
+    #[test]
+    fn signer_refuses_a_boundary_not_admitted_by_checked_facts() {
+        let (graph, source, _) = checked_graph();
+        let authority = [0x67; 32];
+        let request = PackageGraphPageRequest::new(
+            source.coordinate,
+            PackageGraphDirection::Dependencies,
+            None,
+            1,
+        )
+        .expect("first page");
+        let verified =
+            VerifiedPackageGraphPageRequest::verify(&request, &authority).expect("admit");
+        let mut page = page_for(&request, &graph);
+        rewrite_more_cursor(&mut page, [0xff; 32]);
+        assert!(
+            page.seal_against_checked_facts(&verified, [0xa1; 32], &graph)
+                .is_err()
+        );
+        let PackageGraphPageTerminal::More(cursor) = page.terminal else {
+            panic!("more")
+        };
+        assert_eq!(cursor.seal, [0; 32], "a rejected boundary receives no seal");
     }
 
     fn rewrite_more_cursor(page: &mut PackageGraphPage, edge_id: [u8; 32]) {
@@ -1729,6 +2054,7 @@ mod tests {
             assert_eq!(row.facts_version, row.recomputed_version());
             let page = PackageGraphPage {
                 schema: PACKAGE_GRAPH_PAGE_SCHEMA,
+                limit: MAX_PACKAGE_GRAPH_PAGE_ROWS,
                 view_root: [0x75; 32],
                 facts_witness: [0x76; 32],
                 catalog_snapshot: None,
@@ -1754,6 +2080,7 @@ mod tests {
         let source = PackageGraphSourceKey::new(package(), authority);
         let page = PackageGraphPage {
             schema: PACKAGE_GRAPH_PAGE_SCHEMA,
+            limit: MAX_PACKAGE_GRAPH_PAGE_ROWS,
             view_root: [1; 32],
             facts_witness: [2; 32],
             catalog_snapshot: None,
@@ -1795,6 +2122,7 @@ mod tests {
             .expect("mutated target");
         let page = PackageGraphPage {
             schema: PACKAGE_GRAPH_PAGE_SCHEMA,
+            limit: MAX_PACKAGE_GRAPH_PAGE_ROWS,
             view_root: [1; 32],
             facts_witness: [2; 32],
             catalog_snapshot: None,
@@ -1839,6 +2167,8 @@ mod tests {
         );
         let cursor = PackageGraphCursor {
             schema: PACKAGE_GRAPH_PAGE_SCHEMA,
+            limit: request.limit,
+            seal: [0; 32],
             view_root: [0x11; 32],
             facts_witness: [0x12; 32],
             recipe: request.recipe(Some(&source)),
@@ -1848,6 +2178,7 @@ mod tests {
         };
         let page = PackageGraphPage {
             schema: PACKAGE_GRAPH_PAGE_SCHEMA,
+            limit: request.limit,
             view_root: cursor.view_root,
             facts_witness: cursor.facts_witness,
             catalog_snapshot: cursor.catalog_snapshot,
@@ -1902,6 +2233,7 @@ mod tests {
         );
         let mut page = PackageGraphPage {
             schema: PACKAGE_GRAPH_PAGE_SCHEMA,
+            limit: MAX_PACKAGE_GRAPH_PAGE_ROWS,
             view_root: [1; 32],
             facts_witness: [2; 32],
             catalog_snapshot: None,

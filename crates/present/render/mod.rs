@@ -25,6 +25,8 @@ pub enum ContinuationTarget<'a> {
     CliOption,
     /// The named MCP tool accepts the token through its `cursor` argument.
     McpTool(&'a str),
+    /// A measured executable continuation is available in the response envelope.
+    McpInvocation(crate::McpInvocation<'a>),
     /// The generic MCP surface accepts its nested index-search cursor.
     McpSurfaceCommand,
 }
@@ -39,6 +41,7 @@ pub fn continuation_note(target: ContinuationTarget<'_>, cursor: &str) -> String
         ContinuationTarget::McpTool(tool) => format!(
             "Continue `{tool}` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`."
         ),
+        ContinuationTarget::McpInvocation(invocation) => invocation.continuation_note().to_owned(),
         ContinuationTarget::McpSurfaceCommand => "Continue `backend.surface` with the same arguments; copy `structuredContent.surface.data.next_cursor` to `command.cursor`.".to_owned(),
     }
 }
@@ -218,7 +221,9 @@ impl Theme {
 /// Returns the display column count of one line, counting each `char` once.
 #[must_use]
 pub fn display_width(text: &str) -> usize {
-    text.chars().filter(|character| *character != '\u{1b}').count()
+    text.chars()
+        .filter(|character| *character != '\u{1b}')
+        .count()
 }
 
 /// A bounded writer that never grows past one frame.

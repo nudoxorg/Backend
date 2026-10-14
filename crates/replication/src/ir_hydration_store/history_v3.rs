@@ -1641,14 +1641,27 @@ impl FileSemanticRangeStore {
         jumbo_limits: JumboRopeLimits,
     ) -> Result<crate::TypedV3HistoryReplay, String> {
         let pin = self.pin_typed_v3_history_admission()?;
-        let (commit, snapshot) = {
+        let (commit, snapshot, image, image_identity) = {
             let _state_lock = self.acquire_state_lock()?;
             self.validate_history_ref_proof(target, kind, name, commit_id, ancestry)?;
             let commit = self.generations.history_commit(target, commit_id)?;
             let snapshot = self
                 .generations
                 .typed_v3_publication_snapshot(target, commit_id)?;
-            (commit, snapshot)
+            let generation = self
+                .generations
+                .typed_v3_history_generation(target, commit_id)?;
+            if generation.target() != target
+                || generation.selected_stamp() != commit.selected_stamp()
+                || generation.manifest().root() != commit.manifest_root()
+            {
+                return Err(
+                    "typed V3 source image differs from its immutable history commit".to_owned(),
+                );
+            }
+            let image = generation.image();
+            let image_identity = generation.image_identity();
+            (commit, snapshot, image, image_identity)
         };
         let claim = snapshot.claim();
         let locator = snapshot.locator().clone();
@@ -1661,6 +1674,8 @@ impl FileSemanticRangeStore {
         }
         Ok(crate::TypedV3HistoryReplay::new(
             commit,
+            image,
+            image_identity,
             manifest,
             content,
             Arc::new(pin.into_guard()),
@@ -3038,6 +3053,115 @@ mod tests {
                 .as_ref(),
             &[first_commit, second_commit]
         );
+        // An earlier captured object stays readable through the publication's
+        // later tip without creating a query-owned tag or rewriting its bytes.
+        let captured = reopened
+            .history_ref_ancestry_proofs_for_captured_chain(
+                &target,
+                crate::HistoryRefKind::Branch,
+                &public_branch,
+                &[first_commit],
+                None,
+            )
+            .expect("cold publication retains the exact earlier captured chain");
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].ref_tip(), second_commit);
+        assert_eq!(captured[0].ancestor(), first_commit);
+        let replay = reopened
+            .replay_typed_v3_history(
+                &target,
+                crate::HistoryRefKind::Branch,
+                &public_branch,
+                first_commit,
+                &captured[0],
+                SemanticTypedPlaneVerificationTierV2::Standard,
+                JumboRopeLimits::default(),
+            )
+            .expect("cold replay earlier captured image through its publication root");
+        assert_eq!(replay.commit().identity(), first_commit);
+        assert_eq!(replay.commit().provenance(), package.package_identity());
+        drop(replay);
+        for (ids, parent) in [
+            (vec![second_commit, first_commit], None),
+            (vec![first_commit], Some(second_commit)),
+            (vec![first_commit, first_commit], None),
+        ] {
+            assert!(
+                reopened
+                    .history_ref_ancestry_proofs_for_captured_chain(
+                        &target,
+                        crate::HistoryRefKind::Branch,
+                        &public_branch,
+                        &ids,
+                        parent,
+                    )
+                    .is_err(),
+                "captured ancestry must preserve exact order, parent, and identity"
+            );
+        }
+        reopened
+            .compare_and_swap_history_ref(
+                &target,
+                crate::HistoryRefKind::Branch,
+                public_branch.clone(),
+                Some(second_commit),
+                Some(first_commit),
+            )
+            .expect("publication owner rewinds its retained root");
+        assert!(
+            reopened
+                .history_ref_ancestry_if_retained(
+                    &target,
+                    crate::HistoryRefKind::Branch,
+                    &public_branch,
+                    second_commit,
+                )
+                .expect("rewind is a retention observation rather than corrupt history")
+                .is_none()
+        );
+        reopened
+            .compare_and_swap_history_ref(
+                &target,
+                crate::HistoryRefKind::Branch,
+                public_branch.clone(),
+                Some(first_commit),
+                None,
+            )
+            .expect("publication owner releases its root");
+        assert!(
+            reopened
+                .history_ref_ancestry_if_retained(
+                    &target,
+                    crate::HistoryRefKind::Branch,
+                    &public_branch,
+                    first_commit,
+                )
+                .expect("released publication is explicitly Gone")
+                .is_none()
+        );
+        assert!(
+            reopened
+                .replay_typed_v3_history(
+                    &target,
+                    crate::HistoryRefKind::Branch,
+                    &public_branch,
+                    first_commit,
+                    &captured[0],
+                    SemanticTypedPlaneVerificationTierV2::Standard,
+                    JumboRopeLimits::default(),
+                )
+                .is_err(),
+            "an old ancestry capability cannot retain a released publication root"
+        );
+        assert_eq!(
+            reopened
+                .history_ref(&target, crate::HistoryRefKind::Branch, &branch,)
+                .expect("independent original staging root remains")
+                .expect("staging root")
+                .commit(),
+            second_commit
+        );
+
         let duplicate_branch = crate::HistoryRefName::new("package-history-duplicate-member")
             .expect("duplicate member test branch");
         let duplicate_mapping = reopened

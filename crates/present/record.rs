@@ -170,6 +170,7 @@ pub struct RecordList {
     records: Box<[Record]>,
     more: bool,
     continuation: Option<PageContinuation>,
+    page_basis: Option<(backend_library::Basis, u64)>,
     /// Why this page has no records, when the caller proved a reason other
     /// than a missed declaration. Search leaves this empty.
     empty_reason: Option<String>,
@@ -189,6 +190,7 @@ impl RecordList {
             records: records.into(),
             more: false,
             continuation: None,
+            page_basis: None,
             empty_reason: None,
         }
     }
@@ -241,6 +243,19 @@ impl RecordList {
         self.continuation = continuation;
         self.more = self.continuation.is_some();
         self
+    }
+
+    /// Retains immutable producer scope for bounded first-page re-reads.
+    #[must_use]
+    pub const fn with_page_basis(mut self, basis: backend_library::Basis, sequence: u64) -> Self {
+        self.page_basis = Some((basis, sequence));
+        self
+    }
+
+    /// Returns native scope; row count and display text are never a basis.
+    #[must_use]
+    pub const fn page_basis(&self) -> Option<(backend_library::Basis, u64)> {
+        self.page_basis
     }
 
     /// Returns the query text this page answers.

@@ -1,0 +1,26 @@
+{
+  "source": "e315da1ea22958522aae8401af959f45de12e2ac",
+  "tree": "93e5ec5e1397826b4489d70da835428cb69c96e2",
+  "evidence": "persistent actual SearXNG acceptance11, immutable cold MCP id269 and actual CLI standard first native search page25; transport fixture, does not authorize native lookup",
+  "native_on_candidate": "UNRUN",
+  "files": [
+    {
+      "file": "request.json",
+      "origin": "/Users/mileswirht/.cache/nudox/evidence/report21-20261013/sol61-python-go/searxng-runtime-packet-e315-11/recovered/captured-search-budget-refusal.request.json",
+      "bytes": 126,
+      "sha256": "0ea0ebf3eedc7e563f249c0642b3140f91b298f7b3c1d2583280fd9ef381940e"
+    },
+    {
+      "file": "response.json",
+      "origin": "/Users/mileswirht/.cache/nudox/evidence/report21-20261013/sol61-python-go/searxng-runtime-packet-e315-11/recovered/captured-search-budget-refusal.response.json",
+      "bytes": 945,
+      "sha256": "5698a065994990bc9cd1d64e83e2e0b4f370a04e38f4a4b850c2452938af1aa9"
+    },
+    {
+      "file": "cli-page-25.json",
+      "origin": "/Users/mileswirht/.cache/nudox/evidence/report21-20261013/sol61-python-go/searxng-runtime-packet-e315-11/recovered/0277-searxng-search-resume-page-000.stdout",
+      "bytes": 30469,
+      "sha256": "309a9b3b64ff6b1564d6668b2215ac448b04974efe91990ea46e1e5f5d0401d0"
+    }
+  ]
+}

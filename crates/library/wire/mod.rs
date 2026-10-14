@@ -37,7 +37,8 @@ pub use codec::{
     encode_command_body,
 };
 pub use command::{
-    CommandDto, ReplyDto, ViewDto, encode_binary_certificate_command, expand_binary_certificate_command,
+    CommandDto, ReplyDto, ViewDto, encode_binary_certificate_command,
+    expand_binary_certificate_command,
 };
 pub use event_dto::EventDto;
 pub use journal_grammar::JournalViewGrammarV3;

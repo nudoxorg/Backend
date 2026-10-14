@@ -4,6 +4,63 @@ use backend_present::{Cl100kError, cl100k_tokens};
 use serde_json::Value;
 use std::io::{self, Write};
 
+/// Preparation uses the actual caller ID and the stricter stdio framing.
+/// Final emission independently repeats admission for its selected transport.
+/// No selectable row, source byte, or continuation is removed by this budget.
+#[derive(Clone, Copy)]
+pub(super) struct ResponseBudget<'a> {
+    id: &'a Value,
+}
+impl<'a> ResponseBudget<'a> {
+    pub(super) const fn new(id: &'a Value) -> Self {
+        Self { id }
+    }
+    pub(super) fn measure(self, result: Value) -> MeasuredEnvelope {
+        MeasuredEnvelope::new(
+            super::attach_wire_budget(
+                super::success(self.id.clone(), result),
+                ResponseTransport::StdioLine,
+            ),
+            ResponseTransport::StdioLine,
+        )
+    }
+    pub(super) fn admit(self, result: Value) -> Result<Value, super::RpcError> {
+        let measured = self.measure(result);
+        if !measured.fits() {
+            return Err(super::RpcError::from_fault(&Self::fault(&measured)));
+        }
+        measured
+            .into_value()
+            .as_object_mut()
+            .and_then(|frame| frame.remove("result"))
+            .ok_or_else(|| super::RpcError::tool("admitted response changed shape"))
+    }
+    pub(super) fn fault(measured: &MeasuredEnvelope) -> backend_present::Fault {
+        if measured.bytes() > super::MCP_RESULT_BUDGET_BYTES {
+            return super::oversized_fault(backend_present::BudgetExceeded {
+                bytes: measured.bytes(),
+                budget: super::MCP_RESULT_BUDGET_BYTES,
+            });
+        }
+        backend_present::Fault::new(
+            backend_present::FaultSlug::Transport,
+            backend_present::Operand::Whole,
+            backend_present::Cause::new(
+                backend_present::CauseSlug::Oversized,
+                match measured.tokens() {
+                    Ok(tokens) => format!(
+                        "complete MCP response has {tokens} {} tokens, above the {} token budget",
+                        backend_present::CL100K_POLICY,
+                        super::MCP_CL100K_TOKEN_LIMIT
+                    ),
+                    Err(error) => error.to_string(),
+                },
+            ),
+            backend_present::Affordance::None,
+        )
+    }
+}
+
 pub(super) struct MeasuredEnvelope {
     value: Value,
     transport: ResponseTransport,
