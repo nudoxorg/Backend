@@ -806,7 +806,7 @@ impl GraphView {
         let input = self.find.read(cx);
         // Rope length is borrowed metadata. Oversized history must not first
         // materialize the unrestricted live query merely to discard it.
-        if input.text().len_bytes() > MAX_HISTORICAL_QUERY_BYTES {
+        if input.text().len() > MAX_HISTORICAL_QUERY_BYTES {
             return LocalEditingSnapshot { oversized: true, ..Default::default() };
         }
         let selection = input.selected_range();
