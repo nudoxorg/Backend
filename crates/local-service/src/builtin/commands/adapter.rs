@@ -9578,7 +9578,7 @@ mod tests {
         adapter.journal_readiness.lose_notifications();
         adapter.journal_readiness.refresh();
         adapter.journal_readiness.poll();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + control_deadline();
         while !adapter.journal_readiness.prepared_hint() && std::time::Instant::now() < deadline {
             adapter.journal_readiness.poll();
             std::thread::yield_now();
@@ -9644,7 +9644,7 @@ mod tests {
             Ok(Executed::Deferred)
         ));
         let mut ready = Vec::new();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + control_deadline();
         while ready.len() < 2 && std::time::Instant::now() < deadline {
             ready.extend(adapter.poll_deferred(daemon));
             std::thread::yield_now();
@@ -9739,7 +9739,7 @@ mod tests {
         );
         adapter.indexing = Some(indexing);
         adapter.journal_readiness.refresh();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + control_deadline();
         while adapter.indexing.is_some() && std::time::Instant::now() < deadline {
             adapter.poll_deferred(daemon);
             std::thread::yield_now();
@@ -9867,7 +9867,7 @@ mod tests {
         adapter.journal_readiness.exhaust_notifications();
         adapter.journal_readiness.refresh();
         adapter.journal_readiness.poll();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + control_deadline();
         while !adapter.journal_readiness.prepared_hint() && std::time::Instant::now() < deadline {
             adapter.journal_readiness.poll();
             std::thread::yield_now();
@@ -10290,7 +10290,7 @@ mod tests {
             "def legacy_name():\n    return 8\n",
         )
         .expect("source");
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + control_deadline();
         {
             let (adapter, daemon) = fixture.parts();
             assert!(matches!(
@@ -10332,7 +10332,7 @@ mod tests {
             let (adapter, daemon) = fixture.parts();
             assert!(!project_is_admitted(daemon, package));
             for (request, ticket) in [(882, 9882), (883, 9883)] {
-                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                let deadline = std::time::Instant::now() + control_deadline();
                 assert!(matches!(
                     adapter.execute_or_defer(daemon, &add_body(request, package, &label), ticket),
                     Ok(Executed::Deferred)
@@ -10401,7 +10401,7 @@ mod tests {
             ),
             Ok(Executed::Reply(_))
         ));
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + control_deadline();
         while !adapter
             .indexing
             .as_ref()
@@ -10432,11 +10432,15 @@ mod tests {
             .prepare(other, Some([97; 32]), [98; 32], 1)
             .expect("foreign marker");
         let captured = owner_cursor(daemon);
-        while !adapter
-            .indexing
-            .as_ref()
-            .is_some_and(|job| matches!(job.work, IndexJobWork::Publishing { .. }))
-        {
+        while !adapter.indexing.as_ref().is_some_and(|job| {
+            matches!(
+                job.work,
+                IndexJobWork::PublicationWorker {
+                    blocked: Some(_),
+                    ..
+                }
+            )
+        }) {
             assert!(
                 std::time::Instant::now() < deadline,
                 "retain refused candidate"
@@ -10473,17 +10477,30 @@ mod tests {
             )
             .expect("release foreign marker");
         if journal_busy || restart_before_receipt {
-            // Stop at the real workspace commit boundary, before the owner
-            // writes its separate operation terminal receipt.
+            // The released marker lets the refusal's worker commit. Stop once it
+            // has, at the real workspace commit boundary, before the owner writes
+            // the operation's own terminal receipt.
+            adapter.journal_readiness.refresh();
+            let committed_by = std::time::Instant::now() + control_deadline();
+            while !adapter
+                .indexing
+                .as_ref()
+                .is_some_and(|job| matches!(job.work, IndexJobWork::PublicationRetiring { .. }))
+            {
+                assert!(
+                    std::time::Instant::now() < committed_by,
+                    "the refusal worker must commit the capture"
+                );
+                adapter.poll_deferred(daemon);
+                std::thread::yield_now();
+            }
             let mut indexing = adapter.indexing.take().expect("retained refusal job");
-            let IndexJobWork::Publishing { prepared, .. } =
+            let IndexJobWork::PublicationRetiring { worker, outcome } =
                 std::mem::replace(&mut indexing.work, IndexJobWork::Transition)
             else {
-                panic!("retained publication candidate");
+                panic!("refusal worker retiring");
             };
-            let outcome = adapter
-                .finish_prepared_index_selection(daemon, &mut indexing, prepared, &mut None)
-                .expect("exact refusal capture committed");
+            worker.join();
             assert!(matches!(
                 &outcome,
                 backend_library::IndexJobOutcome::RefusedWithCompilerFailure { .. }
@@ -10542,7 +10559,7 @@ mod tests {
                 })
             });
             lock_ready
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(control_deadline())
                 .expect("writer acquired");
             let started = std::time::Instant::now();
             let unresolved = adapter
@@ -10574,7 +10591,7 @@ mod tests {
             adapter.complete_index_job(daemon, indexing, outcome, None);
         } else {
             adapter.journal_readiness.refresh();
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let deadline = std::time::Instant::now() + control_deadline();
             while adapter.indexing.is_some() {
                 assert!(
                     std::time::Instant::now() < deadline,
@@ -10646,7 +10663,7 @@ mod tests {
             adapter.execute_or_defer(daemon, &add_body(850, package, &label), 9850),
             Ok(Executed::Deferred)
         ));
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + control_deadline();
         let mut replies = Vec::new();
         let mut observed_inflight_capture = false;
         while adapter.indexing.is_some() {
@@ -10784,7 +10801,7 @@ mod tests {
             "Add work is not cancelled"
         );
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + control_deadline();
         let mut replies = Vec::new();
         while adapter.indexing.is_some() {
             replies.extend(adapter.poll_deferred(daemon));
@@ -10844,7 +10861,7 @@ mod tests {
             assert_eq!(indexing.requested_package, requested_package);
             assert_eq!(indexing.captured_package, canonical_package);
             assert_eq!(indexing.captured_label, canonical_label);
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let deadline = std::time::Instant::now() + control_deadline();
             while adapter.indexing.is_some() {
                 adapter.poll_deferred(daemon);
                 assert!(std::time::Instant::now() < deadline, "alias scan timed out");
