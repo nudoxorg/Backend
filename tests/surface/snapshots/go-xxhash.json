@@ -5596,7 +5596,7 @@
       "cli outline": 0.07,
       "cli packages": 0.02,
       "cli search Digest": 0.05,
-      "cli search Sum64String": 3.65,
+      "cli search Sum64String": 5.65,
       "mcp": 0.4
     }
   }

@@ -399,3 +399,13 @@ CPU 3.14s (versus normal 663 sample 3.30s/1.82s). Use 4.56s/3.14s as the initial
 Python index/CPU baseline; keep its original memory and query baselines. No
 ratio, floor, source witness or public answer was changed. Final ordinary
 exact-head CI must still pass both real projects and the unchanged polyglot case.
+
+Two-worker native rollout review (484083 / pr-t1/679, `5ea548357`): all public
+answers, memory and owner-CPU guards matched. T2 consumer time fell from128s
+in the preceding serial676 run to85s, including shell/artifact setup. Individual
+cases overlapped; measured case wall time excludes waiting for a worker.
+The Go first cold source query took5.65s versus the serial3.65s baseline,
+slightly exceeding its5.475s limit. Owner CPU stayed16.44s (serial16.79s) and
+indexing28.58s remained within its guard, so calibrate only that cold-query wall
+baseline to the observed two-worker5.65s. Other values/ratios and all answers
+remain unchanged; an independent exact-head two-worker comparison is required.
