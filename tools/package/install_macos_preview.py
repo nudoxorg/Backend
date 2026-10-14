@@ -430,7 +430,14 @@ def _reuse_existing_install_locked(prefix, entry, manifest, allow_downgrade):
 
 
 def install(prefix: Path, entry: dict, manifest: dict, archive: Path, *, allow_downgrade: bool = False) -> None:
-    os.umask(0o077)
+    previous_umask = os.umask(0o077)
+    try:
+        _install_with_private_umask(prefix, entry, manifest, archive, allow_downgrade=allow_downgrade)
+    finally:
+        os.umask(previous_umask)
+
+
+def _install_with_private_umask(prefix: Path, entry: dict, manifest: dict, archive: Path, *, allow_downgrade: bool = False) -> None:
     prefix.mkdir(mode=0o700, parents=True, exist_ok=True)
     _validate_install_directory(prefix)
     lib_dir = prefix / "lib"

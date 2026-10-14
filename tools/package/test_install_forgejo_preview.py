@@ -63,6 +63,15 @@ def published_mac_library(root):
     return path
 
 
+def run_published_install(*args, **kwargs):
+    """Keep the immutable historical installer fixture's process umask local to this test call."""
+    previous_umask = os.umask(0o077)
+    try:
+        return boot.install_verified(*args, **kwargs)
+    finally:
+        os.umask(previous_umask)
+
+
 def candidate_mac_transport(root, entry, archive):
     """Make a next-bootstrap channel that pins the current candidate sources."""
     bootstrap_body = (ROOT / "install_forgejo_preview.py").read_bytes()
@@ -413,16 +422,16 @@ class Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); entry, archive = mac_fixture(root); prefix = root / "prefix"
             library = published_mac_library(root)
-            boot.install_verified(entry, "macos-arm64", library, archive, None, prefix, False)
+            run_published_install(entry, "macos-arm64", library, archive, None, prefix, False)
             current = prefix / "lib/nudox/current"; active = current.resolve()
             marker = json.loads((active / ".installed-release.json").read_bytes())
             self.assertEqual(marker["sha256"], entry["archive"]["sha256"])
             self.assertEqual(marker["asset"], Path(entry["archive"]["url"]).name)
-            boot.install_verified(entry, "macos-arm64", library, archive, None, prefix, False)
+            run_published_install(entry, "macos-arm64", library, archive, None, prefix, False)
             self.assertEqual(current.resolve(), active)
             (active / "bin/backend-cli").write_bytes(b"tampered")
             with self.assertRaises(boot.InstallError):
-                boot.install_verified(entry, "macos-arm64", library, archive, None, prefix, False)
+                run_published_install(entry, "macos-arm64", library, archive, None, prefix, False)
             self.assertEqual(current.resolve(), active)
 
     def test_linux_original_pin_refuses_changed_mirror_manifest_before_install(self):
@@ -433,7 +442,7 @@ class Tests(unittest.TestCase):
             manifest = root / "manifest.json"; manifest.write_bytes(b"changed")
             entry = channel()["platforms"]["linux-x64"]
             with self.assertRaisesRegex(boot.InstallError, "SHA-256 mismatch"):
-                boot.install_verified(entry, "linux-x64", library, root / "absent", manifest, root / "prefix", False)
+                run_published_install(entry, "linux-x64", library, root / "absent", manifest, root / "prefix", False)
             self.assertFalse((root / "prefix").exists())
 
     def test_original_linux_manifest_parses_without_rewriting_provenance(self):
@@ -490,7 +499,7 @@ urllib.request.build_opener=lambda *handlers: Opener()
             prefix = root / "prefix"
             newer = copy.deepcopy(entry)
             newer["tag"] = newer["tag"].replace("20261006", "20261010")
-            boot.install_verified(newer, "macos-arm64", published_mac_library(root), archive, None, prefix, False)
+            run_published_install(newer, "macos-arm64", published_mac_library(root), archive, None, prefix, False)
             original = (prefix / "lib/nudox/current").resolve()
             refusal = subprocess.run([sys.executable, str(PUBLISHED_BOOTSTRAP_FIXTURE), "--prefix", str(prefix)],
                                      text=True, capture_output=True, env=environment, timeout=20)

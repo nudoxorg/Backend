@@ -160,7 +160,7 @@ urllib.request.build_opener=lambda *handlers: Opener()
         entry, archive = self.fixture_transport()
         prefix = self.root / "existing"
         newer = {**entry, "tag": entry["tag"].replace("20261006", "20261010")}
-        mirror_tests.boot.install_verified(newer, "macos-arm64", mirror_tests.published_mac_library(self.root), archive, None, prefix, False)
+        mirror_tests.run_published_install(newer, "macos-arm64", mirror_tests.published_mac_library(self.root), archive, None, prefix, False)
         current = prefix / "lib/nudox/current"
         prior = current.resolve()
         refused = self.run_launcher("--prefix", str(prefix))
