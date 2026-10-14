@@ -212,6 +212,90 @@ def run_mcp(owner: Owner, project: Path, calls: list[dict], timeout: float) -> t
     return {"tools": tools, "calls": answers, "exit": result.returncode}, seconds
 
 
+def run_mcp_interactive(owner: Owner, project: Path, calls: list[dict], timeout: float, on_reply) -> tuple[dict, float]:
+    """Keep session-bound outline authority while dynamically consuming its token."""
+    import selectors
+    import tempfile
+
+    started = time.monotonic()
+    deadline = started + timeout
+    answers = []
+    pending = b""
+    continuation_id = 10000
+    with tempfile.TemporaryFile() as errors:
+        process = subprocess.Popen(
+            [owner.bin_dir / "backend-mcp", "--endpoint", str(owner.endpoint), "--project", str(project)],
+            env=owner.env, cwd=project, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors,
+        )
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ)
+        try:
+            def send(request):
+                process.stdin.write((json.dumps(request) + "\n").encode())
+                process.stdin.flush()
+
+            def receive(identifier, per_call):
+                nonlocal pending
+                until = min(deadline, time.monotonic() + per_call)
+                while True:
+                    if time.monotonic() >= until:
+                        raise RuntimeError("interactive MCP: response deadline exceeded")
+                    if b"\n" not in pending:
+                        if not selector.select(max(0.0, until - time.monotonic())):
+                            raise RuntimeError("interactive MCP: response deadline exceeded")
+                        chunk = os.read(process.stdout.fileno(), 65536)
+                        if not chunk:
+                            raise RuntimeError("interactive MCP: closed before its response")
+                        pending += chunk
+                        if len(pending) > 1048576:
+                            raise RuntimeError("interactive MCP: oversized response")
+                        continue
+                    line, pending = pending.split(b"\n", 1)
+                    if not line.strip():
+                        continue
+                    message = json.loads(line)
+                    if "id" not in message:
+                        continue
+                    if message["id"] != identifier:
+                        raise RuntimeError("interactive MCP: unexpected response identity")
+                    return message.get("result", message.get("error"))
+
+            send({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
+                "protocolVersion": "2025-11-25", "capabilities": {},
+                "clientInfo": {"name": "nudox-t2-surface", "version": "1"}}})
+            receive(0, timeout)
+            send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+            send({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+            tools = sorted(tool["name"] for tool in receive(1, timeout).get("tools", []))
+
+            def exchange(call, identifier, per_call):
+                send({"jsonrpc": "2.0", "id": identifier, "method": "tools/call",
+                      "params": {"name": call["tool"], "arguments": call.get("arguments", {})}})
+                return receive(identifier, per_call)
+
+            def continue_call(call):
+                nonlocal continuation_id
+                continuation_id += 1
+                return exchange(call, continuation_id, 10)
+
+            for identifier, call in enumerate(calls, start=2):
+                reply = exchange(call, identifier, timeout)
+                answers.append({"call": call, "reply": reply})
+                on_reply(call, reply, continue_call)
+            process.stdin.close()
+            process.wait(timeout=max(0.01, deadline - time.monotonic()))
+            return {"tools": tools, "calls": answers, "exit": process.returncode}, time.monotonic() - started
+        finally:
+            selector.close()
+            # Match subprocess.run(timeout=...) cleanup for this owned client.
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            process.stdout.close()
+            if not process.stdin.closed:
+                process.stdin.close()
+
+
 def require_cli_success(name: str, answer: dict) -> None:
     if answer["exit"] != 0 or not isinstance(answer["json"], dict) or answer["json"].get("answer") == "fault":
         raise RuntimeError(f"{name} failed: {answer}")
@@ -677,7 +761,19 @@ def run_case(case: dict, bin_dir: Path) -> dict:
             record["answers"][key] = answer
             record["performance"]["seconds"][key] = round(seconds, 2)
         if case.get("mcp"):
-            answer, seconds = run_mcp(owner, project, case["mcp"], timeout)
+            def prove_session_outline(call, reply, exchange):
+                first = reply.get("structuredContent", {}) if isinstance(reply, dict) else {}
+                token = first.get("nextCursor")
+                if call["tool"] != "backend.outline" or token is None:
+                    return
+                following = exchange(mcp_continuation_call(call, first))
+                if not isinstance(following, dict) or following.get("isError", False) or not isinstance(following.get("structuredContent"), dict):
+                    raise RuntimeError(f"snapshot continuation: MCP refused offered outline token: {following}")
+                require_continuation_reply(first, following["structuredContent"], published_root)
+                proven_tokens.add(token)
+                log("backend.outline: offered continuation consumed in its issuing MCP session")
+
+            answer, seconds = run_mcp_interactive(owner, project, case["mcp"], timeout, prove_session_outline)
             if answer["exit"] != 0 or not answer["tools"]:
                 raise RuntimeError(f"MCP session failed: {answer}")
             for result in answer["calls"]:
@@ -690,7 +786,7 @@ def run_case(case: dict, bin_dir: Path) -> dict:
                 if result["call"]["tool"] == "backend.search" and text in case.get("authored_symbols", {}):
                     require_authored_symbols(reply["structuredContent"], {text: case["authored_symbols"][text]}, case["languages"][0])
                 first = reply.get("structuredContent", {})
-                if first.get("nextCursor") is not None:
+                if first.get("nextCursor") is not None and first["nextCursor"] not in proven_tokens:
                     token = first["nextCursor"]
                     call = result["call"]
                     continued, _ = run_mcp(owner, project, [mcp_continuation_call(call, first)], 10)

@@ -270,5 +270,52 @@ class SnapshotContinuationTests(unittest.TestCase):
             surface.require_continuation_reply(first, dict(following, roots=first["roots"]), "root")
 
 
+class InteractiveMcpTests(unittest.TestCase):
+    def test_dynamic_continuation_uses_the_issuing_process_and_returned_operands(self):
+        import os
+        import sys
+        import tempfile
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            executable = root / "backend-mcp"
+            executable.write_text("#!" + sys.executable + "\n" + '''
+import json, sys
+issued = False
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request:
+        continue
+    method = request['method']
+    if method == 'initialize':
+        result = {}
+    elif method == 'tools/list':
+        result = {'tools': [{'name': 'backend.outline'}]}
+    else:
+        args = request['params']['arguments']
+        if 'cursor' not in args:
+            issued = True
+            result = {'structuredContent': {'nextCursor': 'mcp2-issued', 'page': {'limit': 50}, 'package': {'project': '/project'}, 'detail': 'summary'}}
+        else:
+            assert issued and args == {'cursor': 'mcp2-issued', 'limit': 50, 'path': '/project', 'detail': 'summary'}
+            result = {'resumed': True}
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+''')
+            executable.chmod(0o700)
+            owner = SimpleNamespace(bin_dir=root, endpoint=root / "unused.sock", env=dict(os.environ))
+            observed = []
+
+            def consume(call, reply, exchange):
+                observed.append(exchange(surface.mcp_continuation_call(call, reply["structuredContent"])))
+
+            answer, _ = surface.run_mcp_interactive(owner, root,
+                [{"tool": "backend.outline", "arguments": {}}], 3, consume)
+            self.assertEqual(observed, [{"resumed": True}])
+            self.assertEqual(answer["exit"], 0)
+            self.assertEqual(len(answer["calls"]), 1)
+            self.assertEqual(answer["calls"][0]["reply"]["structuredContent"]["nextCursor"], "mcp2-issued")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -262,7 +262,7 @@ claim; representative-corpus scale and indexing efficiency remain open.
 The first comparison (pr-t1/599, `06daafdca`) kept the exact native view root
 and declaration answers, but opaque continuation proof bytes varied between
 fresh owners. Snapshot admission now consumes every offered first-page token
-through a fresh CLI client or MCP session before replacing its spelling with
+through the appropriate public client before replacing its spelling with
 `<live-validated>`. It rejects refused tokens, repeated/empty pages, search scope
 changes, outline basis changes and dishonest continuation flags. This is a
 one-hop continuation proof, alongside the existing synthetic exhaustive search
@@ -279,3 +279,10 @@ MCP outline can shrink its first page to fit the response budget. Continuation
 copies the returned `page.limit`, package project path and detail, as instructed
 by the public response; reusing an omitted/original limit correctly gets refused.
 The admission controls cover that client behavior too.
+
+Search continuations are consumed by fresh CLI/MCP clients. Outline continuation
+certificates are retained by the issuing MCP session, so the interactive JSON-RPC
+driver keeps that session open, reads the real first response, then sends the
+returned token and effective operands on the same process. It does not claim
+cross-session portability for outline. A stateful subprocess control verifies
+that exchange independently of the native binary; real T2 verifies the product.
