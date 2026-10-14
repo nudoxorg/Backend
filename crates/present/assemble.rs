@@ -284,18 +284,12 @@ pub fn record_list(query: &str, snapshot: &ViewSnapshot) -> RecordList {
 /// is not one of its own relations; a graph with nothing else says so.
 #[must_use]
 pub fn neighbour_list(center: &str, snapshot: &ViewSnapshot) -> RecordList {
-    let rows = snapshot
-        .root
-        .rows()
-        .iter()
-        .filter(|row| row.label != center)
-        .cloned()
-        .collect::<Vec<_>>();
-    record_list_from_rows(
+    record_list_excluding(
         center,
-        &rows,
+        snapshot.root.rows(),
         snapshot.root.coverage(),
         snapshot.next.is_some(),
+        Some(&Identity::parse(center)),
     )
     .with_continuation(snapshot.next.map(PageContinuation::from_cursor))
 }
@@ -312,6 +306,18 @@ pub fn record_list_from_rows(
     rows: &[Row],
     coverage: &[Coverage],
     more: bool,
+) -> RecordList {
+    record_list_excluding(query, rows, coverage, more, None)
+}
+
+/// [`record_list_from_rows`], without the declaration `excluding` names (in
+/// either publication lane's spelling of it).
+fn record_list_excluding(
+    query: &str,
+    rows: &[Row],
+    coverage: &[Coverage],
+    more: bool,
+    excluding: Option<&Identity>,
 ) -> RecordList {
     let line = CoverageLine::new(coverage, u64::try_from(rows.len()).ok());
     // An external placeholder without facts names something elsewhere and
@@ -340,6 +346,13 @@ pub fn record_list_from_rows(
     // declaration, the structural record is the address and the compiler-backed
     // record only contributes the facts the structural one lacks.
     merge_lane_twins(&mut records);
+    if let Some(excluded) = excluding {
+        let excluded_site = site_of_identity(excluded);
+        records.retain(|record| {
+            record.identity().coordinate() != excluded.coordinate()
+                && (excluded_site.is_none() || site_of(record) != excluded_site)
+        });
+    }
     // View rows are ordered by canonical identity for hashing and paging.
     // Scored search rows carry the owner's absolute rank independently of
     // that storage order. Restore it only in the readable projection; a
@@ -360,7 +373,10 @@ pub fn record_list_from_rows(
 /// The declaration a record names: its project, file, line and name, which
 /// both publication lanes agree on for one declaration.
 fn site_of(record: &Record) -> Option<(String, String, u32, String)> {
-    let identity = record.identity();
+    site_of_identity(record.identity())
+}
+
+fn site_of_identity(identity: &Identity) -> Option<(String, String, u32, String)> {
     if !matches!(
         identity.shape(),
         IdentityShape::Declaration | IdentityShape::Semantic

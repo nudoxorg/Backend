@@ -256,6 +256,9 @@ struct ImportedCalls {
     modules: BTreeMap<String, BTreeMap<String, BTreeSet<DeclarationId>>>,
     /// `from m import C [as D]`: a project type binding and its methods.
     classes: BTreeMap<String, BTreeMap<String, BTreeSet<DeclarationId>>>,
+    /// `from m import sub` or `use crate::sub`: a module binding, and the
+    /// methods of the types the module declares, by type and name.
+    module_types: BTreeMap<String, BTreeMap<String, BTreeMap<String, BTreeSet<DeclarationId>>>>,
     /// Bindings from outside the project, or of something not callable.
     opaque: BTreeSet<String>,
 }
@@ -337,6 +340,32 @@ impl ImportedCalls {
                     }
                 }
             }
+            // `from pkg import sub` and `use crate::sub` import a module: the
+            // name is a file of the project, not something a file declares.
+            if !matched && let ImportBindingKind::Value { specifier, exported } = &import.kind {
+                let submodule = if specifier.contains("::")
+                    || matches!(specifier.as_str(), "crate" | "self" | "super")
+                {
+                    format!("{specifier}::{exported}")
+                } else {
+                    format!("{specifier}.{exported}")
+                };
+                for id in modules.resolve(&submodule, path) {
+                    matched = true;
+                    let file = &files[id.0];
+                    let functions = joined.modules.entry(import.local.clone()).or_default();
+                    for (&name, targets) in &file.free {
+                        functions.entry(name.to_owned()).or_default().extend(targets);
+                    }
+                    let types = joined.module_types.entry(import.local.clone()).or_default();
+                    for (&type_name, methods) in &file.methods {
+                        let type_methods = types.entry(type_name.to_owned()).or_default();
+                        for (&name, targets) in methods {
+                            type_methods.entry(name.to_owned()).or_default().extend(targets);
+                        }
+                    }
+                }
+            }
             if !matched {
                 joined.opaque.insert(import.local);
             }
@@ -395,6 +424,12 @@ impl ImportedCalls {
                         .and_then(|methods| methods.get(name))
                 {
                     return unique_target(targets.iter().copied());
+                }
+                // `module::Type::name()`: a method of a type that module declares.
+                if *depth == 2
+                    && let Some(types) = self.module_types.get(root)
+                {
+                    return unique_target(types.get(last.as_str())?.get(name)?.iter().copied());
                 }
                 if *depth > 1 {
                     // `a.b.name()`: a field or a submodule path; only the
@@ -1112,6 +1147,29 @@ mod tests {
         );
         assert!(pairs.contains(&("go".to_owned(), "open".to_owned())), "{pairs:?}");
         assert_eq!(pairs.len(), 2, "{pairs:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_type_reached_through_an_imported_module_binds_its_method() -> Result<(), String> {
+        use backend_engine::SourceLanguage::Rust;
+        let pairs = matched_names(&[
+            (
+                "src/alphabet.rs",
+                Rust,
+                "pub struct Alphabet;\nimpl Alphabet {\n    pub fn new_with_padding() {}\n}\npub struct Other;\nimpl Other {\n    pub fn new_with_padding() {}\n}\n",
+            ),
+            (
+                "src/tests.rs",
+                Rust,
+                "use crate::alphabet;\npub fn it_pads() {\n    alphabet::Alphabet::new_with_padding();\n}\n",
+            ),
+        ])?;
+        assert_eq!(
+            pairs,
+            vec![("it_pads".to_owned(), "new_with_padding".to_owned())],
+            "the type in the path says which of the two methods"
+        );
         Ok(())
     }
 
