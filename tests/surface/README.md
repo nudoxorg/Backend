@@ -444,3 +444,23 @@ Initial native baseline: index19.38s, owner CPU19.46s, peak799588KiB; first
 PercentEncode query1.07s, AsciiSet0.04s, outline0.07s, packages0.02s, MCP0.21s.
 Existing1.5 time/CPU and1.25 memory ratios/floors stay unchanged. Independent
 exact-head comparison of this golden and every old case is required before merge.
+
+Rust repeatability uncovered a product ranking bug (484403/pr-t1/689 on
+5b408366b): unchanged complete native roots/rows but tied source-less types
+changed rank and MCP page composition. Local lexical tie order used provider
+EntityId, which is namespaced by the workspace. Both controlled and ordinary
+query paths now break equal placement/relevance ties by immutable canonical
+RowId, keeping provider identity and provenance/semantic ordering intact.
+No sorting/score normalization was added to the harness.
+
+Native fix review:484553/pr-t1/692 on e70b1e52f. All existing polyglot/Python
+answers and every performance guard passed. Rust's complete4/8 search row sets
+are unchanged; canonical tie order/ordinal scores and readable MCP previews
+change. Go Sum64String's complete18 rows are unchanged; Go Digest remains an
+honest bounded25-row page with continuation. All sourced Digest records,
+packages and complete outline are identical; four source-less ready/unknown
+function instances exchange at the25-row boundary as the tie order changes.
+They are not a claim of authored declarations or exhaustive Digest coverage.
+Fresh continuations/CLI–MCP prefix checks still pass. Revised Go/Rust answer
+snapshots retain every prior performance baseline and tolerance. Rust measured
+20.91s index/20.10CPU/825204KiB; a fresh exact-head comparison is required.

@@ -1025,58 +1025,6 @@
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e87b278e6619b380f763830819334213f9b909656c032298698b02d640eb6b71::AsciiSet",
-              "name": "AsciiSet",
-              "segments": [
-                "AsciiSet"
-              ],
-              "semantic_data": {
-                "kind": "selected-symbol-id",
-                "value": [
-                  195,
-                  83,
-                  67,
-                  149,
-                  209,
-                  104,
-                  65,
-                  210,
-                  23,
-                  36,
-                  240,
-                  115,
-                  15,
-                  75,
-                  90,
-                  46,
-                  52,
-                  135,
-                  77,
-                  171,
-                  232,
-                  182,
-                  164,
-                  109,
-                  223,
-                  141,
-                  122,
-                  164,
-                  80,
-                  135,
-                  171,
-                  76
-                ]
-              },
-              "shape": "semantic",
-              "trail": "project › AsciiSet"
-            },
-            "kind": "type",
-            "language": "unknown",
-            "score": 4294967293,
-            "state": "ready"
-          },
-          {
-            "identity": {
               "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e87b278e6619b380f76383081933421344717f10d073c5db36fc8aed17534918::AsciiSet",
               "name": "AsciiSet",
               "segments": [
@@ -1124,7 +1072,7 @@
             },
             "kind": "type",
             "language": "unknown",
-            "score": 4294967292,
+            "score": 4294967293,
             "state": "ready"
           },
           {
@@ -1169,6 +1117,58 @@
                   125,
                   254,
                   254
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › AsciiSet"
+            },
+            "kind": "type",
+            "language": "unknown",
+            "score": 4294967292,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e87b278e6619b380f763830819334213f9b909656c032298698b02d640eb6b71::AsciiSet",
+              "name": "AsciiSet",
+              "segments": [
+                "AsciiSet"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  195,
+                  83,
+                  67,
+                  149,
+                  209,
+                  104,
+                  65,
+                  210,
+                  23,
+                  36,
+                  240,
+                  115,
+                  15,
+                  75,
+                  90,
+                  46,
+                  52,
+                  135,
+                  77,
+                  171,
+                  232,
+                  182,
+                  164,
+                  109,
+                  223,
+                  141,
+                  122,
+                  164,
+                  80,
+                  135,
+                  171,
+                  76
                 ]
               },
               "shape": "semantic",
@@ -1432,58 +1432,6 @@
           },
           {
             "identity": {
-              "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::ec35dd9e841c3485403f84c0aa4c283af592c90b0b0595eaa39cf5d8b79cdd4f::PercentEncode<'_>",
-              "name": "PercentEncode<'_>",
-              "segments": [
-                "PercentEncode<'_>"
-              ],
-              "semantic_data": {
-                "kind": "selected-symbol-id",
-                "value": [
-                  131,
-                  78,
-                  236,
-                  85,
-                  79,
-                  147,
-                  67,
-                  133,
-                  110,
-                  245,
-                  89,
-                  51,
-                  231,
-                  66,
-                  123,
-                  230,
-                  207,
-                  45,
-                  44,
-                  96,
-                  83,
-                  231,
-                  67,
-                  222,
-                  69,
-                  124,
-                  204,
-                  85,
-                  2,
-                  249,
-                  82,
-                  44
-                ]
-              },
-              "shape": "semantic",
-              "trail": "project › PercentEncode<'_>"
-            },
-            "kind": "type",
-            "language": "unknown",
-            "score": 4294967294,
-            "state": "ready"
-          },
-          {
-            "identity": {
               "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::a9f4c54e047df460cc9e5380ad005d9e718b09ab2ab76bbc4594afd16404cfa5::PercentEncode<'a>",
               "name": "PercentEncode<'a>",
               "segments": [
@@ -1528,6 +1476,58 @@
               },
               "shape": "semantic",
               "trail": "project › PercentEncode<'a>"
+            },
+            "kind": "type",
+            "language": "unknown",
+            "score": 4294967294,
+            "state": "ready"
+          },
+          {
+            "identity": {
+              "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::ec35dd9e841c3485403f84c0aa4c283af592c90b0b0595eaa39cf5d8b79cdd4f::PercentEncode<'_>",
+              "name": "PercentEncode<'_>",
+              "segments": [
+                "PercentEncode<'_>"
+              ],
+              "semantic_data": {
+                "kind": "selected-symbol-id",
+                "value": [
+                  131,
+                  78,
+                  236,
+                  85,
+                  79,
+                  147,
+                  67,
+                  133,
+                  110,
+                  245,
+                  89,
+                  51,
+                  231,
+                  66,
+                  123,
+                  230,
+                  207,
+                  45,
+                  44,
+                  96,
+                  83,
+                  231,
+                  67,
+                  222,
+                  69,
+                  124,
+                  204,
+                  85,
+                  2,
+                  249,
+                  82,
+                  44
+                ]
+              },
+              "shape": "semantic",
+              "trail": "project › PercentEncode<'_>"
             },
             "kind": "type",
             "language": "unknown",
@@ -1618,7 +1618,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n• `PercentEncode` · struct · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::a3a78a92969ecd6d25f04a56b2d21af5b58b0d442df0bc27920dbc35f825ef8d::PercentEncode`\n• `PercentEncode<'_>` · type · unknown\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::ec35dd9e841c3485403f84c0aa4c283af592c90b0b0595eaa39cf5d8b79cdd4f::PercentEncode<'_>`\n• `PercentEncode<'a>` · type · unknown\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::a9f4c54e047df460cc9e5380ad005d9e718b09ab2ab76bbc4594afd16404cfa5::PercentEncode<'a>`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n• `PercentEncode` · struct · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::a3a78a92969ecd6d25f04a56b2d21af5b58b0d442df0bc27920dbc35f825ef8d::PercentEncode`\n• `PercentEncode<'a>` · type · unknown\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::a9f4c54e047df460cc9e5380ad005d9e718b09ab2ab76bbc4594afd16404cfa5::PercentEncode<'a>`\n• `PercentEncode<'_>` · type · unknown\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::ec35dd9e841c3485403f84c0aa4c283af592c90b0b0595eaa39cf5d8b79cdd4f::PercentEncode<'_>`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -1712,58 +1712,6 @@
                 },
                 {
                   "identity": {
-                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::ec35dd9e841c3485403f84c0aa4c283af592c90b0b0595eaa39cf5d8b79cdd4f::PercentEncode<'_>",
-                    "name": "PercentEncode<'_>",
-                    "segments": [
-                      "PercentEncode<'_>"
-                    ],
-                    "semantic_data": {
-                      "kind": "selected-symbol-id",
-                      "value": [
-                        131,
-                        78,
-                        236,
-                        85,
-                        79,
-                        147,
-                        67,
-                        133,
-                        110,
-                        245,
-                        89,
-                        51,
-                        231,
-                        66,
-                        123,
-                        230,
-                        207,
-                        45,
-                        44,
-                        96,
-                        83,
-                        231,
-                        67,
-                        222,
-                        69,
-                        124,
-                        204,
-                        85,
-                        2,
-                        249,
-                        82,
-                        44
-                      ]
-                    },
-                    "shape": "semantic",
-                    "trail": "project › PercentEncode<'_>"
-                  },
-                  "kind": "type",
-                  "language": "unknown",
-                  "score": 4294967294,
-                  "state": "ready"
-                },
-                {
-                  "identity": {
                     "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::a9f4c54e047df460cc9e5380ad005d9e718b09ab2ab76bbc4594afd16404cfa5::PercentEncode<'a>",
                     "name": "PercentEncode<'a>",
                     "segments": [
@@ -1811,6 +1759,58 @@
                   },
                   "kind": "type",
                   "language": "unknown",
+                  "score": 4294967294,
+                  "state": "ready"
+                },
+                {
+                  "identity": {
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::ec35dd9e841c3485403f84c0aa4c283af592c90b0b0595eaa39cf5d8b79cdd4f::PercentEncode<'_>",
+                    "name": "PercentEncode<'_>",
+                    "segments": [
+                      "PercentEncode<'_>"
+                    ],
+                    "semantic_data": {
+                      "kind": "selected-symbol-id",
+                      "value": [
+                        131,
+                        78,
+                        236,
+                        85,
+                        79,
+                        147,
+                        67,
+                        133,
+                        110,
+                        245,
+                        89,
+                        51,
+                        231,
+                        66,
+                        123,
+                        230,
+                        207,
+                        45,
+                        44,
+                        96,
+                        83,
+                        231,
+                        67,
+                        222,
+                        69,
+                        124,
+                        204,
+                        85,
+                        2,
+                        249,
+                        82,
+                        44
+                      ]
+                    },
+                    "shape": "semantic",
+                    "trail": "project › PercentEncode<'_>"
+                  },
+                  "kind": "type",
+                  "language": "unknown",
                   "score": 4294967293,
                   "state": "ready"
                 }
@@ -1837,7 +1837,7 @@
                 "limitBytes": 49152,
                 "limitTokens": 12000,
                 "normalizedEstimatedTokensExcludingCounters": 889,
-                "normalizedFrameBytesExcludingCounters": 3555,
+                "normalizedFrameBytesExcludingCounters": 3556,
                 "scope": "complete_jsonrpc_line",
                 "tokenPolicy": "cl100k_base/ordinary-v1",
                 "tokenScope": "complete_jsonrpc_json_excluding_transport_framing",
@@ -1846,7 +1846,7 @@
             },
             "content": [
               {
-                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n• `AsciiSet` · struct · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::03d4cf8275bbde9af062483aa42b5803afa6d6ab168baea9577972a2f0cf6f0b::AsciiSet`\n• `AsciiSet` · import · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::f6ff4af48d0445a862ca7b44924a66c53728a211bf3d4c409ba6b948d8f25185::AsciiSet`\n• `AsciiSet` · type · unknown\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::e87b278e6619b380f763830819334213f9b909656c032298698b02d640eb6b71::AsciiSet`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
+                "text": "~lanes exact✓3 names✓3 graph✓3 semantic✗ unconfigured semantic-search unavailable (unconfigured) — Run nudox embedding-setup with a matched helper package, reopen the owner, then run nudox add . to reindex.\n• `AsciiSet` · struct · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::03d4cf8275bbde9af062483aa42b5803afa6d6ab168baea9577972a2f0cf6f0b::AsciiSet`\n• `AsciiSet` · import · rust\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::f6ff4af48d0445a862ca7b44924a66c53728a211bf3d4c409ba6b948d8f25185::AsciiSet`\n• `AsciiSet` · type · unknown\n  `/tmp/nudox-surface/rust-percent-encoding/project::semantic::e87b278e6619b380f76383081933421344717f10d073c5db36fc8aed17534918::AsciiSet`\n3 row(s) on this page; showing 3 exact coordinate(s); 0 omitted from text preview. Full page: `structuredContent.records`.\nContinue `backend.search` with the same arguments; copy `structuredContent.nextCursor` to `arguments.cursor`.\n",
                 "type": "text"
               }
             ],
@@ -1854,7 +1854,7 @@
             "structuredContent": {
               "answer": "records",
               "budget": {
-                "bytesExcludingCursor": 2105,
+                "bytesExcludingCursor": 2106,
                 "bytesPerToken": 4,
                 "estimatedTokensExcludingCursor": 527
               },
@@ -1994,7 +1994,7 @@
                 },
                 {
                   "identity": {
-                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e87b278e6619b380f763830819334213f9b909656c032298698b02d640eb6b71::AsciiSet",
+                    "coordinate": "/tmp/nudox-surface/rust-percent-encoding/project::semantic::e87b278e6619b380f76383081933421344717f10d073c5db36fc8aed17534918::AsciiSet",
                     "name": "AsciiSet",
                     "segments": [
                       "AsciiSet"
@@ -2002,38 +2002,38 @@
                     "semantic_data": {
                       "kind": "selected-symbol-id",
                       "value": [
-                        195,
-                        83,
-                        67,
-                        149,
-                        209,
+                        107,
+                        39,
                         104,
-                        65,
-                        210,
-                        23,
-                        36,
-                        240,
+                        225,
+                        160,
+                        236,
+                        4,
+                        238,
+                        53,
+                        53,
+                        248,
+                        228,
+                        186,
+                        82,
+                        160,
+                        49,
+                        193,
+                        72,
+                        96,
+                        63,
+                        110,
+                        121,
+                        107,
                         115,
-                        15,
-                        75,
-                        90,
-                        46,
-                        52,
-                        135,
-                        77,
-                        171,
-                        232,
-                        182,
-                        164,
-                        109,
-                        223,
-                        141,
-                        122,
-                        164,
-                        80,
-                        135,
-                        171,
-                        76
+                        248,
+                        199,
+                        145,
+                        63,
+                        53,
+                        105,
+                        188,
+                        250
                       ]
                     },
                     "shape": "semantic",
