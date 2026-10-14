@@ -71,12 +71,104 @@ class PlacementTests(unittest.TestCase):
             self.assertEqual([call.args for call in setter.call_args_list], [(0, {7}), (0, {7, 9})])
 
     def test_refused_affinity_is_an_error_not_an_ignored_policy(self):
+        original = {7, 9}
+        effective = {'cpus': original}
+        calls = []
+
+        def refuse_after_partial_change(process, cpus):
+            selected = set(cpus)
+            calls.append((process, selected))
+            effective['cpus'] = selected
+            if selected == {7}:
+                raise PermissionError('fixture')
+
         with patch.object(cpu_placement.os, 'sched_getaffinity', create=True, return_value={7, 9}), \
-             patch.object(cpu_placement.os, 'sched_setaffinity', create=True, side_effect=PermissionError('fixture')), \
+             patch.object(cpu_placement.os, 'sched_setaffinity', create=True,
+                          side_effect=refuse_after_partial_change), \
              patch.object(cpu_placement, 'highest_capacity', return_value={'selected': [7]}):
             with self.assertRaises(PermissionError):
                 with cpu_placement.measurement_placement():
                     self.fail('measurement must not run after placement refusal')
+        self.assertEqual(calls, [(0, {7}), (0, original)])
+        self.assertEqual(effective['cpus'], original)
+
+    def test_verification_oserror_restores_original_grant(self):
+        original = {7, 9}
+        verification_error = OSError('verification failed')
+        record = {'selected': [7]}
+        with patch.object(cpu_placement.os, 'sched_getaffinity', create=True,
+                          side_effect=[original, verification_error]), \
+             patch.object(cpu_placement.os, 'sched_setaffinity', create=True) as setter, \
+             patch.object(cpu_placement, 'highest_capacity', return_value=record):
+            with self.assertRaises(OSError) as raised:
+                with cpu_placement.measurement_placement():
+                    self.fail('measurement must not run after verification fails')
+        self.assertIs(raised.exception, verification_error)
+        self.assertEqual([call.args for call in setter.call_args_list],
+                         [(0, {7}), (0, original)])
+
+    def test_verification_keyboardinterrupt_restores_original_grant(self):
+        original = {7, 9}
+        cancellation = KeyboardInterrupt('verification cancelled')
+        with patch.object(cpu_placement.os, 'sched_getaffinity', create=True,
+                          side_effect=[original, cancellation]), \
+             patch.object(cpu_placement.os, 'sched_setaffinity', create=True) as setter, \
+             patch.object(cpu_placement, 'highest_capacity', return_value={'selected': [7]}):
+            with self.assertRaises(KeyboardInterrupt) as raised:
+                with cpu_placement.measurement_placement():
+                    self.fail('measurement must not run after verification is cancelled')
+        self.assertIs(raised.exception, cancellation)
+        self.assertEqual([call.args for call in setter.call_args_list],
+                         [(0, {7}), (0, original)])
+
+    def test_mismatched_effective_grant_restores_original_and_refuses_measurement(self):
+        original = {7, 9}
+        with patch.object(cpu_placement.os, 'sched_getaffinity', create=True,
+                          side_effect=[original, {9}]), \
+             patch.object(cpu_placement.os, 'sched_setaffinity', create=True) as setter, \
+             patch.object(cpu_placement, 'highest_capacity', return_value={'selected': [7]}):
+            with self.assertRaisesRegex(RuntimeError, 'placement was not applied'):
+                with cpu_placement.measurement_placement():
+                    self.fail('measurement must not run after a mismatched grant')
+        self.assertEqual([call.args for call in setter.call_args_list],
+                         [(0, {7}), (0, original)])
+
+    def test_body_cancellation_restores_original_grant(self):
+        original = {7, 9}
+        cancellation = KeyboardInterrupt('measurement cancelled')
+        with patch.object(cpu_placement.os, 'sched_getaffinity', create=True,
+                          side_effect=[original, {7}]), \
+             patch.object(cpu_placement.os, 'sched_setaffinity', create=True) as setter, \
+             patch.object(cpu_placement, 'highest_capacity', return_value={'selected': [7]}):
+            with self.assertRaises(KeyboardInterrupt) as raised:
+                with cpu_placement.measurement_placement():
+                    raise cancellation
+        self.assertIs(raised.exception, cancellation)
+        self.assertEqual([call.args for call in setter.call_args_list],
+                         [(0, {7}), (0, original)])
+
+    def test_restore_failure_is_reported_without_masking_measurement_cancellation(self):
+        original = {7, 9}
+        cancellation = KeyboardInterrupt('measurement cancelled')
+        calls = []
+
+        def set_affinity(process, cpus):
+            calls.append((process, set(cpus)))
+            if len(calls) == 2:
+                raise PermissionError(1, 'restore denied')
+
+        with patch.object(cpu_placement.os, 'sched_getaffinity', create=True,
+                          side_effect=[original, {7}]), \
+             patch.object(cpu_placement.os, 'sched_setaffinity', create=True,
+                          side_effect=set_affinity), \
+             patch.object(cpu_placement, 'highest_capacity', return_value={'selected': [7]}):
+            with self.assertRaises(KeyboardInterrupt) as raised:
+                with cpu_placement.measurement_placement():
+                    raise cancellation
+        self.assertIs(raised.exception, cancellation)
+        self.assertEqual(calls, [(0, {7}), (0, original)])
+        self.assertTrue(any('PermissionError (errno 1)' in note
+                            for note in raised.exception.__notes__))
 
     @unittest.skipUnless(hasattr(os, 'sched_getaffinity'), 'Linux affinity lifecycle')
     def test_real_child_inherits_placement_and_parent_recovers(self):
