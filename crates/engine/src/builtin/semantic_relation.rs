@@ -471,10 +471,12 @@ impl PartialSemanticCoverage {
         Ok(Self { completed, total })
     }
 
+    /// Returns the number of source members with completed semantic artifacts.
     pub const fn completed(self) -> NonZeroU32 {
         self.completed
     }
 
+    /// Returns the total number of members in the declared source scope.
     pub const fn total(self) -> NonZeroU32 {
         self.total
     }
